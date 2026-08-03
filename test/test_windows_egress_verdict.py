@@ -11,6 +11,22 @@ class Policy(object):
         return value in ('127.0.0.1', '10.0.0.5')
 
 
+class MappingPolicy(Policy):
+    def __init__(self):
+        self.lease = object()
+        self.mapping = object()
+        self.mapping_args = None
+
+    def lease_for(self, ip, port):
+        if (ip, port) == ('93.184.216.34', 443):
+            return self.lease
+        return None
+
+    def create_relay_mapping(self, *args):
+        self.mapping_args = args
+        return self.mapping
+
+
 class ListenerPorts(object):
     def isListener(self, proto, port):
         return (proto, port) in (('TCP', 38926), ('TCP', 38927))
@@ -126,6 +142,23 @@ class WindowsVerdictTests(unittest.TestCase):
             self.diverter.finalize_egress_verdict(
                 Packet(dst='93.184.216.34', dport=38927),
                 relay_redirected=True))
+
+    def test_relay_redirect_uses_flow_source_on_multihomed_host(self):
+        policy = MappingPolicy()
+        self.diverter.egress_policy = policy
+        self.diverter.external_ip = '10.0.0.99'
+        packet = Packet(src='10.0.0.5', dst='93.184.216.34', dport=443)
+
+        mapping, lease = self.diverter.redirect_domain_tls_syn(packet)
+
+        self.assertIs(mapping, policy.mapping)
+        self.assertIs(lease, policy.lease)
+        self.assertEqual(
+            ('10.0.0.5', 50000, '93.184.216.34', 443,
+             '10.0.0.5', 38927),
+            policy.mapping_args)
+        self.assertEqual(('10.0.0.5', 38927),
+                         (packet.dst_ip, packet.dport))
 
     def test_ipv6_is_classified_before_packet_context(self):
         ipv6 = bytes.fromhex('6000000000003b40')

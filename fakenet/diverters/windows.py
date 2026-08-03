@@ -492,7 +492,11 @@ class Diverter(DiverterBase, WinUtilMixin):
         lease = self.egress_policy.lease_for(pkt.dst_ip0, pkt.dport0)
         if not lease:
             return None, None
-        relay_ip = self.getNewDestinationIp(pkt.src_ip0)
+        # The relay listens on the IPv4 wildcard address. Target the exact
+        # local address that originated this flow, not Diverter.external_ip:
+        # on a multi-homed VM the latter may belong to another adapter and a
+        # reinjected SYN can be captured and diverted a second time.
+        relay_ip = pkt.src_ip0
         mapping = self.egress_policy.create_relay_mapping(
             pkt.src_ip0, pkt.sport0, pkt.dst_ip0, pkt.dport0,
             relay_ip, self.egress_policy.relay_port)
