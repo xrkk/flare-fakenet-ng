@@ -247,7 +247,8 @@ try {
     Push-Location $repoRoot
     try {
         foreach ($test in @('test_egresspolicy.py', 'test_dns_policy.py',
-                'test_tlshello.py', 'test_windows_egress_verdict.py')) {
+                'test_tlshello.py', 'test_windows_egress_verdict.py',
+                'test_ssl_utils.py')) {
             $testLog = Join-Path $script:LogDir ($test + '.log')
             $testExit = Invoke-NativeCaptured {
                 & $python -m unittest discover -s test -p $test -v
