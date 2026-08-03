@@ -49,9 +49,10 @@ accept the administrator prompt. The launcher refuses physical hosts, selects
 the DNS server already configured on the preferred default-route interface,
 checks dependencies, creates the runtime configuration, and starts FakeNet-NG
 without asking for a DNS value. After the launcher reports `READY`, start the
-sample, keep the launcher window open, and press Enter there when analysis is
-finished. The launcher then requests a graceful stop and checks DNS recovery.
-Plain logs and before/after DNS snapshots are written below
+sample and keep the launcher window open. FakeNet-NG activity is displayed live
+in that window and also retained on disk. Press Enter when analysis is finished;
+the launcher then requests a graceful stop and checks DNS recovery. Plain logs
+and before/after DNS snapshots are written below
 `dist/Logs/domain-allowlist-start-*`.
 
 Installation

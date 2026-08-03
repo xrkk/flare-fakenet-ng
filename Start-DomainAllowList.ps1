@@ -121,6 +121,57 @@ function Invoke-NativeCaptured {
     return $nativeExitCode
 }
 
+function Show-FakeNetLogUntilEnter {
+    param(
+        [Diagnostics.Process]$Process,
+        [string]$Path
+    )
+
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = [IO.File]::Open(
+            $Path,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::ReadWrite)
+        $reader = [IO.StreamReader]::new(
+            $stream, [Text.Encoding]::Default)
+
+        Write-Host ''
+        Write-Host '----- FakeNet-NG live log (press Enter to stop) -----' `
+            -ForegroundColor Cyan
+        while ($true) {
+            while ($reader.Peek() -ge 0) {
+                Write-Host $reader.ReadLine()
+            }
+
+            $Process.Refresh()
+            if ($Process.HasExited) {
+                Start-Sleep -Milliseconds 100
+                while ($reader.Peek() -ge 0) {
+                    Write-Host $reader.ReadLine()
+                }
+                return $false
+            }
+
+            if ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                if ($key.Key -eq [ConsoleKey]::Enter) {
+                    return $true
+                }
+            }
+            Start-Sleep -Milliseconds 200
+        }
+    } finally {
+        if ($reader) {
+            $reader.Dispose()
+        } elseif ($stream) {
+            $stream.Dispose()
+        }
+    }
+}
+
 $vmIdentity = Get-CimInstance Win32_ComputerSystem
 if (-not (Test-IsVirtualMachine)) {
     Write-Error (('REFUSED: this machine does not identify as a VM ' +
@@ -264,7 +315,11 @@ try {
     Write-Host 'FakeNet-NG is READY. You can start the sample now.' `
         -ForegroundColor Green
     Write-Host 'Keep this window open while the sample runs.'
-    [void](Read-Host 'When analysis is finished, press Enter to stop safely')
+    $stopRequested = Show-FakeNetLogUntilEnter `
+        -Process $script:FakeNetProcess -Path $fakeLog
+    if (-not $stopRequested) {
+        throw 'FakeNet-NG exited before a safe stop was requested.'
+    }
     $script:ExitCode = 0
 } catch {
     $script:ExitCode = 1
