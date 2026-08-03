@@ -5,6 +5,8 @@ from fakenet.diverters.windows import Diverter
 
 
 class Policy(object):
+    relay_port = 38927
+
     def is_exact_local_ipv4(self, value):
         return value in ('127.0.0.1', '10.0.0.5')
 
