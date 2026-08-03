@@ -188,9 +188,10 @@ try {
     $python = (Get-Command $PythonPath -ErrorAction Stop).Source
     $dependencyLog = Join-Path $script:LogDir 'dependency-check.log'
     $dependencyExit = Invoke-NativeCaptured {
+        # Keep the native -c argument free of embedded quotes. Windows
+        # PowerShell 5.1 otherwise strips them during native argument binding.
         & $python -c ('import dpkt,dnslib,netifaces,pydivert,' +
-            'pyftpdlib,jinja2,OpenSSL,cryptography; ' +
-            'print("dependencies ok")')
+            'pyftpdlib,jinja2,OpenSSL,cryptography')
     } $dependencyLog
     if ($dependencyExit -ne 0) {
         throw ('Required Python dependencies are missing. See ' +
