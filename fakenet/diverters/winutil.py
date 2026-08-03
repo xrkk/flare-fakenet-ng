@@ -22,6 +22,7 @@ from winreg import *
 import subprocess
 
 NO_ERROR = 0
+ERROR_BUFFER_OVERFLOW = 111
 
 AF_INET = 2
 AF_INET6 = 23
@@ -1087,13 +1088,29 @@ class WinUtilMixin(diverterbase.DiverterPerOSDelegate):
     # );
 
     def get_network_params(self):
-        OutBufLen = ULONG(sizeof(FIXED_INFO))
-        FixedInfo = FIXED_INFO()
-
-        if not windll.iphlpapi.GetNetworkParams(byref(FixedInfo), byref(OutBufLen)) == NO_ERROR:
-            self.logger.error('Failed calling GetNetworkParams')
+        OutBufLen = ULONG(0)
+        result = windll.iphlpapi.GetNetworkParams(None, byref(OutBufLen))
+        if result not in (NO_ERROR, ERROR_BUFFER_OVERFLOW):
+            self.logger.error(
+                'Failed sizing GetNetworkParams buffer (error %d)', result)
             return None
 
+        # FIXED_INFO ends with a linked DNS list, so sizeof(FIXED_INFO) is not
+        # sufficient when Windows reports more than one resolver.
+        OutBufLen.value = max(OutBufLen.value, sizeof(FIXED_INFO))
+        FixedInfoBuffer = create_string_buffer(OutBufLen.value)
+        pFixedInfo = cast(FixedInfoBuffer, POINTER(FIXED_INFO))
+        result = windll.iphlpapi.GetNetworkParams(
+            pFixedInfo, byref(OutBufLen))
+        if result != NO_ERROR:
+            self.logger.error(
+                'Failed calling GetNetworkParams (error %d)', result)
+            return None
+
+        FixedInfo = pFixedInfo.contents
+        # Keep the storage for linked IP_ADDR_STRING nodes alive while callers
+        # traverse DnsServerList.
+        FixedInfo._buffer = FixedInfoBuffer
         return FixedInfo
 
     def get_dns_servers(self):
