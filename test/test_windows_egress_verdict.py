@@ -223,6 +223,40 @@ class WindowsVerdictTests(unittest.TestCase):
             mock.call.close(),
         ], sequence.mock_calls)
 
+    def test_host_blacklist_cannot_grant_external_egress(self):
+        packet = Packet()
+        self.diverter.listener_ports.isHostBlackListHit = mock.Mock(
+            return_value=True)
+        self.assertTrue(self.diverter.check_should_ignore(
+            packet, 123, 'sample.exe'))
+        self.assertEqual(
+            Verdict.DROP_EXTERNAL,
+            self.diverter.finalize_egress_verdict(packet))
+
+    def test_ftp_active_compatibility_port_cannot_grant_egress(self):
+        local = Packet(src='10.0.0.5', sport=20,
+                       dst='10.0.0.5', dport=50001)
+        self.assertTrue(self.diverter.check_should_ignore(
+            local, self.diverter.pid, 'python.exe'))
+        self.assertIn(20, self.diverter.blacklist_ports['TCP'])
+        external = Packet(src='10.0.0.5', sport=20,
+                          dst='93.184.216.34', dport=443)
+        self.assertTrue(self.diverter.check_should_ignore(
+            external, 123, 'sample.exe'))
+        self.assertEqual(
+            Verdict.DROP_EXTERNAL,
+            self.diverter.finalize_egress_verdict(external))
+
+    def test_windivert_send_failure_is_contained(self):
+        self.diverter.handle = mock.Mock()
+        self.diverter.handle.send.side_effect = OSError('send failed')
+        self.diverter.logger = mock.Mock()
+
+        self.assertFalse(self.diverter._send_windivert_packet(
+            object(), 'fault injection'))
+        self.diverter.handle.send.assert_called_once()
+        self.diverter.logger.error.assert_called_once()
+
     def test_ipv6_is_classified_before_packet_context(self):
         ipv6 = bytes.fromhex('6000000000003b40')
         self.assertEqual(

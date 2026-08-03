@@ -216,6 +216,59 @@ class EgressPolicyTests(unittest.TestCase):
                 'dns', 'UDP', '10.0.0.5', 55999,
                 '10.0.0.1', 53)
 
+    def test_control_flow_expiry_and_suspend_revoke_state(self):
+        token = self.policy.register_control_flow(
+            'dns', 'UDP', '10.0.0.5', 56000,
+            '10.0.0.1', 53, ttl=1)
+        self.assertIsNotNone(self.policy.match_control_flow(
+            'UDP', '10.0.0.5', 56000, '10.0.0.1', 53))
+        self.clock.value += 2
+        self.assertIsNone(self.policy.match_control_flow(
+            'UDP', '10.0.0.5', 56000, '10.0.0.1', 53))
+        self.policy.revoke_control_flow(token)
+
+        self.policy.replace_leases(
+            'api.deepseek.com', [('93.184.216.34', 60)])
+        self.policy.suspend()
+        self.assertIsNone(self.policy.lease_for('93.184.216.34', 443))
+        with self.assertRaises(RuntimeError):
+            self.policy.register_control_flow(
+                'dns', 'UDP', '10.0.0.5', 56001,
+                '10.0.0.1', 53)
+
+    def test_domain_and_port_matching_are_exact(self):
+        self.assertEqual('api.deepseek.com',
+                         self.policy.resolve_dns_rule('API.DEEPSEEK.COM.'))
+        self.assertIsNone(
+            self.policy.resolve_dns_rule('sub.api.deepseek.com'))
+        self.policy.replace_leases(
+            'api.deepseek.com', [('93.184.216.34', 60)])
+        self.assertIsNotNone(self.policy.lease_for('93.184.216.34', 443))
+        self.assertIsNone(self.policy.lease_for('93.184.216.34', 80))
+
+    def test_global_active_relay_quota_fails_closed(self):
+        local_ips = ['10.0.2.%d' % value for value in range(1, 10)]
+        policy = EgressPolicy(
+            config(), local_ips, [], '10.0.0.1', self.clock)
+        policy.replace_leases(
+            'api.deepseek.com', [('93.184.216.34', 60)])
+        for offset in range(128):
+            source = local_ips[offset // 16]
+            mapping = policy.create_relay_mapping(
+                source, 41000 + offset, '93.184.216.34', 443,
+                source, 38927)
+            self.assertIs(mapping, policy.consume_relay_target(
+                source, 41000 + offset))
+            self.assertTrue(policy.activate_relay_mapping(
+                mapping.generation))
+        overflow = policy.create_relay_mapping(
+            local_ips[8], 52000, '93.184.216.34', 443,
+            local_ips[8], 38927)
+        self.assertIs(overflow, policy.consume_relay_target(
+            local_ips[8], 52000))
+        self.assertFalse(policy.activate_relay_mapping(
+            overflow.generation))
+
 
 if __name__ == '__main__':
     unittest.main()
