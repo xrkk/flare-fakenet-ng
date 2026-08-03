@@ -15,7 +15,10 @@ class SSLWrapperCertificateTests(unittest.TestCase):
 
     def test_generates_root_crl_and_sni_leaf_with_cryptography(self):
         with tempfile.TemporaryDirectory() as cert_dir:
-            self.wrapper.config = {'cert_dir': cert_dir}
+            self.wrapper.config = {
+                'cert_dir': cert_dir,
+                'static_ca': 'yes',
+            }
             root_cert, root_key, root_crl = self.wrapper.create_cert(
                 'fakenet.flare', cert_dir=cert_dir)
             self.assertTrue(root_cert and root_key and root_crl)

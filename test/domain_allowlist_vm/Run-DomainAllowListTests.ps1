@@ -149,11 +149,22 @@ function Stop-TestComponents {
             Add-Result 'FakeNetStop' 'FAIL' 'graceful stop timed out; terminating process'
             $script:ExitCode = 1
             Stop-Process -Id $script:FakeNetProcess.Id -Force -ErrorAction SilentlyContinue
-        } elseif ($script:FakeNetProcess.ExitCode -ne 0) {
-            Add-Result 'FakeNetStop' 'FAIL' ("exit={0}" -f $script:FakeNetProcess.ExitCode)
-            $script:ExitCode = 1
         } else {
-            Add-Result 'FakeNetStop' 'PASS' 'graceful stop completed'
+            # Windows PowerShell 5.1 can leave ExitCode unpopulated for an
+            # asynchronously started process until redirected streams finish
+            # and the Process object refreshes.
+            $script:FakeNetProcess.WaitForExit()
+            $script:FakeNetProcess.Refresh()
+            $processExitCode = $script:FakeNetProcess.ExitCode
+            if ($null -eq $processExitCode) {
+                Add-Result 'FakeNetStop' 'FAIL' 'process exited but exit code is unavailable'
+                $script:ExitCode = 1
+            } elseif ($processExitCode -ne 0) {
+                Add-Result 'FakeNetStop' 'FAIL' ("exit={0}" -f $processExitCode)
+                $script:ExitCode = 1
+            } else {
+                Add-Result 'FakeNetStop' 'PASS' 'graceful stop completed; exit=0'
+            }
         }
     }
     if ($script:PktmonStarted) {
@@ -295,6 +306,8 @@ try {
     $script:FakeNetProcess = Start-Process -FilePath $python -ArgumentList $arguments `
         -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    $script:FakeNetProcess.EnableRaisingEvents = $true
+    $null = $script:FakeNetProcess.Handle
 
     $ready = $false
     for ($i = 0; $i -lt 30; $i++) {
