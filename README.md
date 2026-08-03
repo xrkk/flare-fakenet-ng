@@ -44,6 +44,16 @@ runner and evidence-return instructions are in
 `test/domain_allowlist_vm/README.md`. Do not run the VM runner or FakeNet-NG on
 the host used to review the source.
 
+For normal Windows VM operation, double-click `Start-DomainAllowList.cmd` and
+accept the administrator prompt. The launcher refuses physical hosts, selects
+the DNS server already configured on the preferred default-route interface,
+checks dependencies, creates the runtime configuration, and starts FakeNet-NG
+without asking for a DNS value. After the launcher reports `READY`, start the
+sample, keep the launcher window open, and press Enter there when analysis is
+finished. The launcher then requests a graceful stop and checks DNS recovery.
+Plain logs and before/after DNS snapshots are written below
+`dist/Logs/domain-allowlist-start-*`.
+
 Installation
 ============
 
