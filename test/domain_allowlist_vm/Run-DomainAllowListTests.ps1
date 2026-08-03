@@ -1,6 +1,5 @@
 [CmdletBinding()]
 param(
-    [string]$ExternalDnsServer = "",
     [string]$PythonPath = "python.exe"
 )
 
@@ -55,25 +54,45 @@ function Resolve-RepositoryRoot {
 function Select-OriginalDnsServer {
     $local = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
         Select-Object -ExpandProperty IPAddress)
-    $candidates = @(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop |
-        ForEach-Object { $_.ServerAddresses } |
-        Where-Object { $_ -and $_ -notin $local -and $_ -notlike '127.*' } |
-        Select-Object -Unique)
-    if (-not $ExternalDnsServer) {
-        throw 'Enter an explicitly reviewed pre-FakeNet IPv4 DNS server; automatic selection is disabled.'
+    $interfaces = @{}
+    Get-NetIPInterface -AddressFamily IPv4 -ErrorAction Stop |
+        Where-Object ConnectionState -eq 'Connected' |
+        ForEach-Object { $interfaces[$_.InterfaceIndex] = $_ }
+    $routes = @(Get-NetRoute -AddressFamily IPv4 `
+            -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+        Where-Object { $interfaces.ContainsKey($_.InterfaceIndex) } |
+        Sort-Object `
+            @{Expression = {
+                $_.RouteMetric + $interfaces[$_.InterfaceIndex].InterfaceMetric
+            }}, InterfaceIndex)
+
+    foreach ($route in $routes) {
+        $dns = Get-DnsClientServerAddress -AddressFamily IPv4 `
+            -InterfaceIndex $route.InterfaceIndex -ErrorAction Stop
+        foreach ($candidate in @($dns.ServerAddresses)) {
+            $candidate = [string]$candidate
+            $parsed = $null
+            if (-not [Net.IPAddress]::TryParse($candidate, [ref]$parsed) -or
+                    $parsed.AddressFamily -ne
+                    [Net.Sockets.AddressFamily]::InterNetwork) {
+                continue
+            }
+            $octets = $parsed.GetAddressBytes()
+            $invalid = ($candidate -in $local -or
+                [Net.IPAddress]::IsLoopback($parsed) -or
+                $candidate -eq '0.0.0.0' -or
+                $candidate -eq '255.255.255.255' -or
+                ($octets[0] -eq 169 -and $octets[1] -eq 254) -or
+                ($octets[0] -ge 224 -and $octets[0] -le 239))
+            if (-not $invalid) {
+                Add-Result 'DnsAutoSelection' 'PASS' (
+                    'interface={0}; resolver={1}; source=pre-test VM configuration' -f
+                    $interfaces[$route.InterfaceIndex].InterfaceAlias, $candidate)
+                return [string]$candidate
+            }
+        }
     }
-    $parsed = $null
-    if (-not [Net.IPAddress]::TryParse($ExternalDnsServer, [ref]$parsed) -or
-            $parsed.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) {
-        throw 'ExternalDnsServer must be an IPv4 address.'
-    }
-    if ($ExternalDnsServer -in $local -or $ExternalDnsServer -like '127.*') {
-        throw 'ExternalDnsServer must not be a local address.'
-    }
-    if ($ExternalDnsServer -notin $candidates) {
-        throw 'ExternalDnsServer must match the VM DNS configuration captured before FakeNet starts.'
-    }
-    return $ExternalDnsServer
+    throw 'No usable IPv4 DNS server exists on a connected default-route interface.'
 }
 
 function Invoke-LoggedCommand {
@@ -142,9 +161,6 @@ if (-not (Test-IsVirtualMachine)) {
 if (-not (Test-IsAdministrator)) {
     $arguments = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
         '-File', ('"{0}"' -f $PSCommandPath))
-    if ($ExternalDnsServer) {
-        $arguments += @('-ExternalDnsServer', $ExternalDnsServer)
-    }
     if ($PythonPath -ne 'python.exe') {
         $arguments += @('-PythonPath', $PythonPath)
     }
