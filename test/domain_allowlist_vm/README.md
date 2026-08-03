@@ -28,3 +28,17 @@ plain diagnostic log directory without starting FakeNet.
 If the runner exits early, return the plain log directory anyway. Do not work around a
 failure by disabling IPv6, using `curl -k` for the positive case, changing the
 allowed domain, adding public-DNS fallback, or broadening firewall rules.
+
+## Abnormal-stop recovery
+
+The VM unit suite exercises the WinDivert receiver-exit watchdog and verifies
+this order: suspend all policy permits, stop policy listeners, restore network
+settings, then close the WinDivert handle. A hard process or VM termination
+cannot run in-process cleanup. If that happens:
+
+1. Disconnect the VM's virtual network adapter before any further activity.
+2. Preserve the latest plain `Logs\domain-allowlist-*` directory.
+3. Compare `dns-before.txt` and the current IPv4 DNS configuration.
+4. If they differ, restore the disposable VM snapshot before reconnecting it.
+
+Do not invent a DNS value or add a temporary outbound exception as recovery.

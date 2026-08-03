@@ -170,6 +170,52 @@ class EgressPolicyTests(unittest.TestCase):
             'TCP', '10.0.0.5', 53002, '93.184.216.34', 443))
         self.policy.revoke_control_flow(token)
 
+    def test_global_pending_mapping_quota_fails_closed(self):
+        local_ips = ['10.0.1.%d' % value for value in range(1, 10)]
+        policy = EgressPolicy(
+            config(), local_ips, [], '10.0.0.1', self.clock)
+        policy.replace_leases(
+            'api.deepseek.com', [('93.184.216.34', 60)])
+        for offset in range(256):
+            source = local_ips[offset // 32]
+            policy.create_relay_mapping(
+                source, 40000 + offset, '93.184.216.34', 443,
+                source, 38927)
+        with self.assertRaises(RuntimeError):
+            policy.create_relay_mapping(
+                local_ips[8], 50000, '93.184.216.34', 443,
+                local_ips[8], 38927)
+
+    def test_active_relay_per_source_quota_recovers_after_close(self):
+        self.policy.replace_leases(
+            'api.deepseek.com', [('93.184.216.34', 60)])
+        mappings = []
+        for offset in range(17):
+            mapping = self.policy.create_relay_mapping(
+                '10.0.0.5', 54000 + offset, '93.184.216.34', 443,
+                '10.0.0.5', 38927)
+            self.assertIs(mapping, self.policy.consume_relay_target(
+                '10.0.0.5', 54000 + offset))
+            mappings.append(mapping)
+        for mapping in mappings[:16]:
+            self.assertTrue(self.policy.activate_relay_mapping(
+                mapping.generation))
+        self.assertFalse(self.policy.activate_relay_mapping(
+            mappings[16].generation))
+        self.policy.close_relay_mapping(mappings[0].generation)
+        self.assertTrue(self.policy.activate_relay_mapping(
+            mappings[16].generation))
+
+    def test_control_flow_table_quota_fails_closed(self):
+        for offset in range(384):
+            self.policy.register_control_flow(
+                'dns', 'UDP', '10.0.0.5', 55000 + offset,
+                '10.0.0.1', 53)
+        with self.assertRaises(RuntimeError):
+            self.policy.register_control_flow(
+                'dns', 'UDP', '10.0.0.5', 55999,
+                '10.0.0.1', 53)
+
 
 if __name__ == '__main__':
     unittest.main()
