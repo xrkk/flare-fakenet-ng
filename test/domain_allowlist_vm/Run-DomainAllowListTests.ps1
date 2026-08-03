@@ -95,19 +95,45 @@ function Select-OriginalDnsServer {
     throw 'No usable IPv4 DNS server exists on a connected default-route interface.'
 }
 
+function Invoke-NativeCaptured {
+    param([scriptblock]$Command, [string]$Path)
+    $previousPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 wraps native stderr as ErrorRecord objects. A
+        # global Stop preference would otherwise turn normal unittest/curl
+        # progress output into a terminating NativeCommandError.
+        $ErrorActionPreference = 'Continue'
+        $records = @(& $Command 2>&1)
+        $nativeExitCode = [int]$LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    $records | Out-File -LiteralPath $Path -Encoding UTF8
+    return $nativeExitCode
+}
+
 function Invoke-LoggedCommand {
-    param([string]$Name, [scriptblock]$Command, [switch]$RequireSuccess)
+    param(
+        [string]$Name,
+        [scriptblock]$Command,
+        [switch]$RequireSuccess,
+        [switch]$Native
+    )
     $path = Join-Path $script:LogDir ($Name + '.log')
     try {
-        & $Command *>&1 | Out-File -LiteralPath $path -Encoding UTF8
-        $commandExit = $LASTEXITCODE
+        if ($Native) {
+            $commandExit = Invoke-NativeCaptured -Command $Command -Path $path
+        } else {
+            & $Command *>&1 | Out-File -LiteralPath $path -Encoding UTF8
+            $commandExit = if ($?) { 0 } else { 1 }
+        }
         if ($RequireSuccess -and $commandExit -ne 0) {
             throw "$Name failed with exit code $commandExit"
         }
         $status = if ($RequireSuccess) { 'PASS' } else { 'OBSERVED' }
         Add-Result $Name $status "exit=$commandExit; inspect capture and policy log"
     } catch {
-        $_ | Out-File -LiteralPath $path -Encoding UTF8
+        $_ | Out-File -LiteralPath $path -Encoding UTF8 -Append
         $status = if ($RequireSuccess) { 'FAIL' } else { 'OBSERVED' }
         Add-Result $Name $status "exception=$($_.Exception.GetType().Name); inspect capture and policy log"
         if ($RequireSuccess) { throw }
@@ -132,14 +158,22 @@ function Stop-TestComponents {
     }
     if ($script:PktmonStarted) {
         $pktmonStopLog = Join-Path $script:LogDir 'pktmon-stop.log'
-        & pktmon.exe stop *> $pktmonStopLog
+        $pktmonStopExit = Invoke-NativeCaptured {
+            & pktmon.exe stop
+        } $pktmonStopLog
         $script:PktmonStarted = $false
+        if ($pktmonStopExit -ne 0) {
+            Add-Result 'IndependentCaptureStop' 'FAIL' "pktmon exit=$pktmonStopExit"
+            $script:ExitCode = 1
+        }
         $etl = Join-Path $script:LogDir 'independent-capture.etl'
         $pcap = Join-Path $script:LogDir 'independent-capture.pcapng'
         if (Test-Path -LiteralPath $etl) {
             $pktmonConvertLog = Join-Path $script:LogDir 'pktmon-convert.log'
-            & pktmon.exe etl2pcap $etl --out $pcap *> $pktmonConvertLog
-            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $pcap) -or
+            $pktmonConvertExit = Invoke-NativeCaptured {
+                & pktmon.exe etl2pcap $etl --out $pcap
+            } $pktmonConvertLog
+            if ($pktmonConvertExit -ne 0 -or -not (Test-Path -LiteralPath $pcap) -or
                     (Get-Item -LiteralPath $pcap).Length -eq 0) {
                 Add-Result 'IndependentCaptureFile' 'FAIL' 'PCAPNG conversion failed or produced an empty file'
                 $script:ExitCode = 1
@@ -201,8 +235,10 @@ try {
 
     $python = (Get-Command $PythonPath -ErrorAction Stop).Source
     $dependencyLog = Join-Path $script:LogDir 'dependency-check.log'
-    & $python -c "import dpkt,dnslib,netifaces,pydivert; print('dependencies ok')" *> $dependencyLog
-    if ($LASTEXITCODE -ne 0) {
+    $dependencyExit = Invoke-NativeCaptured {
+        & $python -c "import dpkt,dnslib,netifaces,pydivert; print('dependencies ok')"
+    } $dependencyLog
+    if ($dependencyExit -ne 0) {
         Add-Result 'Dependencies' 'FAIL' 'install requirements before retrying; no automatic download attempted'
         throw 'Required Python dependencies are missing.'
     }
@@ -213,8 +249,10 @@ try {
         foreach ($test in @('test_egresspolicy.py', 'test_dns_policy.py',
                 'test_tlshello.py', 'test_windows_egress_verdict.py')) {
             $testLog = Join-Path $script:LogDir ($test + '.log')
-            & $python -m unittest discover -s test -p $test -v *> $testLog
-            if ($LASTEXITCODE -ne 0) {
+            $testExit = Invoke-NativeCaptured {
+                & $python -m unittest discover -s test -p $test -v
+            } $testLog
+            if ($testExit -ne 0) {
                 Add-Result $test 'FAIL' 'see unit-test log'
                 throw "Unit test failed: $test"
             }
@@ -236,8 +274,10 @@ try {
     }
     $etl = Join-Path $script:LogDir 'independent-capture.etl'
     $pktmonStartLog = Join-Path $script:LogDir 'pktmon-start.log'
-    & pktmon.exe start --capture --pkt-size 0 --file-name $etl *> $pktmonStartLog
-    if ($LASTEXITCODE -ne 0) {
+    $pktmonStartExit = Invoke-NativeCaptured {
+        & pktmon.exe start --capture --pkt-size 0 --file-name $etl
+    } $pktmonStartLog
+    if ($pktmonStartExit -ne 0) {
         Add-Result 'IndependentCapture' 'FAIL' 'pktmon start failed'
         throw 'Independent packet capture failed to start.'
     }
@@ -280,47 +320,47 @@ try {
     $allowedIp = [string]$allowedIp[0]
     Add-Result 'AllowedIPv4' 'PASS' $allowedIp
 
-    Invoke-LoggedCommand -Name 'positive-api-deepseek' -RequireSuccess -Command {
+    Invoke-LoggedCommand -Name 'positive-api-deepseek' -RequireSuccess -Native -Command {
         & curl.exe --noproxy '*' -v --http1.1 --ssl-no-revoke `
             --connect-timeout 10 --max-time 30 https://api.deepseek.com/
     }
-    Invoke-LoggedCommand -Name 'positive-ipv6-loopback' -RequireSuccess -Command {
+    Invoke-LoggedCommand -Name 'positive-ipv6-loopback' -RequireSuccess -Native -Command {
         & ping.exe -6 ::1 -n 1
     }
-    Invoke-LoggedCommand 'negative-example-https' {
+    Invoke-LoggedCommand -Name 'negative-example-https' -Native -Command {
         & curl.exe --noproxy '*' -vk --connect-timeout 5 --max-time 10 `
             https://example.com/
     }
-    Invoke-LoggedCommand 'negative-allowed-http' {
+    Invoke-LoggedCommand -Name 'negative-allowed-http' -Native -Command {
         & curl.exe --noproxy '*' -v --connect-timeout 5 --max-time 10 `
             http://api.deepseek.com/
     }
-    Invoke-LoggedCommand 'negative-direct-ip' {
+    Invoke-LoggedCommand -Name 'negative-direct-ip' -Native -Command {
         & curl.exe --noproxy '*' -vk --connect-timeout 5 --max-time 10 `
             ("https://{0}/" -f $allowedIp)
     }
-    Invoke-LoggedCommand 'negative-wrong-sni' {
+    Invoke-LoggedCommand -Name 'negative-wrong-sni' -Native -Command {
         & curl.exe --noproxy '*' -vk --connect-timeout 5 --max-time 10 `
             --resolve ("example.com:443:{0}" -f $allowedIp) https://example.com/
     }
-    Invoke-LoggedCommand 'negative-ipv6' {
+    Invoke-LoggedCommand -Name 'negative-ipv6' -Native -Command {
         & curl.exe --noproxy '*' -6 -vk --connect-timeout 5 --max-time 10 `
             https://api.deepseek.com/
     }
-    Invoke-LoggedCommand 'negative-doh' {
+    Invoke-LoggedCommand -Name 'negative-doh' -Native -Command {
         & curl.exe --noproxy '*' -vk --connect-timeout 5 --max-time 10 `
             https://cloudflare-dns.com/dns-query
     }
     Invoke-LoggedCommand 'negative-external-dns' {
         Resolve-DnsName example.com -Type A -Server 8.8.8.8 -DnsOnly
     }
-    Invoke-LoggedCommand 'negative-direct-relay' {
+    Invoke-LoggedCommand -Name 'negative-direct-relay' -Native -Command {
         & $python -c "import socket; s=socket.socket(); s.settimeout(3); s.connect(('127.0.0.1',38927)); s.sendall(b'GET / HTTP/1.0\\r\\n\\r\\n'); s.recv(1)"
     }
-    Invoke-LoggedCommand 'negative-dot' {
+    Invoke-LoggedCommand -Name 'negative-dot' -Native -Command {
         & $python -c "import socket; s=socket.socket(); s.settimeout(3); s.connect(('1.1.1.1',853)); s.sendall(b'blocked-dot-probe'); s.close()"
     }
-    Invoke-LoggedCommand 'negative-udp443' {
+    Invoke-LoggedCommand -Name 'negative-udp443' -Native -Command {
         & $python -c "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.sendto(b'blocked-quic-probe',('1.1.1.1',443)); s.close()"
     }
 
@@ -364,9 +404,7 @@ try {
     if ($script:TranscriptStarted) {
         Stop-Transcript | Out-Null
     }
-    $zip = Join-Path $logRoot ("DomainAllowList-TestLogs-{0}.zip" -f $stamp)
-    Compress-Archive -LiteralPath $script:LogDir -DestinationPath $zip -Force
-    Write-Host "Logs packaged at: $zip"
+    Write-Host "Plain logs available at: $script:LogDir"
 }
 
 exit $script:ExitCode
