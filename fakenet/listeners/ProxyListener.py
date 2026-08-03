@@ -232,6 +232,14 @@ class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
                 is_ssl_encrypted = 'Yes'
                 self.server.logger.debug('SSL detected')
                 ssl_remote_sock = self.server.sslwrapper.wrap_socket(remote_sock)
+                if ssl_remote_sock is None:
+                    self.server.logger.warning('Failed to wrap remote TLS socket')
+                    return
+                # ssl.SSLContext.wrap_socket() detaches the descriptor from
+                # the original socket on current Python versions. From this
+                # point forward, select and non-blocking operations must use
+                # the returned SSLSocket rather than the invalid original.
+                remote_sock = ssl_remote_sock
                 data = ssl_remote_sock.recv(BUF_SZ)
 
             else:
@@ -264,7 +272,6 @@ class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
                 # ssl has no 'peek' option, so we need to process the first
                 # packet that is already consumed from the socket
                 if ssl_remote_sock:
-                    ssl_remote_sock.setblocking(0)
                     remote_q.put(data)
                 
                 while True:

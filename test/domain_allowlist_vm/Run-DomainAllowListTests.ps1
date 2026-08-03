@@ -259,7 +259,7 @@ try {
     try {
         foreach ($test in @('test_egresspolicy.py', 'test_dns_policy.py',
                 'test_tlshello.py', 'test_windows_egress_verdict.py',
-                'test_ssl_utils.py')) {
+                'test_ssl_utils.py', 'test_proxy_listener.py')) {
             $testLog = Join-Path $script:LogDir ($test + '.log')
             $testExit = Invoke-NativeCaptured {
                 & $python -m unittest discover -s test -p $test -v
