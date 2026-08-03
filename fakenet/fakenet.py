@@ -48,6 +48,7 @@ class Fakenet(object):
 
         # Diverter used to intercept and redirect traffic
         self.diverter = None
+        self.policy_mode = False
 
         # FakeNet options and parameters
         self.fakenet_config_dir = ''
@@ -137,6 +138,17 @@ class Fakenet(object):
         return listeners_config_expanded
 
     def start(self):
+
+        self.policy_mode = (str(self.diverter_config.get(
+            'externalaccesspolicy', 'disabled')).lower() ==
+            'domainallowlist')
+        if self.policy_mode and platform.system() != 'Windows':
+            raise RuntimeError(
+                'DomainAllowList is implemented only for Windows')
+        if (self.policy_mode and str(self.fakenet_config.get(
+                'diverttraffic', 'no')).lower() != 'yes'):
+            raise RuntimeError(
+                'DomainAllowList requires DivertTraffic=Yes')
 
         if self.fakenet_config.get('diverttraffic') and self.fakenet_config['diverttraffic'].lower() == 'yes':
 
@@ -232,6 +244,10 @@ class Fakenet(object):
             except AttributeError as e:
                 self.logger.error('Listener %s is not implemented.', listener_config['listener'])
                 self.logger.error("%s" % e)
+                if self.policy_mode:
+                    raise RuntimeError(
+                        'DomainAllowList listener provider is unavailable: %s' %
+                        listener_config['listener']) from e
 
             else:
                 listener_config['networkmode'] = self.diverter_config['networkmode']
@@ -241,20 +257,76 @@ class Fakenet(object):
                 # Store listener provider object
                 self.running_listener_providers.append(listener_provider_instance)
 
-                try:
-                    listener_provider_instance.start()
-                except Exception as e:
-                    self.logger.error('Error starting %s listener on port %s:',
-                                      listener_config['listener'],
-                                      listener_config['port'])
-                    self.logger.error(" %s" % e)
-                    sys.exit(1)
+                if not self.policy_mode:
+                    try:
+                        listener_provider_instance.start()
+                    except Exception as e:
+                        self.logger.error('Error starting %s listener on port %s:',
+                                          listener_config['listener'],
+                                          listener_config['port'])
+                        self.logger.error(" %s" % e)
+                        sys.exit(1)
+
+        if self.policy_mode:
+            # Configure policy listener dependencies before any bind or worker
+            # thread. Providers that need dependencies must implement this
+            # construction-safe method.
+            for listener in self.running_listener_providers:
+                configure = getattr(listener, 'configure_dependencies', None)
+                if configure:
+                    configure(self.running_listener_providers, self.diverter,
+                              self.diverterListenerCallbacks)
+            self.diverter.configure_policy_runtime(
+                self.running_listener_providers)
+            started = []
+            try:
+                for listener in self.running_listener_providers:
+                    listener._policy_stopped = False
+                    listener.start()
+                    started.append(listener)
+                    worker = (getattr(listener, 'server_thread', None) or
+                              getattr(listener, '_accept_thread', None))
+                    if worker:
+                        worker.join(0.05)
+                        if not worker.is_alive():
+                            raise RuntimeError(
+                                'policy listener worker failed to start: %s' %
+                                listener.name)
+            except Exception:
+                self.logger.exception('Policy listener startup failed closed')
+                for listener in reversed(started):
+                    try:
+                        self._stop_policy_listener(listener)
+                    except Exception:
+                        self.logger.exception('Listener rollback failed')
+                raise
 
         # Start the diverter
         if self.diverter:
-            self.diverter.start()
+            try:
+                self.diverter.start()
+            except Exception:
+                if self.policy_mode:
+                    self.logger.exception(
+                        'Policy diverter startup failed; rolling back listeners')
+                    for listener in reversed(
+                            self.running_listener_providers):
+                        try:
+                            self._stop_policy_listener(listener)
+                        except Exception:
+                            self.logger.exception(
+                                'Listener rollback after diverter failure failed')
+                    try:
+                        self.diverter.stopCallback()
+                    except Exception:
+                        self.logger.exception('Diverter rollback failed')
+                raise
 
         for listener in self.running_listener_providers:
+
+            if self.policy_mode and getattr(
+                    listener, 'configure_dependencies', None):
+                continue
 
             # Only listeners that implement acceptListeners(listeners)
             # interface receive running_listener_providers
@@ -281,11 +353,31 @@ class Fakenet(object):
 
         self.logger.info("Stopping...")
 
+        if self.policy_mode and self.diverter:
+            self.diverter.suspend_policy()
+            for running_listener_provider in reversed(
+                    self.running_listener_providers):
+                try:
+                    self._stop_policy_listener(running_listener_provider)
+                except Exception:
+                    self.logger.exception(
+                        'Policy listener failed during stop: %s',
+                        running_listener_provider.name)
+            self.diverter.stop()
+            return
+
         for running_listener_provider in self.running_listener_providers:
             running_listener_provider.stop()
 
         if self.diverter:
             self.diverter.stop()
+
+    @staticmethod
+    def _stop_policy_listener(listener):
+        if getattr(listener, '_policy_stopped', False):
+            return
+        listener.stop()
+        listener._policy_stopped = True
 
 
 class IfaceIpInfo():

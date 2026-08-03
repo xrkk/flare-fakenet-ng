@@ -36,6 +36,9 @@ class ProxyListener(object):
         self.name = name
         self.local_ip = config.get('ipaddr')
         self.server = None
+        self.listeners = None
+        self.diverter = None
+        self.diverterListenerCallbacks = None
         self.udp_fwd_table = dict()
 
         self.logger.debug('Starting...')
@@ -88,6 +91,9 @@ class ProxyListener(object):
             self.server.local_ip = 'localhost'
         self.server.running_listeners = None
         self.server.diverter = None
+        self.server.listeners = self.listeners
+        self.server.diverter = self.diverter
+        self.server.diverterListenerCallbacks = self.diverterListenerCallbacks
         self.server_thread = threading.Thread(
                 target=self.server.serve_forever)
         self.server_thread.daemon = True
@@ -103,13 +109,24 @@ class ProxyListener(object):
             self.server.server_close()
 
     def acceptListeners(self, listeners):
-        self.server.listeners = listeners
+        self.listeners = listeners
+        if self.server:
+            self.server.listeners = listeners
 
     def acceptDiverter(self, diverter):
-        self.server.diverter = diverter
+        self.diverter = diverter
+        if self.server:
+            self.server.diverter = diverter
 
     def acceptDiverterListenerCallbacks(self, diverterListenerCallbacks):
-        self.server.diverterListenerCallbacks = diverterListenerCallbacks
+        self.diverterListenerCallbacks = diverterListenerCallbacks
+        if self.server:
+            self.server.diverterListenerCallbacks = diverterListenerCallbacks
+
+    def configure_dependencies(self, listeners, diverter, callbacks):
+        self.acceptListeners(listeners)
+        self.acceptDiverter(diverter)
+        self.acceptDiverterListenerCallbacks(callbacks)
 
 class ThreadedTCPClientSocket(threading.Thread):
 

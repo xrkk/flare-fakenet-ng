@@ -1,0 +1,24 @@
+# Windows DomainAllowList VM test bundle
+
+Run this package only inside a disposable Windows virtual machine with a
+snapshot. The runner refuses to start FakeNet-NG unless Windows reports a
+recognized virtual-machine manufacturer/model.
+
+1. Extract the ZIP inside the VM to a local path, preferably on `C:`.
+2. Ensure Python and the project dependencies are installed. The runner never
+   downloads dependencies automatically.
+3. Keep IPv6 enabled. Disable HTTP/HTTPS proxy settings and remove credentials,
+   API keys, writable host shares and sensitive clipboard contents from the VM.
+4. Double-click `Run-Tests.cmd`, enter the explicitly reviewed IPv4 DNS server
+   that is already configured in the VM, and accept the administrator prompt.
+5. Wait for the test matrix and graceful cleanup to finish.
+6. Return the generated `Logs\DomainAllowList-TestLogs-*.zip` file for analysis.
+
+The runner records DNS/IP state before and after, policy logs, stdout/stderr,
+unit-test logs, all positive/negative command output, and an independent
+`pktmon` PCAPNG. It uses no DeepSeek API key. HTTP status such as 401/403/404 is
+acceptable for the positive connectivity test.
+
+If the runner exits early, return the log ZIP anyway. Do not work around a
+failure by disabling IPv6, using `curl -k` for the positive case, changing the
+allowed domain, adding public-DNS fallback, or broadening firewall rules.

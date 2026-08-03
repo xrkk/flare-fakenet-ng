@@ -80,6 +80,7 @@ class TFTPListener(object):
         self.name = name
         self.local_ip = config.get('ipaddr')
         self.server = None
+        self.diverterListenerCallbacks = None
         self.name = 'TFTP'
         self.port = self.config.get('port', 69)
 
@@ -105,6 +106,7 @@ class TFTPListener(object):
         self.server.tftproot_path = self.tftproot_path
         self.server.tftp_file_prefix = self.tftp_file_prefix
 
+        self.server.diverterListenerCallbacks = self.diverterListenerCallbacks
         self.server_thread = threading.Thread(target=self.server.serve_forever)
         self.server_thread.daemon = True
         self.server_thread.start()
@@ -116,7 +118,12 @@ class TFTPListener(object):
             self.server.server_close()
 
     def acceptDiverterListenerCallbacks(self, diverterListenerCallbacks):
-        self.server.diverterListenerCallbacks = diverterListenerCallbacks
+        self.diverterListenerCallbacks = diverterListenerCallbacks
+        if self.server:
+            self.server.diverterListenerCallbacks = diverterListenerCallbacks
+
+    def configure_dependencies(self, listeners, diverter, callbacks):
+        self.acceptDiverterListenerCallbacks(callbacks)
 
 class ThreadedUDPRequestHandler(socketserver.BaseRequestHandler):
 

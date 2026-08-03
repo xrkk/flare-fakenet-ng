@@ -10,7 +10,8 @@ from . import IRCListener
 from . import TFTPListener
 from . import POPListener
 from . import ProxyListener
+from . import DomainEgressRelay
 
 import os
 
-__all__ = ['ListenerBase', 'RawListener', 'HTTPListener', 'DNSListener', 'SMTPListener', 'FTPListener', 'IRCListener', 'TFTPListener', 'POPListener', 'ProxyListener']
+__all__ = ['ListenerBase', 'RawListener', 'HTTPListener', 'DNSListener', 'SMTPListener', 'FTPListener', 'IRCListener', 'TFTPListener', 'POPListener', 'ProxyListener', 'DomainEgressRelay']

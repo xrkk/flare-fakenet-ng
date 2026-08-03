@@ -79,6 +79,7 @@ class IRCListener(object):
         self.name = name
         self.local_ip = config.get('ipaddr')
         self.server = None
+        self.diverterListenerCallbacks = None
         self.name = 'IRC'
         
         self.port = self.config.get('port', 6667)
@@ -100,6 +101,7 @@ class IRCListener(object):
         self.server.config = self.config
         self.server.servername = self.config.get('servername', 'localhost')
 
+        self.server.diverterListenerCallbacks = self.diverterListenerCallbacks
         self.server_thread = threading.Thread(target=self.server.serve_forever)
         self.server_thread.daemon = True
         self.server_thread.start()
@@ -115,7 +117,12 @@ class IRCListener(object):
         return bannerfactory.genBanner(self.config, BANNERS)
 
     def acceptDiverterListenerCallbacks(self, diverterListenerCallbacks):
-        self.server.diverterListenerCallbacks = diverterListenerCallbacks
+        self.diverterListenerCallbacks = diverterListenerCallbacks
+        if self.server:
+            self.server.diverterListenerCallbacks = diverterListenerCallbacks
+
+    def configure_dependencies(self, listeners, diverter, callbacks):
+        self.acceptDiverterListenerCallbacks(callbacks)
 
 class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
 

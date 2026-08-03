@@ -7,8 +7,10 @@ import netifaces
 import socketserver
 from dnslib import *
 
-import ssl
 import socket
+import ipaddress
+import secrets
+import struct
 
 from . import *
 
@@ -43,6 +45,7 @@ class DNSListener(object):
         self.server = None
         self.name = 'DNS'
         self.port = self.config.get('port', 53)
+        self.diverterListenerCallbacks = None
 
         self.logger.debug('Starting...')
 
@@ -65,6 +68,7 @@ class DNSListener(object):
             self.server = ThreadedTCPServer((self.local_ip, int(self.config.get('port', 53))), self.config, self.logger, TCPHandler)
 
         self.server.nxdomains = int(self.config.get('nxdomains', 0))
+        self.server.diverterListenerCallbacks = self.diverterListenerCallbacks
 
         self.server_thread = threading.Thread(target=self.server.serve_forever)
         self.server_thread.daemon = True
@@ -79,7 +83,13 @@ class DNSListener(object):
             self.server.server_close()
 
     def acceptDiverterListenerCallbacks(self, diverterListenerCallbacks):
-        self.server.diverterListenerCallbacks = diverterListenerCallbacks
+        self.diverterListenerCallbacks = diverterListenerCallbacks
+        if self.server:
+            self.server.diverterListenerCallbacks = diverterListenerCallbacks
+
+    def configure_dependencies(self, listeners, diverter,
+                               diverterListenerCallbacks):
+        self.acceptDiverterListenerCallbacks(diverterListenerCallbacks)
 
 
 class DNSHandler():
@@ -101,11 +111,9 @@ class DNSHandler():
     def parse(self, data):
         response = ""
         proto = 'TCP' if self.server.socket_type == socket.SOCK_STREAM else 'UDP'
-        is_process_blacklisted, process_name, pid = self.server \
-                                                         .diverterListenerCallbacks \
-                                                         .isProcessBlackListed(
-                                                              proto,
-                                                              sport=self.client_address[1])
+        callbacks = self.server.diverterListenerCallbacks
+        is_process_blacklisted, process_name, pid = callbacks \
+            .isProcessBlackListed(proto, sport=self.client_address[1])
 
         try:
             # Parse data as DNS        
@@ -140,6 +148,20 @@ class DNSHandler():
                     self.log_message(logging.INFO, is_process_blacklisted,
                                      'Received %s request for domain \'%s\' from %s (%s)',
                                      qtype, qname, process_name, pid)
+
+                if callbacks.egressPolicyEnabled():
+                    if not callbacks.isLocalAddress(self.client_address[0]):
+                        self.log_message(logging.WARNING,
+                                         is_process_blacklisted,
+                                         'Rejecting non-local DNS client %s',
+                                         self.client_address[0])
+                        return self._error_response(d, RCODE.REFUSED)
+                    allowed_root = callbacks.resolveDnsRule(qname)
+                    if allowed_root and qtype == 'A':
+                        return self._resolve_allowed_a(
+                            d, qname, allowed_root, proto, callbacks)
+                    if allowed_root and qtype == 'AAAA':
+                        return self._empty_response(d)
 
                 # Create a custom response to the query
                 response = DNSRecord(DNSHeader(id=d.header.id, bitmap=d.header.bitmap, qr=1, aa=1, ra=1), q=d.q)
@@ -226,6 +248,195 @@ class DNSHandler():
                 
         return response  
 
+    def _empty_response(self, request):
+        return DNSRecord(DNSHeader(id=request.header.id, qr=1, aa=0,
+                                   ra=1, rd=request.header.rd,
+                                   rcode=RCODE.NOERROR), q=request.q).pack()
+
+    def _error_response(self, request, rcode=RCODE.SERVFAIL):
+        return DNSRecord(DNSHeader(id=request.header.id, qr=1, aa=0,
+                                   ra=1, rd=request.header.rd,
+                                   rcode=rcode), q=request.q).pack()
+
+    def _resolve_allowed_a(self, request, qname, allowed_root, proto,
+                           callbacks):
+        settings = callbacks.getEgressSettings()
+        try:
+            upstream = self._query_upstream(request, proto, callbacks,
+                                            settings)
+            return self._validate_and_synthesize(
+                request, upstream, qname, allowed_root, callbacks)
+        except Exception as exc:
+            self.server.logger.warning(
+                'Controlled DNS resolution failed for %s: %s', qname, exc)
+            callbacks.logEgressEvent('DNS_SERVFAIL', domain=qname,
+                                     reason=type(exc).__name__)
+            return self._error_response(request)
+
+    def _query_upstream(self, request, client_proto, callbacks, settings):
+        upstream_id = secrets.randbelow(65536)
+        query = DNSRecord(DNSHeader(id=upstream_id, rd=1), q=request.q).pack()
+        response = self._query_upstream_udp(query, callbacks, settings)
+        parsed = DNSRecord.parse(response)
+        self._validate_upstream_header(parsed, request, upstream_id)
+        if parsed.header.tc:
+            response = self._query_upstream_tcp(query, callbacks, settings)
+            parsed = DNSRecord.parse(response)
+            self._validate_upstream_header(parsed, request, upstream_id)
+        return parsed
+
+    def _query_upstream_udp(self, query, callbacks, settings):
+        target = settings['dns_server']
+        source = callbacks.selectSourceIPv4(target, 53)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        token = None
+        try:
+            sock.settimeout(settings['dns_timeout'])
+            sock.bind((source, 0))
+            sport = sock.getsockname()[1]
+            token = callbacks.registerControlFlow(
+                'dns', 'UDP', source, sport, target, 53,
+                ttl=settings['dns_timeout'] + 2)
+            sock.connect((target, 53))
+            sock.send(query)
+            response = sock.recv(65535)
+            callbacks.logEgressEvent(
+                'ALLOW_INTERNAL_UPSTREAM', kind='dns', resolver=target,
+                proto='UDP', sport=sport)
+            return response
+        finally:
+            if token:
+                callbacks.revokeControlFlow(token)
+            sock.close()
+
+    def _query_upstream_tcp(self, query, callbacks, settings):
+        target = settings['dns_server']
+        source = callbacks.selectSourceIPv4(target, 53)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        token = None
+        try:
+            sock.settimeout(settings['dns_timeout'])
+            sock.bind((source, 0))
+            sport = sock.getsockname()[1]
+            token = callbacks.registerControlFlow(
+                'dns', 'TCP', source, sport, target, 53,
+                ttl=settings['dns_timeout'] + 2)
+            sock.connect((target, 53))
+            sock.sendall(struct.pack('!H', len(query)) + query)
+            length = struct.unpack('!H', self._recv_exact(sock, 2))[0]
+            if length > 65535:
+                raise ValueError('oversized TCP DNS response')
+            response = self._recv_exact(sock, length)
+            callbacks.logEgressEvent(
+                'ALLOW_INTERNAL_UPSTREAM', kind='dns', resolver=target,
+                proto='TCP', sport=sport)
+            return response
+        finally:
+            if token:
+                callbacks.revokeControlFlow(token)
+            sock.close()
+
+    @staticmethod
+    def _recv_exact(sock, count):
+        chunks = []
+        remaining = count
+        while remaining:
+            chunk = sock.recv(remaining)
+            if not chunk:
+                raise OSError('unexpected EOF')
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b''.join(chunks)
+
+    @staticmethod
+    def _norm_name(value):
+        return str(value).rstrip('.').encode('idna').decode('ascii').lower()
+
+    def _validate_upstream_header(self, response, request, upstream_id):
+        if response.header.id != upstream_id or response.header.qr != 1:
+            raise ValueError('upstream DNS transaction mismatch')
+        if response.header.rcode != RCODE.NOERROR:
+            raise ValueError('upstream DNS returned an error')
+        if len(response.questions) != 1:
+            raise ValueError('upstream DNS question count mismatch')
+        question = response.questions[0]
+        if (self._norm_name(question.qname) != self._norm_name(request.q.qname)
+                or question.qtype != QTYPE.A):
+            raise ValueError('upstream DNS question mismatch')
+
+    def _validate_and_synthesize(self, request, upstream, qname,
+                                 allowed_root, callbacks):
+        cnames = {}
+        addresses = {}
+        for rr in upstream.auth + upstream.ar:
+            if rr.rtype in (QTYPE.A, QTYPE.CNAME):
+                raise ValueError('address injection outside answer section')
+        for rr in upstream.rr:
+            owner = self._norm_name(rr.rname)
+            if rr.rtype == QTYPE.CNAME:
+                if owner in cnames:
+                    raise ValueError('multiple CNAME records for one owner')
+                cnames[owner] = (self._norm_name(rr.rdata.label), int(rr.ttl))
+            elif rr.rtype == QTYPE.A:
+                addresses.setdefault(owner, []).append((str(rr.rdata),
+                                                        int(rr.ttl)))
+            else:
+                raise ValueError('unexpected answer type')
+
+        current = self._norm_name(qname)
+        visited = set()
+        chain = []
+        chain_ttls = []
+        while current in cnames:
+            if current in visited or len(visited) >= 16:
+                raise ValueError('CNAME loop or excessive chain')
+            visited.add(current)
+            target, ttl = cnames[current]
+            chain.append((current, target, ttl))
+            chain_ttls.append(ttl)
+            current = target
+
+        relevant = visited.union([current])
+        if any(owner not in relevant for owner in cnames) or any(
+                owner != current for owner in addresses):
+            raise ValueError('unrelated DNS answer owner')
+
+        response = DNSRecord(DNSHeader(
+            id=request.header.id, qr=1, aa=0, ra=1,
+            rd=request.header.rd, rcode=RCODE.NOERROR), q=request.q)
+        for owner, target, ttl in chain:
+            response.add_answer(RR(owner, QTYPE.CNAME, ttl=ttl,
+                                   rdata=CNAME(target)))
+
+        records = []
+        for address, ttl in addresses.get(current, []):
+            ip = ipaddress.ip_address(address)
+            if ip.version != 4 or not ip.is_global:
+                raise ValueError('upstream returned non-global IPv4')
+            effective_ttl = min(chain_ttls + [ttl])
+            if effective_ttl <= 0:
+                continue
+            records.append((address, effective_ttl))
+            response.add_answer(RR(current, QTYPE.A, ttl=effective_ttl,
+                                   rdata=A(address)))
+
+        if records:
+            installed = callbacks.replaceDnsLeases(allowed_root, records)
+            for address in installed:
+                ttl = next(ttl for ip, ttl in records if ip == address)
+                callbacks.logEgressEvent(
+                    'DNS_LEASE_ADD', domain=allowed_root, ip=address,
+                    ttl=ttl)
+        elif addresses.get(current):
+            raise ValueError('upstream answer has no positive-TTL A record')
+        elif chain:
+            ttl = min(chain_ttls)
+            if ttl > 0:
+                callbacks.registerDnsAlias(allowed_root, current, ttl)
+        else:
+            raise ValueError('upstream answer has no CNAME or A record')
+        return response.pack()
+
 class UDPHandler(DNSHandler, socketserver.BaseRequestHandler):
 
     def handle(self):
@@ -259,11 +470,8 @@ class TCPHandler(DNSHandler, socketserver.BaseRequestHandler):
         self.request.settimeout(int(self.server.config.get('timeout', 5)))
 
         try:
-            data = self.request.recv(1024)
-            
-            # Remove the addition "length" parameter used in the
-            # TCP DNS protocol
-            data = data[2:]
+            length = struct.unpack('!H', self._recv_exact(self.request, 2))[0]
+            data = self._recv_exact(self.request, length)
             response = self.parse(data)
 
             # Collect NBI

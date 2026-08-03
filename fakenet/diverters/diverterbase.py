@@ -577,6 +577,11 @@ class DiverterBase(fnconfig.Config):
         stringlists = ['HostBlackList']
         idlists = ['BlackListIDsICMP']
         self.configure(diverter_config, portlists, stringlists, idlists)
+        self.external_access_policy = str(
+            self.getconfigval('ExternalAccessPolicy', 'Disabled')).lower()
+        if self.external_access_policy not in ('disabled', 'domainallowlist'):
+            raise ValueError('ExternalAccessPolicy must be Disabled or DomainAllowList')
+        self.egress_policy = None
         self.listeners_config = dict((k.lower(), v)
                                      for k, v in listeners_config.items())
 
@@ -681,12 +686,16 @@ class DiverterBase(fnconfig.Config):
         gw_ok = self.check_gateways()
         if not gw_ok:
             self.logger.warning('WARNING: No gateways configured!')
-            if self.is_set('fixgateway'):
+            if (self.external_access_policy != 'domainallowlist' and
+                    self.is_set('fixgateway')):
                 gw_ok = self.fix_gateway()
                 if not gw_ok:
                     self.logger.warning('Cannot fix gateway')
 
         if not gw_ok:
+            if self.external_access_policy == 'domainallowlist':
+                raise RuntimeError(
+                    'DomainAllowList requires a gateway before startup')
             self.logger.warning('         Please configure a default ' +
                                 'gateway or route in order to intercept ' +
                                 'external traffic.')
@@ -697,12 +706,16 @@ class DiverterBase(fnconfig.Config):
         dns_ok = self.check_dns_servers()
         if not dns_ok:
             self.logger.warning('WARNING: No DNS servers configured!')
-            if self.is_set('fixdns'):
+            if (self.external_access_policy != 'domainallowlist' and
+                    self.is_set('fixdns')):
                 dns_ok = self.fix_dns()
                 if not dns_ok:
                     self.logger.warning('Cannot fix DNS')
 
         if not dns_ok:
+            if self.external_access_policy == 'domainallowlist':
+                raise RuntimeError(
+                    'DomainAllowList requires an upstream DNS before startup')
             self.logger.warning('         Please configure a DNS server ' +
                                 'in order to allow network resolution.')
 
@@ -723,9 +736,14 @@ class DiverterBase(fnconfig.Config):
 
     def stop(self):
         self.logger.info('Stopping...')
-        self.prettyPrintNbi()
-        self.generate_html_report()
-        return self.stopCallback()
+        try:
+            self.prettyPrintNbi()
+            self.generate_html_report()
+        finally:
+            # Network interception and system settings must be released even
+            # if report generation fails.
+            result = self.stopCallback()
+        return result
 
     @abc.abstractmethod
     def startCallback(self):
@@ -1175,7 +1193,8 @@ class DiverterBase(fnconfig.Config):
                             (mangled, pkt.hdrToStr2()))
                 self.pcap.writepkt(pkt.octets)
 
-    def handle_pkt(self, pkt, callbacks3, callbacks4):
+    def handle_pkt(self, pkt, callbacks3, callbacks4,
+                   raw_already_captured=False):
         """Generic packet hook.
 
         Applies FakeNet-NG decision-making to packet, deferring as necessary to
@@ -1210,8 +1229,10 @@ class DiverterBase(fnconfig.Config):
             None
         """
 
-        # 1: Unconditionally write unmangled packet to pcap
-        self.write_pcap(pkt)
+        # 1: Unconditionally write unmangled packet to pcap, unless a policy
+        # coordinator already captured the exact same raw packet.
+        if not raw_already_captured:
+            self.write_pcap(pkt)
 
         no_further_processing = False
 
@@ -2098,3 +2119,73 @@ class DiverterListenerCallbacks():
         """Check if the process is blacklisted.
         """
         return self.__diverter.isProcessBlackListed(proto, sport=sport)
+
+    def egressPolicyEnabled(self):
+        return bool(self.__diverter and
+                    self.__diverter.external_access_policy ==
+                    'domainallowlist' and
+                    self.__diverter.egress_policy)
+
+    def getEgressSettings(self):
+        if not self.egressPolicyEnabled():
+            return None
+        policy = self.__diverter.egress_policy
+        return {
+            'allowed_domains': tuple(sorted(policy.allowed_domains)),
+            'dns_server': policy.external_dns_server,
+            'dns_timeout': policy.dns_timeout,
+            'relay_port': policy.relay_port,
+            'hello_timeout': policy.hello_timeout,
+            'hello_max_bytes': policy.hello_max_bytes,
+            'max_pending': policy.max_pending,
+            'max_pending_per_source': policy.max_pending_per_source,
+            'max_active': policy.max_active,
+            'max_active_per_source': policy.max_active_per_source,
+            'idle_timeout': policy.relay_idle_timeout,
+            'buffer_bytes': policy.relay_buffer_bytes,
+        }
+
+    def isLocalAddress(self, address):
+        return (self.egressPolicyEnabled() and
+                self.__diverter.egress_policy.is_local_address(address))
+
+    def resolveDnsRule(self, qname):
+        if not self.egressPolicyEnabled():
+            return None
+        return self.__diverter.egress_policy.resolve_dns_rule(qname)
+
+    def registerDnsAlias(self, domain, alias, ttl):
+        return self.__diverter.egress_policy.register_alias(domain, alias, ttl)
+
+    def replaceDnsLeases(self, domain, records):
+        return self.__diverter.egress_policy.replace_leases(domain, records)
+
+    def selectSourceIPv4(self, target_ip, target_port):
+        return self.__diverter.select_source_ipv4(target_ip, target_port)
+
+    def registerControlFlow(self, kind, proto, src_ip, sport, dst_ip,
+                            dport, domain=None, ttl=10, generation=None):
+        return self.__diverter.egress_policy.register_control_flow(
+            kind, proto, src_ip, sport, dst_ip, dport, domain, ttl,
+            generation)
+
+    def revokeControlFlow(self, token):
+        if self.egressPolicyEnabled():
+            self.__diverter.egress_policy.revoke_control_flow(token)
+
+    def consumeRelayTarget(self, sample_ip, sample_port):
+        if not self.egressPolicyEnabled():
+            return None
+        return self.__diverter.egress_policy.consume_relay_target(
+            sample_ip, sample_port)
+
+    def activateRelayMapping(self, generation):
+        return self.__diverter.egress_policy.activate_relay_mapping(generation)
+
+    def closeRelayMapping(self, generation):
+        if self.egressPolicyEnabled():
+            self.__diverter.egress_policy.close_relay_mapping(generation)
+
+    def logEgressEvent(self, event, **fields):
+        if self.__diverter:
+            self.__diverter.log_egress_event(event, **fields)

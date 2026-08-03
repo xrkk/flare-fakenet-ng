@@ -186,6 +186,7 @@ class HTTPListener(object):
         self.name = name
         self.local_ip = config.get('ipaddr')
         self.server = None
+        self.diverterListenerCallbacks = None
         self.port = self.config.get('port', 80)
         self.sslwrapper = None
 
@@ -252,6 +253,7 @@ class HTTPListener(object):
                     cr = CustomResponse(section, entries, configdir)
                     self.server.custom_responses.append(cr)
 
+        self.server.diverterListenerCallbacks = self.diverterListenerCallbacks
         self.server_thread = threading.Thread(target=self.server.serve_forever)
         self.server_thread.daemon = True
         self.server_thread.start()
@@ -263,7 +265,12 @@ class HTTPListener(object):
             self.server.server_close()
 
     def acceptDiverterListenerCallbacks(self, diverterListenerCallbacks):
-        self.server.diverterListenerCallbacks = diverterListenerCallbacks
+        self.diverterListenerCallbacks = diverterListenerCallbacks
+        if self.server:
+            self.server.diverterListenerCallbacks = diverterListenerCallbacks
+
+    def configure_dependencies(self, listeners, diverter, callbacks):
+        self.acceptDiverterListenerCallbacks(callbacks)
 
 
 class ThreadedHTTPServer(http.server.HTTPServer):

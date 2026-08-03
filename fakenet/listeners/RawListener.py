@@ -115,6 +115,7 @@ class RawListener(object):
         self.name = name
         self.local_ip = config.get('ipaddr')
         self.server = None
+        self.diverterListenerCallbacks = None
         self.port = self.config.get('port', 1337)
 
         self.logger.debug('Starting...')
@@ -196,6 +197,7 @@ class RawListener(object):
                     self.server.custom_response = (
                         RawCustomResponse(proto, section, entries, configdir))
 
+        self.server.diverterListenerCallbacks = self.diverterListenerCallbacks
         self.server_thread = threading.Thread(target=self.server.serve_forever)
         self.server_thread.daemon = True
         self.server_thread.start()
@@ -207,7 +209,12 @@ class RawListener(object):
             self.server.server_close()
 
     def acceptDiverterListenerCallbacks(self, diverterListenerCallbacks):
-        self.server.diverterListenerCallbacks = diverterListenerCallbacks
+        self.diverterListenerCallbacks = diverterListenerCallbacks
+        if self.server:
+            self.server.diverterListenerCallbacks = diverterListenerCallbacks
+
+    def configure_dependencies(self, listeners, diverter, callbacks):
+        self.acceptDiverterListenerCallbacks(callbacks)
 
 class SocketWithHexdumpRecv():
     def __init__(self, s, logger):

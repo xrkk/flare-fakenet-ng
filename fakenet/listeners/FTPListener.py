@@ -281,6 +281,7 @@ class FTPListener(object):
         self.name = name
         self.local_ip = config.get('ipaddr')
         self.server = None
+        self.diverterListenerCallbacks = None
         self.running_listeners = running_listeners
         self.diverter = diverter
         self.name = 'FTP'
@@ -345,6 +346,7 @@ class FTPListener(object):
         logging.getLogger('pyftpdlib').name = self.name
 
 
+        self.server.diverterListenerCallbacks = self.diverterListenerCallbacks
         self.server_thread = threading.Thread(target=self.server.serve_forever)
         self.server_thread.daemon = True
         self.server_thread.start()
@@ -359,7 +361,12 @@ class FTPListener(object):
         return bannerfactory.genBanner(self.config, BANNERS)
 
     def acceptDiverterListenerCallbacks(self, diverterListenerCallbacks):
-        self.server.diverterListenerCallbacks = diverterListenerCallbacks
+        self.diverterListenerCallbacks = diverterListenerCallbacks
+        if self.server:
+            self.server.diverterListenerCallbacks = diverterListenerCallbacks
+
+    def configure_dependencies(self, listeners, diverter, callbacks):
+        self.acceptDiverterListenerCallbacks(callbacks)
 
 def collect_nbi(sport, nbi, is_ssl_encrypted, diverterCallbacks):
 

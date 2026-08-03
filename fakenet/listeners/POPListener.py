@@ -57,6 +57,7 @@ class POPListener(object):
         self.name = name
         self.local_ip = config.get('ipaddr')
         self.server = None
+        self.diverterListenerCallbacks = None
         self.name = 'POP'
         self.port = self.config.get('port', 110)
 
@@ -91,6 +92,7 @@ class POPListener(object):
         self.server.logger = self.logger
         self.server.config = self.config
 
+        self.server.diverterListenerCallbacks = self.diverterListenerCallbacks
         self.server_thread = threading.Thread(target=self.server.serve_forever)
         self.server_thread.daemon = True
         self.server_thread.start()
@@ -102,7 +104,12 @@ class POPListener(object):
             self.server.server_close()
 
     def acceptDiverterListenerCallbacks(self, diverterListenerCallbacks):
-        self.server.diverterListenerCallbacks = diverterListenerCallbacks
+        self.diverterListenerCallbacks = diverterListenerCallbacks
+        if self.server:
+            self.server.diverterListenerCallbacks = diverterListenerCallbacks
+
+    def configure_dependencies(self, listeners, diverter, callbacks):
+        self.acceptDiverterListenerCallbacks(callbacks)
 
 class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
 

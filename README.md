@@ -20,6 +20,30 @@ Penetration testers and bug hunters will find FakeNet-NG's configurable
 interception engine and modular framework highly useful when testing
 application's specific functionality and prototyping PoCs.
 
+Windows domain allow-list egress mode
+=====================================
+
+This tree includes an opt-in, Windows-only `DomainAllowList` egress policy.
+It is disabled by default. The reviewed test configuration permits only a
+controlled DNS-derived IPv4 connection to `api.deepseek.com` on TCP/443, and
+only after a local transparent relay verifies an exact cleartext TLS SNI match.
+All other external traffic is diverted back to FakeNet where possible or is
+dropped. IPv6 Internet traffic, QUIC, DoH, DoT, direct-IP TLS, missing SNI and
+ECH are not allowed by this first version.
+
+This is domain-and-SNI isolation, not URL or HTTP-request isolation. FakeNet
+does not decrypt TLS, cannot restrict request paths or payloads, and cannot
+prevent data from being sent to the explicitly allowed service. The mode also
+trusts the VM's configured upstream DNS and network path and does not defend
+against an administrator- or kernel-level sample.
+
+Use `fakenet/configs/domain_allowlist_windows.ini` only in a disposable,
+snapshotted Windows VM. Replace its `__EXTERNAL_DNS__` marker with an approved
+pre-FakeNet IPv4 resolver; no public-DNS fallback is supplied. The packaged VM
+runner and evidence-return instructions are in
+`test/domain_allowlist_vm/README.md`. Do not run the VM runner or FakeNet-NG on
+the host used to review the source.
+
 Installation
 ============
 
