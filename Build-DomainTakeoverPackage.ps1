@@ -78,7 +78,7 @@ function Assert-Wheelhouse {
         throw 'Wheelhouse contains an unexpected file or lock/wheel count mismatch.'
     }
     foreach ($row in $rows) {
-        $prefix = ('{0}-{1}-' -f
+        $prefix = ('{0}_{1}_' -f
             $row.Name.ToLowerInvariant().Replace('-', '_'), $row.Version)
         $match = @($wheels | Where-Object {
             $_.Name.ToLowerInvariant().Replace('-', '_').StartsWith($prefix)
