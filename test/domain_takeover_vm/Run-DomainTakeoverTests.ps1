@@ -101,7 +101,8 @@ function Read-AndVerifyManifest {
     if (-not (Test-Path -LiteralPath $path)) {
         throw 'The reviewed package manifest is missing.'
     }
-    $manifest = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    $manifest = Get-Content -LiteralPath $path -Raw -Encoding UTF8 |
+        ConvertFrom-Json
     if ($manifest.policy_version -ne 'v5' -or
             ([string]$manifest.source_commit) -notmatch '^[0-9a-f]{40}$' -or
             $manifest.allowed_domain -ne 'api.deepseek.com' -or
@@ -114,16 +115,29 @@ function Read-AndVerifyManifest {
     }
     $rootPath = (Resolve-Path -LiteralPath $Root).Path
     foreach ($entry in @($manifest.files)) {
-        $candidate = Join-Path $rootPath ([string]$entry.path)
-        $resolved = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path
+        $entryPath = [string]$entry.path
+        if ([string]::IsNullOrWhiteSpace($entryPath)) {
+            throw 'Manifest contains an empty file path.'
+        }
+        $candidate = Join-Path $rootPath $entryPath
+        $resolvedItem = Resolve-Path -LiteralPath $candidate -ErrorAction Stop
+        if ($null -eq $resolvedItem -or
+                [string]::IsNullOrWhiteSpace([string]$resolvedItem.Path)) {
+            throw "Manifest file path cannot be resolved: $entryPath"
+        }
+        $resolved = [string]$resolvedItem.Path
         if (-not $resolved.StartsWith(
                 $rootPath + [IO.Path]::DirectorySeparatorChar,
                 [StringComparison]::OrdinalIgnoreCase)) {
-            throw "Manifest path escapes package root: $($entry.path)"
+            throw "Manifest path escapes package root: $entryPath"
         }
         $actual = (Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actual -ne ([string]$entry.sha256).ToLowerInvariant()) {
-            throw "Manifest hash mismatch: $($entry.path)"
+        $expected = [string]$entry.sha256
+        if ($expected -notmatch '^[0-9a-f]{64}$') {
+            throw "Manifest contains an invalid SHA-256: $entryPath"
+        }
+        if ($actual -ne $expected.ToLowerInvariant()) {
+            throw "Manifest hash mismatch: $entryPath"
         }
     }
     return $manifest

@@ -5,7 +5,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$packageName = 'Windows域名私网接管-一键启动包-2026.08.04'
+$packageVersion = 'v7'
+$packageName = "Windows域名私网接管-一键启动包-$packageVersion-2026.08.04"
 $planRelative = 'PLAN\2026.08.03\2026.08.03-03-FakeNet-NG域名固定解析到指定IP并放行流量方案.md'
 $fixedTimestamp = [DateTimeOffset]::new(
     [DateTime]::SpecifyKind([DateTime]'2000-01-01T00:00:00',
@@ -218,6 +219,47 @@ function Assert-RunnerProbeDefaultSafety {
     }
 }
 
+function Assert-ManifestReaderEncodingSafety {
+    param([string]$Path)
+    $tokens = $null
+    $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+        $Path, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -ne 0) {
+        throw "Cannot inspect manifest reader in invalid script: $Path"
+    }
+    $definitions = @($ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Read-AndVerifyManifest'
+    }, $true))
+    if ($definitions.Count -ne 1) {
+        throw "Manifest reader count mismatch: $Path"
+    }
+    $commands = @($definitions[0].FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -eq 'Get-Content'
+    }, $true))
+    if ($commands.Count -ne 1) {
+        throw "Manifest reader Get-Content count mismatch: $Path"
+    }
+    $elements = @($commands[0].CommandElements)
+    $hasUtf8 = $false
+    for ($i = 0; $i -lt $elements.Count - 1; $i++) {
+        if ($elements[$i] -is
+                [System.Management.Automation.Language.CommandParameterAst] -and
+                $elements[$i].ParameterName -eq 'Encoding' -and
+                [string]$elements[$i + 1].Value -eq 'UTF8') {
+            $hasUtf8 = $true
+            break
+        }
+    }
+    if (-not $hasUtf8) {
+        throw "Manifest reader must specify Get-Content -Encoding UTF8: $Path"
+    }
+}
+
 function New-DeterministicZip {
     param([string]$SourceRoot, [string]$Destination)
     Add-Type -AssemblyName System.IO.Compression
@@ -323,13 +365,16 @@ try {
     foreach ($powerShellScript in $powerShellScripts) {
         Assert-PowerShellSyntax $powerShellScript.FullName
     }
-    Assert-PythonNativeArgumentSafety (Join-Path $stage 'Start-DomainTakeover.ps1')
-    Assert-PythonNativeArgumentSafety (
-        Join-Path $stage 'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1')
-    Assert-RunnerProbeDefaultSafety (
-        Join-Path $stage 'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1')
-
     $launcherPath = Join-Path $stage 'Start-DomainTakeover.ps1'
+    $runnerPath = Join-Path $stage `
+        'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1'
+    Assert-PythonNativeArgumentSafety $launcherPath
+    Assert-PythonNativeArgumentSafety (
+        $runnerPath)
+    Assert-RunnerProbeDefaultSafety $runnerPath
+    Assert-ManifestReaderEncodingSafety $launcherPath
+    Assert-ManifestReaderEncodingSafety $runnerPath
+
     $launcherText = Get-Content -LiteralPath $launcherPath -Raw
     foreach ($forbidden in @('8.8.8.8', '1.1.1.1', 'Invoke-WebRequest',
             'pip download', 'pip install -U')) {
@@ -344,8 +389,6 @@ try {
             throw "Launcher is missing required marker: $requiredMarker"
         }
     }
-    $runnerPath = Join-Path $stage `
-        'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1'
     $identityScripts = [ordered]@{
         Launcher = $launcherText
         Runner = Get-Content -LiteralPath $runnerPath -Raw
@@ -384,6 +427,7 @@ try {
     $manifest = [ordered]@{
         schema_version = 1
         policy_version = 'v5'
+        package_version = $packageVersion
         source_commit = $resolvedCommit
         allowed_domain = 'api.deepseek.com'
         takeover_ipv4 = '192.168.204.1'
@@ -399,15 +443,35 @@ try {
         files = $fileRows
     }
     $manifestPath = Join-Path $stage 'domain-takeover-manifest.json'
-    $manifest | ConvertTo-Json -Depth 8 |
-        Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    $utf8NoBom = [Text.UTF8Encoding]::new($false)
+    $manifestJson = $manifest | ConvertTo-Json -Depth 8
+    [IO.File]::WriteAllText(
+        $manifestPath, $manifestJson + [Environment]::NewLine, $utf8NoBom)
+
+    $manifestContractPath = Join-Path $stage `
+        'test\domain_takeover_vm\Test-ManifestContracts.ps1'
+    if (-not (Test-Path -LiteralPath $manifestContractPath)) {
+        throw 'Archived PowerShell manifest contract test is missing.'
+    }
+    $windowsPowerShell = Join-Path $env:SystemRoot `
+        'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $windowsPowerShell)) {
+        throw 'Windows PowerShell 5.1 is required for manifest contract validation.'
+    }
+    $contractOutput = @(& $windowsPowerShell -NoLogo -NoProfile `
+        -ExecutionPolicy Bypass -File $manifestContractPath `
+        -PackageRoot $stage -LauncherPath $launcherPath `
+        -RunnerPath $runnerPath 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw ('PowerShell 5.1 manifest contract failed: {0}' -f
+            ($contractOutput -join [Environment]::NewLine))
+    }
 
     New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
     New-DeterministicZip -SourceRoot $stage -Destination $zipPath
     $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $sidecarLine = '{0}  {1}' -f
         $zipHash, [IO.Path]::GetFileName($zipPath)
-    $utf8NoBom = [Text.UTF8Encoding]::new($false)
     [IO.File]::WriteAllText(
         $sidecarPath, $sidecarLine + [Environment]::NewLine, $utf8NoBom)
     if ([IO.File]::ReadAllText($sidecarPath, $utf8NoBom).TrimEnd() -ne
