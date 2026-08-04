@@ -62,8 +62,12 @@ function Select-OriginalDnsServer {
     Get-NetIPInterface -AddressFamily IPv4 -ErrorAction Stop |
         Where-Object ConnectionState -eq 'Connected' |
         ForEach-Object { $interfaces[$_.InterfaceIndex] = $_ }
-    $routes = @(Get-NetRoute -AddressFamily IPv4
-            -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+    $routeArguments = @{
+        AddressFamily = 'IPv4'
+        DestinationPrefix = '0.0.0.0/0'
+        ErrorAction = 'Stop'
+    }
+    $routes = @(Get-NetRoute @routeArguments |
         Where-Object { $interfaces.ContainsKey($_.InterfaceIndex) } |
         Sort-Object @{Expression = {
             $_.RouteMetric + $interfaces[$_.InterfaceIndex].InterfaceMetric
@@ -132,9 +136,13 @@ function Get-TakeoverRouteSnapshot {
         Where-Object ConnectionState -eq 'Connected' |
         ForEach-Object { $interfaces[[int]$_.InterfaceIndex] = $_ }
 
+    $routeArguments = @{
+        AddressFamily = 'IPv4'
+        PolicyStore = 'ActiveStore'
+        ErrorAction = 'Stop'
+    }
     $matches = @(
-        Get-NetRoute -AddressFamily IPv4 -PolicyStore ActiveStore
-                -ErrorAction Stop |
+        Get-NetRoute @routeArguments |
             ForEach-Object {
                 $index = [int]$_.InterfaceIndex
                 $containsTarget = Test-IPv4PrefixContains $Target $_.DestinationPrefix

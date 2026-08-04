@@ -119,11 +119,22 @@ function Assert-PowerShellSyntax {
     param([string]$Path)
     $tokens = $null
     $errors = $null
-    [System.Management.Automation.Language.Parser]::ParseFile(
-        $Path, [ref]$tokens, [ref]$errors) | Out-Null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+        $Path, [ref]$tokens, [ref]$errors)
     if ($errors.Count -ne 0) {
         throw ('PowerShell syntax failure in {0}: {1}' -f
             $Path, (($errors | ForEach-Object Message) -join '; '))
+    }
+    $orphanParameters = @($ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.CommandAst] -and
+            $node.CommandElements.Count -gt 0 -and
+            $node.CommandElements[0].Extent.Text -match '^-[A-Za-z]'
+    }, $true))
+    if ($orphanParameters.Count -ne 0) {
+        $first = $orphanParameters[0]
+        throw ('PowerShell orphan parameter command in {0}, line {1}: {2}' -f
+            $Path, $first.Extent.StartLineNumber, $first.Extent.Text)
     }
 }
 
@@ -286,12 +297,16 @@ try {
     $takeoverConfig = Join-Path $stage 'fakenet\configs\domain_takeover_windows.ini'
     Assert-TakeoverConfiguration $baseConfig $takeoverConfig
     $dependencyRows = @(Assert-Wheelhouse $stage)
-    Assert-PowerShellSyntax (Join-Path $stage 'Start-DomainTakeover.ps1')
-    Assert-PowerShellSyntax (Join-Path $stage 'Build-DomainTakeoverPackage.ps1')
-    Assert-PowerShellSyntax (
-        Join-Path $stage 'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1')
-    Assert-PowerShellSyntax (
-        Join-Path $stage 'test\domain_takeover_vm\Test-LauncherContracts.ps1')
+    $scriptSearch = @{
+        LiteralPath = $stage
+        Recurse = $true
+        Filter = '*.ps1'
+        File = $true
+    }
+    $powerShellScripts = @(Get-ChildItem @scriptSearch)
+    foreach ($powerShellScript in $powerShellScripts) {
+        Assert-PowerShellSyntax $powerShellScript.FullName
+    }
     Assert-PythonNativeArgumentSafety (Join-Path $stage 'Start-DomainTakeover.ps1')
     Assert-PythonNativeArgumentSafety (
         Join-Path $stage 'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1')
