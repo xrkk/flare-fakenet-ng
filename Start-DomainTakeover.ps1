@@ -492,13 +492,12 @@ try {
     Invoke-TakeoverProbe @probeArguments
 
     $systemPython = (Get-Command $PythonPath -ErrorAction Stop).Source
-    # Windows PowerShell 5.1 strips unescaped double quotes while rebuilding
-    # native command lines. Keep Python string literals single-quoted so the
-    # exact -c payload survives CreateProcess argument serialization.
+    # Send dynamic Python source through stdin. Windows PowerShell 5.1 can
+    # strip embedded double quotes while rebuilding native command lines.
     $identityCommand = "import json,platform,sys; print(json.dumps({'version':'.'.join(map(str,sys.version_info[:3])),'machine':platform.machine()}))"
     $identityLog = Join-Path $script:LogDir 'python-identity.log'
     $identityExit = Invoke-NativeCaptured {
-        & $systemPython -c $identityCommand
+        $identityCommand | & $systemPython -
     } $identityLog
     if ($identityExit -ne 0) {
         throw ('Unable to inspect the configured Python interpreter. See {0}.' -f
@@ -550,7 +549,7 @@ try {
             'assert version("netifaces-plus")=="0.12.5";' +
             'assert callable(netifaces.interfaces);' +
             'assert callable(netifaces.ifaddresses)')
-        & $venvPython -c $dependencyCommand
+        $dependencyCommand | & $venvPython -
     } $dependencyLog
     if ($dependencyExit -ne 0) {
         throw 'The package-local dependency/API check failed.'

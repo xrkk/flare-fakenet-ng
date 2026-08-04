@@ -127,6 +127,70 @@ function Assert-PowerShellSyntax {
     }
 }
 
+function Assert-PythonNativeArgumentSafety {
+    param([string]$Path)
+    $tokens = $null
+    $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+        $Path, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -ne 0) {
+        throw "Cannot inspect Python native arguments in invalid script: $Path"
+    }
+
+    $commands = @($ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.CommandAst] -and
+            @($node.CommandElements | Where-Object {
+                $_.Extent.Text -eq '-c'
+            }).Count -gt 0
+    }, $true))
+    foreach ($command in $commands) {
+        $elements = @($command.CommandElements)
+        $index = -1
+        for ($i = 0; $i -lt $elements.Count; $i++) {
+            if ($elements[$i].Extent.Text -eq '-c') {
+                $index = $i
+                break
+            }
+        }
+        if ($index -lt 0 -or $index + 1 -ge $elements.Count) {
+            throw "Malformed Python -c command in $Path"
+        }
+        $payload = $elements[$index + 1]
+        if ($payload -is
+                [System.Management.Automation.Language.VariableExpressionAst]) {
+            throw ("Dynamic Python source must use stdin, not -c, in {0}: {1}" -f
+                $Path, $command.Extent.Text)
+        }
+        if ($payload -isnot
+                [System.Management.Automation.Language.StringConstantExpressionAst] -and
+                $payload -isnot
+                [System.Management.Automation.Language.ExpandableStringExpressionAst]) {
+            throw ("Unreviewable Python -c payload in {0}: {1}" -f
+                $Path, $command.Extent.Text)
+        }
+        if ([string]$payload.Value -match '"') {
+            throw ("Python -c payload contains a PowerShell 5.1-unsafe double quote in {0}: {1}" -f
+                $Path, $command.Extent.Text)
+        }
+    }
+
+    $text = Get-Content -LiteralPath $Path -Raw
+    $requiredStdin = if ([IO.Path]::GetFileName($Path) -eq
+            'Start-DomainTakeover.ps1') {
+        @('identityCommand', 'dependencyCommand')
+    } else {
+        @('identityCommand', 'dependencyCommand', 'dnsParityCommand')
+    }
+    foreach ($name in $requiredStdin) {
+        $pattern = ('\${0}\s*\|\s*&\s*\$[A-Za-z][A-Za-z0-9]*\s+-\s*' -f
+            [regex]::Escape($name))
+        if ($text -notmatch $pattern) {
+            throw "Dynamic Python source is not transported through stdin in ${Path}: `${name}"
+        }
+    }
+}
+
 function New-DeterministicZip {
     param([string]$SourceRoot, [string]$Destination)
     Add-Type -AssemblyName System.IO.Compression
@@ -228,6 +292,9 @@ try {
         Join-Path $stage 'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1')
     Assert-PowerShellSyntax (
         Join-Path $stage 'test\domain_takeover_vm\Test-LauncherContracts.ps1')
+    Assert-PythonNativeArgumentSafety (Join-Path $stage 'Start-DomainTakeover.ps1')
+    Assert-PythonNativeArgumentSafety (
+        Join-Path $stage 'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1')
 
     $launcherPath = Join-Path $stage 'Start-DomainTakeover.ps1'
     $launcherText = Get-Content -LiteralPath $launcherPath -Raw
@@ -254,8 +321,10 @@ try {
         if ($identityScript.Value -notmatch
                 [regex]::Escape("json.dumps({'version':") -or
                 $identityScript.Value -notmatch
-                [regex]::Escape('python-identity.log')) {
-            throw ("{0} is missing the PowerShell 5.1-safe Python identity contract." -f
+                [regex]::Escape('python-identity.log') -or
+                $identityScript.Value -notmatch
+                '\$identityCommand\s*\|\s*&\s*\$[A-Za-z][A-Za-z0-9]*\s+-') {
+            throw ("{0} is missing the stdin-safe Python identity contract." -f
                 $identityScript.Key)
         }
         if ($identityScript.Value -match [regex]::Escape('json.dumps({"version"')) {

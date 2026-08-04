@@ -288,13 +288,12 @@ try {
     Add-Result 'WindowsBuild' 'PASS' ([string]$os.Version)
 
     $systemPython = (Get-Command $PythonPath -ErrorAction Stop).Source
-    # Windows PowerShell 5.1 strips unescaped double quotes while rebuilding
-    # native command lines. Keep Python string literals single-quoted so the
-    # exact -c payload survives CreateProcess argument serialization.
+    # Send dynamic Python source through stdin. Windows PowerShell 5.1 can
+    # strip embedded double quotes while rebuilding native command lines.
     $identityCommand = "import json,platform,sys; print(json.dumps({'version':'.'.join(map(str,sys.version_info[:3])),'machine':platform.machine()}))"
     $identityLog = Join-Path $script:LogDir 'python-identity.log'
     $identityExit = Invoke-NativeCaptured {
-        & $systemPython -c $identityCommand
+        $identityCommand | & $systemPython -
     } $identityLog
     if ($identityExit -ne 0) {
         Add-Result 'PythonABI' 'FAIL' 'see python-identity.log'
@@ -350,7 +349,7 @@ try {
             'assert callable(netifaces.interfaces);' +
             'assert callable(netifaces.ifaddresses);' +
             'print("dependency contract ok")')
-        & $python -c $dependencyCommand
+        $dependencyCommand | & $python -
     } $dependencyLog
     if ($dependencyExit -ne 0) {
         Add-Result 'Dependencies' 'FAIL' 'distribution version/API check failed'
@@ -526,7 +525,7 @@ print("UDP/TCP A parity and AAAA NODATA passed")
 '@
     $dnsParityLog = Join-Path $script:LogDir 'dns-udp-tcp-parity.log'
     $dnsParityExit = Invoke-NativeCaptured {
-        & $python -c $dnsParityCommand
+        $dnsParityCommand | & $python -
     } $dnsParityLog
     if ($dnsParityExit -ne 0) {
         Add-Result 'DnsUdpTcpParity' 'FAIL' 'see dns-udp-tcp-parity.log'
