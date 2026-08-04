@@ -129,11 +129,11 @@ class WindowsVerdictTests(unittest.TestCase):
             self.diverter.finalize_egress_verdict(
                 Packet(dst='10.0.0.5', dport=50001)))
 
-    def test_exact_dhcp_exception(self):
+    def test_dhcp_broadcast_is_not_an_egress_exception(self):
         dhcp = Packet(proto='UDP', sport=68,
                       dst='255.255.255.255', dport=67)
         self.assertEqual(
-            Verdict.REINJECT_LOCAL,
+            Verdict.DROP_EXTERNAL,
             self.diverter.finalize_egress_verdict(dhcp))
         dhcp.dst_ip = '10.0.0.255'
         self.assertEqual(
@@ -272,6 +272,17 @@ class WindowsVerdictTests(unittest.TestCase):
             object(), 'fault injection'))
         self.diverter.handle.send.assert_called_once()
         self.diverter.logger.error.assert_called_once()
+
+    @mock.patch('fakenet.diverters.windows.ctypes.windll.kernel32.SetLastError')
+    def test_windivert_close_clears_stale_last_error(self, clear_last_error):
+        handle = mock.Mock()
+        self.diverter.handle = handle
+
+        self.diverter._close_windivert_handle()
+
+        clear_last_error.assert_called_once_with(0)
+        handle.close.assert_called_once_with()
+        self.assertIsNone(self.diverter.handle)
 
     def test_ipv6_is_classified_before_packet_context(self):
         ipv6 = bytes.fromhex('6000000000003b40')

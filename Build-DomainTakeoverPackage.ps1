@@ -5,8 +5,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v7'
-$packageName = "Windows域名私网接管-一键启动包-$packageVersion-2026.08.04"
+$packageVersion = 'v8'
+$packageName = "Windows域名私网接管-$packageVersion"
 $planRelative = 'PLAN\2026.08.03\2026.08.03-03-FakeNet-NG域名固定解析到指定IP并放行流量方案.md'
 $fixedTimestamp = [DateTimeOffset]::new(
     [DateTime]::SpecifyKind([DateTime]'2000-01-01T00:00:00',
@@ -320,7 +320,9 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 }
 $zipPath = Join-Path $outputRoot ($packageName + '.zip')
-$sidecarPath = $zipPath + '.sha256'
+if ($packageName -match '(?i)logs|日志') {
+    throw 'Package name must not contain a log marker.'
+}
 
 try {
     New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
@@ -470,14 +472,6 @@ try {
     New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
     New-DeterministicZip -SourceRoot $stage -Destination $zipPath
     $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $sidecarLine = '{0}  {1}' -f
-        $zipHash, [IO.Path]::GetFileName($zipPath)
-    [IO.File]::WriteAllText(
-        $sidecarPath, $sidecarLine + [Environment]::NewLine, $utf8NoBom)
-    if ([IO.File]::ReadAllText($sidecarPath, $utf8NoBom).TrimEnd() -ne
-            $sidecarLine) {
-        throw 'SHA-256 sidecar did not round-trip exactly as UTF-8.'
-    }
     Write-Host "Package: $zipPath"
     Write-Host "SHA-256: $zipHash"
     Write-Host "Source commit: $resolvedCommit"

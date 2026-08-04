@@ -3,6 +3,7 @@
 # Diverter for Windows implemented using WinDivert library
 
 import logging
+import ctypes
 
 from pydivert.windivert import *
 
@@ -387,6 +388,19 @@ class Diverter(DiverterBase, WinUtilMixin):
             self.handle = None
             raise
 
+    def _close_windivert_handle(self):
+        """Close WinDivert without inheriting a stale Windows last-error.
+
+        PyDivert 2.1.0 checks GetLastError after WinDivertClose even when the
+        close succeeds. Clear the previous error first so only a close error
+        can be reported.
+        """
+        if self.handle is None:
+            return
+        ctypes.windll.kernel32.SetLastError(0)
+        self.handle.close()
+        self.handle = None
+
     def configure_policy_runtime(self, listeners):
         if self.domain_allowlist_mode:
             self._policy_listeners = list(listeners)
@@ -415,7 +429,7 @@ class Diverter(DiverterBase, WinUtilMixin):
             self.diverter_thread.join(0.05)
             if not self.diverter_thread.is_alive():
                 if self.handle:
-                    self.handle.close()
+                    self._close_windivert_handle()
                 raise RuntimeError('WinDivert receiver thread failed to start')
 
         try:
@@ -451,7 +465,7 @@ class Diverter(DiverterBase, WinUtilMixin):
                     'Network restoration failed during startup rollback')
             finally:
                 if self.handle:
-                    self.handle.close()
+                    self._close_windivert_handle()
             self.diverter_thread.join(5)
             raise
 
@@ -704,9 +718,6 @@ class Diverter(DiverterBase, WinUtilMixin):
                     self.listener_ports.isListener(pkt.proto, pkt.dport)):
                 return Verdict.REDIRECT_TLS_RELAY
             return Verdict.DROP_EXTERNAL
-        if (pkt.proto == 'UDP' and pkt.sport == 68 and pkt.dport == 67 and
-                pkt.dst_ip == '255.255.255.255'):
-            return Verdict.REINJECT_LOCAL
         if self.egress_policy.is_exact_local_ipv4(pkt.dst_ip):
             if pkt.proto and self.listener_ports.isListener(pkt.proto,
                                                             pkt.dport):
@@ -782,7 +793,7 @@ class Diverter(DiverterBase, WinUtilMixin):
                         'Network restoration failed after receiver exit')
                 finally:
                     if self.handle:
-                        self.handle.close()
+                        self._close_windivert_handle()
 
     def _refresh_local_addresses(self):
         while not self._stopping.wait(5):
@@ -842,12 +853,12 @@ class Diverter(DiverterBase, WinUtilMixin):
             finally:
                 if self.handle:
                     try:
-                        self.handle.close()
+                        self._close_windivert_handle()
                     except Exception:
                         self.logger.exception('Failed closing WinDivert handle')
         elif self.handle:
             try:
-                self.handle.close()
+                self._close_windivert_handle()
             except Exception:
                 self.logger.exception('Failed closing WinDivert handle')
         if (getattr(self, 'diverter_thread', None) and
