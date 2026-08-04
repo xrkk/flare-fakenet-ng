@@ -288,12 +288,25 @@ try {
     Add-Result 'WindowsBuild' 'PASS' ([string]$os.Version)
 
     $systemPython = (Get-Command $PythonPath -ErrorAction Stop).Source
-    $identityCommand = 'import json,platform,sys; print(json.dumps({"version":".".join(map(str,sys.version_info[:3])),"machine":platform.machine()}))'
-    $identityText = & $systemPython -c $identityCommand
-    if ($LASTEXITCODE -ne 0) {
+    # Windows PowerShell 5.1 strips unescaped double quotes while rebuilding
+    # native command lines. Keep Python string literals single-quoted so the
+    # exact -c payload survives CreateProcess argument serialization.
+    $identityCommand = "import json,platform,sys; print(json.dumps({'version':'.'.join(map(str,sys.version_info[:3])),'machine':platform.machine()}))"
+    $identityLog = Join-Path $script:LogDir 'python-identity.log'
+    $identityExit = Invoke-NativeCaptured {
+        & $systemPython -c $identityCommand
+    } $identityLog
+    if ($identityExit -ne 0) {
+        Add-Result 'PythonABI' 'FAIL' 'see python-identity.log'
         throw 'Unable to inspect the configured Python interpreter.'
     }
-    $identity = $identityText | ConvertFrom-Json
+    try {
+        $identity = (Get-Content -Raw -LiteralPath $identityLog).Trim() |
+            ConvertFrom-Json
+    } catch {
+        Add-Result 'PythonABI' 'FAIL' 'python-identity.log is not valid JSON'
+        throw 'Python identity output is invalid.'
+    }
     if ($identity.version -ne $manifest.python_version -or
             $identity.machine.ToUpperInvariant() -ne
                 $manifest.python_architecture) {

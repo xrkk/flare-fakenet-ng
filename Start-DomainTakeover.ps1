@@ -492,12 +492,24 @@ try {
     Invoke-TakeoverProbe @probeArguments
 
     $systemPython = (Get-Command $PythonPath -ErrorAction Stop).Source
-    $identityCommand = 'import json,platform,sys; print(json.dumps({"version":".".join(map(str,sys.version_info[:3])),"machine":platform.machine()}))'
-    $identityText = & $systemPython -c $identityCommand
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Unable to inspect the configured Python interpreter.'
+    # Windows PowerShell 5.1 strips unescaped double quotes while rebuilding
+    # native command lines. Keep Python string literals single-quoted so the
+    # exact -c payload survives CreateProcess argument serialization.
+    $identityCommand = "import json,platform,sys; print(json.dumps({'version':'.'.join(map(str,sys.version_info[:3])),'machine':platform.machine()}))"
+    $identityLog = Join-Path $script:LogDir 'python-identity.log'
+    $identityExit = Invoke-NativeCaptured {
+        & $systemPython -c $identityCommand
+    } $identityLog
+    if ($identityExit -ne 0) {
+        throw ('Unable to inspect the configured Python interpreter. See {0}.' -f
+            $identityLog)
     }
-    $identity = $identityText | ConvertFrom-Json
+    try {
+        $identity = (Get-Content -Raw -LiteralPath $identityLog).Trim() |
+            ConvertFrom-Json
+    } catch {
+        throw ('Python identity output is invalid. See {0}.' -f $identityLog)
+    }
     if ($identity.version -ne $manifest.python_version -or
             $identity.machine.ToUpperInvariant() -ne
                 $manifest.python_architecture) {

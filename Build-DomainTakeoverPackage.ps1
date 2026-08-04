@@ -222,6 +222,8 @@ try {
     Assert-PowerShellSyntax (Join-Path $stage 'Build-DomainTakeoverPackage.ps1')
     Assert-PowerShellSyntax (
         Join-Path $stage 'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1')
+    Assert-PowerShellSyntax (
+        Join-Path $stage 'test\domain_takeover_vm\Test-LauncherContracts.ps1')
 
     $launcherPath = Join-Path $stage 'Start-DomainTakeover.ps1'
     $launcherText = Get-Content -LiteralPath $launcherPath -Raw
@@ -236,6 +238,25 @@ try {
             'DNS restoration check')) {
         if ($launcherText -notmatch [regex]::Escape($requiredMarker)) {
             throw "Launcher is missing required marker: $requiredMarker"
+        }
+    }
+    $runnerPath = Join-Path $stage `
+        'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1'
+    $identityScripts = [ordered]@{
+        Launcher = $launcherText
+        Runner = Get-Content -LiteralPath $runnerPath -Raw
+    }
+    foreach ($identityScript in $identityScripts.GetEnumerator()) {
+        if ($identityScript.Value -notmatch
+                [regex]::Escape("json.dumps({'version':") -or
+                $identityScript.Value -notmatch
+                [regex]::Escape('python-identity.log')) {
+            throw ("{0} is missing the PowerShell 5.1-safe Python identity contract." -f
+                $identityScript.Key)
+        }
+        if ($identityScript.Value -match [regex]::Escape('json.dumps({"version"')) {
+            throw ("{0} contains the PowerShell 5.1-unsafe Python identity payload." -f
+                $identityScript.Key)
         }
     }
 
