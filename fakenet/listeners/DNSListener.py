@@ -156,11 +156,28 @@ class DNSHandler():
                                          'Rejecting non-local DNS client %s',
                                          self.client_address[0])
                         return self._error_response(d, RCODE.REFUSED)
+                    if d.header.opcode != 0 or len(d.questions) != 1:
+                        return self._error_response(d, RCODE.FORMERR)
+                    if d.q.qclass != CLASS.IN:
+                        return self._error_response(d, RCODE.REFUSED)
                     allowed_root = callbacks.resolveDnsRule(qname)
                     if allowed_root and qtype == 'A':
                         return self._resolve_allowed_a(
                             d, qname, allowed_root, proto, callbacks)
                     if allowed_root and qtype == 'AAAA':
+                        return self._empty_response(d)
+
+                    takeover = callbacks.getTakeoverSettings()
+                    if takeover['enabled'] and qtype == 'A':
+                        if not takeover['available']:
+                            callbacks.logEgressEvent(
+                                'TAKEOVER_DNS_DENY', domain=qname,
+                                reason=takeover['suspend_reason'] or
+                                'takeover_unavailable')
+                            return self._error_response(d, RCODE.SERVFAIL)
+                        return self._takeover_a_response(
+                            d, qname, proto, callbacks, takeover)
+                    if takeover['enabled'] and qtype == 'AAAA':
                         return self._empty_response(d)
 
                 # Create a custom response to the query
@@ -247,6 +264,19 @@ class DNSHandler():
                 response = response.pack()
                 
         return response  
+
+    def _takeover_a_response(self, request, qname, proto, callbacks,
+                             settings):
+        response = DNSRecord(DNSHeader(
+            id=request.header.id, qr=1, aa=1, ra=1,
+            rd=request.header.rd, rcode=RCODE.NOERROR), q=request.q)
+        response.add_answer(RR(
+            request.q.qname, QTYPE.A, ttl=settings['dns_ttl'],
+            rdata=A(settings['ipv4'])))
+        callbacks.logEgressEvent(
+            'TAKEOVER_DNS_ANSWER', domain=qname, ip=settings['ipv4'],
+            ttl=settings['dns_ttl'], proto=proto)
+        return response.pack()
 
     def _empty_response(self, request):
         return DNSRecord(DNSHeader(id=request.header.id, qr=1, aa=0,

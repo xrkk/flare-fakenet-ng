@@ -21,6 +21,101 @@ from .diverterbase import *
 
 import subprocess
 import ipaddress
+import json
+
+_TAKEOVER_ROUTE_SCRIPT = r'''
+$ErrorActionPreference = 'Stop'
+$target = '__TARGET__'
+
+function Test-IPv4PrefixContains {
+    param([string]$Address, [string]$Prefix)
+    $parts = $Prefix.Split('/')
+    if ($parts.Count -ne 2) { return $false }
+    $length = [int]$parts[1]
+    if ($length -lt 0 -or $length -gt 32) { return $false }
+    $addressBytes = ([Net.IPAddress]::Parse($Address)).GetAddressBytes()
+    $networkBytes = ([Net.IPAddress]::Parse($parts[0])).GetAddressBytes()
+    $whole = [Math]::Floor($length / 8)
+    for ($index = 0; $index -lt $whole; $index++) {
+        if ($addressBytes[$index] -ne $networkBytes[$index]) {
+            return $false
+        }
+    }
+    $remainder = $length % 8
+    if ($remainder -eq 0) { return $true }
+    $mask = [int](256 - [Math]::Pow(2, 8 - $remainder))
+    return (($addressBytes[$whole] -band $mask) -eq
+        ($networkBytes[$whole] -band $mask))
+}
+
+$interfaces = @{}
+Get-NetIPInterface -AddressFamily IPv4 -ErrorAction Stop |
+    Where-Object ConnectionState -eq 'Connected' |
+    ForEach-Object { $interfaces[[int]$_.InterfaceIndex] = $_ }
+
+$matches = @(
+    Get-NetRoute -AddressFamily IPv4 -PolicyStore ActiveStore `
+            -ErrorAction Stop |
+        ForEach-Object {
+            $index = [int]$_.InterfaceIndex
+            if ($interfaces.ContainsKey($index) -and
+                    (Test-IPv4PrefixContains $target $_.DestinationPrefix)) {
+                $prefixLength = [int]$_.DestinationPrefix.Split('/')[1]
+                [PSCustomObject]@{
+                    Route = $_
+                    PrefixLength = $prefixLength
+                    TotalMetric = [uint64]$_.RouteMetric +
+                        [uint64]$interfaces[$index].InterfaceMetric
+                }
+            }
+        }
+)
+if ($matches.Count -eq 0) { throw 'No matching active IPv4 route' }
+$bestPrefix = ($matches | Measure-Object PrefixLength -Maximum).Maximum
+$prefixMatches = @($matches | Where-Object PrefixLength -eq $bestPrefix)
+$bestMetric = ($prefixMatches | Measure-Object TotalMetric -Minimum).Minimum
+$best = @($prefixMatches | Where-Object TotalMetric -eq $bestMetric)
+if ($best.Count -ne 1) { throw 'Ambiguous best IPv4 route' }
+$selected = $best[0]
+$route = $selected.Route
+if ($selected.PrefixLength -eq 0) { throw 'Default route is not permitted' }
+if ([string]$route.NextHop -ne '0.0.0.0') {
+    throw 'Gateway route is not permitted'
+}
+
+$sourceAddresses = @(
+    Get-NetIPAddress -AddressFamily IPv4 `
+            -InterfaceIndex $route.InterfaceIndex -ErrorAction Stop |
+        Where-Object {
+            $_.AddressState -eq 'Preferred' -and
+            -not $_.SkipAsSource -and
+            [string]$_.IPAddress -ne $target
+        } | Select-Object -ExpandProperty IPAddress
+)
+$socket = New-Object Net.Sockets.Socket(
+    [Net.Sockets.AddressFamily]::InterNetwork,
+    [Net.Sockets.SocketType]::Dgram,
+    [Net.Sockets.ProtocolType]::Udp)
+try {
+    $socket.Connect([Net.IPAddress]::Parse($target), 9)
+    $source = [string]$socket.LocalEndPoint.Address
+} finally {
+    $socket.Dispose()
+}
+if ($source -notin $sourceAddresses) {
+    throw 'Selected source is not assigned to the best-route interface'
+}
+
+[PSCustomObject]@{
+    interface_index = [int]$route.InterfaceIndex
+    interface_alias = [string]$interfaces[[int]$route.InterfaceIndex].InterfaceAlias
+    source_ipv4 = $source
+    destination_prefix = [string]$route.DestinationPrefix
+    next_hop = [string]$route.NextHop
+    route_metric = [uint64]$route.RouteMetric
+    interface_metric = [uint64]$interfaces[[int]$route.InterfaceIndex].InterfaceMetric
+} | ConvertTo-Json -Compress
+'''
 
 from .egresspolicy import EgressPolicy, PolicyConfigError, Verdict
 
@@ -135,6 +230,7 @@ class Diverter(DiverterBase, WinUtilMixin):
         self._dns_service_stopped = False
         self._drop_log_state = {}
         self._policy_listeners = []
+        self._takeover_route_snapshot = None
 
         # DomainAllowList expands capture to IPv6 and delays opening WinDivert
         # until every listener and callback is ready.  Disabled mode preserves
@@ -154,6 +250,12 @@ class Diverter(DiverterBase, WinUtilMixin):
                 self.logger.critical('Invalid DomainAllowList configuration: %s', exc)
                 raise
             self._validate_policy_listeners()
+            if self.egress_policy.takeover_enabled:
+                self._takeover_route_snapshot = (
+                    self._read_takeover_route_snapshot())
+                self.log_egress_event(
+                    'TAKEOVER_ROUTE_OK',
+                    **self._takeover_route_snapshot)
         else:
             self._open_windivert_handle()
 
@@ -195,19 +297,72 @@ class Diverter(DiverterBase, WinUtilMixin):
         relay = relay_sections[0]
         if relay.get('protocol', '').lower() != 'tcp' or int(relay['port']) != relay_port:
             raise PolicyConfigError('DomainEgressRelay protocol/port mismatch')
-        dns_protocols = {
-            cfg.get('protocol', '').lower()
-            for cfg in self.listeners_config.values()
+        dns_sections = [
+            cfg for cfg in self.listeners_config.values()
             if (cfg.get('listener', '').lower() == 'dnslistener' and
                 int(cfg.get('port', 0)) == 53)
+        ]
+        dns_protocols = {
+            cfg.get('protocol', '').lower() for cfg in dns_sections
         }
-        if dns_protocols != {'udp', 'tcp'}:
+        if dns_protocols != {'udp', 'tcp'} or len(dns_sections) != 2:
             raise PolicyConfigError(
-                'DomainAllowList requires both UDP/53 and TCP/53 DNS listeners')
+                'DomainAllowList requires one UDP/53 and one TCP/53 DNS listener')
+        if self.egress_policy.takeover_enabled:
+            for cfg in dns_sections:
+                if str(cfg.get('responsea', '')).strip() != (
+                        self.egress_policy.takeover_ipv4):
+                    raise PolicyConfigError(
+                        'takeover DNS ResponseA must match ExternalTakeoverIPv4')
         for cfg in self.listeners_config.values():
             if (int(cfg.get('port', 0)) == relay_port and
                     cfg.get('listener', '').lower() != 'domainegressrelay'):
                 raise PolicyConfigError('ExternalRelayPort conflicts with another listener')
+
+    def _read_takeover_route_snapshot(self):
+        if not self.egress_policy.takeover_enabled:
+            return None
+        script = _TAKEOVER_ROUTE_SCRIPT.replace(
+            '__TARGET__', self.egress_policy.takeover_ipv4)
+        completed = subprocess.run(
+            ['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
+             '-ExecutionPolicy', 'Bypass', '-Command', script],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=10,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            raise PolicyConfigError(
+                'takeover route preflight failed: %s' % (
+                    detail or 'PowerShell returned no diagnostic'))
+        lines = [line for line in completed.stdout.splitlines() if line.strip()]
+        if not lines:
+            raise PolicyConfigError(
+                'takeover route preflight returned no route snapshot')
+        try:
+            snapshot = json.loads(lines[-1])
+        except (TypeError, ValueError) as exc:
+            raise PolicyConfigError(
+                'takeover route preflight returned invalid JSON') from exc
+        required = {
+            'interface_index', 'interface_alias', 'source_ipv4',
+            'destination_prefix', 'next_hop', 'route_metric',
+            'interface_metric'}
+        if set(snapshot) != required:
+            raise PolicyConfigError(
+                'takeover route snapshot fields do not match the contract')
+        if (str(snapshot['next_hop']) != '0.0.0.0' or
+                str(snapshot['destination_prefix']) == '0.0.0.0/0' or
+                not self.egress_policy.is_exact_local_ipv4(
+                    snapshot['source_ipv4']) or
+                str(snapshot['source_ipv4']) ==
+                self.egress_policy.takeover_ipv4):
+            raise PolicyConfigError(
+                'takeover route snapshot failed final validation')
+        snapshot['interface_index'] = int(snapshot['interface_index'])
+        snapshot['route_metric'] = int(snapshot['route_metric'])
+        snapshot['interface_metric'] = int(snapshot['interface_metric'])
+        return snapshot
 
     def _open_windivert_handle(self):
         if self.handle is not None:
@@ -309,10 +464,17 @@ class Diverter(DiverterBase, WinUtilMixin):
                 target=self._refresh_local_addresses,
                 name='LocalAddressSnapshot', daemon=True)
             self.address_refresh_thread.start()
-            self.log_egress_event(
-                'DOMAIN_ALLOWLIST_READY',
-                dns=self.egress_policy.external_dns_server,
-                relay_port=self.egress_policy.relay_port)
+            if self.egress_policy.takeover_enabled:
+                self.log_egress_event(
+                    'DOMAIN_TAKEOVER_READY',
+                    allowed_domain='api.deepseek.com',
+                    takeover_ip=self.egress_policy.takeover_ipv4,
+                    ttl=self.egress_policy.takeover_dns_ttl)
+            else:
+                self.log_egress_event(
+                    'DOMAIN_ALLOWLIST_READY',
+                    dns=self.egress_policy.external_dns_server,
+                    relay_port=self.egress_policy.relay_port)
 
         return True
 
@@ -407,6 +569,22 @@ class Diverter(DiverterBase, WinUtilMixin):
                 if not self._send_packet(pkt):
                     self.egress_policy.close_relay_mapping(
                         mapping.generation)
+                return
+
+            if (pkt.proto and
+                    self.egress_policy.matches_takeover_sink(*original)):
+                verdict = self.finalize_egress_verdict(
+                    pkt, takeover_sink=True)
+                if verdict != Verdict.ALLOW_TAKEOVER_SINK:
+                    self.log_egress_event(
+                        'DROP_EXTERNAL', reason='takeover_revalidation_failed',
+                        original_ip=pkt.dst_ip0,
+                        original_port=pkt.dport0)
+                    return
+                self.log_egress_event(
+                    'ALLOW_TAKEOVER_SINK', ip=pkt.dst_ip0,
+                    proto=pkt.proto, sport=pkt.sport0, dport=pkt.dport0)
+                self._send_packet(pkt)
                 return
 
             redirected = False
@@ -505,13 +683,20 @@ class Diverter(DiverterBase, WinUtilMixin):
         return mapping, lease
 
     def finalize_egress_verdict(self, pkt, relay_redirected=False,
-                                permit=None, relay_return_fixed=False):
+                                permit=None, relay_return_fixed=False,
+                                takeover_sink=False):
         if permit is not None:
             return Verdict.ALLOW_INTERNAL_UPSTREAM
         if relay_return_fixed:
             return (Verdict.REINJECT_LOCAL
                     if self.egress_policy.is_exact_local_ipv4(pkt.dst_ip)
                     else Verdict.DROP_EXTERNAL)
+        if takeover_sink:
+            return (Verdict.ALLOW_TAKEOVER_SINK
+                    if self.egress_policy.matches_takeover_sink(
+                        pkt.proto, pkt.src_ip, pkt.sport,
+                        pkt.dst_ip, pkt.dport) else
+                    Verdict.DROP_EXTERNAL)
         if relay_redirected:
             if (pkt.proto == 'TCP' and
                     pkt.dport == self.egress_policy.relay_port and
@@ -607,10 +792,32 @@ class Diverter(DiverterBase, WinUtilMixin):
                     addresses.update(self.get_ipaddresses(adapter))
                 if self.external_ip:
                     addresses.add(self.external_ip)
+                takeover_was_available = (
+                    self.egress_policy.takeover_available())
                 if not self.egress_policy.update_local_ipv4(addresses):
                     self.logger.critical(
                         'DomainAllowList suspended after unsafe address change')
                     return
+                if (takeover_was_available and
+                        not self.egress_policy.takeover_available()):
+                    settings = self.egress_policy.takeover_settings()
+                    self.log_egress_event(
+                        'TAKEOVER_SUSPEND',
+                        reason=settings['suspend_reason'] or
+                        'address_snapshot_changed')
+                if self.egress_policy.takeover_available():
+                    try:
+                        route = self._read_takeover_route_snapshot()
+                        if route != self._takeover_route_snapshot:
+                            raise RuntimeError(
+                                'takeover route snapshot changed')
+                    except Exception as exc:
+                        if self.egress_policy.suspend_takeover(
+                                'route_snapshot_changed'):
+                            self.log_egress_event(
+                                'TAKEOVER_SUSPEND',
+                                reason='route_snapshot_changed',
+                                error=type(exc).__name__)
                 for domain, ip in self.egress_policy.drain_expired_leases():
                     self.log_egress_event(
                         'DNS_LEASE_EXPIRE', domain=domain, ip=ip)

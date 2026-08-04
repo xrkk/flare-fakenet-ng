@@ -4,7 +4,7 @@ import threading
 import unittest
 from unittest import mock
 
-from fakenet.diverters.egresspolicy import Verdict
+from fakenet.diverters.egresspolicy import PolicyConfigError, Verdict
 from fakenet.diverters.windows import Diverter
 
 
@@ -13,6 +13,22 @@ class Policy(object):
 
     def is_exact_local_ipv4(self, value):
         return value in ('127.0.0.1', '10.0.0.5')
+
+
+class TakeoverPolicy(Policy):
+    takeover_enabled = True
+    takeover_ipv4 = '192.168.204.1'
+
+    def matches_takeover_sink(self, proto, src_ip, sport, dst_ip, dport):
+        try:
+            sport = int(sport)
+            dport = int(dport)
+        except (TypeError, ValueError):
+            return False
+        return (str(proto).upper() in ('TCP', 'UDP') and
+                src_ip == '10.0.0.5' and
+                dst_ip == self.takeover_ipv4 and
+                1 <= sport <= 65535 and 1 <= dport <= 65535)
 
 
 class MappingPolicy(Policy):
@@ -267,6 +283,104 @@ class WindowsVerdictTests(unittest.TestCase):
             self.diverter.classify_ipv6_preparse(ipv6, True))
         self.assertIsNone(self.diverter.classify_ipv6_preparse(
             bytes.fromhex('45000014'), False))
+
+    def test_takeover_sink_verdict_is_exact_for_tcp_and_udp(self):
+        self.diverter.egress_policy = TakeoverPolicy()
+        for proto in ('TCP', 'UDP'):
+            for port in (1, 443, 65535):
+                packet = Packet(
+                    proto=proto, dst='192.168.204.1', dport=port)
+                self.assertEqual(
+                    Verdict.ALLOW_TAKEOVER_SINK,
+                    self.diverter.finalize_egress_verdict(
+                        packet, takeover_sink=True))
+        for destination in ('192.168.204.2', '10.0.0.1',
+                            '93.184.216.34'):
+            packet = Packet(dst=destination, dport=443)
+            self.assertEqual(
+                Verdict.DROP_EXTERNAL,
+                self.diverter.finalize_egress_verdict(
+                    packet, takeover_sink=True))
+
+    def test_takeover_sink_is_revalidated_before_reinjection(self):
+        self.diverter.egress_policy = TakeoverPolicy()
+        packet = Packet(dst='192.168.204.1', dport=8443)
+        packet.src_ip = '10.0.0.99'
+        self.assertEqual(
+            Verdict.DROP_EXTERNAL,
+            self.diverter.finalize_egress_verdict(
+                packet, takeover_sink=True))
+
+    def test_takeover_sink_bypasses_legacy_redirect_unchanged(self):
+        self.diverter.egress_policy = TakeoverPolicy()
+        packet = Packet(
+            proto='UDP', dst='192.168.204.1', dport=443)
+        windivert_packet = mock.Mock()
+        windivert_packet.raw.tobytes.return_value = bytes.fromhex(
+            '4500001400000000401100000a000005c0a8cc01')
+        windivert_packet.is_loopback = False
+        self.diverter.write_pcap = mock.Mock()
+        self.diverter.log_egress_event = mock.Mock()
+        self.diverter._send_packet = mock.Mock(return_value=True)
+        self.diverter.handle_pkt = mock.Mock()
+        self.diverter.apply_domain_relay_return_fixup = mock.Mock(
+            return_value=None)
+        self.diverter.egress_policy.match_control_flow = mock.Mock(
+            return_value=None)
+
+        with mock.patch('fakenet.diverters.windows.WindowsPacketCtx',
+                        return_value=packet):
+            self.diverter._handle_policy_packet(windivert_packet)
+
+        self.diverter._send_packet.assert_called_once_with(packet)
+        self.diverter.handle_pkt.assert_not_called()
+        self.diverter.log_egress_event.assert_called_once_with(
+            'ALLOW_TAKEOVER_SINK', ip='192.168.204.1',
+            proto='UDP', sport=50000, dport=443)
+
+    def test_takeover_listener_response_must_match_policy(self):
+        diverter = Diverter.__new__(Diverter)
+        diverter.egress_policy = TakeoverPolicy()
+        diverter.egress_policy.relay_port = 38927
+        relay = {
+            'listener': 'DomainEgressRelay', 'protocol': 'TCP',
+            'port': '38927'}
+        udp = {
+            'listener': 'DNSListener', 'protocol': 'UDP',
+            'port': '53', 'responsea': '192.168.204.1'}
+        tcp = {
+            'listener': 'DNSListener', 'protocol': 'TCP',
+            'port': '53', 'responsea': '192.168.204.2'}
+        diverter.listeners_config = {
+            'relay': relay, 'dnsudp': udp, 'dnstcp': tcp}
+        with self.assertRaises(PolicyConfigError):
+            diverter._validate_policy_listeners()
+        tcp['responsea'] = '192.168.204.1'
+        diverter._validate_policy_listeners()
+
+    def test_route_snapshot_requires_exact_contract(self):
+        diverter = Diverter.__new__(Diverter)
+        diverter.egress_policy = TakeoverPolicy()
+        valid = ({
+            'interface_index': 7,
+            'interface_alias': 'Ethernet0',
+            'source_ipv4': '10.0.0.5',
+            'destination_prefix': '192.168.204.0/24',
+            'next_hop': '0.0.0.0',
+            'route_metric': 10,
+            'interface_metric': 20,
+        })
+        completed = mock.Mock(returncode=0, stdout=__import__('json').dumps(
+            valid), stderr='')
+        with mock.patch('fakenet.diverters.windows.subprocess.run',
+                        return_value=completed):
+            self.assertEqual(valid, diverter._read_takeover_route_snapshot())
+
+        completed.stdout = '{"interface_index": 7}'
+        with mock.patch('fakenet.diverters.windows.subprocess.run',
+                        return_value=completed):
+            with self.assertRaises(PolicyConfigError):
+                diverter._read_takeover_route_snapshot()
 
 
 if __name__ == '__main__':

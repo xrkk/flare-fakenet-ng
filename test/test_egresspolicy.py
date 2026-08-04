@@ -24,6 +24,17 @@ def config():
     }
 
 
+def takeover_config(probe_ports='', probe_timeout='500'):
+    result = config()
+    result.update({
+        'externaltakeoveripv4': '192.168.204.1',
+        'externaltakeoverdnsttl': '60',
+        'externaltakeoverprobetcpports': probe_ports,
+        'externaltakeoverprobetimeoutms': probe_timeout,
+    })
+    return result
+
+
 class Clock(object):
     def __init__(self):
         self.value = 100.0
@@ -268,6 +279,123 @@ class EgressPolicyTests(unittest.TestCase):
             local_ips[8], 52000))
         self.assertFalse(policy.activate_relay_mapping(
             overflow.generation))
+
+    def test_takeover_activation_is_explicit_and_orphans_fail(self):
+        self.assertFalse(self.policy.takeover_enabled)
+        orphan = config()
+        orphan['externaltakeoverdnsttl'] = '60'
+        with self.assertRaises(PolicyConfigError):
+            EgressPolicy(orphan, ['10.0.0.5'], [], '10.0.0.1')
+        empty = takeover_config()
+        empty['externaltakeoveripv4'] = ''
+        with self.assertRaises(PolicyConfigError):
+            EgressPolicy(empty, ['10.0.0.5'], [], '10.0.0.1')
+
+    def test_takeover_accepts_only_single_rfc1918_ipv4(self):
+        accepted = ('10.1.2.3', '172.16.0.1', '172.31.255.254',
+                    '192.168.204.1')
+        for value in accepted:
+            candidate = takeover_config()
+            candidate['externaltakeoveripv4'] = value
+            policy = EgressPolicy(
+                candidate, ['10.0.0.5'], [], '10.0.0.1')
+            self.assertEqual(value, policy.takeover_ipv4)
+        rejected = (
+            '8.8.8.8', '127.0.0.1', '169.254.1.1', '224.0.0.1',
+            '0.0.0.0', '255.255.255.255', 'example.com',
+            '192.168.204.0/24', '192.168.204.1:443',
+            'https://192.168.204.1', '::1')
+        for value in rejected:
+            candidate = takeover_config()
+            candidate['externaltakeoveripv4'] = value
+            with self.assertRaises(PolicyConfigError, msg=value):
+                EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+
+    def test_takeover_rejects_local_resolver_and_policy_conflicts(self):
+        candidate = takeover_config()
+        with self.assertRaises(PolicyConfigError):
+            EgressPolicy(candidate, ['192.168.204.1'], [], '10.0.0.1')
+        with self.assertRaises(PolicyConfigError):
+            EgressPolicy(candidate, ['10.0.0.5'], [], '192.168.204.1')
+        candidate['externalnonallowedaction'] = 'drop'
+        with self.assertRaises(PolicyConfigError):
+            EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+        candidate = takeover_config()
+        candidate['externalalloweddomains'] = 'example.com'
+        with self.assertRaises(PolicyConfigError):
+            EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+
+    def test_takeover_ttl_and_probe_validation(self):
+        for ttl in ('1', '60', '300'):
+            candidate = takeover_config()
+            candidate['externaltakeoverdnsttl'] = ttl
+            policy = EgressPolicy(
+                candidate, ['10.0.0.5'], [], '10.0.0.1')
+            self.assertEqual(int(ttl), policy.takeover_dns_ttl)
+        for ttl in ('', '0', '301', '-1', '1.5'):
+            candidate = takeover_config()
+            candidate['externaltakeoverdnsttl'] = ttl
+            with self.assertRaises(PolicyConfigError, msg=ttl):
+                EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+        for ports, timeout in (('80,80', '500'), ('0', '500'),
+                               ('80,,443', '500'), ('tcp/80', '500'),
+                               ('80', '99'), ('80', '5001'),
+                               ('80', 'not-an-int')):
+            with self.assertRaises(PolicyConfigError):
+                EgressPolicy(takeover_config(ports, timeout),
+                             ['10.0.0.5'], [], '10.0.0.1')
+
+    def test_takeover_sink_matching_is_exact_and_preserves_ports(self):
+        policy = EgressPolicy(
+            takeover_config(), ['10.0.0.5'], [], '10.0.0.1', self.clock)
+        for proto in ('TCP', 'UDP'):
+            for port in (1, 443, 65535):
+                self.assertTrue(policy.matches_takeover_sink(
+                    proto, '10.0.0.5', 50000, '192.168.204.1', port))
+        self.assertFalse(policy.matches_takeover_sink(
+            'TCP', '10.0.0.6', 50000, '192.168.204.1', 443))
+        self.assertFalse(policy.matches_takeover_sink(
+            'TCP', '10.0.0.5', 50000, '192.168.204.2', 443))
+        self.assertFalse(policy.matches_takeover_sink(
+            'ICMP', '10.0.0.5', 1, '192.168.204.1', 1))
+
+    def test_takeover_suspend_does_not_destroy_deepseek_state(self):
+        policy = EgressPolicy(
+            takeover_config(), ['10.0.0.5'], [], '10.0.0.1', self.clock)
+        policy.replace_leases(
+            'api.deepseek.com', [('93.184.216.34', 60)])
+        self.assertTrue(policy.suspend_takeover('route_snapshot_changed'))
+        self.assertFalse(policy.takeover_available())
+        self.assertIsNotNone(policy.lease_for('93.184.216.34', 443))
+        self.assertFalse(policy.matches_takeover_sink(
+            'TCP', '10.0.0.5', 50000, '192.168.204.1', 443))
+
+    def test_sink_becoming_local_suspends_only_takeover(self):
+        policy = EgressPolicy(
+            takeover_config(), ['10.0.0.5'], [], '10.0.0.1', self.clock)
+        policy.replace_leases(
+            'api.deepseek.com', [('93.184.216.34', 60)])
+        self.assertTrue(policy.update_local_ipv4(
+            ['10.0.0.5', '192.168.204.1']))
+        self.assertFalse(policy.takeover_available())
+        self.assertEqual('sink_became_local',
+                         policy.takeover_settings()['suspend_reason'])
+        self.assertIsNotNone(policy.lease_for('93.184.216.34', 443))
+
+    def test_probe_configuration_never_enters_data_plane_state(self):
+        first = EgressPolicy(
+            takeover_config('', '500'), ['10.0.0.5'], [], '10.0.0.1')
+        second = EgressPolicy(
+            takeover_config('80,443', '1000'),
+            ['10.0.0.5'], [], '10.0.0.1')
+        self.assertEqual(first.takeover_settings(),
+                         second.takeover_settings())
+        self.assertEqual(
+            first.matches_takeover_sink(
+                'TCP', '10.0.0.5', 50000, '192.168.204.1', 8080),
+            second.matches_takeover_sink(
+                'TCP', '10.0.0.5', 50000, '192.168.204.1', 8080))
+        self.assertFalse(hasattr(first, 'takeover_probe_ports'))
 
 
 if __name__ == '__main__':

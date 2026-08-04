@@ -55,6 +55,39 @@ the launcher then requests a graceful stop and checks DNS recovery. Plain logs
 and before/after DNS snapshots are written below
 `dist/Logs/domain-allowlist-start-*`.
 
+Windows private-IP domain takeover mode
+=======================================
+
+The separately reviewed `domain_takeover_windows.ini` keeps the existing
+`api.deepseek.com` real-DNS/TCP-443/exact-SNI relay and synthesizes
+`192.168.204.1` for every other A query. TCP and UDP packets whose destination
+is exactly that private sink are sent unchanged: FakeNet does not rewrite the
+protocol or destination port and does not route them through a local listener.
+Direct connections to the exact sink are intentionally covered by the same
+rule. No other private or public address gains this direct-send verdict.
+
+This mode is Windows-only and disabled unless `ExternalTakeoverIPv4` is
+present. The reviewed package accepts only `192.168.204.1`, requires a unique
+on-link non-default route, rejects a local-address/resolver conflict, and
+suspends only the takeover sub-policy if the route or address snapshot changes.
+The optional TCP-port probe is empty by default, read-only, sends no application
+data, and never changes readiness or the data-plane port range.
+
+In the reviewed VM package, double-click `Start-DomainTakeover.cmd`. It asks
+for no DNS, IP, port, or dependency input: it verifies the v5 manifest and every
+packaged file, checks Windows `10.0.19045` and CPython `3.13.7` x64, creates
+a package-local venv from the hash-locked `wheelhouse`, chooses the VM's
+existing default-route DNS, performs the route/probe preflight, and displays
+FakeNet activity live. Press Enter for a graceful stop and DNS comparison.
+
+For automated acceptance, double-click
+`test/domain_takeover_vm/Run-Tests.cmd` in the package. Return the newest
+plain directory under `test/domain_takeover_vm/Logs`, including its PCAPNG,
+without compression. A successful send to the sink proves neither that the
+host listener processed the connection safely nor that inbound return traffic
+is constrained by the new verdict. Host listener configuration is outside this
+feature.
+
 Installation
 ============
 

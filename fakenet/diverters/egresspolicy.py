@@ -24,6 +24,7 @@ class PolicyConfigError(ValueError):
 class Verdict(Enum):
     REDIRECT_TLS_RELAY = "REDIRECT_TLS_RELAY"
     ALLOW_INTERNAL_UPSTREAM = "ALLOW_INTERNAL_UPSTREAM"
+    ALLOW_TAKEOVER_SINK = "ALLOW_TAKEOVER_SINK"
     DIVERT_FAKE = "DIVERT_FAKE"
     REINJECT_LOCAL = "REINJECT_LOCAL"
     DROP_EXTERNAL = "DROP_EXTERNAL"
@@ -67,6 +68,78 @@ def is_global_ipv4(value):
     except ValueError:
         return False
     return address.version == 4 and address.is_global
+
+
+_RFC1918_NETWORKS = (
+    ipaddress.ip_network('10.0.0.0/8'),
+    ipaddress.ip_network('172.16.0.0/12'),
+    ipaddress.ip_network('192.168.0.0/16'),
+)
+
+_TAKEOVER_KEYS = frozenset((
+    'externaltakeoveripv4',
+    'externaltakeoverdnsttl',
+    'externaltakeoverprobetcpports',
+    'externaltakeoverprobetimeoutms',
+))
+
+
+def _parse_takeover_ipv4(value):
+    raw = str(value).strip()
+    if not raw or any(token in raw for token in ('/', ':', ',', '-', '://')):
+        raise PolicyConfigError(
+            'ExternalTakeoverIPv4 must be one dotted-decimal IPv4 address')
+    try:
+        address = ipaddress.ip_address(raw)
+    except ValueError as exc:
+        raise PolicyConfigError(
+            'ExternalTakeoverIPv4 must be a valid IPv4 address') from exc
+    if address.version != 4 or not any(
+            address in network for network in _RFC1918_NETWORKS):
+        raise PolicyConfigError(
+            'ExternalTakeoverIPv4 must be an RFC1918 IPv4 address')
+    if (address.is_loopback or address.is_link_local or address.is_multicast or
+            address.is_unspecified or address.is_reserved or
+            str(address) == '255.255.255.255'):
+        raise PolicyConfigError('ExternalTakeoverIPv4 is not a usable sink')
+    return str(address)
+
+
+def _validate_takeover_probe_config(config):
+    """Validate launcher-only probe fields without retaining policy state."""
+    raw_ports = str(config.get('externaltakeoverprobetcpports', '')).strip()
+    if raw_ports:
+        parts = raw_ports.split(',')
+        if any(not part.strip() for part in parts):
+            raise PolicyConfigError(
+                'ExternalTakeoverProbeTCPPorts contains an empty item')
+        ports = []
+        for part in parts:
+            part = part.strip()
+            if not re.match(r'^\d+$', part):
+                raise PolicyConfigError(
+                    'ExternalTakeoverProbeTCPPorts must contain decimal ports')
+            port = int(part)
+            if not 1 <= port <= 65535:
+                raise PolicyConfigError(
+                    'ExternalTakeoverProbeTCPPorts contains an invalid port')
+            if port in ports:
+                raise PolicyConfigError(
+                    'ExternalTakeoverProbeTCPPorts contains a duplicate port')
+            ports.append(port)
+        if len(ports) > 64:
+            raise PolicyConfigError(
+                'ExternalTakeoverProbeTCPPorts permits at most 64 ports')
+
+    raw_timeout = str(config.get(
+        'externaltakeoverprobetimeoutms', '500')).strip()
+    if not re.match(r'^\d+$', raw_timeout):
+        raise PolicyConfigError(
+            'ExternalTakeoverProbeTimeoutMs must be an integer')
+    timeout = int(raw_timeout)
+    if not 100 <= timeout <= 5000:
+        raise PolicyConfigError(
+            'ExternalTakeoverProbeTimeoutMs must be between 100 and 5000')
 
 
 def _local_ipv4_snapshot(values):
@@ -140,6 +213,34 @@ class EgressPolicy(object):
         self._generation = 0
         self._closed = False
         self._egress_suspended = False
+        self._takeover_suspended = False
+        self._takeover_suspend_reason = None
+
+        config_keys = frozenset(str(key).lower() for key in config)
+        takeover_requested = 'externaltakeoveripv4' in config_keys
+        orphan_keys = (config_keys.intersection(_TAKEOVER_KEYS) -
+                       {'externaltakeoveripv4'})
+        if not takeover_requested and orphan_keys:
+            raise PolicyConfigError(
+                'takeover-specific fields require ExternalTakeoverIPv4')
+        self.takeover_enabled = takeover_requested
+        self.takeover_ipv4 = None
+        self.takeover_dns_ttl = None
+        if takeover_requested:
+            self.takeover_ipv4 = _parse_takeover_ipv4(
+                config.get('externaltakeoveripv4', ''))
+            if 'externaltakeoverdnsttl' not in config_keys:
+                raise PolicyConfigError(
+                    'ExternalTakeoverDnsTTL is required in takeover mode')
+            raw_ttl = str(config.get('externaltakeoverdnsttl', '')).strip()
+            if not re.match(r'^\d+$', raw_ttl):
+                raise PolicyConfigError(
+                    'ExternalTakeoverDnsTTL must be an integer')
+            self.takeover_dns_ttl = int(raw_ttl)
+            if not 1 <= self.takeover_dns_ttl <= 300:
+                raise PolicyConfigError(
+                    'ExternalTakeoverDnsTTL must be between 1 and 300')
+            _validate_takeover_probe_config(config)
 
         self.allowed_domains = frozenset(
             normalize_hostname(item)
@@ -167,6 +268,9 @@ class EgressPolicy(object):
         if action not in ("divert", "drop"):
             raise PolicyConfigError("ExternalNonAllowedAction must be Divert or Drop")
         self.non_allowed_action = action
+        if self.takeover_enabled and action != 'divert':
+            raise PolicyConfigError(
+                'takeover mode requires ExternalNonAllowedAction=Divert')
 
         self.relay_port = int(config.get("externalrelayport", 38927))
         if not 1 <= self.relay_port <= 65535:
@@ -213,6 +317,16 @@ class EgressPolicy(object):
         self.local_ipv6 = self.local_ipv6.union(["::1"])
         if self.external_dns_server in self.local_ipv4:
             raise PolicyConfigError("ExternalDnsServer cannot be a local address")
+        if self.takeover_enabled:
+            if self.allowed_domains != frozenset(['api.deepseek.com']):
+                raise PolicyConfigError(
+                    'reviewed takeover mode permits only api.deepseek.com')
+            if self.takeover_ipv4 in self.local_ipv4:
+                raise PolicyConfigError(
+                    'ExternalTakeoverIPv4 cannot be a local address')
+            if self.takeover_ipv4 == self.external_dns_server:
+                raise PolicyConfigError(
+                    'ExternalTakeoverIPv4 cannot equal ExternalDnsServer')
 
         self._leases = {domain: {} for domain in self.allowed_domains}
         self._aliases = {}
@@ -246,6 +360,9 @@ class EgressPolicy(object):
             if self.external_dns_server in snapshot:
                 self._suspend_locked()
                 return False
+            if (self.takeover_enabled and
+                    self.takeover_ipv4 in snapshot):
+                self._suspend_takeover_locked('sink_became_local')
             for token, permit in list(self._permits_by_token.items()):
                 if permit.key[1] not in snapshot:
                     self._permits_by_token.pop(token, None)
@@ -257,6 +374,53 @@ class EgressPolicy(object):
                         mapping.relay_ip not in snapshot):
                     self._remove_mapping_locked(mapping, now)
             return not self._egress_suspended
+
+    def suspend_takeover(self, reason):
+        with self._lock:
+            if not self.takeover_enabled:
+                return False
+            was_available = self._takeover_available_locked()
+            self._suspend_takeover_locked(reason)
+            return was_available
+
+    def _suspend_takeover_locked(self, reason):
+        self._takeover_suspended = True
+        if self._takeover_suspend_reason is None:
+            self._takeover_suspend_reason = str(reason)
+
+    def _takeover_available_locked(self):
+        return bool(self.takeover_enabled and not self._closed and
+                    not self._egress_suspended and
+                    not self._takeover_suspended)
+
+    def takeover_available(self):
+        with self._lock:
+            return self._takeover_available_locked()
+
+    def takeover_settings(self):
+        with self._lock:
+            return {
+                'enabled': self.takeover_enabled,
+                'available': self._takeover_available_locked(),
+                'ipv4': self.takeover_ipv4,
+                'dns_ttl': self.takeover_dns_ttl,
+                'suspend_reason': self._takeover_suspend_reason,
+            }
+
+    def matches_takeover_sink(self, proto, src_ip, sport, dst_ip, dport):
+        proto = str(proto).upper() if proto else ''
+        try:
+            sport = int(sport)
+            dport = int(dport)
+        except (TypeError, ValueError):
+            return False
+        with self._lock:
+            return bool(
+                self._takeover_available_locked() and
+                proto in ('TCP', 'UDP') and
+                str(src_ip) in self.local_ipv4 and
+                str(dst_ip) == self.takeover_ipv4 and
+                1 <= sport <= 65535 and 1 <= dport <= 65535)
 
     def suspend(self):
         with self._lock:
@@ -598,6 +762,7 @@ class EgressPolicy(object):
     def close(self):
         with self._lock:
             self._closed = True
+            self._takeover_suspended = True
             self._leases = {domain: {} for domain in self.allowed_domains}
             self._aliases.clear()
             self._permits_by_key.clear()

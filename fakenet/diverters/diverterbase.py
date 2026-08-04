@@ -2145,6 +2145,28 @@ class DiverterListenerCallbacks():
             'buffer_bytes': policy.relay_buffer_bytes,
         }
 
+    def takeoverPolicyEnabled(self):
+        if not self.egressPolicyEnabled():
+            return False
+        return self.__diverter.egress_policy.takeover_enabled
+
+    def getTakeoverSettings(self):
+        if not self.egressPolicyEnabled():
+            return {
+                'enabled': False,
+                'available': False,
+                'ipv4': None,
+                'dns_ttl': None,
+                'suspend_reason': None,
+            }
+        return self.__diverter.egress_policy.takeover_settings()
+
+    def matchesTakeoverSink(self, proto, src_ip, sport, dst_ip, dport):
+        if not self.egressPolicyEnabled():
+            return False
+        return self.__diverter.egress_policy.matches_takeover_sink(
+            proto, src_ip, sport, dst_ip, dport)
+
     def isLocalAddress(self, address):
         return (self.egressPolicyEnabled() and
                 self.__diverter.egress_policy.is_local_address(address))

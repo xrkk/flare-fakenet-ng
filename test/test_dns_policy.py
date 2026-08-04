@@ -1,7 +1,9 @@
+import socket
 import unittest
 from unittest import mock
 
-from dnslib import A, CNAME, DNSHeader, DNSQuestion, DNSRecord, QTYPE, RR
+from dnslib import (A, CNAME, CLASS, DNSHeader, DNSQuestion, DNSRecord,
+                    QTYPE, RCODE, RR)
 
 from fakenet.listeners import DNSListener as dns_module
 from fakenet.listeners.DNSListener import DNSHandler
@@ -12,6 +14,30 @@ class Callbacks(object):
         self.leases = None
         self.alias = None
         self.events = []
+        self.takeover = {
+            'enabled': True,
+            'available': True,
+            'ipv4': '192.168.204.1',
+            'dns_ttl': 60,
+            'suspend_reason': None,
+        }
+
+    def isProcessBlackListed(self, proto, sport):
+        return False, None, None
+
+    def egressPolicyEnabled(self):
+        return True
+
+    def isLocalAddress(self, address):
+        return address == '10.0.0.5'
+
+    def resolveDnsRule(self, qname):
+        normalized = str(qname).rstrip('.').lower()
+        return ('api.deepseek.com' if normalized ==
+                'api.deepseek.com' else None)
+
+    def getTakeoverSettings(self):
+        return dict(self.takeover)
 
     def replaceDnsLeases(self, domain, records):
         self.leases = (domain, tuple(records))
@@ -178,6 +204,116 @@ class DnsPolicyTests(unittest.TestCase):
 
         self.assertEqual([100, 101], seen)
         self.assertEqual([100, 101], [first.header.id, second.header.id])
+
+    def _parse_with_takeover(self, request, socket_type=socket.SOCK_DGRAM):
+        handler = DNSHandler()
+        callbacks = Callbacks()
+        server = mock.Mock()
+        server.socket_type = socket_type
+        server.diverterListenerCallbacks = callbacks
+        server.config = {'responsea': '192.168.204.1'}
+        server.nxdomains = 0
+        handler.server = server
+        handler.client_address = ('10.0.0.5', 53000)
+        handler._query_upstream = mock.Mock(
+            side_effect=AssertionError('takeover queried upstream DNS'))
+        packed = handler.parse(request.pack())
+        return handler, callbacks, DNSRecord.parse(packed)
+
+    def test_takeover_a_is_authoritative_and_never_queries_upstream(self):
+        request = DNSRecord(
+            DNSHeader(id=321, rd=1),
+            q=DNSQuestion('example.test', QTYPE.A))
+        handler, callbacks, response = self._parse_with_takeover(request)
+        handler._query_upstream.assert_not_called()
+        self.assertEqual(321, response.header.id)
+        self.assertEqual(1, response.header.qr)
+        self.assertEqual(1, response.header.aa)
+        self.assertEqual(1, response.header.ra)
+        self.assertEqual(1, response.header.rd)
+        self.assertEqual(RCODE.NOERROR, response.header.rcode)
+        self.assertEqual(str(request.q.qname), str(response.q.qname))
+        self.assertEqual('192.168.204.1', str(response.rr[0].rdata))
+        self.assertEqual(60, response.rr[0].ttl)
+        self.assertIn(('TAKEOVER_DNS_ANSWER', {
+            'domain': 'example.test', 'ip': '192.168.204.1',
+            'ttl': 60, 'proto': 'UDP'}), callbacks.events)
+
+    def test_takeover_udp_and_tcp_share_the_same_answer(self):
+        request = DNSRecord(
+            DNSHeader(id=11, rd=1),
+            q=DNSQuestion('other.test', QTYPE.A))
+        _, udp_callbacks, udp = self._parse_with_takeover(
+            request, socket.SOCK_DGRAM)
+        _, tcp_callbacks, tcp = self._parse_with_takeover(
+            request, socket.SOCK_STREAM)
+        self.assertEqual(udp.pack(), tcp.pack())
+        self.assertEqual('UDP', udp_callbacks.events[-1][1]['proto'])
+        self.assertEqual('TCP', tcp_callbacks.events[-1][1]['proto'])
+
+    def test_msftncsi_special_case_is_disabled_in_takeover_mode(self):
+        request = DNSRecord(
+            DNSHeader(id=12, rd=1),
+            q=DNSQuestion('dns.msftncsi.com', QTYPE.A))
+        _, _, response = self._parse_with_takeover(request)
+        self.assertEqual('192.168.204.1', str(response.rr[0].rdata))
+
+    def test_takeover_suspend_returns_servfail_without_fallback(self):
+        handler = DNSHandler()
+        callbacks = Callbacks()
+        callbacks.takeover['available'] = False
+        callbacks.takeover['suspend_reason'] = 'route_snapshot_changed'
+        server = mock.Mock()
+        server.socket_type = socket.SOCK_DGRAM
+        server.diverterListenerCallbacks = callbacks
+        handler.server = server
+        handler.client_address = ('10.0.0.5', 53000)
+        request = DNSRecord(
+            DNSHeader(id=13, rd=1),
+            q=DNSQuestion('blocked.test', QTYPE.A))
+        response = DNSRecord.parse(handler.parse(request.pack()))
+        self.assertEqual(RCODE.SERVFAIL, response.header.rcode)
+        self.assertEqual(0, len(response.rr))
+        self.assertEqual('TAKEOVER_DNS_DENY', callbacks.events[-1][0])
+
+    def test_allowed_domain_never_uses_takeover_answer(self):
+        handler = DNSHandler()
+        callbacks = Callbacks()
+        server = mock.Mock()
+        server.socket_type = socket.SOCK_DGRAM
+        server.diverterListenerCallbacks = callbacks
+        handler.server = server
+        handler.client_address = ('10.0.0.5', 53000)
+        handler._resolve_allowed_a = mock.Mock(return_value=b'allowed')
+        request = DNSRecord(
+            DNSHeader(id=14, rd=1),
+            q=DNSQuestion('api.deepseek.com', QTYPE.A))
+        self.assertEqual(b'allowed', handler.parse(request.pack()))
+        handler._resolve_allowed_a.assert_called_once()
+        self.assertFalse(any(event == 'TAKEOVER_DNS_ANSWER'
+                             for event, fields in callbacks.events))
+
+    def test_takeover_aaaa_is_nodata_and_invalid_questions_fail(self):
+        aaaa = DNSRecord(
+            DNSHeader(id=15, rd=1),
+            q=DNSQuestion('other.test', QTYPE.AAAA))
+        _, callbacks, response = self._parse_with_takeover(aaaa)
+        self.assertEqual(RCODE.NOERROR, response.header.rcode)
+        self.assertEqual(0, len(response.rr))
+        self.assertEqual([], callbacks.events)
+
+        non_in = DNSRecord(
+            DNSHeader(id=16, rd=1),
+            q=DNSQuestion('other.test', QTYPE.A, qclass=CLASS.CH))
+        _, _, refused = self._parse_with_takeover(non_in)
+        self.assertEqual(RCODE.REFUSED, refused.header.rcode)
+
+        multiple = DNSRecord(
+            DNSHeader(id=17, rd=1),
+            q=DNSQuestion('one.test', QTYPE.A))
+        multiple.add_question(DNSQuestion('two.test', QTYPE.A))
+        _, _, malformed = self._parse_with_takeover(multiple)
+        self.assertEqual(RCODE.FORMERR, malformed.header.rcode)
 
 
 if __name__ == '__main__':
