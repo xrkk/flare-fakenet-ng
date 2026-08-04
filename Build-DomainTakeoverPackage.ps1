@@ -372,8 +372,15 @@ try {
     New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
     New-DeterministicZip -SourceRoot $stage -Destination $zipPath
     $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    ('{0}  {1}' -f $zipHash, [IO.Path]::GetFileName($zipPath)) |
-        Set-Content -LiteralPath $sidecarPath -Encoding ASCII
+    $sidecarLine = '{0}  {1}' -f
+        $zipHash, [IO.Path]::GetFileName($zipPath)
+    $utf8NoBom = [Text.UTF8Encoding]::new($false)
+    [IO.File]::WriteAllText(
+        $sidecarPath, $sidecarLine + [Environment]::NewLine, $utf8NoBom)
+    if ([IO.File]::ReadAllText($sidecarPath, $utf8NoBom).TrimEnd() -ne
+            $sidecarLine) {
+        throw 'SHA-256 sidecar did not round-trip exactly as UTF-8.'
+    }
     Write-Host "Package: $zipPath"
     Write-Host "SHA-256: $zipHash"
     Write-Host "Source commit: $resolvedCommit"
