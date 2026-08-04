@@ -12,6 +12,8 @@ Target environment: CPython 3.13.7, Windows x64. All VM installations use
 | Jinja2 | 3.1.6 | `jinja2-3.1.6-py3-none-any.whl` | `85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67` | PyPI official release |
 | MarkupSafe | 3.0.3 | `markupsafe-3.0.3-cp313-cp313-win_amd64.whl` | `9a1abfdc021a164803f4d485104931fb8f8c1efd55bc6b748d2f5774e78b62c5` | PyPI official release |
 | netifaces-plus | 0.12.5 | `netifaces_plus-0.12.5-cp313-cp313-win_amd64.whl` | `ee3287ddbf73221cd4310a7a087f22e4c8c134c4d22bec9d4a65aa75f970eb8f` | PyPI official release |
+| pyasynchat | 1.0.5 | `pyasynchat-1.0.5-py3-none-any.whl` | `35b7859515693e479e8d95ebe9f32cbf4d6312ab7599ced39fc24699e51de46f` | PyPI official release; required by pyftpdlib on Python 3.12+ |
+| pyasyncore | 1.0.5 | `pyasyncore-1.0.5-py3-none-any.whl` | `269bbc5252671827387636822841a1fb721ec6e858b23a3e12cf92eb1f97da2a` | PyPI official release; required by pyftpdlib/pyasynchat on Python 3.12+ |
 | pycparser | 3.0 | `pycparser-3.0-py3-none-any.whl` | `b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992` | PyPI official release |
 | PyDivert | 2.1.0 | `pydivert-2.1.0-py2.py3-none-any.whl` | `382db488e3c37c03ec9ec94e061a0b24334d78dbaeebb7d4e4d32ce4355d9da1` | PyPI official release |
 | pyftpdlib | 2.2.0 | `pyftpdlib-2.2.0-py3-none-any.whl` | `1b6cc483ea645a7b813a734a53e734d3f9594f41f5431bb0d8c941c0ec6dddf8` | Locally built pure-Python wheel from the official PyPI sdist |

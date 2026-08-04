@@ -96,6 +96,10 @@ function Assert-Wheelhouse {
         }
     }
     $critical = @{
+        'pyasynchat' = @('1.0.5',
+            '35b7859515693e479e8d95ebe9f32cbf4d6312ab7599ced39fc24699e51de46f')
+        'pyasyncore' = @('1.0.5',
+            '269bbc5252671827387636822841a1fb721ec6e858b23a3e12cf92eb1f97da2a')
         'netifaces-plus' = @('0.12.5',
             'ee3287ddbf73221cd4310a7a087f22e4c8c134c4d22bec9d4a65aa75f970eb8f')
         'pydivert' = @('2.1.0',
