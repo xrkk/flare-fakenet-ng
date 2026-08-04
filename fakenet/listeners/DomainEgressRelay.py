@@ -334,10 +334,14 @@ class DomainEgressRelay(object):
                 sport=source_port)
             self._relay(client, upstream, buffered)
         except Exception as exc:
-            self.callbacks.logEgressEvent(
-                'TLS_SNI_DENY', domain=mapping.domain,
-                reason=type(exc).__name__)
-            self.logger.debug('TLS relay denied/closed: %s', exc)
+            # stop() deliberately closes every active socket.  A worker can
+            # observe that close between select() and recv()/send(); it is an
+            # expected shutdown path, not a failed SNI decision.
+            if not self._stop.is_set():
+                self.callbacks.logEgressEvent(
+                    'TLS_SNI_DENY', domain=mapping.domain,
+                    reason=type(exc).__name__)
+                self.logger.debug('TLS relay denied/closed: %s', exc)
         finally:
             if pending:
                 self._release_pending(source)

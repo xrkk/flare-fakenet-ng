@@ -803,9 +803,17 @@ class Diverter(DiverterBase, WinUtilMixin):
                     addresses.update(self.get_ipaddresses(adapter))
                 if self.external_ip:
                     addresses.add(self.external_ip)
+                # stopCallback() suspends the policy while this worker may
+                # already be between its timed wait and snapshot update.  Do
+                # not misreport that deliberate suspension as an unsafe
+                # address change during normal shutdown.
+                if self._stopping.is_set():
+                    return
                 takeover_was_available = (
                     self.egress_policy.takeover_available())
                 if not self.egress_policy.update_local_ipv4(addresses):
+                    if self._stopping.is_set():
+                        return
                     self.logger.critical(
                         'DomainAllowList suspended after unsafe address change')
                     return

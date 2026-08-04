@@ -188,6 +188,21 @@ class DomainEgressRelayTests(unittest.TestCase):
         callbacks.closeRelayMapping.assert_called_once_with(8)
         callbacks.logEgressEvent.assert_called_once()
 
+    def test_shutdown_socket_close_is_not_reported_as_sni_denial(self):
+        client = ChunkSocket(name='client')
+        mapping = types.SimpleNamespace(
+            generation=9, domain='api.deepseek.com',
+            server_ip='93.184.216.34', server_port=443)
+        callbacks = mock.Mock()
+        self.relay.callbacks = callbacks
+        self.relay._stop.set()
+
+        self.relay._handle_client(client, ('10.0.0.5', 50002), mapping)
+
+        callbacks.logEgressEvent.assert_not_called()
+        callbacks.closeRelayMapping.assert_called_once_with(9)
+        self.assertTrue(client.closed)
+
 
 if __name__ == '__main__':
     unittest.main()

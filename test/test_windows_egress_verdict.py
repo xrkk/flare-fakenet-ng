@@ -239,6 +239,43 @@ class WindowsVerdictTests(unittest.TestCase):
             mock.call.close(),
         ], sequence.mock_calls)
 
+    def test_address_refresh_shutdown_race_has_no_false_critical_log(self):
+        diverter = Diverter.__new__(Diverter)
+        diverter._stopping = mock.Mock()
+        diverter._stopping.wait.return_value = False
+        diverter._stopping.is_set.side_effect = [False, True]
+        diverter.get_adapters_info = mock.Mock(return_value=[object()])
+        diverter.get_ipaddresses = mock.Mock(return_value=['10.0.0.5'])
+        diverter.external_ip = '10.0.0.5'
+        diverter.egress_policy = mock.Mock()
+        diverter.egress_policy.takeover_available.return_value = True
+        diverter.egress_policy.update_local_ipv4.return_value = False
+        diverter.logger = mock.Mock()
+
+        diverter._refresh_local_addresses()
+
+        diverter.egress_policy.update_local_ipv4.assert_called_once_with(
+            {'10.0.0.5'})
+        diverter.logger.critical.assert_not_called()
+
+    def test_address_refresh_still_reports_unsafe_runtime_change(self):
+        diverter = Diverter.__new__(Diverter)
+        diverter._stopping = mock.Mock()
+        diverter._stopping.wait.return_value = False
+        diverter._stopping.is_set.return_value = False
+        diverter.get_adapters_info = mock.Mock(return_value=[object()])
+        diverter.get_ipaddresses = mock.Mock(return_value=['10.0.0.5'])
+        diverter.external_ip = '10.0.0.5'
+        diverter.egress_policy = mock.Mock()
+        diverter.egress_policy.takeover_available.return_value = True
+        diverter.egress_policy.update_local_ipv4.return_value = False
+        diverter.logger = mock.Mock()
+
+        diverter._refresh_local_addresses()
+
+        diverter.logger.critical.assert_called_once_with(
+            'DomainAllowList suspended after unsafe address change')
+
     def test_host_blacklist_cannot_grant_external_egress(self):
         packet = Packet()
         self.diverter.listener_ports.isHostBlackListHit = mock.Mock(
