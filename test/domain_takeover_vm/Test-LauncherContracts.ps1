@@ -75,6 +75,8 @@ try {
     $prefixAst = Import-ReviewedFunction $ast 'Test-IPv4PrefixContains'
     $routeAst = Import-ReviewedFunction $ast 'Get-TakeoverRouteSnapshot'
     $probeAst = Import-ReviewedFunction $ast 'Invoke-TakeoverProbe'
+    $stopReasonAst = Import-ReviewedFunction $ast 'Get-FakeNetStopReason'
+    $liveLogAst = Import-ReviewedFunction $ast 'Show-FakeNetLogUntilStop'
 
     $probeText = $probeAst.Extent.Text
     foreach ($required in @('IPAddress]::Parse', 'ConnectAsync', '.Wait(',
@@ -88,6 +90,85 @@ try {
             "Probe contains forbidden operation: $forbidden"
     }
     Add-Pass 'ProbeStaticBoundary'
+
+    $liveLogText = $liveLogAst.Extent.Text
+    foreach ($required in @('TreatControlCAsInput', 'StopFlag',
+            'StopRequestReader', 'draining FakeNet-NG shutdown logs')) {
+        Assert-Contract ($liveLogText.Contains($required)) `
+            "Live log stop handling is missing: $required"
+    }
+    Add-Pass 'LiveLogStaticBoundary'
+
+    $ctrlCKey = [PSCustomObject]@{
+        Key = [ConsoleKey]::C
+        KeyChar = [char]3
+        Modifiers = [ConsoleModifiers]::Control
+    }
+    $enterKey = [PSCustomObject]@{
+        Key = [ConsoleKey]::Enter
+        KeyChar = [char]13
+        Modifiers = [ConsoleModifiers]0
+    }
+    $otherKey = [PSCustomObject]@{
+        Key = [ConsoleKey]::A
+        KeyChar = [char]'a'
+        Modifiers = [ConsoleModifiers]0
+    }
+    Assert-Contract ((Get-FakeNetStopReason $ctrlCKey) -eq 'Ctrl+C') `
+        'Ctrl+C was not recognized as a safe stop key.'
+    Assert-Contract ((Get-FakeNetStopReason $enterKey) -eq 'Enter') `
+        'Enter was not recognized as a safe stop key.'
+    Assert-Contract ($null -eq (Get-FakeNetStopReason $otherKey)) `
+        'An unrelated key was recognized as a stop request.'
+    Add-Pass 'LiveLogStopKeys'
+
+    $livePath = Join-Path $LogDirectory 'live-log-contract.log'
+    $stopFlag = Join-Path $LogDirectory 'live-log-contract.stop'
+    Set-Content -LiteralPath $livePath -Value 'LIVE_BEFORE_STOP' `
+        -Encoding Default
+    Remove-Item -LiteralPath $stopFlag -Force -ErrorAction SilentlyContinue
+    $fakeProcess = [PSCustomObject]@{
+        HasExited = $false
+        LogPath = $livePath
+        StopFlag = $stopFlag
+    }
+    $fakeProcess | Add-Member ScriptMethod Refresh {
+        if ((Test-Path -LiteralPath $this.StopFlag) -and
+                -not $this.HasExited) {
+            $payload = [Text.Encoding]::Default.GetBytes(
+                "FAKENET_STOPPING_MARKER`r`nFAKENET_RESTORED_MARKER`r`n")
+            $writer = [IO.File]::Open(
+                $this.LogPath, [IO.FileMode]::Open, [IO.FileAccess]::Write,
+                [IO.FileShare]::ReadWrite)
+            try {
+                $null = $writer.Seek(0, [IO.SeekOrigin]::End)
+                $writer.Write($payload, 0, $payload.Length)
+                $writer.Flush()
+            } finally {
+                $writer.Dispose()
+            }
+            $this.HasExited = $true
+        }
+    }
+    $script:StopReaderCalls = 0
+    $stopReader = {
+        $script:StopReaderCalls++
+        if ($script:StopReaderCalls -eq 1) { return 'Ctrl+C' }
+        return $null
+    }
+    $liveOutput = @(Show-FakeNetLogUntilStop -Process $fakeProcess `
+        -Path $livePath -StopFlag $stopFlag `
+        -StopRequestReader $stopReader 6>&1)
+    $liveOutputText = ($liveOutput | ForEach-Object { $_.ToString() }) -join "`n"
+    Assert-Contract (Test-Path -LiteralPath $stopFlag) `
+        'Ctrl+C contract did not create the safe stop flag.'
+    Assert-Contract $fakeProcess.HasExited `
+        'Live log contract did not wait for the fake process to exit.'
+    Assert-Contract ($liveOutputText.Contains('FAKENET_STOPPING_MARKER')) `
+        'Shutdown log was not forwarded after Ctrl+C.'
+    Assert-Contract ($liveOutputText.Contains('FAKENET_RESTORED_MARKER')) `
+        'Final restoration log was not drained after Ctrl+C.'
+    Add-Pass 'LiveLogCtrlCDrain'
 
     $skipPath = Join-Path $LogDirectory 'probe-skip.log'
     Invoke-TakeoverProbe -Target '192.168.204.1' -PortsValue '' `

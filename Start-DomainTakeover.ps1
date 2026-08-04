@@ -364,39 +364,101 @@ function Invoke-TakeoverProbe {
     $results | Set-Content -LiteralPath $LogPath -Encoding UTF8
 }
 
-function Show-FakeNetLogUntilEnter {
-    param([Diagnostics.Process]$Process, [string]$Path)
+function Get-FakeNetStopReason {
+    param($KeyInfo)
+    if ($KeyInfo.Key -eq [ConsoleKey]::Enter) {
+        return 'Enter'
+    }
+    $control = [ConsoleModifiers]::Control
+    if ($KeyInfo.KeyChar -eq [char]3 -or
+            ($KeyInfo.Key -eq [ConsoleKey]::C -and
+            ($KeyInfo.Modifiers -band $control) -eq $control)) {
+        return 'Ctrl+C'
+    }
+    return $null
+}
+
+function Read-FakeNetStopReason {
+    if (-not [Console]::KeyAvailable) {
+        return $null
+    }
+    return Get-FakeNetStopReason ([Console]::ReadKey($true))
+}
+
+function Show-FakeNetLogUntilStop {
+    param(
+        $Process,
+        [string]$Path,
+        [string]$StopFlag,
+        [scriptblock]$StopRequestReader = $null
+    )
     $stream = $null
     $reader = $null
+    $stopRequested = $false
+    $usesConsoleReader = $null -eq $StopRequestReader
+    $controlModeChanged = $false
+    $originalControlMode = $false
     try {
+        if ($usesConsoleReader) {
+            $originalControlMode = [Console]::TreatControlCAsInput
+            [Console]::TreatControlCAsInput = $true
+            $controlModeChanged = $true
+        }
         $stream = [IO.File]::Open(
             $Path, [IO.FileMode]::Open, [IO.FileAccess]::Read,
             [IO.FileShare]::ReadWrite)
         $reader = [IO.StreamReader]::new(
             $stream, [Text.Encoding]::Default)
-        Write-Host ''
-        Write-Host '----- FakeNet-NG live log (press Enter to stop) -----'
-        while ($true) {
-            while ($reader.Peek() -ge 0) {
-                Write-Host $reader.ReadLine()
-            }
-            $Process.Refresh()
-            if ($Process.HasExited) {
-                Start-Sleep -Milliseconds 100
+        $drainAvailableLog = {
+            while ($true) {
                 while ($reader.Peek() -ge 0) {
                     Write-Host $reader.ReadLine()
                 }
-                return $false
+                # StreamReader can cache EOF while FakeNet still owns and
+                # grows the shared file.  Re-seek only after its current
+                # character buffer is empty, then check for newly appended
+                # bytes without skipping already buffered lines.
+                $position = $reader.BaseStream.Position
+                $reader.DiscardBufferedData()
+                $null = $reader.BaseStream.Seek(
+                    $position, [IO.SeekOrigin]::Begin)
+                if ($reader.Peek() -lt 0) {
+                    break
+                }
             }
-            if ([Console]::KeyAvailable) {
-                $key = [Console]::ReadKey($true)
-                if ($key.Key -eq [ConsoleKey]::Enter) {
-                    return $true
+        }
+        Write-Host ''
+        Write-Host ('----- FakeNet-NG live log ' +
+            '(press Ctrl+C or Enter to stop safely) -----')
+        while ($true) {
+            & $drainAvailableLog
+            $Process.Refresh()
+            if ($Process.HasExited) {
+                Start-Sleep -Milliseconds 100
+                & $drainAvailableLog
+                return $stopRequested
+            }
+            if (-not $stopRequested) {
+                $stopReason = if ($usesConsoleReader) {
+                    Read-FakeNetStopReason
+                } else {
+                    & $StopRequestReader
+                }
+                if ($stopReason) {
+                    $stopRequested = $true
+                    Write-Host (('Safe stop requested by {0}; ' +
+                        'draining FakeNet-NG shutdown logs...') -f
+                        $stopReason)
+                    Set-Content -LiteralPath $StopFlag -Value 'stop' `
+                        -Encoding ASCII
                 }
             }
             Start-Sleep -Milliseconds 200
         }
     } finally {
+        if ($controlModeChanged) {
+            [Console]::TreatControlCAsInput = $originalControlMode
+        }
         if ($reader) {
             $reader.Dispose()
         } elseif ($stream) {
@@ -645,7 +707,9 @@ try {
     Write-Host 'FakeNet-NG is READY. Start or restart the analysis tool now.'
     Write-Host ('The tool must use system DNS and connect directly to ' +
         'https://api.deepseek.com without proxy or DoH.')
-    $stopRequested = Show-FakeNetLogUntilEnter -Process $script:FakeNetProcess -Path $fakeLog
+    $stopRequested = Show-FakeNetLogUntilStop `
+        -Process $script:FakeNetProcess -Path $fakeLog `
+        -StopFlag $script:StopFlag
     if (-not $stopRequested) {
         throw 'FakeNet-NG exited before a safe stop was requested.'
     }

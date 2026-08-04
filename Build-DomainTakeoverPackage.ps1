@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v9'
+$packageVersion = 'v10'
 $packageName = "Windows域名私网接管-$packageVersion"
 $planRelative = 'PLAN\2026.08.03\2026.08.03-03-FakeNet-NG域名固定解析到指定IP并放行流量方案.md'
 $fixedTimestamp = [DateTimeOffset]::new(
@@ -386,7 +386,8 @@ try {
     }
     foreach ($requiredMarker in @('--no-index', '--require-hashes',
             'TAKEOVER_ROUTE_OK', 'TAKEOVER_PROBE_RESULT',
-            'DNS restoration check')) {
+            'DNS restoration check', 'TreatControlCAsInput',
+            'Show-FakeNetLogUntilStop', 'Ctrl+C')) {
         if ($launcherText -notmatch [regex]::Escape($requiredMarker)) {
             throw "Launcher is missing required marker: $requiredMarker"
         }

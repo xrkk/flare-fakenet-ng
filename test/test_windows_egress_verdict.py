@@ -239,6 +239,19 @@ class WindowsVerdictTests(unittest.TestCase):
             mock.call.close(),
         ], sequence.mock_calls)
 
+    def test_suspend_policy_marks_stopping_before_policy_suspend(self):
+        diverter = Diverter.__new__(Diverter)
+        diverter.domain_allowlist_mode = True
+        diverter._stopping = threading.Event()
+        diverter.egress_policy = mock.Mock()
+        diverter.egress_policy.suspend.side_effect = lambda: self.assertTrue(
+            diverter._stopping.is_set())
+
+        diverter.suspend_policy()
+
+        self.assertTrue(diverter._stopping.is_set())
+        diverter.egress_policy.suspend.assert_called_once_with()
+
     def test_address_refresh_shutdown_race_has_no_false_critical_log(self):
         diverter = Diverter.__new__(Diverter)
         diverter._stopping = mock.Mock()

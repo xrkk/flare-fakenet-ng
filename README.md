@@ -78,7 +78,8 @@ for no DNS, IP, port, or dependency input: it verifies the v5 manifest and every
 packaged file, checks Windows `10.0.19045` and CPython `3.13.7` x64, creates
 a package-local venv from the hash-locked `wheelhouse`, chooses the VM's
 existing default-route DNS, performs the route/probe preflight, and displays
-FakeNet activity live. Press Enter for a graceful stop and DNS comparison.
+FakeNet activity live. Press Ctrl+C (or Enter) for a graceful stop; the launcher
+continues displaying shutdown activity through the final DNS comparison.
 
 For automated acceptance, double-click
 `test/domain_takeover_vm/Run-Tests.cmd` in the package. Return the newest

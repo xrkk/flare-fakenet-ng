@@ -406,8 +406,13 @@ class Diverter(DiverterBase, WinUtilMixin):
             self._policy_listeners = list(listeners)
 
     def suspend_policy(self):
-        if self.domain_allowlist_mode and self.egress_policy:
-            self.egress_policy.suspend()
+        if self.domain_allowlist_mode:
+            # FakeNet calls this at the beginning of an orderly stop, before
+            # listeners are drained.  Mark the whole diverter as stopping so
+            # watchdog/refresh workers cannot misclassify that drain window.
+            self._stopping.set()
+            if self.egress_policy:
+                self.egress_policy.suspend()
 
     ###########################################################################
     # Diverter controller functions
@@ -803,10 +808,9 @@ class Diverter(DiverterBase, WinUtilMixin):
                     addresses.update(self.get_ipaddresses(adapter))
                 if self.external_ip:
                     addresses.add(self.external_ip)
-                # stopCallback() suspends the policy while this worker may
-                # already be between its timed wait and snapshot update.  Do
-                # not misreport that deliberate suspension as an unsafe
-                # address change during normal shutdown.
+                # An orderly stop may begin while this worker is already
+                # between its timed wait and snapshot update.  Do not report
+                # that deliberate suspension as an unsafe address change.
                 if self._stopping.is_set():
                     return
                 takeover_was_available = (
