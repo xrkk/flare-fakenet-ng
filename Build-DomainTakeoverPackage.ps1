@@ -202,6 +202,22 @@ function Assert-PythonNativeArgumentSafety {
     }
 }
 
+function Assert-RunnerProbeDefaultSafety {
+    param([string]$Path)
+    $text = Get-Content -LiteralPath $Path -Raw
+    $unsafe = 'ExternalTakeoverProbeTCPPorts\s*:\s*'
+    if ($text.Contains($unsafe)) {
+        throw 'VM runner uses a cross-line whitespace regex for the optional probe default.'
+    }
+    foreach ($required in @(
+            "`$templateText -split '\r?\n'",
+            "'^[ \t]*ExternalTakeoverProbeTCPPorts[ \t]*:[ \t]*`$'")) {
+        if (-not $text.Contains($required)) {
+            throw "VM runner is missing the line-local optional probe default contract: $required"
+        }
+    }
+}
+
 function New-DeterministicZip {
     param([string]$SourceRoot, [string]$Destination)
     Add-Type -AssemblyName System.IO.Compression
@@ -309,6 +325,8 @@ try {
     }
     Assert-PythonNativeArgumentSafety (Join-Path $stage 'Start-DomainTakeover.ps1')
     Assert-PythonNativeArgumentSafety (
+        Join-Path $stage 'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1')
+    Assert-RunnerProbeDefaultSafety (
         Join-Path $stage 'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1')
 
     $launcherPath = Join-Path $stage 'Start-DomainTakeover.ps1'

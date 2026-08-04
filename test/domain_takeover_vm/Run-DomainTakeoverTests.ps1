@@ -398,10 +398,11 @@ try {
     $templateText.Replace('__EXTERNAL_DNS__', $resolver) |
         Set-Content -LiteralPath $runtimeConfig -Encoding ASCII
 
-    $probeMatch = [regex]::Match(
-        $templateText, '(?m)^\s*ExternalTakeoverProbeTCPPorts\s*:\s*(.*?)\s*$')
-    if (-not $probeMatch.Success -or
-            -not [string]::IsNullOrWhiteSpace($probeMatch.Groups[1].Value)) {
+    $probeLines = @($templateText -split '\r?\n' | Where-Object {
+        $_ -match '^[ \t]*ExternalTakeoverProbeTCPPorts[ \t]*:'
+    })
+    if ($probeLines.Count -ne 1 -or $probeLines[0] -notmatch
+            '^[ \t]*ExternalTakeoverProbeTCPPorts[ \t]*:[ \t]*$') {
         Add-Result 'TakeoverProbeDefault' 'FAIL' 'reviewed package must default to an empty optional probe list'
         throw 'Reviewed optional probe default is not empty.'
     }
