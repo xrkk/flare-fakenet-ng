@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$SourceCommit = 'HEAD',
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot 'dist')
+    [string]$OutputDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -177,7 +177,11 @@ $buildName = '.build-domain-takeover-{0}' -f [Guid]::NewGuid().ToString('N')
 $buildRoot = Join-Path $repoRoot $buildName
 $stage = Join-Path $buildRoot $packageName
 $archivePath = Join-Path $buildRoot 'source.zip'
-$outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $outputRoot = Join-Path $repoRoot 'dist'
+} else {
+    $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
+}
 $zipPath = Join-Path $outputRoot ($packageName + '.zip')
 $sidecarPath = $zipPath + '.sha256'
 
