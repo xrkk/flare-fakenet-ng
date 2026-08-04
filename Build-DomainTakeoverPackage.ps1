@@ -206,6 +206,7 @@ try {
         'fakenet\configs\domain_takeover_windows.ini',
         'test\domain_takeover_vm\Run-Tests.cmd',
         'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1',
+        'test\domain_takeover_vm\Test-LauncherContracts.ps1',
         $planRelative)
     foreach ($relative in $required) {
         if (-not (Test-Path -LiteralPath (Join-Path $stage $relative))) {

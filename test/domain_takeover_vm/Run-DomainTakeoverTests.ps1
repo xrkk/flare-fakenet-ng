@@ -345,6 +345,17 @@ try {
     }
     Add-Result 'Dependencies' 'PASS' 'offline lock and critical distribution/API checks passed'
 
+    $contractOutput = Join-Path $script:LogDir 'launcher-contract-run.log'
+    $launcherContract = Join-Path $PSScriptRoot 'Test-LauncherContracts.ps1'
+    $contractExit = Invoke-NativeCaptured {
+        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $launcherContract -LauncherPath (Join-Path $repoRoot 'Start-DomainTakeover.ps1') -LogDirectory $script:LogDir
+    } $contractOutput
+    if ($contractExit -ne 0) {
+        Add-Result 'LauncherContracts' 'FAIL' 'see launcher contract logs'
+        throw 'PowerShell launcher contract tests failed.'
+    }
+    Add-Result 'LauncherContracts' 'PASS'
+
     Push-Location $repoRoot
     try {
         foreach ($test in @('test_egresspolicy.py', 'test_dns_policy.py',

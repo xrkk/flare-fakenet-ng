@@ -14,6 +14,8 @@ manifest, an altered package file, or a missing/ambiguous/gateway route to
 The automated matrix covers:
 
 - all reviewed Python unit-test files;
+- PowerShell launcher probe cases (open/refused/timeout/error/skip) and route
+  preflight cases (unique on-link/default/gateway/missing/ambiguous/read-only);
 - real `api.deepseek.com` DNS/TLS relay behavior;
 - synthesized UDP/TCP A answers and AAAA NODATA for other domains;
 - `dns.msftncsi.com` returning `192.168.204.1`;
