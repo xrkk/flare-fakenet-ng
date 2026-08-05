@@ -10,12 +10,17 @@ import dpkt
 
 
 PCAP_SNAPLEN = 262144
+PCAP_WRITE_BUFFER_SIZE = 64 * 1024
 _ETHERNET_SOURCE = b'\x02\x00\x00\x00\x00\x01'
 _ETHERNET_DESTINATION = b'\x02\x00\x00\x00\x00\x02'
 _ETHERNET_IPV4_HEADER = (
     _ETHERNET_DESTINATION + _ETHERNET_SOURCE + b'\x08\x00')
 _ETHERNET_IPV6_HEADER = (
     _ETHERNET_DESTINATION + _ETHERNET_SOURCE + b'\x86\xdd')
+
+
+def _open_capture_file(path, mode):
+    return open(path, mode, buffering=PCAP_WRITE_BUFFER_SIZE)
 
 
 class PcapWriteError(RuntimeError):
@@ -42,7 +47,7 @@ class DualPcapWriter(object):
         self._clock = clock or time.time
         self._use_dpkt_fast_path = writer_factory is None
         self._writer_factory = writer_factory or dpkt.pcap.Writer
-        self._opener = opener or open
+        self._opener = opener or _open_capture_file
         self.snaplen = int(snaplen)
         self._lock = threading.Lock()
         self._raw_writer = None

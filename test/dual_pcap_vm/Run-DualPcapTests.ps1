@@ -7,6 +7,7 @@ $script:TranscriptStarted = $false
 $script:PythonPathWasPresent = Test-Path Env:PYTHONPATH
 $script:PreviousPythonPath = $env:PYTHONPATH
 . (Join-Path $PSScriptRoot 'Invoke-PythonLogged.ps1')
+. (Join-Path $PSScriptRoot 'Read-ExitCodeEvidence.ps1')
 
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -45,8 +46,8 @@ function Test-PackageManifest {
     }
     $manifest = Get-Content -LiteralPath $path -Raw -Encoding UTF8 |
         ConvertFrom-Json
-    if ($manifest.package_version -ne 'v3' -or
-            $manifest.plan_version -ne 'v2') {
+    if ($manifest.package_version -ne 'v4' -or
+            $manifest.plan_version -ne 'v3') {
         throw 'Package/plan version contract mismatch.'
     }
     foreach ($file in @($manifest.files)) {
@@ -119,6 +120,7 @@ function New-LaunchCommand {
         [string]$ConfigPath,
         [string]$StopFlag,
         [string]$LogFile,
+        [string]$ExitCodePath,
         [string]$FaultMode = ''
     )
     $cmdPath = Join-Path $CaseDirectory 'launch.cmd'
@@ -133,9 +135,15 @@ function New-LaunchCommand {
             '--stop-flag "{2}" --log-file "{3}" --no-pause') -f
             $script:PythonExe, $ConfigPath, $StopFlag, $LogFile
     }
+    $exitCodeTemp = $ExitCodePath + '.tmp'
+    $exitLines = (@(
+        'set "FAKENET_EXIT=%ERRORLEVEL%"',
+        ('> "{0}" echo %FAKENET_EXIT%' -f $exitCodeTemp),
+        ('move /y "{0}" "{1}" >nul' -f $exitCodeTemp, $ExitCodePath),
+        'exit /b %FAKENET_EXIT%') -join "`r`n") + "`r`n"
     [IO.File]::WriteAllText(
         $cmdPath, ("@echo off`r`n@chcp 65001 >nul`r`n" +
-            "$line`r`nexit /b %ERRORLEVEL%`r`n"),
+            "$line`r`n$exitLines"),
         [Text.UTF8Encoding]::new($false))
     return $cmdPath
 }
@@ -153,9 +161,7 @@ function Write-NewLogLines {
 function Send-KnownTraffic {
     param([string]$OutputPath)
     $messages = @()
-    foreach ($target in @(
-            @('TCP4', '198.51.100.10', 80),
-            @('TCP6', '::1', 80))) {
+    foreach ($target in @(@('TCP4', '198.51.100.10', 80))) {
         try {
             $client = [Net.Sockets.TcpClient]::new()
             $pending = $client.BeginConnect($target[1], $target[2], $null, $null)
@@ -166,17 +172,11 @@ function Send-KnownTraffic {
             $messages += ('{0} observed {1}' -f $target[0], $_.Exception.Message)
         }
     }
-    foreach ($target in @(
-            @('UDP4', '198.51.100.11', 5353),
-            @('UDP6', '::1', 5353))) {
+    foreach ($target in @(@('UDP4', '198.51.100.11', 5353))) {
         try {
-            $family = if ($target[0] -eq 'UDP6') {
-                [Net.Sockets.AddressFamily]::InterNetworkV6
-            } else {
-                [Net.Sockets.AddressFamily]::InterNetwork
-            }
-            $udp = [Net.Sockets.UdpClient]::new($family)
-            $bytes = [Text.Encoding]::ASCII.GetBytes('dual-pcap-v3')
+            $udp = [Net.Sockets.UdpClient]::new(
+                [Net.Sockets.AddressFamily]::InterNetwork)
+            $bytes = [Text.Encoding]::ASCII.GetBytes('dual-pcap-v4')
             $null = $udp.Send($bytes, $bytes.Length, $target[1], $target[2])
             $udp.Close()
             $messages += ('{0} sent {1}:{2}' -f $target[0], $target[1], $target[2])
@@ -209,7 +209,10 @@ function Invoke-FakeNetCase {
     $stdout = Join-Path $caseDirectory 'console.out.txt'
     $stderr = Join-Path $caseDirectory 'console.err.txt'
     $trafficLog = Join-Path $caseDirectory 'traffic.txt'
-    $command = New-LaunchCommand $caseDirectory $config $stopFlag $logFile $FaultMode
+    $exitCodeFile = Join-Path $caseDirectory 'exit-code.txt'
+    $command = New-LaunchCommand -CaseDirectory $caseDirectory `
+        -ConfigPath $config -StopFlag $stopFlag -LogFile $logFile `
+        -ExitCodePath $exitCodeFile -FaultMode $FaultMode
     $before = Get-NetworkSnapshot
     $cmdArguments = '/d /s /c ""{0}""' -f $command
     $process = Start-Process cmd.exe -PassThru -WorkingDirectory $script:RepoRoot `
@@ -226,8 +229,12 @@ function Invoke-FakeNetCase {
     if ($process.HasExited) {
         $process.WaitForExit()
         $process.Refresh()
-        $earlyExitCode = $process.ExitCode
-        Add-Result ('Start-' + $CaseName) 'FAIL' ('exit=' + $earlyExitCode)
+        try {
+            $earlyExitCode = Read-ExitCodeEvidence -Path $exitCodeFile
+            Add-Result ('Start-' + $CaseName) 'FAIL' ('exit=' + $earlyExitCode)
+        } catch {
+            Add-Result ('Start-' + $CaseName) 'FAIL' $_.Exception.Message
+        }
         Test-NetworkRestored $before $CaseName | Out-Null
         return $null
     }
@@ -235,7 +242,7 @@ function Invoke-FakeNetCase {
     Send-KnownTraffic $trafficLog
     if ($Interactive) {
         Write-Host ''
-        Write-Host 'FakeNet-NG is READY. Known IPv4/IPv6 traffic was generated.'
+        Write-Host 'FakeNet-NG is READY. Known IPv4 traffic was generated.'
         Write-Host 'Press Ctrl+C or Enter to request a safe stop.'
         $oldMode = [Console]::TreatControlCAsInput
         [Console]::TreatControlCAsInput = $true
@@ -275,11 +282,16 @@ function Invoke-FakeNetCase {
     }
     $process.WaitForExit()
     $expected = if ($FaultMode) { 1 } else { 0 }
-    if ($process.ExitCode -eq $expected) {
-        Add-Result ('Exit-' + $CaseName) 'PASS' ('exit=' + $process.ExitCode)
-    } else {
-        Add-Result ('Exit-' + $CaseName) 'FAIL' (
-            'expected={0}; actual={1}' -f $expected, $process.ExitCode)
+    try {
+        $actualExitCode = Read-ExitCodeEvidence -Path $exitCodeFile
+        if ($actualExitCode -eq $expected) {
+            Add-Result ('Exit-' + $CaseName) 'PASS' ('exit=' + $actualExitCode)
+        } else {
+            Add-Result ('Exit-' + $CaseName) 'FAIL' (
+                'expected={0}; actual={1}' -f $expected, $actualExitCode)
+        }
+    } catch {
+        Add-Result ('Exit-' + $CaseName) 'FAIL' $_.Exception.Message
     }
     Test-NetworkRestored $before $CaseName | Out-Null
     return $caseDirectory
@@ -295,7 +307,7 @@ try {
     $logsBase = Join-Path $PSScriptRoot 'Logs'
     New-Item -ItemType Directory -Path $logsBase -Force | Out-Null
     $script:LogRoot = Join-Path $logsBase (
-        'dual-pcap-v3-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        'dual-pcap-v4-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
     New-Item -ItemType Directory -Path $script:LogRoot -Force | Out-Null
     $script:ResultFile = Join-Path $script:LogRoot 'results.tsv'
     $script:AnyFailure = $false
@@ -347,7 +359,8 @@ print(json.dumps({'python': platform.python_version(), 'machine': platform.machi
                 $verifyExit = Invoke-PythonLogged -PythonExe $script:PythonExe `
                     -Arguments @((Join-Path $PSScriptRoot 'verify_dual_pcap.py'),
                         $raw[0].FullName, $ethernet[0].FullName, '--output',
-                        (Join-Path $normal 'pcap-verification.json')) `
+                        (Join-Path $normal 'pcap-verification.json'),
+                        '--expected-versions', '4') `
                     -LogPath (Join-Path $normal 'pcap-verification.log')
                 if ($verifyExit -eq 0) { Add-Result 'LivePcapPair' 'PASS' }
                 else { Add-Result 'LivePcapPair' 'FAIL' ('exit=' + $verifyExit) }

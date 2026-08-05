@@ -1,8 +1,10 @@
+import io
 import logging
 import os
 import struct
 import tempfile
 import unittest
+from unittest import mock
 
 import dpkt
 
@@ -58,6 +60,19 @@ class DualPcapWriterTests(unittest.TestCase):
         self.assertTrue(summary.healthy)
         self.assertEqual(1, summary.raw_write_count)
         self.assertEqual(1, summary.ethernet_write_count)
+
+    def test_default_files_use_fixed_64_kib_buffers(self):
+        streams = [io.BytesIO(), io.BytesIO()]
+        with mock.patch(
+                'fakenet.diverters.pcapwriter.open',
+                side_effect=streams) as mocked_open:
+            writer = DualPcapWriter('raw.pcap', 'ethernet.pcap')
+            writer.close()
+
+        self.assertEqual([
+            mock.call('raw.pcap', 'xb', buffering=65536),
+            mock.call('ethernet.pcap', 'xb', buffering=65536),
+        ], mocked_open.call_args_list)
 
     def test_ipv6_and_truncated_known_version_keep_matching_payloads(self):
         writer = DualPcapWriter(

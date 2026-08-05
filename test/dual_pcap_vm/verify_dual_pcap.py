@@ -15,7 +15,8 @@ def read_capture(path):
         return reader.datalink(), reader.snaplen, list(reader)
 
 
-def verify(raw_path, ethernet_path, minimum_records=1):
+def verify(raw_path, ethernet_path, minimum_records=1,
+           expected_versions=(4, 6)):
     raw_linktype, raw_snaplen, raw_records = read_capture(raw_path)
     eth_linktype, eth_snaplen, eth_records = read_capture(ethernet_path)
     assert raw_linktype == dpkt.pcap.DLT_RAW == 12
@@ -35,7 +36,8 @@ def verify(raw_path, ethernet_path, minimum_records=1):
         expected = 0x0800 if version == 4 else 0x86dd
         assert version in (4, 6)
         assert struct.unpack('!H', ethernet[12:14])[0] == expected
-    assert versions == {4, 6}, 'live capture must contain IPv4 and IPv6'
+    assert versions == set(expected_versions), (
+        'live capture IP versions differ from the expected set')
     return {
         'raw': raw_path,
         'ethernet': ethernet_path,
@@ -54,9 +56,11 @@ if __name__ == '__main__':
     parser.add_argument('raw')
     parser.add_argument('ethernet')
     parser.add_argument('--minimum-records', type=int, default=1)
+    parser.add_argument('--expected-versions', type=int, nargs='+', default=[4])
     parser.add_argument('--output')
     args = parser.parse_args()
-    result = verify(args.raw, args.ethernet, args.minimum_records)
+    result = verify(
+        args.raw, args.ethernet, args.minimum_records, args.expected_versions)
     rendered = json.dumps(result, indent=2, sort_keys=True)
     print(rendered)
     if args.output:

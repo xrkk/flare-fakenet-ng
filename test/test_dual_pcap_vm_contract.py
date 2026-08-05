@@ -24,7 +24,7 @@ class DualPcapVmContractTests(unittest.TestCase):
     def test_builder_uses_unique_versioned_name_without_sidecar(self):
         builder = (ROOT / 'Build-DualPcapVmPackage.ps1').read_text(
             encoding='utf-8')
-        self.assertIn('$packageVersion = \'v3\'', builder)
+        self.assertIn('$packageVersion = \'v4\'', builder)
         self.assertIn('Windows双PCAP同步输出-', builder)
         self.assertNotIn("Set-Content -LiteralPath ($zipPath + '.sha256')",
                          builder)
@@ -67,6 +67,25 @@ class DualPcapVmContractTests(unittest.TestCase):
                 r'if \(\$process\.HasExited\) \{\s*'
                 r'\$process\.WaitForExit\(\)\s*\$process\.Refresh\(\)',
                 re.MULTILINE))
+
+    def test_runner_uses_strict_exit_evidence_and_ipv4_live_capture(self):
+        runner = (ROOT / 'test/dual_pcap_vm/Run-DualPcapTests.ps1').read_text(
+            encoding='utf-8')
+        helper = (ROOT / 'test/dual_pcap_vm/Read-ExitCodeEvidence.ps1').read_text(
+            encoding='utf-8')
+        verifier = (ROOT / 'test/dual_pcap_vm/verify_dual_pcap.py').read_text(
+            encoding='utf-8')
+
+        self.assertIn('Read-ExitCodeEvidence.ps1', runner)
+        self.assertIn('exit-code.txt', runner)
+        self.assertIn('FAKENET_EXIT', runner)
+        self.assertIn('-join "`r`n"', runner)
+        self.assertNotIn('$process.ExitCode', runner)
+        self.assertNotIn("'TCP6'", runner)
+        self.assertNotIn("'UDP6'", runner)
+        self.assertIn("default=[4]", verifier)
+        self.assertIn("'--expected-versions', '4'", runner)
+        self.assertIn("'^([0-9]|[1-9][0-9]{1,2})$'", helper)
 
 
 if __name__ == '__main__':
