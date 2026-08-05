@@ -36,6 +36,25 @@ function Import-ReviewedFunction {
     return $matches[0]
 }
 
+function Assert-RouteArgumentFormatting {
+    param($FunctionAst)
+    $assignments = @($FunctionAst.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Left.Extent.Text -eq '$startInfo.Arguments'
+    }, $true))
+    Assert-Contract ($assignments.Count -eq 1) 'Route argument assignment count mismatch.'
+    $scriptPath = 'C:\Reviewed Path\Test-ReviewedIPv4Routes.ps1'
+    $encoded = 'W10='
+    $readyFile = 'C:\Reviewed Path\route.ready'
+    $goFile = 'C:\Reviewed Path\route.go'
+    $rendered = Invoke-Expression $assignments[0].Right.Extent.Text
+    Assert-Contract ($rendered -notmatch '\{[0-3]\}') 'Route arguments retain a format placeholder.'
+    foreach ($required in @($scriptPath, $encoded, $readyFile, $goFile)) {
+        Assert-Contract ($rendered.Contains($required)) "Route arguments omitted: $required"
+    }
+}
+
 function New-FakeClient {
     param($Task)
     $client = [PSCustomObject]@{
@@ -81,6 +100,7 @@ try {
     $reviewedGlobalAst = Import-ReviewedFunction $ast 'Test-ReviewedGlobalIPv4'
     $reviewedDnsAst = Import-ReviewedFunction $ast 'Assert-ReviewedDnsFreshness'
     $reviewedRouteAst = Import-ReviewedFunction $ast 'Invoke-ReviewedRoutePreflight'
+    Assert-RouteArgumentFormatting $reviewedRouteAst
     $probeAst = Import-ReviewedFunction $ast 'Invoke-TakeoverProbe'
     $stopReasonAst = Import-ReviewedFunction $ast 'Get-FakeNetStopReason'
     $liveLogAst = Import-ReviewedFunction $ast 'Show-FakeNetLogUntilStop'
@@ -104,6 +124,7 @@ try {
         'Runner must define Invoke-ReviewedRoutePreflight exactly once.'
     Assert-Contract ($runnerRouteCalls.Count -eq 1) `
         'Runner must call Invoke-ReviewedRoutePreflight exactly once.'
+    Assert-RouteArgumentFormatting $runnerRouteDefinitions[0]
     foreach ($required in @('WaitForExit(2000)',
             'ElapsedMilliseconds -ge 15000',
             'Test-ReviewedIPv4Routes.ps1', 'RedirectStandardOutput',

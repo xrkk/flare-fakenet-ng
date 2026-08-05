@@ -296,7 +296,7 @@ function Read-AndVerifyManifest {
         ConvertFrom-Json
     if ($manifest.policy_version -ne 'v7' -or
             $manifest.plan_version -ne 'v5' -or
-            $manifest.package_version -ne 'v16' -or
+            $manifest.package_version -ne 'v17' -or
             ([string]$manifest.source_commit) -notmatch '^[0-9a-f]{40}$' -or
             $manifest.allowed_domain -ne 'api.deepseek.com' -or
             $manifest.reviewed_hostname -ne 'www.baidu.com' -or
@@ -309,7 +309,7 @@ function Read-AndVerifyManifest {
             $manifest.windows_build -ne '10.0.19045' -or
             $manifest.python_version -ne '3.13.7' -or
             $manifest.python_architecture -ne 'AMD64') {
-        throw 'The package manifest does not match reviewed v16 contracts.'
+        throw 'The package manifest does not match reviewed v17 contracts.'
     }
 
     $rootPath = (Resolve-Path -LiteralPath $Root).Path
@@ -481,7 +481,7 @@ function Get-ReviewedRulesValue {
         }
     }
     if ($occurrences -ne 1) {
-        throw 'ExternalAllowedIPv4Rules must occur exactly once in v16.'
+        throw 'ExternalAllowedIPv4Rules must occur exactly once in v17.'
     }
     return ($parts -join ' ').Trim()
 }
@@ -568,9 +568,9 @@ function Invoke-ReviewedRoutePreflight {
         'fakenet-reviewed-route-{0}.go' -f $handshakeId)
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = 'powershell.exe'
-    $startInfo.Arguments = ('-NoLogo -NoProfile -NonInteractive ' +
+    $startInfo.Arguments = (('-NoLogo -NoProfile -NonInteractive ' +
         '-ExecutionPolicy Bypass -File "{0}" -TargetsBase64 {1} ' +
-        '-ReadyFile "{2}" -GoFile "{3}"' -f
+        '-ReadyFile "{2}" -GoFile "{3}"') -f
         $scriptPath, $encoded, $readyFile, $goFile)
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
@@ -815,7 +815,7 @@ try {
     }
     if ($reviewedRules.Count -ne 1 -or
             $reviewedRules[0] -ne 'TCP/110.242.69.21/443') {
-        throw 'The v16 activity profile must contain only TCP/110.242.69.21/443.'
+        throw 'The v17 activity profile must contain only TCP/110.242.69.21/443.'
     }
     $reviewedTargetsFromRules = @($reviewedRules | ForEach-Object {
         $_.Split('/')[1]

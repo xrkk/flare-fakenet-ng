@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v16'
+$packageVersion = 'v17'
 $packageName = "Windows公网指定IPv4放行-$packageVersion"
 $planRelative = 'PLAN\2026.08.05\2026.08.05-01-Windows指定IPv4全端口及指定端口放行方案.md'
 $reviewedRouteProbeUdpPort = 9
@@ -70,7 +70,7 @@ function Test-ReviewedGlobalIPv4 {
 function Get-NormalizedReviewedRules {
     param([string]$Value)
     if ([string]::IsNullOrWhiteSpace($Value)) {
-        throw 'ExternalAllowedIPv4Rules must be present and non-empty for v16.'
+        throw 'ExternalAllowedIPv4Rules must be present and non-empty for v17.'
     }
     $parts = @($Value.Split(','))
     if ($parts.Count -gt 32 -or @($parts | Where-Object {
@@ -130,7 +130,7 @@ function Assert-ReviewedTemplate {
     }
     foreach ($comment in @(
             '# Build-only marker. The source template deliberately grants no public IPv4.',
-            '# The v16 builder emits one manifest-bound TCP/443 runtime profile from here.',
+            '# The v17 builder emits one manifest-bound TCP/443 runtime profile from here.',
             '# __REVIEWED_PUBLIC_IPV4_RULES__')) {
         $template = $template.Replace($comment + "`n", '')
     }
@@ -459,10 +459,10 @@ try {
         'fakenet\configs\domain_allowlist_windows.ini',
         'fakenet\configs\domain_reviewed_ipv4_windows.ini',
         'fakenet\configs\domain_takeover_windows.ini',
-        'test\domain_takeover_vm\Run-Tests.cmd',
-        'test\domain_takeover_vm\Run-ReviewedIPv4Tests.ps1',
-        'test\domain_takeover_vm\Test-LauncherContracts.ps1',
-        'test\domain_takeover_vm\Test-ManifestContracts.ps1',
+        'test\public_ipv4_allowlist_vm\Run-Tests.cmd',
+        'test\public_ipv4_allowlist_vm\Run-ReviewedIPv4Tests.ps1',
+        'test\public_ipv4_allowlist_vm\Test-LauncherContracts.ps1',
+        'test\public_ipv4_allowlist_vm\Test-ManifestContracts.ps1',
         'test\analyze_reviewed_ipv4_pcap.py',
         'test\test_reviewed_ipv4_pcap.py',
         $planRelative)
@@ -483,6 +483,9 @@ try {
                 $_ -eq 'ExternalTakeoverIPv4: 192.168.204.1'
             }).Count -ne 1) {
         throw 'Takeover regression profile must not contain reviewed IPv4 rules.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $stage 'test\domain_takeover_vm')) {
+        throw 'Legacy domain_takeover_vm directory must not enter the public IPv4 package.'
     }
     $baiduConfigRelative =
         'fakenet/configs/domain_reviewed_ipv4_baidu_tcp443_windows.ini'
@@ -507,7 +510,7 @@ try {
     }
     $launcherPath = Join-Path $stage 'Start-ReviewedIPv4.ps1'
     $runnerPath = Join-Path $stage `
-        'test\domain_takeover_vm\Run-ReviewedIPv4Tests.ps1'
+        'test\public_ipv4_allowlist_vm\Run-ReviewedIPv4Tests.ps1'
     Assert-PythonNativeArgumentSafety $launcherPath
     Assert-PythonNativeArgumentSafety (
         $runnerPath)
@@ -584,7 +587,7 @@ try {
         Out-Null
     $launcherContractOutput = @(& $windowsPowerShell -NoLogo -NoProfile `
         -ExecutionPolicy Bypass -File (Join-Path $stage `
-            'test\domain_takeover_vm\Test-LauncherContracts.ps1') `
+            'test\public_ipv4_allowlist_vm\Test-LauncherContracts.ps1') `
         -LauncherPath $launcherPath -RunnerPath $runnerPath `
         -LogDirectory $launcherContractLog `
         -SkipLiveRoute 2>&1)
@@ -661,7 +664,7 @@ try {
         $manifestPath, $manifestJson + [Environment]::NewLine, $utf8NoBom)
 
     $manifestContractPath = Join-Path $stage `
-        'test\domain_takeover_vm\Test-ManifestContracts.ps1'
+        'test\public_ipv4_allowlist_vm\Test-ManifestContracts.ps1'
     if (-not (Test-Path -LiteralPath $manifestContractPath)) {
         throw 'Archived PowerShell manifest contract test is missing.'
     }
