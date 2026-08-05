@@ -13,6 +13,7 @@ import threading
 import subprocess
 from . import fnpacket
 from . import fnconfig
+from .pcapwriter import DualPcapWriter, PcapWriteError
 from .debuglevels import *
 from collections import namedtuple
 from collections import OrderedDict
@@ -551,9 +552,7 @@ class DiverterBase(fnconfig.Config):
 
         self.ip_addrs = ip_addrs
 
-        self.pcap = None
-        self.pcap_filename = ''
-        self.pcap_lock = None
+        self._initialize_capture_state()
 
         self.logger = logging.getLogger('Diverter')
         self.logger.setLevel(logging_level)
@@ -732,18 +731,202 @@ class DiverterBase(fnconfig.Config):
         abstract methods that handle the real OS-specific stuff.
         """
         self.logger.debug('Starting...')
-        return self.startCallback()
+        try:
+            self._start_capture()
+        except BaseException:
+            # No platform packet source has started, so later top-level
+            # cleanup must not invoke a platform rollback for this failure.
+            self._complete_failed_start_without_platform()
+            raise
+        try:
+            return self.startCallback()
+        except BaseException:
+            self._rollback_failed_platform_start()
+            raise
+
+    def _complete_failed_start_without_platform(self):
+        with self._stop_lock:
+            self._stop_started = True
+            self._stop_result = True
+            self._stop_error = None
+            self._stop_complete.set()
+
+    def _rollback_failed_platform_start(self):
+        with self._stop_lock:
+            if self._stop_started:
+                return
+            self._stop_started = True
+        cleanup_error = None
+        result = True
+        try:
+            try:
+                if self.stopCallback() is False:
+                    result = False
+            except BaseException as exc:
+                cleanup_error = exc
+                result = False
+                self.logger.error('Platform startup rollback failed: %s', exc,
+                                  exc_info=True)
+            try:
+                self._close_capture(discard_if_empty=True)
+            except BaseException as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+                result = False
+                self.logger.error('Capture startup rollback failed: %s', exc,
+                                  exc_info=True)
+        finally:
+            with self._stop_lock:
+                self._stop_result = result
+                self._stop_error = self.capture_failure or cleanup_error
+                self._stop_complete.set()
+
+    def _initialize_capture_state(self):
+        self.dual_pcap = None
+        self.pcap_filename = ''
+        self.pcap_converted_filename = ''
+        self.pcap_prefix = 'packets'
+        self.dump_packets = False
+        self._dual_pcap_factory = DualPcapWriter
+        self._capture_failure_event = threading.Event()
+        self._capture_failure_lock = threading.Lock()
+        self._capture_failure = None
+        self._capture_close_summary = None
+        self._capture_writers_safe_to_close = True
+        self._stop_lock = threading.Lock()
+        self._stop_complete = threading.Event()
+        self._stop_started = False
+        self._stop_result = None
+        self._stop_error = None
+
+    def _start_capture(self):
+        if not self.dump_packets or self.dual_pcap is not None:
+            return
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        self.pcap_filename = '%s_%s.pcap' % (self.pcap_prefix, timestamp)
+        self.pcap_converted_filename = '%s_%s-converted.pcap' % (
+            self.pcap_prefix, timestamp)
+        self.logger.info(
+            'Capturing traffic to %s and %s', self.pcap_filename,
+            self.pcap_converted_filename)
+        self.dual_pcap = self._dual_pcap_factory(
+            self.pcap_filename, self.pcap_converted_filename, self.logger)
+
+    @property
+    def capture_failure(self):
+        with self._capture_failure_lock:
+            return self._capture_failure
+
+    def wait_for_capture_failure(self, timeout=None):
+        return self._capture_failure_event.wait(timeout)
+
+    def _record_capture_failure(self, exc):
+        if not isinstance(exc, PcapWriteError):
+            exc = PcapWriteError(str(exc))
+        first = False
+        with self._capture_failure_lock:
+            if self._capture_failure is None:
+                self._capture_failure = exc
+                first = True
+        if first:
+            self.logger.critical('PCAP_DUAL_WRITE_FAILED error=%s', exc)
+            self._capture_failure_event.set()
+            stopping = getattr(self, '_stopping', None)
+            if stopping is not None:
+                stopping.set()
+        return self._capture_failure
+
+    def _close_capture(self, discard_if_empty=False):
+        if self.dual_pcap is None:
+            return self._capture_close_summary
+        if not self._capture_writers_safe_to_close:
+            self._record_capture_failure(PcapWriteError(
+                'capture writer left open because a packet thread did not stop'))
+            return self._capture_close_summary
+        summary = self.dual_pcap.close(
+            discard_if_empty=discard_if_empty)
+        self._capture_close_summary = summary
+        self.logger.info(
+            'PCAP_DUAL_SUMMARY raw=%s ethernet=%s raw_count=%d '
+            'ethernet_count=%d rejected_count=%d healthy=%s',
+            summary.raw_filename, summary.ethernet_filename,
+            summary.raw_write_count, summary.ethernet_write_count,
+            summary.rejected_input_count, summary.healthy)
+        if not summary.healthy and self.capture_failure is None:
+            self._record_capture_failure(PcapWriteError(
+                'paired pcap close or count verification failed'))
+        return summary
+
+    def _generate_reports(self):
+        first_error = None
+        for report in (self.prettyPrintNbi, self.generate_html_report):
+            try:
+                report()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+                self.logger.error('Report generation failed: %s', exc,
+                                  exc_info=True)
+        return first_error
 
     def stop(self):
+        with self._stop_lock:
+            if self._stop_started:
+                stop_owner = False
+            else:
+                self._stop_started = True
+                stop_owner = True
+
+        if not stop_owner:
+            self._stop_complete.wait()
+            if self._stop_error is not None:
+                raise self._stop_error
+            return self._stop_result
+
         self.logger.info('Stopping...')
+        capture_fatal = self.capture_failure is not None
+        report_error = None
+        cleanup_error = None
+        result = True
         try:
-            self.prettyPrintNbi()
-            self.generate_html_report()
+            if not capture_fatal:
+                report_error = self._generate_reports()
+
+            try:
+                callback_result = self.stopCallback()
+                if callback_result is False:
+                    result = False
+            except BaseException as exc:
+                cleanup_error = exc
+                result = False
+                self.logger.error('Platform cleanup failed: %s', exc,
+                                  exc_info=True)
+
+            try:
+                self._close_capture()
+            except BaseException as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+                result = False
+                self.logger.error('Capture close failed: %s', exc,
+                                  exc_info=True)
+
+            if capture_fatal:
+                # Fatal capture shutdown restores networking and closes the
+                # writers before potentially slow report generation.
+                self._generate_reports()
+
+            final_error = self.capture_failure or cleanup_error or report_error
+            if final_error is not None:
+                result = False
+                raise final_error
+            return result
         finally:
-            # Network interception and system settings must be released even
-            # if report generation fails.
-            result = self.stopCallback()
-        return result
+            with self._stop_lock:
+                self._stop_result = result
+                self._stop_error = (
+                    self.capture_failure or cleanup_error or report_error)
+                self._stop_complete.set()
 
     @abc.abstractmethod
     def startCallback(self):
@@ -1078,14 +1261,10 @@ class DiverterBase(fnconfig.Config):
                               'whitelist and blacklist.')
             sys.exit(1)
 
-        if self.is_set('dumppackets'):
-            self.pcap_filename = '%s_%s.pcap' % (self.getconfigval(
-                'dumppacketsfileprefix', 'packets'),
-                time.strftime('%Y%m%d_%H%M%S'))
-            self.logger.info('Capturing traffic to %s', self.pcap_filename)
-            self.pcap = dpkt.pcap.Writer(open(self.pcap_filename, 'wb'),
-                                         linktype=dpkt.pcap.DLT_RAW)
-            self.pcap_lock = threading.Lock()
+        self.dump_packets = self.is_set('dumppackets')
+        if self.dump_packets:
+            self.pcap_prefix = self.getconfigval(
+                'dumppacketsfileprefix', 'packets')
 
         # Do not redirect blacklisted processes
         if self.is_configured('processblacklist'):
@@ -1186,12 +1365,19 @@ class DiverterBase(fnconfig.Config):
         Side-effects:
             Calls dpkt.pcap.Writer.writekpt to persist the octets
         """
-        if self.pcap and self.pcap_lock:
-            with self.pcap_lock:
+        if self.dual_pcap:
+            try:
+                raw_bytes = bytes(pkt.octets)
                 mangled = 'mangled' if pkt.mangled else 'initial'
                 self.pdebug(DPCAP, 'Writing %s packet %s' %
                             (mangled, pkt.hdrToStr2()))
-                self.pcap.writepkt(pkt.octets)
+                return self.dual_pcap.write_ip_packet(raw_bytes)
+            except PcapWriteError as exc:
+                raise self._record_capture_failure(exc)
+            except Exception as exc:
+                failure = PcapWriteError(
+                    'packet snapshot or capture dispatch failed: %s' % exc)
+                raise self._record_capture_failure(failure) from exc
 
     def handle_pkt(self, pkt, callbacks3, callbacks4,
                    raw_already_captured=False):

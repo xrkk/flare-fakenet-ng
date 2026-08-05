@@ -63,6 +63,12 @@ class Fakenet(object):
         # List of running listener providers
         self.running_listener_providers = list()
 
+        self._stop_lock = threading.Lock()
+        self._stop_complete = threading.Event()
+        self._stop_started = False
+        self._stop_result = None
+        self._stop_error = None
+
     def parse_config(self, config_filename):
         # Handling Pyinstaller bundle scenario: https://pyinstaller.org/en/stable/runtime-information.html
         if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
@@ -316,10 +322,6 @@ class Fakenet(object):
                         except Exception:
                             self.logger.exception(
                                 'Listener rollback after diverter failure failed')
-                    try:
-                        self.diverter.stopCallback()
-                    except Exception:
-                        self.logger.exception('Diverter rollback failed')
                 raise
 
         for listener in self.running_listener_providers:
@@ -350,27 +352,71 @@ class Fakenet(object):
                 self.logger.debug("acceptDiverterListenerCallbacks() not implemented by Listener %s" % listener.name)
 
     def stop(self):
+        with self._stop_lock:
+            if self._stop_started:
+                stop_owner = False
+            else:
+                self._stop_started = True
+                stop_owner = True
+
+        if not stop_owner:
+            self._stop_complete.wait()
+            if self._stop_error is not None:
+                raise self._stop_error
+            return self._stop_result
 
         self.logger.info("Stopping...")
-
-        if self.policy_mode and self.diverter:
-            self.diverter.suspend_policy()
-            for running_listener_provider in reversed(
-                    self.running_listener_providers):
+        first_error = None
+        healthy = True
+        try:
+            if self.policy_mode and self.diverter:
                 try:
-                    self._stop_policy_listener(running_listener_provider)
-                except Exception:
+                    self.diverter.suspend_policy()
+                except BaseException as exc:
+                    first_error = exc
+                    healthy = False
+                    self.logger.exception('Policy suspension failed')
+
+            providers = (reversed(self.running_listener_providers)
+                         if self.policy_mode else
+                         iter(self.running_listener_providers))
+            for provider in providers:
+                try:
+                    if self.policy_mode:
+                        self._stop_policy_listener(provider)
+                    else:
+                        provider.stop()
+                except BaseException as exc:
+                    if first_error is None:
+                        first_error = exc
+                    healthy = False
                     self.logger.exception(
-                        'Policy listener failed during stop: %s',
-                        running_listener_provider.name)
-            self.diverter.stop()
-            return
+                        'Listener failed during stop: %s', provider.name)
 
-        for running_listener_provider in self.running_listener_providers:
-            running_listener_provider.stop()
+            if self.diverter:
+                try:
+                    if self.diverter.stop() is False:
+                        healthy = False
+                except BaseException as exc:
+                    if first_error is None:
+                        first_error = exc
+                    healthy = False
+                    self.logger.exception('Diverter failed during stop')
 
+            if first_error is not None:
+                raise first_error
+            return healthy
+        finally:
+            with self._stop_lock:
+                self._stop_result = healthy
+                self._stop_error = first_error
+                self._stop_complete.set()
+
+    def wait_for_capture_failure(self, timeout):
         if self.diverter:
-            self.diverter.stop()
+            return self.diverter.wait_for_capture_failure(timeout)
+        time.sleep(timeout)
+        return False
 
     @staticmethod
     def _stop_policy_listener(listener):
@@ -430,6 +476,18 @@ class IfaceIpInfo():
         if iface:
             downselect = [i for i in downselect if i.iface == iface]
         return [i.ip for i in downselect]
+
+
+def wait_for_shutdown(fakenet, stop_flag=None):
+    """Wait for an operator stop flag or a capture-fatal event."""
+    while True:
+        if fakenet.wait_for_capture_failure(0.1):
+            fakenet.logger.critical(
+                'Capture failed; initiating controlled shutdown')
+            return 1
+        if stop_flag and os.path.exists(stop_flag):
+            fakenet.logger.info('Stop flag found at %s' % stop_flag)
+            return 0
 
 
 def main():
@@ -530,11 +588,7 @@ _____________________________________________________________
 
         fakenet.start()
 
-        while True:
-            time.sleep(1)
-            if options.stop_flag and os.path.exists(options.stop_flag):
-                fakenet.logger.info('Stop flag found at %s' % (options.stop_flag))
-                break
+        rc = wait_for_shutdown(fakenet, options.stop_flag)
 
     except KeyboardInterrupt:
         print("KeyboardInterrupt")
@@ -544,7 +598,12 @@ _____________________________________________________________
             traceback.print_exc()
     finally:
         if fakenet:
-            fakenet.stop()
+            try:
+                if fakenet.stop() is False:
+                    rc = 1
+            except BaseException:
+                rc = 1
+                traceback.print_exc()
         # Delete flag only after FakeNet-NG has stopped to indicate completion
         if options and options.stop_flag and os.path.exists(options.stop_flag):
             try:

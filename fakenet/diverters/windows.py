@@ -21,6 +21,7 @@ import platform
 
 from .winutil import *
 from .diverterbase import *
+from .pcapwriter import PcapWriteError
 
 import subprocess
 import ipaddress
@@ -734,6 +735,10 @@ class Diverter(DiverterBase, WinUtilMixin):
                 return
             else:
                 raise
+        except PcapWriteError:
+            # write_pcap has already registered the fatal condition and
+            # signalled the main thread. Do not reinject the current packet.
+            return
         except Exception:
             self.logger.exception('WinDivert receiver terminated unexpectedly')
         finally:
@@ -892,6 +897,11 @@ class Diverter(DiverterBase, WinUtilMixin):
                     original_port=pkt.dport0)
             if not self._send_packet(pkt) and mapping:
                 self.egress_policy.close_relay_mapping(mapping.generation)
+        except PcapWriteError:
+            if new_mapping_generation:
+                self.egress_policy.close_relay_mapping(
+                    new_mapping_generation)
+            raise
         except Exception as exc:
             if new_mapping_generation:
                 self.egress_policy.close_relay_mapping(
@@ -1198,48 +1208,54 @@ class Diverter(DiverterBase, WinUtilMixin):
 
     def stopCallback(self):
         self._stopping.set()
+        healthy = True
         try:
             self._flush_reviewed_ip_audit(force=True)
         except Exception:
+            healthy = False
             self.logger.exception(
                 'Failed flushing reviewed IPv4 audit summary during stop')
-        if self.domain_allowlist_mode:
-            # Keep capture fail-closed while restoring DNS. Once the original
-            # network settings are back, closing WinDivert is the final step.
-            if self.egress_policy:
-                self.egress_policy.suspend()
+
+        if self.egress_policy:
             try:
-                self._restore_network_settings()
+                self.egress_policy.suspend()
             except Exception:
-                self.logger.exception('Network restoration failed during stop')
-            finally:
-                if self.handle:
-                    try:
-                        self._close_windivert_handle()
-                    except Exception:
-                        self.logger.exception('Failed closing WinDivert handle')
-        elif self.handle:
+                healthy = False
+                self.logger.exception('Failed suspending egress policy')
+
+        # Closing WinDivert wakes a receiver blocked in recv(). Network state
+        # restoration remains independent of handle and thread cleanup.
+        if self.handle:
             try:
                 self._close_windivert_handle()
             except Exception:
+                healthy = False
                 self.logger.exception('Failed closing WinDivert handle')
-        if (getattr(self, 'diverter_thread', None) and
-                self.diverter_thread is not threading.current_thread()):
-            self.diverter_thread.join(5)
-        if (getattr(self, 'address_refresh_thread', None) and
-                self.address_refresh_thread is not threading.current_thread()):
-            self.address_refresh_thread.join(5)
-        if (getattr(self, 'watchdog_thread', None) and
-                self.watchdog_thread is not threading.current_thread()):
-            self.watchdog_thread.join(5)
-        if self.pcap:
-            self.pcap.close()
-            self.pcap = None
-        if not self.domain_allowlist_mode:
+
+        for name in ('diverter_thread', 'address_refresh_thread',
+                     'watchdog_thread'):
+            worker = getattr(self, name, None)
+            if worker and worker is not threading.current_thread():
+                worker.join(5)
+                if worker.is_alive():
+                    healthy = False
+                    self._capture_writers_safe_to_close = False
+                    self.logger.critical(
+                        'PCAP_DUAL_THREAD_STOP_TIMEOUT thread=%s', name)
+
+        try:
             self._restore_network_settings()
+        except Exception:
+            healthy = False
+            self.logger.exception('Network restoration failed during stop')
+
         if self.egress_policy:
-            self.egress_policy.close()
-        return True
+            try:
+                self.egress_policy.close()
+            except Exception:
+                healthy = False
+                self.logger.exception('Failed closing egress policy')
+        return healthy
 
     def _restore_network_settings(self):
         with self._network_restore_lock:

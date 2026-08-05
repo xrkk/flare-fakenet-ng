@@ -13,6 +13,7 @@ from .linutil import *
 from . import fnpacket
 from .debuglevels import *
 from .diverterbase import *
+from .pcapwriter import PcapWriteError
 from collections import namedtuple
 from netfilterqueue import NetfilterQueue
 
@@ -157,16 +158,16 @@ class Diverter(DiverterBase, LinUtilMixin):
             self.pdebug(DNFQUEUE, ('Creating NFQUEUE object for chain %s / ' +
                         'table %s / queue # %d => %s') % (hk.chain, hk.table,
                         qno, str(hk.callback)))
-            q = LinuxDiverterNfqueue(qno, hk.chain, hk.table, hk.callback,
-                                     fn_iface)
+            q = LinuxDiverterNfqueue(
+                qno, hk.chain, hk.table, hk.callback, fn_iface,
+                on_error=self._record_capture_failure)
             self.nfqueues.append(q)
             ok = q.start()
             if not ok:
                 self.logger.critical('Failed to start NFQUEUE for %s'
                                      % (str(q)))
 
-                self.stop()
-                sys.exit(1)
+                raise RuntimeError('Failed to start NFQUEUE for %s' % q)
 
         if self.single_host_mode:
 
@@ -187,8 +188,7 @@ class Diverter(DiverterBase, LinUtilMixin):
             ok, rule = self.linux_redir_icmp(fn_iface)
             if not ok:
                 self.logger.critical('Failed to redirect ICMP')
-                self.stop()
-                sys.exit(1)
+                raise RuntimeError('Failed to redirect ICMP')
             self.rules_added.append(rule)
 
         self.pdebug(DMISC, 'Processing interface redirection on ' +
@@ -202,37 +202,66 @@ class Diverter(DiverterBase, LinUtilMixin):
 
         if not ok:
             self.logger.critical('Failed to process interface redirection')
-            self.stop()
-            sys.exit(1)
+            raise RuntimeError('Failed to process interface redirection')
 
         return True
 
     def stopCallback(self):
+        healthy = True
         self.pdebug(DNFQUEUE, 'Notifying NFQUEUE objects of imminent stop')
         for q in self.nfqueues:
-            q.stop_nonblocking()
+            try:
+                q.stop_nonblocking()
+            except Exception:
+                healthy = False
+                self.logger.exception('Failed notifying NFQUEUE %s', q)
 
         self.pdebug(DIPTBLS, 'Removing iptables rules not associated with any '
                     'NFQUEUE object')
-        self.linux_remove_iptables_rules(self.rules_added)
+        try:
+            self.linux_remove_iptables_rules(self.rules_added)
+        except Exception:
+            healthy = False
+            self.logger.exception('Failed removing Linux diversion rules')
 
         for q in self.nfqueues:
             self.pdebug(DNFQUEUE, 'Stopping NFQUEUE for %s' % (str(q)))
-            q.stop()
-
-        if self.pcap:
-            self.pdebug(DPCAP, 'Closing pcap file %s' % (self.pcap_filename))
-            self.pcap.close()  # Only after all queues are stopped
+            try:
+                queue_healthy = q.stop(timeout=2.0)
+                if q.thread_alive:
+                    healthy = False
+                    self._capture_writers_safe_to_close = False
+                    self.logger.critical(
+                        'PCAP_DUAL_THREAD_STOP_TIMEOUT thread=%s', q)
+                elif not queue_healthy:
+                    healthy = False
+                    self.logger.error(
+                        'NFQUEUE_STOP_FAILED queue=%s error=%s',
+                        q, q.stop_error)
+                if q.thread_error is not None:
+                    healthy = False
+            except Exception:
+                healthy = False
+                self._capture_writers_safe_to_close = False
+                self.logger.exception('Failed stopping NFQUEUE %s', q)
 
         self.logger.info('Stopped Linux Diverter')
 
         if self.single_host_mode and self.is_set('modifylocaldns'):
-            self.linux_restore_local_dns()
+            try:
+                self.linux_restore_local_dns()
+            except Exception:
+                healthy = False
+                self.logger.exception('Failed restoring Linux DNS')
 
         if self.is_set('linuxflushiptables'):
-            self.linux_restore_iptables()
+            try:
+                self.linux_restore_iptables()
+            except Exception:
+                healthy = False
+                self.logger.exception('Failed restoring Linux iptables')
 
-        return True
+        return healthy
 
     def handle_nonlocal(self, nfqpkt):
         """Handle comms sent to IP addresses that are not bound to any adapter.
@@ -251,6 +280,9 @@ class Diverter(DiverterBase, LinUtilMixin):
         # catch-all exception handler anyway, it might as well be mine so that
         # I can print out the stack trace before I lose access to this valuable
         # debugging information.
+        except PcapWriteError:
+            nfqpkt.drop()
+            raise
         except Exception:
             self.logger.error('Exception: %s' % (traceback.format_exc()))
             raise
@@ -275,6 +307,9 @@ class Diverter(DiverterBase, LinUtilMixin):
                             self.incoming_trans_cbs)
             if pkt.mangled:
                 nfqpkt.set_payload(pkt.octets)
+        except PcapWriteError:
+            nfqpkt.drop()
+            raise
         except Exception:
             self.logger.error('Exception: %s' % (traceback.format_exc()))
             raise
@@ -302,6 +337,9 @@ class Diverter(DiverterBase, LinUtilMixin):
                             self.outgoing_trans_cbs)
             if pkt.mangled:
                 nfqpkt.set_payload(pkt.octets)
+        except PcapWriteError:
+            nfqpkt.drop()
+            raise
         except Exception:
             self.logger.error('Exception: %s' % (traceback.format_exc()))
             raise

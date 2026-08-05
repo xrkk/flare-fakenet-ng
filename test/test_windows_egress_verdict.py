@@ -1,6 +1,7 @@
 import ast
 import configparser
 import json
+import logging
 import pathlib
 import subprocess
 import threading
@@ -11,6 +12,7 @@ from fakenet.diverters.egresspolicy import (
     PolicyConfigError, ReviewedIPv4Rule, ReviewedPacketTuple, Verdict)
 from fakenet.diverters.windows import (
     Diverter, ReviewedIpFlowAudit, ROUTE_PROBE_UDP_PORT)
+from fakenet.diverters.pcapwriter import PcapWriteError
 
 
 class Policy(object):
@@ -169,6 +171,42 @@ class WindowsVerdictTests(unittest.TestCase):
         self.assertEqual(
             Verdict.DROP_EXTERNAL,
             self.diverter.finalize_egress_verdict(Packet()))
+
+    def test_policy_handler_does_not_swallow_capture_failure(self):
+        windivert_packet = mock.Mock()
+        windivert_packet.raw.tobytes.return_value = bytes.fromhex(
+            '4500001400000000400600000a0000055db8d822')
+        windivert_packet.is_loopback = False
+        self.diverter.write_pcap = mock.Mock(
+            side_effect=PcapWriteError('injected capture failure'))
+        self.diverter.log_egress_event = mock.Mock()
+
+        with mock.patch('fakenet.diverters.windows.WindowsPacketCtx',
+                        return_value=Packet()):
+            with self.assertRaises(PcapWriteError):
+                self.diverter._handle_policy_packet(windivert_packet)
+
+        self.diverter.log_egress_event.assert_not_called()
+
+    def test_stop_timeout_prevents_capture_close(self):
+        worker = mock.Mock()
+        worker.is_alive.return_value = True
+        self.diverter._stopping = threading.Event()
+        self.diverter._flush_reviewed_ip_audit = mock.Mock()
+        self.diverter.domain_allowlist_mode = False
+        self.diverter.egress_policy = None
+        self.diverter.handle = None
+        self.diverter.diverter_thread = worker
+        self.diverter.address_refresh_thread = None
+        self.diverter.watchdog_thread = None
+        self.diverter._restore_network_settings = mock.Mock()
+        self.diverter._capture_writers_safe_to_close = True
+        self.diverter.logger = logging.getLogger('windows-stop-test')
+
+        self.assertFalse(self.diverter.stopCallback())
+        self.assertFalse(self.diverter._capture_writers_safe_to_close)
+        worker.join.assert_called_once_with(5)
+        self.diverter._restore_network_settings.assert_called_once_with()
 
     def test_process_and_port_blacklists_cannot_grant_egress(self):
         packet = Packet()

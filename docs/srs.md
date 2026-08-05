@@ -282,16 +282,20 @@ mode, whereas Windows and macOS would likely be expected to be used only in
 `SingleHost` mode.
 
 ### Packet Capture Enable/Disable
-The Diverter must respect the Boolean `DumpPackets` setting by writing a pcap
-file to a file with an operator-specified prefix via the relevant setting.
+The Diverter must respect the Boolean `DumpPackets` setting by writing paired
+raw-IP and synthetic-Ethernet pcap files with an operator-specified prefix via
+the relevant setting. The files must have matching timestamps, record order,
+and IP payloads; both global headers must declare a snap length of 262144.
 
 For uniformity with current implementations, the pcap must contain 
 the initial and, if mangled, final forms of traffic.
 
 ### Packet Capture Filename Specification
 When the operator specifies that FakeNet-NG must capture packets, the Diverter
-must prepend the generated pcap filename with the value of the
-`DumpPacketsFilePrefix` setting.
+must prepend both generated pcap filenames with the value of the
+`DumpPacketsFilePrefix` setting. The raw-IP filename remains
+`<prefix>_<timestamp>.pcap`; the Ethernet filename is
+`<prefix>_<timestamp>-converted.pcap`.
 
 ### Proposed: Packet Capture Verbosity
 

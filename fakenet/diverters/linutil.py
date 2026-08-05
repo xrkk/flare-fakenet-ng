@@ -103,7 +103,8 @@ class LinuxDiverterNfqueue(object):
     The results are undefined if start() or stop() are called multiple times.
     """
 
-    def __init__(self, qno, chain, table, callback, iface=None):
+    def __init__(self, qno, chain, table, callback, iface=None,
+                 on_error=None):
         self.logger = logging.getLogger('Diverter')
 
         # Specifications
@@ -116,6 +117,10 @@ class LinuxDiverterNfqueue(object):
         self._sk = None
         self._stopflag = False
         self._thread = None
+        self._thread_error = None
+        self._thread_exited = threading.Event()
+        self._on_error = on_error
+        self._stop_error = None
 
         # State
         self._rule_added = False
@@ -171,14 +176,37 @@ class LinuxDiverterNfqueue(object):
         return self._started
 
     def _threadproc(self):
-        while not self._stopflag:
-            try:
-                self._nfqueue.run_socket(self._sk)
-            except socket.timeout:
-                # Ignore timeouts generated every N seconds due to the prior
-                # call to settimeout(), and move on to re-evaluating the
-                # current state of the stop flag.
-                pass
+        try:
+            while not self._stopflag:
+                try:
+                    self._nfqueue.run_socket(self._sk)
+                except socket.timeout:
+                    # Ignore timeouts generated every N seconds due to the
+                    # prior call to settimeout(), then re-evaluate stop state.
+                    pass
+        except BaseException as exc:
+            self._thread_error = exc
+            self.logger.exception('NFQUEUE worker terminated unexpectedly')
+            if self._on_error is not None:
+                self._on_error(exc)
+        finally:
+            self._thread_exited.set()
+
+    @property
+    def thread_error(self):
+        return self._thread_error
+
+    @property
+    def thread_exited(self):
+        return self._thread_exited.is_set()
+
+    @property
+    def thread_alive(self):
+        return bool(self._started and self._thread.is_alive())
+
+    @property
+    def stop_error(self):
+        return self._stop_error
 
     def stop_nonblocking(self):
         """Call this on each LinuxDiverterNfqueue object in turn to stop them
@@ -191,17 +219,36 @@ class LinuxDiverterNfqueue(object):
         """
         self._stopflag = True
 
-    def stop(self):
+    def stop(self, timeout=2.0):
         self.stop_nonblocking()  # Ensure somebody has set the stop flag
+        self._stop_error = None
 
         if self._started:
-            self._thread.join()  # Wait for the netlink socket to time out
+            self._thread.join(timeout)
 
-        if self._bound:
-            self._nfqueue.unbind()
+        thread_alive = self.thread_alive
+
+        # Unbinding while run_socket is still active is not known to be safe.
+        if self._bound and not thread_alive:
+            try:
+                self._nfqueue.unbind()
+                self._bound = False
+            except Exception as exc:
+                self._stop_error = exc
 
         if self._rule_added:
-            self._rule.remove()  # Shell out to iptables to remove the rule
+            try:
+                result = self._rule.remove()
+                if result == 0:
+                    self._rule_added = False
+                elif self._stop_error is None:
+                    self._stop_error = RuntimeError(
+                        'iptables rule removal returned %s' % result)
+            except Exception as exc:
+                if self._stop_error is None:
+                    self._stop_error = exc
+
+        return not thread_alive and self._stop_error is None
 
 
 class ProcfsReader(object):

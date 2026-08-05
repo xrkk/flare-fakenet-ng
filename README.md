@@ -347,9 +347,9 @@ and an HTTP connection:
                                                                             /
                                                 default configuration file /
 
-    07/06/16 10:20:52 PM [          Diverter] Capturing traffic to packets_20160706_222052.pcap
+    07/06/16 10:20:52 PM [          Diverter] Capturing traffic to packets_20160706_222052.pcap and packets_20160706_222052-converted.pcap
                                                                             /
-                                                          PCAP output file /
+                                                         PCAP output files /
 
     07/06/16 10:20:52 PM [           FakeNet] Anonymous Forwarder listener on TCP port 8080...
                                         \
@@ -412,7 +412,7 @@ logs will be labeled with the name set in the configuration file:
 
     07/06/16 10:21:03 PM [        DNS Server] Received A request for domain 'evil.com'.
 
-To stop FakeNet-NG and save the generated PCAP file and HTML report to disk simply press `CTRL-C`:
+To stop FakeNet-NG and save the generated PCAP files and HTML report to disk simply press `CTRL-C`:
 
     07/06/16 10:21:41 PM [           FakeNet] Stopping...
     07/06/16 10:21:42 PM [    HTTPListener80] Stopping...
@@ -422,7 +422,7 @@ To stop FakeNet-NG and save the generated PCAP file and HTML report to disk simp
 	07/06/16 10:21:43 PM [          Diverter] Generated new HTML report: report_20160607_102143.html
     [Press Enter to exit]
 
-Wait for the PCAP and report to be generated, then press `Enter` to quit. The console
+Wait for the PCAP files and report to be generated, then press `Enter` to quit. The console
 window will stay open until you do; this can be disabled (for example, in scripts)
 with the `--no-pause` flag.
 
@@ -550,7 +550,11 @@ will be changed so that the source IP address would appear as if the packet
 is coming from the originally requested host.
 
 You can optionally enable the `DumpPackets` setting to store all traffic
-observed by FakeNet-NG (redirected or forwarded) to a PCAP file. It is possible
+observed by FakeNet-NG (redirected or forwarded) in two synchronized PCAP
+files. `<prefix>_<timestamp>.pcap` retains the raw-IP capture and
+`<prefix>_<timestamp>-converted.pcap` contains the same records wrapped in
+synthetic Ethernet headers for tools that do not accept raw-IP PCAPs. Both
+files use a snap length of 262144 bytes. It is possible
 to decrypt SSL traffic between an intercepted application and one of the
 listeners with SSL support. Use the instructions at the following page:
 
