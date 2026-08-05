@@ -65,12 +65,26 @@ def _flow_key(proto, src_ip, sport, dst_ip, dport):
     return (str(proto).upper(), str(src_ip), int(sport), str(dst_ip), int(dport))
 
 
+_NON_REVIEWED_IPV4_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
+    '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
+    '169.254.0.0/16', '172.16.0.0/12', '192.0.0.0/24',
+    '192.0.2.0/24', '192.88.99.0/24', '192.168.0.0/16',
+    '198.18.0.0/15', '198.51.100.0/24', '203.0.113.0/24',
+    '224.0.0.0/4', '240.0.0.0/4'))
+
+
 def is_global_ipv4(value):
     try:
         address = ipaddress.ip_address(str(value))
     except ValueError:
         return False
-    return address.version == 4 and address.is_global
+    return (
+        address.version == 4 and address.is_global and
+        not address.is_multicast and not address.is_reserved and
+        not address.is_unspecified and not address.is_loopback and
+        not address.is_link_local and
+        not any(address in network for network in
+                _NON_REVIEWED_IPV4_NETWORKS))
 
 
 _RFC1918_NETWORKS = (
@@ -291,9 +305,9 @@ def _parse_reviewed_ipv4_rules(config, config_keys, local_ipv4,
                 'reviewed IPv4 rule requires one canonical IPv4 address') from exc
         canonical_ipv4 = str(address)
         if (address.version != 4 or canonical_ipv4 != raw_ipv4 or
-                not is_rfc1918_unicast_ipv4(address)):
+                not is_global_ipv4(address)):
             raise PolicyConfigError(
-                'reviewed IPv4 rule requires an RFC1918 unicast IPv4 address')
+                'reviewed IPv4 rule requires a global unicast IPv4 address')
         if (canonical_ipv4 in local_ipv4 or
                 canonical_ipv4 == external_dns_server or
                 (takeover_ipv4 and canonical_ipv4 == takeover_ipv4)):

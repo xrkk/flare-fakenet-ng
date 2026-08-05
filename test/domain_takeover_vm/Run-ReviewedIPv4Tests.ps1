@@ -95,6 +95,59 @@ function Select-OriginalDnsServer {
     throw 'No usable IPv4 DNS server exists on a connected default-route interface.'
 }
 
+function Test-ReviewedGlobalIPv4 {
+    param([string]$Value)
+    $address = $null
+    if (-not [Net.IPAddress]::TryParse($Value, [ref]$address) -or
+            $address.AddressFamily -ne
+                [Net.Sockets.AddressFamily]::InterNetwork -or
+            $address.ToString() -ne $Value) {
+        return $false
+    }
+    $b = $address.GetAddressBytes()
+    if ($b[0] -eq 0 -or $b[0] -eq 10 -or $b[0] -eq 127 -or
+            $b[0] -ge 224 -or
+            ($b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127) -or
+            ($b[0] -eq 169 -and $b[1] -eq 254) -or
+            ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or
+            ($b[0] -eq 192 -and $b[1] -eq 168) -or
+            ($b[0] -eq 192 -and $b[1] -eq 0 -and $b[2] -in @(0, 2)) -or
+            ($b[0] -eq 192 -and $b[1] -eq 88 -and $b[2] -eq 99) -or
+            ($b[0] -eq 198 -and $b[1] -in @(18, 19)) -or
+            ($b[0] -eq 198 -and $b[1] -eq 51 -and $b[2] -eq 100) -or
+            ($b[0] -eq 203 -and $b[1] -eq 0 -and $b[2] -eq 113)) {
+        return $false
+    }
+    return $true
+}
+
+function Assert-ReviewedDnsFreshness {
+    param([string]$Hostname, [string]$Target, [string]$Resolver)
+    if ($Hostname -ne 'www.baidu.com' -or
+            -not (Test-ReviewedGlobalIPv4 $Target)) {
+        throw 'Reviewed DNS freshness inputs do not match the public contract.'
+    }
+    $records = @(Resolve-DnsName -Name $Hostname -Type A -Server $Resolver `
+        -DnsOnly -ErrorAction Stop)
+    @($records | ForEach-Object {
+        'name={0} type={1} ip={2} cname={3} ttl={4}' -f
+            $_.Name, $_.Type, $_.IPAddress, $_.NameHost, $_.TTL
+    }) | Set-Content -LiteralPath (Join-Path $script:RunRoot `
+        'reviewed-dns-freshness.log') -Encoding UTF8
+    $addresses = @($records | Where-Object {
+            $_.Type -eq 'A' -and
+            -not [string]::IsNullOrWhiteSpace([string]$_.IPAddress)
+        } | ForEach-Object { [string]$_.IPAddress } | Select-Object -Unique)
+    if ($Target -notin $addresses) {
+        throw ('Reviewed IPv4 is no longer present in the current A set. ' +
+            'No alternate address was selected.')
+    }
+    Add-Result 'ReviewedDnsFreshness' 'PASS' (
+        'hostname={0}; target={1}; resolver={2}; addresses={3}' -f
+        $Hostname, $Target, $Resolver, ($addresses -join ','))
+    return $addresses
+}
+
 function Read-AndVerifyManifest {
     param([string]$Root)
     $path = Join-Path $Root 'domain-takeover-manifest.json'
@@ -103,20 +156,22 @@ function Read-AndVerifyManifest {
     }
     $manifest = Get-Content -LiteralPath $path -Raw -Encoding UTF8 |
         ConvertFrom-Json
-    if ($manifest.policy_version -ne 'v6' -or
-            $manifest.plan_version -ne 'v4' -or
-            $manifest.package_version -ne 'v12' -or
+    if ($manifest.policy_version -ne 'v7' -or
+            $manifest.plan_version -ne 'v5' -or
+            $manifest.package_version -ne 'v13' -or
             ([string]$manifest.source_commit) -notmatch '^[0-9a-f]{40}$' -or
             $manifest.allowed_domain -ne 'api.deepseek.com' -or
-            $manifest.reviewed_ipv4_target -ne '192.168.204.1' -or
-            $manifest.negative_test_ipv4 -ne '192.168.204.2' -or
-            @($manifest.reviewed_ipv4_profiles).Count -ne 2 -or
+            $manifest.reviewed_hostname -ne 'www.baidu.com' -or
+            $manifest.reviewed_ipv4_target -ne '110.242.69.21' -or
+            $manifest.negative_test_ipv4 -ne '110.242.70.57' -or
+            $manifest.dns_freshness_required -ne $true -or
+            @($manifest.reviewed_ipv4_profiles).Count -ne 1 -or
             [int]$manifest.reviewed_route_probe_udp_port -ne 9 -or
             [int]$manifest.address_refresh_seconds -ne 5 -or
             $manifest.windows_build -ne '10.0.19045' -or
             $manifest.python_version -ne '3.13.7' -or
             $manifest.python_architecture -ne 'AMD64') {
-        throw 'The package manifest does not match reviewed v12 contracts.'
+        throw 'The package manifest does not match reviewed v13 contracts.'
     }
     $rootPath = (Resolve-Path -LiteralPath $Root).Path
     foreach ($entry in @($manifest.files)) {
@@ -229,7 +284,7 @@ function Send-ReviewedMatrixPacket {
             [Net.Sockets.ProtocolType]::Udp)
         try {
             $payload = [Text.Encoding]::ASCII.GetBytes(
-                'fakenet-reviewed-ip-v12')
+                'fakenet-reviewed-ip-v13')
             $sent = $socket.SendTo($payload,
                 [Net.IPEndPoint]::new([Net.IPAddress]::Parse($Target), $Port))
             $line = ('{0} proto=UDP ip={1} port={2} bytes={3}' -f
@@ -244,35 +299,57 @@ function Send-ReviewedMatrixPacket {
     Write-Host $line
 }
 
+function Invoke-ReviewedBaiduTls {
+    param([string]$Target, [string]$Hostname)
+    $baiduTlsCommand = @'
+import json, socket, ssl, sys, time
+target, hostname = sys.argv[1:3]
+started = time.monotonic()
+with socket.create_connection((target, 443), timeout=10) as raw:
+    context = ssl.create_default_context()
+    with context.wrap_socket(raw, server_hostname=hostname) as tls:
+        certificate = tls.getpeercert()
+        print(json.dumps({
+            'target': target,
+            'hostname': hostname,
+            'tls_version': tls.version(),
+            'cipher': tls.cipher()[0],
+            'subject': certificate.get('subject'),
+            'elapsed_ms': int((time.monotonic() - started) * 1000),
+        }, sort_keys=True))
+'@
+    $log = Join-Path $script:LogDir 'baidu-tls-validation.log'
+    $exitCode = Invoke-NativeCaptured {
+        $baiduTlsCommand | & $script:Python - $Target $Hostname
+    } $log
+    if ($exitCode -ne 0) {
+        throw 'Pinned Baidu TCP/TLS/SNI/certificate validation failed.'
+    }
+    Add-Content -LiteralPath $script:ReviewedMatrixLog `
+        -Value ('POSITIVE_TLS proto=TCP ip={0} port=443 hostname={1}' -f
+            $Target, $Hostname) -Encoding UTF8
+    Add-Result 'BaiduTlsCertificate' 'PASS' (Get-Content $log -Raw).Trim()
+}
+
 function Invoke-ReviewedRuleMatrix {
     param([string]$Profile, [string[]]$Rules)
     $script:ReviewedMatrixLog = Join-Path $script:LogDir `
         'reviewed-ip-matrix.log'
     New-Item -ItemType File -Path $script:ReviewedMatrixLog -Force |
         Out-Null
-    foreach ($rule in $Rules) {
-        $fields = $rule.Split('/')
-        $ports = if ($fields[2] -eq '*') {
-            @(1, 443, 65535)
-        } else {
-            @([int]$fields[2])
-        }
-        foreach ($port in $ports) {
-            Send-ReviewedMatrixPacket -Protocol $fields[0] `
-                -Target $fields[1] -Port $port -Label 'POSITIVE'
-        }
+    if ($Profile -ne 'baidu_tcp443' -or $Rules.Count -ne 1 -or
+            $Rules[0] -ne 'TCP/110.242.69.21/443') {
+        throw 'Reviewed v13 matrix/profile contract mismatch.'
     }
-    if ($Profile -eq 'exact_ports') {
-        foreach ($case in @(
-                @('TCP', '192.168.204.1', 5000),
-                @('TCP', '192.168.204.1', 444),
-                @('UDP', '192.168.204.1', 443),
-                @('UDP', '192.168.204.1', 5001),
-                @('TCP', '192.168.204.2', 443),
-                @('UDP', '192.168.204.2', 5000))) {
-            Send-ReviewedMatrixPacket -Protocol $case[0] `
-                -Target $case[1] -Port $case[2] -Label 'NEGATIVE'
-        }
+    Invoke-ReviewedBaiduTls -Target '110.242.69.21' `
+        -Hostname 'www.baidu.com'
+    foreach ($case in @(
+            @('TCP', '110.242.69.21', 80),
+            @('TCP', '110.242.69.21', 444),
+            @('UDP', '110.242.69.21', 443),
+            @('TCP', '110.242.70.57', 443))) {
+        Send-ReviewedMatrixPacket -Protocol $case[0] `
+            -Target $case[1] -Port $case[2] -Label 'NEGATIVE'
     }
     Add-Result 'ReviewedIPv4Matrix' 'OBSERVED' (
         'packet transmission attempted; use policy log and independent PCAPNG for verdict proof')
@@ -420,7 +497,7 @@ function Invoke-ProfileRun {
         if (-not $ready) { throw "Ready timeout: $Name/$ReadyEvent" }
         Add-Result "Ready-$Name" 'PASS' $ReadyEvent
 
-        if ($Name -in @('all_ports', 'exact_ports')) {
+        if ($Name -eq 'baidu_tcp443') {
             $readyText = Get-Content $fakeLog -Raw
             if ($readyText -match 'DOMAIN_TAKEOVER_READY|ALLOW_TAKEOVER_SINK') {
                 throw "Takeover event polluted reviewed profile $Name"
@@ -468,7 +545,7 @@ function Invoke-ProfileRun {
     Add-Result "Restore-$Name" 'PASS' 'DNS/IP/route snapshots match'
 
     $fakeText = Get-Content (Join-Path $profileDir 'fakenet.log') -Raw
-    if ($Name -in @('all_ports', 'exact_ports')) {
+    if ($Name -eq 'baidu_tcp443') {
         foreach ($event in @('IP_ALLOW_READY', 'IP_ALLOW_ROUTE_OK',
                 'ALLOW_REVIEWED_IP_FIRST_FLOW')) {
             if ($fakeText -notmatch [regex]::Escape($event)) {
@@ -526,7 +603,7 @@ if (-not (Test-IsAdministrator)) {
 $script:RepoRoot = Resolve-RepositoryRoot
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $script:RunRoot = Join-Path $PSScriptRoot `
-    ("Logs\reviewed-ipv4-v12-{0}" -f $stamp)
+        ("Logs\reviewed-ipv4-v13-{0}" -f $stamp)
 New-Item -ItemType Directory -Path $script:RunRoot -Force | Out-Null
 $script:LogDir = $script:RunRoot
 $script:ResultFile = Join-Path $script:RunRoot 'results.tsv'
@@ -539,23 +616,25 @@ try {
     $os = Get-CimInstance Win32_OperatingSystem
     if ([string]$os.Version -ne [string]$manifest.windows_build -or
             -not [Environment]::Is64BitOperatingSystem) {
-        throw 'Windows build/architecture does not match reviewed v12.'
+        throw 'Windows build/architecture does not match reviewed v13.'
     }
     Add-Result 'WindowsBuild' 'PASS' ([string]$os.Version)
 
     $script:Resolver = Select-OriginalDnsServer
     $localIPv4 = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
         Select-Object -ExpandProperty IPAddress)
-    if ($script:Resolver -in @('192.168.204.1', '192.168.204.2') -or
-            '192.168.204.1' -in $localIPv4 -or
-            '192.168.204.2' -in $localIPv4) {
+    if ($script:Resolver -in @('110.242.69.21', '110.242.70.57') -or
+            '110.242.69.21' -in $localIPv4 -or
+            '110.242.70.57' -in $localIPv4) {
         throw 'Acceptance targets conflict with VM local/DNS state.'
     }
+    Assert-ReviewedDnsFreshness -Hostname $manifest.reviewed_hostname `
+        -Target $manifest.reviewed_ipv4_target -Resolver $script:Resolver |
+        Out-Null
     $route = @(Invoke-ReviewedRoutePreflight $script:RepoRoot `
-        @('192.168.204.1'))
-    if ($route.Count -ne 1 -or $route[0].next_hop -ne '0.0.0.0' -or
-            $route[0].destination_prefix -eq '0.0.0.0/0') {
-        throw '192.168.204.1 is not uniquely on-link.'
+        @('110.242.69.21'))
+    if ($route.Count -ne 1) {
+        throw '110.242.69.21 does not have one unique best IPv4 route.'
     }
     Add-Result 'ReviewedRoute' 'PASS' $route[0].destination_prefix
 
@@ -570,7 +649,7 @@ try {
     if ($identity.version -ne $manifest.python_version -or
             $identity.machine.ToUpperInvariant() -ne
                 $manifest.python_architecture) {
-        throw 'Python ABI does not match reviewed v12.'
+        throw 'Python ABI does not match reviewed v13.'
     }
 
     $venvRoot = Join-Path $script:RepoRoot '.venv-reviewed-ipv4'
@@ -621,29 +700,33 @@ try {
     if (-not (Get-Command pktmon.exe -ErrorAction SilentlyContinue)) {
         throw 'pktmon.exe is required for independent evidence.'
     }
-    foreach ($profileName in @('all_ports', 'exact_ports')) {
-        $profile = @($manifest.reviewed_ipv4_profiles |
-            Where-Object name -eq $profileName)
-        if ($profile.Count -ne 1) { throw "Profile missing: $profileName" }
-        $config = Join-Path $script:RepoRoot `
-            (([string]$profile[0].config_path).Replace('/', '\'))
-        $configHash = (Get-FileHash $config -Algorithm SHA256).Hash.ToLowerInvariant()
-        $configText = Get-Content $config -Raw
-        $ruleLines = @(Select-String $config `
-            -Pattern '^ExternalAllowedIPv4Rules:\s*(.+)$')
-        if ($configHash -ne
-                ([string]$profile[0].config_sha256).ToLowerInvariant() -or
-                $ruleLines.Count -ne 1 -or
-                $ruleLines[0].Matches[0].Groups[1].Value -ne
-                    [string]$profile[0].rules_raw -or
-                $configText -match '(?m)^ExternalTakeover' -or
-                $configText -match
-                    '(?m)^ResponseA\s*:\s*192\.168\.204\.1\s*$') {
-            throw "Profile config contract mismatch: $profileName"
-        }
-        Invoke-ProfileRun $profileName $config 'IP_ALLOW_READY' `
-            @($profile[0].rules | ForEach-Object { [string]$_ })
+    $profileName = 'baidu_tcp443'
+    $profile = @($manifest.reviewed_ipv4_profiles |
+        Where-Object name -eq $profileName)
+    if ($profile.Count -ne 1 -or
+            [string]$profile[0].rules_raw -ne 'TCP/110.242.69.21/443' -or
+            (@($profile[0].rules) -join ',') -ne
+                'TCP/110.242.69.21/443') {
+        throw 'The single Baidu TCP/443 profile is missing or expanded.'
     }
+    $config = Join-Path $script:RepoRoot `
+        (([string]$profile[0].config_path).Replace('/', '\'))
+    $configHash = (Get-FileHash $config -Algorithm SHA256).Hash.ToLowerInvariant()
+    $configText = Get-Content $config -Raw
+    $ruleLines = @(Select-String $config `
+        -Pattern '^ExternalAllowedIPv4Rules:\s*(.+)$')
+    if ($configHash -ne
+            ([string]$profile[0].config_sha256).ToLowerInvariant() -or
+            $ruleLines.Count -ne 1 -or
+            $ruleLines[0].Matches[0].Groups[1].Value -ne
+                'TCP/110.242.69.21/443' -or
+            $configText -match '(?m)^ExternalTakeover' -or
+            $configText -match
+                '(?m)^ResponseA\s*:\s*192\.168\.204\.1\s*$') {
+        throw 'Baidu TCP/443 profile config contract mismatch.'
+    }
+    Invoke-ProfileRun $profileName $config 'IP_ALLOW_READY' `
+        @('TCP/110.242.69.21/443')
     $takeover = $manifest.takeover_regression_profile
     $takeoverConfig = Join-Path $script:RepoRoot `
         (([string]$takeover.config_path).Replace('/', '\'))
@@ -659,7 +742,7 @@ try {
         'DOMAIN_TAKEOVER_READY'
 
     $script:LogDir = $script:RunRoot
-    Add-Result 'Runner' 'PASS' 'all three profiles completed and restored'
+    Add-Result 'Runner' 'PASS' 'both isolated profiles completed and restored'
     $script:ExitCode = 0
 } catch {
     $script:LogDir = $script:RunRoot

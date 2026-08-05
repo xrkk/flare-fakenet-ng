@@ -5,8 +5,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v12'
-$packageName = "Windows私网指定IPv4放行-$packageVersion"
+$packageVersion = 'v13'
+$packageName = "Windows公网指定IPv4放行-$packageVersion"
 $planRelative = 'PLAN\2026.08.05\2026.08.05-01-Windows指定IPv4全端口及指定端口放行方案.md'
 $reviewedRouteProbeUdpPort = 9
 $addressRefreshSeconds = 5
@@ -40,7 +40,7 @@ function Get-TextSha256 {
     }
 }
 
-function Test-ReviewedPrivateIPv4 {
+function Test-ReviewedGlobalIPv4 {
     param([string]$Value)
     $address = $null
     if (-not [Net.IPAddress]::TryParse($Value, [ref]$address) -or
@@ -50,21 +50,27 @@ function Test-ReviewedPrivateIPv4 {
         return $false
     }
     $b = $address.GetAddressBytes()
-    $isRfc1918 = ($b[0] -eq 10 -or
-        ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or
-        ($b[0] -eq 192 -and $b[1] -eq 168))
-    if (-not $isRfc1918) { return $false }
-    if (($b -join '.') -in @(
-            '10.0.0.0', '10.255.255.255',
-            '172.16.0.0', '172.31.255.255',
-            '192.168.0.0', '192.168.255.255')) { return $false }
+    if ($b[0] -eq 0 -or $b[0] -eq 10 -or $b[0] -eq 127 -or
+            $b[0] -ge 224 -or
+            ($b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127) -or
+            ($b[0] -eq 169 -and $b[1] -eq 254) -or
+            ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or
+            ($b[0] -eq 192 -and $b[1] -eq 168) -or
+            ($b[0] -eq 192 -and $b[1] -eq 0 -and $b[2] -eq 0) -or
+            ($b[0] -eq 192 -and $b[1] -eq 0 -and $b[2] -eq 2) -or
+            ($b[0] -eq 192 -and $b[1] -eq 88 -and $b[2] -eq 99) -or
+            ($b[0] -eq 198 -and $b[1] -in @(18, 19)) -or
+            ($b[0] -eq 198 -and $b[1] -eq 51 -and $b[2] -eq 100) -or
+            ($b[0] -eq 203 -and $b[1] -eq 0 -and $b[2] -eq 113)) {
+        return $false
+    }
     return $true
 }
 
 function Get-NormalizedReviewedRules {
     param([string]$Value)
     if ([string]::IsNullOrWhiteSpace($Value)) {
-        throw 'ExternalAllowedIPv4Rules must be present and non-empty for v12.'
+        throw 'ExternalAllowedIPv4Rules must be present and non-empty for v13.'
     }
     $parts = @($Value.Split(','))
     if ($parts.Count -gt 32 -or @($parts | Where-Object {
@@ -83,8 +89,8 @@ function Get-NormalizedReviewedRules {
         $protocol = $matches[1]
         $ipv4 = $matches[2]
         $port = $matches[3]
-        if (-not (Test-ReviewedPrivateIPv4 $ipv4)) {
-            throw "Reviewed rule does not contain a canonical RFC1918 IPv4: $token"
+        if (-not (Test-ReviewedGlobalIPv4 $ipv4)) {
+            throw "Reviewed rule does not contain a canonical global IPv4: $token"
         }
         if ($port -ne '*' -and
                 ([int64]$port -lt 1 -or [int64]$port -gt 65535)) {
@@ -117,15 +123,15 @@ function Assert-ReviewedTemplate {
     $base = Get-NormalizedText $BasePath
     $template = Get-NormalizedText $TemplatePath
     if (($template.Split("`n") | Where-Object {
-                $_ -eq '# __REVIEWED_PRIVATE_IPV4_RULES__'
+                $_ -eq '# __REVIEWED_PUBLIC_IPV4_RULES__'
             }).Count -ne 1 -or
             $template -match '(?m)^ExternalAllowedIPv4Rules\s*:') {
         throw 'Reviewed IPv4 source template marker/active-rule contract failed.'
     }
     foreach ($comment in @(
-            '# Build-only marker. The source template deliberately grants no private IPv4.',
-            '# The v12 builder emits two separately hashed runtime profiles from this line.',
-            '# __REVIEWED_PRIVATE_IPV4_RULES__')) {
+            '# Build-only marker. The source template deliberately grants no public IPv4.',
+            '# The v13 builder emits one manifest-bound TCP/443 runtime profile from here.',
+            '# __REVIEWED_PUBLIC_IPV4_RULES__')) {
         $template = $template.Replace($comment + "`n", '')
     }
     if ($template -ne $base) {
@@ -141,7 +147,7 @@ function New-ReviewedProfile {
     )
     $normalized = @(Get-NormalizedReviewedRules $RulesValue)
     $text = Get-NormalizedText $TemplatePath
-    $marker = '# __REVIEWED_PRIVATE_IPV4_RULES__'
+    $marker = '# __REVIEWED_PUBLIC_IPV4_RULES__'
     if (($text.Split("`n") | Where-Object { $_ -eq $marker }).Count -ne 1) {
         throw 'Reviewed IPv4 profile marker count mismatch.'
     }
@@ -445,8 +451,6 @@ try {
 
     $required = @(
         'Start-ReviewedIPv4.cmd',
-        'Start-ReviewedIPv4-AllPorts.cmd',
-        'Start-ReviewedIPv4-ExactPorts.cmd',
         'Start-ReviewedIPv4.ps1',
         'Test-ReviewedIPv4Routes.ps1',
         'Build-DomainTakeoverPackage.ps1',
@@ -480,24 +484,15 @@ try {
             }).Count -ne 1) {
         throw 'Takeover regression profile must not contain reviewed IPv4 rules.'
     }
-    $allConfigRelative =
-        'fakenet/configs/domain_reviewed_ipv4_all_ports_windows.ini'
-    $exactConfigRelative =
-        'fakenet/configs/domain_reviewed_ipv4_exact_ports_windows.ini'
-    $allConfig = Join-Path $stage ($allConfigRelative.Replace('/', '\'))
-    $exactConfig = Join-Path $stage ($exactConfigRelative.Replace('/', '\'))
-    $allContract = New-ReviewedProfile $reviewedTemplate $allConfig `
-        'TCP/192.168.204.1/*, UDP/192.168.204.1/*'
-    $exactContract = New-ReviewedProfile $reviewedTemplate $exactConfig `
-        'TCP/192.168.204.1/443, UDP/192.168.204.1/5000'
+    $baiduConfigRelative =
+        'fakenet/configs/domain_reviewed_ipv4_baidu_tcp443_windows.ini'
+    $baiduConfig = Join-Path $stage ($baiduConfigRelative.Replace('/', '\'))
+    $baiduContract = New-ReviewedProfile $reviewedTemplate $baiduConfig `
+        'TCP/110.242.69.21/443'
     $profileContracts = @(
         [PSCustomObject]@{
-            Name = 'all_ports'; ConfigPath = $allConfigRelative
-            Contract = $allContract
-        },
-        [PSCustomObject]@{
-            Name = 'exact_ports'; ConfigPath = $exactConfigRelative
-            Contract = $exactContract
+            Name = 'baidu_tcp443'; ConfigPath = $baiduConfigRelative
+            Contract = $baiduContract
         })
     $dependencyRows = @(Assert-Wheelhouse $stage)
     $scriptSearch = @{
@@ -528,6 +523,7 @@ try {
     }
     foreach ($requiredMarker in @('--no-index', '--require-hashes',
             'IP_ALLOW_ROUTE_OK', 'IP_ALLOW_RISK_ACK',
+            'IP_ALLOW_DNS_FRESHNESS_OK', 'Assert-ReviewedDnsFreshness',
             'Invoke-ReviewedRoutePreflight', 'WaitForExit(2000)',
             'DNS restoration check', 'TreatControlCAsInput',
             'Show-FakeNetLogUntilStop', 'Ctrl+C')) {
@@ -549,7 +545,9 @@ try {
         Join-Path $stage 'Test-ReviewedIPv4Routes.ps1') -Raw
     if (-not $routeCheckerText.Contains('$routeProbeUdpPort = 9') -or
             $routeCheckerText.Contains('.Send(') -or
-            $routeCheckerText.Contains('.SendTo(')) {
+            $routeCheckerText.Contains('.SendTo(') -or
+            $routeCheckerText.Contains('Default route is not permitted') -or
+            $routeCheckerText.Contains('Gateway route is not permitted')) {
         throw 'Reviewed route checker UDP/9 no-payload contract mismatch.'
     }
     $identityScripts = [ordered]@{
@@ -609,13 +607,15 @@ try {
     $planHash = (Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $manifest = [ordered]@{
         schema_version = 1
-        policy_version = 'v6'
-        plan_version = 'v4'
+        policy_version = 'v7'
+        plan_version = 'v5'
         package_version = $packageVersion
         source_commit = $resolvedCommit
         allowed_domain = 'api.deepseek.com'
-        reviewed_ipv4_target = '192.168.204.1'
-        negative_test_ipv4 = '192.168.204.2'
+        reviewed_hostname = 'www.baidu.com'
+        reviewed_ipv4_target = '110.242.69.21'
+        negative_test_ipv4 = '110.242.70.57'
+        dns_freshness_required = $true
         reviewed_ipv4_template =
             'fakenet/configs/domain_reviewed_ipv4_windows.ini'
         reviewed_ipv4_template_sha256 = $templateHash

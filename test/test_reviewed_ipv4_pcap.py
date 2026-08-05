@@ -13,7 +13,7 @@ def packet_for(protocol, target, port):
         transport = dpkt.tcp.TCP(sport=50000, dport=port, flags=dpkt.tcp.TH_SYN)
         ip_protocol = dpkt.ip.IP_PROTO_TCP
     else:
-        transport = dpkt.udp.UDP(sport=50000, dport=port, data=b"v12")
+        transport = dpkt.udp.UDP(sport=50000, dport=port, data=b"v13")
         transport.ulen = len(transport)
         ip_protocol = dpkt.ip.IP_PROTO_UDP
     packet = dpkt.ip.IP(
@@ -43,24 +43,25 @@ class ReviewedIPv4PcapTests(unittest.TestCase):
         self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
         return path
 
-    def test_exact_profile_requires_all_allowed_and_zero_denied(self):
-        matrix = MATRICES["exact_ports"]
-        result = analyze(self.write_capture(matrix["allowed"]), "exact_ports")
+    def test_baidu_tcp443_profile_requires_allowed_and_zero_denied(self):
+        matrix = MATRICES["baidu_tcp443"]
+        result = analyze(
+            self.write_capture(matrix["allowed"]), "baidu_tcp443")
         self.assertTrue(result["allowed_ok"])
         self.assertTrue(result["denied_ok"])
 
         polluted = analyze(
             self.write_capture(matrix["allowed"] + matrix["denied"][:1]),
-            "exact_ports",
+            "baidu_tcp443",
         )
         self.assertFalse(polluted["denied_ok"])
 
-    def test_all_ports_profile_requires_each_boundary_tuple(self):
-        allowed = MATRICES["all_ports"]["allowed"]
+    def test_baidu_profile_requires_the_single_positive_tuple(self):
+        allowed = MATRICES["baidu_tcp443"]["allowed"]
         self.assertTrue(analyze(
-            self.write_capture(allowed), "all_ports")["allowed_ok"])
+            self.write_capture(allowed), "baidu_tcp443")["allowed_ok"])
         self.assertFalse(analyze(
-            self.write_capture(allowed[:-1]), "all_ports")["allowed_ok"])
+            self.write_capture(()), "baidu_tcp443")["allowed_ok"])
 
 
 if __name__ == "__main__":

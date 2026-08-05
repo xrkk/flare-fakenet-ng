@@ -77,6 +77,8 @@ try {
     $routeAst = Import-ReviewedFunction $ast 'Get-TakeoverRouteSnapshot'
     $reviewedValueAst = Import-ReviewedFunction $ast 'Get-ReviewedRulesValue'
     $reviewedRulesAst = Import-ReviewedFunction $ast 'Get-NormalizedReviewedRules'
+    $reviewedGlobalAst = Import-ReviewedFunction $ast 'Test-ReviewedGlobalIPv4'
+    $reviewedDnsAst = Import-ReviewedFunction $ast 'Assert-ReviewedDnsFreshness'
     $reviewedRouteAst = Import-ReviewedFunction $ast 'Invoke-ReviewedRoutePreflight'
     $probeAst = Import-ReviewedFunction $ast 'Invoke-TakeoverProbe'
     $stopReasonAst = Import-ReviewedFunction $ast 'Get-FakeNetStopReason'
@@ -105,12 +107,12 @@ try {
 
     $singleConfig = Join-Path $LogDirectory 'reviewed-single.ini'
     @('[Diverter]',
-      'ExternalAllowedIPv4Rules: TCP/192.168.204.1/443,UDP/192.168.204.2/*') |
+      'ExternalAllowedIPv4Rules: TCP/110.242.69.21/443,UDP/110.242.70.57/*') |
         Set-Content -LiteralPath $singleConfig -Encoding ASCII
     $multiConfig = Join-Path $LogDirectory 'reviewed-multi.ini'
     @('[Diverter]',
-      'ExternalAllowedIPv4Rules: TCP/192.168.204.1/443,',
-      '    UDP/192.168.204.2/*') |
+      'ExternalAllowedIPv4Rules: TCP/110.242.69.21/443,',
+      '    UDP/110.242.70.57/*') |
         Set-Content -LiteralPath $multiConfig -Encoding ASCII
     $singleRules = @(Get-NormalizedReviewedRules (
         Get-ReviewedRulesValue $singleConfig))
@@ -120,9 +122,19 @@ try {
         'Single-line and indented continuation rules normalized differently.'
     Add-Pass 'ReviewedRuleContinuation'
 
+    Assert-Contract (Test-ReviewedGlobalIPv4 '110.242.69.21') `
+        'Reviewed global IPv4 was rejected.'
+    foreach ($invalid in @('192.168.204.1', '100.64.0.1', '127.0.0.1',
+            '169.254.1.1', '192.0.0.9', '192.88.99.1',
+            '198.51.100.1', '224.0.0.1')) {
+        Assert-Contract (-not (Test-ReviewedGlobalIPv4 $invalid)) `
+            "Non-global reviewed IPv4 was accepted: $invalid"
+    }
+    Add-Pass 'ReviewedRuleGlobalOnly'
+
     $badConfig = Join-Path $LogDirectory 'reviewed-reserved-option.ini'
-    @('[Diverter]', 'ExternalAllowedIPv4Rules: TCP/192.168.204.1/443',
-      'UDP/192.168.204.2/53 = stray') |
+    @('[Diverter]', 'ExternalAllowedIPv4Rules: TCP/110.242.69.21/443',
+      'UDP/110.242.70.57/53 = stray') |
         Set-Content -LiteralPath $badConfig -Encoding ASCII
     $failed = $false
     try { Get-ReviewedRulesValue $badConfig | Out-Null } catch { $failed = $true }
@@ -140,18 +152,50 @@ try {
         'Test-ReviewedIPv4Routes.ps1'
     $routeCheckerText = Get-Content -LiteralPath $routeChecker -Raw
     foreach ($required in @('$routeProbeUdpPort = 9', '.Connect(',
-            'Get-NetRoute', 'Get-NetIPAddress', 'Get-NetIPInterface',
-            'Default route is not permitted',
-            'Gateway route is not permitted')) {
+            'Get-NetRoute', 'Get-NetIPAddress', 'Get-NetIPInterface')) {
         Assert-Contract ($routeCheckerText.Contains($required)) `
             "Reviewed route checker is missing: $required"
     }
     foreach ($forbidden in @('.Send(', '.SendTo(', 'Set-NetRoute',
-            'New-NetRoute', 'Remove-NetRoute', 'route add', 'route delete')) {
+            'New-NetRoute', 'Remove-NetRoute', 'route add', 'route delete',
+            'Default route is not permitted',
+            'Gateway route is not permitted')) {
         Assert-Contract (-not $routeCheckerText.Contains($forbidden)) `
             "Reviewed route checker contains mutation/send operation: $forbidden"
     }
     Add-Pass 'ReviewedRouteReadOnlyNoPayload'
+
+    $script:DnsResolverObserved = $null
+    function global:Resolve-DnsName {
+        param($Name, $Type, $Server, [switch]$DnsOnly, $ErrorAction)
+        $script:DnsResolverObserved = $Server
+        return @(
+            [PSCustomObject]@{Name='www.baidu.com'; Type='CNAME';
+                IPAddress=$null; NameHost='www.a.shifen.com'; TTL=100},
+            [PSCustomObject]@{Name='www.a.shifen.com'; Type='A';
+                IPAddress='110.242.69.21'; NameHost=$null; TTL=100},
+            [PSCustomObject]@{Name='www.a.shifen.com'; Type='A';
+                IPAddress='110.242.70.57'; NameHost=$null; TTL=100})
+    }
+    try {
+        $dnsLog = Join-Path $LogDirectory 'dns-freshness.log'
+        $addresses = @(Assert-ReviewedDnsFreshness -Hostname 'www.baidu.com' `
+            -Target '110.242.69.21' -Resolver '10.0.0.1' -LogPath $dnsLog)
+        Assert-Contract ('110.242.69.21' -in $addresses) `
+            'DNS freshness omitted the pinned target.'
+        Assert-Contract ($script:DnsResolverObserved -eq '10.0.0.1') `
+            'DNS freshness did not use the pre-start resolver.'
+        $failed = $false
+        try {
+            Assert-ReviewedDnsFreshness -Hostname 'www.baidu.com' `
+                -Target '110.242.69.22' -Resolver '10.0.0.1' `
+                -LogPath $dnsLog | Out-Null
+        } catch { $failed = $true }
+        Assert-Contract $failed 'DNS freshness selected an alternate address.'
+    } finally {
+        Remove-Item Function:\global:Resolve-DnsName -ErrorAction SilentlyContinue
+    }
+    Add-Pass 'ReviewedDnsFreshnessNoFallback'
 
     $ctrlCKey = [PSCustomObject]@{
         Key = [ConsoleKey]::C

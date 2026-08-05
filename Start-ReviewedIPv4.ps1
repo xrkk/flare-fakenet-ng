@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$PythonPath = 'python.exe',
-    [ValidateSet('all_ports', 'exact_ports')]
-    [string]$Profile = 'exact_ports'
+    [ValidateSet('baidu_tcp443')]
+    [string]$Profile = 'baidu_tcp443'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -110,6 +110,63 @@ function Select-OriginalDnsServer {
     }
     throw ('No usable IPv4 DNS server exists on a connected ' +
         'default-route interface. No fallback DNS was selected.')
+}
+
+function Test-ReviewedGlobalIPv4 {
+    param([string]$Value)
+    $address = $null
+    if (-not [Net.IPAddress]::TryParse($Value, [ref]$address) -or
+            $address.AddressFamily -ne
+                [Net.Sockets.AddressFamily]::InterNetwork -or
+            $address.ToString() -ne $Value) {
+        return $false
+    }
+    $b = $address.GetAddressBytes()
+    if ($b[0] -eq 0 -or $b[0] -eq 10 -or $b[0] -eq 127 -or
+            $b[0] -ge 224 -or
+            ($b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127) -or
+            ($b[0] -eq 169 -and $b[1] -eq 254) -or
+            ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or
+            ($b[0] -eq 192 -and $b[1] -eq 168) -or
+            ($b[0] -eq 192 -and $b[1] -eq 0 -and $b[2] -in @(0, 2)) -or
+            ($b[0] -eq 192 -and $b[1] -eq 88 -and $b[2] -eq 99) -or
+            ($b[0] -eq 198 -and $b[1] -in @(18, 19)) -or
+            ($b[0] -eq 198 -and $b[1] -eq 51 -and $b[2] -eq 100) -or
+            ($b[0] -eq 203 -and $b[1] -eq 0 -and $b[2] -eq 113)) {
+        return $false
+    }
+    return $true
+}
+
+function Assert-ReviewedDnsFreshness {
+    param(
+        [string]$Hostname,
+        [string]$Target,
+        [string]$Resolver,
+        [string]$LogPath
+    )
+    if ($Hostname -ne 'www.baidu.com' -or
+            -not (Test-ReviewedGlobalIPv4 $Target)) {
+        throw 'Reviewed DNS freshness inputs do not match the public contract.'
+    }
+    $records = @(Resolve-DnsName -Name $Hostname -Type A -Server $Resolver `
+        -DnsOnly -ErrorAction Stop)
+    @($records | ForEach-Object {
+        'name={0} type={1} ip={2} cname={3} ttl={4}' -f
+            $_.Name, $_.Type, $_.IPAddress, $_.NameHost, $_.TTL
+    }) | Set-Content -LiteralPath $LogPath -Encoding UTF8
+    $addresses = @($records | Where-Object {
+            $_.Type -eq 'A' -and
+            -not [string]::IsNullOrWhiteSpace([string]$_.IPAddress)
+        } | ForEach-Object { [string]$_.IPAddress } | Select-Object -Unique)
+    if ($Target -notin $addresses) {
+        throw ('Reviewed IPv4 is no longer present in the current A set. ' +
+            'No alternate address was selected.')
+    }
+    Write-Host (('IP_ALLOW_DNS_FRESHNESS_OK hostname={0} ip={1} ' +
+        'resolver={2} addresses={3}') -f
+        $Hostname, $Target, $Resolver, ($addresses -join ','))
+    return $addresses
 }
 
 function Test-IPv4PrefixContains {
@@ -237,20 +294,22 @@ function Read-AndVerifyManifest {
     }
     $manifest = Get-Content -LiteralPath $path -Raw -Encoding UTF8 |
         ConvertFrom-Json
-    if ($manifest.policy_version -ne 'v6' -or
-            $manifest.plan_version -ne 'v4' -or
-            $manifest.package_version -ne 'v12' -or
+    if ($manifest.policy_version -ne 'v7' -or
+            $manifest.plan_version -ne 'v5' -or
+            $manifest.package_version -ne 'v13' -or
             ([string]$manifest.source_commit) -notmatch '^[0-9a-f]{40}$' -or
             $manifest.allowed_domain -ne 'api.deepseek.com' -or
-            $manifest.reviewed_ipv4_target -ne '192.168.204.1' -or
-            $manifest.negative_test_ipv4 -ne '192.168.204.2' -or
-            @($manifest.reviewed_ipv4_profiles).Count -ne 2 -or
+            $manifest.reviewed_hostname -ne 'www.baidu.com' -or
+            $manifest.reviewed_ipv4_target -ne '110.242.69.21' -or
+            $manifest.negative_test_ipv4 -ne '110.242.70.57' -or
+            $manifest.dns_freshness_required -ne $true -or
+            @($manifest.reviewed_ipv4_profiles).Count -ne 1 -or
             [int]$manifest.reviewed_route_probe_udp_port -ne 9 -or
             [int]$manifest.address_refresh_seconds -ne 5 -or
             $manifest.windows_build -ne '10.0.19045' -or
             $manifest.python_version -ne '3.13.7' -or
             $manifest.python_architecture -ne 'AMD64') {
-        throw 'The package manifest does not match reviewed v12 contracts.'
+        throw 'The package manifest does not match reviewed v13 contracts.'
     }
 
     $rootPath = (Resolve-Path -LiteralPath $Root).Path
@@ -422,7 +481,7 @@ function Get-ReviewedRulesValue {
         }
     }
     if ($occurrences -ne 1) {
-        throw 'ExternalAllowedIPv4Rules must occur exactly once in v12.'
+        throw 'ExternalAllowedIPv4Rules must occur exactly once in v13.'
     }
     return ($parts -join ' ').Trim()
 }
@@ -458,13 +517,8 @@ function Get-NormalizedReviewedRules {
                     ([int64]$port -lt 1 -or [int64]$port -gt 65535))) {
             throw "Invalid reviewed IPv4 or port: $token"
         }
-        $octets = $address.GetAddressBytes()
-        $isRfc1918 = ($octets[0] -eq 10 -or
-            ($octets[0] -eq 172 -and $octets[1] -ge 16 -and
-                $octets[1] -le 31) -or
-            ($octets[0] -eq 192 -and $octets[1] -eq 168))
-        if (-not $isRfc1918) {
-            throw "Reviewed IPv4 is not RFC1918: $token"
+        if (-not (Test-ReviewedGlobalIPv4 $ipv4)) {
+            throw "Reviewed IPv4 is not global unicast: $token"
         }
         $canonical = '{0}/{1}/{2}' -f $protocol, $ipv4, $port
         if ($normalized -contains $canonical) {
@@ -739,11 +793,15 @@ try {
     if (($expectedRuleIds -join ',') -ne ($manifestRuleIds -join ',')) {
         throw 'The reviewed IPv4 rule IDs do not match normalized rules.'
     }
+    if ($reviewedRules.Count -ne 1 -or
+            $reviewedRules[0] -ne 'TCP/110.242.69.21/443') {
+        throw 'The v13 activity profile must contain only TCP/110.242.69.21/443.'
+    }
     $reviewedTargetsFromRules = @($reviewedRules | ForEach-Object {
         $_.Split('/')[1]
     } | Select-Object -Unique)
-    if (($reviewedTargetsFromRules -join ',') -ne '192.168.204.1') {
-        throw 'The reviewed profile must target only 192.168.204.1.'
+    if (($reviewedTargetsFromRules -join ',') -ne '110.242.69.21') {
+        throw 'The reviewed profile must target only 110.242.69.21.'
     }
     $sourceTemplateText = Get-Content -LiteralPath $template -Raw
     if ($sourceTemplateText -match '(?m)^ExternalTakeover' -or
@@ -756,13 +814,17 @@ try {
     $resolver = [string]$selection.Address
     $localIPv4 = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
         Select-Object -ExpandProperty IPAddress)
-    if ($resolver -in @('192.168.204.1', '192.168.204.2') -or
-            '192.168.204.1' -in $localIPv4 -or
-            '192.168.204.2' -in $localIPv4) {
+    if ($resolver -in @('110.242.69.21', '110.242.70.57') -or
+            '110.242.69.21' -in $localIPv4 -or
+            '110.242.70.57' -in $localIPv4) {
         throw 'Reviewed or negative-test IPv4 conflicts with VM local/DNS state.'
     }
     Write-Host ('Using pre-start DNS: {0} ({1})' -f
         $resolver, $selection.InterfaceAlias) -ForegroundColor Cyan
+    Assert-ReviewedDnsFreshness -Hostname $manifest.reviewed_hostname `
+        -Target $manifest.reviewed_ipv4_target -Resolver $resolver `
+        -LogPath (Join-Path $script:LogDir 'reviewed-dns-freshness.log') |
+        Out-Null
 
     $reviewedTargets = @($reviewedTargetsFromRules | Sort-Object)
     $reviewedRoutes = @(
@@ -880,9 +942,10 @@ try {
     $script:StopFlag = Join-Path $script:LogDir 'stop-fakenet.flag'
 
     Write-Host ''
-    Write-Host ('Starting reviewed private IPv4 policy: {0}.' -f $Profile)
+    Write-Host ('Starting reviewed public IPv4 policy: {0}.' -f $Profile)
     Write-Host 'Real egress: api.deepseek.com TCP/443 exact TLS SNI.'
-    Write-Host 'Reviewed direct target: 192.168.204.1; takeover is disabled.'
+    Write-Host ('Reviewed direct target: 110.242.69.21 TCP/443 ' +
+        '(www.baidu.com); takeover is disabled.')
     Write-Host ('Plain logs: {0}' -f $script:LogDir)
     Write-Host ''
 
@@ -922,7 +985,7 @@ try {
         throw 'Takeover event appeared in the reviewed-IP profile.'
     }
 
-    Write-Host 'FakeNet-NG is READY. Generate reviewed private-IP traffic now.'
+    Write-Host 'FakeNet-NG is READY. Generate reviewed public-IP traffic now.'
     $stopRequested = Show-FakeNetLogUntilStop `
         -Process $script:FakeNetProcess -Path $fakeLog `
         -StopFlag $script:StopFlag

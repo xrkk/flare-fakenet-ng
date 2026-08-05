@@ -1,4 +1,4 @@
-"""Verify v12 reviewed-private-IPv4 acceptance tuples in a pktmon PCAPNG."""
+"""Verify v13 reviewed-public-IPv4 acceptance tuples in a pktmon PCAPNG."""
 
 import argparse
 import json
@@ -8,29 +8,15 @@ import dpkt
 
 
 MATRICES = {
-    "all_ports": {
+    "baidu_tcp443": {
         "allowed": (
-            ("TCP", "192.168.204.1", 1),
-            ("TCP", "192.168.204.1", 443),
-            ("TCP", "192.168.204.1", 65535),
-            ("UDP", "192.168.204.1", 1),
-            ("UDP", "192.168.204.1", 443),
-            ("UDP", "192.168.204.1", 65535),
-        ),
-        "denied": (),
-    },
-    "exact_ports": {
-        "allowed": (
-            ("TCP", "192.168.204.1", 443),
-            ("UDP", "192.168.204.1", 5000),
+            ("TCP", "110.242.69.21", 443),
         ),
         "denied": (
-            ("TCP", "192.168.204.1", 5000),
-            ("TCP", "192.168.204.1", 444),
-            ("UDP", "192.168.204.1", 443),
-            ("UDP", "192.168.204.1", 5001),
-            ("TCP", "192.168.204.2", 443),
-            ("UDP", "192.168.204.2", 5000),
+            ("TCP", "110.242.69.21", 80),
+            ("TCP", "110.242.69.21", 444),
+            ("UDP", "110.242.69.21", 443),
+            ("TCP", "110.242.70.57", 443),
         ),
     },
 }

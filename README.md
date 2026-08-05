@@ -90,48 +90,43 @@ host listener processed the connection safely nor that inbound return traffic
 is constrained by the new verdict. Host listener configuration is outside this
 feature.
 
-Windows reviewed private-IPv4 direct-egress extension
-================================================
+Windows reviewed public-IPv4 direct-egress extension
+====================================================
 
-The v12 package adds manifest-bound `ExternalAllowedIPv4Rules` to
-the Windows `DomainAllowList` policy. A rule is exactly
-`TCP|UDP/RFC1918-IPv4/*|port`. Only explicit addresses in `10/8`, `172.16/12`,
-or `192.168/16` are accepted; public and special-use addresses are rejected.
-`*` means ports 1 through 65535 for that protocol
-only; it does not authorize ICMP, IPv6, or the other transport protocol. Exact
-UDP/443 and UDP `*` intentionally override the normal QUIC block only for the
-reviewed IP. Reviewed-IP rules run before legacy FakeNet port blacklists.
+The v13 package adds manifest-bound `ExternalAllowedIPv4Rules` to the Windows
+`DomainAllowList` policy. The parser accepts only canonical global-unicast IPv4
+rules in `TCP|UDP/IPv4/*|port` form; RFC1918 and special-use addresses are
+rejected. The active v13 profile is deliberately narrower than the parser:
 
-This is direct network-layer authorization for every process in the VM. It
-does not verify SNI, certificates, application protocols, process identity, or
-content. An all-port rule can carry DNS, encrypted DNS, proxies, tunnels,
-scanning, or custom C2 traffic, and a shared/CDN IP can host unrelated services.
-The reviewed target's IPv4 TCP/UDP fragments are dropped before transport
-parsing, so fragmented traffic and large fragmented UDP datagrams are not
-supported.
+```
+TCP/110.242.69.21/443
+```
 
-The source template contains no active IP authorization. The v12 builder emits
-separately hashed `all_ports` and `exact_ports` profiles for `192.168.204.1`,
-plus an isolated takeover-regression profile. Each rule set is bound to the
-package manifest, config
-hash, stable rule IDs, source commit, and per-file hashes. The launcher accepts
-no rule input, performs a read-only batch route/source selection check with a
-two-second deadline, and never selects a backup IP, route, interface, gateway,
-or DNS server. Runtime route drift or query failure suspends the whole egress
-policy until restart. `IP_ALLOW_*` and `ALLOW_REVIEWED_IP_FIRST_FLOW` events
-record bounded metadata; they do not record payloads and do not prove that a
-remote service responded.
+It grants no UDP, other port, second address, hostname, IPv6, or ICMP rule. The
+address was selected from `www.baidu.com`; startup uses the VM's pre-existing
+resolver and fails closed unless the pinned address is still in the current A
+set. DNS rotation never authorizes a replacement address.
+
+This remains network-layer authorization for every process in the VM. It does
+not enforce runtime SNI, certificates, process identity, application protocol,
+or content. The VM runner separately fixes the connection to the reviewed IP,
+sends SNI `www.baidu.com`, and requires system certificate/hostname validation
+to prove service availability. Target fragments remain fail-closed.
+
+The source template contains no active IP authorization. The v13 builder emits
+one hashed `baidu_tcp443` profile plus an isolated takeover regression. The
+manifest binds the rule text, config hash, stable rule ID, source commit,
+dependencies, plan, and every packaged file. Public default/gateway/on-link
+routes are accepted only when Windows selects one unique best route and the
+no-payload UDP/9 source-selection probe agrees with its interface. Runtime
+route drift suspends the whole reviewed egress policy until restart.
 
 Run only in the reviewed snapshotted Windows VM. Use
-`Windows私网指定IPv4放行-v12.zip`, then double-click
-`test/domain_takeover_vm/Run-Tests.cmd`. The runner executes both reviewed-IP
-profiles and the takeover regression with a full stop/restoration boundary
-between them. Return the newest plain log directory and its independent PCAPNG
-files without compression. No DNS, IP, port, sample, or dependency input is
-requested. For interactive use, double-click
-`Start-ReviewedIPv4-AllPorts.cmd` or
-`Start-ReviewedIPv4-ExactPorts.cmd`; Ctrl+C or Enter performs the controlled
-stop and log drain.
+`Windows公网指定IPv4放行-v13.zip`, then double-click
+`test/domain_takeover_vm/Run-Tests.cmd`. Return the newest plain log directory
+and PCAPNG without compression. For interactive use, double-click
+`Start-ReviewedIPv4.cmd`; Ctrl+C or Enter performs the controlled stop and log
+drain.
 
 Installation
 ============
