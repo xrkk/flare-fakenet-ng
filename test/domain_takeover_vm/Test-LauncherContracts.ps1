@@ -105,8 +105,9 @@ try {
     Assert-Contract ($runnerRouteCalls.Count -eq 1) `
         'Runner must call Invoke-ReviewedRoutePreflight exactly once.'
     foreach ($required in @('WaitForExit(2000)',
+            'ElapsedMilliseconds -ge 15000',
             'Test-ReviewedIPv4Routes.ps1', 'RedirectStandardOutput',
-            'RedirectStandardError')) {
+            'RedirectStandardError', 'ReadyFile', 'GoFile')) {
         Assert-Contract ($runnerRouteDefinitions[0].Extent.Text.Contains($required)) `
             "Reviewed route runner gate is missing: $required"
     }
@@ -182,8 +183,10 @@ try {
     Assert-Contract $failed 'Reserved TCP/UDP option prefix was not rejected.'
     Add-Pass 'ReviewedRuleReservedOption'
 
-    foreach ($required in @('WaitForExit(2000)', 'Test-ReviewedIPv4Routes.ps1',
-            'RedirectStandardOutput', 'RedirectStandardError')) {
+    foreach ($required in @('WaitForExit(2000)',
+            'ElapsedMilliseconds -ge 15000',
+            'Test-ReviewedIPv4Routes.ps1', 'RedirectStandardOutput',
+            'RedirectStandardError', 'ReadyFile', 'GoFile')) {
         Assert-Contract ($reviewedRouteAst.Extent.Text.Contains($required)) `
             "Reviewed route launcher gate is missing: $required"
     }
@@ -193,7 +196,8 @@ try {
         'Test-ReviewedIPv4Routes.ps1'
     $routeCheckerText = Get-Content -LiteralPath $routeChecker -Raw
     foreach ($required in @('$routeProbeUdpPort = 9', '.Connect(',
-            'Get-NetRoute', 'Get-NetIPAddress', 'Get-NetIPInterface')) {
+            'Get-NetRoute', 'Get-NetIPAddress', 'Get-NetIPInterface',
+            'Import-Module NetTCPIP', 'ReadyFile', 'GoFile')) {
         Assert-Contract ($routeCheckerText.Contains($required)) `
             "Reviewed route checker is missing: $required"
     }

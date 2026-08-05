@@ -1,5 +1,9 @@
 [CmdletBinding()]
-param([Parameter(Mandatory = $true)][string]$TargetsBase64)
+param(
+    [Parameter(Mandatory = $true)][string]$TargetsBase64,
+    [Parameter(Mandatory = $true)][string]$ReadyFile,
+    [Parameter(Mandatory = $true)][string]$GoFile
+)
 
 $ErrorActionPreference = 'Stop'
 $routeProbeUdpPort = 9
@@ -29,6 +33,16 @@ $targets = @($json | ConvertFrom-Json)
 if ($targets.Count -lt 1 -or $targets.Count -gt 16 -or
         @($targets | Select-Object -Unique).Count -ne $targets.Count) {
     throw 'Reviewed route target collection is invalid.'
+}
+
+Import-Module NetTCPIP -ErrorAction Stop
+[IO.File]::WriteAllText($ReadyFile, 'ready', [Text.Encoding]::ASCII)
+$goDeadline = [Diagnostics.Stopwatch]::StartNew()
+while (-not (Test-Path -LiteralPath $GoFile)) {
+    if ($goDeadline.ElapsedMilliseconds -ge 15000) {
+        throw 'Reviewed route checker did not receive the GO signal.'
+    }
+    Start-Sleep -Milliseconds 10
 }
 
 $interfaces = @{}

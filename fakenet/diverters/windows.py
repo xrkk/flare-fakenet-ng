@@ -4,6 +4,7 @@
 
 import logging
 import ctypes
+import base64
 from collections import Counter, OrderedDict
 
 from pydivert.windivert import *
@@ -25,6 +26,7 @@ import subprocess
 import ipaddress
 import json
 import struct
+import tempfile
 
 _TAKEOVER_ROUTE_SCRIPT = r'''
 $ErrorActionPreference = 'Stop'
@@ -122,96 +124,6 @@ if ($source -notin $sourceAddresses) {
 
 ROUTE_PROBE_UDP_PORT = 9
 _REVIEWED_ROUTE_QUERY_TIMEOUT_SECONDS = 2
-_REVIEWED_ROUTE_SCRIPT = r'''
-$ErrorActionPreference = 'Stop'
-$targets = @(ConvertFrom-Json -InputObject '__TARGETS_JSON__')
-
-function Test-IPv4PrefixContains {
-    param([string]$Address, [string]$Prefix)
-    $parts = $Prefix.Split('/')
-    if ($parts.Count -ne 2) { return $false }
-    $length = [int]$parts[1]
-    if ($length -lt 0 -or $length -gt 32) { return $false }
-    $addressBytes = ([Net.IPAddress]::Parse($Address)).GetAddressBytes()
-    $networkBytes = ([Net.IPAddress]::Parse($parts[0])).GetAddressBytes()
-    $whole = [Math]::Floor($length / 8)
-    for ($index = 0; $index -lt $whole; $index++) {
-        if ($addressBytes[$index] -ne $networkBytes[$index]) { return $false }
-    }
-    $remainder = $length % 8
-    if ($remainder -eq 0) { return $true }
-    $mask = [int](256 - [Math]::Pow(2, 8 - $remainder))
-    return (($addressBytes[$whole] -band $mask) -eq
-        ($networkBytes[$whole] -band $mask))
-}
-
-$interfaces = @{}
-Get-NetIPInterface -AddressFamily IPv4 -ErrorAction Stop |
-    Where-Object ConnectionState -eq 'Connected' |
-    ForEach-Object { $interfaces[[int]$_.InterfaceIndex] = $_ }
-$routes = @(Get-NetRoute -AddressFamily IPv4 -PolicyStore ActiveStore `
-    -ErrorAction Stop)
-$results = @()
-
-foreach ($target in $targets) {
-    $target = [string]$target
-    $matches = @(
-        $routes | ForEach-Object {
-            $index = [int]$_.InterfaceIndex
-            if ($interfaces.ContainsKey($index) -and
-                    (Test-IPv4PrefixContains $target $_.DestinationPrefix)) {
-                $prefixLength = [int]$_.DestinationPrefix.Split('/')[1]
-                [PSCustomObject]@{
-                    Route = $_
-                    PrefixLength = $prefixLength
-                    TotalMetric = [uint64]$_.RouteMetric +
-                        [uint64]$interfaces[$index].InterfaceMetric
-                }
-            }
-        }
-    )
-    if ($matches.Count -eq 0) { throw "No route for $target" }
-    $bestPrefix = ($matches | Measure-Object PrefixLength -Maximum).Maximum
-    $prefixMatches = @($matches | Where-Object PrefixLength -eq $bestPrefix)
-    $bestMetric = ($prefixMatches | Measure-Object TotalMetric -Minimum).Minimum
-    $best = @($prefixMatches | Where-Object TotalMetric -eq $bestMetric)
-    if ($best.Count -ne 1) { throw "Ambiguous route for $target" }
-    $selected = $best[0]
-    $route = $selected.Route
-    $sourceAddresses = @(
-        Get-NetIPAddress -AddressFamily IPv4 `
-                -InterfaceIndex $route.InterfaceIndex -ErrorAction Stop |
-            Where-Object {
-                $_.AddressState -eq 'Preferred' -and -not $_.SkipAsSource
-            } | Select-Object -ExpandProperty IPAddress
-    )
-    $socket = New-Object Net.Sockets.Socket(
-        [Net.Sockets.AddressFamily]::InterNetwork,
-        [Net.Sockets.SocketType]::Dgram,
-        [Net.Sockets.ProtocolType]::Udp)
-    try {
-        $socket.Connect([Net.IPAddress]::Parse($target),
-            __ROUTE_PROBE_UDP_PORT__)
-        $source = [string]$socket.LocalEndPoint.Address
-    } finally {
-        $socket.Dispose()
-    }
-    if ($source -notin $sourceAddresses) {
-        throw "Selected source is not on the best interface for $target"
-    }
-    $results += [PSCustomObject]@{
-        target_ipv4 = $target
-        interface_index = [int]$route.InterfaceIndex
-        interface_alias = [string]$interfaces[[int]$route.InterfaceIndex].InterfaceAlias
-        source_ipv4 = $source
-        destination_prefix = [string]$route.DestinationPrefix
-        next_hop = [string]$route.NextHop
-        route_metric = [uint64]$route.RouteMetric
-        interface_metric = [uint64]$interfaces[[int]$route.InterfaceIndex].InterfaceMetric
-    }
-}
-@($results) | ConvertTo-Json -Compress
-'''
 
 from .egresspolicy import (EgressPolicy, PolicyConfigError,
                            ReviewedPacketTuple, Verdict)
@@ -559,26 +471,18 @@ class Diverter(DiverterBase, WinUtilMixin):
         targets = sorted({rule.ipv4 for rule in settings['rules']})
         if not targets:
             return ()
-        script = _REVIEWED_ROUTE_SCRIPT.replace(
-            '__TARGETS_JSON__', json.dumps(targets, separators=(',', ':')))
-        script = script.replace(
-            '__ROUTE_PROBE_UDP_PORT__', str(ROUTE_PROBE_UDP_PORT))
         try:
-            completed = subprocess.run(
-                ['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
-                 '-ExecutionPolicy', 'Bypass', '-Command', script],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, timeout=_REVIEWED_ROUTE_QUERY_TIMEOUT_SECONDS,
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            returncode, stdout, stderr = (
+                self._run_reviewed_route_checker(targets))
         except subprocess.TimeoutExpired as exc:
             raise PolicyConfigError(
                 'reviewed IPv4 route query exceeded 2 seconds') from exc
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout).strip()
+        if returncode != 0:
+            detail = (stderr or stdout).strip()
             raise PolicyConfigError(
                 'reviewed IPv4 route preflight failed: %s' % (
                     detail or 'PowerShell returned no diagnostic'))
-        lines = [line for line in completed.stdout.splitlines()
+        lines = [line for line in stdout.splitlines()
                  if line.strip()]
         if not lines:
             raise PolicyConfigError(
@@ -631,6 +535,53 @@ class Diverter(DiverterBase, WinUtilMixin):
             raise PolicyConfigError(
                 'reviewed IPv4 route snapshots do not match configured targets')
         return tuple(normalized)
+
+    def _run_reviewed_route_checker(self, targets):
+        checker = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), '..', '..',
+            'Test-ReviewedIPv4Routes.ps1'))
+        if not os.path.isfile(checker):
+            raise PolicyConfigError(
+                'reviewed IPv4 route checker is missing')
+        encoded = base64.b64encode(json.dumps(
+            list(targets), separators=(',', ':')).encode('utf-8')).decode(
+                'ascii')
+        with tempfile.TemporaryDirectory(
+                prefix='fakenet-reviewed-route-') as handshake:
+            ready_file = os.path.join(handshake, 'ready')
+            go_file = os.path.join(handshake, 'go')
+            process = subprocess.Popen(
+                ['powershell.exe', '-NoLogo', '-NoProfile',
+                 '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                 '-File', checker, '-TargetsBase64', encoded,
+                 '-ReadyFile', ready_file, '-GoFile', go_file],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            startup_deadline = time.monotonic() + 15
+            while not os.path.isfile(ready_file):
+                if process.poll() is not None:
+                    stdout, stderr = process.communicate()
+                    raise PolicyConfigError(
+                        'reviewed IPv4 route checker exited during startup: '
+                        '%s' % ((stderr or stdout).strip() or 'no output'))
+                if time.monotonic() >= startup_deadline:
+                    process.kill()
+                    process.communicate()
+                    raise PolicyConfigError(
+                        'reviewed IPv4 route checker startup exceeded '
+                        '15 seconds')
+                time.sleep(0.01)
+            with open(go_file, 'wb') as go_handle:
+                go_handle.write(b'go')
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=_REVIEWED_ROUTE_QUERY_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                raise
+            return process.returncode, stdout, stderr
 
     def _open_windivert_handle(self):
         if self.handle is not None:

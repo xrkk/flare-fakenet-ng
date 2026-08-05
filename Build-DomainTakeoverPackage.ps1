@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v15'
+$packageVersion = 'v16'
 $packageName = "Windows公网指定IPv4放行-$packageVersion"
 $planRelative = 'PLAN\2026.08.05\2026.08.05-01-Windows指定IPv4全端口及指定端口放行方案.md'
 $reviewedRouteProbeUdpPort = 9
@@ -70,7 +70,7 @@ function Test-ReviewedGlobalIPv4 {
 function Get-NormalizedReviewedRules {
     param([string]$Value)
     if ([string]::IsNullOrWhiteSpace($Value)) {
-        throw 'ExternalAllowedIPv4Rules must be present and non-empty for v15.'
+        throw 'ExternalAllowedIPv4Rules must be present and non-empty for v16.'
     }
     $parts = @($Value.Split(','))
     if ($parts.Count -gt 32 -or @($parts | Where-Object {
@@ -130,7 +130,7 @@ function Assert-ReviewedTemplate {
     }
     foreach ($comment in @(
             '# Build-only marker. The source template deliberately grants no public IPv4.',
-            '# The v15 builder emits one manifest-bound TCP/443 runtime profile from here.',
+            '# The v16 builder emits one manifest-bound TCP/443 runtime profile from here.',
             '# __REVIEWED_PUBLIC_IPV4_RULES__')) {
         $template = $template.Replace($comment + "`n", '')
     }
@@ -534,8 +534,9 @@ try {
     $windowsDiverterText = Get-Content -LiteralPath (
         Join-Path $stage 'fakenet\diverters\windows.py') -Raw
     foreach ($requiredMarker in @('ROUTE_PROBE_UDP_PORT = 9',
-            '__ROUTE_PROBE_UDP_PORT__',
             '_REVIEWED_ROUTE_QUERY_TIMEOUT_SECONDS = 2',
+            '_run_reviewed_route_checker', 'subprocess.Popen',
+            "'-ReadyFile'",
             'while not self._stopping.wait(5)')) {
         if (-not $windowsDiverterText.Contains($requiredMarker)) {
             throw "Windows reviewed-route contract is missing: $requiredMarker"
@@ -544,6 +545,9 @@ try {
     $routeCheckerText = Get-Content -LiteralPath (
         Join-Path $stage 'Test-ReviewedIPv4Routes.ps1') -Raw
     if (-not $routeCheckerText.Contains('$routeProbeUdpPort = 9') -or
+            -not $routeCheckerText.Contains('Import-Module NetTCPIP') -or
+            -not $routeCheckerText.Contains('ReadyFile') -or
+            -not $routeCheckerText.Contains('GoFile') -or
             $routeCheckerText.Contains('.Send(') -or
             $routeCheckerText.Contains('.SendTo(') -or
             $routeCheckerText.Contains('Default route is not permitted') -or

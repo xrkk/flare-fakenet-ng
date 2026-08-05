@@ -157,11 +157,17 @@ function Invoke-ReviewedRoutePreflight {
     $targetJson = ConvertTo-Json @($Targets) -Compress
     $encoded = [Convert]::ToBase64String(
         [Text.Encoding]::UTF8.GetBytes($targetJson))
+    $handshakeId = [Guid]::NewGuid().ToString('N')
+    $readyFile = Join-Path ([IO.Path]::GetTempPath()) (
+        'fakenet-reviewed-route-{0}.ready' -f $handshakeId)
+    $goFile = Join-Path ([IO.Path]::GetTempPath()) (
+        'fakenet-reviewed-route-{0}.go' -f $handshakeId)
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = 'powershell.exe'
     $startInfo.Arguments = ('-NoLogo -NoProfile -NonInteractive ' +
-        '-ExecutionPolicy Bypass -File "{0}" -TargetsBase64 {1}' -f
-        $scriptPath, $encoded)
+        '-ExecutionPolicy Bypass -File "{0}" -TargetsBase64 {1} ' +
+        '-ReadyFile "{2}" -GoFile "{3}"' -f
+        $scriptPath, $encoded, $readyFile, $goFile)
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
@@ -172,6 +178,19 @@ function Invoke-ReviewedRoutePreflight {
         if (-not $process.Start()) {
             throw 'Unable to start reviewed IPv4 route checker.'
         }
+        $startupDeadline = [Diagnostics.Stopwatch]::StartNew()
+        while (-not (Test-Path -LiteralPath $readyFile)) {
+            if ($process.WaitForExit(10)) {
+                $stderr = $process.StandardError.ReadToEnd().Trim()
+                throw ('Reviewed IPv4 route checker exited during startup: {0}' -f
+                    $(if ($stderr) { $stderr } else { 'no output' }))
+            }
+            if ($startupDeadline.ElapsedMilliseconds -ge 15000) {
+                try { $process.Kill() } catch {}
+                throw 'Reviewed IPv4 route checker startup exceeded 15 seconds.'
+            }
+        }
+        [IO.File]::WriteAllText($goFile, 'go', [Text.Encoding]::ASCII)
         if (-not $process.WaitForExit(2000)) {
             try { $process.Kill() } catch {}
             throw 'Reviewed IPv4 batch route query exceeded 2 seconds.'
@@ -192,6 +211,7 @@ function Invoke-ReviewedRoutePreflight {
         return $snapshots
     } finally {
         $process.Dispose()
+        Remove-Item -LiteralPath @($readyFile, $goFile) -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -205,7 +225,7 @@ function Read-AndVerifyManifest {
         ConvertFrom-Json
     if ($manifest.policy_version -ne 'v7' -or
             $manifest.plan_version -ne 'v5' -or
-            $manifest.package_version -ne 'v15' -or
+            $manifest.package_version -ne 'v16' -or
             ([string]$manifest.source_commit) -notmatch '^[0-9a-f]{40}$' -or
             $manifest.allowed_domain -ne 'api.deepseek.com' -or
             $manifest.reviewed_hostname -ne 'www.baidu.com' -or
@@ -218,7 +238,7 @@ function Read-AndVerifyManifest {
             $manifest.windows_build -ne '10.0.19045' -or
             $manifest.python_version -ne '3.13.7' -or
             $manifest.python_architecture -ne 'AMD64') {
-        throw 'The package manifest does not match reviewed v15 contracts.'
+        throw 'The package manifest does not match reviewed v16 contracts.'
     }
     $rootPath = (Resolve-Path -LiteralPath $Root).Path
     foreach ($entry in @($manifest.files)) {
@@ -331,7 +351,7 @@ function Send-ReviewedMatrixPacket {
             [Net.Sockets.ProtocolType]::Udp)
         try {
             $payload = [Text.Encoding]::ASCII.GetBytes(
-                'fakenet-reviewed-ip-v15')
+                'fakenet-reviewed-ip-v16')
             $sent = $socket.SendTo($payload,
                 [Net.IPEndPoint]::new([Net.IPAddress]::Parse($Target), $Port))
             $line = ('{0} proto=UDP ip={1} port={2} bytes={3}' -f
@@ -386,7 +406,7 @@ function Invoke-ReviewedRuleMatrix {
         Out-Null
     if ($Profile -ne 'baidu_tcp443' -or $Rules.Count -ne 1 -or
             $Rules[0] -ne 'TCP/110.242.69.21/443') {
-        throw 'Reviewed v15 matrix/profile contract mismatch.'
+        throw 'Reviewed v16 matrix/profile contract mismatch.'
     }
     Invoke-ReviewedBaiduTls -Target '110.242.69.21' `
         -Hostname 'www.baidu.com'
@@ -666,7 +686,7 @@ if (-not (Test-IsAdministrator)) {
 $script:RepoRoot = Resolve-RepositoryRoot
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $script:RunRoot = Join-Path $PSScriptRoot `
-        ("Logs\reviewed-ipv4-v15-{0}" -f $stamp)
+        ("Logs\reviewed-ipv4-v16-{0}" -f $stamp)
 New-Item -ItemType Directory -Path $script:RunRoot -Force | Out-Null
 $script:LogDir = $script:RunRoot
 $script:ResultFile = Join-Path $script:RunRoot 'results.tsv'
@@ -679,7 +699,7 @@ try {
     $os = Get-CimInstance Win32_OperatingSystem
     if ([string]$os.Version -ne [string]$manifest.windows_build -or
             -not [Environment]::Is64BitOperatingSystem) {
-        throw 'Windows build/architecture does not match reviewed v15.'
+        throw 'Windows build/architecture does not match reviewed v16.'
     }
     Add-Result 'WindowsBuild' 'PASS' ([string]$os.Version)
 
@@ -712,7 +732,7 @@ try {
     if ($identity.version -ne $manifest.python_version -or
             $identity.machine.ToUpperInvariant() -ne
                 $manifest.python_architecture) {
-        throw 'Python ABI does not match reviewed v15.'
+        throw 'Python ABI does not match reviewed v16.'
     }
 
     $venvRoot = Join-Path $script:RepoRoot '.venv-reviewed-ipv4'

@@ -696,17 +696,55 @@ class WindowsVerdictTests(unittest.TestCase):
             'route_metric': 10,
             'interface_metric': 20,
         }]
-        completed = mock.Mock(
-            returncode=0, stdout=json.dumps(valid), stderr='')
-
-        with mock.patch('fakenet.diverters.windows.subprocess.run',
-                        return_value=completed) as run:
+        with mock.patch.object(
+                diverter, '_run_reviewed_route_checker',
+                return_value=(0, json.dumps(valid), '')) as run:
             self.assertEqual(
                 tuple(valid), diverter._read_reviewed_ip_route_snapshots())
 
         self.assertEqual(ROUTE_PROBE_UDP_PORT, 9)
-        self.assertEqual(run.call_args.kwargs['timeout'], 2)
-        self.assertIn('110.242.69.21', run.call_args.args[0][-1])
+        run.assert_called_once_with(['110.242.69.21'])
+
+    def test_reviewed_route_deadline_starts_after_checker_ready(self):
+        diverter = Diverter.__new__(Diverter)
+        valid = [{'target_ipv4': '110.242.69.21'}]
+        observed = {}
+
+        class ReadyProcess(object):
+            returncode = 0
+
+            def __init__(self, args, **kwargs):
+                observed['process'] = self
+                observed['args'] = args
+                self.go_seen = False
+                self.timeout = None
+
+            def poll(self):
+                ready = pathlib.Path(
+                    observed['args'][observed['args'].index('-ReadyFile') + 1])
+                ready.write_text('ready', encoding='ascii')
+                return None
+
+            def communicate(self, timeout=None):
+                self.timeout = timeout
+                go = pathlib.Path(
+                    observed['args'][observed['args'].index('-GoFile') + 1])
+                self.go_seen = go.exists()
+                return json.dumps(valid), ''
+
+            def kill(self):
+                observed['killed'] = True
+
+        with mock.patch('fakenet.diverters.windows.subprocess.Popen',
+                        side_effect=ReadyProcess):
+            code, stdout, stderr = diverter._run_reviewed_route_checker(
+                ['110.242.69.21'])
+
+        self.assertEqual(0, code)
+        self.assertEqual(valid, json.loads(stdout))
+        self.assertEqual('', stderr)
+        self.assertTrue(observed['process'].go_seen)
+        self.assertEqual(2, observed['process'].timeout)
 
     def test_reviewed_public_route_accepts_default_and_gateway_paths(self):
         diverter = Diverter.__new__(Diverter)
@@ -727,10 +765,9 @@ class WindowsVerdictTests(unittest.TestCase):
                 {'destination_prefix': '110.242.69.21/32',
                  'next_hop': '0.0.0.0'}):
             snapshot = dict(base, **changed)
-            completed = mock.Mock(
-                returncode=0, stdout=json.dumps([snapshot]), stderr='')
-            with mock.patch('fakenet.diverters.windows.subprocess.run',
-                            return_value=completed):
+            with mock.patch.object(
+                    diverter, '_run_reviewed_route_checker',
+                    return_value=(0, json.dumps([snapshot]), '')):
                 self.assertEqual(
                     (snapshot,), diverter._read_reviewed_ip_route_snapshots())
 
@@ -738,8 +775,8 @@ class WindowsVerdictTests(unittest.TestCase):
         diverter = Diverter.__new__(Diverter)
         diverter.egress_policy = ReviewedRoutePolicy()
 
-        with mock.patch(
-                'fakenet.diverters.windows.subprocess.run',
+        with mock.patch.object(
+                diverter, '_run_reviewed_route_checker',
                 side_effect=subprocess.TimeoutExpired('powershell', 2)):
             with self.assertRaises(PolicyConfigError):
                 diverter._read_reviewed_ip_route_snapshots()
