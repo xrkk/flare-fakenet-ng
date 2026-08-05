@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v2'
+$packageVersion = 'v3'
 $packageName = "Windows双PCAP同步输出-$packageVersion"
 $fixedTimestamp = [DateTimeOffset]::new(
     [DateTime]::SpecifyKind([DateTime]'2000-01-01T00:00:00',

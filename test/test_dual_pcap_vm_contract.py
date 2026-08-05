@@ -24,7 +24,7 @@ class DualPcapVmContractTests(unittest.TestCase):
     def test_builder_uses_unique_versioned_name_without_sidecar(self):
         builder = (ROOT / 'Build-DualPcapVmPackage.ps1').read_text(
             encoding='utf-8')
-        self.assertIn('$packageVersion = \'v2\'', builder)
+        self.assertIn('$packageVersion = \'v3\'', builder)
         self.assertIn('Windows双PCAP同步输出-', builder)
         self.assertNotIn("Set-Content -LiteralPath ($zipPath + '.sha256')",
                          builder)
@@ -51,6 +51,22 @@ class DualPcapVmContractTests(unittest.TestCase):
             runner,
             re.compile(r'&\s+\$script:PythonExe[^\r\n]*\*>\&1\s*\|'))
         self.assertIn('print(r"""', fakenet)
+
+    def test_runner_bootstrap_handles_unicode_paths_and_early_exit(self):
+        runner = (ROOT / 'test/dual_pcap_vm/Run-DualPcapTests.ps1').read_text(
+            encoding='utf-8')
+
+        self.assertIn('$env:PYTHONPATH = $script:RepoRoot', runner)
+        self.assertIn("'fakenet_path': fakenet.__file__", runner)
+        self.assertIn("'utf8_mode': sys.flags.utf8_mode", runner)
+        self.assertGreaterEqual(runner.count('-X utf8'), 2)
+        self.assertNotIn('[Text.UTF8Encoding]::new($true)', runner)
+        self.assertRegex(
+            runner,
+            re.compile(
+                r'if \(\$process\.HasExited\) \{\s*'
+                r'\$process\.WaitForExit\(\)\s*\$process\.Refresh\(\)',
+                re.MULTILINE))
 
 
 if __name__ == '__main__':

@@ -4,6 +4,8 @@ param([string]$PythonPath = 'python.exe')
 $ErrorActionPreference = 'Stop'
 $script:ExitCode = 1
 $script:TranscriptStarted = $false
+$script:PythonPathWasPresent = Test-Path Env:PYTHONPATH
+$script:PreviousPythonPath = $env:PYTHONPATH
 . (Join-Path $PSScriptRoot 'Invoke-PythonLogged.ps1')
 
 function Test-IsAdministrator {
@@ -43,7 +45,7 @@ function Test-PackageManifest {
     }
     $manifest = Get-Content -LiteralPath $path -Raw -Encoding UTF8 |
         ConvertFrom-Json
-    if ($manifest.package_version -ne 'v2' -or
+    if ($manifest.package_version -ne 'v3' -or
             $manifest.plan_version -ne 'v2') {
         throw 'Package/plan version contract mismatch.'
     }
@@ -122,19 +124,19 @@ function New-LaunchCommand {
     $cmdPath = Join-Path $CaseDirectory 'launch.cmd'
     if ($FaultMode) {
         $launcher = Join-Path $PSScriptRoot 'fault_launcher.py'
-        $line = ('@"{0}" "{1}" --mode {2} --config "{3}" ' +
+        $line = ('@"{0}" -X utf8 "{1}" --mode {2} --config "{3}" ' +
             '--stop-flag "{4}" --log-file "{5}"') -f
             $script:PythonExe, $launcher, $FaultMode, $ConfigPath,
             $StopFlag, $LogFile
     } else {
-        $line = ('@"{0}" -m fakenet.fakenet --config-file "{1}" ' +
+        $line = ('@"{0}" -X utf8 -m fakenet.fakenet --config-file "{1}" ' +
             '--stop-flag "{2}" --log-file "{3}" --no-pause') -f
             $script:PythonExe, $ConfigPath, $StopFlag, $LogFile
     }
     [IO.File]::WriteAllText(
         $cmdPath, ("@echo off`r`n@chcp 65001 >nul`r`n" +
             "$line`r`nexit /b %ERRORLEVEL%`r`n"),
-        [Text.UTF8Encoding]::new($true))
+        [Text.UTF8Encoding]::new($false))
     return $cmdPath
 }
 
@@ -174,7 +176,7 @@ function Send-KnownTraffic {
                 [Net.Sockets.AddressFamily]::InterNetwork
             }
             $udp = [Net.Sockets.UdpClient]::new($family)
-            $bytes = [Text.Encoding]::ASCII.GetBytes('dual-pcap-v2')
+            $bytes = [Text.Encoding]::ASCII.GetBytes('dual-pcap-v3')
             $null = $udp.Send($bytes, $bytes.Length, $target[1], $target[2])
             $udp.Close()
             $messages += ('{0} sent {1}:{2}' -f $target[0], $target[1], $target[2])
@@ -222,7 +224,10 @@ function Invoke-FakeNetCase {
         $process.Refresh()
     }
     if ($process.HasExited) {
-        Add-Result ('Start-' + $CaseName) 'FAIL' ('exit=' + $process.ExitCode)
+        $process.WaitForExit()
+        $process.Refresh()
+        $earlyExitCode = $process.ExitCode
+        Add-Result ('Start-' + $CaseName) 'FAIL' ('exit=' + $earlyExitCode)
         Test-NetworkRestored $before $CaseName | Out-Null
         return $null
     }
@@ -285,11 +290,12 @@ try {
         throw 'REFUSED: this acceptance runner must execute in a virtual machine.'
     }
     $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    $env:PYTHONPATH = $script:RepoRoot
     Test-PackageManifest $script:RepoRoot
     $logsBase = Join-Path $PSScriptRoot 'Logs'
     New-Item -ItemType Directory -Path $logsBase -Force | Out-Null
     $script:LogRoot = Join-Path $logsBase (
-        'dual-pcap-v2-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        'dual-pcap-v3-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
     New-Item -ItemType Directory -Path $script:LogRoot -Force | Out-Null
     $script:ResultFile = Join-Path $script:LogRoot 'results.tsv'
     $script:AnyFailure = $false
@@ -306,11 +312,11 @@ try {
     if ($dependencyExit -ne 0) { throw 'Offline dependency installation failed.' }
 
     $identity = @'
-import json, platform, dpkt
-print(json.dumps({'python': platform.python_version(), 'machine': platform.machine(), 'dpkt': dpkt.__version__, 'dpkt_path': dpkt.__file__, 'dlt_raw': dpkt.pcap.DLT_RAW}, sort_keys=True))
+import json, platform, sys, dpkt, fakenet
+print(json.dumps({'python': platform.python_version(), 'machine': platform.machine(), 'dpkt': dpkt.__version__, 'dpkt_path': dpkt.__file__, 'dlt_raw': dpkt.pcap.DLT_RAW, 'fakenet_path': fakenet.__file__, 'utf8_mode': sys.flags.utf8_mode}, sort_keys=True))
 '@
     $identityExit = Invoke-PythonLogged -PythonExe $script:PythonExe `
-        -Arguments @('-') -InputText $identity `
+        -Arguments @('-X', 'utf8', '-') -InputText $identity `
         -LogPath (Join-Path $script:LogRoot 'python-identity.log')
     if ($identityExit -ne 0) { throw 'Python identity check failed.' }
     Add-Result 'Dependencies' 'PASS' 'offline lock and actual import verified'
@@ -366,6 +372,11 @@ print(json.dumps({'python': platform.python_version(), 'machine': platform.machi
     Write-Error $_
     $script:ExitCode = 1
 } finally {
+    if ($script:PythonPathWasPresent) {
+        $env:PYTHONPATH = $script:PreviousPythonPath
+    } else {
+        Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+    }
     if ($script:TranscriptStarted) { Stop-Transcript | Out-Null }
     if ($script:LogRoot) {
         Write-Host ('Plain logs available at: ' + $script:LogRoot)
