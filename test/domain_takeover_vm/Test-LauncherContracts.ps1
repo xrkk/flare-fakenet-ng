@@ -112,6 +112,19 @@ try {
     }
     Add-Pass 'RunnerReviewedRouteDeadlineStaticBoundary'
 
+    $runnerProfileDefinitions = @($runnerAst.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Invoke-ProfileRun'
+    }, $true))
+    Assert-Contract ($runnerProfileDefinitions.Count -eq 1) 'Runner must define Invoke-ProfileRun exactly once.'
+    $runnerProfileText = $runnerProfileDefinitions[0].Extent.Text
+    foreach ($required in @('FakeNet exited before readiness',
+            'fakenet-stderr.log', '.ExitCode')) {
+        Assert-Contract ($runnerProfileText.Contains($required)) "Runner early-exit readiness diagnostic is missing: $required"
+    }
+    Add-Pass 'RunnerReadinessEarlyExitStaticBoundary'
+
     $probeText = $probeAst.Extent.Text
     foreach ($required in @('IPAddress]::Parse', 'ConnectAsync', '.Wait(',
             '.Close()', '.Dispose()')) {

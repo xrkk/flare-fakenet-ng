@@ -422,7 +422,7 @@ class Diverter(DiverterBase, WinUtilMixin):
             self._validate_policy_listeners()
             reviewed = self.egress_policy.reviewed_ip_settings()
             self._reviewed_ip_audit = ReviewedIpFlowAudit(
-                rule.rule_id for rule in reviewed['rules'])
+                rule_ids=(rule.rule_id for rule in reviewed['rules']))
             self._reviewed_target_protocols = reviewed['target_protocols']
             if reviewed['enabled']:
                 self._reviewed_route_snapshots = (

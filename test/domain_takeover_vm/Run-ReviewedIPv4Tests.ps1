@@ -205,7 +205,7 @@ function Read-AndVerifyManifest {
         ConvertFrom-Json
     if ($manifest.policy_version -ne 'v7' -or
             $manifest.plan_version -ne 'v5' -or
-            $manifest.package_version -ne 'v14' -or
+            $manifest.package_version -ne 'v15' -or
             ([string]$manifest.source_commit) -notmatch '^[0-9a-f]{40}$' -or
             $manifest.allowed_domain -ne 'api.deepseek.com' -or
             $manifest.reviewed_hostname -ne 'www.baidu.com' -or
@@ -218,7 +218,7 @@ function Read-AndVerifyManifest {
             $manifest.windows_build -ne '10.0.19045' -or
             $manifest.python_version -ne '3.13.7' -or
             $manifest.python_architecture -ne 'AMD64') {
-        throw 'The package manifest does not match reviewed v14 contracts.'
+        throw 'The package manifest does not match reviewed v15 contracts.'
     }
     $rootPath = (Resolve-Path -LiteralPath $Root).Path
     foreach ($entry in @($manifest.files)) {
@@ -331,7 +331,7 @@ function Send-ReviewedMatrixPacket {
             [Net.Sockets.ProtocolType]::Udp)
         try {
             $payload = [Text.Encoding]::ASCII.GetBytes(
-                'fakenet-reviewed-ip-v14')
+                'fakenet-reviewed-ip-v15')
             $sent = $socket.SendTo($payload,
                 [Net.IPEndPoint]::new([Net.IPAddress]::Parse($Target), $Port))
             $line = ('{0} proto=UDP ip={1} port={2} bytes={3}' -f
@@ -386,7 +386,7 @@ function Invoke-ReviewedRuleMatrix {
         Out-Null
     if ($Profile -ne 'baidu_tcp443' -or $Rules.Count -ne 1 -or
             $Rules[0] -ne 'TCP/110.242.69.21/443') {
-        throw 'Reviewed v14 matrix/profile contract mismatch.'
+        throw 'Reviewed v15 matrix/profile contract mismatch.'
     }
     Invoke-ReviewedBaiduTls -Target '110.242.69.21' `
         -Hostname 'www.baidu.com'
@@ -519,14 +519,16 @@ function Invoke-ProfileRun {
 
         $script:StopFlag = Join-Path $profileDir 'stop-fakenet.flag'
         $fakeLog = Join-Path $profileDir 'fakenet.log'
+        $fakeStdout = Join-Path $profileDir 'fakenet-stdout.log'
+        $fakeStderr = Join-Path $profileDir 'fakenet-stderr.log'
         $arguments = @('-m', 'fakenet.fakenet', '-c',
             ('"{0}"' -f $runtimeConfig), '-l', ('"{0}"' -f $fakeLog),
             '-f', ('"{0}"' -f $script:StopFlag), '-p', '-v')
         $script:FakeNetProcess = Start-Process -FilePath $script:Python `
             -ArgumentList $arguments -WorkingDirectory $script:RepoRoot `
             -WindowStyle Hidden -PassThru `
-            -RedirectStandardOutput (Join-Path $profileDir 'fakenet-stdout.log') `
-            -RedirectStandardError (Join-Path $profileDir 'fakenet-stderr.log')
+            -RedirectStandardOutput $fakeStdout `
+            -RedirectStandardError $fakeStderr
         $script:FakeNetProcess.EnableRaisingEvents = $true
         $null = $script:FakeNetProcess.Handle
 
@@ -534,7 +536,21 @@ function Invoke-ProfileRun {
         for ($index = 0; $index -lt 30; $index++) {
             Start-Sleep -Seconds 1
             $script:FakeNetProcess.Refresh()
-            if ($script:FakeNetProcess.HasExited) { break }
+            if ($script:FakeNetProcess.HasExited) {
+                $stderrSummary = 'no stderr'
+                if ((Test-Path -LiteralPath $fakeStderr) -and
+                        (Get-Item -LiteralPath $fakeStderr).Length -gt 0) {
+                    $stderrLines = @(Get-Content -LiteralPath $fakeStderr `
+                        -Tail 12 -ErrorAction SilentlyContinue |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                    if ($stderrLines.Count -gt 0) {
+                        $stderrSummary = ($stderrLines -join ' | ')
+                    }
+                }
+                throw ('FakeNet exited before readiness: {0}/{1}; ' +
+                    'exit_code={2}; stderr={3}' -f $Name, $ReadyEvent,
+                    $script:FakeNetProcess.ExitCode, $stderrSummary)
+            }
             if ((Test-Path $fakeLog) -and
                     (Select-String $fakeLog -Pattern $ReadyEvent -Quiet)) {
                 $ready = $true
@@ -650,7 +666,7 @@ if (-not (Test-IsAdministrator)) {
 $script:RepoRoot = Resolve-RepositoryRoot
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $script:RunRoot = Join-Path $PSScriptRoot `
-        ("Logs\reviewed-ipv4-v14-{0}" -f $stamp)
+        ("Logs\reviewed-ipv4-v15-{0}" -f $stamp)
 New-Item -ItemType Directory -Path $script:RunRoot -Force | Out-Null
 $script:LogDir = $script:RunRoot
 $script:ResultFile = Join-Path $script:RunRoot 'results.tsv'
@@ -663,7 +679,7 @@ try {
     $os = Get-CimInstance Win32_OperatingSystem
     if ([string]$os.Version -ne [string]$manifest.windows_build -or
             -not [Environment]::Is64BitOperatingSystem) {
-        throw 'Windows build/architecture does not match reviewed v14.'
+        throw 'Windows build/architecture does not match reviewed v15.'
     }
     Add-Result 'WindowsBuild' 'PASS' ([string]$os.Version)
 
@@ -696,7 +712,7 @@ try {
     if ($identity.version -ne $manifest.python_version -or
             $identity.machine.ToUpperInvariant() -ne
                 $manifest.python_architecture) {
-        throw 'Python ABI does not match reviewed v14.'
+        throw 'Python ABI does not match reviewed v15.'
     }
 
     $venvRoot = Join-Path $script:RepoRoot '.venv-reviewed-ipv4'

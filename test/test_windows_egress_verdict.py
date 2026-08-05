@@ -1,3 +1,4 @@
+import ast
 import configparser
 import json
 import pathlib
@@ -147,6 +148,22 @@ class WindowsVerdictTests(unittest.TestCase):
         self.diverter.pdebug_level = 0
         self.diverter.pdebug_labels = {}
         self.diverter._reviewed_target_protocols = frozenset()
+
+    def test_reviewed_audit_rule_ids_are_keyword_bound_at_constructor(self):
+        source_path = pathlib.Path(__file__).parents[1] / (
+            'fakenet/diverters/windows.py')
+        module = ast.parse(source_path.read_text(encoding='utf-8'))
+        calls = [
+            node for node in ast.walk(module)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == 'ReviewedIpFlowAudit'
+            and (node.args or node.keywords)
+        ]
+        self.assertEqual(1, len(calls))
+        self.assertEqual([], calls[0].args)
+        self.assertEqual(['rule_ids'],
+                         [keyword.arg for keyword in calls[0].keywords])
 
     def test_external_is_dropped_even_after_ignore_paths(self):
         self.assertEqual(
