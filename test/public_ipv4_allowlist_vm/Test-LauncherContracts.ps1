@@ -101,6 +101,8 @@ try {
     $reviewedDnsAst = Import-ReviewedFunction $ast 'Assert-ReviewedDnsFreshness'
     $reviewedRouteAst = Import-ReviewedFunction $ast 'Invoke-ReviewedRoutePreflight'
     Assert-RouteArgumentFormatting $reviewedRouteAst
+    $launcherTrafficReadyAst = Import-ReviewedFunction $ast `
+        'Test-FakeNetTrafficReady'
     $probeAst = Import-ReviewedFunction $ast 'Invoke-TakeoverProbe'
     $stopReasonAst = Import-ReviewedFunction $ast 'Get-FakeNetStopReason'
     $liveLogAst = Import-ReviewedFunction $ast 'Show-FakeNetLogUntilStop'
@@ -125,6 +127,8 @@ try {
     Assert-Contract ($runnerRouteCalls.Count -eq 1) `
         'Runner must call Invoke-ReviewedRoutePreflight exactly once.'
     Assert-RouteArgumentFormatting $runnerRouteDefinitions[0]
+    $runnerTrafficReadyAst = Import-ReviewedFunction $runnerAst `
+        'Test-FakeNetTrafficReady'
     foreach ($required in @('WaitForExit(2000)',
             'ElapsedMilliseconds -ge 15000',
             'Test-ReviewedIPv4Routes.ps1', 'RedirectStandardOutput',
@@ -146,6 +150,26 @@ try {
         Assert-Contract ($runnerProfileText.Contains($required)) "Runner early-exit readiness diagnostic is missing: $required"
     }
     Add-Pass 'RunnerReadinessEarlyExitStaticBoundary'
+
+    foreach ($readyContract in @(
+            [PSCustomObject]@{ Name='Launcher'; Ast=$launcherTrafficReadyAst },
+            [PSCustomObject]@{ Name='Runner'; Ast=$runnerTrafficReadyAst })) {
+        $readyPath = Join-Path $LogDirectory (
+            'traffic-ready-{0}.log' -f $readyContract.Name.ToLowerInvariant())
+        Set-Content -LiteralPath $readyPath -Value 'IP_ALLOW_READY' `
+            -Encoding ASCII
+        Assert-Contract (-not (Test-FakeNetTrafficReady $readyPath)) `
+            "$($readyContract.Name) accepted constructor-only readiness."
+        Add-Content -LiteralPath $readyPath `
+            -Value 'DOMAIN_ALLOWLIST_READY' -Encoding ASCII
+        Assert-Contract (Test-FakeNetTrafficReady $readyPath) `
+            "$($readyContract.Name) rejected complete traffic readiness."
+        foreach ($required in @('IP_ALLOW_READY', 'DOMAIN_ALLOWLIST_READY')) {
+            Assert-Contract ($readyContract.Ast.Extent.Text.Contains($required)) `
+                "$($readyContract.Name) traffic gate omitted: $required"
+        }
+    }
+    Add-Pass 'ReviewedTrafficReadyRequiresPolicyAndWinDivert'
 
     $probeText = $probeAst.Extent.Text
     foreach ($required in @('IPAddress]::Parse', 'ConnectAsync', '.Wait(',

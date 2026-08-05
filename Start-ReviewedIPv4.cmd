@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title FakeNet-NG - Windows Public IPv4 TCP 443 v17
+title FakeNet-NG - Windows Public IPv4 TCP 443 v18
 
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Start-ReviewedIPv4.ps1" -Profile baidu_tcp443
 set "FAKENET_EXIT=%ERRORLEVEL%"

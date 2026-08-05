@@ -93,10 +93,10 @@ feature.
 Windows reviewed public-IPv4 direct-egress extension
 ====================================================
 
-The v17 package adds manifest-bound `ExternalAllowedIPv4Rules` to the Windows
+The v18 package adds manifest-bound `ExternalAllowedIPv4Rules` to the Windows
 `DomainAllowList` policy. The parser accepts only canonical global-unicast IPv4
 rules in `TCP|UDP/IPv4/*|port` form; RFC1918 and special-use addresses are
-rejected. The active v17 profile is deliberately narrower than the parser:
+rejected. The active v18 profile is deliberately narrower than the parser:
 
 ```
 TCP/110.242.69.21/443
@@ -111,9 +111,11 @@ This remains network-layer authorization for every process in the VM. It does
 not enforce runtime SNI, certificates, process identity, application protocol,
 or content. The VM runner separately fixes the connection to the reviewed IP,
 sends SNI `www.baidu.com`, and requires system certificate/hostname validation
-to prove service availability. Target fragments remain fail-closed.
+to prove service availability. The launcher and VM runner do not declare
+traffic readiness until both the reviewed-IP policy and the WinDivert data
+plane report ready. Target fragments remain fail-closed.
 
-The source template contains no active IP authorization. The v17 builder emits
+The source template contains no active IP authorization. The v18 builder emits
 one hashed `baidu_tcp443` profile plus an isolated takeover regression. The
 manifest binds the rule text, config hash, stable rule ID, source commit,
 dependencies, plan, and every packaged file. Public default/gateway/on-link
@@ -122,7 +124,7 @@ no-payload UDP/9 source-selection probe agrees with its interface. Runtime
 route drift suspends the whole reviewed egress policy until restart.
 
 Run only in the reviewed snapshotted Windows VM. Use
-`Windows公网指定IPv4放行-v17.zip`, then double-click
+`Windows公网指定IPv4放行-v18.zip`, then double-click
 `test/public_ipv4_allowlist_vm/Run-Tests.cmd`. Return the newest plain log directory
 and PCAPNG without compression. For interactive use, double-click
 `Start-ReviewedIPv4.cmd`; Ctrl+C or Enter performs the controlled stop and log

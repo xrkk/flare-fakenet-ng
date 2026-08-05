@@ -296,7 +296,7 @@ function Read-AndVerifyManifest {
         ConvertFrom-Json
     if ($manifest.policy_version -ne 'v7' -or
             $manifest.plan_version -ne 'v5' -or
-            $manifest.package_version -ne 'v17' -or
+            $manifest.package_version -ne 'v18' -or
             ([string]$manifest.source_commit) -notmatch '^[0-9a-f]{40}$' -or
             $manifest.allowed_domain -ne 'api.deepseek.com' -or
             $manifest.reviewed_hostname -ne 'www.baidu.com' -or
@@ -309,7 +309,7 @@ function Read-AndVerifyManifest {
             $manifest.windows_build -ne '10.0.19045' -or
             $manifest.python_version -ne '3.13.7' -or
             $manifest.python_architecture -ne 'AMD64') {
-        throw 'The package manifest does not match reviewed v17 contracts.'
+        throw 'The package manifest does not match reviewed v18 contracts.'
     }
 
     $rootPath = (Resolve-Path -LiteralPath $Root).Path
@@ -481,7 +481,7 @@ function Get-ReviewedRulesValue {
         }
     }
     if ($occurrences -ne 1) {
-        throw 'ExternalAllowedIPv4Rules must occur exactly once in v17.'
+        throw 'ExternalAllowedIPv4Rules must occur exactly once in v18.'
     }
     return ($parts -join ' ').Trim()
 }
@@ -617,6 +617,15 @@ function Invoke-ReviewedRoutePreflight {
         $process.Dispose()
         Remove-Item -LiteralPath @($readyFile, $goFile) -Force -ErrorAction SilentlyContinue
     }
+}
+
+function Test-FakeNetTrafficReady {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    $text = [string](Get-Content -LiteralPath $Path -Raw `
+        -ErrorAction SilentlyContinue)
+    return ($text.Contains('IP_ALLOW_READY') -and
+        $text.Contains('DOMAIN_ALLOWLIST_READY'))
 }
 
 function Read-FakeNetStopReason {
@@ -815,7 +824,7 @@ try {
     }
     if ($reviewedRules.Count -ne 1 -or
             $reviewedRules[0] -ne 'TCP/110.242.69.21/443') {
-        throw 'The v17 activity profile must contain only TCP/110.242.69.21/443.'
+        throw 'The v18 activity profile must contain only TCP/110.242.69.21/443.'
     }
     $reviewedTargetsFromRules = @($reviewedRules | ForEach-Object {
         $_.Split('/')[1]
@@ -990,8 +999,7 @@ try {
         Start-Sleep -Seconds 1
         $script:FakeNetProcess.Refresh()
         if ($script:FakeNetProcess.HasExited) { break }
-        if ((Test-Path -LiteralPath $fakeLog) -and
-                (Select-String -LiteralPath $fakeLog -Pattern 'IP_ALLOW_READY' -Quiet)) {
+        if (Test-FakeNetTrafficReady $fakeLog) {
             $ready = $true
             break
         }

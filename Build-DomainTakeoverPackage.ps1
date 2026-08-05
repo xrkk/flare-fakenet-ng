@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v17'
+$packageVersion = 'v18'
 $packageName = "Windows公网指定IPv4放行-$packageVersion"
 $planRelative = 'PLAN\2026.08.05\2026.08.05-01-Windows指定IPv4全端口及指定端口放行方案.md'
 $reviewedRouteProbeUdpPort = 9
@@ -70,7 +70,7 @@ function Test-ReviewedGlobalIPv4 {
 function Get-NormalizedReviewedRules {
     param([string]$Value)
     if ([string]::IsNullOrWhiteSpace($Value)) {
-        throw 'ExternalAllowedIPv4Rules must be present and non-empty for v17.'
+        throw 'ExternalAllowedIPv4Rules must be present and non-empty for v18.'
     }
     $parts = @($Value.Split(','))
     if ($parts.Count -gt 32 -or @($parts | Where-Object {
@@ -130,7 +130,7 @@ function Assert-ReviewedTemplate {
     }
     foreach ($comment in @(
             '# Build-only marker. The source template deliberately grants no public IPv4.',
-            '# The v17 builder emits one manifest-bound TCP/443 runtime profile from here.',
+            '# The v18 builder emits one manifest-bound TCP/443 runtime profile from here.',
             '# __REVIEWED_PUBLIC_IPV4_RULES__')) {
         $template = $template.Replace($comment + "`n", '')
     }
@@ -529,7 +529,8 @@ try {
             'IP_ALLOW_DNS_FRESHNESS_OK', 'Assert-ReviewedDnsFreshness',
             'Invoke-ReviewedRoutePreflight', 'WaitForExit(2000)',
             'DNS restoration check', 'TreatControlCAsInput',
-            'Show-FakeNetLogUntilStop', 'Ctrl+C')) {
+            'Show-FakeNetLogUntilStop', 'Test-FakeNetTrafficReady',
+            'DOMAIN_ALLOWLIST_READY', 'Ctrl+C')) {
         if ($launcherText -notmatch [regex]::Escape($requiredMarker)) {
             throw "Launcher is missing required marker: $requiredMarker"
         }

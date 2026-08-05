@@ -1,10 +1,12 @@
-# Windows public reviewed-IPv4 v17 VM acceptance
+# Windows public reviewed-IPv4 v18 VM acceptance
 
 Run only inside the reviewed, snapshotted Windows VM. Double-click
 `Run-Tests.cmd`; there are no DNS, IP, port, sample, Python-package, or
 dependency prompts. The runner elevates itself, uses the VM's existing
 default-route DNS, creates a package-local virtual environment, and installs
-only the hash-locked bundled wheels.
+only the hash-locked bundled wheels. It sends no matrix traffic until both
+`IP_ALLOW_READY` and `DOMAIN_ALLOWLIST_READY` are present, so WinDivert is
+active before the positive connection starts.
 
 The runner refuses a physical host, an unexpected Windows/Python build, an
 altered package, a DNS result that no longer contains `110.242.69.21`, or a
