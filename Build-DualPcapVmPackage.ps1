@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v4'
+$packageVersion = 'v5'
 $packageName = "Windows双PCAP同步输出-$packageVersion"
 $fixedTimestamp = [DateTimeOffset]::new(
     [DateTime]::SpecifyKind([DateTime]'2000-01-01T00:00:00',
@@ -106,7 +106,9 @@ try {
         'test\dual_pcap_vm\Run-DualPcapTests.ps1',
         'test\dual_pcap_vm\Invoke-PythonLogged.ps1',
         'test\dual_pcap_vm\Read-ExitCodeEvidence.ps1',
+        'test\dual_pcap_vm\ConsoleStopSignal.ps1',
         'test\dual_pcap_vm\Test-ExitCodeEvidence.ps1',
+        'test\dual_pcap_vm\Test-ConsoleStopSignal.ps1',
         'test\dual_pcap_vm\Test-PythonWarningHandling.ps1',
         'test\dual_pcap_vm\verify_dual_pcap.py',
         'test\dual_pcap_vm\fault_launcher.py',
@@ -128,7 +130,8 @@ try {
         Join-Path $stage 'test\dual_pcap_vm\Run-DualPcapTests.ps1') -Raw
     foreach ($requiredMarker in @(
             'Test-IsVirtualMachine', '--no-index', '--require-hashes',
-            'TreatControlCAsInput', 'raw-write', 'ethernet-write',
+            'ConsoleStopSignal.ps1', 'Test-ConsoleStopRequested',
+            'raw-write', 'ethernet-write',
             'PerformanceGate', 'Test-NetworkRestored', 'Plain logs available')) {
         if (-not $runnerText.Contains($requiredMarker)) {
             throw ('VM runner contract is missing: ' + $requiredMarker)
@@ -157,7 +160,7 @@ try {
     $manifest = [ordered]@{
         schema_version = 1
         package_version = $packageVersion
-        plan_version = 'v3'
+        plan_version = 'v4'
         source_commit = $resolvedCommit
         windows_build = '10.0.19045'
         python_version = '3.13.7'

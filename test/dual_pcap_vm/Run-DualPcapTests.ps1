@@ -4,10 +4,12 @@ param([string]$PythonPath = 'python.exe')
 $ErrorActionPreference = 'Stop'
 $script:ExitCode = 1
 $script:TranscriptStarted = $false
+$script:ConsoleStopRegistered = $false
 $script:PythonPathWasPresent = Test-Path Env:PYTHONPATH
 $script:PreviousPythonPath = $env:PYTHONPATH
 . (Join-Path $PSScriptRoot 'Invoke-PythonLogged.ps1')
 . (Join-Path $PSScriptRoot 'Read-ExitCodeEvidence.ps1')
+. (Join-Path $PSScriptRoot 'ConsoleStopSignal.ps1')
 
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -46,8 +48,8 @@ function Test-PackageManifest {
     }
     $manifest = Get-Content -LiteralPath $path -Raw -Encoding UTF8 |
         ConvertFrom-Json
-    if ($manifest.package_version -ne 'v4' -or
-            $manifest.plan_version -ne 'v3') {
+    if ($manifest.package_version -ne 'v5' -or
+            $manifest.plan_version -ne 'v4') {
         throw 'Package/plan version contract mismatch.'
     }
     foreach ($file in @($manifest.files)) {
@@ -176,7 +178,7 @@ function Send-KnownTraffic {
         try {
             $udp = [Net.Sockets.UdpClient]::new(
                 [Net.Sockets.AddressFamily]::InterNetwork)
-            $bytes = [Text.Encoding]::ASCII.GetBytes('dual-pcap-v4')
+            $bytes = [Text.Encoding]::ASCII.GetBytes('dual-pcap-v5')
             $null = $udp.Send($bytes, $bytes.Length, $target[1], $target[2])
             $udp.Close()
             $messages += ('{0} sent {1}:{2}' -f $target[0], $target[1], $target[2])
@@ -244,28 +246,22 @@ function Invoke-FakeNetCase {
         Write-Host ''
         Write-Host 'FakeNet-NG is READY. Known IPv4 traffic was generated.'
         Write-Host 'Press Ctrl+C or Enter to request a safe stop.'
-        $oldMode = [Console]::TreatControlCAsInput
-        [Console]::TreatControlCAsInput = $true
         $lineCount = 0
-        try {
-            while (-not $process.HasExited) {
-                Write-NewLogLines $logFile ([ref]$lineCount)
-                if ([Console]::KeyAvailable) {
-                    $key = [Console]::ReadKey($true)
-                    if ($key.Key -eq [ConsoleKey]::Enter -or
-                            ($key.Modifiers -band [ConsoleModifiers]::Control -and
-                             $key.Key -eq [ConsoleKey]::C)) {
-                        Stop-CaseProcess $process $stopFlag $CaseName
-                        break
-                    }
-                }
-                Start-Sleep -Milliseconds 100
-                $process.Refresh()
-            }
+        while (-not $process.HasExited) {
             Write-NewLogLines $logFile ([ref]$lineCount)
-        } finally {
-            [Console]::TreatControlCAsInput = $oldMode
+            $stopRequested = Test-ConsoleStopRequested
+            if (-not $stopRequested -and [Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                $stopRequested = $key.Key -eq [ConsoleKey]::Enter
+            }
+            if ($stopRequested) {
+                Stop-CaseProcess $process $stopFlag $CaseName
+                break
+            }
+            Start-Sleep -Milliseconds 100
+            $process.Refresh()
         }
+        Write-NewLogLines $logFile ([ref]$lineCount)
     } elseif ($FaultMode -eq 'close') {
         Stop-CaseProcess $process $stopFlag $CaseName
     } else {
@@ -307,7 +303,7 @@ try {
     $logsBase = Join-Path $PSScriptRoot 'Logs'
     New-Item -ItemType Directory -Path $logsBase -Force | Out-Null
     $script:LogRoot = Join-Path $logsBase (
-        'dual-pcap-v4-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        'dual-pcap-v5-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
     New-Item -ItemType Directory -Path $script:LogRoot -Force | Out-Null
     $script:ResultFile = Join-Path $script:LogRoot 'results.tsv'
     $script:AnyFailure = $false
@@ -349,7 +345,14 @@ print(json.dumps({'python': platform.python_version(), 'machine': platform.machi
         if ($performanceExit -eq 0) { Add-Result 'PerformanceGate' 'PASS' }
         else { Add-Result 'PerformanceGate' 'FAIL' ('exit=' + $performanceExit) }
 
-        $normal = Invoke-FakeNetCase 'normal-ctrl-c' -Interactive
+        Initialize-ConsoleStopSignal
+        $script:ConsoleStopRegistered = $true
+        try {
+            $normal = Invoke-FakeNetCase 'normal-ctrl-c' -Interactive
+        } finally {
+            Remove-ConsoleStopSignal
+            $script:ConsoleStopRegistered = $false
+        }
         if ($normal) {
             $raw = @(Get-ChildItem -LiteralPath $normal -Filter 'packets_*.pcap' |
                 Where-Object Name -NotLike '*-converted.pcap')
@@ -385,6 +388,17 @@ print(json.dumps({'python': platform.python_version(), 'machine': platform.machi
     Write-Error $_
     $script:ExitCode = 1
 } finally {
+    if ($script:ConsoleStopRegistered) {
+        try {
+            Remove-ConsoleStopSignal
+            $script:ConsoleStopRegistered = $false
+        } catch {
+            if ($script:ResultFile) {
+                Add-Result 'ConsoleHandlerCleanup' 'FAIL' $_.Exception.Message
+            }
+            $script:ExitCode = 1
+        }
+    }
     if ($script:PythonPathWasPresent) {
         $env:PYTHONPATH = $script:PreviousPythonPath
     } else {

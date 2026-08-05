@@ -12,7 +12,8 @@ class DualPcapVmContractTests(unittest.TestCase):
             encoding='utf-8')
         for required in (
                 'Test-IsVirtualMachine', '--no-index', '--require-hashes',
-                'TreatControlCAsInput', 'Plain logs available at:',
+                'ConsoleStopSignal.ps1', 'Test-ConsoleStopRequested',
+                'Plain logs available at:',
                 "@('raw-write', 'ethernet-write', 'close')",
                 'Test-NetworkRestored', 'benchmark_dual_pcap.py'):
             self.assertIn(required, runner)
@@ -24,7 +25,7 @@ class DualPcapVmContractTests(unittest.TestCase):
     def test_builder_uses_unique_versioned_name_without_sidecar(self):
         builder = (ROOT / 'Build-DualPcapVmPackage.ps1').read_text(
             encoding='utf-8')
-        self.assertIn('$packageVersion = \'v4\'', builder)
+        self.assertIn('$packageVersion = \'v5\'', builder)
         self.assertIn('Windows双PCAP同步输出-', builder)
         self.assertNotIn("Set-Content -LiteralPath ($zipPath + '.sha256')",
                          builder)
@@ -86,6 +87,21 @@ class DualPcapVmContractTests(unittest.TestCase):
         self.assertIn("default=[4]", verifier)
         self.assertIn("'--expected-versions', '4'", runner)
         self.assertIn("'^([0-9]|[1-9][0-9]{1,2})$'", helper)
+
+    def test_ctrl_c_uses_native_handler_without_powershell_pipeline_cancel(self):
+        runner = (ROOT / 'test/dual_pcap_vm/Run-DualPcapTests.ps1').read_text(
+            encoding='utf-8')
+        helper = (ROOT / 'test/dual_pcap_vm/ConsoleStopSignal.ps1').read_text(
+            encoding='utf-8')
+        builder = (ROOT / 'Build-DualPcapVmPackage.ps1').read_text(
+            encoding='utf-8')
+
+        self.assertNotIn('TreatControlCAsInput', runner)
+        self.assertIn('Initialize-ConsoleStopSignal', runner)
+        self.assertIn('Remove-ConsoleStopSignal', runner)
+        self.assertIn('SetConsoleCtrlHandler', helper)
+        self.assertIn('Interlocked.Exchange(ref requested, 1)', helper)
+        self.assertIn('Test-ConsoleStopSignal.ps1', builder)
 
 
 if __name__ == '__main__':
