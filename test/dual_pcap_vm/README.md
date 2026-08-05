@@ -1,4 +1,4 @@
-# Windows 双 PCAP v1 虚拟机验收
+# Windows 双 PCAP v2 虚拟机验收
 
 在已拍快照的 Windows 虚拟机中双击 `Run-Tests.cmd`。脚本不要求填写 DNS、路径或故障参数；若权限不足会触发一次 Windows UAC。正常运行阶段会持续显示 FakeNet-NG 明文日志，按 `Ctrl+C` 或 Enter 请求安全停止。
 

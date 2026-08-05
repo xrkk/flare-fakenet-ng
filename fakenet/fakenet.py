@@ -497,7 +497,7 @@ def main():
     # Wrap everything in try/except for SystemExit to require confirmation
     # before closing the console window
     try:
-        print("""
+        print(r"""
 ______      _  ________ _   _ ______ _______     _   _  _____
 |  ____/\   | |/ /  ____| \ | |  ____|__   __|   | \ | |/ ____|
 | |__ /  \  | ' /| |__  |  \| | |__     | |______|  \| | |  __

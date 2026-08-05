@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v1'
+$packageVersion = 'v2'
 $packageName = "Windows双PCAP同步输出-$packageVersion"
 $fixedTimestamp = [DateTimeOffset]::new(
     [DateTime]::SpecifyKind([DateTime]'2000-01-01T00:00:00',
@@ -104,6 +104,8 @@ try {
     $required = @(
         'test\dual_pcap_vm\Run-Tests.cmd',
         'test\dual_pcap_vm\Run-DualPcapTests.ps1',
+        'test\dual_pcap_vm\Invoke-PythonLogged.ps1',
+        'test\dual_pcap_vm\Test-PythonWarningHandling.ps1',
         'test\dual_pcap_vm\verify_dual_pcap.py',
         'test\dual_pcap_vm\fault_launcher.py',
         'test\dual_pcap_vm\README.md',

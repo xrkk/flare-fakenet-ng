@@ -1,4 +1,5 @@
 import pathlib
+import re
 import unittest
 
 
@@ -23,7 +24,7 @@ class DualPcapVmContractTests(unittest.TestCase):
     def test_builder_uses_unique_versioned_name_without_sidecar(self):
         builder = (ROOT / 'Build-DualPcapVmPackage.ps1').read_text(
             encoding='utf-8')
-        self.assertIn('$packageVersion = \'v1\'', builder)
+        self.assertIn('$packageVersion = \'v2\'', builder)
         self.assertIn('Windows双PCAP同步输出-', builder)
         self.assertNotIn("Set-Content -LiteralPath ($zipPath + '.sha256')",
                          builder)
@@ -35,6 +36,21 @@ class DualPcapVmContractTests(unittest.TestCase):
         self.assertIn('diverterbase.DualPcapWriter = dual_factory', launcher)
         self.assertNotIn('os.environ', launcher)
         self.assertNotIn('ConfigParser', launcher)
+
+    def test_python_warning_cannot_abort_powershell_runner(self):
+        runner = (ROOT / 'test/dual_pcap_vm/Run-DualPcapTests.ps1').read_text(
+            encoding='utf-8')
+        helper = (ROOT / 'test/dual_pcap_vm/Invoke-PythonLogged.ps1').read_text(
+            encoding='utf-8')
+        fakenet = (ROOT / 'fakenet/fakenet.py').read_text(encoding='utf-8')
+
+        self.assertIn('Invoke-PythonLogged.ps1', runner)
+        self.assertIn('function Invoke-PythonLogged', helper)
+        self.assertIn("$ErrorActionPreference = 'Continue'", helper)
+        self.assertNotRegex(
+            runner,
+            re.compile(r'&\s+\$script:PythonExe[^\r\n]*\*>\&1\s*\|'))
+        self.assertIn('print(r"""', fakenet)
 
 
 if __name__ == '__main__':

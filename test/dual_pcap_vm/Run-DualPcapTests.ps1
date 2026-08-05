@@ -4,6 +4,7 @@ param([string]$PythonPath = 'python.exe')
 $ErrorActionPreference = 'Stop'
 $script:ExitCode = 1
 $script:TranscriptStarted = $false
+. (Join-Path $PSScriptRoot 'Invoke-PythonLogged.ps1')
 
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -42,7 +43,7 @@ function Test-PackageManifest {
     }
     $manifest = Get-Content -LiteralPath $path -Raw -Encoding UTF8 |
         ConvertFrom-Json
-    if ($manifest.package_version -ne 'v1' -or
+    if ($manifest.package_version -ne 'v2' -or
             $manifest.plan_version -ne 'v2') {
         throw 'Package/plan version contract mismatch.'
     }
@@ -173,7 +174,7 @@ function Send-KnownTraffic {
                 [Net.Sockets.AddressFamily]::InterNetwork
             }
             $udp = [Net.Sockets.UdpClient]::new($family)
-            $bytes = [Text.Encoding]::ASCII.GetBytes('dual-pcap-v1')
+            $bytes = [Text.Encoding]::ASCII.GetBytes('dual-pcap-v2')
             $null = $udp.Send($bytes, $bytes.Length, $target[1], $target[2])
             $udp.Close()
             $messages += ('{0} sent {1}:{2}' -f $target[0], $target[1], $target[2])
@@ -288,7 +289,7 @@ try {
     $logsBase = Join-Path $PSScriptRoot 'Logs'
     New-Item -ItemType Directory -Path $logsBase -Force | Out-Null
     $script:LogRoot = Join-Path $logsBase (
-        'dual-pcap-v1-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        'dual-pcap-v2-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
     New-Item -ItemType Directory -Path $script:LogRoot -Force | Out-Null
     $script:ResultFile = Join-Path $script:LogRoot 'results.tsv'
     $script:AnyFailure = $false
@@ -296,33 +297,39 @@ try {
     $script:TranscriptStarted = $true
 
     $script:PythonExe = (Get-Command $PythonPath -ErrorAction Stop).Source
-    & $script:PythonExe -m pip install --disable-pip-version-check --no-index `
-        --find-links (Join-Path $script:RepoRoot 'wheelhouse') --require-hashes `
-        -r (Join-Path $script:RepoRoot 'requirements-domain-takeover-windows.lock') *>&1 |
-        Tee-Object -FilePath (Join-Path $script:LogRoot 'dependency-install.log')
-    if ($LASTEXITCODE -ne 0) { throw 'Offline dependency installation failed.' }
+    $dependencyExit = Invoke-PythonLogged -PythonExe $script:PythonExe `
+        -Arguments @('-m', 'pip', 'install', '--disable-pip-version-check',
+            '--no-index', '--find-links',
+            (Join-Path $script:RepoRoot 'wheelhouse'), '--require-hashes', '-r',
+            (Join-Path $script:RepoRoot 'requirements-domain-takeover-windows.lock')) `
+        -LogPath (Join-Path $script:LogRoot 'dependency-install.log')
+    if ($dependencyExit -ne 0) { throw 'Offline dependency installation failed.' }
 
     $identity = @'
 import json, platform, dpkt
 print(json.dumps({'python': platform.python_version(), 'machine': platform.machine(), 'dpkt': dpkt.__version__, 'dpkt_path': dpkt.__file__, 'dlt_raw': dpkt.pcap.DLT_RAW}, sort_keys=True))
 '@
-    $identity | & $script:PythonExe - 2>&1 |
-        Tee-Object -FilePath (Join-Path $script:LogRoot 'python-identity.log')
-    if ($LASTEXITCODE -ne 0) { throw 'Python identity check failed.' }
+    $identityExit = Invoke-PythonLogged -PythonExe $script:PythonExe `
+        -Arguments @('-') -InputText $identity `
+        -LogPath (Join-Path $script:LogRoot 'python-identity.log')
+    if ($identityExit -ne 0) { throw 'Python identity check failed.' }
     Add-Result 'Dependencies' 'PASS' 'offline lock and actual import verified'
 
     Push-Location $script:RepoRoot
     try {
-        & $script:PythonExe -m unittest discover -s test -p 'test_*.py' -v *>&1 |
-            Tee-Object -FilePath (Join-Path $script:LogRoot 'unit-tests.log')
-        if ($LASTEXITCODE -eq 0) { Add-Result 'PythonTests' 'PASS' }
-        else { Add-Result 'PythonTests' 'FAIL' ('exit=' + $LASTEXITCODE) }
+        $testExit = Invoke-PythonLogged -PythonExe $script:PythonExe `
+            -Arguments @('-m', 'unittest', 'discover', '-s', 'test', '-p',
+                'test_*.py', '-v') `
+            -LogPath (Join-Path $script:LogRoot 'unit-tests.log')
+        if ($testExit -eq 0) { Add-Result 'PythonTests' 'PASS' }
+        else { Add-Result 'PythonTests' 'FAIL' ('exit=' + $testExit) }
 
-        & $script:PythonExe test\benchmark_dual_pcap.py --output (
-            Join-Path $script:LogRoot 'performance.json') *>&1 |
-            Tee-Object -FilePath (Join-Path $script:LogRoot 'performance.log')
-        if ($LASTEXITCODE -eq 0) { Add-Result 'PerformanceGate' 'PASS' }
-        else { Add-Result 'PerformanceGate' 'FAIL' ('exit=' + $LASTEXITCODE) }
+        $performanceExit = Invoke-PythonLogged -PythonExe $script:PythonExe `
+            -Arguments @('test\benchmark_dual_pcap.py', '--output',
+                (Join-Path $script:LogRoot 'performance.json')) `
+            -LogPath (Join-Path $script:LogRoot 'performance.log')
+        if ($performanceExit -eq 0) { Add-Result 'PerformanceGate' 'PASS' }
+        else { Add-Result 'PerformanceGate' 'FAIL' ('exit=' + $performanceExit) }
 
         $normal = Invoke-FakeNetCase 'normal-ctrl-c' -Interactive
         if ($normal) {
@@ -331,12 +338,13 @@ print(json.dumps({'python': platform.python_version(), 'machine': platform.machi
             $ethernet = @(Get-ChildItem -LiteralPath $normal -Filter `
                 'packets_*-converted.pcap')
             if ($raw.Count -eq 1 -and $ethernet.Count -eq 1) {
-                & $script:PythonExe (Join-Path $PSScriptRoot 'verify_dual_pcap.py') `
-                    $raw[0].FullName $ethernet[0].FullName --output (
-                        Join-Path $normal 'pcap-verification.json') *>&1 |
-                    Tee-Object -FilePath (Join-Path $normal 'pcap-verification.log')
-                if ($LASTEXITCODE -eq 0) { Add-Result 'LivePcapPair' 'PASS' }
-                else { Add-Result 'LivePcapPair' 'FAIL' ('exit=' + $LASTEXITCODE) }
+                $verifyExit = Invoke-PythonLogged -PythonExe $script:PythonExe `
+                    -Arguments @((Join-Path $PSScriptRoot 'verify_dual_pcap.py'),
+                        $raw[0].FullName, $ethernet[0].FullName, '--output',
+                        (Join-Path $normal 'pcap-verification.json')) `
+                    -LogPath (Join-Path $normal 'pcap-verification.log')
+                if ($verifyExit -eq 0) { Add-Result 'LivePcapPair' 'PASS' }
+                else { Add-Result 'LivePcapPair' 'FAIL' ('exit=' + $verifyExit) }
             } else {
                 Add-Result 'LivePcapPair' 'FAIL' 'expected exactly one pair'
             }
