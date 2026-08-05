@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$LauncherPath,
-    [Parameter(Mandatory=$true)][string]$LogDirectory
+    [Parameter(Mandatory=$true)][string]$LogDirectory,
+    [switch]$SkipLiveRoute
 )
 
 $ErrorActionPreference = 'Stop'
@@ -104,12 +105,12 @@ try {
 
     $singleConfig = Join-Path $LogDirectory 'reviewed-single.ini'
     @('[Diverter]',
-      'ExternalAllowedIPv4Rules: TCP/8.8.8.8/443,UDP/1.1.1.1/*') |
+      'ExternalAllowedIPv4Rules: TCP/192.168.204.1/443,UDP/192.168.204.2/*') |
         Set-Content -LiteralPath $singleConfig -Encoding ASCII
     $multiConfig = Join-Path $LogDirectory 'reviewed-multi.ini'
     @('[Diverter]',
-      'ExternalAllowedIPv4Rules: TCP/8.8.8.8/443,',
-      '    UDP/1.1.1.1/*') |
+      'ExternalAllowedIPv4Rules: TCP/192.168.204.1/443,',
+      '    UDP/192.168.204.2/*') |
         Set-Content -LiteralPath $multiConfig -Encoding ASCII
     $singleRules = @(Get-NormalizedReviewedRules (
         Get-ReviewedRulesValue $singleConfig))
@@ -120,8 +121,8 @@ try {
     Add-Pass 'ReviewedRuleContinuation'
 
     $badConfig = Join-Path $LogDirectory 'reviewed-reserved-option.ini'
-    @('[Diverter]', 'ExternalAllowedIPv4Rules: TCP/8.8.8.8/443',
-      'UDP/1.1.1.1/53 = stray') |
+    @('[Diverter]', 'ExternalAllowedIPv4Rules: TCP/192.168.204.1/443',
+      'UDP/192.168.204.2/53 = stray') |
         Set-Content -LiteralPath $badConfig -Encoding ASCII
     $failed = $false
     try { Get-ReviewedRulesValue $badConfig | Out-Null } catch { $failed = $true }
@@ -139,7 +140,9 @@ try {
         'Test-ReviewedIPv4Routes.ps1'
     $routeCheckerText = Get-Content -LiteralPath $routeChecker -Raw
     foreach ($required in @('$routeProbeUdpPort = 9', '.Connect(',
-            'Get-NetRoute', 'Get-NetIPAddress', 'Get-NetIPInterface')) {
+            'Get-NetRoute', 'Get-NetIPAddress', 'Get-NetIPInterface',
+            'Default route is not permitted',
+            'Gateway route is not permitted')) {
         Assert-Contract ($routeCheckerText.Contains($required)) `
             "Reviewed route checker is missing: $required"
     }
@@ -259,12 +262,16 @@ try {
         Remove-Item Function:\global:New-Object -ErrorAction SilentlyContinue
     }
 
-    $realRoute = Get-TakeoverRouteSnapshot '192.168.204.1'
-    Assert-Contract ($realRoute.next_hop -eq '0.0.0.0') `
-        'Real route is not on-link.'
-    Assert-Contract ($realRoute.destination_prefix -ne '0.0.0.0/0') `
-        'Real route unexpectedly uses the default route.'
-    Add-Pass 'RouteUniqueOnLink' $realRoute.destination_prefix
+    if (-not $SkipLiveRoute) {
+        $realRoute = Get-TakeoverRouteSnapshot '192.168.204.1'
+        Assert-Contract ($realRoute.next_hop -eq '0.0.0.0') `
+            'Real route is not on-link.'
+        Assert-Contract ($realRoute.destination_prefix -ne '0.0.0.0/0') `
+            'Real route unexpectedly uses the default route.'
+        Add-Pass 'RouteUniqueOnLink' $realRoute.destination_prefix
+    } else {
+        Add-Pass 'RouteUniqueOnLink' 'skipped outside reviewed VM'
+    }
 
     $routeText = $routeAst.Extent.Text
     foreach ($forbidden in @('Set-NetRoute', 'New-NetRoute',

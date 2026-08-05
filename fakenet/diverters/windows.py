@@ -178,6 +178,12 @@ foreach ($target in $targets) {
     if ($best.Count -ne 1) { throw "Ambiguous route for $target" }
     $selected = $best[0]
     $route = $selected.Route
+    if ($selected.PrefixLength -eq 0) {
+        throw "Default route is not permitted for $target"
+    }
+    if ([string]$route.NextHop -ne '0.0.0.0') {
+        throw "Gateway route is not permitted for $target"
+    }
 
     $sourceAddresses = @(
         Get-NetIPAddress -AddressFamily IPv4 `
@@ -620,6 +626,8 @@ class Diverter(DiverterBase, WinUtilMixin):
                     item['interface_index'] <= 0 or
                     item['route_metric'] < 0 or
                     item['interface_metric'] < 0 or
+                    item['destination_prefix'] == '0.0.0.0/0' or
+                    item['next_hop'] != '0.0.0.0' or
                     not self.egress_policy.is_exact_local_ipv4(
                         item['source_ipv4'])):
                 raise PolicyConfigError(

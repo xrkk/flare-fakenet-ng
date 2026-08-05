@@ -1,4 +1,4 @@
-# Windows domain-takeover VM acceptance
+# Windows private reviewed-IPv4 v12 VM acceptance
 
 Run only inside the reviewed, snapshotted Windows VM. Double-click
 `Run-Tests.cmd`; there are no DNS, IP, port, Python-package, or dependency
@@ -20,12 +20,14 @@ The automated matrix covers:
 - synthesized UDP/TCP A answers and AAAA NODATA for other domains;
 - `dns.msftncsi.com` returning `192.168.204.1`;
 - domain-derived and direct sink TCP/UDP traffic with original ports;
-- manifest-driven reviewed public IPv4 TCP/UDP exact-port and all-port packet
-  attempts, including UDP/443 only when explicitly authorized;
+- two isolated reviewed-private-IPv4 profiles for `192.168.204.1`: TCP/UDP
+  all ports and TCP/443 plus UDP/5000 exact ports;
+- exact negative tuples on `192.168.204.1` and the unreviewed
+  `192.168.204.2`, with zero matching outbound IPv4 packets required;
 - reviewed-IP route/source snapshots, the fixed no-payload UDP/9 selection
   probe contract, and bounded `IP_ALLOW_*` audit events;
-- other private/public IP, DoH, DoT, external UDP/443, HTTP, and IPv6 negative
-  boundaries;
+- a separate takeover regression profile proving the existing sink and
+  DeepSeek relay without contributing reviewed-IP evidence;
 - required/forbidden policy events, graceful stop, DNS snapshot comparison,
   and an independent `pktmon` PCAPNG.
 
@@ -34,7 +36,7 @@ The evidence proves only that the VM sent matching traffic unchanged to the
 reviewed sink and interface. It does not claim that a host listener handled the
 traffic safely. Inbound return traffic is outside the new sink verdict.
 
-Reviewed public-IP results use the same evidence rule: a successful FakeNet
+Reviewed private-IP results use the same evidence rule: a successful FakeNet
 send verdict and a matching packet in the independent physical-interface PCAP
 prove egress authorization, not service availability. Negative matrix entries
 must have zero matching physical-interface packets. Reviewed-IP fragments are

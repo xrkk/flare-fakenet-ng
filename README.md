@@ -73,7 +73,8 @@ suspends only the takeover sub-policy if the route or address snapshot changes.
 The optional TCP-port probe is empty by default, read-only, sends no application
 data, and never changes readiness or the data-plane port range.
 
-In the reviewed VM package, double-click `Start-DomainTakeover.cmd`. It asks
+In the retained `Windows域名私网接管-v10.zip` package, double-click
+`Start-DomainTakeover.cmd`. It asks
 for no DNS, IP, port, or dependency input: it verifies the v5 manifest and every
 packaged file, checks Windows `10.0.19045` and CPython `3.13.7` x64, creates
 a package-local venv from the hash-locked `wheelhouse`, chooses the VM's
@@ -89,12 +90,14 @@ host listener processed the connection safely nor that inbound return traffic
 is constrained by the new verdict. Host listener configuration is outside this
 feature.
 
-Windows reviewed IPv4 direct-egress extension
+Windows reviewed private-IPv4 direct-egress extension
 ================================================
 
-The v11 combined package can add manifest-bound `ExternalAllowedIPv4Rules` to
+The v12 package adds manifest-bound `ExternalAllowedIPv4Rules` to
 the Windows `DomainAllowList` policy. A rule is exactly
-`TCP|UDP/public-IPv4/*|port`. `*` means ports 1 through 65535 for that protocol
+`TCP|UDP/RFC1918-IPv4/*|port`. Only explicit addresses in `10/8`, `172.16/12`,
+or `192.168/16` are accepted; public and special-use addresses are rejected.
+`*` means ports 1 through 65535 for that protocol
 only; it does not authorize ICMP, IPv6, or the other transport protocol. Exact
 UDP/443 and UDP `*` intentionally override the normal QUIC block only for the
 reviewed IP. Reviewed-IP rules run before legacy FakeNet port blacklists.
@@ -107,8 +110,10 @@ The reviewed target's IPv4 TCP/UDP fragments are dropped before transport
 parsing, so fragmented traffic and large fragmented UDP datagrams are not
 supported.
 
-The source configuration contains no active IP authorization. A v11 delivery
-must contain an exact reviewed rule set bound to the package manifest, config
+The source template contains no active IP authorization. The v12 builder emits
+separately hashed `all_ports` and `exact_ports` profiles for `192.168.204.1`,
+plus an isolated takeover-regression profile. Each rule set is bound to the
+package manifest, config
 hash, stable rule IDs, source commit, and per-file hashes. The launcher accepts
 no rule input, performs a read-only batch route/source selection check with a
 two-second deadline, and never selects a backup IP, route, interface, gateway,
@@ -117,10 +122,16 @@ policy until restart. `IP_ALLOW_*` and `ALLOW_REVIEWED_IP_FIRST_FLOW` events
 record bounded metadata; they do not record payloads and do not prove that a
 remote service responded.
 
-Run only in the reviewed snapshotted Windows VM. Use the v11 package
-`Windows域名私网接管及指定IPv4放行-v11.zip`, then return the newest plain log
-directory and its independent PCAPNG without compression. The builder refuses
-to create v11 while the exact reviewed-rule insertion marker remains unresolved.
+Run only in the reviewed snapshotted Windows VM. Use
+`Windows私网指定IPv4放行-v12.zip`, then double-click
+`test/domain_takeover_vm/Run-Tests.cmd`. The runner executes both reviewed-IP
+profiles and the takeover regression with a full stop/restoration boundary
+between them. Return the newest plain log directory and its independent PCAPNG
+files without compression. No DNS, IP, port, sample, or dependency input is
+requested. For interactive use, double-click
+`Start-ReviewedIPv4-AllPorts.cmd` or
+`Start-ReviewedIPv4-ExactPorts.cmd`; Ctrl+C or Enter performs the controlled
+stop and log drain.
 
 Installation
 ============

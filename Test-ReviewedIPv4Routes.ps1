@@ -71,6 +71,12 @@ foreach ($targetValue in $targets) {
     if ($best.Count -ne 1) { throw "Ambiguous route for $target" }
     $selected = $best[0]
     $route = $selected.Route
+    if ($selected.PrefixLength -eq 0) {
+        throw "Default route is not permitted for $target"
+    }
+    if ([string]$route.NextHop -ne '0.0.0.0') {
+        throw "Gateway route is not permitted for $target"
+    }
 
     $sourceAddresses = @(
         Get-NetIPAddress -AddressFamily IPv4 `

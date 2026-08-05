@@ -36,18 +36,21 @@ foreach ($script in @($LauncherPath, $RunnerPath)) {
     if ($null -eq $manifest -or @($manifest.files).Count -eq 0) {
         throw "Manifest verifier returned no files: $script"
     }
-    if ($manifest.package_version -ne 'v11' -or
-            @($manifest.reviewed_ipv4_rules).Count -lt 1 -or
-            @($manifest.reviewed_ipv4_rule_ids).Count -ne
-                @($manifest.reviewed_ipv4_rules).Count -or
-            [string]::IsNullOrWhiteSpace(
-                [string]$manifest.reviewed_ipv4_rules_raw) -or
-            ([string]$manifest.reviewed_ipv4_config_sha256) -notmatch
-                '^[0-9a-f]{64}$' -or
+    $profiles = @($manifest.reviewed_ipv4_profiles)
+    if ($manifest.package_version -ne 'v12' -or
+            $manifest.policy_version -ne 'v6' -or
+            $manifest.plan_version -ne 'v4' -or
+            $manifest.reviewed_ipv4_target -ne '192.168.204.1' -or
+            $manifest.negative_test_ipv4 -ne '192.168.204.2' -or
+            $profiles.Count -ne 2 -or
             [int]$manifest.reviewed_route_probe_udp_port -ne 9 -or
             [int]$manifest.address_refresh_seconds -ne 5 -or
-            [string]::IsNullOrWhiteSpace(
-                [string]$manifest.authorized_negative_test_ipv4)) {
+            @($profiles | Where-Object {
+                @($_.rules).Count -lt 1 -or
+                @($_.rule_ids).Count -ne @($_.rules).Count -or
+                ([string]$_.rules_sha256) -notmatch '^[0-9a-f]{64}$' -or
+                ([string]$_.config_sha256) -notmatch '^[0-9a-f]{64}$'
+            }).Count -ne 0) {
         throw "Reviewed IPv4 manifest contract mismatch: $script"
     }
     Write-Output ('MANIFEST_READER_PASS script={0} files={1}' -f

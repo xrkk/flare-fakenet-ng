@@ -1,14 +1,12 @@
 ﻿[CmdletBinding()]
 param(
     [string]$SourceCommit = 'HEAD',
-    [string]$OutputDirectory = '',
-    [Parameter(Mandatory = $true)]
-    [string]$AuthorizedNegativeTestIPv4
+    [string]$OutputDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v11'
-$packageName = "Windows域名私网接管及指定IPv4放行-$packageVersion"
+$packageVersion = 'v12'
+$packageName = "Windows私网指定IPv4放行-$packageVersion"
 $planRelative = 'PLAN\2026.08.05\2026.08.05-01-Windows指定IPv4全端口及指定端口放行方案.md'
 $reviewedRouteProbeUdpPort = 9
 $addressRefreshSeconds = 5
@@ -42,7 +40,7 @@ function Get-TextSha256 {
     }
 }
 
-function Test-ReviewedPublicIPv4 {
+function Test-ReviewedPrivateIPv4 {
     param([string]$Value)
     $address = $null
     if (-not [Net.IPAddress]::TryParse($Value, [ref]$address) -or
@@ -52,28 +50,21 @@ function Test-ReviewedPublicIPv4 {
         return $false
     }
     $b = $address.GetAddressBytes()
-    if ($b[0] -in @(0, 10, 127) -or $b[0] -ge 224) { return $false }
-    if ($b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127) {
-        return $false
-    }
-    if ($b[0] -eq 169 -and $b[1] -eq 254) { return $false }
-    if ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) {
-        return $false
-    }
-    if ($b[0] -eq 192 -and $b[1] -eq 168) { return $false }
-    if ($b[0] -eq 198 -and $b[1] -in @(18, 19)) { return $false }
-    $prefix24 = '{0}.{1}.{2}' -f $b[0], $b[1], $b[2]
-    if (($prefix24 -eq '192.0.0' -and $b[3] -notin @(9, 10)) -or
-            $prefix24 -in @('192.0.2', '198.51.100', '203.0.113')) {
-        return $false
-    }
+    $isRfc1918 = ($b[0] -eq 10 -or
+        ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or
+        ($b[0] -eq 192 -and $b[1] -eq 168))
+    if (-not $isRfc1918) { return $false }
+    if (($b -join '.') -in @(
+            '10.0.0.0', '10.255.255.255',
+            '172.16.0.0', '172.31.255.255',
+            '192.168.0.0', '192.168.255.255')) { return $false }
     return $true
 }
 
 function Get-NormalizedReviewedRules {
     param([string]$Value)
     if ([string]::IsNullOrWhiteSpace($Value)) {
-        throw 'ExternalAllowedIPv4Rules must be present and non-empty for v11.'
+        throw 'ExternalAllowedIPv4Rules must be present and non-empty for v12.'
     }
     $parts = @($Value.Split(','))
     if ($parts.Count -gt 32 -or @($parts | Where-Object {
@@ -92,8 +83,8 @@ function Get-NormalizedReviewedRules {
         $protocol = $matches[1]
         $ipv4 = $matches[2]
         $port = $matches[3]
-        if (-not (Test-ReviewedPublicIPv4 $ipv4)) {
-            throw "Reviewed rule does not contain a canonical public IPv4: $token"
+        if (-not (Test-ReviewedPrivateIPv4 $ipv4)) {
+            throw "Reviewed rule does not contain a canonical RFC1918 IPv4: $token"
         }
         if ($port -ne '*' -and
                 ([int64]$port -lt 1 -or [int64]$port -gt 65535)) {
@@ -121,51 +112,49 @@ function Get-NormalizedReviewedRules {
     return @($normalized | Sort-Object)
 }
 
-function Assert-TakeoverConfiguration {
-    param([string]$BasePath, [string]$TakeoverPath)
+function Assert-ReviewedTemplate {
+    param([string]$BasePath, [string]$TemplatePath)
     $base = Get-NormalizedText $BasePath
-    $takeover = Get-NormalizedText $TakeoverPath
-    if ($takeover.Contains('__REVIEWED_IPV4_RULES_INSERTION__')) {
-        throw ('The reviewed IPv4 insertion marker is unresolved. Add the ' +
-            'approved exact ExternalAllowedIPv4Rules value and commit it ' +
-            'before building v11.')
+    $template = Get-NormalizedText $TemplatePath
+    if (($template.Split("`n") | Where-Object {
+                $_ -eq '# __REVIEWED_PRIVATE_IPV4_RULES__'
+            }).Count -ne 1 -or
+            $template -match '(?m)^ExternalAllowedIPv4Rules\s*:') {
+        throw 'Reviewed IPv4 source template marker/active-rule contract failed.'
     }
-    $reviewedLines = @($takeover.Split("`n") | Where-Object {
-        $_ -match '^ExternalAllowedIPv4Rules:\s*(.+)$'
-    })
-    if ($reviewedLines.Count -ne 1) {
-        throw 'Takeover INI must contain one active reviewed IPv4 rule field.'
-    }
-    $reviewedValue = [regex]::Match(
-        $reviewedLines[0], '^ExternalAllowedIPv4Rules:\s*(.+)$').Groups[1].Value
-    $normalizedRules = @(Get-NormalizedReviewedRules $reviewedValue)
     foreach ($comment in @(
-            '# Replace this marker with exactly one approved ExternalAllowedIPv4Rules field',
-            '# before the reviewed commit is built. The v11 builder rejects this marker.')) {
-        $takeover = $takeover.Replace($comment + "`n", '')
+            '# Build-only marker. The source template deliberately grants no private IPv4.',
+            '# The v12 builder emits two separately hashed runtime profiles from this line.',
+            '# __REVIEWED_PRIVATE_IPV4_RULES__')) {
+        $template = $template.Replace($comment + "`n", '')
     }
-    $takeover = $takeover.Replace($reviewedLines[0] + "`n", '')
-    foreach ($line in @(
-            'ExternalTakeoverIPv4: 192.168.204.1',
-            'ExternalTakeoverDnsTTL: 60',
-            'ExternalTakeoverProbeTCPPorts:',
-            'ExternalTakeoverProbeTimeoutMs: 500')) {
-        if (($takeover.Split("`n") | Where-Object { $_ -eq $line }).Count -ne 1) {
-            throw "Takeover INI must contain exactly one reviewed line: $line"
-        }
-        $takeover = $takeover.Replace($line + "`n", '')
+    if ($template -ne $base) {
+        throw 'Reviewed IPv4 template differs from the allow-list base outside its marker.'
     }
-    $sinkResponse = 'ResponseA: 192.168.204.1'
-    if (($takeover.Split("`n") | Where-Object { $_ -eq $sinkResponse }).Count -ne 2) {
-        throw 'Takeover INI must contain exactly two sink ResponseA values.'
+}
+
+function New-ReviewedProfile {
+    param(
+        [string]$TemplatePath,
+        [string]$DestinationPath,
+        [string]$RulesValue
+    )
+    $normalized = @(Get-NormalizedReviewedRules $RulesValue)
+    $text = Get-NormalizedText $TemplatePath
+    $marker = '# __REVIEWED_PRIVATE_IPV4_RULES__'
+    if (($text.Split("`n") | Where-Object { $_ -eq $marker }).Count -ne 1) {
+        throw 'Reviewed IPv4 profile marker count mismatch.'
     }
-    $takeover = $takeover.Replace($sinkResponse, 'ResponseA: GetFirstNonLoopback')
-    if ($takeover -ne $base) {
-        throw 'Takeover INI differs from the reviewed allow-list base outside the whitelist.'
-    }
+    $text = $text.Replace(
+        $marker, 'ExternalAllowedIPv4Rules: ' + $RulesValue)
+    $utf8NoBom = [Text.UTF8Encoding]::new($false)
+    [IO.File]::WriteAllText($DestinationPath, $text, $utf8NoBom)
     return [PSCustomObject]@{
-        Raw = $reviewedValue
-        Normalized = @($normalizedRules)
+        Raw = $RulesValue
+        Normalized = @($normalized)
+        NormalizedSha256 = Get-TextSha256 ($normalized -join ',')
+        ConfigSha256 = (Get-FileHash -LiteralPath $DestinationPath `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 }
 
@@ -307,11 +296,11 @@ function Assert-PythonNativeArgumentSafety {
     }
 
     $text = Get-Content -LiteralPath $Path -Raw
-    $requiredStdin = if ([IO.Path]::GetFileName($Path) -eq
-            'Start-DomainTakeover.ps1') {
+    $requiredStdin = if ([IO.Path]::GetFileName($Path) -like
+            'Start-*.ps1') {
         @('identityCommand', 'dependencyCommand')
     } else {
-        @('identityCommand', 'dependencyCommand', 'dnsParityCommand')
+        @('identityCommand', 'dependencyCommand')
     }
     foreach ($name in $requiredStdin) {
         $pattern = ('\${0}\s*\|\s*&\s*\$[A-Za-z][A-Za-z0-9]*\s+-\s*' -f
@@ -455,18 +444,23 @@ try {
     }
 
     $required = @(
-        'Start-DomainTakeover.cmd',
-        'Start-DomainTakeover.ps1',
+        'Start-ReviewedIPv4.cmd',
+        'Start-ReviewedIPv4-AllPorts.cmd',
+        'Start-ReviewedIPv4-ExactPorts.cmd',
+        'Start-ReviewedIPv4.ps1',
         'Test-ReviewedIPv4Routes.ps1',
         'Build-DomainTakeoverPackage.ps1',
         'requirements-domain-takeover-windows.lock',
         'wheelhouse\SOURCES.md',
         'fakenet\configs\domain_allowlist_windows.ini',
+        'fakenet\configs\domain_reviewed_ipv4_windows.ini',
         'fakenet\configs\domain_takeover_windows.ini',
         'test\domain_takeover_vm\Run-Tests.cmd',
-        'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1',
+        'test\domain_takeover_vm\Run-ReviewedIPv4Tests.ps1',
         'test\domain_takeover_vm\Test-LauncherContracts.ps1',
         'test\domain_takeover_vm\Test-ManifestContracts.ps1',
+        'test\analyze_reviewed_ipv4_pcap.py',
+        'test\test_reviewed_ipv4_pcap.py',
         $planRelative)
     foreach ($relative in $required) {
         if (-not (Test-Path -LiteralPath (Join-Path $stage $relative))) {
@@ -475,22 +469,36 @@ try {
     }
 
     $baseConfig = Join-Path $stage 'fakenet\configs\domain_allowlist_windows.ini'
+    $reviewedTemplate = Join-Path $stage `
+        'fakenet\configs\domain_reviewed_ipv4_windows.ini'
     $takeoverConfig = Join-Path $stage 'fakenet\configs\domain_takeover_windows.ini'
-    $reviewedRuleContract =
-        Assert-TakeoverConfiguration $baseConfig $takeoverConfig
-    $reviewedRules = @($reviewedRuleContract.Normalized)
-    $reviewedRulesText = $reviewedRules -join ','
-    $reviewedRulesHash = Get-TextSha256 $reviewedRulesText
-    if (-not (Test-ReviewedPublicIPv4 $AuthorizedNegativeTestIPv4)) {
-        throw 'AuthorizedNegativeTestIPv4 must be one canonical public IPv4.'
+    Assert-ReviewedTemplate $baseConfig $reviewedTemplate
+    $takeoverText = Get-NormalizedText $takeoverConfig
+    if ($takeoverText -match '(?m)^ExternalAllowedIPv4Rules\s*:' -or
+            ($takeoverText.Split("`n") | Where-Object {
+                $_ -eq 'ExternalTakeoverIPv4: 192.168.204.1'
+            }).Count -ne 1) {
+        throw 'Takeover regression profile must not contain reviewed IPv4 rules.'
     }
-    $reviewedTargets = @($reviewedRules | ForEach-Object {
-        $_.Split('/')[1]
-    } | Select-Object -Unique)
-    if ($AuthorizedNegativeTestIPv4 -in $reviewedTargets) {
-        throw ('AuthorizedNegativeTestIPv4 must not be a reviewed allow ' +
-            'target; otherwise it cannot prove the unreviewed-public case.')
-    }
+    $allConfigRelative =
+        'fakenet/configs/domain_reviewed_ipv4_all_ports_windows.ini'
+    $exactConfigRelative =
+        'fakenet/configs/domain_reviewed_ipv4_exact_ports_windows.ini'
+    $allConfig = Join-Path $stage ($allConfigRelative.Replace('/', '\'))
+    $exactConfig = Join-Path $stage ($exactConfigRelative.Replace('/', '\'))
+    $allContract = New-ReviewedProfile $reviewedTemplate $allConfig `
+        'TCP/192.168.204.1/*, UDP/192.168.204.1/*'
+    $exactContract = New-ReviewedProfile $reviewedTemplate $exactConfig `
+        'TCP/192.168.204.1/443, UDP/192.168.204.1/5000'
+    $profileContracts = @(
+        [PSCustomObject]@{
+            Name = 'all_ports'; ConfigPath = $allConfigRelative
+            Contract = $allContract
+        },
+        [PSCustomObject]@{
+            Name = 'exact_ports'; ConfigPath = $exactConfigRelative
+            Contract = $exactContract
+        })
     $dependencyRows = @(Assert-Wheelhouse $stage)
     $scriptSearch = @{
         LiteralPath = $stage
@@ -502,13 +510,12 @@ try {
     foreach ($powerShellScript in $powerShellScripts) {
         Assert-PowerShellSyntax $powerShellScript.FullName
     }
-    $launcherPath = Join-Path $stage 'Start-DomainTakeover.ps1'
+    $launcherPath = Join-Path $stage 'Start-ReviewedIPv4.ps1'
     $runnerPath = Join-Path $stage `
-        'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1'
+        'test\domain_takeover_vm\Run-ReviewedIPv4Tests.ps1'
     Assert-PythonNativeArgumentSafety $launcherPath
     Assert-PythonNativeArgumentSafety (
         $runnerPath)
-    Assert-RunnerProbeDefaultSafety $runnerPath
     Assert-ManifestReaderEncodingSafety $launcherPath
     Assert-ManifestReaderEncodingSafety $runnerPath
 
@@ -520,7 +527,6 @@ try {
         }
     }
     foreach ($requiredMarker in @('--no-index', '--require-hashes',
-            'TAKEOVER_ROUTE_OK', 'TAKEOVER_PROBE_RESULT',
             'IP_ALLOW_ROUTE_OK', 'IP_ALLOW_RISK_ACK',
             'Invoke-ReviewedRoutePreflight', 'WaitForExit(2000)',
             'DNS restoration check', 'TreatControlCAsInput',
@@ -566,7 +572,24 @@ try {
         }
     }
 
-    $configPath = Join-Path $stage 'fakenet\configs\domain_takeover_windows.ini'
+    $windowsPowerShell = Join-Path $env:SystemRoot `
+        'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $windowsPowerShell)) {
+        throw 'Windows PowerShell 5.1 is required for contract validation.'
+    }
+    $launcherContractLog = Join-Path $buildRoot 'launcher-contract'
+    New-Item -ItemType Directory -Path $launcherContractLog -Force |
+        Out-Null
+    $launcherContractOutput = @(& $windowsPowerShell -NoLogo -NoProfile `
+        -ExecutionPolicy Bypass -File (Join-Path $stage `
+            'test\domain_takeover_vm\Test-LauncherContracts.ps1') `
+        -LauncherPath $launcherPath -LogDirectory $launcherContractLog `
+        -SkipLiveRoute 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw ('PowerShell 5.1 launcher contract failed: {0}' -f
+            ($launcherContractOutput -join [Environment]::NewLine))
+    }
+
     $planPath = Join-Path $stage $planRelative
     $fileRows = @()
     foreach ($file in Get-ChildItem -LiteralPath $stage -File -Recurse |
@@ -579,29 +602,47 @@ try {
             size = [uint64]$file.Length
         }
     }
-    $configHash = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $templateHash = (Get-FileHash -LiteralPath $reviewedTemplate `
+        -Algorithm SHA256).Hash.ToLowerInvariant()
+    $takeoverConfigHash = (Get-FileHash -LiteralPath $takeoverConfig `
+        -Algorithm SHA256).Hash.ToLowerInvariant()
     $planHash = (Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $manifest = [ordered]@{
         schema_version = 1
-        policy_version = 'v5'
+        policy_version = 'v6'
+        plan_version = 'v4'
         package_version = $packageVersion
         source_commit = $resolvedCommit
         allowed_domain = 'api.deepseek.com'
-        takeover_ipv4 = '192.168.204.1'
-        takeover_dns_ttl = 60
-        reviewed_ipv4_rules_raw = [string]$reviewedRuleContract.Raw
-        reviewed_ipv4_rules = @($reviewedRules)
-        reviewed_ipv4_config_sha256 = $reviewedRulesHash
-        reviewed_ipv4_rule_ids = @($reviewedRules | ForEach-Object {
-            (Get-TextSha256 $_).Substring(0, 16)
+        reviewed_ipv4_target = '192.168.204.1'
+        negative_test_ipv4 = '192.168.204.2'
+        reviewed_ipv4_template =
+            'fakenet/configs/domain_reviewed_ipv4_windows.ini'
+        reviewed_ipv4_template_sha256 = $templateHash
+        reviewed_ipv4_profiles = @($profileContracts | ForEach-Object {
+            [ordered]@{
+                name = $_.Name
+                config_path = $_.ConfigPath
+                rules_raw = [string]$_.Contract.Raw
+                rules = @($_.Contract.Normalized)
+                rules_sha256 = [string]$_.Contract.NormalizedSha256
+                rule_ids = @($_.Contract.Normalized | ForEach-Object {
+                    (Get-TextSha256 $_).Substring(0, 16)
+                })
+                config_sha256 = [string]$_.Contract.ConfigSha256
+            }
         })
-        authorized_negative_test_ipv4 = $AuthorizedNegativeTestIPv4
+        takeover_regression_profile = [ordered]@{
+            config_path = 'fakenet/configs/domain_takeover_windows.ini'
+            config_sha256 = $takeoverConfigHash
+            takeover_ipv4 = '192.168.204.1'
+            takeover_dns_ttl = 60
+        }
         reviewed_route_probe_udp_port = $reviewedRouteProbeUdpPort
         address_refresh_seconds = $addressRefreshSeconds
         windows_build = '10.0.19045'
         python_version = '3.13.7'
         python_architecture = 'AMD64'
-        config_sha256 = $configHash
         plan_sha256 = $planHash
         dependencies = @($dependencyRows | Sort-Object Name | ForEach-Object {
             [ordered]@{ name=$_.Name; version=$_.Version; sha256=$_.Hash }
@@ -618,11 +659,6 @@ try {
         'test\domain_takeover_vm\Test-ManifestContracts.ps1'
     if (-not (Test-Path -LiteralPath $manifestContractPath)) {
         throw 'Archived PowerShell manifest contract test is missing.'
-    }
-    $windowsPowerShell = Join-Path $env:SystemRoot `
-        'System32\WindowsPowerShell\v1.0\powershell.exe'
-    if (-not (Test-Path -LiteralPath $windowsPowerShell)) {
-        throw 'Windows PowerShell 5.1 is required for manifest contract validation.'
     }
     $contractOutput = @(& $windowsPowerShell -NoLogo -NoProfile `
         -ExecutionPolicy Bypass -File $manifestContractPath `

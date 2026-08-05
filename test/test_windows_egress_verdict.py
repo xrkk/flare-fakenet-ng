@@ -55,9 +55,9 @@ class ReviewedPolicy(Policy):
     def __init__(self, protocol='TCP', port_scope='exact', port=443):
         normalized_port = '*' if port_scope == 'all' else port
         self.rule = ReviewedIPv4Rule(
-            'rule-test', protocol, '8.8.8.8', port_scope,
+            'rule-test', protocol, '192.168.204.1', port_scope,
             None if port_scope == 'all' else port,
-            '%s/8.8.8.8/%s' % (protocol, normalized_port))
+            '%s/192.168.204.1/%s' % (protocol, normalized_port))
 
     def match_reviewed_ip(self, packet):
         port_matches = (self.rule.port_scope == 'all' or
@@ -65,7 +65,7 @@ class ReviewedPolicy(Policy):
         if (packet.outbound and packet.protocol == self.rule.protocol and
                 packet.source_ipv4 == '10.0.0.5' and
                 packet.source_port == 50000 and
-                packet.target_ipv4 == '8.8.8.8' and
+                packet.target_ipv4 == '192.168.204.1' and
                 port_matches and
                 packet.interface_index == 7):
             return self.rule
@@ -146,6 +146,7 @@ class WindowsVerdictTests(unittest.TestCase):
         self.diverter.pid = 999
         self.diverter.pdebug_level = 0
         self.diverter.pdebug_labels = {}
+        self.diverter._reviewed_target_protocols = frozenset()
 
     def test_external_is_dropped_even_after_ignore_paths(self):
         self.assertEqual(
@@ -492,7 +493,7 @@ class WindowsVerdictTests(unittest.TestCase):
 
     def test_reviewed_ip_allow_is_revalidated_before_reinjection(self):
         self.diverter.egress_policy = ReviewedPolicy()
-        packet = Packet(dst='8.8.8.8', dport=443)
+        packet = Packet(dst='192.168.204.1', dport=443)
         rule = self.diverter.egress_policy.rule
 
         self.assertEqual(
@@ -507,7 +508,7 @@ class WindowsVerdictTests(unittest.TestCase):
                 packet, reviewed_rule=rule))
 
     def test_reviewed_ip_match_requires_outbound_packet_tuple(self):
-        packet = Packet(dst='8.8.8.8', dport=443)
+        packet = Packet(dst='192.168.204.1', dport=443)
         packet.is_outbound = False
         reviewed = self.diverter._reviewed_packet_tuple(packet)
 
@@ -523,19 +524,20 @@ class WindowsVerdictTests(unittest.TestCase):
             raw[16:20] = bytes(int(part) for part in target.split('.'))
             return bytes(raw)
 
-        protocols = {'8.8.8.8': frozenset(('TCP', 'UDP'))}
+        protocols = frozenset((
+            ('TCP', '192.168.204.1'), ('UDP', '192.168.204.1')))
         for fragment_field in (0x2000, 0x0001, 0x3fff):
             self.assertTrue(self.diverter.classify_reviewed_ipv4_fragment(
-                ipv4('8.8.8.8', 6, fragment_field), protocols))
+                ipv4('192.168.204.1', 6, fragment_field), protocols))
             self.assertTrue(self.diverter.classify_reviewed_ipv4_fragment(
-                ipv4('8.8.8.8', 17, fragment_field), protocols))
+                ipv4('192.168.204.1', 17, fragment_field), protocols))
 
         self.assertFalse(self.diverter.classify_reviewed_ipv4_fragment(
-            ipv4('8.8.8.8', 6, 0), protocols))
+            ipv4('192.168.204.1', 6, 0), protocols))
         self.assertFalse(self.diverter.classify_reviewed_ipv4_fragment(
-            ipv4('8.8.4.4', 6, 0x2000), protocols))
+            ipv4('192.168.204.2', 6, 0x2000), protocols))
         self.assertFalse(self.diverter.classify_reviewed_ipv4_fragment(
-            ipv4('8.8.8.8', 1, 0x2000), protocols))
+            ipv4('192.168.204.1', 1, 0x2000), protocols))
         self.assertFalse(self.diverter.classify_reviewed_ipv4_fragment(
             bytes.fromhex('4500'), protocols))
 
@@ -544,12 +546,12 @@ class WindowsVerdictTests(unittest.TestCase):
         raw[0] = 0x45
         raw[6:8] = (0x2000).to_bytes(2, 'big')
         raw[9] = 6
-        raw[16:20] = bytes((8, 8, 8, 8))
+        raw[16:20] = bytes((192, 168, 204, 1))
         windivert_packet = mock.Mock()
         windivert_packet.raw.tobytes.return_value = bytes(raw)
         windivert_packet.is_loopback = False
         self.diverter._reviewed_target_protocols = frozenset((
-            ('TCP', '8.8.8.8'),))
+            ('TCP', '192.168.204.1'),))
         self.diverter.log_egress_event = mock.Mock()
         self.diverter.egress_policy.match_control_flow = mock.Mock()
 
@@ -560,7 +562,7 @@ class WindowsVerdictTests(unittest.TestCase):
         self.diverter.egress_policy.match_control_flow.assert_not_called()
         self.diverter.log_egress_event.assert_called_once_with(
             'DROP_EXTERNAL', reason='reviewed_ip_fragment',
-            proto='TCP', ip='8.8.8.8')
+            proto='TCP', ip='192.168.204.1')
 
     def test_reviewed_ip_precedes_legacy_blacklist_and_redirect(self):
         policy = ReviewedPolicy()
@@ -569,7 +571,7 @@ class WindowsVerdictTests(unittest.TestCase):
         self.diverter.egress_policy = policy
         self.diverter.blacklist_ports['TCP'] = [443]
         self.diverter._reviewed_target_protocols = frozenset((
-            ('TCP', '8.8.8.8'),))
+            ('TCP', '192.168.204.1'),))
         self.diverter.write_pcap = mock.Mock()
         self.diverter.log_egress_event = mock.Mock()
         self.diverter._send_packet = mock.Mock(return_value=True)
@@ -580,10 +582,10 @@ class WindowsVerdictTests(unittest.TestCase):
             return_value=None)
         self.diverter._is_new_tcp_syn = mock.Mock(return_value=False)
         self.diverter.handle_pkt = mock.Mock()
-        packet = Packet(dst='8.8.8.8', dport=443)
+        packet = Packet(dst='192.168.204.1', dport=443)
         windivert_packet = mock.Mock()
         windivert_packet.raw.tobytes.return_value = bytes.fromhex(
-            '4500001400000000400600000a00000508080808')
+            '4500001400000000400600000a000005c0a8cc01')
         windivert_packet.is_loopback = False
 
         with mock.patch('fakenet.diverters.windows.WindowsPacketCtx',
@@ -601,7 +603,7 @@ class WindowsVerdictTests(unittest.TestCase):
         self.diverter.egress_policy = policy
         self.diverter.blacklist_ports['UDP'] = [443]
         self.diverter._reviewed_target_protocols = frozenset((
-            ('UDP', '8.8.8.8'),))
+            ('UDP', '192.168.204.1'),))
         self.diverter.write_pcap = mock.Mock()
         self.diverter.log_egress_event = mock.Mock()
         self.diverter._send_packet = mock.Mock(return_value=True)
@@ -612,10 +614,10 @@ class WindowsVerdictTests(unittest.TestCase):
             return_value=None)
         self.diverter._is_new_tcp_syn = mock.Mock(return_value=False)
         self.diverter.handle_pkt = mock.Mock()
-        packet = Packet(proto='UDP', dst='8.8.8.8', dport=443)
+        packet = Packet(proto='UDP', dst='192.168.204.1', dport=443)
         windivert_packet = mock.Mock()
         windivert_packet.raw.tobytes.return_value = bytes.fromhex(
-            '4500001400000000401100000a00000508080808')
+            '4500001400000000401100000a000005c0a8cc01')
         windivert_packet.is_loopback = False
 
         with mock.patch('fakenet.diverters.windows.WindowsPacketCtx',
@@ -633,7 +635,7 @@ class WindowsVerdictTests(unittest.TestCase):
         policy.match_reviewed_ip = mock.Mock(wraps=policy.match_reviewed_ip)
         self.diverter.egress_policy = policy
         self.diverter._reviewed_target_protocols = frozenset((
-            ('TCP', '8.8.8.8'),))
+            ('TCP', '192.168.204.1'),))
         self.diverter.write_pcap = mock.Mock()
         self.diverter.log_egress_event = mock.Mock()
         self.diverter._send_packet = mock.Mock(return_value=True)
@@ -649,10 +651,10 @@ class WindowsVerdictTests(unittest.TestCase):
         self.diverter.apply_domain_relay_forward_redirect = mock.Mock(
             side_effect=redirect)
         self.diverter._is_new_tcp_syn = mock.Mock(return_value=False)
-        packet = Packet(dst='8.8.8.8', dport=443)
+        packet = Packet(dst='192.168.204.1', dport=443)
         windivert_packet = mock.Mock()
         windivert_packet.raw.tobytes.return_value = bytes.fromhex(
-            '4500001400000000400600000a00000508080808')
+            '4500001400000000400600000a000005c0a8cc01')
         windivert_packet.is_loopback = False
 
         with mock.patch('fakenet.diverters.windows.WindowsPacketCtx',
@@ -668,12 +670,12 @@ class WindowsVerdictTests(unittest.TestCase):
         diverter = Diverter.__new__(Diverter)
         diverter.egress_policy = ReviewedRoutePolicy()
         valid = [{
-            'target_ipv4': '8.8.8.8',
+            'target_ipv4': '192.168.204.1',
             'interface_index': 7,
             'interface_alias': 'Ethernet0',
             'source_ipv4': '10.0.0.5',
-            'destination_prefix': '0.0.0.0/0',
-            'next_hop': '10.0.0.1',
+            'destination_prefix': '192.168.204.0/24',
+            'next_hop': '0.0.0.0',
             'route_metric': 10,
             'interface_metric': 20,
         }]
@@ -687,7 +689,31 @@ class WindowsVerdictTests(unittest.TestCase):
 
         self.assertEqual(ROUTE_PROBE_UDP_PORT, 9)
         self.assertEqual(run.call_args.kwargs['timeout'], 2)
-        self.assertIn('8.8.8.8', run.call_args.args[0][-1])
+        self.assertIn('192.168.204.1', run.call_args.args[0][-1])
+
+    def test_reviewed_private_route_rejects_default_and_gateway_paths(self):
+        diverter = Diverter.__new__(Diverter)
+        diverter.egress_policy = ReviewedRoutePolicy()
+        base = {
+            'target_ipv4': '192.168.204.1',
+            'interface_index': 7,
+            'interface_alias': 'Ethernet0',
+            'source_ipv4': '10.0.0.5',
+            'destination_prefix': '192.168.204.0/24',
+            'next_hop': '0.0.0.0',
+            'route_metric': 10,
+            'interface_metric': 20,
+        }
+        for changed in (
+                {'destination_prefix': '0.0.0.0/0'},
+                {'next_hop': '192.168.204.254'}):
+            snapshot = dict(base, **changed)
+            completed = mock.Mock(
+                returncode=0, stdout=json.dumps([snapshot]), stderr='')
+            with mock.patch('fakenet.diverters.windows.subprocess.run',
+                            return_value=completed):
+                with self.assertRaises(PolicyConfigError, msg=repr(changed)):
+                    diverter._read_reviewed_ip_route_snapshots()
 
     def test_reviewed_route_query_timeout_fails_closed(self):
         diverter = Diverter.__new__(Diverter)
@@ -732,7 +758,7 @@ class WindowsVerdictTests(unittest.TestCase):
 
         def packet(port):
             return ReviewedPacketTuple(
-                'TCP', '10.0.0.5', 50000 + port, '8.8.8.8', port,
+                'TCP', '10.0.0.5', 50000 + port, '192.168.204.1', port,
                 7, 0, True)
 
         first, pressure, entries = audit.observe(rule, packet(443))
@@ -755,24 +781,27 @@ class WindowsVerdictTests(unittest.TestCase):
 
         def packet(port):
             return ReviewedPacketTuple(
-                'TCP', '10.0.0.5', 50000, '8.8.8.8', port,
+                'TCP', '10.0.0.5', 50000, '192.168.204.1', port,
                 7, 0, True)
 
         audit.observe(rule, packet(443))
         self.assertTrue(audit.observe(rule, packet(444))[1])
         self.assertFalse(audit.observe(rule, packet(445))[1])
         clock.advance(60)
-        self.assertTrue(audit.observe(rule, packet(446))[1])
-        self.assertFalse(audit.observe(rule, packet(443))[0])
-        audit.observe(rule, packet(444))
+        first, pressure, entries = audit.observe(rule, packet(446))
+        self.assertTrue(first)
+        self.assertFalse(pressure)
+        self.assertEqual(1, entries)
+        self.assertTrue(audit.observe(rule, packet(443))[1])
+        self.assertFalse(audit.observe(rule, packet(444))[1])
         first, pressure, entries = audit.observe(rule, packet(445))
         self.assertTrue(first)
-        self.assertTrue(pressure)
-        self.assertEqual(entries, 2)
+        self.assertFalse(pressure)
+        self.assertEqual(entries, 1)
 
         clock.advance(60)
         summaries = audit.summaries()
-        self.assertEqual((rule.rule_id, 4, 3, 1), summaries[0])
+        self.assertEqual((rule.rule_id, 7, 7, 5), summaries[0])
 
         clock.advance(61)
         first, pressure, entries = audit.observe(rule, packet(446))

@@ -1,5 +1,9 @@
 [CmdletBinding()]
-param([string]$PythonPath = 'python.exe')
+param(
+    [string]$PythonPath = 'python.exe',
+    [ValidateSet('all_ports', 'exact_ports')]
+    [string]$Profile = 'exact_ports'
+)
 
 $ErrorActionPreference = 'Stop'
 $script:ExitCode = 1
@@ -233,26 +237,20 @@ function Read-AndVerifyManifest {
     }
     $manifest = Get-Content -LiteralPath $path -Raw -Encoding UTF8 |
         ConvertFrom-Json
-    if ($manifest.policy_version -ne 'v5' -or
-            $manifest.package_version -ne 'v11' -or
+    if ($manifest.policy_version -ne 'v6' -or
+            $manifest.plan_version -ne 'v4' -or
+            $manifest.package_version -ne 'v12' -or
             ([string]$manifest.source_commit) -notmatch '^[0-9a-f]{40}$' -or
             $manifest.allowed_domain -ne 'api.deepseek.com' -or
-            $manifest.takeover_ipv4 -ne '192.168.204.1' -or
-            [int]$manifest.takeover_dns_ttl -ne 60 -or
-            @($manifest.reviewed_ipv4_rules).Count -lt 1 -or
-            @($manifest.reviewed_ipv4_rules).Count -gt 32 -or
-            [string]::IsNullOrWhiteSpace(
-                [string]$manifest.reviewed_ipv4_rules_raw) -or
-            ([string]$manifest.reviewed_ipv4_config_sha256) -notmatch
-                '^[0-9a-f]{64}$' -or
+            $manifest.reviewed_ipv4_target -ne '192.168.204.1' -or
+            $manifest.negative_test_ipv4 -ne '192.168.204.2' -or
+            @($manifest.reviewed_ipv4_profiles).Count -ne 2 -or
             [int]$manifest.reviewed_route_probe_udp_port -ne 9 -or
             [int]$manifest.address_refresh_seconds -ne 5 -or
-            [string]::IsNullOrWhiteSpace(
-                [string]$manifest.authorized_negative_test_ipv4) -or
             $manifest.windows_build -ne '10.0.19045' -or
             $manifest.python_version -ne '3.13.7' -or
             $manifest.python_architecture -ne 'AMD64') {
-        throw 'The package manifest does not match reviewed v11 contracts.'
+        throw 'The package manifest does not match reviewed v12 contracts.'
     }
 
     $rootPath = (Resolve-Path -LiteralPath $Root).Path
@@ -424,7 +422,7 @@ function Get-ReviewedRulesValue {
         }
     }
     if ($occurrences -ne 1) {
-        throw 'ExternalAllowedIPv4Rules must occur exactly once in v11.'
+        throw 'ExternalAllowedIPv4Rules must occur exactly once in v12.'
     }
     return ($parts -join ' ').Trim()
 }
@@ -459,6 +457,14 @@ function Get-NormalizedReviewedRules {
                 ($port -ne '*' -and
                     ([int64]$port -lt 1 -or [int64]$port -gt 65535))) {
             throw "Invalid reviewed IPv4 or port: $token"
+        }
+        $octets = $address.GetAddressBytes()
+        $isRfc1918 = ($octets[0] -eq 10 -or
+            ($octets[0] -eq 172 -and $octets[1] -ge 16 -and
+                $octets[1] -le 31) -or
+            ($octets[0] -eq 192 -and $octets[1] -eq 168))
+        if (-not $isRfc1918) {
+            throw "Reviewed IPv4 is not RFC1918: $token"
         }
         $canonical = '{0}/{1}/{2}' -f $protocol, $ipv4, $port
         if ($normalized -contains $canonical) {
@@ -641,6 +647,7 @@ if (-not (Test-IsAdministrator)) {
     if ($PythonPath -ne 'python.exe') {
         $arguments += @('-PythonPath', ('"{0}"' -f $PythonPath))
     }
+    $arguments += @('-Profile', $Profile)
     $elevatedArguments = @{
         FilePath = 'powershell.exe'
         Verb = 'RunAs'
@@ -656,18 +663,19 @@ try {
     $repoRoot = Resolve-RepositoryRoot
     $logRoot = Join-Path $repoRoot 'dist\Logs'
     New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
-    $script:LockPath = Join-Path $logRoot 'domain-takeover-start.lock'
+    $script:LockPath = Join-Path $logRoot 'reviewed-ipv4-start.lock'
     try {
         $script:LockStream = [IO.File]::Open(
             $script:LockPath, [IO.FileMode]::OpenOrCreate,
             [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
         $script:LockOwned = $true
     } catch {
-        throw 'Another domain-takeover launcher is already running.'
+        throw 'Another reviewed-IPv4 launcher is already running.'
     }
 
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $script:LogDir = Join-Path $logRoot ('domain-takeover-start-{0}' -f $stamp)
+    $script:LogDir = Join-Path $logRoot (
+        'reviewed-ipv4-{0}-{1}' -f $Profile, $stamp)
     New-Item -ItemType Directory -Path $script:LogDir -Force | Out-Null
     $transcriptPath = Join-Path $script:LogDir 'launcher-transcript.log'
     Start-Transcript -LiteralPath $transcriptPath | Out-Null
@@ -693,17 +701,25 @@ try {
         throw 'The reviewed package requires Windows x64.'
     }
 
-    $template = Join-Path $repoRoot 'fakenet\configs\domain_takeover_windows.ini'
+    $profileContract = @($manifest.reviewed_ipv4_profiles |
+        Where-Object { [string]$_.name -eq $Profile })
+    if ($profileContract.Count -ne 1) {
+        throw "Manifest profile is missing or duplicated: $Profile"
+    }
+    $profileContract = $profileContract[0]
+    $template = Join-Path $repoRoot (
+        ([string]$profileContract.config_path).Replace('/', '\'))
     $templateHash = (Get-FileHash -LiteralPath $template -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($templateHash -ne ([string]$manifest.config_sha256).ToLowerInvariant()) {
-        throw 'The takeover INI hash does not match the reviewed manifest.'
+    if ($templateHash -ne
+            ([string]$profileContract.config_sha256).ToLowerInvariant()) {
+        throw 'The reviewed IPv4 profile hash does not match the manifest.'
     }
     $reviewedRulesRaw = Get-ReviewedRulesValue $template
     $reviewedRules = @(Get-NormalizedReviewedRules $reviewedRulesRaw)
-    if ($reviewedRulesRaw -ne [string]$manifest.reviewed_ipv4_rules_raw) {
+    if ($reviewedRulesRaw -ne [string]$profileContract.rules_raw) {
         throw 'The exact reviewed IPv4 rule text does not match the manifest.'
     }
-    $manifestRules = @($manifest.reviewed_ipv4_rules | ForEach-Object {
+    $manifestRules = @($profileContract.rules | ForEach-Object {
         [string]$_
     })
     if (($reviewedRules -join ',') -ne ($manifestRules -join ',')) {
@@ -711,49 +727,39 @@ try {
     }
     $reviewedRulesHash = Get-TextSha256 ($reviewedRules -join ',')
     if ($reviewedRulesHash -ne
-            ([string]$manifest.reviewed_ipv4_config_sha256).ToLowerInvariant()) {
+            ([string]$profileContract.rules_sha256).ToLowerInvariant()) {
         throw 'The normalized reviewed IPv4 rule hash does not match manifest.'
     }
     $expectedRuleIds = @($reviewedRules | ForEach-Object {
         (Get-TextSha256 $_).Substring(0, 16)
     })
-    $manifestRuleIds = @($manifest.reviewed_ipv4_rule_ids | ForEach-Object {
+    $manifestRuleIds = @($profileContract.rule_ids | ForEach-Object {
         [string]$_
     })
     if (($expectedRuleIds -join ',') -ne ($manifestRuleIds -join ',')) {
         throw 'The reviewed IPv4 rule IDs do not match normalized rules.'
     }
-    $negativeTestAddress = $null
-    $negativeTestIPv4 = [string]$manifest.authorized_negative_test_ipv4
     $reviewedTargetsFromRules = @($reviewedRules | ForEach-Object {
         $_.Split('/')[1]
     } | Select-Object -Unique)
-    if (-not [Net.IPAddress]::TryParse(
-            $negativeTestIPv4, [ref]$negativeTestAddress) -or
-            $negativeTestAddress.AddressFamily -ne
-                [Net.Sockets.AddressFamily]::InterNetwork -or
-            $negativeTestAddress.ToString() -ne $negativeTestIPv4 -or
-            $negativeTestIPv4 -in $reviewedTargetsFromRules) {
-        throw 'The authorized negative-test IPv4 is invalid or reviewed.'
+    if (($reviewedTargetsFromRules -join ',') -ne '192.168.204.1') {
+        throw 'The reviewed profile must target only 192.168.204.1.'
     }
-    if ((Get-IniValue $template 'ExternalTakeoverIPv4') -ne
-            '192.168.204.1' -or
-            [int](Get-IniValue $template 'ExternalTakeoverDnsTTL') -ne 60) {
-        throw 'The takeover configuration does not match reviewed v5.'
-    }
-    $probePorts = Get-IniValue $template 'ExternalTakeoverProbeTCPPorts'
-    $probeTimeoutText = Get-IniValue $template 'ExternalTakeoverProbeTimeoutMs'
-    if ($probeTimeoutText -notmatch '^\d+$') {
-        throw 'ExternalTakeoverProbeTimeoutMs is invalid.'
+    $sourceTemplateText = Get-Content -LiteralPath $template -Raw
+    if ($sourceTemplateText -match '(?m)^ExternalTakeover' -or
+            $sourceTemplateText -match
+                '(?m)^ResponseA\s*:\s*192\.168\.204\.1\s*$') {
+        throw 'Reviewed profile contains takeover fields or sink DNS answers.'
     }
 
     $selection = Select-OriginalDnsServer
     $resolver = [string]$selection.Address
-    if ($resolver -eq '192.168.204.1') {
-        throw 'The takeover target cannot equal the upstream DNS server.'
-    }
-    if ($resolver -eq $negativeTestIPv4) {
-        throw 'The authorized negative-test IPv4 cannot be the VM resolver.'
+    $localIPv4 = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+        Select-Object -ExpandProperty IPAddress)
+    if ($resolver -in @('192.168.204.1', '192.168.204.2') -or
+            '192.168.204.1' -in $localIPv4 -or
+            '192.168.204.2' -in $localIPv4) {
+        throw 'Reviewed or negative-test IPv4 conflicts with VM local/DNS state.'
     }
     Write-Host ('Using pre-start DNS: {0} ({1})' -f
         $resolver, $selection.InterfaceAlias) -ForegroundColor Cyan
@@ -783,25 +789,6 @@ try {
         }
     }
 
-    $route = Get-TakeoverRouteSnapshot '192.168.204.1'
-    $routeLine = ('TAKEOVER_ROUTE_OK interface_index={0} ' +
-        'interface_alias={1} source_ipv4={2} destination_prefix={3} ' +
-        'next_hop={4} route_metric={5} interface_metric={6}') -f
-        $route.interface_index, $route.interface_alias,
-        $route.source_ipv4, $route.destination_prefix, $route.next_hop,
-        $route.route_metric, $route.interface_metric
-    $routeLog = Join-Path $script:LogDir 'takeover-route.log'
-    $routeLine | Set-Content -LiteralPath $routeLog -Encoding UTF8
-    Write-Host $routeLine -ForegroundColor Cyan
-
-    $probeArguments = @{
-        Target = '192.168.204.1'
-        PortsValue = $probePorts
-        TimeoutMs = [int]$probeTimeoutText
-        LogPath = Join-Path $script:LogDir 'takeover-probe.log'
-    }
-    Invoke-TakeoverProbe @probeArguments
-
     $systemPython = (Get-Command $PythonPath -ErrorAction Stop).Source
     # Send dynamic Python source through stdin. Windows PowerShell 5.1 can
     # strip embedded double quotes while rebuilding native command lines.
@@ -828,7 +815,7 @@ try {
             $identity.version, $identity.machine)
     }
 
-    $venvRoot = Join-Path $repoRoot '.venv-domain-takeover'
+    $venvRoot = Join-Path $repoRoot '.venv-reviewed-ipv4'
     $venvPython = Join-Path $venvRoot 'Scripts\python.exe'
     if (-not (Test-Path -LiteralPath $venvPython)) {
         $venvLog = Join-Path $script:LogDir 'venv-create.log'
@@ -866,7 +853,8 @@ try {
         throw 'The package-local dependency/API check failed.'
     }
 
-    $runtimeConfig = Join-Path $script:LogDir 'domain_takeover_runtime.ini'
+    $runtimeConfig = Join-Path $script:LogDir (
+        'domain_reviewed_ipv4_{0}_runtime.ini' -f $Profile)
     $templateText = Get-Content -LiteralPath $template -Raw
     if (([regex]::Matches($templateText,
                 [regex]::Escape('__EXTERNAL_DNS__'))).Count -ne 1) {
@@ -875,11 +863,11 @@ try {
     $templateText.Replace('__EXTERNAL_DNS__', $resolver) |
         Set-Content -LiteralPath $runtimeConfig -Encoding ASCII
 
-    $manifestLine = ('TAKEOVER_POLICY_MANIFEST policy_version={0} ' +
-        'config_sha256={1} source_commit={2} os_build={3} ' +
-        'python={4} pydivert=2.1.0 ' +
+    $manifestLine = ('IP_ALLOW_POLICY_MANIFEST policy_version={0} ' +
+        'profile={1} config_sha256={2} source_commit={3} os_build={4} ' +
+        'python={5} pydivert=2.1.0 ' +
         'netifaces_dist=netifaces-plus==0.12.5') -f
-        $manifest.policy_version, $manifest.config_sha256,
+        $manifest.policy_version, $Profile, $profileContract.config_sha256,
         $manifest.source_commit, $manifest.windows_build,
         $manifest.python_version
     $manifestLog = Join-Path $script:LogDir 'policy-manifest.log'
@@ -892,10 +880,9 @@ try {
     $script:StopFlag = Join-Path $script:LogDir 'stop-fakenet.flag'
 
     Write-Host ''
-    Write-Host 'Starting reviewed Windows domain takeover policy.'
+    Write-Host ('Starting reviewed private IPv4 policy: {0}.' -f $Profile)
     Write-Host 'Real egress: api.deepseek.com TCP/443 exact TLS SNI.'
-    Write-Host ('Other DNS A answers: 192.168.204.1; ' +
-        'sink TCP/UDP ports unchanged.')
+    Write-Host 'Reviewed direct target: 192.168.204.1; takeover is disabled.'
     Write-Host ('Plain logs: {0}' -f $script:LogDir)
     Write-Host ''
 
@@ -921,7 +908,7 @@ try {
         $script:FakeNetProcess.Refresh()
         if ($script:FakeNetProcess.HasExited) { break }
         if ((Test-Path -LiteralPath $fakeLog) -and
-                (Select-String -LiteralPath $fakeLog -Pattern 'DOMAIN_TAKEOVER_READY' -Quiet)) {
+                (Select-String -LiteralPath $fakeLog -Pattern 'IP_ALLOW_READY' -Quiet)) {
             $ready = $true
             break
         }
@@ -930,10 +917,12 @@ try {
         throw ('FakeNet-NG exited early or did not become ready within ' +
             '30 seconds.')
     }
+    if (Select-String -LiteralPath $fakeLog `
+            -Pattern 'DOMAIN_TAKEOVER_READY|ALLOW_TAKEOVER_SINK' -Quiet) {
+        throw 'Takeover event appeared in the reviewed-IP profile.'
+    }
 
-    Write-Host 'FakeNet-NG is READY. Start or restart the analysis tool now.'
-    Write-Host ('The tool must use system DNS and connect directly to ' +
-        'https://api.deepseek.com without proxy or DoH.')
+    Write-Host 'FakeNet-NG is READY. Generate reviewed private-IP traffic now.'
     $stopRequested = Show-FakeNetLogUntilStop `
         -Process $script:FakeNetProcess -Path $fakeLog `
         -StopFlag $script:StopFlag

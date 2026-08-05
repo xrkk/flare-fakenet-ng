@@ -79,6 +79,20 @@ _RFC1918_NETWORKS = (
     ipaddress.ip_network('192.168.0.0/16'),
 )
 
+
+def is_rfc1918_unicast_ipv4(address):
+    """Return True only for canonical, usable addresses in RFC1918 blocks."""
+    try:
+        address = ipaddress.ip_address(str(address))
+    except ValueError:
+        return False
+    if address.version != 4:
+        return False
+    return any(
+        address in network and
+        address not in (network.network_address, network.broadcast_address)
+        for network in _RFC1918_NETWORKS)
+
 _TAKEOVER_KEYS = frozenset((
     'externaltakeoveripv4',
     'externaltakeoverdnsttl',
@@ -277,9 +291,9 @@ def _parse_reviewed_ipv4_rules(config, config_keys, local_ipv4,
                 'reviewed IPv4 rule requires one canonical IPv4 address') from exc
         canonical_ipv4 = str(address)
         if (address.version != 4 or canonical_ipv4 != raw_ipv4 or
-                not address.is_global):
+                not is_rfc1918_unicast_ipv4(address)):
             raise PolicyConfigError(
-                'reviewed IPv4 rule requires a global unicast IPv4 address')
+                'reviewed IPv4 rule requires an RFC1918 unicast IPv4 address')
         if (canonical_ipv4 in local_ipv4 or
                 canonical_ipv4 == external_dns_server or
                 (takeover_ipv4 and canonical_ipv4 == takeover_ipv4)):
