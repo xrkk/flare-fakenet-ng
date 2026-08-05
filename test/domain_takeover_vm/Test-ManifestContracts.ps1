@@ -37,7 +37,7 @@ foreach ($script in @($LauncherPath, $RunnerPath)) {
         throw "Manifest verifier returned no files: $script"
     }
     $profiles = @($manifest.reviewed_ipv4_profiles)
-    if ($manifest.package_version -ne 'v13' -or
+    if ($manifest.package_version -ne 'v14' -or
             $manifest.policy_version -ne 'v7' -or
             $manifest.plan_version -ne 'v5' -or
             $manifest.reviewed_hostname -ne 'www.baidu.com' -or

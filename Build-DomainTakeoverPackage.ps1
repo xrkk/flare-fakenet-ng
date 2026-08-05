@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v13'
+$packageVersion = 'v14'
 $packageName = "Windows公网指定IPv4放行-$packageVersion"
 $planRelative = 'PLAN\2026.08.05\2026.08.05-01-Windows指定IPv4全端口及指定端口放行方案.md'
 $reviewedRouteProbeUdpPort = 9
@@ -70,7 +70,7 @@ function Test-ReviewedGlobalIPv4 {
 function Get-NormalizedReviewedRules {
     param([string]$Value)
     if ([string]::IsNullOrWhiteSpace($Value)) {
-        throw 'ExternalAllowedIPv4Rules must be present and non-empty for v13.'
+        throw 'ExternalAllowedIPv4Rules must be present and non-empty for v14.'
     }
     $parts = @($Value.Split(','))
     if ($parts.Count -gt 32 -or @($parts | Where-Object {
@@ -130,7 +130,7 @@ function Assert-ReviewedTemplate {
     }
     foreach ($comment in @(
             '# Build-only marker. The source template deliberately grants no public IPv4.',
-            '# The v13 builder emits one manifest-bound TCP/443 runtime profile from here.',
+            '# The v14 builder emits one manifest-bound TCP/443 runtime profile from here.',
             '# __REVIEWED_PUBLIC_IPV4_RULES__')) {
         $template = $template.Replace($comment + "`n", '')
     }
@@ -581,7 +581,8 @@ try {
     $launcherContractOutput = @(& $windowsPowerShell -NoLogo -NoProfile `
         -ExecutionPolicy Bypass -File (Join-Path $stage `
             'test\domain_takeover_vm\Test-LauncherContracts.ps1') `
-        -LauncherPath $launcherPath -LogDirectory $launcherContractLog `
+        -LauncherPath $launcherPath -RunnerPath $runnerPath `
+        -LogDirectory $launcherContractLog `
         -SkipLiveRoute 2>&1)
     if ($LASTEXITCODE -ne 0) {
         throw ('PowerShell 5.1 launcher contract failed: {0}' -f

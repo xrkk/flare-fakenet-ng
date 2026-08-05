@@ -148,6 +148,53 @@ function Assert-ReviewedDnsFreshness {
     return $addresses
 }
 
+function Invoke-ReviewedRoutePreflight {
+    param([string]$Root, [string[]]$Targets)
+    $scriptPath = Join-Path $Root 'Test-ReviewedIPv4Routes.ps1'
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        throw 'Reviewed IPv4 route checker is missing.'
+    }
+    $targetJson = ConvertTo-Json @($Targets) -Compress
+    $encoded = [Convert]::ToBase64String(
+        [Text.Encoding]::UTF8.GetBytes($targetJson))
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = 'powershell.exe'
+    $startInfo.Arguments = ('-NoLogo -NoProfile -NonInteractive ' +
+        '-ExecutionPolicy Bypass -File "{0}" -TargetsBase64 {1}' -f
+        $scriptPath, $encoded)
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw 'Unable to start reviewed IPv4 route checker.'
+        }
+        if (-not $process.WaitForExit(2000)) {
+            try { $process.Kill() } catch {}
+            throw 'Reviewed IPv4 batch route query exceeded 2 seconds.'
+        }
+        $stdout = $process.StandardOutput.ReadToEnd().Trim()
+        $stderr = $process.StandardError.ReadToEnd().Trim()
+        if ($process.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($stdout)) {
+            throw ('Reviewed IPv4 route preflight failed: {0}' -f
+                $(if ($stderr) { $stderr } else { 'no output' }))
+        }
+        $snapshots = @($stdout | ConvertFrom-Json)
+        $observed = @($snapshots | ForEach-Object {
+            [string]$_.target_ipv4
+        } | Sort-Object)
+        if (($observed -join ',') -ne (@($Targets | Sort-Object) -join ',')) {
+            throw 'Reviewed IPv4 route snapshots do not match manifest targets.'
+        }
+        return $snapshots
+    } finally {
+        $process.Dispose()
+    }
+}
+
 function Read-AndVerifyManifest {
     param([string]$Root)
     $path = Join-Path $Root 'domain-takeover-manifest.json'
@@ -158,7 +205,7 @@ function Read-AndVerifyManifest {
         ConvertFrom-Json
     if ($manifest.policy_version -ne 'v7' -or
             $manifest.plan_version -ne 'v5' -or
-            $manifest.package_version -ne 'v13' -or
+            $manifest.package_version -ne 'v14' -or
             ([string]$manifest.source_commit) -notmatch '^[0-9a-f]{40}$' -or
             $manifest.allowed_domain -ne 'api.deepseek.com' -or
             $manifest.reviewed_hostname -ne 'www.baidu.com' -or
@@ -171,7 +218,7 @@ function Read-AndVerifyManifest {
             $manifest.windows_build -ne '10.0.19045' -or
             $manifest.python_version -ne '3.13.7' -or
             $manifest.python_architecture -ne 'AMD64') {
-        throw 'The package manifest does not match reviewed v13 contracts.'
+        throw 'The package manifest does not match reviewed v14 contracts.'
     }
     $rootPath = (Resolve-Path -LiteralPath $Root).Path
     foreach ($entry in @($manifest.files)) {
@@ -284,7 +331,7 @@ function Send-ReviewedMatrixPacket {
             [Net.Sockets.ProtocolType]::Udp)
         try {
             $payload = [Text.Encoding]::ASCII.GetBytes(
-                'fakenet-reviewed-ip-v13')
+                'fakenet-reviewed-ip-v14')
             $sent = $socket.SendTo($payload,
                 [Net.IPEndPoint]::new([Net.IPAddress]::Parse($Target), $Port))
             $line = ('{0} proto=UDP ip={1} port={2} bytes={3}' -f
@@ -339,7 +386,7 @@ function Invoke-ReviewedRuleMatrix {
         Out-Null
     if ($Profile -ne 'baidu_tcp443' -or $Rules.Count -ne 1 -or
             $Rules[0] -ne 'TCP/110.242.69.21/443') {
-        throw 'Reviewed v13 matrix/profile contract mismatch.'
+        throw 'Reviewed v14 matrix/profile contract mismatch.'
     }
     Invoke-ReviewedBaiduTls -Target '110.242.69.21' `
         -Hostname 'www.baidu.com'
@@ -603,7 +650,7 @@ if (-not (Test-IsAdministrator)) {
 $script:RepoRoot = Resolve-RepositoryRoot
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $script:RunRoot = Join-Path $PSScriptRoot `
-        ("Logs\reviewed-ipv4-v13-{0}" -f $stamp)
+        ("Logs\reviewed-ipv4-v14-{0}" -f $stamp)
 New-Item -ItemType Directory -Path $script:RunRoot -Force | Out-Null
 $script:LogDir = $script:RunRoot
 $script:ResultFile = Join-Path $script:RunRoot 'results.tsv'
@@ -616,7 +663,7 @@ try {
     $os = Get-CimInstance Win32_OperatingSystem
     if ([string]$os.Version -ne [string]$manifest.windows_build -or
             -not [Environment]::Is64BitOperatingSystem) {
-        throw 'Windows build/architecture does not match reviewed v13.'
+        throw 'Windows build/architecture does not match reviewed v14.'
     }
     Add-Result 'WindowsBuild' 'PASS' ([string]$os.Version)
 
@@ -649,7 +696,7 @@ try {
     if ($identity.version -ne $manifest.python_version -or
             $identity.machine.ToUpperInvariant() -ne
                 $manifest.python_architecture) {
-        throw 'Python ABI does not match reviewed v13.'
+        throw 'Python ABI does not match reviewed v14.'
     }
 
     $venvRoot = Join-Path $script:RepoRoot '.venv-reviewed-ipv4'

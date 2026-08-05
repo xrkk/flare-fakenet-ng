@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$LauncherPath,
+    [Parameter(Mandatory=$true)][string]$RunnerPath,
     [Parameter(Mandatory=$true)][string]$LogDirectory,
     [switch]$SkipLiveRoute
 )
@@ -83,6 +84,33 @@ try {
     $probeAst = Import-ReviewedFunction $ast 'Invoke-TakeoverProbe'
     $stopReasonAst = Import-ReviewedFunction $ast 'Get-FakeNetStopReason'
     $liveLogAst = Import-ReviewedFunction $ast 'Show-FakeNetLogUntilStop'
+
+    $runnerTokens = $null
+    $runnerErrors = $null
+    $runnerAst = [Management.Automation.Language.Parser]::ParseFile(
+        $RunnerPath, [ref]$runnerTokens, [ref]$runnerErrors)
+    Assert-Contract ($runnerErrors.Count -eq 0) 'Runner PowerShell parse failed.'
+    $runnerRouteDefinitions = @($runnerAst.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Invoke-ReviewedRoutePreflight'
+    }, $true))
+    $runnerRouteCalls = @($runnerAst.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -eq 'Invoke-ReviewedRoutePreflight'
+    }, $true))
+    Assert-Contract ($runnerRouteDefinitions.Count -eq 1) `
+        'Runner must define Invoke-ReviewedRoutePreflight exactly once.'
+    Assert-Contract ($runnerRouteCalls.Count -eq 1) `
+        'Runner must call Invoke-ReviewedRoutePreflight exactly once.'
+    foreach ($required in @('WaitForExit(2000)',
+            'Test-ReviewedIPv4Routes.ps1', 'RedirectStandardOutput',
+            'RedirectStandardError')) {
+        Assert-Contract ($runnerRouteDefinitions[0].Extent.Text.Contains($required)) `
+            "Reviewed route runner gate is missing: $required"
+    }
+    Add-Pass 'RunnerReviewedRouteDeadlineStaticBoundary'
 
     $probeText = $probeAst.Extent.Text
     foreach ($required in @('IPAddress]::Parse', 'ConnectAsync', '.Wait(',
