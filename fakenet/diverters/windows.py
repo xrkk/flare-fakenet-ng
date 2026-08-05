@@ -4,6 +4,7 @@
 
 import logging
 import ctypes
+from collections import Counter, OrderedDict
 
 from pydivert.windivert import *
 
@@ -23,6 +24,7 @@ from .diverterbase import *
 import subprocess
 import ipaddress
 import json
+import struct
 
 _TAKEOVER_ROUTE_SCRIPT = r'''
 $ErrorActionPreference = 'Stop'
@@ -118,12 +120,177 @@ if ($source -notin $sourceAddresses) {
 } | ConvertTo-Json -Compress
 '''
 
-from .egresspolicy import EgressPolicy, PolicyConfigError, Verdict
+ROUTE_PROBE_UDP_PORT = 9
+_REVIEWED_ROUTE_QUERY_TIMEOUT_SECONDS = 2
+_REVIEWED_ROUTE_SCRIPT = r'''
+$ErrorActionPreference = 'Stop'
+$targets = @(ConvertFrom-Json -InputObject '__TARGETS_JSON__')
+
+function Test-IPv4PrefixContains {
+    param([string]$Address, [string]$Prefix)
+    $parts = $Prefix.Split('/')
+    if ($parts.Count -ne 2) { return $false }
+    $length = [int]$parts[1]
+    if ($length -lt 0 -or $length -gt 32) { return $false }
+    $addressBytes = ([Net.IPAddress]::Parse($Address)).GetAddressBytes()
+    $networkBytes = ([Net.IPAddress]::Parse($parts[0])).GetAddressBytes()
+    $whole = [Math]::Floor($length / 8)
+    for ($index = 0; $index -lt $whole; $index++) {
+        if ($addressBytes[$index] -ne $networkBytes[$index]) { return $false }
+    }
+    $remainder = $length % 8
+    if ($remainder -eq 0) { return $true }
+    $mask = [int](256 - [Math]::Pow(2, 8 - $remainder))
+    return (($addressBytes[$whole] -band $mask) -eq
+        ($networkBytes[$whole] -band $mask))
+}
+
+$interfaces = @{}
+Get-NetIPInterface -AddressFamily IPv4 -ErrorAction Stop |
+    Where-Object ConnectionState -eq 'Connected' |
+    ForEach-Object { $interfaces[[int]$_.InterfaceIndex] = $_ }
+$routes = @(Get-NetRoute -AddressFamily IPv4 -PolicyStore ActiveStore `
+    -ErrorAction Stop)
+$results = @()
+
+foreach ($target in $targets) {
+    $target = [string]$target
+    $matches = @(
+        $routes | ForEach-Object {
+            $index = [int]$_.InterfaceIndex
+            if ($interfaces.ContainsKey($index) -and
+                    (Test-IPv4PrefixContains $target $_.DestinationPrefix)) {
+                $prefixLength = [int]$_.DestinationPrefix.Split('/')[1]
+                [PSCustomObject]@{
+                    Route = $_
+                    PrefixLength = $prefixLength
+                    TotalMetric = [uint64]$_.RouteMetric +
+                        [uint64]$interfaces[$index].InterfaceMetric
+                }
+            }
+        }
+    )
+    if ($matches.Count -eq 0) { throw "No route for $target" }
+    $bestPrefix = ($matches | Measure-Object PrefixLength -Maximum).Maximum
+    $prefixMatches = @($matches | Where-Object PrefixLength -eq $bestPrefix)
+    $bestMetric = ($prefixMatches | Measure-Object TotalMetric -Minimum).Minimum
+    $best = @($prefixMatches | Where-Object TotalMetric -eq $bestMetric)
+    if ($best.Count -ne 1) { throw "Ambiguous route for $target" }
+    $selected = $best[0]
+    $route = $selected.Route
+
+    $sourceAddresses = @(
+        Get-NetIPAddress -AddressFamily IPv4 `
+                -InterfaceIndex $route.InterfaceIndex -ErrorAction Stop |
+            Where-Object {
+                $_.AddressState -eq 'Preferred' -and -not $_.SkipAsSource
+            } | Select-Object -ExpandProperty IPAddress
+    )
+    $socket = New-Object Net.Sockets.Socket(
+        [Net.Sockets.AddressFamily]::InterNetwork,
+        [Net.Sockets.SocketType]::Dgram,
+        [Net.Sockets.ProtocolType]::Udp)
+    try {
+        $socket.Connect([Net.IPAddress]::Parse($target),
+            __ROUTE_PROBE_UDP_PORT__)
+        $source = [string]$socket.LocalEndPoint.Address
+    } finally {
+        $socket.Dispose()
+    }
+    if ($source -notin $sourceAddresses) {
+        throw "Selected source is not on the best interface for $target"
+    }
+    $results += [PSCustomObject]@{
+        target_ipv4 = $target
+        interface_index = [int]$route.InterfaceIndex
+        interface_alias = [string]$interfaces[[int]$route.InterfaceIndex].InterfaceAlias
+        source_ipv4 = $source
+        destination_prefix = [string]$route.DestinationPrefix
+        next_hop = [string]$route.NextHop
+        route_metric = [uint64]$route.RouteMetric
+        interface_metric = [uint64]$interfaces[[int]$route.InterfaceIndex].InterfaceMetric
+    }
+}
+@($results) | ConvertTo-Json -Compress
+'''
+
+from .egresspolicy import (EgressPolicy, PolicyConfigError,
+                           ReviewedPacketTuple, Verdict)
+
+
+class ReviewedIpFlowAudit(object):
+    MAX_ENTRIES = 4096
+    FLOW_TTL_SECONDS = 60
+    SUMMARY_SECONDS = 60
+    PRESSURE_SECONDS = 60
+
+    def __init__(self, clock=None, rule_ids=()):
+        self._clock = clock or time.monotonic
+        self._lock = threading.Lock()
+        self._rule_ids = frozenset(rule_ids)
+        self._flows = OrderedDict()
+        self._packets = Counter()
+        self._new_flows = Counter()
+        self._evictions = Counter()
+        self._last_summary = self._clock()
+        self._last_pressure = -self.PRESSURE_SECONDS
+
+    def observe(self, rule, packet):
+        now = self._clock()
+        key = (rule.rule_id, packet.protocol, packet.source_ipv4,
+               packet.source_port, packet.target_ipv4, packet.target_port)
+        with self._lock:
+            self._packets[rule.rule_id] += 1
+            while self._flows:
+                oldest_key, oldest_seen = next(iter(self._flows.items()))
+                if now - oldest_seen < self.FLOW_TTL_SECONDS:
+                    break
+                self._flows.pop(oldest_key, None)
+            previous = self._flows.get(key)
+            first = previous is None or now - previous >= self.FLOW_TTL_SECONDS
+            pressure = False
+            if first:
+                if key in self._flows:
+                    self._flows.pop(key, None)
+                while len(self._flows) >= self.MAX_ENTRIES:
+                    evicted_key, unused = self._flows.popitem(last=False)
+                    self._evictions[evicted_key[0]] += 1
+                    if now - self._last_pressure >= self.PRESSURE_SECONDS:
+                        pressure = True
+                        self._last_pressure = now
+                self._flows[key] = now
+                self._new_flows[rule.rule_id] += 1
+            return first, pressure, len(self._flows)
+
+    def summaries(self, force=False):
+        now = self._clock()
+        with self._lock:
+            if not force and now - self._last_summary < self.SUMMARY_SECONDS:
+                return ()
+            rule_ids = set(self._rule_ids).union(self._packets).union(
+                self._new_flows, self._evictions)
+            result = tuple(
+                (rule_id, self._packets[rule_id],
+                 self._new_flows[rule_id], self._evictions[rule_id])
+                for rule_id in sorted(rule_ids))
+            self._packets.clear()
+            self._new_flows.clear()
+            self._evictions.clear()
+            self._last_summary = now
+            return result
 
 
 class WindowsPacketCtx(fnpacket.PacketCtx):
     def __init__(self, lbl, wdpkt):
         self.wdpkt = wdpkt
+        interface = getattr(wdpkt, 'interface', (-1, -1))
+        try:
+            self.interface_index = int(interface[0])
+            self.subinterface_index = int(interface[1])
+        except (TypeError, ValueError, IndexError):
+            self.interface_index = -1
+            self.subinterface_index = -1
+        self.is_outbound = bool(getattr(wdpkt, 'is_outbound', False))
         raw = wdpkt.raw.tobytes()
 
         super(WindowsPacketCtx, self).__init__(lbl, raw)
@@ -232,6 +399,9 @@ class Diverter(DiverterBase, WinUtilMixin):
         self._drop_log_state = {}
         self._policy_listeners = []
         self._takeover_route_snapshot = None
+        self._reviewed_route_snapshots = ()
+        self._reviewed_target_protocols = frozenset()
+        self._reviewed_ip_audit = ReviewedIpFlowAudit()
 
         # DomainAllowList expands capture to IPv6 and delays opening WinDivert
         # until every listener and callback is ready.  Disabled mode preserves
@@ -251,6 +421,26 @@ class Diverter(DiverterBase, WinUtilMixin):
                 self.logger.critical('Invalid DomainAllowList configuration: %s', exc)
                 raise
             self._validate_policy_listeners()
+            reviewed = self.egress_policy.reviewed_ip_settings()
+            self._reviewed_ip_audit = ReviewedIpFlowAudit(
+                rule.rule_id for rule in reviewed['rules'])
+            self._reviewed_target_protocols = reviewed['target_protocols']
+            if reviewed['enabled']:
+                self._reviewed_route_snapshots = (
+                    self._read_reviewed_ip_route_snapshots())
+                self.egress_policy.activate_reviewed_ip_routes(
+                    self._reviewed_route_snapshots)
+                for snapshot in self._reviewed_route_snapshots:
+                    self.log_egress_event('IP_ALLOW_ROUTE_OK', **snapshot)
+                for rule in reviewed['rules']:
+                    if rule.port_scope == 'all':
+                        self.log_egress_event(
+                            'IP_ALLOW_RISK_ACK', rule_id=rule.rule_id,
+                            risk='all_ports_includes_dns_proxy_tunnel')
+                self.log_egress_event(
+                    'IP_ALLOW_READY', rule_count=len(reviewed['rules']),
+                    ip_count=len(reviewed['rule_ids_by_ip']),
+                    config_sha256=reviewed['config_sha256'])
             if self.egress_policy.takeover_enabled:
                 self._takeover_route_snapshot = (
                     self._read_takeover_route_snapshot())
@@ -364,6 +554,84 @@ class Diverter(DiverterBase, WinUtilMixin):
         snapshot['route_metric'] = int(snapshot['route_metric'])
         snapshot['interface_metric'] = int(snapshot['interface_metric'])
         return snapshot
+
+    def _read_reviewed_ip_route_snapshots(self):
+        settings = self.egress_policy.reviewed_ip_settings()
+        targets = sorted({rule.ipv4 for rule in settings['rules']})
+        if not targets:
+            return ()
+        script = _REVIEWED_ROUTE_SCRIPT.replace(
+            '__TARGETS_JSON__', json.dumps(targets, separators=(',', ':')))
+        script = script.replace(
+            '__ROUTE_PROBE_UDP_PORT__', str(ROUTE_PROBE_UDP_PORT))
+        try:
+            completed = subprocess.run(
+                ['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
+                 '-ExecutionPolicy', 'Bypass', '-Command', script],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, timeout=_REVIEWED_ROUTE_QUERY_TIMEOUT_SECONDS,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        except subprocess.TimeoutExpired as exc:
+            raise PolicyConfigError(
+                'reviewed IPv4 route query exceeded 2 seconds') from exc
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            raise PolicyConfigError(
+                'reviewed IPv4 route preflight failed: %s' % (
+                    detail or 'PowerShell returned no diagnostic'))
+        lines = [line for line in completed.stdout.splitlines()
+                 if line.strip()]
+        if not lines:
+            raise PolicyConfigError(
+                'reviewed IPv4 route preflight returned no snapshot')
+        try:
+            decoded = json.loads(lines[-1])
+        except (TypeError, ValueError) as exc:
+            raise PolicyConfigError(
+                'reviewed IPv4 route preflight returned invalid JSON') from exc
+        if isinstance(decoded, dict):
+            decoded = [decoded]
+        if not isinstance(decoded, list):
+            raise PolicyConfigError(
+                'reviewed IPv4 route preflight returned an invalid collection')
+        required = {
+            'target_ipv4', 'interface_index', 'interface_alias',
+            'source_ipv4', 'destination_prefix', 'next_hop',
+            'route_metric', 'interface_metric'}
+        normalized = []
+        for snapshot in decoded:
+            if not isinstance(snapshot, dict) or set(snapshot) != required:
+                raise PolicyConfigError(
+                    'reviewed IPv4 route snapshot fields do not match')
+            item = dict(snapshot)
+            item['target_ipv4'] = str(item['target_ipv4'])
+            item['source_ipv4'] = str(item['source_ipv4'])
+            item['interface_alias'] = str(item['interface_alias'])
+            item['destination_prefix'] = str(item['destination_prefix'])
+            item['next_hop'] = str(item['next_hop'])
+            try:
+                item['interface_index'] = int(item['interface_index'])
+                item['route_metric'] = int(item['route_metric'])
+                item['interface_metric'] = int(item['interface_metric'])
+            except (TypeError, ValueError) as exc:
+                raise PolicyConfigError(
+                    'reviewed IPv4 route snapshot has invalid numbers') from exc
+            if (item['target_ipv4'] not in targets or
+                    item['interface_index'] <= 0 or
+                    item['route_metric'] < 0 or
+                    item['interface_metric'] < 0 or
+                    not self.egress_policy.is_exact_local_ipv4(
+                        item['source_ipv4'])):
+                raise PolicyConfigError(
+                    'reviewed IPv4 route snapshot failed validation')
+            normalized.append(item)
+        normalized.sort(key=lambda item: item['target_ipv4'])
+        if ([item['target_ipv4'] for item in normalized] != targets or
+                len({item['target_ipv4'] for item in normalized}) !=
+                len(targets)):
+            raise PolicyConfigError(
+                'reviewed IPv4 route snapshots do not match configured targets')
+        return tuple(normalized)
 
     def _open_windivert_handle(self):
         if self.handle is not None:
@@ -551,6 +819,14 @@ class Diverter(DiverterBase, WinUtilMixin):
         if version != 4:
             self.log_egress_event('DROP_EXTERNAL', reason='unknown_ip_version')
             return
+        fragment = self.classify_reviewed_ipv4_fragment(
+            raw, self._reviewed_target_protocols)
+        if fragment:
+            protocol, target_ipv4 = fragment
+            self.log_egress_event(
+                'DROP_EXTERNAL', reason='reviewed_ip_fragment',
+                proto=protocol, ip=target_ipv4)
+            return
 
         new_mapping_generation = None
         try:
@@ -622,6 +898,25 @@ class Diverter(DiverterBase, WinUtilMixin):
                             original_ip=pkt.dst_ip0,
                             relay_port=self.egress_policy.relay_port)
 
+            if not redirected and pkt.proto:
+                reviewed_packet = self._reviewed_packet_tuple(pkt)
+                reviewed_rule = self.egress_policy.match_reviewed_ip(
+                    reviewed_packet)
+                if reviewed_rule:
+                    verdict = self.finalize_egress_verdict(
+                        pkt, reviewed_rule=reviewed_rule)
+                    if verdict != Verdict.ALLOW_REVIEWED_IP:
+                        self.log_egress_event(
+                            'DROP_EXTERNAL',
+                            reason='reviewed_ip_revalidation_failed',
+                            ip=pkt.dst_ip0, proto=pkt.proto,
+                            dport=pkt.dport0)
+                        return
+                    if self._send_packet(pkt):
+                        self._record_reviewed_ip_allow(
+                            pkt, reviewed_packet, reviewed_rule)
+                    return
+
             handled_by_base = False
             if (not redirected and
                     self.egress_policy.non_allowed_action == 'divert'):
@@ -667,6 +962,75 @@ class Diverter(DiverterBase, WinUtilMixin):
                     Verdict.DROP_EXTERNAL)
         return None
 
+    @staticmethod
+    def classify_reviewed_ipv4_fragment(raw, target_protocols):
+        if not raw or len(raw) < 20 or ((raw[0] & 0xf0) >> 4) != 4:
+            return None
+        header_length = (raw[0] & 0x0f) * 4
+        if header_length < 20 or len(raw) < header_length:
+            return None
+        protocol = {6: 'TCP', 17: 'UDP'}.get(raw[9])
+        if not protocol:
+            return None
+        target_ipv4 = socket.inet_ntoa(raw[16:20])
+        fragment_bits = struct.unpack('!H', raw[6:8])[0]
+        if (fragment_bits & 0x3fff and
+                (protocol, target_ipv4) in target_protocols):
+            return protocol, target_ipv4
+        return None
+
+    @staticmethod
+    def _reviewed_packet_tuple(pkt):
+        return ReviewedPacketTuple(
+            protocol=pkt.proto,
+            source_ipv4=pkt.src_ip,
+            source_port=pkt.sport,
+            target_ipv4=pkt.dst_ip,
+            target_port=pkt.dport,
+            interface_index=getattr(pkt, 'interface_index', -1),
+            subinterface_index=getattr(pkt, 'subinterface_index', -1),
+            outbound=bool(getattr(pkt, 'is_outbound', False)))
+
+    def _record_reviewed_ip_allow(self, pkt, packet, rule):
+        try:
+            first, pressure, entries = self._reviewed_ip_audit.observe(
+                rule, packet)
+            if first:
+                pid = None
+                process = None
+                try:
+                    pid, process = self.get_pid_comm(pkt)
+                except Exception:
+                    pid = None
+                    process = None
+                self.log_egress_event(
+                    'ALLOW_REVIEWED_IP_FIRST_FLOW',
+                    rule_id=rule.rule_id, src=packet.source_ipv4,
+                    sport=packet.source_port, ip=packet.target_ipv4,
+                    proto=packet.protocol, dport=packet.target_port,
+                    port_scope=rule.port_scope,
+                    interface_index=packet.interface_index,
+                    subinterface_index=packet.subinterface_index,
+                    pid=pid if pid is not None else 'unknown',
+                    process=(str(process).replace(' ', '_')
+                             if process else 'unknown'))
+            if pressure:
+                self.log_egress_event(
+                    'IP_ALLOW_AUDIT_PRESSURE', entries=entries,
+                    evictions=1)
+            self._flush_reviewed_ip_audit()
+        except Exception:
+            self.logger.exception(
+                'Reviewed IPv4 observability failed without changing verdict')
+
+    def _flush_reviewed_ip_audit(self, force=False):
+        for rule_id, packets, flows, evictions in (
+                self._reviewed_ip_audit.summaries(force=force)):
+            self.log_egress_event(
+                'IP_ALLOW_AUDIT_SUMMARY', rule_id=rule_id,
+                allowed_packets=packets, observed_flows=flows,
+                evictions=evictions)
+
     def apply_domain_relay_return_fixup(self, pkt, original):
         if not pkt.proto:
             return None
@@ -702,8 +1066,8 @@ class Diverter(DiverterBase, WinUtilMixin):
         return mapping, lease
 
     def finalize_egress_verdict(self, pkt, relay_redirected=False,
-                                permit=None, relay_return_fixed=False,
-                                takeover_sink=False):
+                                 permit=None, relay_return_fixed=False,
+                                 takeover_sink=False, reviewed_rule=None):
         if permit is not None:
             return Verdict.ALLOW_INTERNAL_UPSTREAM
         if relay_return_fixed:
@@ -723,6 +1087,12 @@ class Diverter(DiverterBase, WinUtilMixin):
                     self.listener_ports.isListener(pkt.proto, pkt.dport)):
                 return Verdict.REDIRECT_TLS_RELAY
             return Verdict.DROP_EXTERNAL
+        if reviewed_rule is not None:
+            current = self.egress_policy.match_reviewed_ip(
+                self._reviewed_packet_tuple(pkt))
+            return (Verdict.ALLOW_REVIEWED_IP
+                    if current and current.rule_id == reviewed_rule.rule_id
+                    else Verdict.DROP_EXTERNAL)
         if self.egress_policy.is_exact_local_ipv4(pkt.dst_ip):
             if pkt.proto and self.listener_ports.isListener(pkt.proto,
                                                             pkt.dport):
@@ -841,9 +1211,34 @@ class Diverter(DiverterBase, WinUtilMixin):
                                 'TAKEOVER_SUSPEND',
                                 reason='route_snapshot_changed',
                                 error=type(exc).__name__)
+                if self.egress_policy.reviewed_ipv4_enabled:
+                    try:
+                        routes = self._read_reviewed_ip_route_snapshots()
+                        if routes != self._reviewed_route_snapshots:
+                            raise RuntimeError(
+                                'reviewed IPv4 route snapshot changed')
+                    except Exception as exc:
+                        self.egress_policy.suspend()
+                        if isinstance(
+                                getattr(exc, '__cause__', None),
+                                subprocess.TimeoutExpired):
+                            reason = 'route_query_timeout'
+                        elif isinstance(exc, RuntimeError):
+                            reason = 'route_snapshot_changed'
+                        else:
+                            reason = 'route_query_failed'
+                        self.log_egress_event(
+                            'IP_ALLOW_ROUTE_SUSPEND',
+                            reason=reason, error=type(exc).__name__,
+                            detail=str(exc).replace(' ', '_')[:160])
+                        self.logger.critical(
+                            'DomainAllowList suspended after reviewed IPv4 '
+                            'route failure')
+                        return
                 for domain, ip in self.egress_policy.drain_expired_leases():
                     self.log_egress_event(
                         'DNS_LEASE_EXPIRE', domain=domain, ip=ip)
+                self._flush_reviewed_ip_audit()
             except Exception:
                 self.logger.exception('Failed refreshing local address snapshot')
                 self.egress_policy.suspend()
@@ -853,6 +1248,11 @@ class Diverter(DiverterBase, WinUtilMixin):
 
     def stopCallback(self):
         self._stopping.set()
+        try:
+            self._flush_reviewed_ip_audit(force=True)
+        except Exception:
+            self.logger.exception(
+                'Failed flushing reviewed IPv4 audit summary during stop')
         if self.domain_allowlist_mode:
             # Keep capture fail-closed while restoring DNS. Once the original
             # network settings are back, closing WinDivert is the final step.

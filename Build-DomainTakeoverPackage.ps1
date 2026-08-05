@@ -1,13 +1,17 @@
 ﻿[CmdletBinding()]
 param(
     [string]$SourceCommit = 'HEAD',
-    [string]$OutputDirectory = ''
+    [string]$OutputDirectory = '',
+    [Parameter(Mandatory = $true)]
+    [string]$AuthorizedNegativeTestIPv4
 )
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v10'
-$packageName = "Windows域名私网接管-$packageVersion"
-$planRelative = 'PLAN\2026.08.03\2026.08.03-03-FakeNet-NG域名固定解析到指定IP并放行流量方案.md'
+$packageVersion = 'v11'
+$packageName = "Windows域名私网接管及指定IPv4放行-$packageVersion"
+$planRelative = 'PLAN\2026.08.05\2026.08.05-01-Windows指定IPv4全端口及指定端口放行方案.md'
+$reviewedRouteProbeUdpPort = 9
+$addressRefreshSeconds = 5
 $fixedTimestamp = [DateTimeOffset]::new(
     [DateTime]::SpecifyKind([DateTime]'2000-01-01T00:00:00',
         [DateTimeKind]::Utc))
@@ -26,10 +30,121 @@ function Get-NormalizedText {
     return (Get-Content -LiteralPath $Path -Raw).Replace("`r`n", "`n")
 }
 
+function Get-TextSha256 {
+    param([string]$Text)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.Encoding]::ASCII.GetBytes($Text)
+        return ([BitConverter]::ToString(
+            $algorithm.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $algorithm.Dispose()
+    }
+}
+
+function Test-ReviewedPublicIPv4 {
+    param([string]$Value)
+    $address = $null
+    if (-not [Net.IPAddress]::TryParse($Value, [ref]$address) -or
+            $address.AddressFamily -ne
+                [Net.Sockets.AddressFamily]::InterNetwork -or
+            $address.ToString() -ne $Value) {
+        return $false
+    }
+    $b = $address.GetAddressBytes()
+    if ($b[0] -in @(0, 10, 127) -or $b[0] -ge 224) { return $false }
+    if ($b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127) {
+        return $false
+    }
+    if ($b[0] -eq 169 -and $b[1] -eq 254) { return $false }
+    if ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) {
+        return $false
+    }
+    if ($b[0] -eq 192 -and $b[1] -eq 168) { return $false }
+    if ($b[0] -eq 198 -and $b[1] -in @(18, 19)) { return $false }
+    $prefix24 = '{0}.{1}.{2}' -f $b[0], $b[1], $b[2]
+    if (($prefix24 -eq '192.0.0' -and $b[3] -notin @(9, 10)) -or
+            $prefix24 -in @('192.0.2', '198.51.100', '203.0.113')) {
+        return $false
+    }
+    return $true
+}
+
+function Get-NormalizedReviewedRules {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw 'ExternalAllowedIPv4Rules must be present and non-empty for v11.'
+    }
+    $parts = @($Value.Split(','))
+    if ($parts.Count -gt 32 -or @($parts | Where-Object {
+                [string]::IsNullOrWhiteSpace($_)
+            }).Count -ne 0) {
+        throw 'ExternalAllowedIPv4Rules has an empty item or exceeds 32 rules.'
+    }
+    $normalized = @()
+    $scopes = @{}
+    $ips = @{}
+    foreach ($part in $parts) {
+        $token = $part.Trim()
+        if ($token -notmatch '^(TCP|UDP)/([^/]+)/(\*|[0-9]+)$') {
+            throw "Invalid reviewed IPv4 rule: $token"
+        }
+        $protocol = $matches[1]
+        $ipv4 = $matches[2]
+        $port = $matches[3]
+        if (-not (Test-ReviewedPublicIPv4 $ipv4)) {
+            throw "Reviewed rule does not contain a canonical public IPv4: $token"
+        }
+        if ($port -ne '*' -and
+                ([int64]$port -lt 1 -or [int64]$port -gt 65535)) {
+            throw "Reviewed rule port is outside 1..65535: $token"
+        }
+        $canonical = '{0}/{1}/{2}' -f $protocol, $ipv4, $port
+        if ($normalized -contains $canonical) {
+            throw "Duplicate reviewed IPv4 rule: $canonical"
+        }
+        $scopeKey = '{0}/{1}' -f $protocol, $ipv4
+        if (-not $scopes.ContainsKey($scopeKey)) {
+            $scopes[$scopeKey] = @()
+        }
+        if (($port -eq '*' -and $scopes[$scopeKey].Count -gt 0) -or
+                ($port -ne '*' -and $scopes[$scopeKey] -contains '*')) {
+            throw "Wildcard and exact reviewed rules conflict: $scopeKey"
+        }
+        $scopes[$scopeKey] += $port
+        $ips[$ipv4] = $true
+        $normalized += $canonical
+    }
+    if ($ips.Count -gt 16) {
+        throw 'ExternalAllowedIPv4Rules exceeds 16 distinct IPv4 addresses.'
+    }
+    return @($normalized | Sort-Object)
+}
+
 function Assert-TakeoverConfiguration {
     param([string]$BasePath, [string]$TakeoverPath)
     $base = Get-NormalizedText $BasePath
     $takeover = Get-NormalizedText $TakeoverPath
+    if ($takeover.Contains('__REVIEWED_IPV4_RULES_INSERTION__')) {
+        throw ('The reviewed IPv4 insertion marker is unresolved. Add the ' +
+            'approved exact ExternalAllowedIPv4Rules value and commit it ' +
+            'before building v11.')
+    }
+    $reviewedLines = @($takeover.Split("`n") | Where-Object {
+        $_ -match '^ExternalAllowedIPv4Rules:\s*(.+)$'
+    })
+    if ($reviewedLines.Count -ne 1) {
+        throw 'Takeover INI must contain one active reviewed IPv4 rule field.'
+    }
+    $reviewedValue = [regex]::Match(
+        $reviewedLines[0], '^ExternalAllowedIPv4Rules:\s*(.+)$').Groups[1].Value
+    $normalizedRules = @(Get-NormalizedReviewedRules $reviewedValue)
+    foreach ($comment in @(
+            '# Replace this marker with exactly one approved ExternalAllowedIPv4Rules field',
+            '# before the reviewed commit is built. The v11 builder rejects this marker.')) {
+        $takeover = $takeover.Replace($comment + "`n", '')
+    }
+    $takeover = $takeover.Replace($reviewedLines[0] + "`n", '')
     foreach ($line in @(
             'ExternalTakeoverIPv4: 192.168.204.1',
             'ExternalTakeoverDnsTTL: 60',
@@ -47,6 +162,10 @@ function Assert-TakeoverConfiguration {
     $takeover = $takeover.Replace($sinkResponse, 'ResponseA: GetFirstNonLoopback')
     if ($takeover -ne $base) {
         throw 'Takeover INI differs from the reviewed allow-list base outside the whitelist.'
+    }
+    return [PSCustomObject]@{
+        Raw = $reviewedValue
+        Normalized = @($normalizedRules)
     }
 }
 
@@ -338,6 +457,7 @@ try {
     $required = @(
         'Start-DomainTakeover.cmd',
         'Start-DomainTakeover.ps1',
+        'Test-ReviewedIPv4Routes.ps1',
         'Build-DomainTakeoverPackage.ps1',
         'requirements-domain-takeover-windows.lock',
         'wheelhouse\SOURCES.md',
@@ -346,6 +466,7 @@ try {
         'test\domain_takeover_vm\Run-Tests.cmd',
         'test\domain_takeover_vm\Run-DomainTakeoverTests.ps1',
         'test\domain_takeover_vm\Test-LauncherContracts.ps1',
+        'test\domain_takeover_vm\Test-ManifestContracts.ps1',
         $planRelative)
     foreach ($relative in $required) {
         if (-not (Test-Path -LiteralPath (Join-Path $stage $relative))) {
@@ -355,7 +476,21 @@ try {
 
     $baseConfig = Join-Path $stage 'fakenet\configs\domain_allowlist_windows.ini'
     $takeoverConfig = Join-Path $stage 'fakenet\configs\domain_takeover_windows.ini'
-    Assert-TakeoverConfiguration $baseConfig $takeoverConfig
+    $reviewedRuleContract =
+        Assert-TakeoverConfiguration $baseConfig $takeoverConfig
+    $reviewedRules = @($reviewedRuleContract.Normalized)
+    $reviewedRulesText = $reviewedRules -join ','
+    $reviewedRulesHash = Get-TextSha256 $reviewedRulesText
+    if (-not (Test-ReviewedPublicIPv4 $AuthorizedNegativeTestIPv4)) {
+        throw 'AuthorizedNegativeTestIPv4 must be one canonical public IPv4.'
+    }
+    $reviewedTargets = @($reviewedRules | ForEach-Object {
+        $_.Split('/')[1]
+    } | Select-Object -Unique)
+    if ($AuthorizedNegativeTestIPv4 -in $reviewedTargets) {
+        throw ('AuthorizedNegativeTestIPv4 must not be a reviewed allow ' +
+            'target; otherwise it cannot prove the unreviewed-public case.')
+    }
     $dependencyRows = @(Assert-Wheelhouse $stage)
     $scriptSearch = @{
         LiteralPath = $stage
@@ -386,11 +521,30 @@ try {
     }
     foreach ($requiredMarker in @('--no-index', '--require-hashes',
             'TAKEOVER_ROUTE_OK', 'TAKEOVER_PROBE_RESULT',
+            'IP_ALLOW_ROUTE_OK', 'IP_ALLOW_RISK_ACK',
+            'Invoke-ReviewedRoutePreflight', 'WaitForExit(2000)',
             'DNS restoration check', 'TreatControlCAsInput',
             'Show-FakeNetLogUntilStop', 'Ctrl+C')) {
         if ($launcherText -notmatch [regex]::Escape($requiredMarker)) {
             throw "Launcher is missing required marker: $requiredMarker"
         }
+    }
+    $windowsDiverterText = Get-Content -LiteralPath (
+        Join-Path $stage 'fakenet\diverters\windows.py') -Raw
+    foreach ($requiredMarker in @('ROUTE_PROBE_UDP_PORT = 9',
+            '__ROUTE_PROBE_UDP_PORT__',
+            '_REVIEWED_ROUTE_QUERY_TIMEOUT_SECONDS = 2',
+            'while not self._stopping.wait(5)')) {
+        if (-not $windowsDiverterText.Contains($requiredMarker)) {
+            throw "Windows reviewed-route contract is missing: $requiredMarker"
+        }
+    }
+    $routeCheckerText = Get-Content -LiteralPath (
+        Join-Path $stage 'Test-ReviewedIPv4Routes.ps1') -Raw
+    if (-not $routeCheckerText.Contains('$routeProbeUdpPort = 9') -or
+            $routeCheckerText.Contains('.Send(') -or
+            $routeCheckerText.Contains('.SendTo(')) {
+        throw 'Reviewed route checker UDP/9 no-payload contract mismatch.'
     }
     $identityScripts = [ordered]@{
         Launcher = $launcherText
@@ -435,6 +589,15 @@ try {
         allowed_domain = 'api.deepseek.com'
         takeover_ipv4 = '192.168.204.1'
         takeover_dns_ttl = 60
+        reviewed_ipv4_rules_raw = [string]$reviewedRuleContract.Raw
+        reviewed_ipv4_rules = @($reviewedRules)
+        reviewed_ipv4_config_sha256 = $reviewedRulesHash
+        reviewed_ipv4_rule_ids = @($reviewedRules | ForEach-Object {
+            (Get-TextSha256 $_).Substring(0, 16)
+        })
+        authorized_negative_test_ipv4 = $AuthorizedNegativeTestIPv4
+        reviewed_route_probe_udp_port = $reviewedRouteProbeUdpPort
+        address_refresh_seconds = $addressRefreshSeconds
         windows_build = '10.0.19045'
         python_version = '3.13.7'
         python_architecture = 'AMD64'

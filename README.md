@@ -89,6 +89,39 @@ host listener processed the connection safely nor that inbound return traffic
 is constrained by the new verdict. Host listener configuration is outside this
 feature.
 
+Windows reviewed IPv4 direct-egress extension
+================================================
+
+The v11 combined package can add manifest-bound `ExternalAllowedIPv4Rules` to
+the Windows `DomainAllowList` policy. A rule is exactly
+`TCP|UDP/public-IPv4/*|port`. `*` means ports 1 through 65535 for that protocol
+only; it does not authorize ICMP, IPv6, or the other transport protocol. Exact
+UDP/443 and UDP `*` intentionally override the normal QUIC block only for the
+reviewed IP. Reviewed-IP rules run before legacy FakeNet port blacklists.
+
+This is direct network-layer authorization for every process in the VM. It
+does not verify SNI, certificates, application protocols, process identity, or
+content. An all-port rule can carry DNS, encrypted DNS, proxies, tunnels,
+scanning, or custom C2 traffic, and a shared/CDN IP can host unrelated services.
+The reviewed target's IPv4 TCP/UDP fragments are dropped before transport
+parsing, so fragmented traffic and large fragmented UDP datagrams are not
+supported.
+
+The source configuration contains no active IP authorization. A v11 delivery
+must contain an exact reviewed rule set bound to the package manifest, config
+hash, stable rule IDs, source commit, and per-file hashes. The launcher accepts
+no rule input, performs a read-only batch route/source selection check with a
+two-second deadline, and never selects a backup IP, route, interface, gateway,
+or DNS server. Runtime route drift or query failure suspends the whole egress
+policy until restart. `IP_ALLOW_*` and `ALLOW_REVIEWED_IP_FIRST_FLOW` events
+record bounded metadata; they do not record payloads and do not prove that a
+remote service responded.
+
+Run only in the reviewed snapshotted Windows VM. Use the v11 package
+`Windows域名私网接管及指定IPv4放行-v11.zip`, then return the newest plain log
+directory and its independent PCAPNG without compression. The builder refuses
+to create v11 while the exact reviewed-rule insertion marker remains unresolved.
+
 Installation
 ============
 

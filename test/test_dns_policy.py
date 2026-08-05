@@ -39,6 +39,13 @@ class Callbacks(object):
     def getTakeoverSettings(self):
         return dict(self.takeover)
 
+    def getEgressSettings(self):
+        return {
+            'dns_server': '10.0.0.1',
+            'dns_timeout': 3,
+            'reviewed_ipv4_rule_ids': {},
+        }
+
     def replaceDnsLeases(self, domain, records):
         self.leases = (domain, tuple(records))
         return tuple(ip for ip, ttl in records if ttl > 0)
@@ -54,6 +61,7 @@ class DnsPolicyTests(unittest.TestCase):
     def setUp(self):
         self.handler = DNSHandler()
         self.callbacks = Callbacks()
+        self.settings = self.callbacks.getEgressSettings()
         self.request = DNSRecord(
             DNSHeader(id=7, rd=1),
             q=DNSQuestion('api.deepseek.com', QTYPE.A))
@@ -67,7 +75,7 @@ class DnsPolicyTests(unittest.TestCase):
                                rdata=A('93.184.216.34')))
         packed = self.handler._validate_and_synthesize(
             self.request, upstream, 'api.deepseek.com',
-            'api.deepseek.com', self.callbacks)
+            'api.deepseek.com', self.callbacks, self.settings)
         response = DNSRecord.parse(packed)
         self.assertEqual(7, response.header.id)
         self.assertEqual(
@@ -85,7 +93,7 @@ class DnsPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.handler._validate_and_synthesize(
                 self.request, upstream, 'api.deepseek.com',
-                'api.deepseek.com', self.callbacks)
+                'api.deepseek.com', self.callbacks, self.settings)
 
     def test_wrong_upstream_transaction_is_rejected(self):
         upstream = DNSRecord(
@@ -102,7 +110,7 @@ class DnsPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.handler._validate_and_synthesize(
                 self.request, upstream, 'api.deepseek.com',
-                'api.deepseek.com', self.callbacks)
+                'api.deepseek.com', self.callbacks, self.settings)
 
     def test_multiple_global_addresses_are_installed(self):
         upstream = DNSRecord(
@@ -113,13 +121,63 @@ class DnsPolicyTests(unittest.TestCase):
                                rdata=A('8.8.4.4')))
         packed = self.handler._validate_and_synthesize(
             self.request, upstream, 'api.deepseek.com',
-            'api.deepseek.com', self.callbacks)
+            'api.deepseek.com', self.callbacks, self.settings)
         response = DNSRecord.parse(packed)
         self.assertEqual(
             ('api.deepseek.com',
              (('93.184.216.34', 20), ('8.8.4.4', 10))),
             self.callbacks.leases)
         self.assertEqual(2, len(response.rr))
+
+    def test_reviewed_ip_overlap_is_audited_without_changing_dns(self):
+        upstream = DNSRecord(
+            DNSHeader(id=99, qr=1, ra=1), q=self.request.q)
+        upstream.add_answer(RR('api.deepseek.com', QTYPE.A, ttl=10,
+                               rdata=A('93.184.216.34')))
+        settings = dict(self.settings)
+        settings['reviewed_ipv4_rule_ids'] = {
+            '93.184.216.34': ('rule-a', 'rule-b')}
+
+        packed = self.handler._validate_and_synthesize(
+            self.request, upstream, 'api.deepseek.com',
+            'api.deepseek.com', self.callbacks, settings)
+
+        response = DNSRecord.parse(packed)
+        self.assertEqual('93.184.216.34', str(response.rr[0].rdata))
+        self.assertIn(
+            ('IP_ALLOW_DOMAIN_OVERLAP', {
+                'domain': 'api.deepseek.com',
+                'ip': '93.184.216.34',
+                'rule_ids': 'rule-a;rule-b',
+            }), self.callbacks.events)
+
+    def test_reviewed_ip_overlap_log_failure_does_not_change_dns_or_lease(self):
+        upstream = DNSRecord(
+            DNSHeader(id=99, qr=1, ra=1), q=self.request.q)
+        upstream.add_answer(RR('api.deepseek.com', QTYPE.A, ttl=10,
+                               rdata=A('93.184.216.34')))
+        settings = dict(self.settings)
+        settings['reviewed_ipv4_rule_ids'] = {
+            '93.184.216.34': ('rule-a',)}
+        original_logger = self.callbacks.logEgressEvent
+
+        def fail_overlap(event, **fields):
+            if event == 'IP_ALLOW_DOMAIN_OVERLAP':
+                raise OSError('log unavailable')
+            return original_logger(event, **fields)
+
+        self.callbacks.logEgressEvent = fail_overlap
+        self.handler.server = mock.Mock()
+        packed = self.handler._validate_and_synthesize(
+            self.request, upstream, 'api.deepseek.com',
+            'api.deepseek.com', self.callbacks, settings)
+
+        response = DNSRecord.parse(packed)
+        self.assertEqual('93.184.216.34', str(response.rr[0].rdata))
+        self.assertEqual(
+            ('api.deepseek.com', (('93.184.216.34', 10),)),
+            self.callbacks.leases)
+        self.handler.server.logger.warning.assert_called_once()
 
     def test_private_address_and_cname_loop_are_rejected(self):
         private = DNSRecord(
@@ -129,7 +187,7 @@ class DnsPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.handler._validate_and_synthesize(
                 self.request, private, 'api.deepseek.com',
-                'api.deepseek.com', self.callbacks)
+                'api.deepseek.com', self.callbacks, self.settings)
 
         loop = DNSRecord(
             DNSHeader(id=99, qr=1, ra=1), q=self.request.q)
@@ -140,7 +198,7 @@ class DnsPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.handler._validate_and_synthesize(
                 self.request, loop, 'api.deepseek.com',
-                'api.deepseek.com', self.callbacks)
+                'api.deepseek.com', self.callbacks, self.settings)
 
     def test_wrong_upstream_question_name_and_type_are_rejected(self):
         wrong_name = DNSRecord(

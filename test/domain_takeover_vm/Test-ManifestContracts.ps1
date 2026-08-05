@@ -36,6 +36,20 @@ foreach ($script in @($LauncherPath, $RunnerPath)) {
     if ($null -eq $manifest -or @($manifest.files).Count -eq 0) {
         throw "Manifest verifier returned no files: $script"
     }
+    if ($manifest.package_version -ne 'v11' -or
+            @($manifest.reviewed_ipv4_rules).Count -lt 1 -or
+            @($manifest.reviewed_ipv4_rule_ids).Count -ne
+                @($manifest.reviewed_ipv4_rules).Count -or
+            [string]::IsNullOrWhiteSpace(
+                [string]$manifest.reviewed_ipv4_rules_raw) -or
+            ([string]$manifest.reviewed_ipv4_config_sha256) -notmatch
+                '^[0-9a-f]{64}$' -or
+            [int]$manifest.reviewed_route_probe_udp_port -ne 9 -or
+            [int]$manifest.address_refresh_seconds -ne 5 -or
+            [string]::IsNullOrWhiteSpace(
+                [string]$manifest.authorized_negative_test_ipv4)) {
+        throw "Reviewed IPv4 manifest contract mismatch: $script"
+    }
     Write-Output ('MANIFEST_READER_PASS script={0} files={1}' -f
         [IO.Path]::GetFileName($script), @($manifest.files).Count)
 }

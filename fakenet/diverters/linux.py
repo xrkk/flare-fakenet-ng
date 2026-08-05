@@ -32,6 +32,12 @@ class Diverter(DiverterBase, LinUtilMixin):
         super(Diverter, self).__init__(diverter_config, listeners_config,
                                        ip_addrs, logging_level)
 
+        if self.is_configured('ExternalAllowedIPv4Rules'):
+            raise ValueError(
+                'ExternalAllowedIPv4Rules is supported only by the Windows '
+                'Diverter; Linux refused the configuration before changing '
+                'network state')
+
         self.init_linux_mixin()
         self.init_diverter_linux()
 

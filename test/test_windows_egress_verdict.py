@@ -1,11 +1,15 @@
 import configparser
+import json
 import pathlib
+import subprocess
 import threading
 import unittest
 from unittest import mock
 
-from fakenet.diverters.egresspolicy import PolicyConfigError, Verdict
-from fakenet.diverters.windows import Diverter
+from fakenet.diverters.egresspolicy import (
+    PolicyConfigError, ReviewedIPv4Rule, ReviewedPacketTuple, Verdict)
+from fakenet.diverters.windows import (
+    Diverter, ReviewedIpFlowAudit, ROUTE_PROBE_UDP_PORT)
 
 
 class Policy(object):
@@ -47,6 +51,45 @@ class MappingPolicy(Policy):
         return self.mapping
 
 
+class ReviewedPolicy(Policy):
+    def __init__(self, protocol='TCP', port_scope='exact', port=443):
+        normalized_port = '*' if port_scope == 'all' else port
+        self.rule = ReviewedIPv4Rule(
+            'rule-test', protocol, '8.8.8.8', port_scope,
+            None if port_scope == 'all' else port,
+            '%s/8.8.8.8/%s' % (protocol, normalized_port))
+
+    def match_reviewed_ip(self, packet):
+        port_matches = (self.rule.port_scope == 'all' or
+                        packet.target_port == self.rule.port)
+        if (packet.outbound and packet.protocol == self.rule.protocol and
+                packet.source_ipv4 == '10.0.0.5' and
+                packet.source_port == 50000 and
+                packet.target_ipv4 == '8.8.8.8' and
+                port_matches and
+                packet.interface_index == 7):
+            return self.rule
+        return None
+
+
+class ReviewedRoutePolicy(ReviewedPolicy):
+    reviewed_ipv4_enabled = True
+
+    def reviewed_ip_settings(self):
+        return {'rules': (self.rule,)}
+
+
+class AuditClock(object):
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
 class ListenerPorts(object):
     def isListener(self, proto, port):
         return (proto, port) in (('TCP', 38926), ('TCP', 38927))
@@ -80,6 +123,10 @@ class Packet(object):
         self.dst_ip0 = dst
         self.dport0 = dport
         self.ipver = 4
+        self.interface_index = 7
+        self.subinterface_index = 0
+        self.is_outbound = True
+        self.mangled = False
 
     def hdrToStr(self):
         return 'test packet'
@@ -442,6 +489,296 @@ class WindowsVerdictTests(unittest.TestCase):
                         return_value=completed):
             with self.assertRaises(PolicyConfigError):
                 diverter._read_takeover_route_snapshot()
+
+    def test_reviewed_ip_allow_is_revalidated_before_reinjection(self):
+        self.diverter.egress_policy = ReviewedPolicy()
+        packet = Packet(dst='8.8.8.8', dport=443)
+        rule = self.diverter.egress_policy.rule
+
+        self.assertEqual(
+            Verdict.ALLOW_REVIEWED_IP,
+            self.diverter.finalize_egress_verdict(
+                packet, reviewed_rule=rule))
+
+        packet.interface_index = 8
+        self.assertEqual(
+            Verdict.DROP_EXTERNAL,
+            self.diverter.finalize_egress_verdict(
+                packet, reviewed_rule=rule))
+
+    def test_reviewed_ip_match_requires_outbound_packet_tuple(self):
+        packet = Packet(dst='8.8.8.8', dport=443)
+        packet.is_outbound = False
+        reviewed = self.diverter._reviewed_packet_tuple(packet)
+
+        self.assertIsInstance(reviewed, ReviewedPacketTuple)
+        self.assertFalse(reviewed.outbound)
+
+    def test_reviewed_fragment_gate_drops_only_reviewed_protocol_targets(self):
+        def ipv4(target, protocol, fragment_field):
+            raw = bytearray(20)
+            raw[0] = 0x45
+            raw[6:8] = fragment_field.to_bytes(2, 'big')
+            raw[9] = protocol
+            raw[16:20] = bytes(int(part) for part in target.split('.'))
+            return bytes(raw)
+
+        protocols = {'8.8.8.8': frozenset(('TCP', 'UDP'))}
+        for fragment_field in (0x2000, 0x0001, 0x3fff):
+            self.assertTrue(self.diverter.classify_reviewed_ipv4_fragment(
+                ipv4('8.8.8.8', 6, fragment_field), protocols))
+            self.assertTrue(self.diverter.classify_reviewed_ipv4_fragment(
+                ipv4('8.8.8.8', 17, fragment_field), protocols))
+
+        self.assertFalse(self.diverter.classify_reviewed_ipv4_fragment(
+            ipv4('8.8.8.8', 6, 0), protocols))
+        self.assertFalse(self.diverter.classify_reviewed_ipv4_fragment(
+            ipv4('8.8.4.4', 6, 0x2000), protocols))
+        self.assertFalse(self.diverter.classify_reviewed_ipv4_fragment(
+            ipv4('8.8.8.8', 1, 0x2000), protocols))
+        self.assertFalse(self.diverter.classify_reviewed_ipv4_fragment(
+            bytes.fromhex('4500'), protocols))
+
+    def test_reviewed_fragment_precedes_control_flow_and_packet_parser(self):
+        raw = bytearray(20)
+        raw[0] = 0x45
+        raw[6:8] = (0x2000).to_bytes(2, 'big')
+        raw[9] = 6
+        raw[16:20] = bytes((8, 8, 8, 8))
+        windivert_packet = mock.Mock()
+        windivert_packet.raw.tobytes.return_value = bytes(raw)
+        windivert_packet.is_loopback = False
+        self.diverter._reviewed_target_protocols = frozenset((
+            ('TCP', '8.8.8.8'),))
+        self.diverter.log_egress_event = mock.Mock()
+        self.diverter.egress_policy.match_control_flow = mock.Mock()
+
+        with mock.patch('fakenet.diverters.windows.WindowsPacketCtx') as ctx:
+            self.diverter._handle_policy_packet(windivert_packet)
+
+        ctx.assert_not_called()
+        self.diverter.egress_policy.match_control_flow.assert_not_called()
+        self.diverter.log_egress_event.assert_called_once_with(
+            'DROP_EXTERNAL', reason='reviewed_ip_fragment',
+            proto='TCP', ip='8.8.8.8')
+
+    def test_reviewed_ip_precedes_legacy_blacklist_and_redirect(self):
+        policy = ReviewedPolicy()
+        policy.match_control_flow = mock.Mock(return_value=None)
+        policy.matches_takeover_sink = mock.Mock(return_value=False)
+        self.diverter.egress_policy = policy
+        self.diverter.blacklist_ports['TCP'] = [443]
+        self.diverter._reviewed_target_protocols = frozenset((
+            ('TCP', '8.8.8.8'),))
+        self.diverter.write_pcap = mock.Mock()
+        self.diverter.log_egress_event = mock.Mock()
+        self.diverter._send_packet = mock.Mock(return_value=True)
+        self.diverter._record_reviewed_ip_allow = mock.Mock()
+        self.diverter.apply_domain_relay_return_fixup = mock.Mock(
+            return_value=None)
+        self.diverter.apply_domain_relay_forward_redirect = mock.Mock(
+            return_value=None)
+        self.diverter._is_new_tcp_syn = mock.Mock(return_value=False)
+        self.diverter.handle_pkt = mock.Mock()
+        packet = Packet(dst='8.8.8.8', dport=443)
+        windivert_packet = mock.Mock()
+        windivert_packet.raw.tobytes.return_value = bytes.fromhex(
+            '4500001400000000400600000a00000508080808')
+        windivert_packet.is_loopback = False
+
+        with mock.patch('fakenet.diverters.windows.WindowsPacketCtx',
+                        return_value=packet):
+            self.diverter._handle_policy_packet(windivert_packet)
+
+        self.diverter._send_packet.assert_called_once_with(packet)
+        self.diverter.handle_pkt.assert_not_called()
+        self.diverter._record_reviewed_ip_allow.assert_called_once()
+
+    def test_reviewed_udp443_overrides_quic_and_legacy_blacklist_for_target(self):
+        policy = ReviewedPolicy(protocol='UDP')
+        policy.match_control_flow = mock.Mock(return_value=None)
+        policy.matches_takeover_sink = mock.Mock(return_value=False)
+        self.diverter.egress_policy = policy
+        self.diverter.blacklist_ports['UDP'] = [443]
+        self.diverter._reviewed_target_protocols = frozenset((
+            ('UDP', '8.8.8.8'),))
+        self.diverter.write_pcap = mock.Mock()
+        self.diverter.log_egress_event = mock.Mock()
+        self.diverter._send_packet = mock.Mock(return_value=True)
+        self.diverter._record_reviewed_ip_allow = mock.Mock()
+        self.diverter.apply_domain_relay_return_fixup = mock.Mock(
+            return_value=None)
+        self.diverter.apply_domain_relay_forward_redirect = mock.Mock(
+            return_value=None)
+        self.diverter._is_new_tcp_syn = mock.Mock(return_value=False)
+        self.diverter.handle_pkt = mock.Mock()
+        packet = Packet(proto='UDP', dst='8.8.8.8', dport=443)
+        windivert_packet = mock.Mock()
+        windivert_packet.raw.tobytes.return_value = bytes.fromhex(
+            '4500001400000000401100000a00000508080808')
+        windivert_packet.is_loopback = False
+
+        with mock.patch('fakenet.diverters.windows.WindowsPacketCtx',
+                        return_value=packet):
+            self.diverter._handle_policy_packet(windivert_packet)
+
+        self.diverter._send_packet.assert_called_once_with(packet)
+        self.diverter.handle_pkt.assert_not_called()
+        self.diverter._record_reviewed_ip_allow.assert_called_once()
+
+    def test_existing_domain_mapping_precedes_reviewed_ip_rule(self):
+        policy = ReviewedPolicy()
+        policy.match_control_flow = mock.Mock(return_value=None)
+        policy.matches_takeover_sink = mock.Mock(return_value=False)
+        policy.match_reviewed_ip = mock.Mock(wraps=policy.match_reviewed_ip)
+        self.diverter.egress_policy = policy
+        self.diverter._reviewed_target_protocols = frozenset((
+            ('TCP', '8.8.8.8'),))
+        self.diverter.write_pcap = mock.Mock()
+        self.diverter.log_egress_event = mock.Mock()
+        self.diverter._send_packet = mock.Mock(return_value=True)
+        self.diverter.apply_domain_relay_return_fixup = mock.Mock(
+            return_value=None)
+        mapping = object()
+
+        def redirect(packet, original):
+            packet.dst_ip = '10.0.0.5'
+            packet.dport = 38927
+            return mapping
+
+        self.diverter.apply_domain_relay_forward_redirect = mock.Mock(
+            side_effect=redirect)
+        self.diverter._is_new_tcp_syn = mock.Mock(return_value=False)
+        packet = Packet(dst='8.8.8.8', dport=443)
+        windivert_packet = mock.Mock()
+        windivert_packet.raw.tobytes.return_value = bytes.fromhex(
+            '4500001400000000400600000a00000508080808')
+        windivert_packet.is_loopback = False
+
+        with mock.patch('fakenet.diverters.windows.WindowsPacketCtx',
+                        return_value=packet):
+            self.diverter._handle_policy_packet(windivert_packet)
+
+        policy.match_reviewed_ip.assert_not_called()
+        self.diverter._send_packet.assert_called_once_with(packet)
+        self.assertEqual(('10.0.0.5', 38927),
+                         (packet.dst_ip, packet.dport))
+
+    def test_reviewed_route_snapshot_is_batched_and_exact(self):
+        diverter = Diverter.__new__(Diverter)
+        diverter.egress_policy = ReviewedRoutePolicy()
+        valid = [{
+            'target_ipv4': '8.8.8.8',
+            'interface_index': 7,
+            'interface_alias': 'Ethernet0',
+            'source_ipv4': '10.0.0.5',
+            'destination_prefix': '0.0.0.0/0',
+            'next_hop': '10.0.0.1',
+            'route_metric': 10,
+            'interface_metric': 20,
+        }]
+        completed = mock.Mock(
+            returncode=0, stdout=json.dumps(valid), stderr='')
+
+        with mock.patch('fakenet.diverters.windows.subprocess.run',
+                        return_value=completed) as run:
+            self.assertEqual(
+                tuple(valid), diverter._read_reviewed_ip_route_snapshots())
+
+        self.assertEqual(ROUTE_PROBE_UDP_PORT, 9)
+        self.assertEqual(run.call_args.kwargs['timeout'], 2)
+        self.assertIn('8.8.8.8', run.call_args.args[0][-1])
+
+    def test_reviewed_route_query_timeout_fails_closed(self):
+        diverter = Diverter.__new__(Diverter)
+        diverter.egress_policy = ReviewedRoutePolicy()
+
+        with mock.patch(
+                'fakenet.diverters.windows.subprocess.run',
+                side_effect=subprocess.TimeoutExpired('powershell', 2)):
+            with self.assertRaises(PolicyConfigError):
+                diverter._read_reviewed_ip_route_snapshots()
+
+    def test_reviewed_route_refresh_failure_suspends_globally_once(self):
+        diverter = Diverter.__new__(Diverter)
+        diverter._stopping = mock.Mock()
+        diverter._stopping.wait.return_value = False
+        diverter._stopping.is_set.return_value = False
+        diverter.get_adapters_info = mock.Mock(return_value=[])
+        diverter.get_ipaddresses = mock.Mock(return_value=[])
+        diverter.external_ip = '10.0.0.5'
+        diverter.egress_policy = mock.Mock()
+        diverter.egress_policy.takeover_available.return_value = False
+        diverter.egress_policy.update_local_ipv4.return_value = True
+        diverter.egress_policy.reviewed_ipv4_enabled = True
+        diverter._read_reviewed_ip_route_snapshots = mock.Mock(
+            side_effect=PolicyConfigError('timeout'))
+        diverter.log_egress_event = mock.Mock()
+        diverter.logger = mock.Mock()
+
+        diverter._refresh_local_addresses()
+
+        diverter.egress_policy.suspend.assert_called_once_with()
+        diverter.log_egress_event.assert_called_once_with(
+            'IP_ALLOW_ROUTE_SUSPEND', reason='route_query_failed',
+            error='PolicyConfigError', detail='timeout')
+        diverter.logger.critical.assert_called_once()
+
+    def test_reviewed_flow_audit_is_bounded_expires_and_summarizes(self):
+        clock = AuditClock()
+        audit = ReviewedIpFlowAudit(clock=clock)
+        audit.MAX_ENTRIES = 2
+        rule = ReviewedPolicy().rule
+
+        def packet(port):
+            return ReviewedPacketTuple(
+                'TCP', '10.0.0.5', 50000 + port, '8.8.8.8', port,
+                7, 0, True)
+
+        first, pressure, entries = audit.observe(rule, packet(443))
+        self.assertTrue(first)
+        self.assertFalse(pressure)
+        self.assertEqual(entries, 1)
+
+    def test_reviewed_flow_audit_emits_zero_rule_summary(self):
+        clock = AuditClock()
+        audit = ReviewedIpFlowAudit(clock=clock, rule_ids=('rule-zero',))
+        clock.advance(60)
+        self.assertEqual(
+            (('rule-zero', 0, 0, 0),), audit.summaries())
+
+    def test_reviewed_flow_pressure_event_is_limited_to_once_per_minute(self):
+        clock = AuditClock()
+        audit = ReviewedIpFlowAudit(clock=clock)
+        audit.MAX_ENTRIES = 1
+        rule = ReviewedPolicy().rule
+
+        def packet(port):
+            return ReviewedPacketTuple(
+                'TCP', '10.0.0.5', 50000, '8.8.8.8', port,
+                7, 0, True)
+
+        audit.observe(rule, packet(443))
+        self.assertTrue(audit.observe(rule, packet(444))[1])
+        self.assertFalse(audit.observe(rule, packet(445))[1])
+        clock.advance(60)
+        self.assertTrue(audit.observe(rule, packet(446))[1])
+        self.assertFalse(audit.observe(rule, packet(443))[0])
+        audit.observe(rule, packet(444))
+        first, pressure, entries = audit.observe(rule, packet(445))
+        self.assertTrue(first)
+        self.assertTrue(pressure)
+        self.assertEqual(entries, 2)
+
+        clock.advance(60)
+        summaries = audit.summaries()
+        self.assertEqual((rule.rule_id, 4, 3, 1), summaries[0])
+
+        clock.advance(61)
+        first, pressure, entries = audit.observe(rule, packet(446))
+        self.assertTrue(first)
+        self.assertFalse(pressure)
+        self.assertEqual(entries, 1)
 
 
 if __name__ == '__main__':

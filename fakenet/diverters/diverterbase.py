@@ -2143,6 +2143,7 @@ class DiverterListenerCallbacks():
             'max_active_per_source': policy.max_active_per_source,
             'idle_timeout': policy.relay_idle_timeout,
             'buffer_bytes': policy.relay_buffer_bytes,
+            'reviewed_ipv4_rule_ids': policy.reviewed_ipv4_rule_ids,
         }
 
     def takeoverPolicyEnabled(self):

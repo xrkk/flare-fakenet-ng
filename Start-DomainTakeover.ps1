@@ -234,14 +234,25 @@ function Read-AndVerifyManifest {
     $manifest = Get-Content -LiteralPath $path -Raw -Encoding UTF8 |
         ConvertFrom-Json
     if ($manifest.policy_version -ne 'v5' -or
+            $manifest.package_version -ne 'v11' -or
             ([string]$manifest.source_commit) -notmatch '^[0-9a-f]{40}$' -or
             $manifest.allowed_domain -ne 'api.deepseek.com' -or
             $manifest.takeover_ipv4 -ne '192.168.204.1' -or
             [int]$manifest.takeover_dns_ttl -ne 60 -or
+            @($manifest.reviewed_ipv4_rules).Count -lt 1 -or
+            @($manifest.reviewed_ipv4_rules).Count -gt 32 -or
+            [string]::IsNullOrWhiteSpace(
+                [string]$manifest.reviewed_ipv4_rules_raw) -or
+            ([string]$manifest.reviewed_ipv4_config_sha256) -notmatch
+                '^[0-9a-f]{64}$' -or
+            [int]$manifest.reviewed_route_probe_udp_port -ne 9 -or
+            [int]$manifest.address_refresh_seconds -ne 5 -or
+            [string]::IsNullOrWhiteSpace(
+                [string]$manifest.authorized_negative_test_ipv4) -or
             $manifest.windows_build -ne '10.0.19045' -or
             $manifest.python_version -ne '3.13.7' -or
             $manifest.python_architecture -ne 'AMD64') {
-        throw 'The package manifest does not match reviewed v5.'
+        throw 'The package manifest does not match reviewed v11 contracts.'
     }
 
     $rootPath = (Resolve-Path -LiteralPath $Root).Path
@@ -376,6 +387,156 @@ function Get-FakeNetStopReason {
         return 'Ctrl+C'
     }
     return $null
+}
+
+function Get-ReviewedRulesValue {
+    param([string]$Path)
+    $section = ''
+    $collecting = $false
+    $occurrences = 0
+    $parts = @()
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        if ($line -match '^\s*\[([^]]+)\]\s*$') {
+            $section = $matches[1]
+            $collecting = $false
+            continue
+        }
+        if ($section -ne 'Diverter') { continue }
+        if ($line -match '^ExternalAllowedIPv4Rules\s*:\s*(.*)$') {
+            $occurrences++
+            $collecting = $true
+            $parts += $matches[1]
+            continue
+        }
+        if ($line -match '^\s*(TCP|UDP)/[^:=]*[:=]') {
+            throw 'Reviewed IPv4 rule fragment was parsed as an INI option.'
+        }
+        if ($collecting) {
+            if ($line -match '^[ \t]+(.+)$') {
+                $value = $matches[1].Trim()
+                if ($value -and -not $value.StartsWith('#') -and
+                        -not $value.StartsWith(';')) {
+                    $parts += $value
+                }
+                continue
+            }
+            $collecting = $false
+        }
+    }
+    if ($occurrences -ne 1) {
+        throw 'ExternalAllowedIPv4Rules must occur exactly once in v11.'
+    }
+    return ($parts -join ' ').Trim()
+}
+
+function Get-NormalizedReviewedRules {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw 'ExternalAllowedIPv4Rules is empty.'
+    }
+    $parts = @($Value.Split(','))
+    if ($parts.Count -gt 32 -or @($parts | Where-Object {
+                [string]::IsNullOrWhiteSpace($_)
+            }).Count -ne 0) {
+        throw 'ExternalAllowedIPv4Rules has an empty item or too many rules.'
+    }
+    $normalized = @()
+    $scopes = @{}
+    $ips = @{}
+    foreach ($part in $parts) {
+        $token = $part.Trim()
+        if ($token -notmatch '^(TCP|UDP)/([^/]+)/(\*|[0-9]+)$') {
+            throw "Invalid reviewed IPv4 rule: $token"
+        }
+        $protocol = $matches[1]
+        $ipv4 = $matches[2]
+        $port = $matches[3]
+        $address = $null
+        if (-not [Net.IPAddress]::TryParse($ipv4, [ref]$address) -or
+                $address.AddressFamily -ne
+                    [Net.Sockets.AddressFamily]::InterNetwork -or
+                $address.ToString() -ne $ipv4 -or
+                ($port -ne '*' -and
+                    ([int64]$port -lt 1 -or [int64]$port -gt 65535))) {
+            throw "Invalid reviewed IPv4 or port: $token"
+        }
+        $canonical = '{0}/{1}/{2}' -f $protocol, $ipv4, $port
+        if ($normalized -contains $canonical) {
+            throw "Duplicate reviewed IPv4 rule: $canonical"
+        }
+        $scopeKey = '{0}/{1}' -f $protocol, $ipv4
+        if (-not $scopes.ContainsKey($scopeKey)) { $scopes[$scopeKey] = @() }
+        if (($port -eq '*' -and $scopes[$scopeKey].Count -gt 0) -or
+                ($port -ne '*' -and $scopes[$scopeKey] -contains '*')) {
+            throw "Wildcard and exact reviewed rules conflict: $scopeKey"
+        }
+        $scopes[$scopeKey] += $port
+        $ips[$ipv4] = $true
+        $normalized += $canonical
+    }
+    if ($ips.Count -gt 16) {
+        throw 'ExternalAllowedIPv4Rules exceeds 16 distinct IPv4 addresses.'
+    }
+    return @($normalized | Sort-Object)
+}
+
+function Get-TextSha256 {
+    param([string]$Text)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.Encoding]::ASCII.GetBytes($Text)
+        return ([BitConverter]::ToString(
+            $algorithm.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $algorithm.Dispose()
+    }
+}
+
+function Invoke-ReviewedRoutePreflight {
+    param([string]$Root, [string[]]$Targets)
+    $scriptPath = Join-Path $Root 'Test-ReviewedIPv4Routes.ps1'
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        throw 'Reviewed IPv4 route checker is missing.'
+    }
+    $targetJson = ConvertTo-Json @($Targets) -Compress
+    $encoded = [Convert]::ToBase64String(
+        [Text.Encoding]::UTF8.GetBytes($targetJson))
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = 'powershell.exe'
+    $startInfo.Arguments = ('-NoLogo -NoProfile -NonInteractive ' +
+        '-ExecutionPolicy Bypass -File "{0}" -TargetsBase64 {1}' -f
+        $scriptPath, $encoded)
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw 'Unable to start reviewed IPv4 route checker.'
+        }
+        if (-not $process.WaitForExit(2000)) {
+            try { $process.Kill() } catch {}
+            throw 'Reviewed IPv4 batch route query exceeded 2 seconds.'
+        }
+        $stdout = $process.StandardOutput.ReadToEnd().Trim()
+        $stderr = $process.StandardError.ReadToEnd().Trim()
+        if ($process.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($stdout)) {
+            throw ('Reviewed IPv4 route preflight failed: {0}' -f
+                $(if ($stderr) { $stderr } else { 'no output' }))
+        }
+        $snapshots = @($stdout | ConvertFrom-Json)
+        $observed = @($snapshots | ForEach-Object {
+            [string]$_.target_ipv4
+        } | Sort-Object)
+        if (($observed -join ',') -ne (@($Targets | Sort-Object) -join ',')) {
+            throw 'Reviewed IPv4 route snapshots do not match manifest targets.'
+        }
+        return $snapshots
+    } finally {
+        $process.Dispose()
+    }
 }
 
 function Read-FakeNetStopReason {
@@ -537,6 +698,44 @@ try {
     if ($templateHash -ne ([string]$manifest.config_sha256).ToLowerInvariant()) {
         throw 'The takeover INI hash does not match the reviewed manifest.'
     }
+    $reviewedRulesRaw = Get-ReviewedRulesValue $template
+    $reviewedRules = @(Get-NormalizedReviewedRules $reviewedRulesRaw)
+    if ($reviewedRulesRaw -ne [string]$manifest.reviewed_ipv4_rules_raw) {
+        throw 'The exact reviewed IPv4 rule text does not match the manifest.'
+    }
+    $manifestRules = @($manifest.reviewed_ipv4_rules | ForEach-Object {
+        [string]$_
+    })
+    if (($reviewedRules -join ',') -ne ($manifestRules -join ',')) {
+        throw 'The active reviewed IPv4 rules do not match the manifest.'
+    }
+    $reviewedRulesHash = Get-TextSha256 ($reviewedRules -join ',')
+    if ($reviewedRulesHash -ne
+            ([string]$manifest.reviewed_ipv4_config_sha256).ToLowerInvariant()) {
+        throw 'The normalized reviewed IPv4 rule hash does not match manifest.'
+    }
+    $expectedRuleIds = @($reviewedRules | ForEach-Object {
+        (Get-TextSha256 $_).Substring(0, 16)
+    })
+    $manifestRuleIds = @($manifest.reviewed_ipv4_rule_ids | ForEach-Object {
+        [string]$_
+    })
+    if (($expectedRuleIds -join ',') -ne ($manifestRuleIds -join ',')) {
+        throw 'The reviewed IPv4 rule IDs do not match normalized rules.'
+    }
+    $negativeTestAddress = $null
+    $negativeTestIPv4 = [string]$manifest.authorized_negative_test_ipv4
+    $reviewedTargetsFromRules = @($reviewedRules | ForEach-Object {
+        $_.Split('/')[1]
+    } | Select-Object -Unique)
+    if (-not [Net.IPAddress]::TryParse(
+            $negativeTestIPv4, [ref]$negativeTestAddress) -or
+            $negativeTestAddress.AddressFamily -ne
+                [Net.Sockets.AddressFamily]::InterNetwork -or
+            $negativeTestAddress.ToString() -ne $negativeTestIPv4 -or
+            $negativeTestIPv4 -in $reviewedTargetsFromRules) {
+        throw 'The authorized negative-test IPv4 is invalid or reviewed.'
+    }
     if ((Get-IniValue $template 'ExternalTakeoverIPv4') -ne
             '192.168.204.1' -or
             [int](Get-IniValue $template 'ExternalTakeoverDnsTTL') -ne 60) {
@@ -553,8 +752,36 @@ try {
     if ($resolver -eq '192.168.204.1') {
         throw 'The takeover target cannot equal the upstream DNS server.'
     }
+    if ($resolver -eq $negativeTestIPv4) {
+        throw 'The authorized negative-test IPv4 cannot be the VM resolver.'
+    }
     Write-Host ('Using pre-start DNS: {0} ({1})' -f
         $resolver, $selection.InterfaceAlias) -ForegroundColor Cyan
+
+    $reviewedTargets = @($reviewedTargetsFromRules | Sort-Object)
+    $reviewedRoutes = @(
+        Invoke-ReviewedRoutePreflight $repoRoot $reviewedTargets)
+    $reviewedRouteLines = @()
+    foreach ($snapshot in $reviewedRoutes) {
+        $line = ('IP_ALLOW_ROUTE_OK rule_ip={0} interface_index={1} ' +
+            'interface_alias={2} source_ipv4={3} destination_prefix={4} ' +
+            'next_hop={5} route_metric={6} interface_metric={7}') -f
+            $snapshot.target_ipv4, $snapshot.interface_index,
+            $snapshot.interface_alias, $snapshot.source_ipv4,
+            $snapshot.destination_prefix, $snapshot.next_hop,
+            $snapshot.route_metric, $snapshot.interface_metric
+        $reviewedRouteLines += $line
+        Write-Host $line -ForegroundColor Cyan
+    }
+    $reviewedRouteLines | Set-Content -LiteralPath (
+        Join-Path $script:LogDir 'reviewed-ip-routes.log') -Encoding UTF8
+    for ($index = 0; $index -lt $reviewedRules.Count; $index++) {
+        if ($reviewedRules[$index].EndsWith('/*')) {
+            Write-Host (('IP_ALLOW_RISK_ACK rule_id={0} ' +
+                'risk=all_ports_includes_dns_proxy_tunnel') -f
+                $expectedRuleIds[$index]) -ForegroundColor Yellow
+        }
+    }
 
     $route = Get-TakeoverRouteSnapshot '192.168.204.1'
     $routeLine = ('TAKEOVER_ROUTE_OK interface_index={0} ' +

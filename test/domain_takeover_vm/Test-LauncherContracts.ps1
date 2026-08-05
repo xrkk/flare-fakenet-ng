@@ -74,6 +74,9 @@ try {
     Assert-Contract ($errors.Count -eq 0) 'Launcher PowerShell parse failed.'
     $prefixAst = Import-ReviewedFunction $ast 'Test-IPv4PrefixContains'
     $routeAst = Import-ReviewedFunction $ast 'Get-TakeoverRouteSnapshot'
+    $reviewedValueAst = Import-ReviewedFunction $ast 'Get-ReviewedRulesValue'
+    $reviewedRulesAst = Import-ReviewedFunction $ast 'Get-NormalizedReviewedRules'
+    $reviewedRouteAst = Import-ReviewedFunction $ast 'Invoke-ReviewedRoutePreflight'
     $probeAst = Import-ReviewedFunction $ast 'Invoke-TakeoverProbe'
     $stopReasonAst = Import-ReviewedFunction $ast 'Get-FakeNetStopReason'
     $liveLogAst = Import-ReviewedFunction $ast 'Show-FakeNetLogUntilStop'
@@ -98,6 +101,54 @@ try {
             "Live log stop handling is missing: $required"
     }
     Add-Pass 'LiveLogStaticBoundary'
+
+    $singleConfig = Join-Path $LogDirectory 'reviewed-single.ini'
+    @('[Diverter]',
+      'ExternalAllowedIPv4Rules: TCP/8.8.8.8/443,UDP/1.1.1.1/*') |
+        Set-Content -LiteralPath $singleConfig -Encoding ASCII
+    $multiConfig = Join-Path $LogDirectory 'reviewed-multi.ini'
+    @('[Diverter]',
+      'ExternalAllowedIPv4Rules: TCP/8.8.8.8/443,',
+      '    UDP/1.1.1.1/*') |
+        Set-Content -LiteralPath $multiConfig -Encoding ASCII
+    $singleRules = @(Get-NormalizedReviewedRules (
+        Get-ReviewedRulesValue $singleConfig))
+    $multiRules = @(Get-NormalizedReviewedRules (
+        Get-ReviewedRulesValue $multiConfig))
+    Assert-Contract (($singleRules -join ',') -eq ($multiRules -join ',')) `
+        'Single-line and indented continuation rules normalized differently.'
+    Add-Pass 'ReviewedRuleContinuation'
+
+    $badConfig = Join-Path $LogDirectory 'reviewed-reserved-option.ini'
+    @('[Diverter]', 'ExternalAllowedIPv4Rules: TCP/8.8.8.8/443',
+      'UDP/1.1.1.1/53 = stray') |
+        Set-Content -LiteralPath $badConfig -Encoding ASCII
+    $failed = $false
+    try { Get-ReviewedRulesValue $badConfig | Out-Null } catch { $failed = $true }
+    Assert-Contract $failed 'Reserved TCP/UDP option prefix was not rejected.'
+    Add-Pass 'ReviewedRuleReservedOption'
+
+    foreach ($required in @('WaitForExit(2000)', 'Test-ReviewedIPv4Routes.ps1',
+            'RedirectStandardOutput', 'RedirectStandardError')) {
+        Assert-Contract ($reviewedRouteAst.Extent.Text.Contains($required)) `
+            "Reviewed route launcher gate is missing: $required"
+    }
+    Add-Pass 'ReviewedRouteDeadlineStaticBoundary'
+
+    $routeChecker = Join-Path (Split-Path -Parent $LauncherPath) `
+        'Test-ReviewedIPv4Routes.ps1'
+    $routeCheckerText = Get-Content -LiteralPath $routeChecker -Raw
+    foreach ($required in @('$routeProbeUdpPort = 9', '.Connect(',
+            'Get-NetRoute', 'Get-NetIPAddress', 'Get-NetIPInterface')) {
+        Assert-Contract ($routeCheckerText.Contains($required)) `
+            "Reviewed route checker is missing: $required"
+    }
+    foreach ($forbidden in @('.Send(', '.SendTo(', 'Set-NetRoute',
+            'New-NetRoute', 'Remove-NetRoute', 'route add', 'route delete')) {
+        Assert-Contract (-not $routeCheckerText.Contains($forbidden)) `
+            "Reviewed route checker contains mutation/send operation: $forbidden"
+    }
+    Add-Pass 'ReviewedRouteReadOnlyNoPayload'
 
     $ctrlCKey = [PSCustomObject]@{
         Key = [ConsoleKey]::C

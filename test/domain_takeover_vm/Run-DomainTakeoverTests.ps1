@@ -104,14 +104,25 @@ function Read-AndVerifyManifest {
     $manifest = Get-Content -LiteralPath $path -Raw -Encoding UTF8 |
         ConvertFrom-Json
     if ($manifest.policy_version -ne 'v5' -or
+            $manifest.package_version -ne 'v11' -or
             ([string]$manifest.source_commit) -notmatch '^[0-9a-f]{40}$' -or
             $manifest.allowed_domain -ne 'api.deepseek.com' -or
             $manifest.takeover_ipv4 -ne '192.168.204.1' -or
             [int]$manifest.takeover_dns_ttl -ne 60 -or
+            @($manifest.reviewed_ipv4_rules).Count -lt 1 -or
+            @($manifest.reviewed_ipv4_rules).Count -gt 32 -or
+            [string]::IsNullOrWhiteSpace(
+                [string]$manifest.reviewed_ipv4_rules_raw) -or
+            ([string]$manifest.reviewed_ipv4_config_sha256) -notmatch
+                '^[0-9a-f]{64}$' -or
+            [int]$manifest.reviewed_route_probe_udp_port -ne 9 -or
+            [int]$manifest.address_refresh_seconds -ne 5 -or
+            [string]::IsNullOrWhiteSpace(
+                [string]$manifest.authorized_negative_test_ipv4) -or
             $manifest.windows_build -ne '10.0.19045' -or
             $manifest.python_version -ne '3.13.7' -or
             $manifest.python_architecture -ne 'AMD64') {
-        throw 'The package manifest does not match reviewed v5.'
+        throw 'The package manifest does not match reviewed v11 contracts.'
     }
     $rootPath = (Resolve-Path -LiteralPath $Root).Path
     foreach ($entry in @($manifest.files)) {
@@ -186,6 +197,92 @@ function Invoke-LoggedCommand {
         Add-Result $Name $status "exception=$($_.Exception.GetType().Name); inspect capture and policy log"
         if ($RequireSuccess) { throw }
     }
+}
+
+function Test-ReviewedRuleMatch {
+    param([string[]]$Rules, [string]$Protocol,
+          [string]$Target, [int]$Port)
+    foreach ($rule in $Rules) {
+        $fields = $rule.Split('/')
+        if ($fields.Count -eq 3 -and $fields[0] -eq $Protocol -and
+                $fields[1] -eq $Target -and
+                ($fields[2] -eq '*' -or [int]$fields[2] -eq $Port)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Send-ReviewedMatrixPacket {
+    param([string]$Protocol, [string]$Target, [int]$Port,
+          [string]$Label)
+    $line = $null
+    if ($Protocol -eq 'TCP') {
+        $client = [Net.Sockets.TcpClient]::new()
+        try {
+            $task = $client.ConnectAsync([Net.IPAddress]::Parse($Target), $Port)
+            try { $null = $task.Wait(500) } catch {}
+            $line = ('{0} proto=TCP ip={1} port={2} status={3}' -f
+                $Label, $Target, $Port, $task.Status)
+        } finally {
+            $client.Close()
+            $client.Dispose()
+        }
+    } else {
+        $socket = [Net.Sockets.Socket]::new(
+            [Net.Sockets.AddressFamily]::InterNetwork,
+            [Net.Sockets.SocketType]::Dgram,
+            [Net.Sockets.ProtocolType]::Udp)
+        try {
+            $payload = [Text.Encoding]::ASCII.GetBytes(
+                'fakenet-reviewed-ip-v11')
+            $sent = $socket.SendTo($payload,
+                [Net.IPEndPoint]::new([Net.IPAddress]::Parse($Target), $Port))
+            $line = ('{0} proto=UDP ip={1} port={2} bytes={3}' -f
+                $Label, $Target, $Port, $sent)
+        } finally {
+            $socket.Close()
+            $socket.Dispose()
+        }
+    }
+    Add-Content -LiteralPath $script:ReviewedMatrixLog -Value $line `
+        -Encoding UTF8
+    Write-Host $line
+}
+
+function Invoke-ReviewedRuleMatrix {
+    param([string[]]$Rules)
+    $script:ReviewedMatrixLog = Join-Path $script:LogDir `
+        'reviewed-ip-matrix.log'
+    New-Item -ItemType File -Path $script:ReviewedMatrixLog -Force |
+        Out-Null
+    foreach ($rule in $Rules) {
+        $fields = $rule.Split('/')
+        $ports = if ($fields[2] -eq '*') {
+            @(1, 443, 65535)
+        } else {
+            @([int]$fields[2])
+        }
+        foreach ($port in $ports) {
+            Send-ReviewedMatrixPacket -Protocol $fields[0] `
+                -Target $fields[1] -Port $port -Label 'POSITIVE'
+        }
+    }
+    foreach ($target in @($Rules | ForEach-Object {
+                $_.Split('/')[1]
+            } | Select-Object -Unique)) {
+        foreach ($protocol in @('TCP', 'UDP')) {
+            $negativePort = @(@(2, 444, 31337, 65534) | Where-Object {
+                -not (Test-ReviewedRuleMatch $Rules $protocol $target $_)
+            } | Select-Object -First 1)
+            if ($negativePort.Count -eq 1) {
+                Send-ReviewedMatrixPacket -Protocol $protocol `
+                    -Target $target -Port $negativePort[0] -Label 'NEGATIVE'
+            }
+        }
+    }
+    Add-Result 'ReviewedIPv4Matrix' 'OBSERVED' (
+        'packet transmission attempted; use policy log and independent PCAPNG for verdict proof')
 }
 
 function Stop-TestComponents {
@@ -293,6 +390,22 @@ try {
     Add-Result 'ExternalDnsServer' 'PASS' $resolver
 
     $manifest = Read-AndVerifyManifest $repoRoot
+    $negativeTestAddress = $null
+    $negativeTestIPv4 = [string]$manifest.authorized_negative_test_ipv4
+    $reviewedTargets = @($manifest.reviewed_ipv4_rules |
+        ForEach-Object { ([string]$_).Split('/')[1] } |
+        Select-Object -Unique)
+    if (-not [Net.IPAddress]::TryParse(
+            $negativeTestIPv4, [ref]$negativeTestAddress) -or
+            $negativeTestAddress.AddressFamily -ne
+                [Net.Sockets.AddressFamily]::InterNetwork -or
+            $negativeTestAddress.ToString() -ne $negativeTestIPv4 -or
+            $negativeTestIPv4 -in $reviewedTargets) {
+        throw 'The manifest negative-test IPv4 is invalid or reviewed.'
+    }
+    if ($negativeTestIPv4 -eq $resolver) {
+        throw 'The manifest negative-test IPv4 cannot be the VM resolver.'
+    }
     $os = Get-CimInstance Win32_OperatingSystem
     if ([string]$os.Version -ne [string]$manifest.windows_build) {
         Add-Result 'WindowsBuild' 'FAIL' ("expected={0}; observed={1}" -f
@@ -387,6 +500,7 @@ try {
         foreach ($test in @('test_egresspolicy.py', 'test_dns_policy.py',
                 'test_tlshello.py', 'test_domain_egress_relay.py',
                 'test_windows_egress_verdict.py',
+                'test_linux_reviewed_ip_guard.py',
                 'test_ssl_utils.py', 'test_proxy_listener.py')) {
             $testLog = Join-Path $script:LogDir ($test + '.log')
             $testExit = Invoke-NativeCaptured {
@@ -465,7 +579,10 @@ try {
         $script:FakeNetProcess.Refresh()
         if ($script:FakeNetProcess.HasExited) { break }
         if ((Test-Path -LiteralPath $fakeLog) -and
-                (Select-String -LiteralPath $fakeLog -Pattern 'DOMAIN_TAKEOVER_READY' -Quiet)) {
+                (Select-String -LiteralPath $fakeLog `
+                    -Pattern 'DOMAIN_TAKEOVER_READY' -Quiet) -and
+                (Select-String -LiteralPath $fakeLog `
+                    -Pattern 'IP_ALLOW_READY' -Quiet)) {
             $ready = $true
             break
         }
@@ -548,6 +665,9 @@ print("UDP/TCP A parity and AAAA NODATA passed")
     }
     Add-Result 'DnsUdpTcpParity' 'PASS'
 
+    Invoke-ReviewedRuleMatrix @($manifest.reviewed_ipv4_rules |
+        ForEach-Object { [string]$_ })
+
     Invoke-LoggedCommand -Name 'positive-api-deepseek' -RequireSuccess -Native -Command {
         & curl.exe --noproxy '*' -v --http1.1 --ssl-no-revoke --connect-timeout 10 --max-time 30 https://api.deepseek.com/
     }
@@ -566,8 +686,9 @@ print("UDP/TCP A parity and AAAA NODATA passed")
     Invoke-LoggedCommand -Name 'negative-other-private' -Native -Command {
         & $python -c "import socket; s=socket.socket(); s.settimeout(3); print('connect_ex',s.connect_ex(('192.168.204.2',28080))); s.close()"
     }
+    $negativePublicIPv4 = [string]$manifest.authorized_negative_test_ipv4
     Invoke-LoggedCommand -Name 'negative-public-ip' -Native -Command {
-        & curl.exe --noproxy '*' -vk --connect-timeout 5 --max-time 10 https://1.1.1.1/
+        & curl.exe --noproxy '*' -vk --connect-timeout 5 --max-time 10 ("https://{0}/" -f $negativePublicIPv4)
     }
     Invoke-LoggedCommand -Name 'negative-allowed-http' -Native -Command {
         & curl.exe --noproxy '*' -v --connect-timeout 5 --max-time 10 http://api.deepseek.com/
@@ -576,21 +697,23 @@ print("UDP/TCP A parity and AAAA NODATA passed")
         & curl.exe --noproxy '*' -vk --connect-timeout 5 --max-time 10 https://cloudflare-dns.com/dns-query
     }
     Invoke-LoggedCommand -Name 'negative-dot' -Native -Command {
-        & $python -c "import socket; s=socket.socket(); s.settimeout(3); print('connect_ex',s.connect_ex(('1.1.1.1',853))); s.close()"
+        & $python -c "import socket,sys; s=socket.socket(); s.settimeout(3); print('connect_ex',s.connect_ex((sys.argv[1],853))); s.close()" $negativePublicIPv4
     }
     Invoke-LoggedCommand -Name 'negative-external-udp443' -Native -Command {
-        & $python -c "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.sendto(b'blocked-quic-probe',('1.1.1.1',443)); s.close()"
+        & $python -c "import socket,sys; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.sendto(b'blocked-quic-probe',(sys.argv[1],443)); s.close()" $negativePublicIPv4
     }
     Invoke-LoggedCommand -Name 'negative-ipv6' -Native -Command {
         & curl.exe --noproxy '*' -6 -vk --connect-timeout 5 --max-time 10 https://api.deepseek.com/
     }
     Invoke-LoggedCommand 'negative-external-dns' {
-        Resolve-DnsName example.com -Type A -Server 8.8.8.8 -DnsOnly
+        Resolve-DnsName example.com -Type A -Server $negativePublicIPv4 -DnsOnly
     }
 
     Start-Sleep -Seconds 3
     $fakeText = Get-Content -LiteralPath $fakeLog -Raw
     foreach ($event in @('DOMAIN_TAKEOVER_READY', 'TAKEOVER_ROUTE_OK',
+            'IP_ALLOW_READY', 'IP_ALLOW_ROUTE_OK',
+            'ALLOW_REVIEWED_IP_FIRST_FLOW',
             'TAKEOVER_DNS_ANSWER', 'ALLOW_TAKEOVER_SINK',
             'DNS_LEASE_ADD', 'REDIRECT_TLS_RELAY', 'TLS_SNI_ALLOW',
             'ALLOW_INTERNAL_UPSTREAM', 'DROP_EXTERNAL')) {
@@ -600,7 +723,8 @@ print("UDP/TCP A parity and AAAA NODATA passed")
         }
         Add-Result ("Event-{0}" -f $event) 'PASS'
     }
-    foreach ($forbiddenEvent in @('TAKEOVER_SUSPEND', 'policy_exception')) {
+    foreach ($forbiddenEvent in @('TAKEOVER_SUSPEND',
+            'IP_ALLOW_ROUTE_SUSPEND', 'policy_exception')) {
         if ($fakeText -match [regex]::Escape($forbiddenEvent)) {
             Add-Result ("ForbiddenEvent-{0}" -f $forbiddenEvent) 'FAIL' 'event present'
             throw "Forbidden event occurred: $forbiddenEvent"

@@ -295,7 +295,7 @@ class DNSHandler():
             upstream = self._query_upstream(request, proto, callbacks,
                                             settings)
             return self._validate_and_synthesize(
-                request, upstream, qname, allowed_root, callbacks)
+                request, upstream, qname, allowed_root, callbacks, settings)
         except Exception as exc:
             self.server.logger.warning(
                 'Controlled DNS resolution failed for %s: %s', qname, exc)
@@ -395,7 +395,7 @@ class DNSHandler():
             raise ValueError('upstream DNS question mismatch')
 
     def _validate_and_synthesize(self, request, upstream, qname,
-                                 allowed_root, callbacks):
+                                 allowed_root, callbacks, settings):
         cnames = {}
         addresses = {}
         for rr in upstream.auth + upstream.ar:
@@ -457,6 +457,16 @@ class DNSHandler():
                 callbacks.logEgressEvent(
                     'DNS_LEASE_ADD', domain=allowed_root, ip=address,
                     ttl=ttl)
+                rule_ids = settings['reviewed_ipv4_rule_ids'].get(address)
+                if rule_ids:
+                    try:
+                        callbacks.logEgressEvent(
+                            'IP_ALLOW_DOMAIN_OVERLAP', domain=allowed_root,
+                            ip=address, rule_ids=';'.join(rule_ids))
+                    except Exception as exc:
+                        self.server.logger.warning(
+                            'Reviewed IPv4 overlap logging failed for %s: %s',
+                            address, type(exc).__name__)
         elif addresses.get(current):
             raise ValueError('upstream answer has no positive-TTL A record')
         elif chain:

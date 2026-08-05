@@ -1,7 +1,9 @@
+import configparser
 import unittest
 
 from fakenet.diverters.egresspolicy import (
-    EgressPolicy, PolicyConfigError, normalize_hostname)
+    EgressPolicy, PolicyConfigError, ReviewedPacketTuple,
+    normalize_hostname)
 
 
 def config():
@@ -33,6 +35,20 @@ def takeover_config(probe_ports='', probe_timeout='500'):
         'externaltakeoverprobetimeoutms': probe_timeout,
     })
     return result
+
+
+def reviewed_config(rules):
+    result = takeover_config()
+    result['externalallowedipv4rules'] = rules
+    return result
+
+
+def reviewed_packet(proto='TCP', src='10.0.0.5', sport=50000,
+                    dst='8.8.8.8', dport=443, interface_index=7,
+                    subinterface_index=0, outbound=True):
+    return ReviewedPacketTuple(
+        proto, src, sport, dst, dport, interface_index,
+        subinterface_index, outbound)
 
 
 class Clock(object):
@@ -396,6 +412,192 @@ class EgressPolicyTests(unittest.TestCase):
             second.matches_takeover_sink(
                 'TCP', '10.0.0.5', 50000, '192.168.204.1', 8080))
         self.assertFalse(hasattr(first, 'takeover_probe_ports'))
+
+    def test_reviewed_ipv4_field_missing_is_disabled_and_empty_fails(self):
+        self.assertFalse(self.policy.reviewed_ipv4_enabled)
+        self.assertFalse(self.policy.reviewed_ip_settings()['enabled'])
+        for value in ('', '   ', ',', 'TCP/8.8.8.8/443,'):
+            candidate = takeover_config()
+            candidate['externalallowedipv4rules'] = value
+            with self.assertRaises(PolicyConfigError, msg=repr(value)):
+                EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+
+    def test_reviewed_ipv4_all_and_exact_rules_match(self):
+        policy = EgressPolicy(reviewed_config(
+            'TCP/8.8.8.8/*,UDP/8.8.8.8/53,UDP/8.8.8.8/443,'
+            'TCP/1.1.1.1/65535'), ['10.0.0.5'], [], '10.0.0.1')
+        bindings = policy.activate_reviewed_ip_routes((
+            {'target_ipv4': '8.8.8.8', 'source_ipv4': '10.0.0.5',
+             'interface_index': 7},
+            {'target_ipv4': '1.1.1.1', 'source_ipv4': '10.0.0.5',
+             'interface_index': 7},
+        ))
+        self.assertEqual(2, len(bindings))
+        for port in (1, 443, 65535):
+            rule = policy.match_reviewed_ip(reviewed_packet(dport=port))
+            self.assertEqual('all', rule.port_scope)
+        self.assertEqual('exact', policy.match_reviewed_ip(
+            reviewed_packet(proto='UDP', dport=53)).port_scope)
+        self.assertIsNone(policy.match_reviewed_ip(
+            reviewed_packet(proto='UDP', dport=54)))
+        self.assertIsNotNone(policy.match_reviewed_ip(
+            reviewed_packet(dst='1.1.1.1', dport=65535)))
+
+    def test_reviewed_ipv4_udp_all_is_cross_protocol_exact(self):
+        policy = EgressPolicy(reviewed_config(
+            'UDP/8.8.4.4/*,TCP/8.8.8.8/1,TCP/8.8.8.8/65535'),
+            ['10.0.0.5'], [], '10.0.0.1')
+        policy.activate_reviewed_ip_routes((
+            {'target_ipv4': '8.8.4.4', 'source_ipv4': '10.0.0.5',
+             'interface_index': 7},
+            {'target_ipv4': '8.8.8.8', 'source_ipv4': '10.0.0.5',
+             'interface_index': 7},
+        ))
+        for port in (1, 443, 31337, 65535):
+            self.assertIsNotNone(policy.match_reviewed_ip(
+                reviewed_packet(proto='UDP', dst='8.8.4.4', dport=port)))
+        self.assertIsNone(policy.match_reviewed_ip(
+            reviewed_packet(proto='TCP', dst='8.8.4.4', dport=443)))
+        self.assertIsNotNone(policy.match_reviewed_ip(
+            reviewed_packet(dst='8.8.8.8', dport=1)))
+        self.assertIsNotNone(policy.match_reviewed_ip(
+            reviewed_packet(dst='8.8.8.8', dport=65535)))
+        self.assertIsNone(policy.match_reviewed_ip(
+            reviewed_packet(dst='8.8.8.8', dport=2)))
+
+    def test_reviewed_ipv4_packet_binding_and_state_are_exact(self):
+        policy = EgressPolicy(reviewed_config('TCP/8.8.8.8/443'),
+                              ['10.0.0.5'], [], '10.0.0.1')
+        policy.activate_reviewed_ip_routes((
+            {'target_ipv4': '8.8.8.8', 'source_ipv4': '10.0.0.5',
+             'interface_index': 7},))
+        self.assertIsNotNone(policy.match_reviewed_ip(reviewed_packet()))
+        for packet in (
+                reviewed_packet(src='10.0.0.6'),
+                reviewed_packet(interface_index=8),
+                reviewed_packet(outbound=False),
+                reviewed_packet(dport=444),
+                reviewed_packet(proto='UDP'),
+                reviewed_packet(sport=0)):
+            self.assertIsNone(policy.match_reviewed_ip(packet))
+        policy.suspend()
+        self.assertIsNone(policy.match_reviewed_ip(reviewed_packet()))
+
+    def test_reviewed_ipv4_route_activation_is_exact_and_one_shot(self):
+        policy = EgressPolicy(reviewed_config('TCP/8.8.8.8/443'),
+                              ['10.0.0.5'], [], '10.0.0.1')
+        with self.assertRaises(PolicyConfigError):
+            policy.activate_reviewed_ip_routes(())
+        with self.assertRaises(PolicyConfigError):
+            policy.activate_reviewed_ip_routes((
+                {'target_ipv4': '8.8.8.8', 'source_ipv4': '10.0.0.6',
+                 'interface_index': 7},))
+        policy.activate_reviewed_ip_routes((
+            {'target_ipv4': '8.8.8.8', 'source_ipv4': '10.0.0.5',
+             'interface_index': 7},))
+        with self.assertRaises(RuntimeError):
+            policy.activate_reviewed_ip_routes((
+                {'target_ipv4': '8.8.8.8', 'source_ipv4': '10.0.0.5',
+                 'interface_index': 7},))
+
+    def test_reviewed_ipv4_rejects_invalid_and_protected_rules(self):
+        rejected = (
+            'TCP/8.8.8.8/443,TCP/8.8.8.8/443',
+            'TCP/8.8.8.8/*,TCP/8.8.8.8/443',
+            'ANY/8.8.8.8/443', 'tcp/8.8.8.8/443',
+            'TCP/8.8.8.8/0', 'TCP/8.8.8.8/65536',
+            'TCP/8.8.8.8/-1', 'TCP/8.8.8.8/1-2',
+            'TCP/192.168.1.1/443', 'TCP/127.0.0.1/443',
+            'TCP/100.64.0.1/443', 'TCP/169.254.1.1/443',
+            'TCP/198.51.100.1/443', 'TCP/203.0.113.1/443',
+            'TCP/224.0.0.1/443', 'TCP/240.0.0.1/443',
+            'TCP/10.0.0.5/443', 'TCP/10.0.0.1/443',
+            'TCP/8.8.8.0/24/443', 'TCP/example.com/443',
+            'TCP/https://8.8.8.8/443', 'TCP/::1/443')
+        for rules in rejected:
+            with self.assertRaises(PolicyConfigError, msg=rules):
+                EgressPolicy(reviewed_config(rules), ['10.0.0.5'], [],
+                             '10.0.0.1')
+
+    def test_reviewed_ipv4_rejects_reserved_option_prefix_and_limits(self):
+        candidate = reviewed_config('TCP/8.8.8.8/443')
+        candidate['tcp/1.1.1.1/53'] = 'stray'
+        with self.assertRaises(PolicyConfigError):
+            EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+        unrelated = reviewed_config('TCP/8.8.8.8/443')
+        unrelated['documentation/url'] = 'retained compatibility'
+        EgressPolicy(unrelated, ['10.0.0.5'], [], '10.0.0.1')
+        too_many_rules = ','.join(
+            'TCP/8.8.8.8/%d' % port for port in range(1, 34))
+        with self.assertRaises(PolicyConfigError):
+            EgressPolicy(reviewed_config(too_many_rules), ['10.0.0.5'], [],
+                         '10.0.0.1')
+        too_many_ips = ','.join(
+            'TCP/8.8.8.%d/443' % value for value in range(1, 18))
+        with self.assertRaises(PolicyConfigError):
+            EgressPolicy(reviewed_config(too_many_ips), ['10.0.0.5'], [],
+                         '10.0.0.1')
+
+        maximum = ','.join(
+            ('TCP/8.8.8.%d/1,UDP/8.8.8.%d/65535' % (value, value))
+            for value in range(1, 17))
+        boundary = EgressPolicy(reviewed_config(maximum), ['10.0.0.5'], [],
+                                '10.0.0.1')
+        self.assertEqual(32, len(boundary.reviewed_ipv4_rules))
+        self.assertEqual(16, len(boundary.reviewed_ipv4_rule_ids))
+
+    def test_reviewed_ipv4_configparser_continuation_contract(self):
+        single = configparser.ConfigParser(strict=True)
+        single.read_string(
+            '[Diverter]\nExternalAllowedIPv4Rules: '
+            'TCP/8.8.8.8/443, UDP/1.1.1.1/*\n')
+        multi = configparser.ConfigParser(strict=True)
+        multi.read_string(
+            '[Diverter]\nExternalAllowedIPv4Rules: TCP/8.8.8.8/443,\n'
+            '    UDP/1.1.1.1/*\n')
+        first = EgressPolicy(
+            dict(reviewed_config('TCP/8.8.8.8/443,UDP/1.1.1.1/*'),
+                 **dict(single.items('Diverter'))),
+            ['10.0.0.5'], [], '10.0.0.1')
+        second = EgressPolicy(
+            dict(reviewed_config('TCP/8.8.8.8/443,UDP/1.1.1.1/*'),
+                 **dict(multi.items('Diverter'))),
+            ['10.0.0.5'], [], '10.0.0.1')
+        self.assertEqual(first.reviewed_ipv4_rules,
+                         second.reviewed_ipv4_rules)
+        with self.assertRaises(configparser.ParsingError):
+            broken = configparser.ConfigParser(strict=True)
+            broken.read_string(
+                '[Diverter]\nExternalAllowedIPv4Rules: TCP/8.8.8.8/443,\n'
+                'UDP/1.1.1.1/*\n')
+
+    def test_reviewed_ipv4_takeover_suspend_isolated_but_local_target_global(self):
+        policy = EgressPolicy(reviewed_config('TCP/8.8.8.8/443'),
+                              ['10.0.0.5'], [], '10.0.0.1', self.clock)
+        policy.activate_reviewed_ip_routes((
+            {'target_ipv4': '8.8.8.8', 'source_ipv4': '10.0.0.5',
+             'interface_index': 7},))
+        policy.suspend_takeover('route_snapshot_changed')
+        self.assertIsNotNone(policy.match_reviewed_ip(reviewed_packet()))
+        self.assertFalse(policy.update_local_ipv4(
+            ['10.0.0.5', '8.8.8.8']))
+        self.assertIsNone(policy.match_reviewed_ip(reviewed_packet()))
+
+    def test_reviewed_ipv4_settings_and_rule_ids_are_immutable(self):
+        first = EgressPolicy(reviewed_config(
+            'UDP/8.8.8.8/53,TCP/8.8.8.8/443'),
+            ['10.0.0.5'], [], '10.0.0.1')
+        second = EgressPolicy(reviewed_config(
+            'TCP/8.8.8.8/443,UDP/8.8.8.8/53'),
+            ['10.0.0.5'], [], '10.0.0.1')
+        self.assertEqual(first.reviewed_ipv4_config_sha256,
+                         second.reviewed_ipv4_config_sha256)
+        self.assertEqual(first.reviewed_ipv4_rule_ids,
+                         second.reviewed_ipv4_rule_ids)
+        with self.assertRaises(TypeError):
+            first.reviewed_ipv4_rule_ids['8.8.8.8'] = ()
+        with self.assertRaises(TypeError):
+            first.reviewed_ip_settings()['enabled'] = False
 
 
 if __name__ == '__main__':

@@ -10,11 +10,13 @@ callback facade.
 from collections import Counter, deque
 from dataclasses import dataclass
 from enum import Enum
+import hashlib
 import ipaddress
 import re
 import secrets
 import threading
 import time
+from types import MappingProxyType
 
 
 class PolicyConfigError(ValueError):
@@ -25,6 +27,7 @@ class Verdict(Enum):
     REDIRECT_TLS_RELAY = "REDIRECT_TLS_RELAY"
     ALLOW_INTERNAL_UPSTREAM = "ALLOW_INTERNAL_UPSTREAM"
     ALLOW_TAKEOVER_SINK = "ALLOW_TAKEOVER_SINK"
+    ALLOW_REVIEWED_IP = "ALLOW_REVIEWED_IP"
     DIVERT_FAKE = "DIVERT_FAKE"
     REINJECT_LOCAL = "REINJECT_LOCAL"
     DROP_EXTERNAL = "DROP_EXTERNAL"
@@ -201,6 +204,148 @@ class RelayNatMapping:
         return (self.sample_ip, self.sample_port)
 
 
+@dataclass(frozen=True)
+class ReviewedIPv4Rule:
+    rule_id: str
+    protocol: str
+    ipv4: str
+    port_scope: str
+    port: object
+    normalized: str
+
+
+@dataclass(frozen=True)
+class ReviewedRouteBinding:
+    target_ipv4: str
+    source_ipv4: str
+    interface_index: int
+
+
+@dataclass(frozen=True)
+class ReviewedPacketTuple:
+    protocol: str
+    source_ipv4: str
+    source_port: int
+    target_ipv4: str
+    target_port: int
+    interface_index: int
+    subinterface_index: int
+    outbound: bool
+
+
+def _parse_reviewed_ipv4_rules(config, config_keys, local_ipv4,
+                               external_dns_server, takeover_ipv4):
+    field = 'externalallowedipv4rules'
+    if field not in config_keys:
+        return (), MappingProxyType({}), MappingProxyType({}), frozenset(), ''
+
+    for key in config_keys:
+        normalized_key = str(key).strip().lower()
+        if normalized_key.startswith(('tcp/', 'udp/')):
+            raise PolicyConfigError(
+                'reviewed IPv4 rule fragments cannot be separate options')
+
+    raw = str(config.get(field, ''))
+    parts = raw.split(',')
+    if not raw.strip() or any(not part.strip() for part in parts):
+        raise PolicyConfigError(
+            'ExternalAllowedIPv4Rules contains an empty rule')
+    if len(parts) > 32:
+        raise PolicyConfigError(
+            'ExternalAllowedIPv4Rules permits at most 32 rules')
+
+    parsed = []
+    seen = set()
+    scopes = {}
+    unique_ips = set()
+    for part in parts:
+        token = part.strip()
+        fields = token.split('/')
+        if len(fields) != 3:
+            raise PolicyConfigError(
+                'reviewed IPv4 rules must use PROTOCOL/IPv4/PORT')
+        protocol, raw_ipv4, raw_port = fields
+        if protocol not in ('TCP', 'UDP'):
+            raise PolicyConfigError(
+                'reviewed IPv4 rule protocol must be TCP or UDP')
+        if raw_ipv4 != raw_ipv4.strip() or not raw_ipv4:
+            raise PolicyConfigError('reviewed IPv4 address is invalid')
+        try:
+            address = ipaddress.ip_address(raw_ipv4)
+        except ValueError as exc:
+            raise PolicyConfigError(
+                'reviewed IPv4 rule requires one canonical IPv4 address') from exc
+        canonical_ipv4 = str(address)
+        if (address.version != 4 or canonical_ipv4 != raw_ipv4 or
+                not address.is_global):
+            raise PolicyConfigError(
+                'reviewed IPv4 rule requires a global unicast IPv4 address')
+        if (canonical_ipv4 in local_ipv4 or
+                canonical_ipv4 == external_dns_server or
+                (takeover_ipv4 and canonical_ipv4 == takeover_ipv4)):
+            raise PolicyConfigError(
+                'reviewed IPv4 rule conflicts with a protected address')
+
+        if raw_port == '*':
+            port_scope = 'all'
+            port = None
+        else:
+            if not re.match(r'^\d+$', raw_port):
+                raise PolicyConfigError(
+                    'reviewed IPv4 rule port must be * or decimal')
+            port = int(raw_port)
+            if not 1 <= port <= 65535:
+                raise PolicyConfigError(
+                    'reviewed IPv4 rule port must be between 1 and 65535')
+            port_scope = 'exact'
+
+        normalized = '%s/%s/%s' % (
+            protocol, canonical_ipv4, '*' if port is None else port)
+        if normalized in seen:
+            raise PolicyConfigError(
+                'ExternalAllowedIPv4Rules contains a duplicate rule')
+        seen.add(normalized)
+        key = (protocol, canonical_ipv4)
+        previous_scopes = scopes.setdefault(key, set())
+        if ((port is None and previous_scopes) or
+                (port is not None and None in previous_scopes)):
+            raise PolicyConfigError(
+                'reviewed IPv4 wildcard and exact ports conflict')
+        previous_scopes.add(port)
+        unique_ips.add(canonical_ipv4)
+        rule_id = hashlib.sha256(normalized.encode('ascii')).hexdigest()[:16]
+        parsed.append(ReviewedIPv4Rule(
+            rule_id, protocol, canonical_ipv4, port_scope, port, normalized))
+
+    if len(unique_ips) > 16:
+        raise PolicyConfigError(
+            'ExternalAllowedIPv4Rules permits at most 16 IPv4 addresses')
+
+    rules = tuple(sorted(parsed, key=lambda item: item.normalized))
+    match_index = {}
+    rule_ids_by_ip = {}
+    for rule in rules:
+        key = (rule.protocol, rule.ipv4)
+        if rule.port_scope == 'all':
+            match_index[key] = rule
+        else:
+            ports = match_index.setdefault(key, {})
+            ports[rule.port] = rule
+        rule_ids_by_ip.setdefault(rule.ipv4, []).append(rule.rule_id)
+    for key, value in list(match_index.items()):
+        if isinstance(value, dict):
+            match_index[key] = MappingProxyType(value)
+    frozen_ids = MappingProxyType({
+        ip: tuple(sorted(rule_ids))
+        for ip, rule_ids in rule_ids_by_ip.items()
+    })
+    normalized_text = ','.join(rule.normalized for rule in rules)
+    config_sha256 = hashlib.sha256(
+        normalized_text.encode('ascii')).hexdigest()
+    return (rules, MappingProxyType(match_index), frozen_ids,
+            frozenset(match_index), config_sha256)
+
+
 class EgressPolicy(object):
     """Thread-safe state for DomainAllowList mode."""
 
@@ -328,6 +473,15 @@ class EgressPolicy(object):
                 raise PolicyConfigError(
                     'ExternalTakeoverIPv4 cannot equal ExternalDnsServer')
 
+        (self.reviewed_ipv4_rules, self._reviewed_match_index,
+         self.reviewed_ipv4_rule_ids, self.reviewed_target_protocols,
+         self.reviewed_ipv4_config_sha256) = _parse_reviewed_ipv4_rules(
+             config, config_keys, self.local_ipv4,
+             self.external_dns_server, self.takeover_ipv4)
+        self.reviewed_ipv4_enabled = bool(self.reviewed_ipv4_rules)
+        self._reviewed_routes_activated = False
+        self._reviewed_route_bindings = MappingProxyType({})
+
         self._leases = {domain: {} for domain in self.allowed_domains}
         self._aliases = {}
         self._permits_by_key = {}
@@ -360,6 +514,10 @@ class EgressPolicy(object):
             if self.external_dns_server in snapshot:
                 self._suspend_locked()
                 return False
+            if any(rule.ipv4 in snapshot
+                   for rule in self.reviewed_ipv4_rules):
+                self._suspend_locked()
+                return False
             if (self.takeover_enabled and
                     self.takeover_ipv4 in snapshot):
                 self._suspend_takeover_locked('sink_became_local')
@@ -374,6 +532,99 @@ class EgressPolicy(object):
                         mapping.relay_ip not in snapshot):
                     self._remove_mapping_locked(mapping, now)
             return not self._egress_suspended
+
+    def activate_reviewed_ip_routes(self, bindings):
+        prepared = {}
+        for item in bindings:
+            if isinstance(item, ReviewedRouteBinding):
+                binding = item
+            else:
+                try:
+                    binding = ReviewedRouteBinding(
+                        str(item['target_ipv4']), str(item['source_ipv4']),
+                        int(item['interface_index']))
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise PolicyConfigError(
+                        'reviewed route binding is invalid') from exc
+            try:
+                target = ipaddress.ip_address(binding.target_ipv4)
+                source = ipaddress.ip_address(binding.source_ipv4)
+            except ValueError as exc:
+                raise PolicyConfigError(
+                    'reviewed route binding contains an invalid IPv4') from exc
+            if (target.version != 4 or source.version != 4 or
+                    str(target) != binding.target_ipv4 or
+                    str(source) != binding.source_ipv4 or
+                    binding.interface_index <= 0):
+                raise PolicyConfigError(
+                    'reviewed route binding is not canonical')
+            if (binding.target_ipv4 in prepared or
+                    binding.source_ipv4 not in self.local_ipv4 or
+                    binding.target_ipv4 in self.local_ipv4):
+                raise PolicyConfigError(
+                    'reviewed route binding failed address validation')
+            prepared[binding.target_ipv4] = binding
+
+        expected = frozenset(rule.ipv4 for rule in self.reviewed_ipv4_rules)
+        if frozenset(prepared) != expected:
+            raise PolicyConfigError(
+                'reviewed route bindings do not match configured IPv4 rules')
+        with self._lock:
+            self._ensure_open()
+            if self._reviewed_routes_activated:
+                raise RuntimeError('reviewed route bindings are already active')
+            self._reviewed_route_bindings = MappingProxyType(dict(prepared))
+            self._reviewed_routes_activated = True
+            return tuple(self._reviewed_route_bindings[ip]
+                         for ip in sorted(self._reviewed_route_bindings))
+
+    def match_reviewed_ip(self, packet):
+        if not isinstance(packet, ReviewedPacketTuple):
+            return None
+        try:
+            protocol = str(packet.protocol).upper()
+            source_port = int(packet.source_port)
+            target_port = int(packet.target_port)
+            interface_index = int(packet.interface_index)
+        except (TypeError, ValueError):
+            return None
+        with self._lock:
+            if (self._closed or self._egress_suspended or
+                    not self._reviewed_routes_activated or
+                    not packet.outbound or
+                    protocol not in ('TCP', 'UDP') or
+                    not 1 <= source_port <= 65535 or
+                    not 1 <= target_port <= 65535):
+                return None
+            binding = self._reviewed_route_bindings.get(
+                str(packet.target_ipv4))
+            if (not binding or
+                    str(packet.source_ipv4) != binding.source_ipv4 or
+                    interface_index != binding.interface_index):
+                return None
+            candidate = self._reviewed_match_index.get(
+                (protocol, binding.target_ipv4))
+            if isinstance(candidate, ReviewedIPv4Rule):
+                return candidate
+            if candidate:
+                return candidate.get(target_port)
+            return None
+
+    def reviewed_ip_settings(self):
+        with self._lock:
+            return MappingProxyType({
+                'enabled': self.reviewed_ipv4_enabled,
+                'active': bool(self._reviewed_routes_activated and
+                               not self._closed and
+                               not self._egress_suspended),
+                'rules': self.reviewed_ipv4_rules,
+                'target_protocols': self.reviewed_target_protocols,
+                'rule_ids_by_ip': self.reviewed_ipv4_rule_ids,
+                'config_sha256': self.reviewed_ipv4_config_sha256,
+                'bindings': tuple(
+                    self._reviewed_route_bindings[ip]
+                    for ip in sorted(self._reviewed_route_bindings)),
+            })
 
     def suspend_takeover(self, reason):
         with self._lock:

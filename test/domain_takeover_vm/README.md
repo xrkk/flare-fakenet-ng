@@ -20,6 +20,10 @@ The automated matrix covers:
 - synthesized UDP/TCP A answers and AAAA NODATA for other domains;
 - `dns.msftncsi.com` returning `192.168.204.1`;
 - domain-derived and direct sink TCP/UDP traffic with original ports;
+- manifest-driven reviewed public IPv4 TCP/UDP exact-port and all-port packet
+  attempts, including UDP/443 only when explicitly authorized;
+- reviewed-IP route/source snapshots, the fixed no-payload UDP/9 selection
+  probe contract, and bounded `IP_ALLOW_*` audit events;
 - other private/public IP, DoH, DoT, external UDP/443, HTTP, and IPv6 negative
   boundaries;
 - required/forbidden policy events, graceful stop, DNS snapshot comparison,
@@ -29,6 +33,12 @@ The sink listener does not have to return a successful application response.
 The evidence proves only that the VM sent matching traffic unchanged to the
 reviewed sink and interface. It does not claim that a host listener handled the
 traffic safely. Inbound return traffic is outside the new sink verdict.
+
+Reviewed public-IP results use the same evidence rule: a successful FakeNet
+send verdict and a matching packet in the independent physical-interface PCAP
+prove egress authorization, not service availability. Negative matrix entries
+must have zero matching physical-interface packets. Reviewed-IP fragments are
+expected to be dropped, and all-port authorization applies to every VM process.
 
 After the run, copy the newest directory under `Logs` back to
 `dist\Logs` without compression. Preserve the `.pcapng` file alongside the
