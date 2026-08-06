@@ -99,10 +99,18 @@ class Runner(object):
             raise AcceptanceError('plan manifest version mismatch')
         if manifest.get('logs_plaintext') is not True:
             raise AcceptanceError('manifest does not require plaintext logs')
-        for row in manifest.get('files', []):
-            path = REPO_ROOT / Path(row['path'])
+        rows = manifest.get('files', [])
+        if not rows:
+            raise AcceptanceError('package manifest file list is empty')
+        seen = set()
+        for row in rows:
+            relative = row['path']
+            if relative in seen:
+                raise AcceptanceError('duplicate manifest path: %s' % relative)
+            seen.add(relative)
+            path = (REPO_ROOT / Path(relative)).resolve()
             try:
-                path.relative_to(REPO_ROOT)
+                path.relative_to(REPO_ROOT.resolve())
             except ValueError:
                 raise AcceptanceError('manifest path escapes package root')
             if not path.is_file():
@@ -300,31 +308,48 @@ class Runner(object):
         rows = ['differences before emergency rollback: %s' %
                 ', '.join(differences)]
         if 'iptables' in differences:
-            result = self._command(
-                ['iptables-restore'], input_bytes=before['iptables'], check=False)
-            rows.append('iptables-restore exit=%d stderr=%s' % (
-                result.returncode,
-                result.stderr.decode('utf-8', errors='replace').strip()))
+            try:
+                result = self._command(
+                    ['iptables-restore'], input_bytes=before['iptables'],
+                    check=False)
+                rows.append('iptables-restore exit=%d stderr=%s' % (
+                    result.returncode,
+                    result.stderr.decode('utf-8', errors='replace').strip()))
+            except BaseException as exc:
+                rows.append('iptables-restore raised: %s' % exc)
         if 'ip6tables' in differences:
-            result = self._command(
-                ['ip6tables-restore'], input_bytes=before['ip6tables'], check=False)
-            rows.append('ip6tables-restore exit=%d stderr=%s' % (
-                result.returncode,
-                result.stderr.decode('utf-8', errors='replace').strip()))
+            try:
+                result = self._command(
+                    ['ip6tables-restore'], input_bytes=before['ip6tables'],
+                    check=False)
+                rows.append('ip6tables-restore exit=%d stderr=%s' % (
+                    result.returncode,
+                    result.stderr.decode('utf-8', errors='replace').strip()))
+            except BaseException as exc:
+                rows.append('ip6tables-restore raised: %s' % exc)
         if 'dns' in differences:
-            current = self._dns_state()
-            same_link = (
-                current['is_symlink'] == before['dns']['is_symlink'] and
-                current['link_target'] == before['dns']['link_target'])
-            if same_link:
-                Path('/etc/resolv.conf').write_bytes(before['dns']['content'])
-                rows.append('DNS content restored through unchanged path')
-            else:
-                rows.append('DNS link identity changed; unsafe automatic repair refused')
-        after = self.network_snapshot()
-        remaining = self.snapshot_differences(before, after)
-        rows.append('differences after emergency rollback: %s' %
-                    (', '.join(remaining) if remaining else 'none'))
+            try:
+                current = self._dns_state()
+                same_link = (
+                    current['is_symlink'] == before['dns']['is_symlink'] and
+                    current['link_target'] == before['dns']['link_target'])
+                if same_link:
+                    Path('/etc/resolv.conf').write_bytes(
+                        before['dns']['content'])
+                    rows.append('DNS content restored through unchanged path')
+                else:
+                    rows.append(
+                        'DNS link identity changed; unsafe automatic repair refused')
+            except BaseException as exc:
+                rows.append('DNS emergency restore raised: %s' % exc)
+        try:
+            after = self.network_snapshot()
+            remaining = self.snapshot_differences(before, after)
+            rows.append('differences after emergency rollback: %s' %
+                        (', '.join(remaining) if remaining else 'none'))
+        except BaseException as exc:
+            remaining = ['post-rollback-snapshot-unavailable']
+            rows.append('post-rollback snapshot raised: %s' % exc)
         (case_directory / 'emergency-rollback.txt').write_text(
             '\n'.join(rows) + '\n', encoding='utf-8', newline='\n')
         return remaining
@@ -502,9 +527,15 @@ class Runner(object):
                     code = self.wait_process(process, stop_flag, 8)
                 self.active = None
                 self.active_stop_flag = None
-        after = self.network_snapshot()
-        self.write_snapshot(case_directory / 'network-after.json', after)
-        differences = self.snapshot_differences(before, after)
+        snapshot_error = None
+        try:
+            after = self.network_snapshot()
+            self.write_snapshot(case_directory / 'network-after.json', after)
+            differences = self.snapshot_differences(before, after)
+        except BaseException as exc:
+            snapshot_error = exc
+            differences = ['iptables', 'ip6tables', 'dns',
+                           'post-case-snapshot-unavailable']
         remaining = []
         if differences:
             remaining = self.emergency_restore(before, case_directory, differences)
@@ -516,6 +547,11 @@ class Runner(object):
         if case_error is not None:
             raise AcceptanceError('%s failed: %s; network_diff=%s; residual=%s' %
                                   (mode, case_error, differences, residue))
+        if snapshot_error is not None:
+            raise AcceptanceError(
+                '%s post-case network snapshot failed: %s; '
+                'emergency_remaining=%s' %
+                (mode, snapshot_error, remaining))
         if not network_ok:
             raise AcceptanceError(
                 '%s did not restore network state: %s; emergency_remaining=%s' %

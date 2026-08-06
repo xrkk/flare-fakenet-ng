@@ -1,10 +1,13 @@
 import importlib.util
+import hashlib
+import json
 import logging
 import os
 from pathlib import Path
 import socket
 import tempfile
 import unittest
+from unittest import mock
 
 import dpkt
 
@@ -40,6 +43,44 @@ def udp_packet(destination, marker):
 
 
 class LinuxAcceptanceContractTests(unittest.TestCase):
+    def test_manifest_rejects_normalized_parent_escape(self):
+        runner = linux_runner.Runner.__new__(linux_runner.Runner)
+        with tempfile.TemporaryDirectory() as root:
+            repo = Path(root)
+            manifest = {
+                'package_version': 'v1', 'plan_version': 'v4',
+                'logs_plaintext': True,
+                'files': [{'path': '../escape', 'size': 0,
+                           'sha256': hashlib.sha256(b'').hexdigest()}]}
+            (repo / 'dual-pcap-linux-manifest.json').write_text(
+                json.dumps(manifest), encoding='utf-8')
+            with mock.patch.object(linux_runner, 'REPO_ROOT', repo):
+                with self.assertRaisesRegex(
+                        linux_runner.AcceptanceError, 'escapes package root'):
+                    runner.validate_manifest()
+
+    def test_emergency_restore_records_post_restore_snapshot_failure(self):
+        runner = linux_runner.Runner.__new__(linux_runner.Runner)
+        runner._command = mock.Mock(return_value=mock.Mock(
+            returncode=0, stderr=b''))
+        runner.network_snapshot = mock.Mock(
+            side_effect=linux_runner.AcceptanceError('snapshot unavailable'))
+        before = {
+            'iptables': b'v4', 'ip6tables': b'v6',
+            'routes4': b'', 'routes6': b'',
+            'dns': {'is_symlink': False, 'link_target': None,
+                    'content': b'nameserver 127.0.0.1\n'}}
+        with tempfile.TemporaryDirectory() as root:
+            case = Path(root)
+            remaining = runner.emergency_restore(
+                before, case, ['iptables', 'ip6tables'])
+            evidence = (case / 'emergency-rollback.txt').read_text(
+                encoding='utf-8')
+
+        self.assertEqual(['post-rollback-snapshot-unavailable'], remaining)
+        self.assertEqual(2, runner._command.call_count)
+        self.assertIn('post-rollback snapshot raised', evidence)
+
     def test_generated_live_config_enables_only_reviewed_test_scope(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / 'fakenet.ini'
