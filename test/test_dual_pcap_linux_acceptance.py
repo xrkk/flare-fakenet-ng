@@ -120,6 +120,7 @@ class LinuxAcceptanceContractTests(unittest.TestCase):
         self.assertIn('dual-pcap-linux-manifest.json', source)
         self.assertIn('logs_plaintext = $true', source)
         self.assertIn('No .sha256 sidecar was generated.', source)
+        self.assertIn('$shellText.Replace("`r`n", "`n")', source)
         self.assertNotRegex(source, r'(?m)^\s*Compress-Archive\b')
 
 

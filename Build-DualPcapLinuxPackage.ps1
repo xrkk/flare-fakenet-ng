@@ -93,6 +93,17 @@ try {
         Remove-Item -LiteralPath $archivedDist -Recurse -Force
     }
 
+    # git archive/Expand-Archive can apply the Windows checkout EOL policy.
+    # Normalize shell entries before hashing and packaging so the executable
+    # shebang remains valid when the ZIP is extracted on Linux.
+    $utf8NoBom = [Text.UTF8Encoding]::new($false)
+    foreach ($shellFile in Get-ChildItem -LiteralPath $stage -Filter '*.sh' `
+            -File -Recurse) {
+        $shellText = [IO.File]::ReadAllText($shellFile.FullName)
+        $shellText = $shellText.Replace("`r`n", "`n").Replace("`r", "`n")
+        [IO.File]::WriteAllText($shellFile.FullName, $shellText, $utf8NoBom)
+    }
+
     $required = @(
         'test\dual_pcap_linux\Run-Tests.sh',
         'test\dual_pcap_linux\run_tests.py',
@@ -160,7 +171,7 @@ try {
     [IO.File]::WriteAllText(
         $manifestPath,
         (($manifest | ConvertTo-Json -Depth 6) + [Environment]::NewLine),
-        [Text.UTF8Encoding]::new($false))
+        $utf8NoBom)
 
     New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
     New-DeterministicZip $stage $zipPath
