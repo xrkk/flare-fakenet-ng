@@ -129,11 +129,15 @@ class LinuxPcapLifecycleTests(unittest.TestCase):
             (_ for _ in ()).throw(PcapWriteError('injected')))
         packet = VerdictPacket()
 
-        with self.assertRaises(PcapWriteError):
-            diverter.handle_outgoing(packet)
+        with self.assertLogs('linux-handler-test', level='CRITICAL') as logs:
+            with self.assertRaises(PcapWriteError):
+                diverter.handle_outgoing(packet)
 
         self.assertEqual(1, packet.drop_calls)
         self.assertEqual(0, packet.accept_calls)
+        self.assertEqual(1, len([
+            line for line in logs.output
+            if 'PCAP_DUAL_CURRENT_PACKET_DROP hook=outgoing' in line]))
 
 
 if __name__ == '__main__':

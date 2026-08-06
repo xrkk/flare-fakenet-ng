@@ -28,6 +28,12 @@ class LinuxPacketCtx(fnpacket.PacketCtx):
 
 class Diverter(DiverterBase, LinUtilMixin):
 
+    def _drop_capture_failed_packet(self, nfqpkt, hook):
+        """Fail closed for the NFQUEUE packet that observed capture failure."""
+        self.logger.critical(
+            'PCAP_DUAL_CURRENT_PACKET_DROP hook=%s', hook)
+        nfqpkt.drop()
+
     def __init__(self, diverter_config, listeners_config, ip_addrs,
                  logging_level=logging.INFO):
         super(Diverter, self).__init__(diverter_config, listeners_config,
@@ -281,7 +287,7 @@ class Diverter(DiverterBase, LinUtilMixin):
         # I can print out the stack trace before I lose access to this valuable
         # debugging information.
         except PcapWriteError:
-            nfqpkt.drop()
+            self._drop_capture_failed_packet(nfqpkt, 'nonlocal')
             raise
         except Exception:
             self.logger.error('Exception: %s' % (traceback.format_exc()))
@@ -308,7 +314,7 @@ class Diverter(DiverterBase, LinUtilMixin):
             if pkt.mangled:
                 nfqpkt.set_payload(pkt.octets)
         except PcapWriteError:
-            nfqpkt.drop()
+            self._drop_capture_failed_packet(nfqpkt, 'incoming')
             raise
         except Exception:
             self.logger.error('Exception: %s' % (traceback.format_exc()))
@@ -338,7 +344,7 @@ class Diverter(DiverterBase, LinUtilMixin):
             if pkt.mangled:
                 nfqpkt.set_payload(pkt.octets)
         except PcapWriteError:
-            nfqpkt.drop()
+            self._drop_capture_failed_packet(nfqpkt, 'outgoing')
             raise
         except Exception:
             self.logger.error('Exception: %s' % (traceback.format_exc()))
