@@ -149,3 +149,58 @@ def test_locked_field_flags_consistent():
             assert value == 'Yes'
         elif field.wtype == schema.T_INT:
             assert str(int(field.default)) == value
+
+
+# ---------------------------------------------------------------------------
+# End-to-end anchor (§6): the four functional profiles, with their build-time
+# placeholders substituted by reviewed values, must validate clean through
+# the GUI rule engine — this pulls windows.py-level coupling into the
+# dual-source anchor net (F8 reinforcement, v0.2).
+# ---------------------------------------------------------------------------
+
+FUNCTIONAL_INIS = (
+    'domain_allowlist_windows.ini',
+    'domain_reviewed_ipv4_windows.ini',
+    'domain_takeover_windows.ini',
+    'process_redirect_windows.ini',
+)
+
+
+def _substitute_placeholders(model):
+    import hashlib
+    diverter = model.diverter()
+    if (diverter.get('ExternalDnsServer') or '').startswith('__'):
+        diverter.set('ExternalDnsServer', '8.8.8.8')
+    image = os.path.abspath(__file__)
+    if (diverter.get('ExternalProcessRedirectImagePath') or
+            '').startswith('__'):
+        diverter.set('ExternalProcessRedirectImagePath', image)
+        with open(image, 'rb') as handle:
+            diverter.set('ExternalProcessRedirectImageSHA256',
+                         hashlib.sha256(handle.read()).hexdigest())
+    if (diverter.get('ExternalProcessRedirectOriginalIPv4') or
+            '').startswith('__'):
+        diverter.set('ExternalProcessRedirectOriginalIPv4', '110.242.69.21')
+    if (diverter.get('ExternalProcessRedirectTargetIPv4') or
+            '').startswith('__'):
+        diverter.set('ExternalProcessRedirectTargetIPv4', '192.168.204.1')
+
+
+@pytest.mark.parametrize('name', FUNCTIONAL_INIS)
+def test_functional_profile_placeholders_flagged(name):
+    from fakenet.gui import configmodel, validator
+    model = configmodel.ConfigModel.load(os.path.join(CONFIGS, name))
+    errors = [i for i in validator.validate(model)
+              if i.level == validator.ERROR]
+    assert any('占位符' in i.message for i in errors), (
+        'placeholder values in %s must be flagged' % name)
+
+
+@pytest.mark.parametrize('name', FUNCTIONAL_INIS)
+def test_functional_profile_valid_after_substitution(name):
+    from fakenet.gui import configmodel, validator
+    model = configmodel.ConfigModel.load(os.path.join(CONFIGS, name))
+    _substitute_placeholders(model)
+    errors = [i for i in validator.validate(model)
+              if i.level == validator.ERROR]
+    assert errors == [], '%s: unexpected errors: %r' % (name, errors)
