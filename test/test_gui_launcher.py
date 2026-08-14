@@ -1,0 +1,129 @@
+# -*- coding: utf-8 -*-
+"""Launcher gate tests (plan v0.2 §6): VM three-state parsing, duplicate
+detection contract, path injection rejection, settings/locate fallback."""
+
+import os
+
+import pytest
+
+from fakenet.gui import launcher
+
+
+def test_parse_vm_state_known_vms():
+    assert launcher.parse_vm_state(
+        'innotek GmbH', 'VirtualBox').verdict == launcher.VERDICT_VM
+    assert launcher.parse_vm_state(
+        'VMware, Inc.', 'VMware7,1').verdict == launcher.VERDICT_VM
+    assert launcher.parse_vm_state(
+        'Microsoft Corporation', 'Virtual Machine').verdict == \
+        launcher.VERDICT_VM
+    assert launcher.parse_vm_state(
+        'QEMU', 'Standard PC (i440FX + PIIX, 1996)').verdict == \
+        launcher.VERDICT_VM
+
+
+def test_parse_vm_state_physical():
+    assert launcher.parse_vm_state(
+        'Dell Inc.', 'OptiPlex 7090').verdict == launcher.VERDICT_PHYSICAL
+    assert launcher.parse_vm_state(
+        'LENOVO', '20XW').verdict == launcher.VERDICT_PHYSICAL
+
+
+def test_parse_vm_state_unknown():
+    assert launcher.parse_vm_state('', '').verdict == launcher.VERDICT_UNKNOWN
+    assert launcher.parse_vm_state(
+        None, None).verdict == launcher.VERDICT_UNKNOWN
+
+
+def test_query_vm_state_never_raises():
+    result = launcher.query_vm_state(timeout=15)
+    assert result.verdict in (launcher.VERDICT_VM, launcher.VERDICT_PHYSICAL,
+                              launcher.VERDICT_UNKNOWN)
+    assert isinstance(result, launcher.VmCheckResult)
+
+
+def test_is_fakenet_running_bool():
+    assert isinstance(launcher.is_fakenet_running(), bool)
+
+
+def test_validate_config_path(tmp_path):
+    good = tmp_path.joinpath('ok.ini')
+    good.write_text('[FakeNet]\n', encoding='ascii')
+    ok, _ = launcher.validate_config_path(str(good))
+    assert ok
+
+    ok, reason = launcher.validate_config_path('')
+    assert not ok
+    ok, reason = launcher.validate_config_path('relative.ini')
+    assert not ok and '绝对' in reason
+    ok, reason = launcher.validate_config_path(str(good) + '"')
+    assert not ok and '引号' in reason
+    ok, reason = launcher.validate_config_path(str(good)[:-1] + '\\')
+    assert not ok and '反斜杠' in reason
+    ok, reason = launcher.validate_config_path(str(good) + '\x01')
+    assert not ok and '控制字符' in reason
+    ok, reason = launcher.validate_config_path(
+        str(tmp_path.joinpath('missing.ini')))
+    assert not ok and '不存在' in reason
+
+
+def test_settings_round_trip(tmp_path):
+    base = str(tmp_path)
+    assert launcher.load_settings(base) == {}
+    launcher.save_settings({'fakenet_exe': 'X:\\fn\\fakenet.exe'}, base)
+    assert launcher.load_settings(base) == {'fakenet_exe':
+                                            'X:\\fn\\fakenet.exe'}
+
+
+def test_locate_prefers_valid_persisted(tmp_path):
+    base = str(tmp_path)
+    sibling = tmp_path.joinpath('fakenet.exe')
+    sibling.write_bytes(b'MZ')
+    persisted = tmp_path.joinpath('custom')
+    persisted.mkdir()
+    persisted_exe = persisted.joinpath('fakenet.exe')
+    persisted_exe.write_bytes(b'MZ')
+    path, source, note = launcher.locate_fakenet_exe(
+        settings={'fakenet_exe': str(persisted_exe)}, base_dir=base)
+    assert source == 'settings' and path == str(persisted_exe)
+    assert note == ''
+
+
+def test_locate_invalid_persisted_falls_back_to_sibling(tmp_path):
+    base = str(tmp_path)
+    sibling = tmp_path.joinpath('fakenet.exe')
+    sibling.write_bytes(b'MZ')
+    path, source, note = launcher.locate_fakenet_exe(
+        settings={'fakenet_exe': str(tmp_path.joinpath('gone.exe'))},
+        base_dir=base)
+    assert source == 'sibling' and path == str(sibling)
+    assert '回落' in note  # P11 fallback must be surfaced to the user
+
+
+def test_locate_missing_reports_none(tmp_path):
+    path, source, note = launcher.locate_fakenet_exe(base_dir=str(tmp_path))
+    assert path is None and source == 'none'
+    assert '手工指定' in note
+
+
+def test_build_dev_command_uses_module_form(tmp_path):
+    config = tmp_path.joinpath('c.ini')
+    config.write_text('[FakeNet]\n', encoding='ascii')
+    target, params, cwd = launcher.build_dev_command(str(config))
+    assert os.path.isfile(target)  # sys.executable
+    assert '-m fakenet.fakenet' in params
+    assert '-c' in params
+    assert os.path.isdir(cwd)
+
+
+def test_build_commands_reject_bad_paths():
+    with pytest.raises(launcher.LaunchError):
+        launcher.build_dev_command('relative.ini')
+    with pytest.raises(launcher.LaunchError):
+        launcher.build_frozen_command('X:\\fn\\fakenet.exe',
+                                      'no\\abs\\path.ini')
+
+
+def test_manual_command_hint_module_form():
+    hint = launcher.manual_command_hint('C:\\cfg\\x.ini')
+    assert hint == 'python -m fakenet.fakenet -c "C:\\cfg\\x.ini"'
