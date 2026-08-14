@@ -70,7 +70,7 @@ def query_vm_state(timeout=10):
             ['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
              '-ExecutionPolicy', 'Bypass', '-Command', script],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, timeout=timeout,
+            text=True, timeout=timeout, errors='replace',
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     except (OSError, subprocess.TimeoutExpired) as exc:
         return VmCheckResult(VERDICT_UNKNOWN,
@@ -87,7 +87,12 @@ def query_vm_state(timeout=10):
 
 
 def is_fakenet_running(image_name='fakenet.exe', timeout=10):
-    """True when a fakenet.exe process exists (or detection fails)."""
+    """True when a fakenet.exe process exists (or detection fails).
+
+    Byte-level comparison: on CJK Windows ``tasklist`` emits localized
+    messages in the OEM code page, which can crash a UTF-8 text-mode
+    reader thread and silently yield stdout=None.
+    """
     if os.name != 'nt':
         return False
     try:
@@ -95,12 +100,13 @@ def is_fakenet_running(image_name='fakenet.exe', timeout=10):
             ['tasklist', '/FI', 'IMAGENAME eq %s' % image_name,
              '/FO', 'CSV', '/NH'],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, timeout=timeout,
+            timeout=timeout,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     except (OSError, subprocess.TimeoutExpired):
         return True  # conservative: refuse to double-launch
-    return completed.returncode == 0 and image_name.lower() in \
-        completed.stdout.lower()
+    if completed.returncode != 0 or completed.stdout is None:
+        return True
+    return image_name.lower().encode('ascii') in completed.stdout.lower()
 
 
 def validate_config_path(path):
