@@ -1,5 +1,6 @@
 import logging
 import socket
+import ssl
 import unittest
 from unittest import mock
 
@@ -97,6 +98,58 @@ class ProxySocketLifecycleTests(unittest.TestCase):
         self.assertEqual([0], wrapped.blocking_values)
         select_mock.assert_called_once_with([wrapped], [], [], .001)
         self.assertEqual(('TCP', 50000, 51000, 'Yes'), callbacks.mapping)
+
+
+class FailingWrappedSocket(object):
+    def recv(self, count):
+        raise ssl.SSLError('ambient telemetry handshake failure')
+
+    def setblocking(self, value):
+        return None
+
+
+class CaptureHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record.getMessage())
+
+
+class ProxyTlsFailureTests(unittest.TestCase):
+    def _build_handler(self, wrapped):
+        logger = logging.getLogger('proxy-tls-fail-test')
+        logger.handlers[:] = []
+        capture = CaptureHandler()
+        logger.addHandler(capture)
+        logger.setLevel(logging.WARNING)
+        server = type('Server', (), {
+            'logger': logger,
+            'sslwrapper': SSLWrapper(wrapped),
+            'config': {},
+            'listeners': [],
+            'diverter': object(),
+            'local_ip': '127.0.0.1',
+            'diverterListenerCallbacks': Callbacks(),
+        })()
+        handler = ProxyListener.ThreadedTCPRequestHandler.__new__(
+            ProxyListener.ThreadedTCPRequestHandler)
+        handler.request = RawSocket()
+        handler.server = server
+        handler.client_address = ('192.0.2.10', 50000)
+        return handler, capture
+
+    def test_tls_proxy_recv_failure_returns_without_raising(self):
+        handler, capture = self._build_handler(FailingWrappedSocket())
+
+        with mock.patch.object(ProxyListener.ssl_detector,
+                               'looks_like_ssl', return_value=True):
+            handler.handle()  # must not raise
+
+        self.assertTrue(
+            any('TLS proxy' in message for message in capture.records),
+            'expected a TLS proxy warning, got: %r' % capture.records)
 
 
 if __name__ == '__main__':

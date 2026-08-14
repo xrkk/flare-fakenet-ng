@@ -28,6 +28,7 @@ import ipaddress
 import json
 import struct
 import tempfile
+import hashlib
 
 _TAKEOVER_ROUTE_SCRIPT = r'''
 $ErrorActionPreference = 'Stop'
@@ -125,9 +126,133 @@ if ($source -notin $sourceAddresses) {
 
 ROUTE_PROBE_UDP_PORT = 9
 _REVIEWED_ROUTE_QUERY_TIMEOUT_SECONDS = 2
+_PROCESS_REDIRECT_ROUTE_QUERY_TIMEOUT_SECONDS = 10
 
 from .egresspolicy import (EgressPolicy, PolicyConfigError,
                            ReviewedPacketTuple, Verdict)
+from .processredirect import (
+    PacketTuple, ProcessRedirectAction, ProcessRedirectEngine)
+
+
+def build_domain_allowlist_filter(target_ipv4=None, frozen_local_ipv4=None):
+    """Build the reviewed filter without broadening disabled-mode capture."""
+    base = 'outbound and (ip or ipv6)'
+    if target_ipv4 is None and frozen_local_ipv4 is None:
+        return base
+    try:
+        target = ipaddress.ip_address(str(target_ipv4))
+        local = ipaddress.ip_address(str(frozen_local_ipv4))
+    except ValueError as exc:
+        raise PolicyConfigError(
+            'process redirect filter contains an invalid IPv4') from exc
+    if (target.version != 4 or local.version != 4 or
+            str(target) != str(target_ipv4) or
+            str(local) != str(frozen_local_ipv4)):
+        raise PolicyConfigError(
+            'process redirect filter requires canonical IPv4 addresses')
+    return (
+        '(%s) or (inbound and ip and ip.SrcAddr == %s and '
+        'ip.DstAddr == %s and ip.Protocol == 6)' %
+        (base, target, local))
+
+
+def classify_process_redirect_ipv4_fragment(
+        raw, is_outbound, original_ipv4, target_ipv4, frozen_local_ipv4):
+    """Recognize all TCP-protocol IPv4 fragments before TCP parsing."""
+    if not raw or len(raw) < 20 or ((raw[0] & 0xf0) >> 4) != 4:
+        return False
+    header_length = (raw[0] & 0x0f) * 4
+    if header_length < 20 or len(raw) < header_length or raw[9] != 6:
+        return False
+    fragment_bits = struct.unpack('!H', raw[6:8])[0]
+    if not fragment_bits & 0x3fff:
+        return False
+    source_ipv4 = socket.inet_ntoa(raw[12:16])
+    destination_ipv4 = socket.inet_ntoa(raw[16:20])
+    if is_outbound:
+        return destination_ipv4 == str(original_ipv4)
+    return bool(
+        source_ipv4 == str(target_ipv4) and
+        destination_ipv4 == str(frozen_local_ipv4))
+
+
+class ProcessRedirectRouteGuard(object):
+    """Freeze A/B route identity and expose a bounded engine adapter."""
+
+    def __init__(self, expected_snapshots, reader):
+        self._expected = self._freeze(expected_snapshots)
+        if len(self._expected) != 2:
+            raise PolicyConfigError(
+                'process redirect requires exactly two route snapshots')
+        decoded = [dict(item) for item in self._expected]
+        sources = {item['source_ipv4'] for item in decoded}
+        interfaces = {int(item['interface_index']) for item in decoded}
+        if len(sources) != 1 or len(interfaces) != 1:
+            raise PolicyConfigError(
+                'process redirect A/B routes must share source and interface')
+        self.frozen_local_ipv4 = next(iter(sources))
+        self.frozen_interface_index = next(iter(interfaces))
+        self._reader = reader
+        self._lock = threading.RLock()
+        self._available = True
+        self._first_validated = False
+        self.failure_reason = None
+        self.failure_error = None
+        self.failure_detail = None
+
+    @staticmethod
+    def _freeze(snapshots):
+        normalized = []
+        for item in snapshots:
+            normalized.append(tuple(sorted(dict(item).items())))
+        return tuple(sorted(normalized))
+
+    def refresh(self):
+        # Run the route-checker subprocess BEFORE acquiring the lock. The
+        # receiver thread's is_current() takes this same lock on every new
+        # target SYN; if the subprocess (a PowerShell cold start, often
+        # multi-second) ran under the lock it would stall the receiver,
+        # overflow WinDivert's queue, and leak target traffic to the
+        # original address. Only the in-memory state swap is lock-protected.
+        try:
+            current = self._freeze(self._reader())
+        except Exception as exc:
+            with self._lock:
+                self._available = False
+                self.failure_reason = 'route_query_failed'
+                cause = exc
+                while cause is not None:
+                    if isinstance(cause, subprocess.TimeoutExpired):
+                        self.failure_reason = 'route_query_timeout'
+                        break
+                    cause = cause.__cause__ or cause.__context__
+                self.failure_error = type(exc).__name__
+                self.failure_detail = str(exc)
+            return False
+        with self._lock:
+            self._available = current == self._expected
+            self._first_validated = True
+            if self._available:
+                self.failure_reason = None
+                self.failure_error = None
+                self.failure_detail = None
+            else:
+                self.failure_reason = 'route_snapshot_changed'
+                self.failure_error = None
+                self.failure_detail = None
+            return self._available
+
+    def is_current(self, packet):
+        with self._lock:
+            if not self._first_validated and not self.refresh():
+                return False
+            return bool(
+                self._available and
+                packet.source_ipv4 == self.frozen_local_ipv4 and
+                int(packet.interface_index) == self.frozen_interface_index)
+
+    def validate_resume(self):
+        return self.refresh()
 
 
 class ReviewedIpFlowAudit(object):
@@ -314,6 +439,10 @@ class Diverter(DiverterBase, WinUtilMixin):
         self._reviewed_route_snapshots = ()
         self._reviewed_target_protocols = frozenset()
         self._reviewed_ip_audit = ReviewedIpFlowAudit()
+        self._process_identity_api = None
+        self.process_redirect_engine = None
+        self._process_redirect_route_guard = None
+        self._process_redirect_route_snapshots = ()
 
         # DomainAllowList expands capture to IPv6 and delays opening WinDivert
         # until every listener and callback is ready.  Disabled mode preserves
@@ -323,44 +452,109 @@ class Diverter(DiverterBase, WinUtilMixin):
 
         if self.domain_allowlist_mode:
             dns_server = self._select_external_dns_server()
+            if self.is_set('ExternalProcessRedirectEnabled'):
+                self._process_identity_api = WindowsProcessIdentityApi()
             try:
                 self.egress_policy = EgressPolicy(
                     self._dict,
                     set(self.ip_addrs.get(4, [])).union([self.external_ip]),
                     self.ip_addrs.get(6, []),
-                    dns_server)
+                    dns_server,
+                    process_rule_reviewer=self._process_identity_api,
+                    platform_name='windows')
+                self._initialize_domain_policy_runtime()
             except (PolicyConfigError, ValueError) as exc:
+                if self._process_identity_api is not None:
+                    self._process_identity_api.close()
                 self.logger.critical('Invalid DomainAllowList configuration: %s', exc)
                 raise
-            self._validate_policy_listeners()
-            reviewed = self.egress_policy.reviewed_ip_settings()
-            self._reviewed_ip_audit = ReviewedIpFlowAudit(
-                rule_ids=(rule.rule_id for rule in reviewed['rules']))
-            self._reviewed_target_protocols = reviewed['target_protocols']
-            if reviewed['enabled']:
-                self._reviewed_route_snapshots = (
-                    self._read_reviewed_ip_route_snapshots())
-                self.egress_policy.activate_reviewed_ip_routes(
-                    self._reviewed_route_snapshots)
-                for snapshot in self._reviewed_route_snapshots:
-                    self.log_egress_event('IP_ALLOW_ROUTE_OK', **snapshot)
-                for rule in reviewed['rules']:
-                    if rule.port_scope == 'all':
-                        self.log_egress_event(
-                            'IP_ALLOW_RISK_ACK', rule_id=rule.rule_id,
-                            risk='all_ports_includes_dns_proxy_tunnel')
-                self.log_egress_event(
-                    'IP_ALLOW_READY', rule_count=len(reviewed['rules']),
-                    ip_count=len(reviewed['rule_ids_by_ip']),
-                    config_sha256=reviewed['config_sha256'])
-            if self.egress_policy.takeover_enabled:
-                self._takeover_route_snapshot = (
-                    self._read_takeover_route_snapshot())
-                self.log_egress_event(
-                    'TAKEOVER_ROUTE_OK',
-                    **self._takeover_route_snapshot)
+            except BaseException:
+                if self._process_identity_api is not None:
+                    self._process_identity_api.close()
+                raise
         else:
             self._open_windivert_handle()
+
+    def _initialize_domain_policy_runtime(self):
+        """Build all reviewed runtime state before WinDivert or DNS changes."""
+        self._validate_policy_listeners()
+        reviewed = self.egress_policy.reviewed_ip_settings()
+        self._reviewed_ip_audit = ReviewedIpFlowAudit(
+            rule_ids=(rule.rule_id for rule in reviewed['rules']))
+        self._reviewed_target_protocols = reviewed['target_protocols']
+        if reviewed['enabled']:
+            self._reviewed_route_snapshots = (
+                self._read_reviewed_ip_route_snapshots())
+            self.egress_policy.activate_reviewed_ip_routes(
+                self._reviewed_route_snapshots)
+            for snapshot in self._reviewed_route_snapshots:
+                self.log_egress_event('IP_ALLOW_ROUTE_OK', **snapshot)
+            for rule in reviewed['rules']:
+                if rule.port_scope == 'all':
+                    self.log_egress_event(
+                        'IP_ALLOW_RISK_ACK', rule_id=rule.rule_id,
+                        risk='all_ports_includes_dns_proxy_tunnel')
+            self.log_egress_event(
+                'IP_ALLOW_READY', rule_count=len(reviewed['rules']),
+                ip_count=len(reviewed['rule_ids_by_ip']),
+                config_sha256=reviewed['config_sha256'])
+        if self.egress_policy.takeover_enabled:
+            self._takeover_route_snapshot = (
+                self._read_takeover_route_snapshot())
+            self.log_egress_event(
+                'TAKEOVER_ROUTE_OK', **self._takeover_route_snapshot)
+        if not self.egress_policy.process_redirect_enabled:
+            return
+        self._process_redirect_route_snapshots = (
+            self._read_process_redirect_route_snapshots())
+        self._process_redirect_route_guard = ProcessRedirectRouteGuard(
+            self._process_redirect_route_snapshots,
+            self._read_process_redirect_route_snapshots)
+        self._validate_process_redirect_quiescence()
+        instrumented_api = InstrumentedProcessIdentityApi(
+            self._process_identity_api,
+            on_slow_query=self._log_owner_query_latency)
+        self._instrumented_owner_api = instrumented_api
+        resolver = StrictTcpOwnerResolver(
+            instrumented_api,
+            reviewed_file_identity=(
+                self.egress_policy.process_redirect_rule.file_identity))
+        self.process_redirect_engine = ProcessRedirectEngine(
+            self.egress_policy.process_redirect_rule,
+            resolver, self._process_redirect_route_guard)
+        self.filter = build_domain_allowlist_filter(
+            self.egress_policy.process_redirect_rule.target_ipv4,
+            self._process_redirect_route_guard.frozen_local_ipv4)
+        for snapshot in self._process_redirect_route_snapshots:
+            self.log_egress_event(
+                'PROCESS_REDIRECT_ROUTE_OK', **snapshot)
+        self.log_egress_event(
+            'PROCESS_REDIRECT_RULE_READY',
+            original_ipv4=(
+                self.egress_policy.process_redirect_rule.original_ipv4),
+            target_ipv4=(
+                self.egress_policy.process_redirect_rule.target_ipv4),
+            image_sha256=(
+                self.egress_policy.process_redirect_rule.image_sha256))
+
+    def _validate_process_redirect_quiescence(self):
+        """Reject stale owners before READY and before opening WinDivert."""
+        rule = self.egress_policy.process_redirect_rule
+        running = self._process_identity_api.find_reviewed_processes(
+            rule.file_identity)
+        if running:
+            raise PolicyConfigError(
+                'reviewed process image is already running before READY')
+        existing = [
+            row for row in self._process_identity_api.get_tcp_owner_rows()
+            if (row.remote_ipv4 == rule.original_ipv4 and
+                3 <= int(row.state) <= 12)]
+        if existing:
+            raise PolicyConfigError(
+                'an existing TCP row already targets process redirect A')
+        self.log_egress_event(
+            'PROCESS_REDIRECT_QUIESCENCE_OK',
+            running_reviewed_processes=0, existing_a_rows=0)
 
     def _select_external_dns_server(self):
         configured = str(self.getconfigval('ExternalDnsServer', 'Auto')).strip()
@@ -537,10 +731,102 @@ class Diverter(DiverterBase, WinUtilMixin):
                 'reviewed IPv4 route snapshots do not match configured targets')
         return tuple(normalized)
 
+    def _read_process_redirect_route_snapshots(self):
+        rule = self.egress_policy.process_redirect_rule
+        targets = sorted((rule.original_ipv4, rule.target_ipv4))
+        try:
+            returncode, stdout, stderr = (
+                self._run_process_redirect_route_checker(targets))
+        except subprocess.TimeoutExpired as exc:
+            raise PolicyConfigError(
+                'process redirect route query exceeded %d seconds' %
+                _PROCESS_REDIRECT_ROUTE_QUERY_TIMEOUT_SECONDS) from exc
+        if returncode != 0:
+            detail = (stderr or stdout).strip()
+            raise PolicyConfigError(
+                'process redirect route preflight failed: %s' %
+                (detail or 'PowerShell returned no diagnostic'))
+        lines = [line for line in stdout.splitlines() if line.strip()]
+        if not lines:
+            raise PolicyConfigError(
+                'process redirect route preflight returned no snapshot')
+        try:
+            decoded = json.loads(lines[-1])
+        except (TypeError, ValueError) as exc:
+            raise PolicyConfigError(
+                'process redirect route preflight returned invalid JSON') from exc
+        if isinstance(decoded, dict):
+            decoded = [decoded]
+        required = {
+            'target_ipv4', 'interface_index', 'interface_alias',
+            'source_ipv4', 'destination_prefix', 'next_hop',
+            'route_metric', 'interface_metric', 'weak_host_send',
+            'weak_host_receive', 'address_state', 'skip_as_source'}
+        normalized = []
+        for snapshot in decoded if isinstance(decoded, list) else ():
+            if not isinstance(snapshot, dict) or set(snapshot) != required:
+                raise PolicyConfigError(
+                    'process redirect route snapshot fields do not match')
+            item = dict(snapshot)
+            for key in ('target_ipv4', 'source_ipv4', 'interface_alias',
+                        'destination_prefix', 'next_hop', 'weak_host_send',
+                        'weak_host_receive', 'address_state'):
+                item[key] = str(item[key])
+            try:
+                for key in ('interface_index', 'route_metric',
+                            'interface_metric'):
+                    item[key] = int(item[key])
+            except (TypeError, ValueError) as exc:
+                raise PolicyConfigError(
+                    'process redirect route snapshot has invalid numbers') from exc
+            if (item['target_ipv4'] not in targets or
+                    item['interface_index'] <= 0 or
+                    item['route_metric'] < 0 or
+                    item['interface_metric'] < 0 or
+                    not self.egress_policy.is_exact_local_ipv4(
+                        item['source_ipv4'])):
+                raise PolicyConfigError(
+                    'process redirect route snapshot failed validation')
+            if (item['weak_host_send'].lower() != 'disabled' or
+                    item['weak_host_receive'].lower() != 'disabled' or
+                    item['address_state'].lower() != 'preferred' or
+                    item['skip_as_source'] is not False):
+                raise PolicyConfigError(
+                    'process redirect route requires disabled weak-host and '
+                    'one preferred non-skip source address')
+            normalized.append(item)
+        normalized.sort(key=lambda item: item['target_ipv4'])
+        if ([item['target_ipv4'] for item in normalized] != targets or
+                len(normalized) != 2):
+            raise PolicyConfigError(
+                'process redirect route snapshots do not match A/B')
+        if (len({item['source_ipv4'] for item in normalized}) != 1 or
+                len({item['interface_index'] for item in normalized}) != 1):
+            raise PolicyConfigError(
+                'process redirect A/B routes must share source and interface')
+        target_snapshot = next(
+            item for item in normalized
+            if item['target_ipv4'] == rule.target_ipv4)
+        if (target_snapshot['next_hop'] != '0.0.0.0' or
+                target_snapshot['destination_prefix'] == '0.0.0.0/0'):
+            raise PolicyConfigError(
+                'process redirect B route must be specific and on-link')
+        return tuple(normalized)
+
     def _run_reviewed_route_checker(self, targets):
+        return self._run_route_checker(
+            targets, 'Test-ReviewedIPv4Routes.ps1',
+            _REVIEWED_ROUTE_QUERY_TIMEOUT_SECONDS)
+
+    def _run_process_redirect_route_checker(self, targets):
+        return self._run_route_checker(
+            targets, 'Test-ProcessRedirectRoutes.ps1',
+            _PROCESS_REDIRECT_ROUTE_QUERY_TIMEOUT_SECONDS)
+
+    def _run_route_checker(self, targets, checker_name, query_timeout):
         checker = os.path.abspath(os.path.join(
             os.path.dirname(__file__), '..', '..',
-            'Test-ReviewedIPv4Routes.ps1'))
+            checker_name))
         if not os.path.isfile(checker):
             raise PolicyConfigError(
                 'reviewed IPv4 route checker is missing')
@@ -577,7 +863,7 @@ class Diverter(DiverterBase, WinUtilMixin):
                 go_handle.write(b'go')
             try:
                 stdout, stderr = process.communicate(
-                    timeout=_REVIEWED_ROUTE_QUERY_TIMEOUT_SECONDS)
+                    timeout=query_timeout)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.communicate()
@@ -587,9 +873,26 @@ class Diverter(DiverterBase, WinUtilMixin):
     def _open_windivert_handle(self):
         if self.handle is not None:
             return
+        if getattr(self, 'process_redirect_engine', None) is not None:
+            self._validate_process_redirect_windivert_runtime()
         try:
             self.handle = WinDivert(filter=self.filter)
             self.handle.open()
+            # Record the effective WinDivert queue limits so the evidence log
+            # pins the exact threshold packets age out against. Best-effort:
+            # the diverter runs on documented driver defaults if this fails.
+            self._windivert_queue_time_ms = 2000
+            try:
+                from pydivert import Param
+                queue_time_ms = int(self.handle.get_param(Param.QUEUE_TIME))
+                queue_len = int(self.handle.get_param(Param.QUEUE_LEN))
+                queue_size = int(self.handle.get_param(Param.QUEUE_SIZE))
+                self._windivert_queue_time_ms = queue_time_ms
+                self.log_egress_event(
+                    'WINDIVERT_QUEUE_PARAM', queue_time_ms=queue_time_ms,
+                    queue_len=queue_len, queue_size_bytes=queue_size)
+            except Exception:
+                pass
         except WindowsError as e:
             if e.winerror == 5:
                 self.logger.critical('ERROR: Insufficient privileges to run '
@@ -606,6 +909,37 @@ class Diverter(DiverterBase, WinUtilMixin):
                                      'WinDivert driver: %s', e)
             self.handle = None
             raise
+
+    def _validate_process_redirect_windivert_runtime(self):
+        """Validate the exact enabled filter against the DLL about to load."""
+        try:
+            valid, position, message = WinDivert.check_filter(self.filter)
+        except Exception as exc:
+            raise PolicyConfigError(
+                'WinDivert filter validation could not load the bundled DLL') from exc
+        if not valid:
+            raise PolicyConfigError(
+                'WinDivert rejected process redirect filter at %s: %s' %
+                (position, message or 'unknown filter error'))
+        dll_path = os.path.abspath(str(windivert_dll.DLL_PATH))
+        if not os.path.isfile(dll_path):
+            raise PolicyConfigError(
+                'the exact WinDivert DLL path is not a regular file')
+        digest = hashlib.sha256()
+        with open(dll_path, 'rb') as dll_handle:
+            while True:
+                chunk = dll_handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        self.log_egress_event(
+            'PROCESS_REDIRECT_WINDIVERT_BASELINE',
+            expected_version='1.3.0',
+            expected_service='WinDivert1.3',
+            dll_path=dll_path,
+            dll_sha256=digest.hexdigest(),
+            filter_sha256=hashlib.sha256(
+                self.filter.encode('utf-8')).hexdigest())
 
     def _close_windivert_handle(self):
         """Close WinDivert without inheriting a stale Windows last-error.
@@ -630,6 +964,10 @@ class Diverter(DiverterBase, WinUtilMixin):
             # listeners are drained.  Mark the whole diverter as stopping so
             # watchdog/refresh workers cannot misclassify that drain window.
             self._stopping.set()
+            process_engine = getattr(
+                self, 'process_redirect_engine', None)
+            if process_engine is not None:
+                process_engine.suspend('orderly_stop')
             if self.egress_policy:
                 self.egress_policy.suspend()
 
@@ -681,6 +1019,8 @@ class Diverter(DiverterBase, WinUtilMixin):
         except Exception:
             if self.domain_allowlist_mode:
                 self.egress_policy.suspend()
+                if self.process_redirect_engine is not None:
+                    self.process_redirect_engine.close('startup_rollback')
             self._stopping.set()
             try:
                 self._restore_network_settings()
@@ -713,13 +1053,55 @@ class Diverter(DiverterBase, WinUtilMixin):
                     'DOMAIN_ALLOWLIST_READY',
                     dns=self.egress_policy.external_dns_server,
                     relay_port=self.egress_policy.relay_port)
+            if self.egress_policy.process_redirect_enabled:
+                self.log_egress_event(
+                    'PROCESS_REDIRECT_READY',
+                    original_ipv4=(
+                        self.egress_policy.process_redirect_rule.original_ipv4),
+                    target_ipv4=(
+                        self.egress_policy.process_redirect_rule.target_ipv4),
+                    port_scope='all_tcp_ports')
 
         return True
 
     def divert_thread(self):
+        prev_recv_return = None
+        last_gap_log = 0.0
+        self._hp_stats = {
+            'cycle': [0.0, 0, 0.0],
+            'pcap': [0.0, 0, 0.0],
+            'send': [0.0, 0, 0.0]}
+        self._hp_last_flush = time.monotonic()
         try:
             while not self._stopping.is_set():
+                loop_top = time.monotonic()
+                # Observability: the delta from the previous recv() return to
+                # now is wall time this single thread spent processing one
+                # packet (owner resolution, route guard, inject). When it
+                # approaches the WinDivert queue time, packets that arrived
+                # meanwhile age out of the kernel queue and are silently
+                # dropped before ever reaching this loop. Best-effort only;
+                # instrumentation must never disturb the packet path.
+                if prev_recv_return is not None:
+                    stall_ms = (loop_top - prev_recv_return) * 1000.0
+                    self._hp_accumulate('cycle', stall_ms)
+                    if (stall_ms > 1000.0 and
+                            loop_top - last_gap_log > 1.0):
+                        last_gap_log = loop_top
+                        try:
+                            self.log_egress_event(
+                                'WINDIVERT_RECV_CYCLE_GAP',
+                                gap_ms=int(stall_ms),
+                                queue_time_ms=getattr(
+                                    self, '_windivert_queue_time_ms', 2000),
+                                epoch_ms=int(time.time() * 1000))
+                        except Exception:
+                            pass
+                if loop_top - self._hp_last_flush >= 10.0:
+                    self._hp_last_flush = loop_top
+                    self._hp_flush()
                 wdpkt = self.handle.recv()
+                prev_recv_return = time.monotonic()
 
                 if wdpkt is None:
                     self.logger.error('ERROR: Can\'t handle packet.')
@@ -774,6 +1156,16 @@ class Diverter(DiverterBase, WinUtilMixin):
         if version != 4:
             self.log_egress_event('DROP_EXTERNAL', reason='unknown_ip_version')
             return
+        if getattr(self, 'process_redirect_engine', None) is not None:
+            rule = self.egress_policy.process_redirect_rule
+            if classify_process_redirect_ipv4_fragment(
+                    raw, bool(getattr(wdpkt, 'is_outbound', False)),
+                    rule.original_ipv4, rule.target_ipv4,
+                    self._process_redirect_route_guard.frozen_local_ipv4):
+                self.log_egress_event(
+                    'PROCESS_REDIRECT_DENY',
+                    reason='process_redirect_fragment')
+                return
         fragment = self.classify_reviewed_ipv4_fragment(
             raw, self._reviewed_target_protocols)
         if fragment:
@@ -786,9 +1178,18 @@ class Diverter(DiverterBase, WinUtilMixin):
         new_mapping_generation = None
         try:
             pkt = WindowsPacketCtx('domain_allowlist', wdpkt)
-            self.write_pcap(pkt)
+            self._timed_write_pcap(pkt)
             original = (pkt.proto, pkt.src_ip0, pkt.sport0,
                         pkt.dst_ip0, pkt.dport0)
+            self._log_a_teardown_seen(pkt)
+
+            if not pkt.is_outbound:
+                if getattr(self, 'process_redirect_engine', None) is not None:
+                    if self._apply_process_redirect(pkt):
+                        return
+                self.log_egress_event(
+                    'DROP_EXTERNAL', reason='unexpected_policy_inbound')
+                return
 
             if pkt.proto:
                 permit = self.egress_policy.match_control_flow(*original)
@@ -815,10 +1216,14 @@ class Diverter(DiverterBase, WinUtilMixin):
                     self.egress_policy.close_relay_mapping(
                         mapping.generation)
                     return
-                self.write_pcap(pkt)
+                self._timed_write_pcap(pkt)
                 if not self._send_packet(pkt):
                     self.egress_policy.close_relay_mapping(
                         mapping.generation)
+                return
+
+            if (getattr(self, 'process_redirect_engine', None) is not None and
+                    self._apply_process_redirect(pkt)):
                 return
 
             if (pkt.proto and
@@ -890,7 +1295,7 @@ class Diverter(DiverterBase, WinUtilMixin):
                         mapping.generation)
                 return
             if pkt.mangled and not handled_by_base:
-                self.write_pcap(pkt)
+                self._timed_write_pcap(pkt)
             if verdict == Verdict.DIVERT_FAKE:
                 self.log_egress_event(
                     'DIVERT_FAKE', original_ip=pkt.dst_ip0,
@@ -914,6 +1319,204 @@ class Diverter(DiverterBase, WinUtilMixin):
         return bool(pkt.proto == 'TCP' and
                     (pkt.hdr.data.flags & dpkt.tcp.TH_SYN) and
                      not (pkt.hdr.data.flags & dpkt.tcp.TH_ACK))
+
+    @staticmethod
+    def _process_redirect_packet_tuple(pkt):
+        flags = 0
+        if pkt.proto == 'TCP':
+            flags = int(pkt.hdr.data.flags)
+        raw = getattr(pkt, 'raw', b'')
+        packet_size = len(raw) if isinstance(raw, (bytes, bytearray)) else 0
+        return PacketTuple(
+            direction=('outbound' if pkt.is_outbound else 'inbound'),
+            ipv4_version=int(pkt.ipver or 0), fragmented=False,
+            protocol=str(pkt.proto or ''), tcp_flags=flags,
+            source_ipv4=str(pkt.src_ip0), source_port=int(pkt.sport0 or 0),
+            target_ipv4=str(pkt.dst_ip0), target_port=int(pkt.dport0 or 0),
+            interface_index=int(pkt.interface_index),
+            subinterface_index=int(pkt.subinterface_index),
+            packet_size=packet_size)
+
+    def _log_owner_query_latency(self, method, elapsed_ms):
+        """Sink for InstrumentedProcessIdentityApi slow-query reports."""
+        try:
+            self.log_egress_event(
+                'OWNER_QUERY_LATENCY', method=method, ms=int(elapsed_ms),
+                epoch_ms=int(time.time() * 1000))
+        except Exception:
+            pass
+
+    def _is_a_outbound_teardown(self, pkt):
+        """True for outbound TCP FIN/RST to the reviewed original address A.
+
+        Decisive v22 probe: logs at receive-time and at decision-time let us
+        tell whether a leaked teardown packet was seen by this diverter (so the
+        leak is a decision/path bug here) or never captured by WinDivert.
+        """
+        try:
+            rule = self.egress_policy.process_redirect_rule
+            return bool(
+                pkt.is_outbound and pkt.proto == 'TCP'
+                and pkt.dst_ip0 == rule.original_ipv4
+                and int(pkt.hdr.data.flags) & 0x05)
+        except Exception:
+            return False
+
+    def _log_a_teardown_seen(self, pkt):
+        if self._is_a_outbound_teardown(pkt):
+            try:
+                self.log_egress_event(
+                    'PROCESS_REDIRECT_A_TEARDOWN', sport=pkt.sport0,
+                    flags=int(pkt.hdr.data.flags),
+                    epoch_ms=int(time.time() * 1000))
+            except Exception:
+                pass
+
+    def _hp_accumulate(self, key, ms):
+        stats = getattr(self, '_hp_stats', None)
+        if stats is None:
+            return
+        bucket = stats[key]
+        bucket[0] += ms
+        bucket[1] += 1
+        if ms > bucket[2]:
+            bucket[2] = ms
+
+    def _hp_flush(self):
+        stats = getattr(self, '_hp_stats', None)
+        if stats is None:
+            return
+        fields = {}
+        for key in ('cycle', 'pcap', 'send'):
+            total, count, max_ms = stats[key]
+            avg = (total / count) if count else 0.0
+            fields[key + '_count'] = count
+            fields[key + '_avg_ms'] = round(avg, 3)
+            fields[key + '_max_ms'] = round(max_ms, 3)
+            stats[key][0] = 0.0
+            stats[key][1] = 0
+            stats[key][2] = 0.0
+        owner_api = getattr(self, '_instrumented_owner_api', None)
+        if owner_api is not None:
+            try:
+                o_count, o_avg, o_max = owner_api.drain_latency_stats()
+                fields['owner_count'] = o_count
+                fields['owner_avg_ms'] = round(o_avg, 3)
+                fields['owner_max_ms'] = round(o_max, 3)
+            except Exception:
+                pass
+        try:
+            self.log_egress_event('PROCESS_REDIRECT_HOTPATH_STATS', **fields)
+        except Exception:
+            pass
+
+    def _timed_write_pcap(self, pkt):
+        """write_pcap is per-packet disk I/O on the receiver thread; time it
+        so a stall here can be attributed as the WinDivert queue-overflow
+        cause. Delegates verbatim; instrumentation never blocks the path."""
+        pcap_start = time.monotonic()
+        try:
+            return self.write_pcap(pkt)
+        finally:
+            try:
+                elapsed_ms = (time.monotonic() - pcap_start) * 1000.0
+                self._hp_accumulate('pcap', elapsed_ms)
+                if elapsed_ms > 250.0:
+                    self.log_egress_event(
+                        'PCAP_WRITE_LATENCY', ms=int(elapsed_ms),
+                        epoch_ms=int(time.time() * 1000))
+            except Exception:
+                pass
+
+    def _apply_process_redirect(self, pkt):
+        """Apply one engine decision; return True when the packet is final."""
+        prepared = self.process_redirect_engine.prepare(
+            self._process_redirect_packet_tuple(pkt))
+        decision = prepared.decision
+        if self._is_a_outbound_teardown(pkt):
+            try:
+                self.log_egress_event(
+                    'PROCESS_REDIRECT_A_DECISION', sport=pkt.sport0,
+                    flags=int(pkt.hdr.data.flags),
+                    action=decision.action.value, reason=decision.reason,
+                    epoch_ms=int(time.time() * 1000))
+            except Exception:
+                pass
+        if decision.action == ProcessRedirectAction.NOT_APPLICABLE:
+            return False
+        if decision.action == ProcessRedirectAction.PASS_UNCHANGED:
+            if pkt.is_outbound:
+                return False
+            sent = self._send_packet(pkt)
+            if not sent:
+                self.log_egress_event(
+                    'PROCESS_REDIRECT_B_COMPATIBILITY_DENY',
+                    reason='inject_call_failed')
+            return True
+        if decision.action == ProcessRedirectAction.DROP:
+            self.log_egress_event(
+                'PROCESS_REDIRECT_DENY', reason=decision.reason,
+                original_ip=pkt.dst_ip0, original_port=pkt.dport0)
+            return True
+
+        token = prepared.token
+        try:
+            if decision.action == ProcessRedirectAction.REWRITE_OUTBOUND:
+                pkt.dst_ip = decision.rewrite_target_ipv4
+                pkt.dport = decision.rewrite_target_port
+            elif decision.action == ProcessRedirectAction.REWRITE_INBOUND:
+                pkt.src_ip = decision.rewrite_source_ipv4
+                pkt.sport = decision.rewrite_source_port
+            else:
+                raise RuntimeError('unknown process redirect action')
+            self._timed_write_pcap(pkt)
+            sent = self._send_packet(pkt)
+        except BaseException as exc:
+            self.process_redirect_engine.abort(
+                token, reason=type(exc).__name__)
+            raise
+
+        try:
+            self.process_redirect_engine.commit(token, sent)
+        except Exception as exc:
+            self.process_redirect_engine.suspend('commit_failed')
+            self.log_egress_event(
+                'PROCESS_REDIRECT_COMMIT_FAILED',
+                error=type(exc).__name__, generation=decision.generation)
+            return True
+
+        if decision.reason == 'new_mapping' and sent:
+            self.log_egress_event(
+                'PROCESS_REDIRECT_MAPPING_CREATED',
+                generation=decision.generation,
+                protocol='TCP', original_ipv4=pkt.dst_ip0,
+                original_port=pkt.dport0,
+                target_ipv4=decision.rewrite_target_ipv4,
+                target_port=decision.rewrite_target_port,
+                source_ipv4=pkt.src_ip0, source_port=pkt.sport0,
+                pid=decision.pid,
+                process_creation_time=decision.process_creation_time,
+                process_file_id=decision.process_file_id,
+                process_image_sha256=(
+                    self.egress_policy.process_redirect_rule.image_sha256),
+                interface_index=pkt.interface_index,
+                subinterface_index=pkt.subinterface_index)
+        if not sent or decision.reason == 'new_mapping':
+            self.log_egress_event(
+                ('PROCESS_REDIRECT_INJECT_CALL_SUCCEEDED' if sent else
+                 'PROCESS_REDIRECT_INJECT_CALL_FAILED'),
+                action=decision.action.value,
+                generation=decision.generation)
+        return True
+
+    def _flush_process_redirect_audit(self, force=False):
+        engine = getattr(self, 'process_redirect_engine', None)
+        if engine is None:
+            return
+        summary = engine.drain_audit_summary(force=force)
+        if summary is not None:
+            self.log_egress_event(
+                'PROCESS_REDIRECT_AUDIT_SUMMARY', **summary)
 
     @staticmethod
     def classify_ipv6_preparse(raw, is_loopback):
@@ -1061,14 +1664,26 @@ class Diverter(DiverterBase, WinUtilMixin):
         return Verdict.DROP_EXTERNAL
 
     def _send_packet(self, pkt):
-        if self._send_windivert_packet(pkt.wdpkt, 'packet reinjection'):
-            return True
-        protocol = pkt.proto or ('ICMP' if pkt.is_icmp else 'Unknown')
-        self.logger.error('ERROR: Failed to send %s %s %s packet',
-                          self.pktDirectionStr(pkt),
-                          self.pktInterfaceStr(pkt), protocol)
-        self.logger.error('  %s', pkt.hdrToStr())
-        return False
+        send_start = time.monotonic()
+        try:
+            if self._send_windivert_packet(pkt.wdpkt, 'packet reinjection'):
+                return True
+            protocol = pkt.proto or ('ICMP' if pkt.is_icmp else 'Unknown')
+            self.logger.error('ERROR: Failed to send %s %s %s packet',
+                              self.pktDirectionStr(pkt),
+                              self.pktInterfaceStr(pkt), protocol)
+            self.logger.error('  %s', pkt.hdrToStr())
+            return False
+        finally:
+            try:
+                elapsed_ms = (time.monotonic() - send_start) * 1000.0
+                self._hp_accumulate('send', elapsed_ms)
+                if elapsed_ms > 250.0:
+                    self.log_egress_event(
+                        'WINDIVERT_SEND_LATENCY', ms=int(elapsed_ms),
+                        epoch_ms=int(time.time() * 1000))
+            except Exception:
+                pass
 
     def _send_windivert_packet(self, wdpkt, description):
         self.setLastErrorNull()
@@ -1112,6 +1727,10 @@ class Diverter(DiverterBase, WinUtilMixin):
             self.logger.critical(
                 'WinDivert receiver exited; closing capture and restoring network')
             try:
+                process_engine = getattr(
+                    self, 'process_redirect_engine', None)
+                if process_engine is not None:
+                    process_engine.close('windivert_receiver_exit')
                 self.egress_policy.suspend()
                 for listener in reversed(self._policy_listeners):
                     try:
@@ -1129,6 +1748,10 @@ class Diverter(DiverterBase, WinUtilMixin):
                 finally:
                     if self.handle:
                         self._close_windivert_handle()
+                    identity_api = getattr(
+                        self, '_process_identity_api', None)
+                    if identity_api is not None:
+                        identity_api.close()
 
     def _refresh_local_addresses(self):
         while not self._stopping.wait(5):
@@ -1171,6 +1794,39 @@ class Diverter(DiverterBase, WinUtilMixin):
                                 'TAKEOVER_SUSPEND',
                                 reason='route_snapshot_changed',
                                 error=type(exc).__name__)
+                process_engine = getattr(
+                    self, 'process_redirect_engine', None)
+                if process_engine is not None:
+                    rule = self.egress_policy.process_redirect_rule
+                    if (rule.original_ipv4 in addresses or
+                            rule.target_ipv4 in addresses):
+                        if process_engine.suspend(
+                                'process_redirect_address_became_local'):
+                            self.log_egress_event(
+                                'PROCESS_REDIRECT_SUSPEND',
+                                reason='address_became_local')
+                    elif not self._process_redirect_route_guard.refresh():
+                        reason = (
+                            self._process_redirect_route_guard.failure_reason or
+                            'route_query_failed')
+                        if process_engine.suspend(
+                                reason):
+                            fields = {'reason': reason}
+                            error = (
+                                self._process_redirect_route_guard.failure_error)
+                            detail = (
+                                self._process_redirect_route_guard.failure_detail)
+                            if error:
+                                fields['error'] = error
+                            if detail:
+                                fields['detail'] = detail
+                            self.log_egress_event(
+                                'PROCESS_REDIRECT_SUSPEND', **fields)
+                    elif not process_engine.settings()['available']:
+                        if process_engine.resume():
+                            self.log_egress_event(
+                                'PROCESS_REDIRECT_RESUME',
+                                reason='full_snapshot_revalidated')
                 if self.egress_policy.reviewed_ipv4_enabled:
                     try:
                         routes = self._read_reviewed_ip_route_snapshots()
@@ -1199,6 +1855,7 @@ class Diverter(DiverterBase, WinUtilMixin):
                     self.log_egress_event(
                         'DNS_LEASE_EXPIRE', domain=domain, ip=ip)
                 self._flush_reviewed_ip_audit()
+                self._flush_process_redirect_audit()
             except Exception:
                 self.logger.exception('Failed refreshing local address snapshot')
                 self.egress_policy.suspend()
@@ -1209,12 +1866,26 @@ class Diverter(DiverterBase, WinUtilMixin):
     def stopCallback(self):
         self._stopping.set()
         healthy = True
+        process_engine = getattr(self, 'process_redirect_engine', None)
+        if process_engine is not None:
+            try:
+                process_engine.close('orderly_stop')
+            except Exception:
+                healthy = False
+                self.logger.exception(
+                    'Failed closing process redirect engine')
         try:
             self._flush_reviewed_ip_audit(force=True)
         except Exception:
             healthy = False
             self.logger.exception(
                 'Failed flushing reviewed IPv4 audit summary during stop')
+        try:
+            self._flush_process_redirect_audit(force=True)
+        except Exception:
+            healthy = False
+            self.logger.exception(
+                'Failed flushing process redirect audit summary during stop')
 
         if self.egress_policy:
             try:
@@ -1255,6 +1926,14 @@ class Diverter(DiverterBase, WinUtilMixin):
             except Exception:
                 healthy = False
                 self.logger.exception('Failed closing egress policy')
+        identity_api = getattr(self, '_process_identity_api', None)
+        if identity_api is not None:
+            try:
+                identity_api.close()
+            except Exception:
+                healthy = False
+                self.logger.exception(
+                    'Failed closing reviewed process image handle')
         return healthy
 
     def _restore_network_settings(self):

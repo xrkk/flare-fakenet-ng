@@ -13,6 +13,7 @@ import os
 import sys
 import socket
 import struct
+import hashlib
 from . import diverterbase
 
 import time
@@ -20,14 +21,188 @@ import time
 from winreg import *
 
 import subprocess
+from dataclasses import dataclass
+from collections import OrderedDict
+
+from .processredirect import (
+    OwnerResolution, OwnerResolutionStatus, ProcessOwnerIdentity)
+
+
+@dataclass(frozen=True)
+class TcpOwnerRow:
+    local_ipv4: str
+    local_port: int
+    remote_ipv4: str
+    remote_port: int
+    state: int
+    pid: int
+
+
+class StrictTcpOwnerResolver(object):
+    """Resolve one captured TCP flow through an injected Windows API adapter."""
+
+    IDENTITY_CACHE_SECONDS = 5
+    IDENTITY_CACHE_MAX = 256
+
+    def __init__(self, api, reviewed_file_identity=None, clock=None):
+        self._api = api
+        self._reviewed_file_identity = reviewed_file_identity
+        self._clock = clock or time.monotonic
+        self._identity_cache = OrderedDict()
+
+    @staticmethod
+    def _same_file_identity(left, right):
+        if left is None or right is None:
+            return False
+        return bool(
+            os.path.normcase(os.path.normpath(left.final_path)) ==
+            os.path.normcase(os.path.normpath(right.final_path)) and
+            int(left.volume_serial) == int(right.volume_serial) and
+            int(left.file_id) == int(right.file_id))
+
+    def _purge_identity_cache(self, now):
+        for pid, item in list(self._identity_cache.items()):
+            if item[0] <= now:
+                self._identity_cache.pop(pid, None)
+
+    def _get_process_identity(self, pid):
+        now = self._clock()
+        self._purge_identity_cache(now)
+        cached = self._identity_cache.get(int(pid))
+        if cached is not None:
+            self._identity_cache.move_to_end(int(pid))
+            return cached[1]
+        identity = self._api.get_process_identity(pid)
+        # Only the reviewed executable is reusable. Caching arbitrary owners
+        # could turn PID reuse into an erroneous compatibility pass.
+        if self._same_file_identity(
+                identity, self._reviewed_file_identity):
+            self._identity_cache[int(pid)] = (
+                now + self.IDENTITY_CACHE_SECONDS, identity)
+            self._identity_cache.move_to_end(int(pid))
+            while len(self._identity_cache) > self.IDENTITY_CACHE_MAX:
+                self._identity_cache.popitem(last=False)
+        return identity
+
+    def resolve_tcp_owner(self, packet):
+        try:
+            matches = [
+                row for row in self._api.get_tcp_owner_rows()
+                if (row.local_ipv4 == packet.source_ipv4 and
+                    row.local_port == packet.source_port and
+                    row.remote_ipv4 == packet.target_ipv4 and
+                    row.remote_port == packet.target_port and
+                    3 <= int(row.state) <= 12)
+            ]
+        except Exception as exc:
+            return OwnerResolution(
+                OwnerResolutionStatus.ERROR, detail=type(exc).__name__)
+        if not matches:
+            return OwnerResolution(OwnerResolutionStatus.NOT_FOUND)
+        if len(matches) != 1:
+            return OwnerResolution(OwnerResolutionStatus.AMBIGUOUS)
+        try:
+            identity = self._get_process_identity(matches[0].pid)
+        except Exception as exc:
+            return OwnerResolution(
+                OwnerResolutionStatus.ERROR, detail=type(exc).__name__)
+        if not isinstance(identity, ProcessOwnerIdentity):
+            return OwnerResolution(
+                OwnerResolutionStatus.ERROR,
+                detail='invalid_process_identity')
+        return OwnerResolution(OwnerResolutionStatus.RESOLVED, identity)
+
+    def revalidate_process_identity(self, identity):
+        try:
+            current = self._api.get_process_identity(identity.pid)
+        except Exception:
+            self._identity_cache.pop(int(identity.pid), None)
+            return False
+        if current != identity:
+            self._identity_cache.pop(int(identity.pid), None)
+            return False
+        if self._same_file_identity(current, self._reviewed_file_identity):
+            self._identity_cache[int(identity.pid)] = (
+                self._clock() + self.IDENTITY_CACHE_SECONDS, current)
+            self._identity_cache.move_to_end(int(identity.pid))
+            while len(self._identity_cache) > self.IDENTITY_CACHE_MAX:
+                self._identity_cache.popitem(last=False)
+        return True
+
+    def revalidate_rule_file(self, identity):
+        try:
+            return self._api.revalidate_rule_file(identity)
+        except Exception:
+            return False
+
+
+class InstrumentedProcessIdentityApi(object):
+    """Best-effort timing wrapper around the Windows process-identity adapter.
+
+    Delegates each call to the real adapter and measures wall-clock latency.
+    Calls at or above ``threshold_ms`` are reported through ``on_slow_query``
+    as ``(method, elapsed_ms)`` so the diverter can attribute receiver-thread
+    stalls to a specific blocking syscall (GetExtendedTcpTable enumeration,
+    OpenProcess, or file-identity queries). Timing never alters behavior: any
+    instrumentation failure falls through to the delegated call so owner
+    resolution stays correct even when a probe raises.
+    """
+
+    def __init__(self, api, on_slow_query=None, clock=None,
+                 threshold_ms=500.0):
+        self._api = api
+        self._on_slow_query = on_slow_query
+        self._clock = clock or time.monotonic
+        self._threshold_ms = float(threshold_ms)
+        # [total_ms, count, max_ms] for average-cost attribution.
+        self._latency_stats = [0.0, 0, 0.0]
+
+    def _invoke(self, method, target, *args):
+        start = self._clock()
+        try:
+            return target(*args)
+        finally:
+            try:
+                elapsed_ms = (self._clock() - start) * 1000.0
+                self._latency_stats[0] += elapsed_ms
+                self._latency_stats[1] += 1
+                if elapsed_ms > self._latency_stats[2]:
+                    self._latency_stats[2] = elapsed_ms
+                if (self._on_slow_query is not None and
+                        elapsed_ms >= self._threshold_ms):
+                    self._on_slow_query(method, elapsed_ms)
+            except Exception:
+                pass
+
+    def drain_latency_stats(self):
+        """Return ``(count, avg_ms, max_ms)`` and reset the accumulator."""
+        total, count, max_ms = self._latency_stats
+        avg = (total / count) if count else 0.0
+        self._latency_stats = [0.0, 0, 0.0]
+        return (count, avg, max_ms)
+
+    def get_tcp_owner_rows(self):
+        return self._invoke(
+            'get_tcp_owner_rows', self._api.get_tcp_owner_rows)
+
+    def get_process_identity(self, pid):
+        return self._invoke(
+            'get_process_identity', self._api.get_process_identity, pid)
+
+    def revalidate_rule_file(self, identity):
+        # File revalidation is not on the per-SYN hot path; delegate directly.
+        return self._api.revalidate_rule_file(identity)
+
 
 NO_ERROR = 0
 ERROR_BUFFER_OVERFLOW = 111
+ERROR_INSUFFICIENT_BUFFER = 122
 
 AF_INET = 2
 AF_INET6 = 23
 
 ULONG64 = c_uint64
+ULONG_PTR = c_size_t
 
 
 ##############################################################################
@@ -104,6 +279,292 @@ class MIB_TCPTABLE_OWNER_PID(Structure):
         ("dwNumEntries", DWORD),
         ("table",        MIB_TCPROW_OWNER_PID * 512)
     ]
+
+
+class BY_HANDLE_FILE_INFORMATION(Structure):
+    _fields_ = [
+        ('dwFileAttributes', DWORD),
+        ('ftCreationTime', FILETIME),
+        ('ftLastAccessTime', FILETIME),
+        ('ftLastWriteTime', FILETIME),
+        ('dwVolumeSerialNumber', DWORD),
+        ('nFileSizeHigh', DWORD),
+        ('nFileSizeLow', DWORD),
+        ('nNumberOfLinks', DWORD),
+        ('nFileIndexHigh', DWORD),
+        ('nFileIndexLow', DWORD),
+    ]
+
+
+class PROCESSENTRY32W(Structure):
+    _fields_ = [
+        ('dwSize', DWORD),
+        ('cntUsage', DWORD),
+        ('th32ProcessID', DWORD),
+        ('th32DefaultHeapID', ULONG_PTR),
+        ('th32ModuleID', DWORD),
+        ('cntThreads', DWORD),
+        ('th32ParentProcessID', DWORD),
+        ('pcPriClassBase', LONG),
+        ('dwFlags', DWORD),
+        ('szExeFile', WCHAR * 260),
+    ]
+
+
+class WindowsProcessIdentityApi(object):
+    """ctypes adapter for strict owner and reviewed-file identity queries."""
+
+    GENERIC_READ = 0x80000000
+    FILE_READ_ATTRIBUTES = 0x0080
+    FILE_SHARE_READ = 0x00000001
+    FILE_SHARE_WRITE = 0x00000002
+    FILE_SHARE_DELETE = 0x00000004
+    OPEN_EXISTING = 3
+    FILE_ATTRIBUTE_DIRECTORY = 0x00000010
+    INVALID_HANDLE_VALUE = c_void_p(-1).value
+    HASH_CHUNK = 1024 * 1024
+    TH32CS_SNAPPROCESS = 0x00000002
+
+    def __init__(self):
+        self._reviewed_handle = None
+        self._configure_api_signatures()
+
+    @staticmethod
+    def _configure_api_signatures():
+        kernel32 = windll.kernel32
+        kernel32.CreateFileW.argtypes = [
+            LPCWSTR, DWORD, DWORD, LPVOID, DWORD, DWORD, HANDLE]
+        kernel32.CreateFileW.restype = HANDLE
+        kernel32.GetFinalPathNameByHandleW.argtypes = [
+            HANDLE, LPWSTR, DWORD, DWORD]
+        kernel32.GetFinalPathNameByHandleW.restype = DWORD
+        kernel32.GetFileInformationByHandle.argtypes = [
+            HANDLE, POINTER(BY_HANDLE_FILE_INFORMATION)]
+        kernel32.GetFileInformationByHandle.restype = BOOL
+        kernel32.ReadFile.argtypes = [
+            HANDLE, LPVOID, DWORD, POINTER(DWORD), LPVOID]
+        kernel32.ReadFile.restype = BOOL
+        kernel32.OpenProcess.argtypes = [DWORD, BOOL, DWORD]
+        kernel32.OpenProcess.restype = HANDLE
+        kernel32.GetProcessTimes.argtypes = [
+            HANDLE, POINTER(FILETIME), POINTER(FILETIME),
+            POINTER(FILETIME), POINTER(FILETIME)]
+        kernel32.GetProcessTimes.restype = BOOL
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            HANDLE, DWORD, LPWSTR, POINTER(DWORD)]
+        kernel32.QueryFullProcessImageNameW.restype = BOOL
+        kernel32.CloseHandle.argtypes = [HANDLE]
+        kernel32.CloseHandle.restype = BOOL
+        kernel32.CreateToolhelp32Snapshot.argtypes = [DWORD, DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = HANDLE
+        kernel32.Process32FirstW.argtypes = [
+            HANDLE, POINTER(PROCESSENTRY32W)]
+        kernel32.Process32FirstW.restype = BOOL
+        kernel32.Process32NextW.argtypes = [
+            HANDLE, POINTER(PROCESSENTRY32W)]
+        kernel32.Process32NextW.restype = BOOL
+        windll.iphlpapi.GetExtendedTcpTable.argtypes = [
+            LPVOID, POINTER(DWORD), BOOL, ULONG, DWORD, ULONG]
+        windll.iphlpapi.GetExtendedTcpTable.restype = DWORD
+
+    @staticmethod
+    def _raise_last_error(operation):
+        error = int(windll.kernel32.GetLastError())
+        raise OSError(error, '%s failed with Windows error %d' %
+                      (operation, error))
+
+    def _create_file(self, path, access, share):
+        handle = windll.kernel32.CreateFileW(
+            c_wchar_p(path), access, share, None, self.OPEN_EXISTING, 0, None)
+        if handle in (None, 0, self.INVALID_HANDLE_VALUE):
+            self._raise_last_error('CreateFileW')
+        return handle
+
+    def _final_path(self, handle):
+        size = 512
+        while size <= 32768:
+            buffer = create_unicode_buffer(size)
+            copied = windll.kernel32.GetFinalPathNameByHandleW(
+                handle, buffer, size, 0)
+            if copied == 0:
+                self._raise_last_error('GetFinalPathNameByHandleW')
+            if copied < size:
+                value = buffer.value
+                if value.startswith('\\\\?\\UNC\\'):
+                    return '\\\\' + value[8:]
+                if value.startswith('\\\\?\\'):
+                    return value[4:]
+                return value
+            size = copied + 1
+        raise OSError('final image path exceeds the reviewed limit')
+
+    def _file_identity(self, handle):
+        info = BY_HANDLE_FILE_INFORMATION()
+        if not windll.kernel32.GetFileInformationByHandle(
+                handle, byref(info)):
+            self._raise_last_error('GetFileInformationByHandle')
+        file_id = ((int(info.nFileIndexHigh) << 32) |
+                   int(info.nFileIndexLow))
+        return info, int(info.dwVolumeSerialNumber), file_id
+
+    def _hash_handle(self, handle):
+        digest = hashlib.sha256()
+        while True:
+            buffer = create_string_buffer(self.HASH_CHUNK)
+            read = DWORD(0)
+            if not windll.kernel32.ReadFile(
+                    handle, buffer, self.HASH_CHUNK, byref(read), None):
+                self._raise_last_error('ReadFile')
+            if read.value == 0:
+                return digest.hexdigest()
+            digest.update(buffer.raw[:read.value])
+
+    def review_rule_file(self, path, expected_sha256):
+        if self._reviewed_handle is not None:
+            raise ValueError('only one reviewed process image is supported')
+        handle = self._create_file(
+            path, self.GENERIC_READ, self.FILE_SHARE_READ)
+        try:
+            info, volume_serial, file_id = self._file_identity(handle)
+            if info.dwFileAttributes & self.FILE_ATTRIBUTE_DIRECTORY:
+                raise ValueError('reviewed process image must be a file')
+            final_path = self._final_path(handle)
+            sha256 = self._hash_handle(handle)
+            if sha256.lower() != str(expected_sha256).lower():
+                raise ValueError('reviewed process image SHA-256 mismatch')
+            from .processredirect import FrozenFileIdentity
+            identity = FrozenFileIdentity(
+                final_path, volume_serial, file_id, sha256.lower())
+        except BaseException:
+            windll.kernel32.CloseHandle(handle)
+            raise
+        self._reviewed_handle = handle
+        return identity
+
+    def get_tcp_owner_rows(self):
+        size = DWORD(0)
+        result = windll.iphlpapi.GetExtendedTcpTable(
+            None, byref(size), False, AF_INET,
+            TCP_TABLE_OWNER_PID_ALL, 0)
+        if result not in (NO_ERROR, ERROR_INSUFFICIENT_BUFFER):
+            raise OSError(result, 'GetExtendedTcpTable sizing failed')
+        size.value = max(size.value, sizeof(DWORD))
+        for unused_attempt in range(3):
+            buffer = create_string_buffer(size.value)
+            result = windll.iphlpapi.GetExtendedTcpTable(
+                buffer, byref(size), False, AF_INET,
+                TCP_TABLE_OWNER_PID_ALL, 0)
+            if result == ERROR_INSUFFICIENT_BUFFER:
+                continue
+            if result != NO_ERROR:
+                raise OSError(result, 'GetExtendedTcpTable failed')
+            count = cast(buffer, POINTER(DWORD)).contents.value
+            required = sizeof(DWORD) + count * sizeof(MIB_TCPROW_OWNER_PID)
+            if required > len(buffer):
+                raise OSError('GetExtendedTcpTable returned a short buffer')
+            rows_type = MIB_TCPROW_OWNER_PID * count
+            rows = rows_type.from_buffer(buffer, sizeof(DWORD))
+            return tuple(TcpOwnerRow(
+                socket.inet_ntoa(struct.pack('<L', item.dwLocalAddr)),
+                socket.ntohs(item.dwLocalPort & 0xffff),
+                socket.inet_ntoa(struct.pack('<L', item.dwRemoteAddr)),
+                socket.ntohs(item.dwRemotePort & 0xffff),
+                int(item.dwState), int(item.dwOwningPid))
+                for item in rows)
+        raise OSError(ERROR_INSUFFICIENT_BUFFER,
+                      'GetExtendedTcpTable buffer kept changing')
+
+    def revalidate_rule_file(self, identity):
+        if self._reviewed_handle is None:
+            return False
+        unused_info, volume_serial, file_id = self._file_identity(
+            self._reviewed_handle)
+        return bool(
+            self._final_path(self._reviewed_handle).lower() ==
+            identity.final_path.lower() and
+            volume_serial == identity.volume_serial and
+            file_id == identity.file_id)
+
+    def _identity_for_image_path(self, path):
+        handle = self._create_file(
+            path, self.FILE_READ_ATTRIBUTES,
+            self.FILE_SHARE_READ | self.FILE_SHARE_WRITE |
+            self.FILE_SHARE_DELETE)
+        try:
+            unused_info, volume_serial, file_id = self._file_identity(handle)
+            return self._final_path(handle), volume_serial, file_id
+        finally:
+            windll.kernel32.CloseHandle(handle)
+
+    def get_process_identity(self, pid):
+        handle = windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            self._raise_last_error('OpenProcess')
+        try:
+            created = FILETIME()
+            exited = FILETIME()
+            kernel = FILETIME()
+            user = FILETIME()
+            if not windll.kernel32.GetProcessTimes(
+                    handle, byref(created), byref(exited),
+                    byref(kernel), byref(user)):
+                self._raise_last_error('GetProcessTimes')
+            size = DWORD(32768)
+            buffer = create_unicode_buffer(size.value)
+            if not windll.kernel32.QueryFullProcessImageNameW(
+                    handle, 0, buffer, byref(size)):
+                self._raise_last_error('QueryFullProcessImageNameW')
+            creation_time = ((int(created.dwHighDateTime) << 32) |
+                             int(created.dwLowDateTime))
+            final_path, volume_serial, file_id = (
+                self._identity_for_image_path(buffer.value))
+            return ProcessOwnerIdentity(
+                int(pid), creation_time, final_path,
+                volume_serial, file_id)
+        finally:
+            windll.kernel32.CloseHandle(handle)
+
+    def find_reviewed_processes(self, reviewed_identity):
+        """Return exact reviewed-image processes visible in a Toolhelp scan."""
+        snapshot = windll.kernel32.CreateToolhelp32Snapshot(
+            self.TH32CS_SNAPPROCESS, 0)
+        if snapshot in (None, 0, self.INVALID_HANDLE_VALUE):
+            self._raise_last_error('CreateToolhelp32Snapshot')
+        matches = []
+        target_name = os.path.normcase(os.path.basename(
+            reviewed_identity.final_path))
+        try:
+            entry = PROCESSENTRY32W()
+            entry.dwSize = sizeof(PROCESSENTRY32W)
+            more = windll.kernel32.Process32FirstW(snapshot, byref(entry))
+            if not more:
+                self._raise_last_error('Process32FirstW')
+            while more:
+                if (entry.th32ProcessID and
+                        os.path.normcase(str(entry.szExeFile)) == target_name):
+                    identity = self.get_process_identity(
+                        int(entry.th32ProcessID))
+                    if StrictTcpOwnerResolver._same_file_identity(
+                            identity, reviewed_identity):
+                        matches.append(identity)
+                entry.dwSize = sizeof(PROCESSENTRY32W)
+                more = windll.kernel32.Process32NextW(
+                    snapshot, byref(entry))
+            return tuple(matches)
+        finally:
+            windll.kernel32.CloseHandle(snapshot)
+
+    def close(self):
+        if self._reviewed_handle is not None:
+            windll.kernel32.CloseHandle(self._reviewed_handle)
+            self._reviewed_handle = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 ##############################################################################
 # GetExtendedUdpTable constants and structures
@@ -908,13 +1369,14 @@ class WinUtilMixin(diverterbase.DiverterPerOSDelegate):
                 PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if hProcess:
 
-                lpImageFileName = create_string_buffer(MAX_PATH)
+                lpImageFileName = create_unicode_buffer(MAX_PATH)
 
-                if windll.psapi.GetProcessImageFileNameA(hProcess, lpImageFileName, MAX_PATH) > 0:
+                if windll.psapi.GetProcessImageFileNameW(
+                        hProcess, lpImageFileName, MAX_PATH) > 0:
                     # https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/3f6cc0e2-1303-4088-a26b-fb9582f29197
-                    process_name = os.path.basename(lpImageFileName.value.decode("utf-8"))
+                    process_name = os.path.basename(lpImageFileName.value)
                 else:
-                    self.logger.error('Failed to call GetProcessImageFileNameA, %d' %
+                    self.logger.error('Failed to call GetProcessImageFileNameW, %d' %
                                       (ctypes.GetLastError()))
 
                 windll.kernel32.CloseHandle(hProcess)
@@ -930,8 +1392,8 @@ class WinUtilMixin(diverterbase.DiverterPerOSDelegate):
         available for the Windows Diverter to NULL LastError before invoking
         handle.send().
 
-        This was discovered in cases where GetProcessImageFileNameA() was
-        called on PID 4 (System): GetProcessImageFileNameA returned an error
+        This was discovered in cases where GetProcessImageFileNameW() was
+        called on PID 4 (System): GetProcessImageFileNameW returned an error
         value, and GetLastError() returned 87. Reliably when this happened,
         handle.send(wdpkt) raised an exception that, when printed as a string,
         read as follows:
@@ -1377,7 +1839,7 @@ def test_registry_nameserver():
     self = Test()
 
     key = HKEY_LOCAL_MACHINE
-    sub_key = 'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{cd17d5b5-bf83-44f5-8de7-d988e3db5451}'
+    sub_key = r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{cd17d5b5-bf83-44f5-8de7-d988e3db5451}'
     value = 'NameServer'
     data = '127.0.0.1'
 
@@ -1406,7 +1868,7 @@ def test_registry_gateway():
     self = Test()
 
     key = HKEY_LOCAL_MACHINE
-    sub_key = 'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{cd17d5b5-bf83-44f5-8de7-d988e3db5451}'
+    sub_key = r'SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{cd17d5b5-bf83-44f5-8de7-d988e3db5451}'
     #value = 'NameServer'
     #data = '127.0.0.1'
 

@@ -130,6 +130,60 @@ and PCAPNG without compression. For interactive use, double-click
 `Start-ReviewedIPv4.cmd`; Ctrl+C or Enter performs the controlled stop and log
 drain.
 
+Windows process-specific transparent IPv4 redirection
+======================================================
+
+`ExternalProcessRedirectEnabled` is an opt-in Windows-only extension of
+`DomainAllowList`. One exact executable (absolute final path, SHA-256, volume
+serial and file ID) may open TCP connections to one reviewed public IPv4 `A`;
+FakeNet changes only the packet-layer destination to one reviewed on-link
+RFC1918 IPv4 `B`. The destination port is preserved, so the rule covers every
+TCP port. This deliberately exposes every contacted port on `B`; FakeNet does
+not restrict, start, or manage the service listening there. UDP, IPv6, port
+translation, multiple rules, basename matching and child-process inheritance
+are not implemented.
+
+New `A` SYNs are authorized through a complete Windows TCP-owner tuple and a
+second process-identity check. Unknown, ambiguous, over-budget, stale-route,
+fragmented or capacity-exhausted flows are dropped and never fall back to real
+`A`. A uniquely resolved non-target process continues through the pre-existing
+policy chain; that compatibility path is not authorization to `B`. The
+process-redirection engine can suspend independently without disabling the
+approved DeepSeek domain relay, takeover, or reviewed-IP mechanisms.
+
+The built-in PCAP is a policy-observation record: a forward packet can appear
+once as `dst=A` and once as `dst=B`, and a return packet can appear as `src=B`
+then `src=A`. Raw-IP and converted Ethernet PCAP records remain paired, but
+record counts are not wire packet counts. Only the VM runner's independent
+pktmon capture establishes that the wire saw `B`, did not see `A`, and did not
+loop after WinDivert reinjection.
+
+**Known limitation (bundled WinDivert 1.3):** a small number of late,
+OS-generated teardown packets (FIN/RST) for already-closed redirected
+connections are not captured at the WinDivert network layer, so they are not
+rewritten and can appear on the wire toward `A`. These are payload-free
+signaling packets; all connection data is redirected correctly (owner-gate
+10,000/10,000 validated). Under the strict wire-side `A`-absent acceptance gate
+this surfaces as a handful of teardown-only packets. This is a WinDivert 1.3
+capture limitation, not a diverter defect — the diverter never receives these
+packets (verified). Accepted as known; see PLAN §24.29.
+
+The source template `fakenet/configs/process_redirect_windows.ini` intentionally
+contains unresolved reviewed markers. It is not a general interactive sample
+selector. A delivery builder must bind one target PE, its hash, `A`, `B`, the
+sentinel protocol/port and every packaged file into a versioned manifest. The
+VM acceptance script is required to run without prompts and must stop before
+opening WinDivert if the B sentinel, A/B route identity, manifest, target image,
+WinDivert baseline or pre-start quiescence check fails. Linux rejects an enabled
+process-redirection setting; Linux implementation remains a separate TODO.
+
+For the reviewed VM acceptance profile only, the host-side `FNPR/1` nonce
+sentinel can be started by double-clicking `Start-FNPR-Sentinel.cmd`. It binds
+only `192.168.204.1:443`, accepts the bounded `FNPR/1|nonce|role` test line,
+and writes plain logs under `dist\Logs`. Ctrl+C stops it. This auxiliary tool
+does not change firewall, adapter or route settings, is not started by FakeNet,
+and is not required by the production redirection protocol after acceptance.
+
 Installation
 ============
 

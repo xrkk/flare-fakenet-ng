@@ -18,6 +18,8 @@ import threading
 import time
 from types import MappingProxyType
 
+from .processredirect import parse_process_redirect_rule
+
 
 class PolicyConfigError(ValueError):
     pass
@@ -380,7 +382,7 @@ class EgressPolicy(object):
     RELAY_TOMBSTONE_SECONDS = 120
 
     def __init__(self, config, local_ipv4, local_ipv6, external_dns_server,
-                 clock=None):
+                 clock=None, process_rule_reviewer=None, platform_name=None):
         self._clock = clock or time.monotonic
         self._lock = threading.RLock()
         self._generation = 0
@@ -509,6 +511,16 @@ class EgressPolicy(object):
         self.reviewed_ipv4_enabled = bool(self.reviewed_ipv4_rules)
         self._reviewed_routes_activated = False
         self._reviewed_route_bindings = MappingProxyType({})
+
+        try:
+            self.process_redirect_rule = parse_process_redirect_rule(
+                config, self.local_ipv4, self.external_dns_server,
+                self.takeover_ipv4,
+                (rule.ipv4 for rule in self.reviewed_ipv4_rules),
+                process_rule_reviewer, platform_name)
+        except ValueError as exc:
+            raise PolicyConfigError(str(exc)) from exc
+        self.process_redirect_enabled = self.process_redirect_rule is not None
 
         self._leases = {domain: {} for domain in self.allowed_domains}
         self._aliases = {}

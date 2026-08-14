@@ -44,6 +44,11 @@ class Diverter(DiverterBase, LinUtilMixin):
                 'ExternalAllowedIPv4Rules is supported only by the Windows '
                 'Diverter; Linux refused the configuration before changing '
                 'network state')
+        if self.is_set('ExternalProcessRedirectEnabled'):
+            raise ValueError(
+                'ExternalProcessRedirectEnabled is supported only by the '
+                'Windows Diverter; Linux refused the configuration before '
+                'changing network state')
 
         self.init_linux_mixin()
         self.init_diverter_linux()

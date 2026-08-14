@@ -94,3 +94,10 @@ ENV/
 
 # PyCharm
 .idea/
+
+**/.tmp*
+**/.temp*
+**/dist
+dist/*
+dist
+**/.omo*

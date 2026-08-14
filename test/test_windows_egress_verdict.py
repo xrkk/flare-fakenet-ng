@@ -784,6 +784,38 @@ class WindowsVerdictTests(unittest.TestCase):
         self.assertTrue(observed['process'].go_seen)
         self.assertEqual(2, observed['process'].timeout)
 
+    def test_process_redirect_route_query_has_low_memory_vm_budget(self):
+        diverter = Diverter.__new__(Diverter)
+        observed = {}
+
+        class ReadyProcess(object):
+            returncode = 0
+
+            def __init__(self, args, **kwargs):
+                observed['process'] = self
+                observed['args'] = args
+                self.timeout = None
+
+            def poll(self):
+                ready = pathlib.Path(
+                    observed['args'][observed['args'].index('-ReadyFile') + 1])
+                ready.write_text('ready', encoding='ascii')
+                return None
+
+            def communicate(self, timeout=None):
+                self.timeout = timeout
+                return '[]', ''
+
+            def kill(self):
+                observed['killed'] = True
+
+        with mock.patch('fakenet.diverters.windows.subprocess.Popen',
+                        side_effect=ReadyProcess):
+            diverter._run_process_redirect_route_checker(
+                ['93.184.216.34', '192.168.204.1'])
+
+        self.assertEqual(10, observed['process'].timeout)
+
     def test_reviewed_public_route_accepts_default_and_gateway_paths(self):
         diverter = Diverter.__new__(Diverter)
         diverter.egress_policy = ReviewedRoutePolicy()
