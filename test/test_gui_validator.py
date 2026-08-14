@@ -384,6 +384,12 @@ def test_missing_path_warning_only():
     assert not by_key(errors(model), 'Webroot')
 
 
+def test_dump_packets_without_prefix_warning():
+    model = build()
+    model.diverter().delete('DumpPacketsFilePrefix')
+    assert any('未设置前缀' in i.message for i in warnings(model))
+
+
 # -- custom response file --------------------------------------------------------
 
 def test_custom_response_validation():

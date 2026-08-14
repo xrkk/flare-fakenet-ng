@@ -477,7 +477,8 @@ class FakenetConfigApp(object):
             self._schedule_validate()
 
     def _listener_add(self):
-        name = self._prompt_name('新增监听器段', 'NewListener')
+        name, listener_class = self._prompt_listener_section('新增监听器段',
+                                                             'NewListener')
         if not name:
             return
         sec = self.model.ensure_section(name)
@@ -485,10 +486,52 @@ class FakenetConfigApp(object):
         sec.set('Port', '8080')
         sec.set('Protocol', 'TCP')
         sec.set('Hidden', 'False')
+        if listener_class:
+            sec.set('Listener', listener_class)
         self._selected_listener = name
         self._mark_dirty()
         self._refresh_listener_list()
         self._schedule_validate()
+
+    def _prompt_listener_section(self, title, default):
+        """Name prompt with the 10-class type dropdown (plan §5.4)."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.transient(self.root)
+        ttk.Label(dialog, text='段名:').grid(row=0, column=0, padx=8,
+                                             pady=(8, 2), sticky='e')
+        name_var = tk.StringVar(value=default)
+        entry = ttk.Entry(dialog, textvariable=name_var, width=32)
+        entry.grid(row=0, column=1, padx=8, pady=(8, 2))
+        ttk.Label(dialog, text='监听器类型:').grid(row=1, column=0, padx=8,
+                                                   pady=2, sticky='e')
+        type_var = tk.StringVar(value='')
+        type_box = ttk.Combobox(
+            dialog, textvariable=type_var, state='readonly', width=30,
+            values=['(匿名:仅重定向)'] + list(schema.LISTENER_CLASSES))
+        type_box.current(0)
+        type_box.grid(row=1, column=1, padx=8, pady=2)
+        result = []
+
+        def confirm():
+            result.append((name_var.get().strip(),
+                           '' if type_box.current() == 0
+                           else type_var.get()))
+            dialog.destroy()
+
+        ttk.Button(dialog, text='确定', command=confirm)\
+            .grid(row=2, column=0, columnspan=2, pady=8)
+        entry.bind('<Return>', lambda _e: confirm())
+        entry.focus_set()
+        dialog.wait_window()
+        if not result:
+            return '', ''
+        name, listener_class = result[0]
+        if not name or name.lower() in ('fakenet', 'diverter'):
+            if name:
+                messagebox.showerror(title, '段名不能为 FakeNet/Diverter')
+            return '', ''
+        return name, listener_class
 
     def _listener_duplicate(self):
         if not self._selected_listener:

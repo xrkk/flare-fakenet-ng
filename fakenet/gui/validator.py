@@ -683,6 +683,13 @@ def _check_values(model, issues):
             '文件带 UTF-8 BOM:中文系统上 fakenet 以 GBK 读取时 BOM 会混入'
             '首段名导致解析错乱'))
 
+    diverter = model.diverter()
+    if _is_yes(diverter.get('DumpPackets')) and not \
+            (diverter.get('DumpPacketsFilePrefix') or '').strip():
+        issues.append(Issue(
+            WARNING, 'Diverter', 'DumpPacketsFilePrefix',
+            'DumpPackets 开启但未设置前缀,运行时将使用默认值 packets'))
+
     for sec in model.listener_sections():
         for key in ('Webroot', 'FTProot', 'TFTPRoot', 'Custom', 'CA_Cert',
                     'CA_Key'):
