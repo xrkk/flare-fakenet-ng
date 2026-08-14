@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""fakenet-config main window (plan v0.2 §5.4).
+"""fakenet-GUI main window (plan v0.2 §5.4).
 
 Chinese UI.  Tabs: 全局 ([FakeNet] + [Diverter] base groups), 出站策略
 (egress sub-groups with smart locking and topology auto-fix), 监听器
@@ -11,6 +11,7 @@ fail-closed on inconclusive VM state.
 
 import os
 import sys
+import textwrap
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -158,17 +159,57 @@ class FakenetConfigApp(object):
         self.save_button = ttk.Button(bottom, text='保存配置',
                                       command=self.save)
         self.save_button.pack(side='right', padx=6)
-        self.panel = ttk.Treeview(bottom, height=7,
+
+        panel_header = ttk.Frame(bottom)
+        panel_header.pack(side='bottom', fill='x')
+        ttk.Label(panel_header,
+                  text='校验结果(双击跳转 · 右键/Ctrl+C 复制 · 消息列可横向滚动)',
+                  foreground='#555').pack(side='left')
+        self.copy_all_button = ttk.Button(panel_header, text='复制全部',
+                                          width=10,
+                                          command=self._copy_all_issues)
+        self.copy_all_button.pack(side='right')
+        self.copy_selected_button = ttk.Button(panel_header, text='复制选中',
+                                               width=10,
+                                               command=self.
+                                               _copy_selected_issues)
+        self.copy_selected_button.pack(side='right', padx=4)
+
+        panel_frame = ttk.Frame(bottom)
+        panel_frame.pack(side='bottom', fill='x')
+        self.panel = ttk.Treeview(panel_frame, height=8,
                                   columns=('level', 'loc', 'msg'),
-                                  show='headings')
+                                  show='headings',
+                                  selectmode='extended')
         self.panel.heading('level', text='级别')
         self.panel.heading('loc', text='位置')
         self.panel.heading('msg', text='消息')
-        self.panel.column('level', width=48, stretch=False)
-        self.panel.column('loc', width=220, stretch=False)
-        self.panel.column('msg', width=520)
-        self.panel.pack(side='bottom', fill='x')
+        self.panel.column('level', width=48, minwidth=48, stretch=False)
+        self.panel.column('loc', width=240, minwidth=240, stretch=False)
+        # Full text stays intact in the item values; the wide minwidth +
+        # horizontal scrollbar make it reachable instead of clipped.
+        self.panel.column('msg', width=680, minwidth=1600, stretch=True)
+        xbar = ttk.Scrollbar(panel_frame, orient='horizontal',
+                             command=self.panel.xview)
+        ybar = ttk.Scrollbar(panel_frame, orient='vertical',
+                             command=self.panel.yview)
+        self.panel.configure(xscrollcommand=xbar.set,
+                             yscrollcommand=ybar.set)
+        ybar.pack(side='right', fill='y')
+        self.panel.pack(side='top', fill='x')
+        xbar.pack(side='bottom', fill='x')
         self.panel.bind('<Double-1>', self._jump_to_issue)
+        self.panel.bind('<Button-3>', self._panel_popup)
+        self.panel.bind('<Control-c>', self._copy_selected_and_break)
+
+        self._panel_menu = tk.Menu(self.root, tearoff=0)
+        self._panel_menu.add_command(label='复制选中行 (Ctrl+C)',
+                                     command=self._copy_selected_issues)
+        self._panel_menu.add_command(label='复制全部',
+                                     command=self._copy_all_issues)
+        self._panel_menu.add_separator()
+        self._panel_menu.add_command(label='查看完整消息…',
+                                     command=self._show_full_issue)
 
     # ------------------------------------------------------------------
     # tab builders
@@ -829,7 +870,7 @@ class FakenetConfigApp(object):
         for directory in candidates:
             if os.path.isdir(directory):
                 try:
-                    probe = os.path.join(directory, '.fakenet-config-probe')
+                    probe = os.path.join(directory, '.fakenet-GUI-probe')
                     with open(probe, 'w') as handle:
                         handle.write('x')
                     os.remove(probe)
@@ -974,6 +1015,63 @@ class FakenetConfigApp(object):
             widget.input.focus_set()
         except tk.TclError:
             pass
+
+    # -- validation panel copy / full-text support ---------------------------
+
+    def _panel_popup(self, event):
+        iid = self.panel.identify_row(event.y)
+        if iid and iid not in self.panel.selection():
+            self.panel.selection_set(iid)
+        try:
+            self._panel_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._panel_menu.grab_release()
+
+    def _copy_selected_and_break(self, _event=None):
+        self._copy_selected_issues()
+        return 'break'
+
+    @staticmethod
+    def _row_text(values):
+        # Treeview values hold the FULL message; copying never truncates.
+        parts = [str(item) for item in (list(values) + ['', '', ''])[:3]]
+        return '\t'.join(parts)
+
+    def _copy_to_clipboard(self, text):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self._hint('已复制 %d 个字符到剪贴板' % len(text))
+
+    def _copy_selected_issues(self):
+        rows = [self.panel.item(iid)['values']
+                for iid in self.panel.selection()]
+        if not rows:
+            self._hint('请先选中要复制的行(可按住 Ctrl 多选)')
+            return
+        self._copy_to_clipboard(
+            '\n'.join(self._row_text(row) for row in rows))
+
+    def _copy_all_issues(self):
+        rows = [self.panel.item(iid)['values']
+                for iid in self.panel.get_children()]
+        if not rows:
+            self._hint('当前没有校验结果')
+            return
+        self._copy_to_clipboard(
+            '\n'.join(self._row_text(row) for row in rows))
+
+    def _show_full_issue(self):
+        rows = [self.panel.item(iid)['values']
+                for iid in self.panel.selection()]
+        if not rows:
+            self._hint('请先选中要查看的行')
+            return
+        blocks = []
+        for values in rows:
+            level, location = str(values[0]), str(values[1])
+            message = textwrap.fill(str(values[2]), width=76)
+            blocks.append('%s  %s\n%s' % (level, location, message))
+        messagebox.showinfo('完整消息', '\n\n'.join(blocks), parent=self.root)
 
     def _tab_of(self, widget):
         owner = widget.winfo_parent()
