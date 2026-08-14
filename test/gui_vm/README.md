@@ -5,8 +5,9 @@
 ## 用法
 
 1. 在**隔离分析 VM** 内放置(任一布局):
-   - `fakenet-config.exe`、`fakenet.exe`(release zip 布局,与本目录同处),或
+   - VM 验收包(`Windows-GUI配置工具-VM验收-v*.zip`,已含 `fakenet.exe`/`fakenet-config.exe` 于包根),或
    - 仓库检出 + 已 `pip install .`(GUI 以 `python -m` 运行;A6–A8 需要 `fakenet.exe`,建议放到本目录/仓库根/`dist\`)。
+   - **验收驱动脚本本身需要 VM 内有 Python ≥3.8(仅标准库依赖;两个 exe 已自带各自运行时)。**
 2. 双击 `Run-Tests.cmd`。**仅开头一次 UAC 同意**,之后全程免操作;脚本自提权后,对 fakenet 的提权启动不再弹窗。
 3. 结果:控制台汇总 + `Logs\<时间戳>\results.tsv`(及 fakenet 运行日志)。
 
