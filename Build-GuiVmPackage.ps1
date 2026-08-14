@@ -9,6 +9,11 @@ param(
 # Layout inside the versioned ZIP:
 #   <pkg>\fakenet.exe            - built from the staged source (A6-A8)
 #   <pkg>\fakenet-config.exe     - built from the staged source (A9)
+#   <pkg>\configs|defaultFiles|listeners\ssl_utils
+#                               - flattened release layout beside the exes
+#                                 (mirrors build.yaml) so double-clicking
+#                                 fakenet.exe finds configs\default.ini and
+#                                 the frozen GUI template menu is populated
 #   <pkg>\test\gui_vm\...        - Run-Tests.cmd one-click acceptance
 #   <pkg>\<full source tree>     - transparency + python fallback
 #
@@ -17,7 +22,7 @@ param(
 # SHA-256, no Logs directory, no .sha256 sidecar.
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v1'
+$packageVersion = 'v2'
 $packageName = "Windows-GUI配置工具-VM验收-$packageVersion"
 $fixedTimestamp = [DateTimeOffset]::new(
     [DateTime]::SpecifyKind([DateTime]'2000-01-01T00:00:00',
@@ -118,6 +123,28 @@ try {
     $collectDir = Join-Path $stage 'fakenet-dat'
     if (Test-Path -LiteralPath $collectDir) {
         Remove-Item -LiteralPath $collectDir -Recurse -Force
+    }
+
+    # Flatten the official release layout next to the exes (mirrors
+    # build.yaml) so double-clicking fakenet.exe finds configs\default.ini
+    # exactly like the CI release zip, and the frozen GUI's template menu
+    # (exe_dir\configs) is populated.
+    foreach ($item in @('configs','defaultFiles')) {
+        Copy-Item -LiteralPath (Join-Path $stage ('fakenet\'+$item)) `
+            -Destination (Join-Path $stage $item) -Recurse
+    }
+    New-Item -ItemType Directory -Path (Join-Path $stage 'listeners') -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $stage 'fakenet\listeners\ssl_utils') `
+        -Destination (Join-Path $stage 'listeners\ssl_utils') -Recurse
+    Get-ChildItem -LiteralPath (Join-Path $stage 'listeners') -Filter '__pycache__' `
+        -Directory -Recurse | Remove-Item -Recurse -Force
+    foreach ($probe in @(
+            (Join-Path $stage 'configs\default.ini'),
+            (Join-Path $stage 'defaultFiles'),
+            (Join-Path $stage 'listeners\ssl_utils\privkey.pem'))) {
+        if (-not (Test-Path -LiteralPath $probe)) {
+            throw ('Release layout incomplete at: ' + $probe)
+        }
     }
 
     # Syntax gates on the acceptance payload before it ships.
