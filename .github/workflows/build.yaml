@@ -36,11 +36,23 @@ jobs:
         run: py -3.10 -m pip install .
       - name: Build executable using PyInstaller
         run: py -3.10 -m PyInstaller fakenet.spec
+      # GUI configuration editor. Isolation (plan v0.2 §5.6/B2+P10): a
+      # failure here must NOT block the fakenet.zip release; the staging
+      # step below detects absence and warns instead of failing.
+      - name: Build GUI executable using PyInstaller
+        id: gui_build
+        run: py -3.10 -m PyInstaller fakenet-config.spec
+        continue-on-error: true
       - name: Create release
         run: |
           # Create release directory and copy required files to it
           New-Item -ItemType Directory -Path $env:ReleaseDir
           Copy-Item "dist\fakenet.exe" -Destination "$env:ReleaseDir\fakenet.exe"
+          if (Test-Path "dist\fakenet-config.exe") {
+            Copy-Item "dist\fakenet-config.exe" -Destination "$env:ReleaseDir\fakenet-config.exe"
+          } else {
+            Write-Warning "fakenet-config.exe missing: GUI build failed or skipped; shipping zip without it."
+          }
           @("LICENSE.txt", "CHANGELOG.txt", "README.md") | ForEach-Object { Copy-Item $_ -Destination $env:ReleaseDir }
           New-Item -ItemType Directory -Path "$env:ReleaseDir\docs"
           @("contributors.md", "CustomResponse.md") | ForEach-Object { Copy-Item "docs\$_" -Destination "$env:ReleaseDir\docs\$_" }

@@ -38,11 +38,16 @@ setup(
     package_data={'fakenet': ['*.pem','diverters/*.py', 'listeners/*.py',
         'listeners/ssl_utils/*.py', 'listeners/ssl_utils/*.pem', 'configs/*.ini',
         'configs/html_report_template.html', 'defaultFiles/*', 'lib/64/*', 'lib/32/*',
-        'configs/*.crt', 'configs/*.key']},
+        'configs/*.crt', 'configs/*.key', 'gui/*.py']},
     entry_points={
         "console_scripts": [
             "fakenet=fakenet.fakenet:main",
-        ]
+        ],
+        # Windowed entry (pythonw wrapper on Windows); the GUI itself is
+        # pure standard library (tkinter + ctypes + subprocess).
+        "gui_scripts": [
+            "fakenet-config=fakenet.gui.main:main",
+        ],
     },
     include_package_data=True,
     install_requires=requirements,

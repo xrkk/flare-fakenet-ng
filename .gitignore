@@ -32,6 +32,9 @@ var/
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+# Project-owned PyInstaller specs stay tracked (fakenet.spec was tracked before this rule)
+!fakenet.spec
+!fakenet-config.spec
 
 # Installer logs
 pip-log.txt
@@ -101,3 +104,7 @@ ENV/
 dist/*
 dist
 **/.omo*
+
+# fakenet-config local build smoke artifacts (plan 2026.08.14)
+build_gui_dist/
+build_gui_work/
