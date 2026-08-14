@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# fakenet-config GUI spec (plan v0.2 §5.6).
+# fakenet-GUI spec (plan v0.2 §5.6).
 #
 # Differences from fakenet.spec:
 # - tkinter is KEPT (no TOC subtraction - that old syntax is gone in
@@ -34,7 +34,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='fakenet-config',
+    name='fakenet-GUI',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

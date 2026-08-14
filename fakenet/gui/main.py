@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""fakenet-config entry point (plan v0.2 §4/§5.4)."""
+"""fakenet-GUI entry point (plan v0.2 §4/§5.4)."""
 
 import sys
 
@@ -22,7 +22,7 @@ def main():
         from tkinter import messagebox
     except ImportError:
         sys.stderr.write(
-            'fakenet-config 需要 tkinter(当前 Python 未包含)。\n'
+            'fakenet-GUI 需要 tkinter(当前 Python 未包含)。\n'
             'Windows: 勾选 tcl/tk 组件重装 Python;Linux: 安装 '
             'python3-tk 包。\n')
         return 1
@@ -35,7 +35,7 @@ def main():
     except Exception as exc:  # noqa: BLE001 - fatal dialog, then exit
         try:
             root.withdraw()
-            messagebox.showerror('fakenet-config 启动失败', str(exc))
+            messagebox.showerror('fakenet-GUI 启动失败', str(exc))
         finally:
             root.destroy()
         raise

@@ -8,7 +8,7 @@ param(
 #
 # Layout inside the versioned ZIP:
 #   <pkg>\fakenet.exe            - built from the staged source (A6-A8)
-#   <pkg>\fakenet-config.exe     - built from the staged source (A9)
+#   <pkg>\fakenet-GUI.exe     - built from the staged source (A9)
 #   <pkg>\configs|defaultFiles|listeners\ssl_utils
 #                               - flattened release layout beside the exes
 #                                 (mirrors build.yaml) so double-clicking
@@ -22,7 +22,7 @@ param(
 # SHA-256, no Logs directory, no .sha256 sidecar.
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v2'
+$packageVersion = 'v3'
 $packageName = "Windows-GUI配置工具-VM验收-$packageVersion"
 $fixedTimestamp = [DateTimeOffset]::new(
     [DateTime]::SpecifyKind([DateTime]'2000-01-01T00:00:00',
@@ -111,9 +111,9 @@ try {
     $pythonVersion = ((& python -c 'import platform;print(platform.python_version())') 2>&1).ToString().Trim()
     $pyinstallerVersion = ((& python -m PyInstaller --version) 2>&1).ToString().Trim()
     Invoke-PyInstaller $stage 'fakenet.spec' $stage (Join-Path $buildRoot 'work-fakenet')
-    Invoke-PyInstaller $stage 'fakenet-config.spec' $stage (Join-Path $buildRoot 'work-gui')
+    Invoke-PyInstaller $stage 'fakenet-GUI.spec' $stage (Join-Path $buildRoot 'work-gui')
     $fakenetExe = Join-Path $stage 'fakenet.exe'
-    $guiExe = Join-Path $stage 'fakenet-config.exe'
+    $guiExe = Join-Path $stage 'fakenet-GUI.exe'
     foreach ($binary in @($fakenetExe,$guiExe)) {
         if (-not (Test-Path -LiteralPath $binary)) {
             throw ('Expected build output missing: ' + $binary)
@@ -180,7 +180,7 @@ try {
         python_version=$pythonVersion
         pyinstaller_version=$pyinstallerVersion
         fakenet_exe_sha256=$fakenetHash
-        fakenet_config_exe_sha256=$guiHash
+        fakenet_gui_exe_sha256=$guiHash
         acceptance_entry='test/gui_vm/Run-Tests.cmd'
         evidence_levels='results.tsv 标注 实测/等效'
         logs_plaintext=$true
@@ -195,7 +195,7 @@ try {
     Write-Host ('Package: ' + $zipPath)
     Write-Host ('Source commit: ' + $resolvedCommit)
     Write-Host ('fakenet.exe sha256: ' + $fakenetHash)
-    Write-Host ('fakenet-config.exe sha256: ' + $guiHash)
+    Write-Host ('fakenet-GUI.exe sha256: ' + $guiHash)
     Write-Host 'No Logs directory and no .sha256 sidecar were generated.'
 } finally {
     if (Test-Path -LiteralPath $buildRoot) {

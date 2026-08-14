@@ -46,7 +46,7 @@ setup(
         # Windowed entry (pythonw wrapper on Windows); the GUI itself is
         # pure standard library (tkinter + ctypes + subprocess).
         "gui_scripts": [
-            "fakenet-config=fakenet.gui.main:main",
+            "fakenet-gui=fakenet.gui.main:main",
         ],
     },
     include_package_data=True,

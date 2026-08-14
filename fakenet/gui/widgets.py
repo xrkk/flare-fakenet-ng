@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Field widgets for the fakenet-config GUI (plan v0.2 §5.1/§5.4).
+"""Field widgets for the fakenet-GUI GUI (plan v0.2 §5.1/§5.4).
 
 One FieldWidget per schema.Field: label, type-specific input, lock badge,
 focus-driven hint callback.  Locked widgets render read-only with a

@@ -1,2 +1,2 @@
 # -*- coding: utf-8 -*-
-"""fakenet-config GUI package (plan v0.2)."""
+"""fakenet-GUI package (plan v0.2)."""

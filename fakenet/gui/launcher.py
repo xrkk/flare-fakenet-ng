@@ -128,12 +128,12 @@ def validate_config_path(path):
 
 
 # ---------------------------------------------------------------------------
-# Persisted settings (P11: %APPDATA%\fakenet-config\settings.json)
+# Persisted settings (P11: %APPDATA%\fakenet-gui\settings.json)
 # ---------------------------------------------------------------------------
 
 def settings_dir(base=None):
     base = base or os.environ.get('APPDATA') or os.path.expanduser('~')
-    return os.path.join(base, 'fakenet-config')
+    return os.path.join(base, 'fakenet-gui')
 
 
 def load_settings(base=None):

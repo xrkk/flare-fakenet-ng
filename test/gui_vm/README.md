@@ -5,7 +5,7 @@
 ## 用法
 
 1. 在**隔离分析 VM** 内放置(任一布局):
-   - VM 验收包(`Windows-GUI配置工具-VM验收-v*.zip`,已含 `fakenet.exe`/`fakenet-config.exe` 于包根),或
+   - VM 验收包(`Windows-GUI配置工具-VM验收-v*.zip`,已含 `fakenet.exe`/`fakenet-GUI.exe` 于包根),或
    - 仓库检出 + 已 `pip install .`(GUI 以 `python -m` 运行;A6–A8 需要 `fakenet.exe`,建议放到本目录/仓库根/`dist\`)。
    - **验收驱动脚本本身需要 VM 内有 Python ≥3.8(仅标准库依赖;两个 exe 已自带各自运行时)。**
 2. 双击 `Run-Tests.cmd`。**仅开头一次 UAC 同意**,之后全程免操作;脚本自提权后,对 fakenet 的提权启动不再弹窗。
@@ -26,7 +26,7 @@
 | A6 | 提权启动真实 fakenet.exe(最小非侵入配置:不劫持流量、不抓包)+ 日志落盘 | 实测 |
 | A7 | 双实例门(真实实例运行中被检出) | 实测 |
 | A8 | `-f` 停止旗标优雅退出 | 实测 |
-| A9 | fakenet-config GUI 启动冒烟(存活 ≥6 秒;窗口会短暂出现,无需操作) | 实测 |
+| A9 | fakenet-GUI GUI 启动冒烟(存活 ≥6 秒;窗口会短暂出现,无需操作) | 实测 |
 
 A6–A8 依赖 `fakenet.exe` 镜像名做生命周期断言;缺失时明确 SKIP 并在结果中说明放置方式(dev 模式的 python.exe 无独立镜像名,不做脆弱断言)。
 

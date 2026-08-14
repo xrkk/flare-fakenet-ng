@@ -41,17 +41,17 @@ jobs:
       # step below detects absence and warns instead of failing.
       - name: Build GUI executable using PyInstaller
         id: gui_build
-        run: py -3.10 -m PyInstaller fakenet-config.spec
+        run: py -3.10 -m PyInstaller fakenet-gui.spec
         continue-on-error: true
       - name: Create release
         run: |
           # Create release directory and copy required files to it
           New-Item -ItemType Directory -Path $env:ReleaseDir
           Copy-Item "dist\fakenet.exe" -Destination "$env:ReleaseDir\fakenet.exe"
-          if (Test-Path "dist\fakenet-config.exe") {
-            Copy-Item "dist\fakenet-config.exe" -Destination "$env:ReleaseDir\fakenet-config.exe"
+          if (Test-Path "dist\fakenet-GUI.exe") {
+            Copy-Item "dist\fakenet-GUI.exe" -Destination "$env:ReleaseDir\fakenet-GUI.exe"
           } else {
-            Write-Warning "fakenet-config.exe missing: GUI build failed or skipped; shipping zip without it."
+            Write-Warning "fakenet-GUI.exe missing: GUI build failed or skipped; shipping zip without it."
           }
           @("LICENSE.txt", "CHANGELOG.txt", "README.md") | ForEach-Object { Copy-Item $_ -Destination $env:ReleaseDir }
           New-Item -ItemType Directory -Path "$env:ReleaseDir\docs"

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Declarative field catalog for the fakenet-config GUI.
+"""Declarative field catalog for the fakenet-GUI GUI.
 
 Pure data module: no tkinter and no fakenet core imports (plan v0.2 §4).
 Constraint values are anchored to source code and re-verified by

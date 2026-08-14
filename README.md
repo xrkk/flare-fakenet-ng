@@ -515,10 +515,10 @@ The UI also includes various interactive features:
 
  * Go To Top Button: Appears when the page's content exceeds the viewable area. Clicking this button takes you to the top of the page, where you can access important buttons like `Copy Selected NBIs`,` Copy All NBIs`, `Copy Filtered NBIs`, and the search bar.
 
-GUI Configuration Tool (fakenet-config)
+GUI Configuration Tool (fakenet-GUI)
 ----------------------------------------
 
-`fakenet-config` is a windowed configuration editor for FakeNet-NG (this
+`fakenet-GUI` is a windowed configuration editor for FakeNet-NG (this
 fork). It visually edits the full configuration surface — the original
 options plus every `External*` egress feature (domain allow-list, private
 domain takeover, reviewed public IPv4 egress, dual PCAP, per-process
@@ -527,10 +527,10 @@ constraints the code enforces, and launches FakeNet-NG directly.
 
 Running it:
 
- * Stand-alone: put `fakenet-config.exe` next to `fakenet.exe` (the
+ * Stand-alone: put `fakenet-GUI.exe` next to `fakenet.exe` (the
    release ZIP ships them together) and double-click it. The tool runs
    unelevated; it raises the UAC prompt itself when launching fakenet.
- * Installed: `python -m pip install .` then run the `fakenet-config`
+ * Installed: `python -m pip install .` then run the `fakenet-GUI`
    entry point (requires a Python with tkinter).
  * From source: `python -m fakenet.gui.main`.
 

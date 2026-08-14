@@ -240,7 +240,7 @@ def main():
                            capture_output=True)
 
     # -- A9 GUI launch smoke ----------------------------------------------------
-    gui_exe = find_file('fakenet-config.exe')
+    gui_exe = find_file('fakenet-GUI.exe')
     if gui_exe:
         gui_cmd = [gui_exe]
         gui_mode = 'exe'
