@@ -127,3 +127,13 @@ def test_build_commands_reject_bad_paths():
 def test_manual_command_hint_module_form():
     hint = launcher.manual_command_hint('C:\\cfg\\x.ini')
     assert hint == 'python -m fakenet.fakenet -c "C:\\cfg\\x.ini"'
+
+
+def test_interpret_shell_result():
+    assert launcher.interpret_shell_result(33) == (True, '已启动')
+    assert launcher.interpret_shell_result(42) == (True, '已启动')
+    ok, detail = launcher.interpret_shell_result(launcher.SE_ERR_ACCESSDENIED)
+    assert not ok and '取消 UAC' in detail
+    for code in (0, 2, 3, 31):
+        ok, detail = launcher.interpret_shell_result(code)
+        assert not ok and '失败' in detail

@@ -197,16 +197,33 @@ def _shell_execute(hwnd, verb, file_, params, directory, show):
                                      show))
 
 
+def interpret_shell_result(result):
+    """Map a ShellExecuteW return code to (ok, detail).
+
+    >32 succeeds; SE_ERR_ACCESSDENIED(5) is the UAC-cancel path.  Split
+    out as a pure function so acceptance runners can verify the
+    cancel-branch deterministically (clicking 'No' on a real UAC prompt
+    cannot be automated).
+    """
+    if result > 32:
+        return True, '已启动'
+    if result == SE_ERR_ACCESSDENIED:
+        return False, '已取消 UAC 提权,未启动'
+    if result == 0:
+        return False, '启动失败(ShellExecuteW 返回 0:内存/资源不足)'
+    if result == 2:
+        return False, '启动失败(ShellExecuteW 返回 2:文件未找到)'
+    if result == 3:
+        return False, '启动失败(ShellExecuteW 返回 3:路径未找到)'
+    return False, '启动失败(ShellExecuteW 返回 %d)' % result
+
+
 def launch_elevated(target, params, directory=None):
     """ShellExecuteW 'runas'. Returns (ok, detail)."""
     result = _shell_execute(None, 'runas', target, params,
                             directory or os.path.dirname(target) or None,
                             SW_SHOWNORMAL)
-    if result > 32:
-        return True, '已启动'
-    if result == SE_ERR_ACCESSDENIED:
-        return False, '已取消 UAC 提权,未启动'
-    return False, '启动失败(ShellExecuteW 返回 %d)' % result
+    return interpret_shell_result(result)
 
 
 def build_dev_command(config_path):
