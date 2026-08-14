@@ -515,6 +515,58 @@ The UI also includes various interactive features:
 
  * Go To Top Button: Appears when the page's content exceeds the viewable area. Clicking this button takes you to the top of the page, where you can access important buttons like `Copy Selected NBIs`,` Copy All NBIs`, `Copy Filtered NBIs`, and the search bar.
 
+GUI Configuration Tool (fakenet-config)
+----------------------------------------
+
+`fakenet-config` is a windowed configuration editor for FakeNet-NG (this
+fork). It visually edits the full configuration surface — the original
+options plus every `External*` egress feature (domain allow-list, private
+domain takeover, reviewed public IPv4 egress, dual PCAP, per-process
+transparent redirect) — validates it in real time against the same hard
+constraints the code enforces, and launches FakeNet-NG directly.
+
+Running it:
+
+ * Stand-alone: put `fakenet-config.exe` next to `fakenet.exe` (the
+   release ZIP ships them together) and double-click it. The tool runs
+   unelevated; it raises the UAC prompt itself when launching fakenet.
+ * Installed: `python -m pip install .` then run the `fakenet-config`
+   entry point (requires a Python with tkinter).
+ * From source: `python -m fakenet.gui.main`.
+
+What it does:
+
+ * Tabs: `全局` ([FakeNet] + base [Diverter] groups), `出站策略` (egress
+   sub-policies), `监听器` (section list with add/duplicate/rename/delete
+   and a type-aware field panel), `自定义响应` (custom response INI).
+ * Values pinned by code (e.g. `ExternalAllowedTCPPorts=443`, the
+   resource-limit tuple, SNI/IPv6/QUIC booleans) render read-only with a
+   `代码强制` badge; takeover conditional locks apply automatically.
+ * Live validation: errors disable the launch button; warnings (missing
+   paths, non-ASCII values, BOM, bare `%`) do not. Double-click an issue
+   to jump to the field. A `一键补齐必需监听器` button provisions the
+   DomainAllowList topology (relay + 2x53 DNS listeners).
+ * Editing is lossless: disabled listener sections, section order,
+   unknown keys, source encoding (GBK/UTF-8 BOM), line endings and `%%`
+   escaping are all preserved round-trip.
+ * Launch gates: duplicate fakenet.exe instances are refused; the VM
+   check (physical machine → refused; inconclusive → refused, fail-closed
+   with guidance) runs before the elevated start, and a cancelled UAC
+   prompt is reported instead of pretending to have launched.
+
+Security differences vs the PowerShell launchers (`Start-*.cmd`): the GUI
+path does NOT perform upstream DNS probing, post-stop DNS restoration
+comparison, lock-file mutual exclusion (approximated by process
+detection) or `-l` file logging. When those guarantees matter, keep using
+the PowerShell launchers.
+
+Operational notes: unsigned PyInstaller binaries plus `runas` elevation
+may trip AV/EDR products — allow-list accordingly; always pair the GUI
+with the `fakenet.exe` from the same build (an older fakenet silently
+ignores newer keys); slim VM images may lack Chinese fonts for the
+localized UI; and the one-file exe takes a few seconds to unpack on first
+start.
+
 Configuration
 -------------
 
