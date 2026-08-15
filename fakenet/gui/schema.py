@@ -194,7 +194,8 @@ DIVERTER_FIELDS = (
     # -- 出站策略: 域名放行 -------------------------------------------------
     Field('ExternalAccessPolicy', '出站策略', T_ENUM, default='Disabled',
           group='域名放行', enum=('Disabled', 'DomainAllowList'),
-          hint='DomainAllowList 仅 Windows 且要求 DivertTraffic=Yes'),
+          hint='DomainAllowList 仅 Windows 且要求 DivertTraffic=Yes;选择后'
+               '写入代码强制值,再用上方按钮补齐必需监听器'),
     Field('ExternalAllowedDomains', '放行域名', T_STRINGLIST,
           default='api.deepseek.com', group='域名放行',
           hint='接管模式下代码仅允许 api.deepseek.com'),

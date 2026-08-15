@@ -546,8 +546,11 @@ What it does:
    `代码强制` badge; takeover conditional locks apply automatically.
  * Live validation: errors disable the launch button; warnings (missing
    paths, non-ASCII values, BOM, bare `%`) do not. Double-click an issue
-   to jump to the field. A `一键补齐必需监听器` button provisions the
-   DomainAllowList topology (relay + 2x53 DNS listeners).
+   to jump to the field. Selecting `DomainAllowList` writes the values that
+   FakeNet-NG enforces (including TCP port 443); the enabled
+   `一键补齐必需监听器` button then provisions the required topology
+   (one relay plus UDP/53 and TCP/53 DNS listeners). The button is disabled
+   while the policy is `Disabled` and does not enable the policy itself.
  * Hover over any field label or editor to see its purpose, accepted format,
    conditions and important constraints. Unknown listener extension keys get
    a preservation notice instead of invented semantics.

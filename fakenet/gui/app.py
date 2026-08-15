@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""fakenet-GUI main window (plan v1.9 §5.4/§12.13).
+"""fakenet-GUI main window (plan v1.10 §5.4/§12.14).
 
 Chinese UI.  Tabs: 全局 ([FakeNet] + [Diverter] base groups), 出站策略
 (egress sub-groups with smart locking and topology auto-fix), 监听器
@@ -330,6 +330,12 @@ class FakenetConfigApp(object):
             command=self.autofix_topology)
         self._egress_topology_button.grid(
             row=0, column=0, columnspan=2, sticky='w', padx=4, pady=3)
+        widgets.attach_tooltip(
+            self._egress_topology_button,
+            '一键补齐必需监听器\n创建或启用 1 个 DomainEgressRelay、'
+            'UDP/53 与 TCP/53 各 1 个 DNSListener;私网接管时仅补空的 '
+            'ResponseA。此按钮不会启用出站策略。',
+            self._hint, '补齐 DomainAllowList 必需的 relay 与 DNS 监听器')
         self._egress_inner = inner
 
     def _build_listeners_tab(self):
@@ -517,10 +523,12 @@ class FakenetConfigApp(object):
     def _refresh_locks(self):
         if self.model is None:
             return
-        policy = (self.model.diverter().get('ExternalAccessPolicy') or
-                  'Disabled').strip().lower() == 'domainallowlist'
-        takeover = bool((self.model.diverter().get('ExternalTakeoverIPv4')
-                         or '').strip())
+        diverter = self.model.diverter()
+        policy = (diverter.get('ExternalAccessPolicy') or
+                   'Disabled').strip().lower() == 'domainallowlist'
+        takeover = bool((diverter.get('ExternalTakeoverIPv4') or '').strip())
+        self._egress_topology_button.state(
+            ['!disabled'] if policy else ['disabled'])
         for key, widget in self._egress_widgets.items():
             field = schema.diverter_field(key)
             if field is None:
@@ -541,6 +549,26 @@ class FakenetConfigApp(object):
                     widget.set_locked(False)
             else:
                 widget.set_locked(not policy)
+
+    def _sync_active_egress_locks(self):
+        """Write UI-enforced values after an explicit egress edit."""
+        diverter = self.model.diverter()
+        policy = (diverter.get('ExternalAccessPolicy') or
+                  'Disabled').strip().lower() == 'domainallowlist'
+        if not policy:
+            return
+        values = dict(schema.LOCKED_FIELD_VALUES)
+        if (diverter.get('ExternalTakeoverIPv4') or '').strip():
+            values.update({
+                'ExternalAllowedDomains': 'api.deepseek.com',
+                'ExternalNonAllowedAction': 'Divert',
+            })
+        for key, value in values.items():
+            if diverter.get(key) != value:
+                diverter.set(key, value)
+            widget = self._egress_widgets.get(key)
+            if widget is not None and widget.get() != value:
+                widget.set(value)
 
     # ------------------------------------------------------------------
     # global / egress tabs render
@@ -567,6 +595,11 @@ class FakenetConfigApp(object):
                 if self._building:
                     return
                 self.model.section(section).set(key, value)
+                field = schema.diverter_field(key) \
+                    if section == 'Diverter' else None
+                if field and field.group in schema.egress_group_names():
+                    self._sync_active_egress_locks()
+                    self._refresh_locks()
                 self._mark_dirty()
                 self._schedule_validate()
             return handler
@@ -1358,7 +1391,7 @@ class FakenetConfigApp(object):
     def _about(self):
         messagebox.showinfo(
             '关于', 'FakeNet-NG 配置工具\n\n可视化编辑 FakeNet-NG INI 配置并'
-            '启动(带 VM/重复实例安全门)。\n方案: PLAN/2026.08.14 v1.9')
+            '启动(带 VM/重复实例安全门)。\n方案: PLAN/2026.08.14 v1.10')
 
     def _on_close(self):
         if self.dirty and not messagebox.askyesno('退出',

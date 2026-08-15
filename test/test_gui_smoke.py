@@ -393,6 +393,71 @@ def test_host_visual_density_uses_wide_labels_and_compact_actions():
         root.destroy()
 
 
+def test_domain_allowlist_activation_materializes_locks_before_autofix(
+        monkeypatch):
+    from fakenet.gui import app as app_module, schema, validator
+
+    root, application = _construct_app()
+    try:
+        application._render_static_tabs()
+        monkeypatch.setattr(
+            app_module.messagebox, 'showinfo',
+            lambda *_args, **_kwargs: None)
+        assert application._egress_topology_button.instate(['disabled'])
+        assert '不会启用出站策略' in \
+            application._egress_topology_button._hover_help.text
+        policy = application._registry[
+            ('Diverter', 'externalaccesspolicy')]
+        policy.set('DomainAllowList')
+        policy._changed()
+        assert not application._egress_topology_button.instate(['disabled'])
+        application._validate_now()
+
+        assert application.model.diverter().get(
+            'ExternalAllowedTCPPorts') == '443'
+        assert all(application.model.diverter().get(key) == value
+                   for key, value in schema.LOCKED_FIELD_VALUES.items())
+        errors = [issue for issue in application._issues
+                  if issue.level == validator.ERROR]
+        assert not any(issue.key == 'ExternalAllowedTCPPorts'
+                       for issue in errors)
+        assert sum(issue.key == 'ExternalAccessPolicy'
+                   for issue in errors) == 2
+
+        application.autofix_topology()
+        application._validate_now()
+        assert not [issue for issue in application._issues
+                    if issue.level == validator.ERROR]
+
+        policy.set('Disabled')
+        policy._changed()
+        assert application._egress_topology_button.instate(['disabled'])
+        assert application.model.diverter().get(
+            'ExternalAllowedTCPPorts') == '443'
+    finally:
+        root.destroy()
+
+
+def test_takeover_edit_materializes_conditional_locked_values():
+    root, application = _construct_app()
+    try:
+        application._render_static_tabs()
+        for key, value in (
+                ('externalaccesspolicy', 'DomainAllowList'),
+                ('externalalloweddomains', 'example.com'),
+                ('externalnonallowedaction', 'Drop'),
+                ('externaltakeoveripv4', '192.168.204.1')):
+            widget = application._registry[('Diverter', key)]
+            widget.set(value)
+            widget._changed()
+
+        diverter = application.model.diverter()
+        assert diverter.get('ExternalAllowedDomains') == 'api.deepseek.com'
+        assert diverter.get('ExternalNonAllowedAction') == 'Divert'
+    finally:
+        root.destroy()
+
+
 def test_field_tooltip_shows_help_and_updates_status_hint():
     root, application = _construct_app()
     try:
