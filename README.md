@@ -548,6 +548,13 @@ What it does:
    paths, non-ASCII values, BOM, bare `%`) do not. Double-click an issue
    to jump to the field. A `一键补齐必需监听器` button provisions the
    DomainAllowList topology (relay + 2x53 DNS listeners).
+ * The validation details drawer stays collapsed when the configuration is
+   clean and opens automatically for errors or warnings. Save and launch
+   remain in a persistent bottom action bar on every tab; the bar also shows
+   the current path and unsaved-change state.
+ * Listener forms use aligned, responsive fields; long proxy `Listeners`
+   values wrap without truncation. The custom-response tab shows a guided
+   empty state until a response INI is opened or created.
  * Editing is lossless: disabled listener sections, section order,
    unknown keys, source encoding (GBK/UTF-8 BOM), line endings and `%%`
    escaping are all preserved round-trip.

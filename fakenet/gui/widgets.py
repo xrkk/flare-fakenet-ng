@@ -23,11 +23,13 @@ class FieldWidget(ttk.Frame):
         self.on_change = on_change
         self.on_focus = on_focus
         self._lock_badge = None
+        self._multiline = False
 
         self.columnconfigure(1, weight=1)
-        title = '%s:' % field.label + (' (仅保真)' if field.dead else '')
-        self.label = ttk.Label(self, text=title)
-        self.label.grid(row=0, column=0, sticky='ne', padx=(0, 6), pady=2)
+        title = '%s:' % field.label + ('（仅保真）' if field.dead else '')
+        self.label = ttk.Label(self, text=title, width=20, anchor='e',
+                               justify='right', wraplength=160)
+        self.label.grid(row=0, column=0, sticky='ne', padx=(0, 8), pady=3)
 
         wtype = field.wtype
         if wtype in (schema.T_BOOL_YESNO, schema.T_BOOL_TRUEFALSE):
@@ -50,12 +52,15 @@ class FieldWidget(ttk.Frame):
             self.input.bind('<<ComboboxSelected>>', self._changed)
             self.input.bind('<FocusOut>', self._changed)
             self.input.grid(row=0, column=1, sticky='we', pady=2)
-        elif wtype == schema.T_TEXT:
+        elif wtype == schema.T_TEXT or field.key.lower() == 'listeners':
+            self._multiline = True
             self.variable = None
-            self.input = tk.Text(self, height=3, width=48, wrap='word')
+            height = 3 if wtype == schema.T_TEXT else 2
+            self.input = tk.Text(self, height=height, width=40, wrap='word',
+                                 undo=True)
             self.input.insert('1.0', value)
             self.input.bind('<FocusOut>', self._changed)
-            self.input.grid(row=0, column=1, sticky='we', pady=2)
+            self.input.grid(row=0, column=1, sticky='nsew', pady=3)
         elif wtype in (schema.T_PATH_FILE, schema.T_PATH_DIR):
             box = ttk.Frame(self)
             box.grid(row=0, column=1, sticky='we', pady=2)
@@ -71,10 +76,9 @@ class FieldWidget(ttk.Frame):
             self.input = entry
         else:
             self.variable = tk.StringVar(value=value)
-            self.input = ttk.Entry(self, textvariable=self.variable,
-                                   width=48)
+            self.input = ttk.Entry(self, textvariable=self.variable)
             self.input.bind('<FocusOut>', self._changed)
-            self.input.grid(row=0, column=1, sticky='we', pady=2)
+            self.input.grid(row=0, column=1, sticky='we', pady=3)
 
         if wtype == schema.T_HEX64:
             ttk.Button(self, text='计算文件哈希', width=14,
@@ -114,12 +118,12 @@ class FieldWidget(ttk.Frame):
     # -- value / lock ---------------------------------------------------------
 
     def get(self):
-        if self.field.wtype == schema.T_TEXT:
+        if self._multiline:
             return self.input.get('1.0', 'end').rstrip('\n')
         return self.variable.get()
 
     def set(self, value):
-        if self.field.wtype == schema.T_TEXT:
+        if self._multiline:
             self.input.delete('1.0', 'end')
             self.input.insert('1.0', value)
         else:
@@ -135,7 +139,8 @@ class FieldWidget(ttk.Frame):
             self._lock_badge.destroy()
             self._lock_badge = None
         if locked:
-            self._lock_badge = ttk.Label(self, text=badge, foreground='#a00')
+            self._lock_badge = ttk.Label(self, text=badge,
+                                          style='Locked.TLabel')
             self._lock_badge.grid(row=0, column=2, sticky='w', padx=(6, 0))
 
     def _apply_state(self, widget, state):
@@ -157,10 +162,11 @@ def build_group_frame(parent, title, fields, getter, on_change, on_focus,
                       registry=None, section_name=''):
     """Render one titled group of FieldWidgets; returns the frame."""
     box = ttk.LabelFrame(parent, text=title)
+    box.columnconfigure(0, weight=1)
     for row, field in enumerate(fields):
         widget = FieldWidget(box, field, value=getter(field.key),
                              on_change=on_change, on_focus=on_focus)
-        widget.grid(row=row, column=0, sticky='we', padx=6, pady=1)
+        widget.grid(row=row, column=0, sticky='we', padx=8, pady=1)
         if registry is not None:
             registry[(section_name, field.key.lower())] = widget
     return box

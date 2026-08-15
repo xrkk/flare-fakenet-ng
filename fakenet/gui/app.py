@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""fakenet-GUI main window (plan v0.2 §5.4).
+"""fakenet-GUI main window (plan v1.5 §5.4/§12.9).
 
 Chinese UI.  Tabs: 全局 ([FakeNet] + [Diverter] base groups), 出站策略
 (egress sub-groups with smart locking and topology auto-fix), 监听器
-(section list + dynamic field panel), 自定义响应.  Bottom validation
-panel with double-click jump-to-field; save + launch buttons.  The
+(section list + dynamic field panel), 自定义响应.  Collapsible validation
+drawer with double-click jump-to-field; persistent save + launch bar.  The
 launch pipeline runs VM/duplicate gates off the UI thread and is
 fail-closed on inconclusive VM state.
 """
@@ -14,6 +14,7 @@ import sys
 import textwrap
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
 
 from fakenet.gui import configmodel, launcher, schema, validator, widgets
@@ -21,6 +22,42 @@ from fakenet.gui import configmodel, launcher, schema, validator, widgets
 APP_TITLE = 'FakeNet-NG 配置工具'
 TEMPLATE_EXCLUDE = ('sample_custom_response.ini',)
 VALIDATE_DEBOUNCE_MS = 300
+
+COLOR_BG = '#F4F6F8'
+COLOR_MUTED = '#5F6B7A'
+COLOR_PRIMARY = '#1769AA'
+COLOR_SUCCESS = '#18864B'
+COLOR_WARNING = '#B7791F'
+COLOR_ERROR = '#C9362B'
+
+
+def configure_styles(root):
+    """Apply a restrained Windows analysis-workbench visual system."""
+    available = set(tkfont.families(root))
+    if 'Microsoft YaHei UI' in available:
+        for name in ('TkDefaultFont', 'TkTextFont', 'TkMenuFont',
+                     'TkHeadingFont'):
+            try:
+                tkfont.nametofont(name).configure(
+                    family='Microsoft YaHei UI', size=9)
+            except tk.TclError:
+                pass
+    root.configure(background=COLOR_BG)
+    style = ttk.Style(root)
+    style.configure('TNotebook.Tab', padding=(12, 5))
+    style.configure('TLabelframe', padding=(4, 4))
+    style.configure('Muted.TLabel', foreground=COLOR_MUTED)
+    style.configure('Locked.TLabel', foreground=COLOR_MUTED)
+    style.configure('Success.TLabel', foreground=COLOR_SUCCESS,
+                    font=('', 9, 'bold'))
+    style.configure('Warning.TLabel', foreground=COLOR_WARNING,
+                    font=('', 9, 'bold'))
+    style.configure('Error.TLabel', foreground=COLOR_ERROR,
+                    font=('', 9, 'bold'))
+    style.configure('Primary.TButton', padding=(12, 6),
+                    foreground=COLOR_PRIMARY, font=('', 9, 'bold'))
+    style.configure('Action.TButton', padding=(10, 5))
+    return style
 
 
 def scrollable(parent):
@@ -66,9 +103,13 @@ class FakenetConfigApp(object):
         self._egress_widgets = {}
         self._selected_listener = None
         self._building = False
+        self._validation_expanded = False
+        self._validation_manually_collapsed = False
 
         root.title(APP_TITLE)
         root.geometry('980x700')
+        root.minsize(900, 640)
+        configure_styles(root)
         self._build_menu()
         self._build_layout()
         self.new_config()
@@ -134,50 +175,57 @@ class FakenetConfigApp(object):
                 label=name, command=lambda n=name: self.load_template(n))
 
     def _build_layout(self):
-        top = ttk.Frame(self.root)
-        top.pack(side='top', fill='x', padx=8, pady=(6, 0))
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(1, weight=1)
+
+        top = ttk.Frame(self.root, padding=(10, 7, 10, 2))
+        top.grid(row=0, column=0, sticky='ew')
         self.summary_var = tk.StringVar(value='就绪')
-        ttk.Label(top, textvariable=self.summary_var,
-                  font=('', 10, 'bold')).pack(side='left')
+        self.summary_label = ttk.Label(
+            top, textvariable=self.summary_var, style='Success.TLabel')
+        self.summary_label.pack(side='left')
         self.hint_var = tk.StringVar(value='')
-        ttk.Label(top, textvariable=self.hint_var, foreground='#555')\
+        ttk.Label(top, textvariable=self.hint_var, style='Muted.TLabel')\
             .pack(side='left', padx=16)
 
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(side='top', fill='both', expand=True,
-                           padx=8, pady=6)
+        self.notebook.grid(row=1, column=0, sticky='nsew', padx=8,
+                           pady=(4, 4))
         self._build_global_tab()
         self._build_egress_tab()
         self._build_listeners_tab()
         self._build_custom_tab()
 
-        bottom = ttk.Frame(self.root)
-        bottom.pack(side='bottom', fill='x', padx=8, pady=(0, 8))
-        self.launch_button = ttk.Button(bottom, text='▶ 启动 FakeNet-NG',
-                                        command=self.launch)
-        self.launch_button.pack(side='right')
-        self.save_button = ttk.Button(bottom, text='保存配置',
-                                      command=self.save)
-        self.save_button.pack(side='right', padx=6)
-
-        panel_header = ttk.Frame(bottom)
-        panel_header.pack(side='bottom', fill='x')
-        ttk.Label(panel_header,
-                  text='校验结果(双击跳转 · 右键/Ctrl+C 复制 · 消息列可横向滚动)',
-                  foreground='#555').pack(side='left')
-        self.copy_all_button = ttk.Button(panel_header, text='复制全部',
-                                          width=10,
-                                          command=self._copy_all_issues)
+        validation = ttk.Frame(self.root, padding=(8, 0, 8, 4))
+        validation.grid(row=2, column=0, sticky='ew')
+        panel_header = ttk.Frame(validation)
+        panel_header.pack(fill='x')
+        self.validation_summary_var = tk.StringVar(value='✓ 校验通过')
+        self.validation_summary_label = ttk.Label(
+            panel_header, textvariable=self.validation_summary_var,
+            style='Success.TLabel')
+        self.validation_summary_label.pack(side='left', padx=(4, 8))
+        ttk.Label(
+            panel_header,
+            text='双击跳转 · 右键/Ctrl+C 复制',
+            style='Muted.TLabel').pack(side='left')
+        self.validation_toggle_button = ttk.Button(
+            panel_header, text='展开详情', width=9,
+            command=self._toggle_validation)
+        self.validation_toggle_button.pack(side='right')
+        self.validation_issue_actions = ttk.Frame(panel_header)
+        self.validation_issue_actions.pack(side='right', padx=(4, 0))
+        self.copy_all_button = ttk.Button(
+            self.validation_issue_actions, text='复制全部', width=9,
+            command=self._copy_all_issues)
         self.copy_all_button.pack(side='right')
-        self.copy_selected_button = ttk.Button(panel_header, text='复制选中',
-                                               width=10,
-                                               command=self.
-                                               _copy_selected_issues)
-        self.copy_selected_button.pack(side='right', padx=4)
+        self.copy_selected_button = ttk.Button(
+            self.validation_issue_actions, text='复制选中', width=9,
+            command=self._copy_selected_issues)
+        self.copy_selected_button.pack(side='right', padx=(4, 0))
 
-        panel_frame = ttk.Frame(bottom)
-        panel_frame.pack(side='bottom', fill='x')
-        self.panel = ttk.Treeview(panel_frame, height=8,
+        self.validation_body = ttk.Frame(validation)
+        self.panel = ttk.Treeview(self.validation_body, height=6,
                                   columns=('level', 'loc', 'msg'),
                                   show='headings',
                                   selectmode='extended')
@@ -188,15 +236,15 @@ class FakenetConfigApp(object):
         self.panel.column('loc', width=240, minwidth=240, stretch=False)
         # Full text stays intact in the item values; the wide minwidth +
         # horizontal scrollbar make it reachable instead of clipped.
-        self.panel.column('msg', width=680, minwidth=1600, stretch=True)
-        xbar = ttk.Scrollbar(panel_frame, orient='horizontal',
+        self.panel.column('msg', width=1200, minwidth=680, stretch=False)
+        xbar = ttk.Scrollbar(self.validation_body, orient='horizontal',
                              command=self.panel.xview)
-        ybar = ttk.Scrollbar(panel_frame, orient='vertical',
+        ybar = ttk.Scrollbar(self.validation_body, orient='vertical',
                              command=self.panel.yview)
         self.panel.configure(xscrollcommand=xbar.set,
                              yscrollcommand=ybar.set)
         ybar.pack(side='right', fill='y')
-        self.panel.pack(side='top', fill='x')
+        self.panel.pack(side='top', fill='x', expand=True)
         xbar.pack(side='bottom', fill='x')
         self.panel.bind('<Double-1>', self._jump_to_issue)
         self.panel.bind('<Button-3>', self._panel_popup)
@@ -210,6 +258,24 @@ class FakenetConfigApp(object):
         self._panel_menu.add_separator()
         self._panel_menu.add_command(label='查看完整消息…',
                                      command=self._show_full_issue)
+
+        ttk.Separator(self.root).grid(row=3, column=0, sticky='ew')
+        action_bar = ttk.Frame(self.root, padding=(10, 7, 10, 9))
+        action_bar.grid(row=4, column=0, sticky='ew')
+        self.file_status_var = tk.StringVar(value='未保存配置')
+        ttk.Label(action_bar, textvariable=self.file_status_var,
+                  style='Muted.TLabel').pack(side='left', fill='x',
+                                             expand=True)
+        self.launch_button = ttk.Button(
+            action_bar, text='▶ 启动 FakeNet-NG', style='Primary.TButton',
+            command=self.launch)
+        self.launch_button.pack(side='right')
+        self.save_button = ttk.Button(
+            action_bar, text='保存配置', style='Action.TButton',
+            command=self.save)
+        self.save_button.pack(side='right', padx=(0, 8))
+
+        self._set_validation_expanded(False)
 
     # ------------------------------------------------------------------
     # tab builders
@@ -231,9 +297,9 @@ class FakenetConfigApp(object):
         pane = ttk.PanedWindow(self.notebook, orient='horizontal')
         self.notebook.add(pane, text='监听器')
 
-        left = ttk.Frame(pane)
+        left = ttk.Frame(pane, padding=(2, 0, 4, 0))
         pane.add(left, weight=1)
-        self.listener_list = tk.Listbox(left, width=28, exportselection=False)
+        self.listener_list = tk.Listbox(left, width=22, exportselection=False)
         self.listener_list.pack(fill='both', expand=True)
         self.listener_list.bind('<<ListboxSelect>>', self._on_select_listener)
         buttons = ttk.Frame(left)
@@ -249,31 +315,40 @@ class FakenetConfigApp(object):
                    command=self._listener_delete).pack(side='left', padx=1)
 
         right_container, right = scrollable(pane)
-        pane.add(right_container, weight=3)
+        pane.add(right_container, weight=5)
         self._listener_inner = right
         self.expansion_var = tk.StringVar(value='')
         ttk.Label(right, textvariable=self.expansion_var,
-                  foreground='#555').pack(anchor='w')
+                  style='Muted.TLabel').pack(anchor='w')
 
     def _build_custom_tab(self):
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text='自定义响应')
         bar = ttk.Frame(tab)
-        bar.pack(fill='x', pady=4)
-        ttk.Button(bar, text='打开自定义响应文件…',
+        bar.pack(fill='x', padx=6, pady=6)
+        ttk.Button(bar, text='打开响应文件…', style='Action.TButton',
                    command=self._custom_open).pack(side='left')
-        ttk.Button(bar, text='新建',
+        ttk.Button(bar, text='新建响应文件', style='Action.TButton',
                    command=self._custom_new).pack(side='left', padx=4)
-        ttk.Button(bar, text='保存', command=self._custom_save)\
+        ttk.Button(bar, text='保存响应文件', style='Action.TButton',
+                   command=self._custom_save)\
             .pack(side='left')
         self.custom_status = tk.StringVar(value='未加载(由监听器的 Custom 键引用)')
         ttk.Label(bar, textvariable=self.custom_status,
-                  foreground='#555').pack(side='left', padx=12)
+                  style='Muted.TLabel').pack(side='left', padx=12)
 
-        pane = ttk.PanedWindow(tab, orient='horizontal')
-        pane.pack(fill='both', expand=True)
-        left = ttk.Frame(pane)
-        pane.add(left, weight=1)
+        self.custom_empty = ttk.Frame(tab, padding=(24, 70))
+        ttk.Label(self.custom_empty, text='尚未加载自定义响应文件',
+                  font=('', 11, 'bold')).pack()
+        ttk.Label(
+            self.custom_empty,
+            text='自定义响应文件由监听器中的 Custom 字段引用。\n'
+                 '请打开已有 INI，或新建一个响应文件后添加配置段。',
+            justify='center', style='Muted.TLabel').pack(pady=(10, 0))
+
+        self.custom_pane = ttk.PanedWindow(tab, orient='horizontal')
+        left = ttk.Frame(self.custom_pane, padding=(2, 0, 4, 0))
+        self.custom_pane.add(left, weight=1)
         self.custom_list = tk.Listbox(left, width=28, exportselection=False)
         self.custom_list.pack(fill='both', expand=True)
         self.custom_list.bind('<<ListboxSelect>>', self._on_select_custom)
@@ -284,12 +359,13 @@ class FakenetConfigApp(object):
         ttk.Button(addbox, text='删除段', width=8,
                    command=self._custom_delete).pack(side='left', padx=1)
 
-        right_container, right = scrollable(pane)
-        pane.add(right_container, weight=3)
+        right_container, right = scrollable(self.custom_pane)
+        self.custom_pane.add(right_container, weight=3)
         self._custom_inner = right
         self.custom_model = None
         self._custom_selected = None
         self._custom_registry = {}
+        self._update_custom_content_state()
 
     # ------------------------------------------------------------------
     # model wiring
@@ -298,17 +374,50 @@ class FakenetConfigApp(object):
     def _hint(self, text):
         self.hint_var.set(text)
 
+    def _set_validation_expanded(self, expanded, manual=False):
+        expanded = bool(expanded)
+        if manual:
+            self._validation_manually_collapsed = not expanded
+        if expanded == self._validation_expanded:
+            return
+        self._validation_expanded = expanded
+        if expanded:
+            self.validation_body.pack(fill='x', pady=(4, 0))
+            self.validation_toggle_button.configure(text='收起详情')
+        else:
+            self.validation_body.pack_forget()
+            self.validation_toggle_button.configure(text='展开详情')
+
+    def _toggle_validation(self):
+        if not self._issues:
+            return
+        self._set_validation_expanded(
+            not self._validation_expanded, manual=True)
+
+    def _update_file_status(self):
+        if self.model is None:
+            text = '未加载配置'
+        else:
+            path = self.model.path or '未保存配置'
+            text = ('● 有未保存修改 · %s' if self.dirty else
+                    '✓ 已保存 · %s') % path
+            if not self.model.path and not self.dirty:
+                text = '○ 新配置尚未保存'
+        self.file_status_var.set(text)
+
     def _mark_dirty(self):
         self.dirty = True
         name = os.path.basename(self.model.path) if self.model.path \
             else '未命名'
         self.root.title('%s* - %s' % (name, APP_TITLE))
+        self._update_file_status()
 
     def _clear_dirty(self):
         self.dirty = False
         name = os.path.basename(self.model.path) if self.model.path \
             else '未命名'
         self.root.title('%s - %s' % (name, APP_TITLE))
+        self._update_file_status()
 
     def _schedule_validate(self):
         if self._validate_job is not None:
@@ -325,6 +434,18 @@ class FakenetConfigApp(object):
         warns = [i for i in self._issues if i.level == validator.WARNING]
         self.summary_var.set('⚠ %d 错误 / %d 警告' % (len(errors), len(warns))
                              if (errors or warns) else '✓ 校验通过')
+        if errors:
+            style = 'Error.TLabel'
+            detail = '✕ %d 个错误 / %d 个警告' % (len(errors), len(warns))
+        elif warns:
+            style = 'Warning.TLabel'
+            detail = '⚠ 0 个错误 / %d 个警告' % len(warns)
+        else:
+            style = 'Success.TLabel'
+            detail = '✓ 校验通过'
+        self.summary_label.configure(style=style)
+        self.validation_summary_label.configure(style=style)
+        self.validation_summary_var.set(detail)
         self.launch_button.state(['!disabled'] if not errors
                                  else ['disabled'])
         self.panel.delete(*self.panel.get_children())
@@ -333,6 +454,21 @@ class FakenetConfigApp(object):
                               values=('错误' if issue.level == validator.ERROR
                                       else '警告',
                                       issue.location, issue.message))
+        button_state = ['!disabled'] if self._issues else ['disabled']
+        self.validation_toggle_button.state(button_state)
+        self.copy_all_button.state(button_state)
+        self.copy_selected_button.state(button_state)
+        if self._issues:
+            if not self.validation_issue_actions.winfo_manager():
+                self.validation_issue_actions.pack(
+                    side='right', padx=(4, 0),
+                    before=self.validation_toggle_button)
+            if not self._validation_manually_collapsed:
+                self._set_validation_expanded(True)
+        else:
+            self.validation_issue_actions.pack_forget()
+            self._validation_manually_collapsed = False
+            self._set_validation_expanded(False)
         self._refresh_locks()
 
     def _refresh_locks(self):
@@ -494,7 +630,7 @@ class FakenetConfigApp(object):
                                   self._on_extra_key(sec.name, k, v))
                     ttk.Entry(row, textvariable=var).pack(
                         side='left', fill='x', expand=True)
-                ttk.Label(box, foreground='#777',
+                ttk.Label(box, style='Muted.TLabel',
                           text='提示:额外键保存时原样写回,不做任何转换')\
                     .pack(anchor='w', padx=6)
         finally:
@@ -658,6 +794,17 @@ class FakenetConfigApp(object):
     # custom response tab
     # ------------------------------------------------------------------
 
+    def _update_custom_content_state(self):
+        if self.custom_model is None:
+            self.custom_pane.pack_forget()
+            if not self.custom_empty.winfo_manager():
+                self.custom_empty.pack(fill='both', expand=True)
+        else:
+            self.custom_empty.pack_forget()
+            if not self.custom_pane.winfo_manager():
+                self.custom_pane.pack(fill='both', expand=True, padx=6,
+                                      pady=(0, 6))
+
     def _custom_open(self):
         path = filedialog.askopenfilename(
             parent=self.root, filetypes=[('INI', '*.ini'), ('所有', '*.*')])
@@ -672,6 +819,7 @@ class FakenetConfigApp(object):
         self.custom_model = model
         self._custom_selected = None
         self.custom_status.set(os.path.basename(path))
+        self._update_custom_content_state()
         self._refresh_custom_list()
 
     def _custom_new(self):
@@ -681,6 +829,7 @@ class FakenetConfigApp(object):
         self.custom_model = model
         self._custom_selected = None
         self.custom_status.set('未命名(新建)')
+        self._update_custom_content_state()
         self._refresh_custom_list()
 
     def _custom_save(self):
@@ -710,7 +859,9 @@ class FakenetConfigApp(object):
     def _refresh_custom_list(self):
         self.custom_list.delete(0, 'end')
         if self.custom_model is None:
+            self._update_custom_content_state()
             return
+        self._update_custom_content_state()
         names = [sec.name for sec in self.custom_model.sections.values()]
         for name in names:
             self.custom_list.insert('end', name)
@@ -1088,7 +1239,7 @@ class FakenetConfigApp(object):
     def _about(self):
         messagebox.showinfo(
             '关于', 'FakeNet-NG 配置工具\n\n可视化编辑 FakeNet-NG INI 配置并'
-            '启动(带 VM/重复实例安全门)。\n方案: PLAN/2026.08.14 v0.2')
+            '启动(带 VM/重复实例安全门)。\n方案: PLAN/2026.08.14 v1.5')
 
     def _on_close(self):
         if self.dirty and not messagebox.askyesno('退出',
