@@ -553,12 +553,18 @@ What it does:
    check (physical machine → refused; inconclusive → refused, fail-closed
    with guidance) runs before the elevated start, and a cancelled UAC
    prompt is reported instead of pretending to have launched.
+ * Runtime log: every FakeNet-NG core process creates exactly one detailed
+   UTF-8 log. For the frozen release it is written under `Logs` beside
+   `fakenet.exe`, regardless of the launch directory or whether FakeNet was
+   started from the GUI, Explorer, a terminal, or a script. Source runs use
+   the repository-root `Logs` directory. Existing `-l/--log-file` remains
+   an explicit override and suppresses creation of the automatic file.
 
 Security differences vs the PowerShell launchers (`Start-*.cmd`): the GUI
 path does NOT perform upstream DNS probing, post-stop DNS restoration
 comparison, lock-file mutual exclusion (approximated by process
-detection) or `-l` file logging. When those guarantees matter, keep using
-the PowerShell launchers.
+detection). When those guarantees matter, keep using the PowerShell
+launchers.
 
 Operational notes: unsigned PyInstaller binaries plus `runas` elevation
 may trip AV/EDR products — allow-list accordingly; always pair the GUI

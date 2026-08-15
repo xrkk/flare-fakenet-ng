@@ -8,9 +8,9 @@
 # Original developer: Peter Kacherginsky
 # Current developer: Mandiant FLARE Team (FakeNet@mandiant.com)
 
+import datetime
 import logging
 import logging.handlers
-
 import os
 import sys
 import time
@@ -32,6 +32,85 @@ from collections import namedtuple
 # Listener services
 from fakenet import listeners
 from fakenet.listeners import *
+
+
+def _runtime_directory():
+    """Directory beside fakenet.exe, or the equivalent source repo root."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _reserve_default_log_path(now=None, pid=None):
+    now = now or datetime.datetime.now()
+    pid = pid if pid is not None else os.getpid()
+    directory = os.path.join(_runtime_directory(), 'Logs')
+    os.makedirs(directory, exist_ok=True)
+    stem = 'fakenet-%s-p%d' % (now.strftime('%Y%m%d-%H%M%S-%f'), pid)
+    for number in range(1000):
+        suffix = '' if number == 0 else '-%d' % number
+        path = os.path.join(directory, stem + suffix + '.log')
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            continue
+        os.close(descriptor)
+        return path
+    raise OSError('Could not allocate a unique FakeNet-NG log filename')
+
+
+def _requested_log_file(argv=None):
+    """Read only the existing -l option before OptionParser may exit."""
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    for index, argument in enumerate(arguments):
+        if argument == '--':
+            break
+        if argument in ('-l', '--log-file'):
+            return arguments[index + 1] if index + 1 < len(arguments) else None
+        if argument.startswith('--log-file='):
+            return argument.split('=', 1)[1]
+        if argument.startswith('-l') and len(argument) > 2:
+            return argument[2:]
+    return None
+
+
+def _configure_startup_logging(log_file=None, level=logging.INFO,
+                               console=False):
+    """Install exactly one UTF-8 file handler for this FakeNet process."""
+    reserved = not log_file
+    path = os.path.abspath(log_file) if log_file else \
+        _reserve_default_log_path()
+    try:
+        file_handler = logging.FileHandler(path, mode='a', encoding='utf-8')
+    except BaseException:
+        if reserved:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        raise
+
+    date_format = '%m/%d/%y %I:%M:%S %p'
+    file_handler.setLevel(level)
+    file_handler.setFormatter(logging.Formatter(
+        '%(asctime)s [%(levelname)-8s] [%(name)18s] '
+        'pid=%(process)d thread=%(threadName)s %(message)s',
+        datefmt=date_format))
+    root_logger = logging.getLogger('')
+    root_logger.handlers = []
+    root_logger.setLevel(level)
+    root_logger.addHandler(file_handler)
+    if console:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(level)
+        console_handler.setFormatter(logging.Formatter(
+            '%(asctime)s [%(name)18s] %(message)s', datefmt=date_format))
+        root_logger.addHandler(console_handler)
+    root_logger.info(
+        'FakeNet-NG startup: log=%s executable=%s frozen=%s cwd=%s argv=%r',
+        path, sys.executable, bool(getattr(sys, 'frozen', False)),
+        os.getcwd(), sys.argv)
+    return root_logger, path
 
 ###############################################################################
 # FakeNet
@@ -494,6 +573,7 @@ def main():
     rc = 0
     fakenet = None
     options = None
+    logger = None
     # Wrap everything in try/except for SystemExit to require confirmation
     # before closing the console window
     try:
@@ -535,28 +615,32 @@ _____________________________________________________________
                         dest="no_con_out", default=False,
                         help="Suppress console output (for testing on Linux)")
 
-        (options, args) = parser.parse_args()
+        try:
+            (options, args) = parser.parse_args()
+        except SystemExit:
+            # --help and invalid-option exits are still real process starts.
+            requested_log = _requested_log_file()
+            try:
+                logger, _log_path = _configure_startup_logging(requested_log)
+            except IOError:
+                print(('Failed to open log file: %s' %
+                       (requested_log or os.path.join(
+                           _runtime_directory(), 'Logs'))))
+                raise SystemExit(1)
+            logger.info('FakeNet-NG option parsing requested process exit')
+            raise
 
         logging_level = logging.DEBUG if options.verbose else logging.INFO
-
         date_format = '%m/%d/%y %I:%M:%S %p'
-        logging.basicConfig(format='%(asctime)s [%(name)18s] %(message)s',
-                            datefmt=date_format, level=logging_level)
-        logger = logging.getLogger('')  # Get the root logger i.e. ''
-
-        if options.no_con_out:
-            logger.handlers = []
-
-        if options.log_file:
-            try:
-                loghandler = logging.StreamHandler(stream=open(options.log_file,
-                                                            'a'))
-            except IOError:
-                print(('Failed to open specified log file: %s' % (options.log_file)))
-                sys.exit(1)
-            loghandler.formatter = logging.Formatter(
-                '%(asctime)s [%(name)18s] %(message)s', datefmt=date_format)
-            logger.addHandler(loghandler)
+        try:
+            logger, _log_path = _configure_startup_logging(
+                options.log_file, logging_level,
+                console=not options.no_con_out)
+        except IOError:
+            print(('Failed to open log file: %s' %
+                   (options.log_file or os.path.join(
+                       _runtime_directory(), 'Logs'))))
+            sys.exit(1)
 
         if options.syslog:
             platform_name = platform.system()
@@ -591,10 +675,14 @@ _____________________________________________________________
         rc = wait_for_shutdown(fakenet, options.stop_flag)
 
     except KeyboardInterrupt:
+        if logger:
+            logger.info('KeyboardInterrupt')
         print("KeyboardInterrupt")
     except BaseException as e:
         rc = e.code if isinstance(e, SystemExit) else 1
         if rc != 0:
+            if logger:
+                logger.exception('FakeNet-NG terminated with an error')
             traceback.print_exc()
     finally:
         if fakenet:
@@ -603,6 +691,8 @@ _____________________________________________________________
                     rc = 1
             except BaseException:
                 rc = 1
+                if logger:
+                    logger.exception('FakeNet-NG stop failed')
                 traceback.print_exc()
         # Delete flag only after FakeNet-NG has stopped to indicate completion
         if options and options.stop_flag and os.path.exists(options.stop_flag):
@@ -616,6 +706,8 @@ _____________________________________________________________
         if options and not options.no_pause:
             input("[Press Enter to exit]")
 
+        if logger:
+            logger.info('FakeNet-NG exiting: rc=%s', rc)
         sys.exit(rc)
 
 if __name__ == '__main__':
