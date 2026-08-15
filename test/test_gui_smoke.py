@@ -187,3 +187,22 @@ def test_compact_static_tabs_hide_unneeded_scrollbars_at_default_size():
         assert application._egress_scroll._scrollbar.winfo_manager() == ''
     finally:
         root.destroy()
+
+
+def test_host_visual_density_uses_wide_labels_and_compact_actions():
+    root, application = _construct_app()
+    try:
+        application._render_static_tabs()
+        assert int(application._registry[
+            ('FakeNet', 'diverttraffic')].label.cget('width')) == 20
+        assert int(application._registry[
+            ('Diverter', 'processwhitelist')].label.cget('width')) == 20
+        assert int(application._registry[
+            ('Diverter', 'linuxrestrictinterface')].label.cget('width')) == 16
+
+        buttons = application.listener_action_buttons
+        assert [button.cget('text') for button in buttons] == [
+            '新增', '复制', '改名', '删除']
+        assert all(int(button.cget('width')) == 5 for button in buttons)
+    finally:
+        root.destroy()

@@ -329,15 +329,16 @@ class FakenetConfigApp(object):
         self.listener_list.bind('<<ListboxSelect>>', self._on_select_listener)
         buttons = ttk.Frame(left)
         buttons.pack(fill='x')
-        ttk.Button(buttons, text='新增', width=6,
-                   command=self._listener_add).pack(side='left', padx=1)
-        ttk.Button(buttons, text='复制', width=6,
-                   command=self._listener_duplicate).pack(side='left',
-                                                          padx=1)
-        ttk.Button(buttons, text='重命名', width=8,
-                   command=self._listener_rename).pack(side='left', padx=1)
-        ttk.Button(buttons, text='删除', width=6,
-                   command=self._listener_delete).pack(side='left', padx=1)
+        self.listener_action_buttons = []
+        for text, command in (
+                ('新增', self._listener_add),
+                ('复制', self._listener_duplicate),
+                ('改名', self._listener_rename),
+                ('删除', self._listener_delete)):
+            button = ttk.Button(buttons, text=text, width=5,
+                                command=command)
+            button.pack(side='left', padx=1)
+            self.listener_action_buttons.append(button)
 
         right_container, right = scrollable(pane)
         pane.add(right_container, weight=5)
@@ -556,7 +557,7 @@ class FakenetConfigApp(object):
         fakenet_frame = widgets.build_group_frame(
             self._global_inner, '[FakeNet]', schema.FAKENET_FIELDS,
             getter('FakeNet'), on_change('FakeNet'), self._hint,
-            self._registry, 'FakeNet', columns=2)
+            self._registry, 'FakeNet', columns=2, label_width=20)
         fakenet_frame.grid(row=0, column=0, sticky='nsew', padx=3, pady=3)
 
         base_groups = {}
@@ -576,7 +577,9 @@ class FakenetConfigApp(object):
             frame = widgets.build_group_frame(
                 self._global_inner, '[Diverter] · %s' % group, fields,
                 getter('Diverter'), on_change('Diverter'), self._hint,
-                self._registry, 'Diverter', columns=2)
+                self._registry, 'Diverter', columns=2,
+                label_width=(20 if group == '重定向与黑名单'
+                             else 16 if group == 'Linux' else 12))
             row, column, span = global_slots.get(
                 group, (fallback_row, 0, 2))
             frame.grid(row=row, column=column, columnspan=span,

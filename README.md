@@ -558,8 +558,11 @@ What it does:
    groups use a compact two-column layout; scrollbars appear only when the
    content actually exceeds the viewport.
  * Listener forms remain single-column with aligned, responsive fields; long
-   proxy `Listeners` values wrap without truncation. The custom-response tab
-   shows a guided empty state until a response INI is opened or created.
+   proxy `Listeners` values wrap without truncation. Compact add/copy/rename/
+   delete actions leave more width for the editor. Long labels in the global
+   two-column form use wider label columns so English tokens do not break in
+   the middle. The custom-response tab shows a guided empty state until a
+   response INI is opened or created.
  * Editing is lossless: disabled listener sections, section order,
    unknown keys, source encoding (GBK/UTF-8 BOM), line endings and `%%`
    escaping are all preserved round-trip.
