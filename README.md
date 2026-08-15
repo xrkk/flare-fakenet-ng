@@ -539,6 +539,8 @@ What it does:
  * Tabs: `全局` ([FakeNet] + base [Diverter] groups), `出站策略` (egress
    sub-policies), `监听器` (section list with add/duplicate/rename/delete
    and a type-aware field panel), `自定义响应` (custom response INI).
+ * A new window starts with valid TCP/UDP proxy listener sections, so its
+   default redirect targets are immediately launchable instead of dangling.
  * Values pinned by code (e.g. `ExternalAllowedTCPPorts=443`, the
    resource-limit tuple, SNI/IPv6/QUIC booleans) render read-only with a
    `代码强制` badge; takeover conditional locks apply automatically.
@@ -553,12 +555,13 @@ What it does:
    check (physical machine → refused; inconclusive → refused, fail-closed
    with guidance) runs before the elevated start, and a cancelled UAC
    prompt is reported instead of pretending to have launched.
- * Runtime log: every FakeNet-NG core process creates exactly one detailed
-   UTF-8 log. For the frozen release it is written under `Logs` beside
-   `fakenet.exe`, regardless of the launch directory or whether FakeNet was
-   started from the GUI, Explorer, a terminal, or a script. Source runs use
-   the repository-root `Logs` directory. Existing `-l/--log-file` remains
-   an explicit override and suppresses creation of the automatic file.
+ * Runtime logs: every GUI process and every FakeNet-NG core process creates
+   exactly one detailed UTF-8 log. For the frozen release both executables
+   write separate files under the shared `Logs` directory beside the exe,
+   regardless of the launch directory or whether FakeNet was started from
+   the GUI, Explorer, a terminal, or a script. Source runs use the
+   repository-root `Logs` directory. Existing core `-l/--log-file` remains
+   an explicit override and suppresses creation of the automatic core file.
 
 Security differences vs the PowerShell launchers (`Start-*.cmd`): the GUI
 path does NOT perform upstream DNS probing, post-stop DNS restoration

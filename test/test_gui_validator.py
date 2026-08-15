@@ -6,6 +6,15 @@ import os
 
 import pytest
 
+
+def test_new_config_has_existing_default_proxy_listeners():
+    """The model displayed at GUI startup must not contain dangling defaults."""
+    from fakenet.gui import configmodel, validator
+
+    model = configmodel.ConfigModel.new_config()
+    issues = validator.validate(model)
+    assert [issue for issue in issues if issue.level == validator.ERROR] == []
+
 from fakenet.gui import configmodel, schema, validator
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

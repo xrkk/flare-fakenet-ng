@@ -226,6 +226,29 @@ class ConfigModel(object):
         for field in schema.DIVERTER_FIELDS:
             if field.default and not field.lock and not field.advanced:
                 diverter.set(field.key, field.default)
+        proxy_tcp = model.ensure_section('ProxyTCPListener')
+        proxy_tcp.set('Enabled', 'True')
+        proxy_tcp.set('Protocol', 'TCP')
+        proxy_tcp.set('Listener', 'ProxyListener')
+        proxy_tcp.set('Port', '38926')
+        proxy_tcp.set(
+            'Listeners',
+            'HTTPListener, RawListener, FTPListener, DNSListener, '
+            'POPListener, SMTPListener, TFTPListener, IRCListener')
+        proxy_tcp.set('Hidden', 'False')
+        proxy_tcp.set('Static_CA', 'No')
+        proxy_tcp.set('CA_Cert', 'configs/fakenet_ca.crt')
+        proxy_tcp.set('CA_Key', 'configs/fakenet_ca.key')
+
+        proxy_udp = model.ensure_section('ProxyUDPListener')
+        proxy_udp.set('Enabled', 'True')
+        proxy_udp.set('Protocol', 'UDP')
+        proxy_udp.set('Listener', 'ProxyListener')
+        proxy_udp.set('Port', '38926')
+        proxy_udp.set(
+            'Listeners',
+            'RawListener, DNSListener, TFTPListener, FTPListener')
+        proxy_udp.set('Hidden', 'False')
         return model
 
     def render(self, header=None):
