@@ -552,9 +552,14 @@ What it does:
    clean and opens automatically for errors or warnings. Save and launch
    remain in a persistent bottom action bar on every tab; the bar also shows
    the current path and unsaved-change state.
- * Listener forms use aligned, responsive fields; long proxy `Listeners`
-   values wrap without truncation. The custom-response tab shows a guided
-   empty state until a response INI is opened or created.
+ * Boolean values use checkboxes while preserving their exact `Yes/No` or
+   `True/False` INI literals. Enumerated drop-downs stay content-width and
+   left-aligned instead of stretching across the form. Global and egress
+   groups use a compact two-column layout; scrollbars appear only when the
+   content actually exceeds the viewport.
+ * Listener forms remain single-column with aligned, responsive fields; long
+   proxy `Listeners` values wrap without truncation. The custom-response tab
+   shows a guided empty state until a response INI is opened or created.
  * Editing is lossless: disabled listener sections, section order,
    unknown keys, source encoding (GBK/UTF-8 BOM), line endings and `%%`
    escaping are all preserved round-trip.

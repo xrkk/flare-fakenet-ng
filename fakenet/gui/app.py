@@ -70,14 +70,32 @@ def scrollable(parent):
     canvas = tk.Canvas(container, highlightthickness=0)
     bar = ttk.Scrollbar(container, orient='vertical', command=canvas.yview)
     inner = ttk.Frame(canvas)
-    inner.bind('<Configure>', lambda _e: canvas.configure(
-        scrollregion=canvas.bbox('all')))
     window = canvas.create_window((0, 0), window=inner, anchor='nw')
     canvas.configure(yscrollcommand=bar.set)
-    canvas.bind('<Configure>', lambda e: canvas.itemconfigure(
-        window, width=e.width))
     canvas.pack(side='left', fill='both', expand=True)
-    bar.pack(side='right', fill='y')
+
+    def update_scrollbar():
+        if not canvas.winfo_exists():
+            return
+        needed = inner.winfo_reqheight() > canvas.winfo_height() + 1
+        if needed and not bar.winfo_manager():
+            bar.pack(side='right', fill='y')
+        elif not needed and bar.winfo_manager():
+            bar.pack_forget()
+
+    def inner_changed(_event=None):
+        canvas.configure(scrollregion=canvas.bbox('all'))
+        canvas.after_idle(update_scrollbar)
+
+    def canvas_changed(event):
+        canvas.itemconfigure(window, width=event.width)
+        canvas.after_idle(update_scrollbar)
+
+    inner.bind('<Configure>', inner_changed)
+    canvas.bind('<Configure>', canvas_changed)
+    container._scroll_canvas = canvas
+    container._scrollbar = bar
+    container._scroll_inner = inner
 
     def wheel(event):
         first, last = canvas.yview()
@@ -284,13 +302,20 @@ class FakenetConfigApp(object):
     def _build_global_tab(self):
         container, inner = scrollable(self.notebook)
         self.notebook.add(container, text='全局')
+        self._global_scroll = container
         self._global_inner = inner
 
     def _build_egress_tab(self):
         container, inner = scrollable(self.notebook)
         self.notebook.add(container, text='出站策略')
-        ttk.Button(inner, text='一键补齐必需监听器(DomainEgressRelay + 2×DNS)',
-                   command=self.autofix_topology).pack(anchor='w', pady=4)
+        self._egress_scroll = container
+        inner.columnconfigure(0, weight=1, uniform='egress-group')
+        inner.columnconfigure(1, weight=1, uniform='egress-group')
+        self._egress_topology_button = ttk.Button(
+            inner, text='一键补齐必需监听器(DomainEgressRelay + 2×DNS)',
+            command=self.autofix_topology)
+        self._egress_topology_button.grid(
+            row=0, column=0, columnspan=2, sticky='w', padx=4, pady=3)
         self._egress_inner = inner
 
     def _build_listeners_tab(self):
@@ -506,10 +531,14 @@ class FakenetConfigApp(object):
     def _render_static_tabs(self):
         for child in self._global_inner.winfo_children():
             child.destroy()
-        for child in self._egress_inner.winfo_children()[1:]:
-            child.destroy()
+        for child in self._egress_inner.winfo_children():
+            if child is not self._egress_topology_button:
+                child.destroy()
         self._egress_widgets = {}
         self._registry = {}
+        for column in range(2):
+            self._global_inner.columnconfigure(
+                column, weight=1, uniform='global-group')
 
         def getter(section):
             return lambda key: (self.model.section(section).get(key, '') or
@@ -527,33 +556,63 @@ class FakenetConfigApp(object):
         fakenet_frame = widgets.build_group_frame(
             self._global_inner, '[FakeNet]', schema.FAKENET_FIELDS,
             getter('FakeNet'), on_change('FakeNet'), self._hint,
-            self._registry, 'FakeNet')
-        fakenet_frame.pack(fill='x', pady=4)
+            self._registry, 'FakeNet', columns=2)
+        fakenet_frame.grid(row=0, column=0, sticky='nsew', padx=3, pady=3)
 
         base_groups = {}
         for field in schema.DIVERTER_FIELDS:
             if field.group in schema.egress_group_names():
                 continue
             base_groups.setdefault(field.group, []).append(field)
+        global_slots = {
+            '基础': (0, 1, 1),
+            '抓包': (1, 0, 1),
+            'DNS与网关': (1, 1, 1),
+            '重定向与黑名单': (2, 0, 2),
+            'Linux': (3, 0, 2),
+        }
+        fallback_row = 4
         for group, fields in base_groups.items():
             frame = widgets.build_group_frame(
                 self._global_inner, '[Diverter] · %s' % group, fields,
                 getter('Diverter'), on_change('Diverter'), self._hint,
-                self._registry, 'Diverter')
-            frame.pack(fill='x', pady=4)
+                self._registry, 'Diverter', columns=2)
+            row, column, span = global_slots.get(
+                group, (fallback_row, 0, 2))
+            frame.grid(row=row, column=column, columnspan=span,
+                       sticky='nsew', padx=3, pady=3)
+            if group not in global_slots:
+                fallback_row += 1
 
         egress_groups = {}
         for field in schema.DIVERTER_FIELDS:
             if field.group not in schema.egress_group_names():
                 continue
             egress_groups.setdefault(field.group, []).append(field)
+        egress_stack = ttk.Frame(self._egress_inner)
+        egress_stack.grid(row=2, column=0, sticky='nsew', padx=3, pady=3)
+        egress_stack.columnconfigure(0, weight=1)
+        fallback_row = 3
         for group in schema.egress_group_names():
             fields = egress_groups.get(group, [])
+            parent = egress_stack if group in ('私网接管', '公网IPv4放行') \
+                else self._egress_inner
             frame = widgets.build_group_frame(
-                self._egress_inner, group, fields,
+                parent, group, fields,
                 getter('Diverter'), on_change('Diverter'), self._hint,
-                self._registry, 'Diverter')
-            frame.pack(fill='x', pady=4)
+                self._registry, 'Diverter', columns=2,
+                label_width=16 if group == '域名放行' else 12)
+            if group == '域名放行':
+                frame.grid(row=1, column=0, columnspan=2,
+                           sticky='nsew', padx=3, pady=3)
+            elif group in ('私网接管', '公网IPv4放行'):
+                frame.pack(fill='x', pady=(0, 4))
+            elif group == '进程重定向':
+                frame.grid(row=2, column=1, sticky='nsew', padx=3, pady=3)
+            else:
+                frame.grid(row=fallback_row, column=0, columnspan=2,
+                           sticky='nsew', padx=3, pady=3)
+                fallback_row += 1
             for field in fields:
                 self._egress_widgets[field.key] = \
                     self._registry[('Diverter', field.key.lower())]

@@ -109,3 +109,81 @@ def test_proxy_listener_list_is_full_width_multiline_editor():
         assert field.input.cget('wrap') == 'word'
     finally:
         root.destroy()
+
+
+def test_boolean_fields_use_checkboxes_and_preserve_literals():
+    root, application = _construct_app()
+    try:
+        true_false = application._registry[
+            ('ProxyTCPListener', 'enabled')]
+        application._render_static_tabs()
+        yes_no = application._registry[('FakeNet', 'diverttraffic')]
+        assert isinstance(yes_no.input, tkinter.ttk.Checkbutton)
+        assert isinstance(true_false.input, tkinter.ttk.Checkbutton)
+
+        yes_no.set('Yes')
+        assert yes_no.get() == 'Yes'
+        yes_no.input.invoke()
+        assert yes_no.get() == 'No'
+        assert application.model.fakenet().get('DivertTraffic') == 'No'
+
+        true_false.set('True')
+        assert true_false.get() == 'True'
+        true_false.input.invoke()
+        assert true_false.get() == 'False'
+        assert application.model.section(
+            'ProxyTCPListener').get('Enabled') == 'False'
+    finally:
+        root.destroy()
+
+
+def test_enum_combobox_is_content_width_and_left_aligned():
+    root, application = _construct_app()
+    try:
+        application._render_static_tabs()
+        network_mode = application._registry[('Diverter', 'networkmode')]
+        assert isinstance(network_mode.input, tkinter.ttk.Combobox)
+        assert 10 <= int(network_mode.input.cget('width')) <= 32
+        assert network_mode.input.grid_info()['sticky'] == 'w'
+    finally:
+        root.destroy()
+
+
+def test_static_groups_are_two_column_but_listener_is_single_column():
+    root, application = _construct_app()
+    try:
+        enabled = application._registry[('ProxyTCPListener', 'enabled')]
+        protocol = application._registry[('ProxyTCPListener', 'protocol')]
+        application._render_static_tabs()
+        network_mode = application._registry[('Diverter', 'networkmode')]
+        debug_level = application._registry[('Diverter', 'debuglevel')]
+        assert network_mode.grid_info()['row'] == debug_level.grid_info()['row']
+        assert {network_mode.grid_info()['column'],
+                debug_level.grid_info()['column']} == {0, 1}
+
+        image_path = application._registry[
+            ('Diverter', 'externalprocessredirectimagepath')]
+        assert image_path.grid_info()['columnspan'] == 2
+
+        assert enabled.grid_info()['column'] == 0
+        assert protocol.grid_info()['column'] == 0
+    finally:
+        root.destroy()
+
+
+def test_compact_static_tabs_hide_unneeded_scrollbars_at_default_size():
+    root, application = _construct_app()
+    try:
+        _remove_new_config_path_warnings(application)
+        application._validate_now()
+        root.geometry('980x700')
+        root.deiconify()
+        application.notebook.select(application._global_scroll)
+        root.update()
+        assert application._global_scroll._scrollbar.winfo_manager() == ''
+
+        application.notebook.select(application._egress_scroll)
+        root.update()
+        assert application._egress_scroll._scrollbar.winfo_manager() == ''
+    finally:
+        root.destroy()
