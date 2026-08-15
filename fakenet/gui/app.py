@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""fakenet-GUI main window (plan v1.10 §5.4/§12.14).
+"""fakenet-GUI main window (plan v1.11 §5.4/§12.15).
 
 Chinese UI.  Tabs: 全局 ([FakeNet] + [Diverter] base groups), 出站策略
 (egress sub-groups with smart locking and topology auto-fix), 监听器
@@ -325,17 +325,6 @@ class FakenetConfigApp(object):
         self._egress_scroll = container
         inner.columnconfigure(0, weight=1, uniform='egress-group')
         inner.columnconfigure(1, weight=1, uniform='egress-group')
-        self._egress_topology_button = ttk.Button(
-            inner, text='一键补齐必需监听器(DomainEgressRelay + 2×DNS)',
-            command=self.autofix_topology)
-        self._egress_topology_button.grid(
-            row=0, column=0, columnspan=2, sticky='w', padx=4, pady=3)
-        widgets.attach_tooltip(
-            self._egress_topology_button,
-            '一键补齐必需监听器\n创建或启用 1 个 DomainEgressRelay、'
-            'UDP/53 与 TCP/53 各 1 个 DNSListener;私网接管时仅补空的 '
-            'ResponseA。此按钮不会启用出站策略。',
-            self._hint, '补齐 DomainAllowList 必需的 relay 与 DNS 监听器')
         self._egress_inner = inner
 
     def _build_listeners_tab(self):
@@ -527,8 +516,6 @@ class FakenetConfigApp(object):
         policy = (diverter.get('ExternalAccessPolicy') or
                    'Disabled').strip().lower() == 'domainallowlist'
         takeover = bool((diverter.get('ExternalTakeoverIPv4') or '').strip())
-        self._egress_topology_button.state(
-            ['!disabled'] if policy else ['disabled'])
         for key, widget in self._egress_widgets.items():
             field = schema.diverter_field(key)
             if field is None:
@@ -550,13 +537,14 @@ class FakenetConfigApp(object):
             else:
                 widget.set_locked(not policy)
 
-    def _sync_active_egress_locks(self):
-        """Write UI-enforced values after an explicit egress edit."""
+    def _sync_active_egress_policy(self):
+        """Materialize enforced values and topology for an active policy."""
         diverter = self.model.diverter()
         policy = (diverter.get('ExternalAccessPolicy') or
                   'Disabled').strip().lower() == 'domainallowlist'
         if not policy:
-            return
+            return []
+        changes = []
         values = dict(schema.LOCKED_FIELD_VALUES)
         if (diverter.get('ExternalTakeoverIPv4') or '').strip():
             values.update({
@@ -566,9 +554,14 @@ class FakenetConfigApp(object):
         for key, value in values.items():
             if diverter.get(key) != value:
                 diverter.set(key, value)
+                changes.append('[Diverter] %s 已同步为 %s' % (key, value))
             widget = self._egress_widgets.get(key)
             if widget is not None and widget.get() != value:
                 widget.set(value)
+        changes.extend(validator.ensure_domain_allowlist_topology(self.model))
+        if changes:
+            self._hint('已自动补齐 DomainAllowList 必需配置')
+        return changes
 
     # ------------------------------------------------------------------
     # global / egress tabs render
@@ -578,8 +571,7 @@ class FakenetConfigApp(object):
         for child in self._global_inner.winfo_children():
             child.destroy()
         for child in self._egress_inner.winfo_children():
-            if child is not self._egress_topology_button:
-                child.destroy()
+            child.destroy()
         self._egress_widgets = {}
         self._registry = {}
         for column in range(2):
@@ -598,7 +590,9 @@ class FakenetConfigApp(object):
                 field = schema.diverter_field(key) \
                     if section == 'Diverter' else None
                 if field and field.group in schema.egress_group_names():
-                    self._sync_active_egress_locks()
+                    changes = self._sync_active_egress_policy()
+                    if changes:
+                        self._refresh_listener_list()
                     self._refresh_locks()
                 self._mark_dirty()
                 self._schedule_validate()
@@ -643,9 +637,9 @@ class FakenetConfigApp(object):
                 continue
             egress_groups.setdefault(field.group, []).append(field)
         egress_stack = ttk.Frame(self._egress_inner)
-        egress_stack.grid(row=2, column=0, sticky='nsew', padx=3, pady=3)
+        egress_stack.grid(row=1, column=0, sticky='nsew', padx=3, pady=3)
         egress_stack.columnconfigure(0, weight=1)
-        fallback_row = 3
+        fallback_row = 2
         for group in schema.egress_group_names():
             fields = egress_groups.get(group, [])
             parent = egress_stack if group in ('私网接管', '公网IPv4放行') \
@@ -656,12 +650,12 @@ class FakenetConfigApp(object):
                 self._registry, 'Diverter', columns=2,
                 label_width=16 if group == '域名放行' else 12)
             if group == '域名放行':
-                frame.grid(row=1, column=0, columnspan=2,
+                frame.grid(row=0, column=0, columnspan=2,
                            sticky='nsew', padx=3, pady=3)
             elif group in ('私网接管', '公网IPv4放行'):
                 frame.pack(fill='x', pady=(0, 4))
             elif group == '进程重定向':
-                frame.grid(row=2, column=1, sticky='nsew', padx=3, pady=3)
+                frame.grid(row=1, column=1, sticky='nsew', padx=3, pady=3)
             else:
                 frame.grid(row=fallback_row, column=0, columnspan=2,
                            sticky='nsew', padx=3, pady=3)
@@ -898,15 +892,6 @@ class FakenetConfigApp(object):
             return ''
         return name
 
-    def autofix_topology(self):
-        changes = validator.ensure_domain_allowlist_topology(self.model)
-        self._mark_dirty()
-        self._render_static_tabs()
-        self._refresh_listener_list()
-        self._schedule_validate()
-        messagebox.showinfo(
-            '一键补齐', '\n'.join(changes) if changes else '拓扑已完整,无需补齐')
-
     # ------------------------------------------------------------------
     # custom response tab
     # ------------------------------------------------------------------
@@ -1113,17 +1098,23 @@ class FakenetConfigApp(object):
         model.ensure_sections()
         self.model = model
         self._selected_listener = None
-        self._rebuild_all()
-        self._clear_dirty()
+        changes = self._rebuild_all()
+        if changes:
+            self._mark_dirty()
+        else:
+            self._clear_dirty()
 
     def _rebuild_all(self):
+        changes = []
         self._building = True
         try:
             self._render_static_tabs()
+            changes = self._sync_active_egress_policy()
         finally:
             self._building = False
         self._refresh_listener_list()
         self._validate_now()
+        return changes
 
     def _confirm_discard(self):
         if not self.dirty:
@@ -1391,7 +1382,7 @@ class FakenetConfigApp(object):
     def _about(self):
         messagebox.showinfo(
             '关于', 'FakeNet-NG 配置工具\n\n可视化编辑 FakeNet-NG INI 配置并'
-            '启动(带 VM/重复实例安全门)。\n方案: PLAN/2026.08.14 v1.10')
+            '启动(带 VM/重复实例安全门)。\n方案: PLAN/2026.08.14 v1.11')
 
     def _on_close(self):
         if self.dirty and not messagebox.askyesno('退出',

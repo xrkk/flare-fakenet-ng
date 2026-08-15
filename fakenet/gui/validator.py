@@ -360,8 +360,7 @@ def _check_policy_topology(model, relay_port):
         issues.append(Issue(
             ERROR, 'Diverter', 'ExternalAccessPolicy',
             '拓扑要求恰好 1 个已启用的 DomainEgressRelay 监听器段'
-            '(当前 %d 个,可用界面上的"一键补齐必需监听器"按钮)'
-            % len(relays)))
+            '(当前 %d 个)' % len(relays)))
     else:
         relay = relays[0]
         if (relay.get('Protocol') or '').upper() != 'TCP':
@@ -797,7 +796,7 @@ def validate(model):
 
 
 def ensure_domain_allowlist_topology(model):
-    """One-click provisioning (§5.3): relay + 2x DNS sections."""
+    """Idempotent automatic provisioning (§12.15): relay + 2x DNS."""
     changes = []
     diverter = model.diverter()
     relay_port = (diverter.get('ExternalRelayPort') or '38927').strip() \

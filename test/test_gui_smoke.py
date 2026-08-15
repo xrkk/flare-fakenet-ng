@@ -393,47 +393,77 @@ def test_host_visual_density_uses_wide_labels_and_compact_actions():
         root.destroy()
 
 
-def test_domain_allowlist_activation_materializes_locks_before_autofix(
-        monkeypatch):
-    from fakenet.gui import app as app_module, schema, validator
+def test_domain_allowlist_activation_materializes_locks_and_topology():
+    from fakenet.gui import schema, validator
 
     root, application = _construct_app()
     try:
         application._render_static_tabs()
-        monkeypatch.setattr(
-            app_module.messagebox, 'showinfo',
-            lambda *_args, **_kwargs: None)
-        assert application._egress_topology_button.instate(['disabled'])
-        assert '不会启用出站策略' in \
-            application._egress_topology_button._hover_help.text
+        assert not hasattr(application, '_egress_topology_button')
         policy = application._registry[
             ('Diverter', 'externalaccesspolicy')]
         policy.set('DomainAllowList')
         policy._changed()
-        assert not application._egress_topology_button.instate(['disabled'])
         application._validate_now()
 
         assert application.model.diverter().get(
             'ExternalAllowedTCPPorts') == '443'
         assert all(application.model.diverter().get(key) == value
                    for key, value in schema.LOCKED_FIELD_VALUES.items())
-        errors = [issue for issue in application._issues
-                  if issue.level == validator.ERROR]
-        assert not any(issue.key == 'ExternalAllowedTCPPorts'
-                       for issue in errors)
-        assert sum(issue.key == 'ExternalAccessPolicy'
-                   for issue in errors) == 2
-
-        application.autofix_topology()
-        application._validate_now()
         assert not [issue for issue in application._issues
                     if issue.level == validator.ERROR]
 
+        enabled = [
+            sec for sec in application.model.listener_sections()
+            if (sec.get('Enabled') or '').lower() == 'true']
+        assert sum((sec.get('Listener') or '') == 'DomainEgressRelay'
+                   for sec in enabled) == 1
+        assert sum((sec.get('Listener') or '') == 'DNSListener' and
+                   (sec.get('Protocol') or '').upper() == 'UDP' and
+                   sec.get('Port') == '53' for sec in enabled) == 1
+        assert sum((sec.get('Listener') or '') == 'DNSListener' and
+                   (sec.get('Protocol') or '').upper() == 'TCP' and
+                   sec.get('Port') == '53' for sec in enabled) == 1
+
+        section_count = len(application.model.listener_sections())
+        dns_server = application._egress_widgets['ExternalDnsServer']
+        dns_server.set('8.8.8.8')
+        dns_server._changed()
+        application._validate_now()
+        assert not [issue for issue in application._issues
+                    if issue.level == validator.ERROR]
+        assert len(application.model.listener_sections()) == section_count
+
         policy.set('Disabled')
         policy._changed()
-        assert application._egress_topology_button.instate(['disabled'])
         assert application.model.diverter().get(
             'ExternalAllowedTCPPorts') == '443'
+        assert sum((sec.get('Listener') or '') == 'DomainEgressRelay'
+                   for sec in application.model.listener_sections()) == 1
+    finally:
+        root.destroy()
+
+
+def test_loading_active_policy_auto_repairs_in_memory_and_marks_dirty(
+        tmp_path):
+    from fakenet.gui import configmodel, schema, validator
+
+    path = tmp_path / 'active-missing-topology.ini'
+    model = configmodel.ConfigModel.new_config()
+    model.diverter().set('ExternalAccessPolicy', 'DomainAllowList')
+    for key, value in schema.LOCKED_FIELD_VALUES.items():
+        model.diverter().set(key, value)
+    model.save(str(path))
+    before = path.read_bytes()
+
+    root, application = _construct_app()
+    try:
+        application._load_path(str(path))
+        assert path.read_bytes() == before
+        assert application.dirty
+        assert '未保存修改' in application.file_status_var.get()
+        assert not [issue for issue in application._issues
+                    if issue.level == validator.ERROR]
     finally:
         root.destroy()
 
@@ -443,11 +473,11 @@ def test_takeover_edit_materializes_conditional_locked_values():
     try:
         application._render_static_tabs()
         for key, value in (
-                ('externalaccesspolicy', 'DomainAllowList'),
-                ('externalalloweddomains', 'example.com'),
-                ('externalnonallowedaction', 'Drop'),
-                ('externaltakeoveripv4', '192.168.204.1')):
-            widget = application._registry[('Diverter', key)]
+                ('ExternalAccessPolicy', 'DomainAllowList'),
+                ('ExternalAllowedDomains', 'example.com'),
+                ('ExternalNonAllowedAction', 'Drop'),
+                ('ExternalTakeoverIPv4', '192.168.204.1')):
+            widget = application._egress_widgets[key]
             widget.set(value)
             widget._changed()
 
