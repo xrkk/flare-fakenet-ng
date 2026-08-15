@@ -485,6 +485,8 @@ class FakenetConfigApp(object):
         self.copy_all_button.state(button_state)
         self.copy_selected_button.state(button_state)
         if self._issues:
+            if not self.validation_toggle_button.winfo_manager():
+                self.validation_toggle_button.pack(side='right')
             if not self.validation_issue_actions.winfo_manager():
                 self.validation_issue_actions.pack(
                     side='right', padx=(4, 0),
@@ -493,6 +495,7 @@ class FakenetConfigApp(object):
                 self._set_validation_expanded(True)
         else:
             self.validation_issue_actions.pack_forget()
+            self.validation_toggle_button.pack_forget()
             self._validation_manually_collapsed = False
             self._set_validation_expanded(False)
         self._refresh_locks()
@@ -690,8 +693,13 @@ class FakenetConfigApp(object):
                     var = tk.StringVar(value=sec.get(key) or '')
                     var.trace_add('write', lambda *_a, k=key, v=var:
                                   self._on_extra_key(sec.name, k, v))
-                    ttk.Entry(row, textvariable=var).pack(
-                        side='left', fill='x', expand=True)
+                    entry = ttk.Entry(row, textvariable=var)
+                    entry.pack(side='left', fill='x', expand=True)
+                    extra_hint = ('schema 未识别的扩展配置项;保存时原样写回,'
+                                  '不转换也不校验')
+                    widgets.attach_tooltip(
+                        row, '%s\n%s' % (key, extra_hint),
+                        self._hint, extra_hint)
                 ttk.Label(box, style='Muted.TLabel',
                           text='提示:额外键保存时原样写回,不做任何转换')\
                     .pack(anchor='w', padx=6)

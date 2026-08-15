@@ -151,6 +151,18 @@ def test_locked_field_flags_consistent():
             assert str(int(field.default)) == value
 
 
+def test_every_visible_schema_field_has_help_text():
+    groups = [schema.FAKENET_FIELDS, schema.DIVERTER_FIELDS,
+              schema.LISTENER_COMMON_FIELDS,
+              schema.CUSTOM_RESPONSE_FIELDS]
+    groups.extend(schema.LISTENER_TYPE_FIELDS.values())
+    fields = [field for group in groups for field in group]
+    assert len(fields) == 117
+    missing = [field.key for field in fields
+               if not (field.hint or '').strip()]
+    assert missing == []
+
+
 # ---------------------------------------------------------------------------
 # End-to-end anchor (§6): the four functional profiles, with their build-time
 # placeholders substituted by reviewed values, must validate clean through

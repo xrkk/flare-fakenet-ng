@@ -548,10 +548,13 @@ What it does:
    paths, non-ASCII values, BOM, bare `%`) do not. Double-click an issue
    to jump to the field. A `一键补齐必需监听器` button provisions the
    DomainAllowList topology (relay + 2x53 DNS listeners).
- * The validation details drawer stays collapsed when the configuration is
-   clean and opens automatically for errors or warnings. Save and launch
-   remain in a persistent bottom action bar on every tab; the bar also shows
-   the current path and unsaved-change state.
+ * Hover over any field label or editor to see its purpose, accepted format,
+   conditions and important constraints. Unknown listener extension keys get
+   a preservation notice instead of invented semantics.
+ * The validation details drawer and its `展开详情` action are hidden while the
+   configuration is clean, then appear automatically for errors or warnings.
+   Save and launch remain in a persistent bottom action bar on every tab; the
+   bar also shows the current path and unsaved-change state.
  * Boolean values use checkboxes while preserving their exact `Yes/No` or
    `True/False` INI literals. Enumerated drop-downs stay content-width and
    left-aligned instead of stretching across the form. Global and egress

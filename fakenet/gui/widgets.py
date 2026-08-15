@@ -14,6 +14,99 @@ from tkinter import ttk, filedialog, messagebox
 from fakenet.gui import schema
 
 
+class _HoverHelp(object):
+    """One delayed, non-focus-stealing tooltip shared by a field tree."""
+
+    DELAY_MS = 450
+
+    def __init__(self, owner, text, on_hover=None, status_text=None):
+        self.owner = owner
+        self.text = text
+        self.on_hover = on_hover
+        self.status_text = status_text or text
+        self.window = None
+        self._job = None
+        self.bind_tree(owner)
+        owner.bind('<Destroy>', self._destroy, add='+')
+
+    def bind_tree(self, widget):
+        widget.bind('<Enter>', self._enter, add='+')
+        widget.bind('<Leave>', self._leave, add='+')
+        widget.bind('<ButtonPress>', self._leave, add='+')
+        for child in widget.winfo_children():
+            self.bind_tree(child)
+
+    def _enter(self, _event=None):
+        self._cancel()
+        self._hide()
+        if self.on_hover:
+            self.on_hover(self.status_text)
+        if self.text:
+            self._job = self.owner.after(self.DELAY_MS, self._show)
+
+    def _leave(self, _event=None):
+        self._cancel()
+        self._hide()
+
+    def _cancel(self):
+        if self._job is not None:
+            try:
+                self.owner.after_cancel(self._job)
+            except tk.TclError:
+                pass
+            self._job = None
+
+    def _show(self):
+        self._cancel()
+        if self.window is not None or not self.owner.winfo_exists():
+            return
+        window = tk.Toplevel(self.owner)
+        window.wm_overrideredirect(True)
+        try:
+            window.wm_attributes('-topmost', True)
+        except tk.TclError:
+            pass
+        tk.Label(
+            window, text=self.text, justify='left', anchor='w',
+            background='#FFFFE1', foreground='#1F2937',
+            relief='solid', borderwidth=1, padx=8, pady=6,
+            wraplength=420, font=('Microsoft YaHei UI', 9)).pack()
+        window.update_idletasks()
+
+        x = self.owner.winfo_pointerx() + 14
+        y = self.owner.winfo_pointery() + 18
+        left = self.owner.winfo_vrootx() + 8
+        top = self.owner.winfo_vrooty() + 8
+        right = (self.owner.winfo_vrootx() +
+                 self.owner.winfo_vrootwidth() - 8)
+        bottom = (self.owner.winfo_vrooty() +
+                  self.owner.winfo_vrootheight() - 8)
+        x = max(left, min(x, right - window.winfo_reqwidth()))
+        y = max(top, min(y, bottom - window.winfo_reqheight()))
+        window.wm_geometry('%+d%+d' % (x, y))
+        self.window = window
+
+    def _hide(self):
+        if self.window is not None:
+            try:
+                self.window.destroy()
+            except tk.TclError:
+                pass
+            self.window = None
+
+    def _destroy(self, event=None):
+        if event is None or event.widget is self.owner:
+            self._cancel()
+            self._hide()
+
+
+def attach_tooltip(owner, text, on_hover=None, status_text=None):
+    """Attach hover help to an existing widget tree and keep it alive."""
+    tooltip = _HoverHelp(owner, text, on_hover, status_text)
+    owner._hover_help = tooltip
+    return tooltip
+
+
 class FieldWidget(ttk.Frame):
 
     def __init__(self, parent, field, value='', on_change=None,
@@ -90,6 +183,9 @@ class FieldWidget(ttk.Frame):
                 .grid(row=1, column=1, sticky='w')
         for widget in (self.input, self.label):
             widget.bind('<FocusIn>', self._focused)
+        self.tooltip = attach_tooltip(
+            self, '%s\n%s' % (field.label, field.hint),
+            on_focus, field.hint)
 
     # -- events --------------------------------------------------------------
 
@@ -151,6 +247,7 @@ class FieldWidget(ttk.Frame):
             self._lock_badge = ttk.Label(self, text=badge,
                                           style='Locked.TLabel')
             self._lock_badge.grid(row=0, column=2, sticky='w', padx=(6, 0))
+            self.tooltip.bind_tree(self._lock_badge)
 
     def _apply_state(self, widget, state):
         try:

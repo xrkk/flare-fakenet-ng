@@ -48,11 +48,13 @@ def test_validation_drawer_auto_and_manual_states():
         assert not application._validation_expanded
         assert application.validation_body.winfo_manager() == ''
         assert application.validation_issue_actions.winfo_manager() == ''
+        assert application.validation_toggle_button.winfo_manager() == ''
 
         application.model.diverter().set(
             'DefaultTCPListener', 'MissingListener')
         application._validate_now()
         assert application._validation_expanded
+        assert application.validation_toggle_button.winfo_manager() == 'pack'
         assert application.validation_body.winfo_manager() == 'pack'
         assert application.validation_issue_actions.winfo_manager() == 'pack'
 
@@ -204,5 +206,48 @@ def test_host_visual_density_uses_wide_labels_and_compact_actions():
         assert [button.cget('text') for button in buttons] == [
             '新增', '复制', '改名', '删除']
         assert all(int(button.cget('width')) == 5 for button in buttons)
+    finally:
+        root.destroy()
+
+
+def test_field_tooltip_shows_help_and_updates_status_hint():
+    root, application = _construct_app()
+    try:
+        application._render_static_tabs()
+        field = application._registry[('Diverter', 'networkmode')]
+        tooltip = field.tooltip
+        tooltip._enter()
+        assert application.hint_var.get() == field.field.hint
+        tooltip._show()
+        root.update_idletasks()
+        assert tooltip.window is not None
+        assert field.field.label in tooltip.text
+        assert field.field.hint in tooltip.text
+        tooltip._leave()
+        assert tooltip.window is None
+    finally:
+        root.destroy()
+
+
+def test_unknown_listener_extra_key_has_preservation_tooltip():
+    root, application = _construct_app()
+    try:
+        section = application.model.section('ProxyTCPListener')
+        section.set('VendorExtension', 'kept verbatim')
+        application._selected_listener = section.name
+        application._render_listener_panel()
+
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+
+        helps = [widget._hover_help
+                 for widget in descendants(application._listener_inner)
+                 if hasattr(widget, '_hover_help')]
+        assert any('VendorExtension' in help_.text and
+                   '原样写回' in help_.text and
+                   '不校验' in help_.text
+                   for help_ in helps)
     finally:
         root.destroy()
