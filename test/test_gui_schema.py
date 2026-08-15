@@ -151,6 +151,18 @@ def test_locked_field_flags_consistent():
             assert str(int(field.default)) == value
 
 
+def test_egress_policy_switch_schema_preserves_ini_literals():
+    field = schema.diverter_field('ExternalAccessPolicy')
+    assert field.wtype == schema.T_BOOL_POLICY
+    assert field.label == '出站策略总开关'
+    assert field.group == '基础策略'
+    assert field.default == schema.EGRESS_POLICY_DISABLED == 'Disabled'
+    assert field.enum == (
+        schema.EGRESS_POLICY_DISABLED, schema.EGRESS_POLICY_ENABLED)
+    assert schema.EGRESS_POLICY_ENABLED == 'DomainAllowList'
+    assert schema.egress_group_names()[0] == '基础策略'
+
+
 def test_every_visible_schema_field_has_help_text():
     groups = [schema.FAKENET_FIELDS, schema.DIVERTER_FIELDS,
               schema.LISTENER_COMMON_FIELDS,

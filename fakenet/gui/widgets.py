@@ -127,11 +127,19 @@ class FieldWidget(ttk.Frame):
         self.label.grid(row=0, column=0, sticky='ne', padx=(0, 6), pady=1)
 
         wtype = field.wtype
-        if wtype in (schema.T_BOOL_YESNO, schema.T_BOOL_TRUEFALSE):
-            values = (('Yes', 'No') if wtype == schema.T_BOOL_YESNO
-                      else ('True', 'False'))
+        if wtype in (schema.T_BOOL_YESNO, schema.T_BOOL_TRUEFALSE,
+                     schema.T_BOOL_POLICY):
+            if wtype == schema.T_BOOL_YESNO:
+                values = ('Yes', 'No')
+            elif wtype == schema.T_BOOL_TRUEFALSE:
+                values = ('True', 'False')
+            else:
+                values = (schema.EGRESS_POLICY_ENABLED,
+                          schema.EGRESS_POLICY_DISABLED)
             self._bool_literals = values
-            self.variable = tk.BooleanVar(value=value != values[1])
+            checked = value == values[0] if wtype == schema.T_BOOL_POLICY \
+                else value != values[1]
+            self.variable = tk.BooleanVar(value=checked)
             self.input = ttk.Checkbutton(
                 self, text='启用', variable=self.variable,
                 command=self._changed, takefocus=True)
@@ -230,7 +238,10 @@ class FieldWidget(ttk.Frame):
             self.input.delete('1.0', 'end')
             self.input.insert('1.0', value)
         elif self._bool_literals:
-            self.variable.set(value != self._bool_literals[1])
+            checked = value == self._bool_literals[0] \
+                if self.field.wtype == schema.T_BOOL_POLICY \
+                else value != self._bool_literals[1]
+            self.variable.set(checked)
         else:
             self.variable.set(value)
 

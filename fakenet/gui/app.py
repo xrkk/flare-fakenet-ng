@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""fakenet-GUI main window (plan v1.11 §5.4/§12.15).
+"""fakenet-GUI main window (plan v1.12 §5.4/§12.16).
 
 Chinese UI.  Tabs: 全局 ([FakeNet] + [Diverter] base groups), 出站策略
 (egress sub-groups with smart locking and topology auto-fix), 监听器
@@ -514,7 +514,8 @@ class FakenetConfigApp(object):
             return
         diverter = self.model.diverter()
         policy = (diverter.get('ExternalAccessPolicy') or
-                   'Disabled').strip().lower() == 'domainallowlist'
+                  schema.EGRESS_POLICY_DISABLED).strip().lower() == \
+            schema.EGRESS_POLICY_ENABLED.lower()
         takeover = bool((diverter.get('ExternalTakeoverIPv4') or '').strip())
         for key, widget in self._egress_widgets.items():
             field = schema.diverter_field(key)
@@ -541,7 +542,8 @@ class FakenetConfigApp(object):
         """Materialize enforced values and topology for an active policy."""
         diverter = self.model.diverter()
         policy = (diverter.get('ExternalAccessPolicy') or
-                  'Disabled').strip().lower() == 'domainallowlist'
+                  schema.EGRESS_POLICY_DISABLED).strip().lower() == \
+            schema.EGRESS_POLICY_ENABLED.lower()
         if not policy:
             return []
         changes = []
@@ -560,7 +562,7 @@ class FakenetConfigApp(object):
                 widget.set(value)
         changes.extend(validator.ensure_domain_allowlist_topology(self.model))
         if changes:
-            self._hint('已自动补齐 DomainAllowList 必需配置')
+            self._hint('已自动补齐出站策略必需配置')
         return changes
 
     # ------------------------------------------------------------------
@@ -648,8 +650,8 @@ class FakenetConfigApp(object):
                 parent, group, fields,
                 getter('Diverter'), on_change('Diverter'), self._hint,
                 self._registry, 'Diverter', columns=2,
-                label_width=16 if group == '域名放行' else 12)
-            if group == '域名放行':
+                label_width=16 if group == '基础策略' else 12)
+            if group == '基础策略':
                 frame.grid(row=0, column=0, columnspan=2,
                            sticky='nsew', padx=3, pady=3)
             elif group in ('私网接管', '公网IPv4放行'):
@@ -1382,7 +1384,7 @@ class FakenetConfigApp(object):
     def _about(self):
         messagebox.showinfo(
             '关于', 'FakeNet-NG 配置工具\n\n可视化编辑 FakeNet-NG INI 配置并'
-            '启动(带 VM/重复实例安全门)。\n方案: PLAN/2026.08.14 v1.11')
+            '启动(带 VM/重复实例安全门)。\n方案: PLAN/2026.08.14 v1.12')
 
     def _on_close(self):
         if self.dirty and not messagebox.askyesno('退出',

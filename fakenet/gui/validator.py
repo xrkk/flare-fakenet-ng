@@ -274,7 +274,7 @@ def _check_policy_core(model, issues):
     if divert.lower() != 'yes':
         issues.append(Issue(
             ERROR, 'FakeNet', 'DivertTraffic',
-            'DomainAllowList 模式要求 DivertTraffic=Yes(代码只认小写比较 '
+            '出站策略启用时要求 DivertTraffic=Yes(代码只认小写比较 '
             "'yes')"))
 
     for key, expected in schema.LOCKED_FIELD_VALUES.items():
@@ -287,7 +287,7 @@ def _check_policy_core(model, issues):
             if key == 'ExternalAllowedTCPPorts':
                 issues.append(Issue(
                     ERROR, 'Diverter', key,
-                    'DomainAllowList 模式要求显式为 %r(缺省即被 '
+                    '出站策略启用时要求显式为 %r(缺省即被 '
                     'egresspolicy 拒绝)' % expected))
                 continue
             field = schema.diverter_field(key)
@@ -313,7 +313,7 @@ def _check_policy_core(model, issues):
     if not domains:
         issues.append(Issue(
             ERROR, 'Diverter', 'ExternalAllowedDomains',
-            'DomainAllowList 模式必填'))
+            '出站策略启用时必填'))
     for domain in domains:
         if not _valid_hostname(domain):
             issues.append(Issue(

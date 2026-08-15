@@ -393,8 +393,8 @@ def test_host_visual_density_uses_wide_labels_and_compact_actions():
         root.destroy()
 
 
-def test_domain_allowlist_activation_materializes_locks_and_topology():
-    from fakenet.gui import schema, validator
+def test_egress_policy_checkbox_materializes_locks_and_topology(tmp_path):
+    from fakenet.gui import configmodel, schema, validator
 
     root, application = _construct_app()
     try:
@@ -402,10 +402,15 @@ def test_domain_allowlist_activation_materializes_locks_and_topology():
         assert not hasattr(application, '_egress_topology_button')
         policy = application._registry[
             ('Diverter', 'externalaccesspolicy')]
-        policy.set('DomainAllowList')
-        policy._changed()
+        assert isinstance(policy.input, tkinter.ttk.Checkbutton)
+        assert policy.field.label == '出站策略总开关'
+        assert policy.get() == schema.EGRESS_POLICY_DISABLED
+        policy.input.invoke()
         application._validate_now()
 
+        assert policy.get() == schema.EGRESS_POLICY_ENABLED
+        assert application.model.diverter().get(
+            'ExternalAccessPolicy') == schema.EGRESS_POLICY_ENABLED
         assert application.model.diverter().get(
             'ExternalAllowedTCPPorts') == '443'
         assert all(application.model.diverter().get(key) == value
@@ -434,12 +439,23 @@ def test_domain_allowlist_activation_materializes_locks_and_topology():
                     if issue.level == validator.ERROR]
         assert len(application.model.listener_sections()) == section_count
 
-        policy.set('Disabled')
-        policy._changed()
+        enabled_path = tmp_path / 'policy-enabled.ini'
+        application.model.save(str(enabled_path))
+        assert configmodel.ConfigModel.load(str(enabled_path)).diverter().get(
+            'ExternalAccessPolicy') == schema.EGRESS_POLICY_ENABLED
+
+        policy.input.invoke()
+        assert policy.get() == schema.EGRESS_POLICY_DISABLED
+        assert application.model.diverter().get(
+            'ExternalAccessPolicy') == schema.EGRESS_POLICY_DISABLED
         assert application.model.diverter().get(
             'ExternalAllowedTCPPorts') == '443'
         assert sum((sec.get('Listener') or '') == 'DomainEgressRelay'
                    for sec in application.model.listener_sections()) == 1
+        disabled_path = tmp_path / 'policy-disabled.ini'
+        application.model.save(str(disabled_path))
+        assert configmodel.ConfigModel.load(str(disabled_path)).diverter().get(
+            'ExternalAccessPolicy') == schema.EGRESS_POLICY_DISABLED
     finally:
         root.destroy()
 

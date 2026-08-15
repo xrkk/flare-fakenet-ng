@@ -17,6 +17,7 @@ test/test_gui_schema.py:
 
 T_BOOL_YESNO = 'bool_yesno'          # canonical literal Yes/No
 T_BOOL_TRUEFALSE = 'bool_truefalse'  # canonical literal True/False
+T_BOOL_POLICY = 'bool_policy'        # DomainAllowList/Disabled checkbox
 T_INT = 'int'
 T_STRING = 'string'
 T_ENUM = 'enum'
@@ -86,6 +87,8 @@ DIVERTER_SECTION = 'Diverter'
 
 # RespawnIPv4ResponseA special tokens (DNSListener.py:224,232).
 RESPONSEA_TOKENS = ('GetFirstNonLoopback', 'GetHostByName')
+EGRESS_POLICY_DISABLED = 'Disabled'
+EGRESS_POLICY_ENABLED = 'DomainAllowList'
 
 
 class Field(object):
@@ -119,7 +122,7 @@ class Field(object):
 FAKENET_FIELDS = (
     Field('DivertTraffic', '劫持流量 (DivertTraffic)', T_BOOL_YESNO,
           default='Yes', group='全局',
-          hint='Yes 时 NetworkMode 必填;DomainAllowList 模式强制 Yes'),
+          hint='Yes 时 NetworkMode 必填;出站策略启用时强制 Yes'),
 )
 
 # ---------------------------------------------------------------------------
@@ -191,62 +194,63 @@ DIVERTER_FIELDS = (
     Field('LinuxFlushDNSCommand', 'Linux 刷新 DNS 命令', T_STRING,
           default='service dns-clean restart', group='Linux',
           hint='Linux 修改 DNS 后执行的发行版相关刷新命令;如 service dns-clean restart'),
-    # -- 出站策略: 域名放行 -------------------------------------------------
-    Field('ExternalAccessPolicy', '出站策略', T_ENUM, default='Disabled',
-          group='域名放行', enum=('Disabled', 'DomainAllowList'),
-          hint='DomainAllowList 仅 Windows 且要求 DivertTraffic=Yes;选择后'
-               '自动写入代码强制值并补齐 relay 与两条 DNS/53 监听器'),
+    # -- 出站策略: 基础策略 -------------------------------------------------
+    Field('ExternalAccessPolicy', '出站策略总开关', T_BOOL_POLICY,
+          default=EGRESS_POLICY_DISABLED, group='基础策略',
+          enum=(EGRESS_POLICY_DISABLED, EGRESS_POLICY_ENABLED),
+          hint='勾选后启用域名放行、私网接管、公网 IPv4 放行和进程重定向'
+               '的统一出站策略,并自动补齐必需监听器'),
     Field('ExternalAllowedDomains', '放行域名', T_STRINGLIST,
-          default='api.deepseek.com', group='域名放行',
+          default='api.deepseek.com', group='基础策略',
           hint='接管模式下代码仅允许 api.deepseek.com'),
     Field('ExternalAllowedTCPPorts', '放行 TCP 端口', T_PORTLIST,
-          default='443', group='域名放行', lock=LOCK_TCP_PORTS_443,
+          default='443', group='基础策略', lock=LOCK_TCP_PORTS_443,
           hint='代码强制仅 443'),
     Field('ExternalDnsServer', '上游 DNS', T_STRING, default='Auto',
-          group='域名放行',
+          group='基础策略',
           hint='Auto 或可用单播 IPv4;不能是本机地址'),
     Field('ExternalDnsTimeout', '上游 DNS 超时(秒)', T_INT, default='3',
-          group='域名放行', minimum=1, maximum=30,
+          group='基础策略', minimum=1, maximum=30,
           hint='查询上游 DNS 的等待时间;范围 1–30 秒'),
     Field('ExternalVerifyTLSSNI', 'TLS SNI 精确校验', T_BOOL_YESNO,
-          default='Yes', group='域名放行', lock=LOCK_BOOL_YES,
+          default='Yes', group='基础策略', lock=LOCK_BOOL_YES,
           hint='代码强制 Yes'),
     Field('ExternalRelayPort', 'TLS 中继端口', T_INT, default='38927',
-          group='域名放行', minimum=1, maximum=65535,
+          group='基础策略', minimum=1, maximum=65535,
           hint='必须等于 DomainEgressRelay 监听器的 Port'),
     Field('ExternalTLSHelloTimeout', 'TLS Hello 超时(秒)', T_INT, default='5',
-          group='域名放行', lock=LOCK_RESOURCE_TUPLE,
+          group='基础策略', lock=LOCK_RESOURCE_TUPLE,
           minimum=5, maximum=5, hint='代码强制 5'),
     Field('ExternalTLSHelloMaxBytes', 'TLS Hello 最大字节', T_INT,
-          default='65536', group='域名放行', lock=LOCK_RESOURCE_TUPLE,
+          default='65536', group='基础策略', lock=LOCK_RESOURCE_TUPLE,
           minimum=65536, maximum=65536, hint='代码强制 65536'),
     Field('ExternalMaxPendingFlows', '最大挂起流', T_INT, default='256',
-          group='域名放行', lock=LOCK_RESOURCE_TUPLE,
+          group='基础策略', lock=LOCK_RESOURCE_TUPLE,
           minimum=256, maximum=256, hint='代码强制 256'),
     Field('ExternalMaxPendingPerSource', '每源最大挂起流', T_INT,
-          default='32', group='域名放行', lock=LOCK_RESOURCE_TUPLE,
+          default='32', group='基础策略', lock=LOCK_RESOURCE_TUPLE,
           minimum=32, maximum=32, hint='代码强制 32'),
     Field('ExternalMaxActiveRelays', '最大活动中继', T_INT, default='128',
-          group='域名放行', lock=LOCK_RESOURCE_TUPLE,
+          group='基础策略', lock=LOCK_RESOURCE_TUPLE,
           minimum=128, maximum=128, hint='代码强制 128'),
     Field('ExternalMaxActivePerSource', '每源最大活动中继', T_INT,
-          default='16', group='域名放行', lock=LOCK_RESOURCE_TUPLE,
+          default='16', group='基础策略', lock=LOCK_RESOURCE_TUPLE,
           minimum=16, maximum=16, hint='代码强制 16'),
     Field('ExternalRelayIdleTimeout', '中继空闲超时(秒)', T_INT,
-          default='300', group='域名放行', lock=LOCK_RESOURCE_TUPLE,
+          default='300', group='基础策略', lock=LOCK_RESOURCE_TUPLE,
           minimum=300, maximum=300, hint='代码强制 300'),
     Field('ExternalRelayBufferBytes', '中继缓冲字节', T_INT,
-          default='1048576', group='域名放行', lock=LOCK_RESOURCE_TUPLE,
+          default='1048576', group='基础策略', lock=LOCK_RESOURCE_TUPLE,
           minimum=1048576, maximum=1048576, hint='代码强制 1048576'),
     Field('ExternalNonAllowedAction', '非放行流量动作', T_ENUM,
-          default='Divert', group='域名放行', enum=('Divert', 'Drop'),
+          default='Divert', group='基础策略', enum=('Divert', 'Drop'),
           cond_lock=COND_TAKEOVER_ACTION,
           hint='接管模式下代码强制 Divert'),
     Field('ExternalBlockExternalIPv6', '拒绝 IPv6 公网出站', T_BOOL_YESNO,
-          default='Yes', group='域名放行', lock=LOCK_BOOL_YES,
+          default='Yes', group='基础策略', lock=LOCK_BOOL_YES,
           hint='代码强制 Yes'),
     Field('ExternalBlockQUIC', '拒绝 QUIC', T_BOOL_YESNO, default='Yes',
-          group='域名放行', lock=LOCK_BOOL_YES, hint='代码强制 Yes'),
+          group='基础策略', lock=LOCK_BOOL_YES, hint='代码强制 Yes'),
     # -- 出站策略: 私网接管 -------------------------------------------------
     Field('ExternalTakeoverIPv4', '接管 sink IPv4', T_IPV4, default='',
           group='私网接管',
@@ -422,7 +426,7 @@ LISTENER_TYPE_FIELDS = {
     'DomainEgressRelay': (
         Field('Port', '端口(须等于 ExternalRelayPort)', T_PORTSPEC,
               default='38927',
-              hint='域名放行 TLS 中继监听端口;必须等于 Diverter.ExternalRelayPort'),
+              hint='出站策略 TLS 中继监听端口;必须等于 Diverter.ExternalRelayPort'),
     ),
 }
 
@@ -522,7 +526,7 @@ def custom_response_field(key):
 
 def egress_group_names():
     """Egress policy sub-groups shown on the 出站策略 tab."""
-    return ('域名放行', '私网接管', '公网IPv4放行', '进程重定向')
+    return ('基础策略', '私网接管', '公网IPv4放行', '进程重定向')
 
 
 def is_egress_field(field):
