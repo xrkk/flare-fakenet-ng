@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""fakenet-GUI main window (plan v1.5 §5.4/§12.9).
+"""fakenet-GUI main window (plan v1.9 §5.4/§12.13).
 
 Chinese UI.  Tabs: 全局 ([FakeNet] + [Diverter] base groups), 出站策略
 (egress sub-groups with smart locking and topology auto-fix), 监听器
 (section list + dynamic field panel), 自定义响应.  Collapsible validation
-drawer with double-click jump-to-field; persistent save + launch bar.  The
-launch pipeline runs VM/duplicate gates off the UI thread and is
-fail-closed on inconclusive VM state.
+drawer with double-click jump-to-field; persistent import/restore/save +
+launch bar.  The launch pipeline runs VM/duplicate gates off the UI thread
+and is fail-closed on inconclusive VM state.
 """
 
 import os
@@ -292,6 +292,20 @@ class FakenetConfigApp(object):
             action_bar, text='保存配置', style='Action.TButton',
             command=self.save)
         self.save_button.pack(side='right', padx=(0, 8))
+        self.restore_button = ttk.Button(
+            action_bar, text='恢复默认配置', command=self.restore_defaults)
+        self.restore_button.pack(side='right', padx=(0, 8))
+        self.import_button = ttk.Button(
+            action_bar, text='导入配置', command=self.open_file)
+        self.import_button.pack(side='right', padx=(0, 8))
+        widgets.attach_tooltip(
+            self.import_button,
+            '导入配置\n打开并编辑现有 INI;保存配置时将写回该文件。',
+            self._hint, '打开并绑定现有 INI;保存时写回原文件')
+        widgets.attach_tooltip(
+            self.restore_button,
+            '恢复默认配置\n确认后使用安全默认配置立即覆盖当前绑定的 INI 文件。',
+            self._hint, '确认后立即覆盖当前绑定文件')
 
         self._set_validation_expanded(False)
 
@@ -1012,6 +1026,41 @@ class FakenetConfigApp(object):
             return
         self._load_path(path)
 
+    def restore_defaults(self):
+        if self.model is None or not self.model.path:
+            messagebox.showwarning(
+                '恢复默认配置',
+                '当前配置尚未绑定文件,请先保存配置或导入配置。',
+                parent=self.root)
+            return
+        path = os.path.abspath(self.model.path)
+        if not messagebox.askyesno(
+                '恢复默认配置',
+                '将使用默认配置覆盖当前文件:\n%s\n\n'
+                '此操作无法撤销,是否继续?' % path,
+                parent=self.root):
+            return
+
+        current = self.model
+        replacement = configmodel.ConfigModel.new_config()
+        replacement.path = path
+        replacement.encoding = current.encoding
+        replacement.bom = current.bom
+        replacement.newline = current.newline
+        replacement.mtime = None
+        try:
+            replacement.save(path)
+        except OSError as exc:
+            messagebox.showerror(
+                '恢复默认配置', '覆盖配置文件失败:\n%s' % exc,
+                parent=self.root)
+            return
+
+        self.model = replacement
+        self._selected_listener = None
+        self._rebuild_all()
+        self._clear_dirty()
+
     def load_template(self, name):
         if not self._confirm_discard():
             return
@@ -1309,7 +1358,7 @@ class FakenetConfigApp(object):
     def _about(self):
         messagebox.showinfo(
             '关于', 'FakeNet-NG 配置工具\n\n可视化编辑 FakeNet-NG INI 配置并'
-            '启动(带 VM/重复实例安全门)。\n方案: PLAN/2026.08.14 v1.5')
+            '启动(带 VM/重复实例安全门)。\n方案: PLAN/2026.08.14 v1.9')
 
     def _on_close(self):
         if self.dirty and not messagebox.askyesno('退出',

@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """GUI import smoke test (plan v0.2 §6): no window is opened on CI."""
 
+import os
+
 import pytest
 
 tkinter = pytest.importorskip('tkinter')
@@ -76,12 +78,193 @@ def test_persistent_actions_and_file_status():
     root, application = _construct_app()
     try:
         assert application.notebook.winfo_manager() == 'grid'
+        assert application.import_button.winfo_manager() == 'pack'
+        assert application.restore_button.winfo_manager() == 'pack'
         assert application.save_button.winfo_manager() == 'pack'
         assert application.launch_button.winfo_manager() == 'pack'
+        assert application.import_button.cget('text') == '导入配置'
+        assert application.restore_button.cget('text') == '恢复默认配置'
+        assert '写回该文件' in application.import_button._hover_help.text
+        assert '立即覆盖' in application.restore_button._hover_help.text
         assert application.file_status_var.get() == '○ 新配置尚未保存'
 
         application._mark_dirty()
         assert application.file_status_var.get().startswith('● 有未保存修改')
+    finally:
+        root.destroy()
+
+
+def test_import_button_opens_and_binds_selected_file(tmp_path, monkeypatch):
+    from fakenet.gui import app as app_module, configmodel
+
+    path = tmp_path / 'imported.ini'
+    imported = configmodel.ConfigModel.new_config()
+    imported.diverter().set('DebugLevel', 'Debug')
+    imported.save(str(path))
+
+    root, application = _construct_app()
+    try:
+        monkeypatch.setattr(
+            app_module.filedialog, 'askopenfilename',
+            lambda **_kwargs: str(path))
+        application.import_button.invoke()
+        assert application.model.path == os.path.abspath(str(path))
+        assert application.model.diverter().get('DebugLevel') == 'Debug'
+        assert os.path.abspath(str(path)) in application.file_status_var.get()
+        assert not application.dirty
+    finally:
+        root.destroy()
+
+
+def test_import_button_respects_unsaved_discard_refusal(monkeypatch):
+    from fakenet.gui import app as app_module
+
+    root, application = _construct_app()
+    try:
+        original = application.model
+        application._mark_dirty()
+        opened = []
+        monkeypatch.setattr(
+            app_module.messagebox, 'askyesno',
+            lambda *_args, **_kwargs: False)
+        monkeypatch.setattr(
+            app_module.filedialog, 'askopenfilename',
+            lambda **_kwargs: opened.append(True) or '')
+        application.import_button.invoke()
+        assert application.model is original
+        assert application.dirty
+        assert opened == []
+    finally:
+        root.destroy()
+
+
+def test_restore_defaults_requires_bound_file(monkeypatch):
+    from fakenet.gui import app as app_module
+
+    root, application = _construct_app()
+    try:
+        original = application.model
+        warnings = []
+        monkeypatch.setattr(
+            app_module.messagebox, 'showwarning',
+            lambda title, message, **_kwargs:
+            warnings.append((title, message)))
+        application.restore_button.invoke()
+        assert application.model is original
+        assert warnings and '尚未绑定文件' in warnings[0][1]
+    finally:
+        root.destroy()
+
+
+def test_restore_defaults_cancel_leaves_file_unchanged(tmp_path, monkeypatch):
+    from fakenet.gui import app as app_module, configmodel
+
+    path = tmp_path / 'bound.ini'
+    bound = configmodel.ConfigModel.new_config()
+    bound.diverter().set('DebugLevel', 'Debug')
+    bound.save(str(path))
+    before = path.read_bytes()
+
+    root, application = _construct_app()
+    try:
+        application._load_path(str(path))
+        original = application.model
+        monkeypatch.setattr(
+            app_module.messagebox, 'askyesno',
+            lambda *_args, **_kwargs: False)
+        application.restore_button.invoke()
+        assert application.model is original
+        assert path.read_bytes() == before
+    finally:
+        root.destroy()
+
+
+def test_restore_defaults_write_failure_keeps_current_model(
+        tmp_path, monkeypatch):
+    from fakenet.gui import app as app_module, configmodel
+
+    path = tmp_path / 'bound.ini'
+    bound = configmodel.ConfigModel.new_config()
+    bound.save(str(path))
+
+    root, application = _construct_app()
+    try:
+        application.model = bound
+        original = application.model
+        errors = []
+        monkeypatch.setattr(
+            app_module.messagebox, 'askyesno',
+            lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(
+            app_module.messagebox, 'showerror',
+            lambda title, message, **_kwargs:
+            errors.append((title, message)))
+
+        def fail_save(_model, _path=None):
+            raise OSError('write denied')
+
+        monkeypatch.setattr(
+            configmodel.ConfigModel, 'save', fail_save)
+
+        application.restore_button.invoke()
+        assert application.model is original
+        assert errors == [(
+            '恢复默认配置', '覆盖配置文件失败:\nwrite denied')]
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize(
+    ('encoding', 'bom', 'newline'),
+    [('utf-8-sig', True, '\n'), ('locale', False, '\r\n')])
+def test_restore_defaults_immediately_overwrites_bound_file_and_keeps_format(
+        tmp_path, monkeypatch, encoding, bom, newline):
+    from fakenet.gui import app as app_module, configmodel, validator
+
+    path = tmp_path / ('bound-%s.ini' % encoding)
+    bound = configmodel.ConfigModel.new_config()
+    bound.diverter().set('DebugLevel', 'Debug')
+    bound.diverter().set('VendorSentinel', 'remove-me')
+    bound.encoding = encoding
+    bound.bom = bom
+    bound.newline = newline
+    bound.save(str(path))
+    with path.open('ab') as handle:
+        handle.write(b'\n# EXTERNAL CHANGE\n')
+
+    root, application = _construct_app()
+    try:
+        application.model = bound
+        application._selected_listener = None
+        application._rebuild_all()
+        application._clear_dirty()
+        custom_before = application.custom_model
+        confirmations = []
+        monkeypatch.setattr(
+            app_module.messagebox, 'askyesno',
+            lambda title, message, **_kwargs: confirmations.append(
+                (title, message)) or True)
+
+        application.restore_button.invoke()
+
+        raw = path.read_bytes()
+        assert confirmations == [(
+            '恢复默认配置',
+            '将使用默认配置覆盖当前文件:\n%s\n\n'
+            '此操作无法撤销,是否继续?' % os.path.abspath(str(path)))]
+        assert raw.startswith(b'\xef\xbb\xbf') is bom
+        assert (b'\r\n' in raw) is (newline == '\r\n')
+        assert application.model.path == os.path.abspath(str(path))
+        assert application.model.encoding == encoding
+        assert application.model.bom is bom
+        assert application.model.newline == newline
+        assert application.model.diverter().get('VendorSentinel') is None
+        assert application.model.section('ProxyTCPListener') is not None
+        assert application.model.section('ProxyUDPListener') is not None
+        assert not any(issue.level == 'error'
+                       for issue in validator.validate(application.model))
+        assert application.custom_model is custom_before
+        assert not application.dirty
     finally:
         root.destroy()
 

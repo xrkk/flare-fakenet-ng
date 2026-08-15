@@ -553,8 +553,12 @@ What it does:
    a preservation notice instead of invented semantics.
  * The validation details drawer and its `展开详情` action are hidden while the
    configuration is clean, then appear automatically for errors or warnings.
-   Save and launch remain in a persistent bottom action bar on every tab; the
-   bar also shows the current path and unsaved-change state.
+   File actions and launch remain in a persistent bottom action bar on every
+   tab; the bar also shows the current path and unsaved-change state.
+ * `导入配置` opens and binds an existing INI, so later saves write back to the
+   selected file. `恢复默认配置` asks once, then immediately overwrites the
+   bound file with the GUI's safe default configuration while preserving its
+   encoding, BOM and line endings; an unbound configuration is never written.
  * Boolean values use checkboxes while preserving their exact `Yes/No` or
    `True/False` INI literals. Enumerated drop-downs stay content-width and
    left-aligned instead of stretching across the form. Global and egress
