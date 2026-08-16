@@ -536,9 +536,10 @@ Running it:
 
 What it does:
 
- * Tabs: `全局` ([FakeNet] + base [Diverter] groups), `出站策略` (egress
-   sub-policies), `监听器` (section list with add/duplicate/rename/delete
-   and a type-aware field panel), `自定义响应` (custom response INI).
+ * Five tabs: `基础配置` ([FakeNet] + base [Diverter] groups), `出站策略`
+   (task-oriented egress controls), `监听器` (user and system-managed sections),
+   `自定义响应` (custom response INI), and `实时日志` (the exact current core
+   log launched by this GUI). Tabs other than the first are built lazily.
  * A new window starts with valid TCP/UDP proxy listener sections, so its
    default redirect targets are immediately launchable instead of dangling.
  * Values pinned by code (e.g. `ExternalAllowedTCPPorts=443`, the
@@ -555,10 +556,11 @@ What it does:
  * Hover over any field label or editor to see its purpose, accepted format,
    conditions and important constraints. Unknown listener extension keys get
    a preservation notice instead of invented semantics.
- * The validation details drawer and its `展开详情` action are hidden while the
-   configuration is clean, then appear automatically for errors or warnings.
-   File actions and launch remain in a persistent bottom action bar on every
-   tab; the bar also shows the current path and unsaved-change state.
+ * The main window keeps validation to one status line and shows short errors
+   directly below their fields. Clicking the status line opens a resizable
+   validation window with complete messages, copy actions, and double-click
+   navigation. File actions and launch remain in a persistent bottom action
+   bar on every tab; the bar also shows the current path and unsaved state.
  * `导入配置` opens and binds an existing INI, so later saves write back to the
    selected file. `恢复默认配置` asks once, then immediately overwrites the
    bound file with the GUI's safe default configuration while preserving its
@@ -573,21 +575,33 @@ What it does:
    delete actions leave more width for the editor. Long labels in the global
    two-column form use wider label columns so English tokens do not break in
    the middle. The custom-response tab shows a guided empty state until a
-   response INI is opened or created.
+   response INI is opened or created. Policy-required DNS/53 and relay sections
+   are separated into a read-only `系统自动管理` list with a regeneration action.
+ * Egress editing uses native task controls: a multi-domain list, an explicit
+   private-analysis-host checkbox, a protocol/IP/port table for reviewed public
+   IPv4 rules, and automatic SHA-256 calculation whenever the process image
+   path changes. The private-host safety contract still fixes the sole real
+   domain to `api.deepseek.com` after confirmation.
  * Editing is lossless: disabled listener sections, section order,
    unknown keys, source encoding (GBK/UTF-8 BOM), line endings and `%%`
    escaping are all preserved round-trip.
  * Launch gates: duplicate fakenet.exe instances are refused; the VM
    check (physical machine → refused; inconclusive → refused, fail-closed
    with guidance) runs before the elevated start, and a cancelled UAC
-   prompt is reported instead of pretending to have launched.
+   prompt is reported instead of pretending to have launched. The GUI itself
+   is also single-instance; a second launch activates the existing window and
+   exits, warning only if activation fails.
  * Runtime logs: every GUI process and every FakeNet-NG core process creates
    exactly one detailed UTF-8 log. For the frozen release both executables
    write separate files under the shared `Logs` directory beside the exe,
    regardless of the launch directory or whether FakeNet was started from
-   the GUI, Explorer, a terminal, or a script. Source runs use the
-   repository-root `Logs` directory. Existing core `-l/--log-file` remains
-   an explicit override and suppresses creation of the automatic core file.
+   the GUI, Explorer, a terminal, or a script. A GUI-launched core receives one
+   explicit unique `--log-file` under the selected `fakenet.exe` sibling
+   `Logs`; the log tab incrementally displays that complete file. While the
+   core runs, configuration editing and file actions stay locked, then unlock
+   automatically when its retained process handle signals exit. A source GUI's
+   own startup log uses repository-root `Logs`. Existing core `-l/--log-file`
+   remains an explicit override and suppresses a second automatic core file.
 
 Security differences vs the PowerShell launchers (`Start-*.cmd`): the GUI
 path does NOT perform upstream DNS probing, post-stop DNS restoration
@@ -599,8 +613,8 @@ Operational notes: unsigned PyInstaller binaries plus `runas` elevation
 may trip AV/EDR products — allow-list accordingly; always pair the GUI
 with the `fakenet.exe` from the same build (an older fakenet silently
 ignores newer keys); slim VM images may lack Chinese fonts for the
-localized UI; and the one-file exe takes a few seconds to unpack on first
-start.
+ localized UI. The one-file GUI disables UPX and shows a native splash while
+ unpacking and constructing its first page.
 
 Configuration
 -------------

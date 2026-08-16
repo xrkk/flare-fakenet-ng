@@ -40,6 +40,27 @@ def _reserve_log_path(now=None, pid=None):
     raise OSError('无法分配唯一的 fakenet-GUI 日志文件名')
 
 
+def reserve_fakenet_log_path(now=None, pid=None, base_dir=None):
+    """Reserve one unique core log beside the executables for a GUI launch."""
+    now = now or datetime.datetime.now()
+    pid = pid if pid is not None else os.getpid()
+    directory = os.path.join(base_dir or runtime_directory(), 'Logs')
+    os.makedirs(directory, exist_ok=True)
+    stem = 'fakenet-%s-gui-p%d' % (
+        now.strftime('%Y%m%d-%H%M%S-%f'), pid)
+    for number in range(1000):
+        suffix = '' if number == 0 else '-%d' % number
+        path = os.path.join(directory, stem + suffix + '.log')
+        try:
+            descriptor = os.open(
+                path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            continue
+        os.close(descriptor)
+        return path
+    raise OSError('无法分配唯一的 FakeNet-NG 日志文件名')
+
+
 def configure():
     """Install and return the GUI process's sole UTF-8 file logger."""
     global _LOGGER, _LOG_PATH

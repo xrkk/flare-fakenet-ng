@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Launch pipeline: VM gate, duplicate-instance gate, UAC elevation
-(plan v0.2 §5.5).
+"""Windows launch/lifecycle helpers (plan v1.13 §5.5/§12.17).
 
 Verdicts are fail-closed: an inconclusive VM check refuses the launch
 (audit F1).  Duplicate-instance detection approximates the PowerShell
 launchers' lock file (Start-DomainAllowList.ps1:199-210) because
-ShellExecuteW gives us no process handle to manage.
+ShellExecuteExW retains the elevated process handle so the GUI can lock the
+bound configuration and tail the exact log until FakeNet exits.
 """
 
 import ctypes
@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+from ctypes import wintypes
 
 VERDICT_VM = 'vm'
 VERDICT_PHYSICAL = 'physical'
@@ -25,6 +26,14 @@ VM_PATTERN = re.compile(
 
 SE_ERR_ACCESSDENIED = 5
 SW_SHOWNORMAL = 1
+SW_RESTORE = 9
+SEE_MASK_NOCLOSEPROCESS = 0x00000040
+ERROR_CANCELLED = 1223
+ERROR_ALREADY_EXISTS = 183
+WAIT_OBJECT_0 = 0
+WAIT_FAILED = 0xFFFFFFFF
+INFINITE = 0xFFFFFFFF
+GUI_MUTEX_NAME = r'Local\FLARE_FakeNet_NG_GUI_Config_Tool'
 
 WINDOWS_ONLY_NOTE = 'VM 检测仅支持 Windows'
 
@@ -127,6 +136,23 @@ def validate_config_path(path):
     return True, ''
 
 
+def validate_log_path(path):
+    """Validate a reserved log path before quoting it for ShellExecuteEx."""
+    if not path:
+        return False, '日志路径为空'
+    if not os.path.isabs(path):
+        return False, '日志路径必须为绝对路径(当前 %r)' % path
+    if '"' in path:
+        return False, '日志路径不得包含引号'
+    if any(ord(ch) < 0x20 for ch in path):
+        return False, '日志路径不得包含控制字符'
+    if path.endswith('\\'):
+        return False, '日志路径不得以反斜杠结尾'
+    if not os.path.isdir(os.path.dirname(path)):
+        return False, '日志目录不存在: %s' % os.path.dirname(path)
+    return True, ''
+
+
 # ---------------------------------------------------------------------------
 # Persisted settings (P11: %APPDATA%\fakenet-gui\settings.json)
 # ---------------------------------------------------------------------------
@@ -226,7 +252,143 @@ def launch_elevated(target, params, directory=None):
     return interpret_shell_result(result)
 
 
-def build_dev_command(config_path):
+class _ShellExecuteInfoW(ctypes.Structure):
+    _fields_ = [
+        ('cbSize', wintypes.DWORD),
+        ('fMask', wintypes.ULONG),
+        ('hwnd', wintypes.HWND),
+        ('lpVerb', wintypes.LPCWSTR),
+        ('lpFile', wintypes.LPCWSTR),
+        ('lpParameters', wintypes.LPCWSTR),
+        ('lpDirectory', wintypes.LPCWSTR),
+        ('nShow', ctypes.c_int),
+        ('hInstApp', wintypes.HINSTANCE),
+        ('lpIDList', ctypes.c_void_p),
+        ('lpClass', wintypes.LPCWSTR),
+        ('hkeyClass', wintypes.HKEY),
+        ('dwHotKey', wintypes.DWORD),
+        ('hIconOrMonitor', wintypes.HANDLE),
+        ('hProcess', wintypes.HANDLE),
+    ]
+
+
+def _shell_execute_ex(verb, target, params, directory):
+    """Return (ok, hinst_value, process_handle, last_error)."""
+    if os.name != 'nt':
+        return False, 0, None, 0
+    shell32 = ctypes.WinDLL('shell32', use_last_error=True)
+    execute = shell32.ShellExecuteExW
+    execute.argtypes = [ctypes.POINTER(_ShellExecuteInfoW)]
+    execute.restype = wintypes.BOOL
+    info = _ShellExecuteInfoW()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = SEE_MASK_NOCLOSEPROCESS
+    info.lpVerb = verb
+    info.lpFile = target
+    info.lpParameters = params
+    info.lpDirectory = directory
+    info.nShow = SW_SHOWNORMAL
+    ctypes.set_last_error(0)
+    ok = bool(execute(ctypes.byref(info)))
+    hinst = int(info.hInstApp or 0)
+    handle = int(info.hProcess or 0) or None
+    return ok, hinst, handle, ctypes.get_last_error()
+
+
+def launch_elevated_with_handle(target, params, directory=None):
+    """Launch elevated and return ``(ok, detail, process_handle)``."""
+    ok, hinst, handle, last_error = _shell_execute_ex(
+        'runas', target, params,
+        directory or os.path.dirname(target) or None)
+    if ok and handle:
+        return True, '已启动', handle
+    if handle:
+        close_handle(handle)
+    if last_error == ERROR_CANCELLED:
+        return False, '已取消 UAC 提权,未启动', None
+    if not ok and last_error:
+        return False, '启动失败(ShellExecuteExW 错误 %d)' % last_error, None
+    launched, detail = interpret_shell_result(hinst)
+    return launched, detail, None
+
+
+def wait_process(handle):
+    """Wait for a Windows process handle and return its exit code."""
+    if os.name != 'nt' or not handle:
+        return None
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    wait = kernel32.WaitForSingleObject
+    wait.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    wait.restype = wintypes.DWORD
+    result = wait(wintypes.HANDLE(handle), INFINITE)
+    if result == WAIT_FAILED:
+        raise OSError(ctypes.get_last_error(), 'WaitForSingleObject failed')
+    code = wintypes.DWORD()
+    get_exit = kernel32.GetExitCodeProcess
+    get_exit.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    get_exit.restype = wintypes.BOOL
+    if not get_exit(wintypes.HANDLE(handle), ctypes.byref(code)):
+        raise OSError(ctypes.get_last_error(), 'GetExitCodeProcess failed')
+    return int(code.value)
+
+
+def close_handle(handle):
+    if os.name == 'nt' and handle:
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle(wintypes.HANDLE(handle))
+
+
+def acquire_gui_mutex(name=GUI_MUTEX_NAME):
+    """Return ``(handle, already_running)`` for the per-session GUI mutex."""
+    if os.name != 'nt':
+        return None, False
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    create = kernel32.CreateMutexW
+    create.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    create.restype = wintypes.HANDLE
+    ctypes.set_last_error(0)
+    handle = create(None, False, name)
+    error = ctypes.get_last_error()
+    if not handle:
+        raise OSError(error, 'CreateMutexW failed')
+    return int(handle), error == ERROR_ALREADY_EXISTS
+
+
+def activate_existing_gui(title_fragment='FakeNet-NG 配置工具'):
+    """Restore and activate a visible top-level window containing title."""
+    if os.name != 'nt':
+        return False
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    found = []
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND,
+                                      wintypes.LPARAM)
+
+    @callback_type
+    def callback(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return True
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buffer, len(buffer))
+        if title_fragment in buffer.value:
+            found.append(hwnd)
+            return False
+        return True
+
+    user32.EnumWindows(callback, 0)
+    if not found:
+        return False
+    hwnd = found[0]
+    user32.ShowWindow(hwnd, SW_RESTORE)
+    user32.BringWindowToTop(hwnd)
+    return bool(user32.SetForegroundWindow(hwnd))
+
+
+def build_dev_command(config_path, log_path=None):
     """Dev-mode elevated target: python -m fakenet.fakenet (P1)."""
     ok, reason = validate_config_path(config_path)
     if not ok:
@@ -234,14 +396,25 @@ def build_dev_command(config_path):
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))))
     params = '-m fakenet.fakenet -c "%s"' % config_path
+    if log_path:
+        ok, reason = validate_log_path(log_path)
+        if not ok:
+            raise LaunchError(reason)
+        params += ' --log-file "%s"' % log_path
     return sys.executable, params, repo_root
 
 
-def build_frozen_command(exe_path, config_path):
+def build_frozen_command(exe_path, config_path, log_path=None):
     ok, reason = validate_config_path(config_path)
     if not ok:
         raise LaunchError(reason)
-    return exe_path, '-c "%s"' % config_path, os.path.dirname(exe_path)
+    params = '-c "%s"' % config_path
+    if log_path:
+        ok, reason = validate_log_path(log_path)
+        if not ok:
+            raise LaunchError(reason)
+        params += ' --log-file "%s"' % log_path
+    return exe_path, params, os.path.dirname(exe_path)
 
 
 def manual_command_hint(config_path):

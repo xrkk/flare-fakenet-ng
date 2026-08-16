@@ -8,7 +8,7 @@
 #   pure standard library;
 # - windowed (console=False) and NOT elevated (no uac_admin): the tool
 #   runs as a normal user and elevates fakenet.exe itself via
-#   ShellExecuteW 'runas' at launch time.
+#   ShellExecuteExW 'runas' at launch time and retains the core process handle.
 
 block_cipher = None
 
@@ -28,17 +28,30 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+splash = Splash(
+    'resources/fakenet.png',
+    binaries=a.binaries,
+    datas=a.datas,
+    # Omitting text_pos intentionally disables PyInstaller's extraction-name
+    # stream; the project image gives immediate feedback without leaking
+    # internal paths such as _tcl_data\encoding\ascii.enc to users.
+    minify_script=True,
+    always_on_top=True,
+)
+
 exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
     a.datas,
+    splash,
+    splash.binaries,
     [],
     name='fakenet-GUI',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     icon='resources/fakenet.ico',
 )

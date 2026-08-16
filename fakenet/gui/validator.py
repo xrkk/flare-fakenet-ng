@@ -419,8 +419,23 @@ def _check_policy_topology(model, relay_port):
 
 def _check_takeover(model, issues):
     diverter = model.diverter()
+    takeover_keys = (
+        'ExternalTakeoverIPv4', 'ExternalTakeoverDnsTTL',
+        'ExternalTakeoverProbeTCPPorts',
+        'ExternalTakeoverProbeTimeoutMs')
+    requested = 'ExternalTakeoverIPv4' in diverter
+    orphaned = [key for key in takeover_keys[1:] if key in diverter]
+    if not requested:
+        for key in orphaned:
+            issues.append(Issue(
+                ERROR, 'Diverter', key,
+                '须先启用“将其他域名导向私网分析主机”'))
+        return None
     sink_text = _takeover_ip(model)
     if not sink_text:
+        issues.append(Issue(
+            ERROR, 'Diverter', 'ExternalTakeoverIPv4',
+            '启用后必须填写私网分析主机 IPv4'))
         return None
     try:
         sink = ipaddress.ip_address(sink_text)

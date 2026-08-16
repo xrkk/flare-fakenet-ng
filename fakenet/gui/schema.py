@@ -200,9 +200,10 @@ DIVERTER_FIELDS = (
           enum=(EGRESS_POLICY_DISABLED, EGRESS_POLICY_ENABLED),
           hint='勾选后启用域名放行、私网接管、公网 IPv4 放行和进程重定向'
                '的统一出站策略,并自动补齐必需监听器'),
-    Field('ExternalAllowedDomains', '放行域名', T_STRINGLIST,
+    Field('ExternalAllowedDomains', '真实联网域名', T_STRINGLIST,
           default='api.deepseek.com', group='基础策略',
-          hint='接管模式下代码仅允许 api.deepseek.com'),
+          cond_lock=COND_TAKEOVER_DOMAINS,
+          hint='可配置多个精确主机名,用英文逗号分隔;开启“将其他域名导向私网分析主机”后代码强制仅 api.deepseek.com'),
     Field('ExternalAllowedTCPPorts', '放行 TCP 端口', T_PORTLIST,
           default='443', group='基础策略', lock=LOCK_TCP_PORTS_443,
           hint='代码强制仅 443'),
@@ -252,9 +253,9 @@ DIVERTER_FIELDS = (
     Field('ExternalBlockQUIC', '拒绝 QUIC', T_BOOL_YESNO, default='Yes',
           group='基础策略', lock=LOCK_BOOL_YES, hint='代码强制 Yes'),
     # -- 出站策略: 私网接管 -------------------------------------------------
-    Field('ExternalTakeoverIPv4', '接管 sink IPv4', T_IPV4, default='',
+    Field('ExternalTakeoverIPv4', '私网分析主机 IPv4', T_IPV4, default='',
           group='私网接管',
-          hint='RFC1918 单播;非本机、≠上游 DNS;填写即启用接管(其余 3 键须同时配置)'),
+          hint='其余域名的 A 查询将解析到此 RFC1918 单播地址;必须非本机且不等于上游 DNS'),
     Field('ExternalTakeoverDnsTTL', '接管 DNS TTL(秒)', T_INT, default='',
           group='私网接管', minimum=1, maximum=300,
           hint='接管模式返回 sink IPv4 时使用的 DNS TTL;启用接管时必填,范围 1–300'),
@@ -263,14 +264,15 @@ DIVERTER_FIELDS = (
           hint='可空;最多 64 个;只读探测'),
     Field('ExternalTakeoverProbeTimeoutMs', '探测超时(毫秒)', T_INT,
           default='500', group='私网接管', minimum=100, maximum=5000,
-          hint='接管前只读 TCP 探测的单次超时;范围 100–5000 毫秒'),
+          advanced=True,
+          hint='仅启用私网导向后写入;接管前只读 TCP 探测的单次超时;范围 100–5000 毫秒'),
     # -- 出站策略: 公网 IPv4 放行 -------------------------------------------
     Field('ExternalAllowedIPv4Rules', '公网 IPv4 直连规则', T_STRINGLIST,
           default='', group='公网IPv4放行',
           hint='格式 协议/IPv4/端口,如 TCP/110.242.69.21/443;端口可用 *;'
                '最多 32 条、16 个 IP;存在但为空=配置错误'),
     # -- 出站策略: 进程重定向 -----------------------------------------------
-    Field('ExternalProcessRedirectEnabled', '启用按进程重定向', T_BOOL_YESNO,
+    Field('ExternalProcessRedirectEnabled', '按指定程序重定向', T_BOOL_YESNO,
           default='No', group='进程重定向', hint='仅 Windows;fail-closed'),
     Field('ExternalProcessRedirectProtocol', '重定向协议', T_ENUM,
           default='TCP', group='进程重定向', enum=('TCP',),

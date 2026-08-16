@@ -3,6 +3,7 @@
 detection contract, path injection rejection, settings/locate fallback."""
 
 import os
+import uuid
 
 import pytest
 
@@ -67,6 +68,21 @@ def test_validate_config_path(tmp_path):
     assert not ok and '不存在' in reason
 
 
+def test_validate_log_path(tmp_path):
+    logs = tmp_path / 'Logs'
+    logs.mkdir()
+    good = logs / 'fakenet.log'
+    ok, reason = launcher.validate_log_path(str(good))
+    assert ok and reason == ''
+
+    for bad in ('relative.log', str(good) + '"', str(good) + '\x01'):
+        ok, _reason = launcher.validate_log_path(bad)
+        assert not ok
+    ok, reason = launcher.validate_log_path(
+        str(tmp_path / 'missing' / 'fakenet.log'))
+    assert not ok and '目录不存在' in reason
+
+
 def test_settings_round_trip(tmp_path):
     base = str(tmp_path)
     assert launcher.load_settings(base) == {}
@@ -114,6 +130,51 @@ def test_build_dev_command_uses_module_form(tmp_path):
     assert '-m fakenet.fakenet' in params
     assert '-c' in params
     assert os.path.isdir(cwd)
+
+
+def test_build_commands_include_exactly_one_explicit_log_file(tmp_path):
+    config = tmp_path / 'c.ini'
+    config.write_text('[FakeNet]\n', encoding='ascii')
+    logs = tmp_path / 'Logs'
+    logs.mkdir()
+    log_path = logs / 'one.log'
+
+    _target, dev_params, _cwd = launcher.build_dev_command(
+        str(config), str(log_path))
+    _target, frozen_params, _cwd = launcher.build_frozen_command(
+        str(tmp_path / 'fakenet.exe'), str(config), str(log_path))
+    for params in (dev_params, frozen_params):
+        assert params.count('--log-file') == 1
+        assert '"%s"' % log_path in params
+
+
+def test_launch_elevated_with_handle_maps_success_and_cancel(monkeypatch):
+    monkeypatch.setattr(
+        launcher, '_shell_execute_ex',
+        lambda *_args: (True, 42, 12345, 0))
+    assert launcher.launch_elevated_with_handle(
+        'fakenet.exe', '-c "x.ini"') == (True, '已启动', 12345)
+
+    monkeypatch.setattr(
+        launcher, '_shell_execute_ex',
+        lambda *_args: (False, 0, None, launcher.ERROR_CANCELLED))
+    ok, detail, handle = launcher.launch_elevated_with_handle(
+        'fakenet.exe', '-c "x.ini"')
+    assert not ok and '取消 UAC' in detail and handle is None
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows named mutex contract')
+def test_gui_mutex_detects_second_instance_and_releases_handles():
+    name = r'Local\FLARE_FakeNet_NG_GUI_Test_%s' % uuid.uuid4().hex
+    first = second = None
+    try:
+        first, duplicate = launcher.acquire_gui_mutex(name)
+        assert first and not duplicate
+        second, duplicate = launcher.acquire_gui_mutex(name)
+        assert second and duplicate
+    finally:
+        launcher.close_handle(second)
+        launcher.close_handle(first)
 
 
 def test_build_commands_reject_bad_paths():
