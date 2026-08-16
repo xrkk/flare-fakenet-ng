@@ -235,6 +235,7 @@ class Fakenet(object):
             raise RuntimeError(
                 'DomainAllowList requires DivertTraffic=Yes')
 
+        fn_addr = '0.0.0.0'
         if self.fakenet_config.get('diverttraffic') and self.fakenet_config['diverttraffic'].lower() == 'yes':
 
             if (('networkmode' not in self.diverter_config) or
@@ -253,7 +254,6 @@ class Fakenet(object):
             ip_addrs = dict()
             ip_addrs[4] = iface_ip_info.get_ips([4])
             ip_addrs[6] = iface_ip_info.get_ips([6])
-            fn_addr = '0.0.0.0'
 
             if platform_name == 'Windows':
 
@@ -671,6 +671,7 @@ _____________________________________________________________
             fakenet.logger.info('Will seek stop flag at %s' % (options.stop_flag))
 
         fakenet.start()
+        logger.info('FakeNet-NG started successfully')
 
         rc = wait_for_shutdown(fakenet, options.stop_flag)
 

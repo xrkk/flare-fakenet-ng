@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# fakenet-GUI spec (plan v0.2 §5.6).
+# fakenet-GUI spec (plan v1.14 §12.18).
 #
 # Differences from fakenet.spec:
 # - tkinter is KEPT (no TOC subtraction - that old syntax is gone in

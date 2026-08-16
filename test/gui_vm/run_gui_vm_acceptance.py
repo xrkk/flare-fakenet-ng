@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""One-click GUI VM acceptance runner (plan v0.2 §12.4 pending item).
+"""One-click GUI VM acceptance runner (plan v1.14 §12.18).
 
 Start via Run-Tests.cmd (self-elevates).  Fully unattended afterwards:
 the elevated fakenet launch skips the UAC prompt because the runner
@@ -13,6 +13,7 @@ Exit codes: 0 = all PASS, 1 = any FAIL, 2 = REFUSED (precondition).
 """
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -27,6 +28,56 @@ from fakenet.gui import configmodel, launcher, validator  # noqa: E402
 EXIT_PASS, EXIT_FAIL, EXIT_REFUSED = 0, 1, 2
 RESULTS = []
 LOG_DIR = None
+CORE_STARTED_MARKER = 'FakeNet-NG started successfully'
+CORE_FAILURE_MARKERS = (
+    'Traceback (most recent call last):',
+    'FakeNet-NG terminated with an error',
+    'FakeNet-NG stop failed',
+)
+
+
+def evaluate_start_log(content):
+    """Return whether core log evidence proves a successful startup."""
+    if any(marker in content for marker in CORE_FAILURE_MARKERS):
+        return False, '核心日志记录异常终止'
+    exit_codes = re.findall(r'FakeNet-NG exiting: rc=([^\s]+)', content)
+    if any(code != '0' for code in exit_codes):
+        return False, '核心进程以非零状态退出'
+    if CORE_STARTED_MARKER not in content:
+        return False, '核心日志缺少成功启动标记'
+    return True, '核心日志已记录成功启动'
+
+
+def evaluate_stop_log(content):
+    """Return whether core log evidence proves stop-flag shutdown with rc=0."""
+    started, detail = evaluate_start_log(content)
+    if not started:
+        return False, detail
+    if 'Stop flag found at ' not in content:
+        return False, '核心日志未记录 stop flag 命中'
+    if 'Stopping...' not in content:
+        return False, '核心日志未记录停止阶段'
+    exit_codes = re.findall(r'FakeNet-NG exiting: rc=([^\s]+)', content)
+    if not exit_codes or exit_codes[-1] != '0':
+        return False, '核心日志未记录 rc=0 正常退出'
+    return True, 'stop flag 已触发且核心 rc=0 正常退出'
+
+
+def read_core_log(path):
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as handle:
+            return handle.read()
+    except OSError:
+        return ''
+
+
+def startup_log_decided(path):
+    content = read_core_log(path)
+    return (
+        CORE_STARTED_MARKER in content or
+        any(marker in content for marker in CORE_FAILURE_MARKERS) or
+        'FakeNet-NG exiting: rc=' in content
+    )
 
 
 def result(name, status, detail, level='实测'):
@@ -89,6 +140,8 @@ def build_smoke_config(path):
     diverter.set('RedirectAllTraffic', 'No')
     diverter.delete('DefaultTCPListener')
     diverter.delete('DefaultUDPListener')
+    model.delete_section('ProxyTCPListener')
+    model.delete_section('ProxyUDPListener')
     sec = model.ensure_section('RawTCPListener')
     sec.set('Enabled', 'True')
     sec.set('Port', '1337')
@@ -211,31 +264,70 @@ def main():
         appeared = wait_for(launcher.is_fakenet_running, 40)
         log_ready = wait_for(lambda: os.path.isfile(fakenet_log) and
                              os.path.getsize(fakenet_log) > 0, 20)
-        if not appeared:
-            result('A6 提权启动', 'FAIL',
-                   '已发起但 40 秒内未见 fakenet.exe 存活')
-        else:
+        wait_for(lambda: startup_log_decided(fakenet_log), 40)
+        start_ok, start_detail = evaluate_start_log(
+            read_core_log(fakenet_log))
+        running = launcher.is_fakenet_running()
+        a6_ok = appeared and log_ready and start_ok and running
+        if a6_ok:
             result('A6 提权启动', 'PASS',
-                   'fakenet.exe: %s%s' % (
-                       fakenet_exe, ';日志已写入' if log_ready
-                       else '(日志未就绪)'))
+                   'fakenet.exe 稳定运行;日志已记录成功启动: %s'
+                   % fakenet_exe)
+        else:
+            failures = []
+            if not appeared:
+                failures.append('40 秒内未见 fakenet.exe 存活')
+            if not log_ready:
+                failures.append('核心日志未就绪')
+            if not start_ok:
+                failures.append(start_detail)
+            if not running:
+                failures.append('证据判定时 fakenet.exe 已退出')
+            result('A6 提权启动', 'FAIL', ';'.join(failures))
 
-        if launcher.is_fakenet_running():
+        if a6_ok and launcher.is_fakenet_running():
             result('A7 双实例门', 'PASS',
                    '真实 fakenet.exe 运行中被 is_fakenet_running 检出'
                    '(GUI 启动门将拒绝二次启动)')
+            a7_ok = True
         else:
-            result('A7 双实例门', 'FAIL', '实例存活但未被检出')
+            a7_ok = False
+            result('A7 双实例门', 'FAIL',
+                   'A6 未证明稳定启动或实例已提前退出')
 
-        with open(stop_flag, 'w') as handle:
-            handle.write('stop\n')
-        stopped = wait_for(lambda: not launcher.is_fakenet_running(), 40)
-        if stopped:
-            result('A8 停止旗标优雅停止', 'PASS',
-                   'stop flag 触发 fakenet 自行退出;-l 日志: %s'
-                   % fakenet_log)
+        if a6_ok and a7_ok:
+            with open(stop_flag, 'w') as handle:
+                handle.write('stop\n')
+            stopped = wait_for(
+                lambda: not launcher.is_fakenet_running(), 40)
+            wait_for(
+                lambda: 'FakeNet-NG exiting: rc=' in
+                read_core_log(fakenet_log),
+                10)
+            stop_ok, stop_detail = evaluate_stop_log(
+                read_core_log(fakenet_log))
+            if stopped and stop_ok:
+                result('A8 停止旗标优雅停止', 'PASS',
+                       '%s;-l 日志: %s' % (stop_detail, fakenet_log))
+            else:
+                details = []
+                if not stopped:
+                    details.append('40 秒内未退出')
+                if not stop_ok:
+                    details.append(stop_detail)
+                result('A8 停止旗标优雅停止', 'FAIL',
+                       ';'.join(details))
         else:
-            result('A8 停止旗标优雅停止', 'FAIL', '40 秒内未退出,强制清理')
+            result('A8 停止旗标优雅停止', 'FAIL',
+                   'A6/A7 前置证据未通过,不得判定优雅停止')
+
+        if launcher.is_fakenet_running():
+            if not os.path.exists(stop_flag):
+                with open(stop_flag, 'w') as handle:
+                    handle.write('stop\n')
+                wait_for(
+                    lambda: not launcher.is_fakenet_running(), 10)
+        if launcher.is_fakenet_running():
             subprocess.run(['taskkill', '/F', '/IM', 'fakenet.exe'],
                            capture_output=True)
 

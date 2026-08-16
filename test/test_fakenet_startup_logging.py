@@ -93,3 +93,43 @@ def test_core_failure_traceback_is_written_to_automatic_log(tmp_path):
     assert 'FakeNet-NG terminated with an error' in content
     assert 'SystemExit: 1' in content
     assert 'FakeNet-NG exiting: rc=1' in content
+    assert 'FakeNet-NG started successfully' not in content
+
+
+def test_successful_start_is_recorded_before_stop_flag_shutdown(tmp_path):
+    config_path = tmp_path.joinpath('minimal.ini')
+    log_path = tmp_path.joinpath('fakenet.log')
+    stop_flag = tmp_path.joinpath('stop.flag')
+    config_path.write_text(
+        '[FakeNet]\n'
+        'DivertTraffic: No\n'
+        '\n'
+        '[Diverter]\n'
+        'NetworkMode: SingleHost\n'
+        '\n'
+        '[AnonymousTCPListener]\n'
+        'Enabled: True\n'
+        'Port: 1337\n'
+        'Protocol: TCP\n',
+        encoding='ascii')
+    stop_flag.write_text('stop\n', encoding='ascii')
+    script = (
+        'import sys\n'
+        'from fakenet import fakenet\n'
+        'sys.argv = ["fakenet", "--config-file", r"%s", '
+        '"--log-file", r"%s", "--stop-flag", r"%s", '
+        '"--no-pause", "--no-console-output"]\n'
+        'fakenet.main()\n'
+        % (str(config_path), str(log_path), str(stop_flag)))
+    environment = os.environ.copy()
+    environment['PYTHONPATH'] = REPO
+
+    completed = subprocess.run(
+        [sys.executable, '-c', script], env=environment,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    assert completed.returncode == 0
+    content = log_path.read_text(encoding='utf-8')
+    assert content.count('FakeNet-NG started successfully') == 1
+    assert 'Stop flag found at' in content
+    assert 'FakeNet-NG exiting: rc=0' in content

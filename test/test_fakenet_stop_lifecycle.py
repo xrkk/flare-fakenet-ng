@@ -86,6 +86,27 @@ class FakenetStopLifecycleTests(unittest.TestCase):
         self.assertEqual(1, wait_for_shutdown(fake))
         self.assertEqual([0.1], fake.waits)
 
+    def test_start_without_diverter_assigns_listener_bind_address(self):
+        fakenet = Fakenet(logging.ERROR)
+        fakenet.fakenet_config = {'diverttraffic': 'no'}
+        fakenet.diverter_config = {
+            'externalaccesspolicy': 'disabled',
+            'networkmode': 'singlehost',
+        }
+        fakenet.listeners_config = {
+            'AnonymousTCPListener': {
+                'port': 1337,
+                'protocol': 'TCP',
+            },
+        }
+
+        fakenet.start()
+
+        self.assertIsNone(fakenet.diverter)
+        self.assertEqual(
+            '0.0.0.0',
+            fakenet.listeners_config['AnonymousTCPListener']['ipaddr'])
+
 
 if __name__ == '__main__':
     unittest.main()

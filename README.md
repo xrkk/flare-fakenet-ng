@@ -602,6 +602,13 @@ What it does:
    automatically when its retained process handle signals exit. A source GUI's
    own startup log uses repository-root `Logs`. Existing core `-l/--log-file`
    remains an explicit override and suppresses a second automatic core file.
+ * With `DivertTraffic=No`, enabled listeners use the normal `0.0.0.0`
+   bind address while the Diverter remains disabled. This supports safe,
+   listener-only configurations without loading WinDivert.
+ * The v15 VM acceptance package includes `test/gui_vm/Run-Tests.cmd`.
+   A6 requires a live core plus the `FakeNet-NG started successfully` log
+   marker; A8 requires stop-flag evidence, `Stopping...`, and `rc=0`.
+   Tracebacks or nonzero exits fail closed.
 
 Security differences vs the PowerShell launchers (`Start-*.cmd`): the GUI
 path does NOT perform upstream DNS probing, post-stop DNS restoration
