@@ -82,3 +82,44 @@ def test_diverter_starts_after_listener_dependency_injection():
     accept_pos = source.index('listener.acceptDiverter(self.diverter)')
     diverter_start = source.index('# Start the diverter')
     assert accept_pos < diverter_start
+
+
+def test_get_dns_servers_walks_pointer_chain():
+    """Hosts with 2+ DNS servers crashed on the undereferenced Next hop."""
+    import ctypes
+
+    from fakenet.diverters import winutil
+
+    second = winutil.IP_ADDR_STRING()
+    second.IpAddress.String = b'8.8.4.4'
+    third = winutil.IP_ADDR_STRING()
+    third.IpAddress.String = b'1.1.1.1'
+    second.Next = ctypes.pointer(third)
+    first = winutil.IP_ADDR_STRING()
+    first.IpAddress.String = b'192.168.204.163'
+    first.Next = ctypes.pointer(second)
+
+    class FakeFixedInfo(object):
+        DnsServerList = first
+
+    util = winutil.WinUtilMixin.__new__(winutil.WinUtilMixin)
+    util.get_network_params = lambda: FakeFixedInfo()
+    assert list(util.get_dns_servers()) == [
+        b'192.168.204.163', b'8.8.4.4', b'1.1.1.1']
+
+
+def test_get_dns_servers_single_entry_and_none():
+    from fakenet.diverters import winutil
+
+    only = winutil.IP_ADDR_STRING()
+    only.IpAddress.String = b'192.168.1.1'
+
+    class FakeFixedInfo(object):
+        DnsServerList = only
+
+    util = winutil.WinUtilMixin.__new__(winutil.WinUtilMixin)
+    util.get_network_params = lambda: FakeFixedInfo()
+    assert list(util.get_dns_servers()) == [b'192.168.1.1']
+
+    util.get_network_params = lambda: None
+    assert list(util.get_dns_servers()) == []

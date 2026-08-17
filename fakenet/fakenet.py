@@ -689,8 +689,10 @@ _____________________________________________________________
         rc = e.code if isinstance(e, SystemExit) else 1
         if rc != 0:
             if logger:
+                # logger.exception already carries the full traceback to the
+                # log file and the console; a second raw print_exc() only
+                # duplicated the console dump (v1.24 §12.27).
                 logger.exception('FakeNet-NG terminated with an error')
-            traceback.print_exc()
     finally:
         if fakenet:
             try:

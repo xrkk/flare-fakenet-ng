@@ -1585,9 +1585,15 @@ class WinUtilMixin(diverterbase.DiverterPerOSDelegate):
         ip_addr_string = FixedInfo.DnsServerList
 
         while ip_addr_string:
-
-            yield ip_addr_string.IpAddress.String
-            ip_addr_string = ip_addr_string.Next
+            # DnsServerList is an embedded IP_ADDR_STRING, but every Next
+            # hop is a POINTER(IP_ADDR_STRING) that must be dereferenced;
+            # hosts with two or more DNS servers crashed here before
+            # (v1.24 §12.27).
+            node = (ip_addr_string.contents
+                    if hasattr(ip_addr_string, 'contents')
+                    else ip_addr_string)
+            yield node.IpAddress.String
+            ip_addr_string = node.Next
 
     ###########################################################################
     # The GetBestInterface function retrieves the index of the interface that has the best route to the specified IPv4 address.
