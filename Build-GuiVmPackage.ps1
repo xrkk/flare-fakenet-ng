@@ -22,7 +22,7 @@ param(
 # SHA-256, no Logs directory, no .sha256 sidecar.
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v15'
+$packageVersion = 'v16'
 $packageName = "Windows-GUI配置工具-VM验收-$packageVersion"
 $fixedTimestamp = [DateTimeOffset]::new(
     [DateTime]::SpecifyKind([DateTime]'2000-01-01T00:00:00',
@@ -175,7 +175,7 @@ try {
     $manifest = [ordered]@{
         schema_version=1
         package_version=$packageVersion
-        plan_version='v1.14'
+        plan_version='v1.15'
         source_commit=$resolvedCommit
         python_version=$pythonVersion
         pyinstaller_version=$pyinstallerVersion
