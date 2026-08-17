@@ -28,6 +28,7 @@ from fakenet.gui import configmodel, launcher, validator  # noqa: E402
 EXIT_PASS, EXIT_FAIL, EXIT_REFUSED = 0, 1, 2
 RESULTS = []
 LOG_DIR = None
+_GUI_LOGS_BEFORE = {}
 CORE_STARTED_MARKER = 'FakeNet-NG started successfully'
 CORE_FAILURE_MARKERS = (
     'Traceback (most recent call last):',
@@ -159,6 +160,60 @@ def build_smoke_config(path):
     return model, errors
 
 
+def gui_logs_root():
+    """Package-root Logs directory written by fakenet-GUI.exe, if any."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.abspath(os.path.join(script_dir, '..', '..'))
+    logs = os.path.join(root, 'Logs')
+    return logs if os.path.isdir(logs) else None
+
+
+def snapshot_gui_logs(logs_root=None):
+    """{name: mtime} of GUI logs before the run; used to copy only files
+    this acceptance session created or touched (v1.23 §12.26)."""
+    logs = logs_root if logs_root is not None else gui_logs_root()
+    if not logs or not os.path.isdir(logs):
+        return {}
+    snapshot = {}
+    for name in os.listdir(logs):
+        if name.endswith('.log'):
+            try:
+                snapshot[name] = os.path.getmtime(os.path.join(logs, name))
+            except OSError:
+                pass
+    return snapshot
+
+
+def collect_gui_logs(before, logs_root=None, target_dir=None):
+    """Copy GUI logs new/changed since `before` into the evidence folder.
+
+    The A9 GUI instance (and any GUI-launched core run) writes beside the
+    exe; merging them here means one copy location for the whole evidence
+    set. Copy failures are non-fatal (best effort).
+    """
+    logs = logs_root if logs_root is not None else gui_logs_root()
+    if not logs or not os.path.isdir(logs):
+        return []
+    copied = []
+    for name in os.listdir(logs):
+        if not name.endswith('.log'):
+            continue
+        source = os.path.join(logs, name)
+        try:
+            if name in before and os.path.getmtime(source) <= before[name]:
+                continue
+        except OSError:
+            continue
+        os.makedirs(target_dir, exist_ok=True)
+        try:
+            import shutil
+            shutil.copyfile(source, os.path.join(target_dir, name))
+            copied.append(name)
+        except OSError:
+            pass
+    return copied
+
+
 def main():
     global LOG_DIR
 
@@ -172,6 +227,8 @@ def main():
     LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            'Logs', stamp)
     os.makedirs(LOG_DIR, exist_ok=True)
+    global _GUI_LOGS_BEFORE
+    _GUI_LOGS_BEFORE = snapshot_gui_logs()
     print('日志目录: %s' % LOG_DIR)
 
     # -- precondition: VM gate (fail-closed, three-state) -------------------
@@ -362,6 +419,13 @@ def main():
 
 def finish():
     failed = [r for r in RESULTS if r[0] == 'FAIL']
+    if LOG_DIR is not None:
+        copied = collect_gui_logs(_GUI_LOGS_BEFORE, target_dir=os.path.join(
+            LOG_DIR, 'gui-logs'))
+        if copied:
+            print('GUI 日志已并入: %s (共 %d 个: %s)' % (
+                os.path.join(LOG_DIR, 'gui-logs'), len(copied),
+                ', '.join(sorted(copied))))
     print('\n===== 汇总: %d 项,失败 %d 项 =====' % (len(RESULTS), len(failed)))
     for status, name, detail, level in RESULTS:
         print('  %-6s %-24s %s' % (status, name, detail))
