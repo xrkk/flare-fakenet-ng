@@ -60,6 +60,9 @@ def configure_styles(root):
                 pass
     root.configure(background=COLOR_BG)
     style = ttk.Style(root)
+    # Tabs sit at the bottom edge; all tab content renders above them
+    # (v1.20 §12.24).
+    style.configure('TNotebook', tabposition='s')
     style.configure('TNotebook.Tab', padding=(18, 8))
     style.configure('TLabelframe', padding=(6, 6))
     style.configure('Muted.TLabel', foreground=COLOR_MUTED)

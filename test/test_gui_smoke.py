@@ -695,6 +695,17 @@ def test_master_switch_toggle_reverts_provisioning_and_dirty():
         root.destroy()
 
 
+def test_notebook_tabs_are_positioned_at_the_bottom():
+    from tkinter import ttk as ttk_styles
+
+    root, application = _construct_app()
+    try:
+        style = ttk_styles.Style(root)
+        assert style.lookup('TNotebook', 'tabposition') == 's'
+    finally:
+        root.destroy()
+
+
 def test_treeview_rowheight_and_uniform_action_buttons():
     import tkinter.font as tkfont
     from tkinter import ttk as ttk_styles
