@@ -702,7 +702,6 @@ _____________________________________________________________
                 rc = 1
                 if logger:
                     logger.exception('FakeNet-NG stop failed')
-                traceback.print_exc()
         # Delete flag only after FakeNet-NG has stopped to indicate completion
         if options and options.stop_flag and os.path.exists(options.stop_flag):
             try:
