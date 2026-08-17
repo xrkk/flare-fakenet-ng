@@ -850,17 +850,24 @@ def test_title_fixed_and_path_row_shows_bound_absolute_path(tmp_path):
 def test_first_launch_loads_default_with_info_not_warning(tmp_path, monkeypatch):
     import json as json_module
     from fakenet.gui import app as app_module
+    from fakenet.gui.app import FakenetConfigApp
 
-    root, application = _construct_app()
+    # Mirror production ordering: bind the state directory BEFORE the app
+    # is constructed, so construction itself must not claim a "last" file.
+    root = tkinter.Tk()
+    root.withdraw()
     try:
         state_dir = tmp_path / 'state'
         state_dir.mkdir()
-        application._gui_state_dir = lambda: str(state_dir)
+        monkeypatch.setattr(
+            FakenetConfigApp, '_gui_state_dir', lambda self: str(state_dir))
         infos, warnings = [], []
         monkeypatch.setattr(app_module.messagebox, 'showinfo',
                             lambda *args, **kwargs: infos.append(args))
         monkeypatch.setattr(app_module.messagebox, 'showwarning',
                             lambda *args, **kwargs: warnings.append(args))
+        application = FakenetConfigApp(root)
+        assert not (state_dir / 'fakenet-GUI.state.json').exists()
         application.startup_load()
         default = str(state_dir / 'fakenet-GUI-default.ini')
         assert os.path.isfile(default)

@@ -2055,8 +2055,9 @@ class FakenetConfigApp(object):
         self.model = configmodel.ConfigModel.new_config()
         # A configuration is always bound to a file (v1.18 §12.22); 新建
         # rebinds to the immutable default without writing it (v1.19 §12.23).
+        # The state file is NOT updated here: only real loads/saves do, so a
+        # first launch still counts as first launch (§12.23.1).
         self.model.path = self._default_config_path()
-        self._remember_config_path(self.model.path)
         self._selected_listener = None
         self._egress_auto = {}
         self._rebuild_all()
