@@ -87,7 +87,8 @@ def main():
         _enable_dpi_awareness()
         root = tk.Tk()
         from fakenet.gui.app import FakenetConfigApp
-        FakenetConfigApp(root)
+        application = FakenetConfigApp(root)
+        application.startup_load()
         root.update_idletasks()
         _close_splash()
         logger.info('fakenet-GUI main window initialized')

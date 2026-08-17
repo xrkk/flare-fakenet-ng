@@ -128,14 +128,14 @@ def test_persistent_actions_and_file_status():
         assert application.restore_button.cget('text') == '恢复默认配置'
         assert '写回该文件' in application.import_button._hover_help.text
         assert '立即覆盖' in application.restore_button._hover_help.text
-        assert application.file_status_var.get() == '○ 新配置尚未保存'
+        assert application.file_status_var.get().startswith('✓ 已保存 · ')
 
         application.model.diverter().set('DebugLevel', 'Debug')
         application._mark_dirty()
         assert application.file_status_var.get().startswith('● 有未保存修改')
         application.model.diverter().set('DebugLevel', 'Off')
         application._mark_dirty()
-        assert application.file_status_var.get() == '○ 新配置尚未保存'
+        assert application.file_status_var.get().startswith('✓ 已保存 · ')
     finally:
         root.destroy()
 
@@ -197,6 +197,9 @@ def test_restore_defaults_requires_bound_file(monkeypatch):
             app_module.messagebox, 'showwarning',
             lambda title, message, **_kwargs:
             warnings.append((title, message)))
+        # v1.18 §12.22: configurations are always bound; simulate the
+        # documented residual (no writable location) to cover the guard.
+        application.model.path = None
         application.restore_button.invoke()
         assert application.model is original
         assert warnings and '尚未绑定文件' in warnings[0][1]
@@ -754,6 +757,128 @@ def test_diverter_level_filter_hints_explain_purpose():
                        ('HostBlackList', ('直接放行', 'IPv4'))):
         hint = schema.diverter_field(key).hint
         assert all(word in hint for word in words), key
+
+
+def _bind_state_dir(application, tmp_path):
+    state_dir = str(tmp_path)
+    application._gui_state_dir = lambda: state_dir
+    return state_dir
+
+
+def test_startup_loads_last_configuration(tmp_path, monkeypatch):
+    from fakenet.gui import configmodel
+
+    last = tmp_path / 'last.ini'
+    model = configmodel.ConfigModel.new_config()
+    model.diverter().set('DebugLevel', 'Debug')
+    model.save(str(last))
+
+    root, application = _construct_app()
+    try:
+        _bind_state_dir(application, tmp_path / 'state')
+        (tmp_path / 'state').mkdir()
+        import json as json_module
+        (tmp_path / 'state' / 'fakenet-GUI.state.json').write_text(
+            json_module.dumps({'last_config': str(last)}), encoding='utf-8')
+        application.startup_load()
+        assert os.path.abspath(str(last)) == \
+            os.path.abspath(application.model.path)
+        assert application.model.diverter().get('DebugLevel') == 'Debug'
+        assert os.path.basename(application.model.path) in root.title()
+        assert root.title().startswith('FakeNet-NG 配置工具 - ')
+    finally:
+        root.destroy()
+
+
+def test_startup_falls_back_to_default_working_config(tmp_path, monkeypatch):
+    import json as json_module
+    from fakenet.gui import app as app_module
+
+    root, application = _construct_app()
+    try:
+        state_dir = tmp_path / 'state'
+        state_dir.mkdir()
+        application._gui_state_dir = lambda: str(state_dir)
+        (state_dir / 'fakenet-GUI.state.json').write_text(
+            json_module.dumps({'last_config': str(tmp_path / 'gone.ini')}),
+            encoding='utf-8')
+        warnings = []
+        monkeypatch.setattr(app_module.messagebox, 'showwarning',
+                            lambda *args, **kwargs: warnings.append(args))
+
+        application.startup_load()
+        working = str(state_dir / 'fakenet-GUI-config.ini')
+        assert os.path.isfile(working)
+        assert os.path.abspath(application.model.path) == \
+            os.path.abspath(working)
+        assert warnings and '无法加载上次的配置文件' in warnings[0][1]
+        assert root.title().endswith('fakenet-GUI-config.ini')
+
+        # corrupt last config also falls back with a single warning
+        corrupt = tmp_path / 'corrupt.ini'
+        corrupt.write_bytes(b'\x00\x01\xff\xfe not an ini file \x00')
+        (state_dir / 'fakenet-GUI.state.json').write_text(
+            json_module.dumps({'last_config': str(corrupt)}),
+            encoding='utf-8')
+        warnings.clear()
+        application.startup_load()
+        assert os.path.abspath(application.model.path) == \
+            os.path.abspath(working)
+        assert len(warnings) == 1
+    finally:
+        root.destroy()
+
+
+def test_title_always_shows_bound_absolute_path(tmp_path):
+    root, application = _construct_app()
+    try:
+        _bind_state_dir(application, tmp_path)
+        expected = 'FakeNet-NG 配置工具 - %s' % \
+            os.path.abspath(application.model.path)
+        assert root.title() == expected
+        application.model.diverter().set('DebugLevel', 'Debug')
+        application._mark_dirty()
+        assert root.title() == expected + '*'
+    finally:
+        root.destroy()
+
+
+def test_process_and_host_list_mutex_reflected_in_ui(tmp_path):
+    root, application = _construct_app()
+    try:
+        application._render_static_tabs()
+        white = application._registry[('Diverter', 'processwhitelist')]
+        black = application._registry[('Diverter', 'processblacklist')]
+
+        white.set('sample.exe', notify=True, force=True)
+        assert _widget_disabled(black.input)
+        assert '互斥' in black.tooltip.text
+
+        white.set('', notify=True, force=True)
+        assert not _widget_disabled(black.input)
+        assert '互斥' not in black.tooltip.text
+
+        # listener-level mutex on a user listener panel
+        application._ensure_tab(2)
+        application._selected_listener = 'ProxyTCPListener'
+        application._render_listener_panel()
+        lwhite = application._registry[
+            ('ProxyTCPListener', 'processwhitelist')]
+        lblack = application._registry[
+            ('ProxyTCPListener', 'processblacklist')]
+        lhost_white = application._registry[
+            ('ProxyTCPListener', 'hostwhitelist')]
+        lhost_black = application._registry[
+            ('ProxyTCPListener', 'hostblacklist')]
+        lwhite.set('a.exe', notify=True, force=True)
+        assert _widget_disabled(lblack.input)
+        assert '互斥' in lblack.tooltip.text
+        assert not _widget_disabled(lhost_white.input)
+        lhost_black.set('1.2.3.4', notify=True, force=True)
+        assert _widget_disabled(lhost_white.input)
+        assert _widget_disabled(lblack.input)  # process whitelist still set
+    finally:
+        root.destroy()
 
 
 def test_long_labels_stay_single_line():

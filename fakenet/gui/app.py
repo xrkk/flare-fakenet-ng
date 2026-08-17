@@ -10,10 +10,12 @@ main editor's vertical space.
 import codecs
 import difflib
 import hashlib
+import json
 import logging
 import os
 import queue
 import sys
+import tempfile
 import textwrap
 import threading
 import tkinter as tk
@@ -647,15 +649,79 @@ class FakenetConfigApp(object):
         self.dirty = (self._baseline_render is not None and
                       signature is not None and
                       signature != self._baseline_render)
-        name = (os.path.basename(self.model.path) if self.model and
-                self.model.path else '未命名')
-        self.root.title('%s%s - %s' % (name, '*' if self.dirty else '',
-                                       APP_TITLE))
+        if self.model is not None and self.model.path:
+            shown = os.path.abspath(self.model.path)
+        else:
+            shown = '未命名'  # documented residual: no writable location
+        self.root.title('%s - %s%s' % (APP_TITLE, shown,
+                                       '*' if self.dirty else ''))
         self._update_file_status()
 
     def _set_clean_baseline(self):
         self._baseline_render = self._baseline_signature()
         self._refresh_dirty()
+
+    # -- startup persistence (v1.18 §12.22) ----------------------------------
+
+    def _gui_state_dir(self):
+        if getattr(sys, 'frozen', False):
+            return os.path.dirname(sys.executable)
+        return tempfile.gettempdir()
+
+    def _state_path(self):
+        return os.path.join(self._gui_state_dir(), 'fakenet-GUI.state.json')
+
+    def _default_working_path(self):
+        return os.path.abspath(os.path.join(
+            self._gui_state_dir(), 'fakenet-GUI-config.ini'))
+
+    def _read_last_config_path(self):
+        try:
+            with open(self._state_path(), 'r', encoding='utf-8') as handle:
+                data = json.load(handle)
+            path = data.get('last_config')
+            return os.path.abspath(path) if path else None
+        except Exception:  # noqa: BLE001 - missing/corrupt state restarts clean
+            return None
+
+    def _remember_config_path(self, path):
+        try:
+            with open(self._state_path(), 'w', encoding='utf-8') as handle:
+                json.dump({'last_config': os.path.abspath(path)}, handle)
+        except Exception:  # noqa: BLE001 - persistence is best effort
+            pass
+
+    def startup_load(self):
+        """Load the last configuration; fall back to defaults (§12.22)."""
+        last = self._read_last_config_path()
+        reason = None
+        if last and os.path.isfile(last):
+            if self._load_path(last, show_error=False):
+                return
+            self.logger.warning('last configuration failed to load: %s', last)
+            reason = '无法解析该文件'
+        elif last:
+            reason = '文件不存在'
+        if reason:
+            messagebox.showwarning(
+                '启动', '无法加载上次的配置文件(%s):\n%s\n\n'
+                '已改为加载默认工作配置。' % (reason, last), parent=self.root)
+        self._load_default_working_config()
+
+    def _load_default_working_config(self):
+        path = self._default_working_path()
+        if not os.path.isfile(path):
+            model = configmodel.ConfigModel.new_config()
+            model.path = path
+            try:
+                model.save(path)
+            except OSError as exc:
+                messagebox.showerror(
+                    '启动', '默认工作配置创建失败:\n%s\n\n%s\n\n'
+                    '当前会话将保持未绑定文件状态。' % (path, exc),
+                    parent=self.root)
+                return
+        self._load_path(path)
 
     def _mark_dirty(self):
         """Compatibility alias: dirty is computed, just refresh the chrome."""
@@ -862,6 +928,65 @@ class FakenetConfigApp(object):
                 if hasattr(widget, 'set_locked'):
                     widget.set_locked(True, reason='FakeNet 运行中')
 
+    def _mutex_pair(self, widget_white, widget_black, white_set, black_set,
+                    label):
+        """One side set disables the other; clearing both re-enables (§12.22).
+
+        Only locks applied here are lifted here (per-widget flag), so
+        read-only/running locks applied elsewhere are never clobbered.
+        """
+
+        def lock(widget, reason):
+            if widget is not None:
+                widget.set_locked(True, reason=reason)
+                widget._mutex_locked = True
+
+        def unlock(widget):
+            if widget is not None and getattr(widget, '_mutex_locked', False):
+                widget.set_locked(False)
+                widget._mutex_locked = False
+
+        if white_set and black_set:
+            both = ('%s黑/白名单互斥:两者都配置会启动失败,请清空其一' % label)
+            lock(widget_white, both)
+            lock(widget_black, both)
+        elif white_set:
+            unlock(widget_white)
+            lock(widget_black, '与%s白名单互斥;请先清空白名单' % label)
+        elif black_set:
+            unlock(widget_black)
+            lock(widget_white, '与%s黑名单互斥;请先清空黑名单' % label)
+        else:
+            unlock(widget_white)
+            unlock(widget_black)
+
+    def _refresh_mutex_locks(self):
+        """Reflect process/host black/white list mutexes in the UI (§12.22)."""
+        if self.model is None or self._running:
+            return
+        diverter = self.model.diverter()
+        self._mutex_pair(
+            self._registry.get(('Diverter', 'processwhitelist')),
+            self._registry.get(('Diverter', 'processblacklist')),
+            bool((diverter.get('ProcessWhiteList') or '').strip()),
+            bool((diverter.get('ProcessBlackList') or '').strip()),
+            '进程')
+        section = self._selected_listener
+        if not section or self._selected_listener_is_system():
+            return
+        sec = self.model.section(section)
+        if sec is None:
+            return
+        for white_key, black_key, label in (
+                ('ProcessWhiteList', 'ProcessBlackList', '进程'),
+                ('HostWhiteList', 'HostBlackList', '主机')):
+            self._mutex_pair(
+                self._registry.get((section, white_key.lower())),
+                self._registry.get((section, black_key.lower())),
+                bool((sec.get(white_key) or '').strip()),
+                bool((sec.get(black_key) or '').strip()),
+                label)
+
     def _snapshot_model(self):
         """Whole-model {section: {key: value}} copy for provenance diffing."""
         return {name: dict(sec.items())
@@ -1006,6 +1131,8 @@ class FakenetConfigApp(object):
             if changes and 2 in self._tabs_built:
                 self._refresh_listener_list()
             self._refresh_locks()
+        if key in ('ProcessWhiteList', 'ProcessBlackList'):
+            self._refresh_mutex_locks()
         self._mark_dirty()
         self._schedule_validate()
 
@@ -1532,6 +1659,7 @@ class FakenetConfigApp(object):
                     .pack(anchor='w', padx=6)
         finally:
             self._building = False
+        self._refresh_mutex_locks()
 
     def _on_listener_field(self, key, value):
         if (self._building or self._running or not self._selected_listener or
@@ -1544,6 +1672,9 @@ class FakenetConfigApp(object):
         self._mark_dirty()
         if key.lower() in ('enabled', 'listener', 'port', 'protocol'):
             self._refresh_listener_list()
+        if key in ('ProcessWhiteList', 'ProcessBlackList',
+                   'HostWhiteList', 'HostBlackList'):
+            self._refresh_mutex_locks()
         self._schedule_validate()
 
     def _on_extra_key(self, section_name, key, var):
@@ -1858,7 +1989,10 @@ class FakenetConfigApp(object):
             return
         self.logger.info('new configuration requested')
         self.model = configmodel.ConfigModel.new_config()
-        self.model.path = None
+        # A configuration is always bound to a file (v1.18 §12.22); the
+        # working file is only written on save/restore, not on 新建.
+        self.model.path = self._default_working_path()
+        self._remember_config_path(self.model.path)
         self._selected_listener = None
         self._egress_auto = {}
         self._rebuild_all()
@@ -1913,6 +2047,7 @@ class FakenetConfigApp(object):
         self._egress_auto = {}
         self._rebuild_all()
         self._clear_dirty()
+        self._remember_config_path(path)
 
     def load_template(self, name):
         if self._running:
@@ -1926,13 +2061,14 @@ class FakenetConfigApp(object):
                 return
         messagebox.showerror('模板载入', '模板不存在: %s' % name)
 
-    def _load_path(self, path):
+    def _load_path(self, path, show_error=True):
         self.logger.info('configuration load requested: path=%s', path)
         try:
             model = configmodel.ConfigModel.load(path)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user
-            messagebox.showerror('打开', '无法解析配置文件:\n%s' % exc)
-            return
+            if show_error:
+                messagebox.showerror('打开', '无法解析配置文件:\n%s' % exc)
+            return False
         model.ensure_sections()
         self.model = model
         self._selected_listener = None
@@ -1943,10 +2079,12 @@ class FakenetConfigApp(object):
         self._baseline_render = self._baseline_signature()
         changes = self._rebuild_all()
         self._refresh_dirty()
+        self._remember_config_path(os.path.abspath(path))
         self.logger.info(
             'configuration loaded: path=%s encoding=%s bom=%s newline=%r '
             'automatic_changes=%d', self.model.path, self.model.encoding,
             self.model.bom, self.model.newline, len(changes))
+        return True
 
     def _rebuild_all(self):
         changes = []
@@ -1980,6 +2118,7 @@ class FakenetConfigApp(object):
             except tk.TclError:
                 pass
         self._validate_job = self.root.after_idle(self._validate_now)
+        self._refresh_mutex_locks()
         return changes
 
     def _confirm_discard(self):
@@ -2018,6 +2157,7 @@ class FakenetConfigApp(object):
             messagebox.showerror('保存', '保存失败:\n%s' % exc)
             return
         self._clear_dirty()
+        self._remember_config_path(path)
         self._validate_now()
         self.logger.info('configuration saved: path=%s', self.model.path)
 
