@@ -178,12 +178,16 @@ DIVERTER_FIELDS = (
           hint='仅 Windows;模板中仅注释样例,v0.2 审计 P5 补'),
     Field('ProcessWhiteList', '进程白名单(Diverter 级)', T_STRINGLIST,
           default='', group='重定向与黑名单',
-          hint='与 ProcessBlackList 互斥(同时存在即启动失败)'),
+          hint='全局过滤:仅接管列表内进程的出站流量,其他进程直接转发;'
+               '与 ProcessBlackList 互斥(同时存在即启动失败)'),
     Field('ProcessBlackList', '进程黑名单(Diverter 级)', T_STRINGLIST,
           default='', group='重定向与黑名单',
-          hint='列表内进程的流量直接转发;与 ProcessWhiteList 同时配置会启动失败'),
+          hint='全局过滤:列表内进程的流量直接放行转发、不进任何监听器;'
+               '与 ProcessWhiteList 同时配置会启动失败'),
     Field('HostBlackList', '主机黑名单(Diverter 级)', T_STRINGLIST,
-          default='', group='重定向与黑名单', hint='逗号分隔 IPv4'),
+          default='', group='重定向与黑名单',
+          hint='全局过滤:发往列表内 IPv4 的流量直接放行转发,不进监听器;'
+               '逗号分隔'),
     # -- Linux 专用 --------------------------------------------------------
     Field('LinuxRestrictInterface', 'Linux 限定的网卡名', T_STRING,
           default='Off', group='Linux',

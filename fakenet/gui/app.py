@@ -305,11 +305,12 @@ class FakenetConfigApp(object):
             command=self.save)
         self.save_button.pack(side='right', padx=(0, 8))
         self.restore_button = ttk.Button(
-            action_bar, text='恢复默认配置', width=14,
-            command=self.restore_defaults)
+            action_bar, text='恢复默认配置', style='Action.TButton',
+            width=14, command=self.restore_defaults)
         self.restore_button.pack(side='right', padx=(0, 8))
         self.import_button = ttk.Button(
-            action_bar, text='导入配置', width=14, command=self.open_file)
+            action_bar, text='导入配置', style='Action.TButton', width=14,
+            command=self.open_file)
         self.import_button.pack(side='right', padx=(0, 8))
         self._action_buttons = [self.import_button, self.restore_button,
                                 self.save_button]
@@ -533,7 +534,8 @@ class FakenetConfigApp(object):
         window = tk.Toplevel(self.root)
         window.title('配置校验详情')
         window.transient(self.root)
-        window.geometry(VALIDATION_WINDOW_SIZE)
+        self._center_over_parent(window, *map(
+            int, VALIDATION_WINDOW_SIZE.split('x')))
         window.minsize(*VALIDATION_WINDOW_MIN_SIZE)
         self._validation_window = window
         header = ttk.Frame(window, padding=(8, 8, 8, 5))
@@ -673,13 +675,27 @@ class FakenetConfigApp(object):
             fromfile='已保存/载入', tofile='当前', lineterm='')
         return list(diff)
 
+    def _center_over_parent(self, window, width, height):
+        """Center a dialog over the main window (screen if unmapped)."""
+        self.root.update_idletasks()
+        root_w = self.root.winfo_width()
+        root_h = self.root.winfo_height()
+        if root_w > 100 and root_h > 100:
+            x = self.root.winfo_rootx() + (root_w - width) // 2
+            y = self.root.winfo_rooty() + (root_h - height) // 2
+        else:
+            x = (self.root.winfo_screenwidth() - width) // 2
+            y = (self.root.winfo_screenheight() - height) // 2
+        window.geometry('%dx%d+%d+%d' % (
+            width, height, max(0, x), max(0, y)))
+
     def _show_unsaved_details(self, _event=None):
         if self._running:
             return
         window = tk.Toplevel(self.root)
         window.title('未保存修改详情')
         window.transient(self.root)
-        window.geometry('900x480')
+        self._center_over_parent(window, 900, 480)
         window.minsize(640, 320)
         body = ttk.Frame(window, padding=(8, 8, 8, 8))
         body.pack(fill='both', expand=True)

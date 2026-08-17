@@ -703,13 +703,57 @@ def test_treeview_rowheight_and_uniform_action_buttons():
         linespace = int(
             tkfont.nametofont('TkDefaultFont').metrics('linespace'))
         assert rowheight >= linespace
-        widths = {int(button.cget('width')) for button in (
-            application.import_button, application.restore_button,
-            application.save_button)}
+        buttons = (application.import_button, application.restore_button,
+                   application.save_button)
+        widths = {int(button.cget('width')) for button in buttons}
         assert widths == {14}
+        styles = {str(button.cget('style')) for button in buttons}
+        assert styles == {'Action.TButton'}
         assert application.file_status_label is not None
     finally:
         root.destroy()
+
+
+def test_dialogs_center_over_main_window():
+    root, application = _construct_app()
+    try:
+        root.deiconify()
+        root.update()
+
+        application._show_unsaved_details()
+        window = application.unsaved_details_window
+        window.update_idletasks()
+        geometry = window.geometry()
+        size, _, position = geometry.partition('+')
+        x, y = (int(part) for part in position.split('+'))
+        assert size == '900x480'
+        assert x == root.winfo_rootx() + (root.winfo_width() - 900) // 2
+        assert y == root.winfo_rooty() + (root.winfo_height() - 480) // 2
+        window.destroy()
+
+        application._issues = []
+        application.open_validation_window()
+        window = application._validation_window
+        window.update_idletasks()
+        geometry = window.geometry()
+        size, _, position = geometry.partition('+')
+        x, y = (int(part) for part in position.split('+'))
+        assert size == '1350x630'
+        assert x == root.winfo_rootx() + (root.winfo_width() - 1350) // 2
+        assert y == root.winfo_rooty() + (root.winfo_height() - 630) // 2
+        window.destroy()
+    finally:
+        root.destroy()
+
+
+def test_diverter_level_filter_hints_explain_purpose():
+    from fakenet.gui import schema
+
+    for key, words in (('ProcessWhiteList', ('仅接管', '互斥')),
+                       ('ProcessBlackList', ('直接放行', '同时配置')),
+                       ('HostBlackList', ('直接放行', 'IPv4'))):
+        hint = schema.diverter_field(key).hint
+        assert all(word in hint for word in words), key
 
 
 def test_long_labels_stay_single_line():
