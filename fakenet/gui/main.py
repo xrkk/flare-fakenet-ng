@@ -88,10 +88,15 @@ def main():
         root = tk.Tk()
         from fakenet.gui.app import FakenetConfigApp
         application = FakenetConfigApp(root)
-        application.startup_load()
         root.update_idletasks()
         _close_splash()
         logger.info('fakenet-GUI main window initialized')
+        if not application.startup_load():
+            # The user closed the window while the last configuration was
+            # still loading; exit quietly instead of crashing (§12.22).
+            logger.info('fakenet-GUI exiting')
+            launcher.close_handle(mutex_handle)
+            return 0
     except Exception as exc:  # noqa: BLE001 - fatal dialog, then exit
         _close_splash()
         logger.exception('fakenet-GUI startup failed')

@@ -692,12 +692,23 @@ class FakenetConfigApp(object):
             pass
 
     def startup_load(self):
-        """Load the last configuration; fall back to defaults (§12.22)."""
+        """Load the last configuration; fall back to defaults (§12.22).
+
+        Returns False when the window was closed mid-load (caller exits
+        quietly); True otherwise.
+        """
+        try:
+            return self._startup_load()
+        except tk.TclError:
+            self.logger.warning('startup load aborted: window closed')
+            return False
+
+    def _startup_load(self):
         last = self._read_last_config_path()
         reason = None
         if last and os.path.isfile(last):
             if self._load_path(last, show_error=False):
-                return
+                return True
             self.logger.warning('last configuration failed to load: %s', last)
             reason = '无法解析该文件'
         elif last:
@@ -707,6 +718,7 @@ class FakenetConfigApp(object):
                 '启动', '无法加载上次的配置文件(%s):\n%s\n\n'
                 '已改为加载默认工作配置。' % (reason, last), parent=self.root)
         self._load_default_working_config()
+        return True
 
     def _load_default_working_config(self):
         path = self._default_working_path()
