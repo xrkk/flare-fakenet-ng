@@ -128,14 +128,14 @@ def test_persistent_actions_and_file_status():
         assert application.restore_button.cget('text') == '恢复默认配置'
         assert '写回该文件' in application.import_button._hover_help.text
         assert '立即覆盖' in application.restore_button._hover_help.text
-        assert application.file_status_var.get().startswith('✓ 已保存 · ')
+        assert application.file_status_var.get() == '✓ 已保存'
 
         application.model.diverter().set('DebugLevel', 'Debug')
         application._mark_dirty()
         assert application.file_status_var.get().startswith('● 有未保存修改')
         application.model.diverter().set('DebugLevel', 'Off')
         application._mark_dirty()
-        assert application.file_status_var.get().startswith('✓ 已保存 · ')
+        assert application.file_status_var.get() == '✓ 已保存'
     finally:
         root.destroy()
 
@@ -156,7 +156,7 @@ def test_import_button_opens_and_binds_selected_file(tmp_path, monkeypatch):
         application.import_button.invoke()
         assert application.model.path == os.path.abspath(str(path))
         assert application.model.diverter().get('DebugLevel') == 'Debug'
-        assert os.path.abspath(str(path)) in application.file_status_var.get()
+        assert os.path.abspath(str(path)) in application.config_path_var.get()
         assert not application.dirty
     finally:
         root.destroy()
@@ -784,8 +784,8 @@ def test_startup_loads_last_configuration(tmp_path, monkeypatch):
         assert os.path.abspath(str(last)) == \
             os.path.abspath(application.model.path)
         assert application.model.diverter().get('DebugLevel') == 'Debug'
-        assert os.path.basename(application.model.path) in root.title()
-        assert root.title().startswith('FakeNet-NG 配置工具 - ')
+        assert application.config_path_var.get() ==             os.path.abspath(application.model.path)
+        assert root.title() == 'FakeNet-NG 配置工具'
     finally:
         root.destroy()
 
@@ -807,12 +807,14 @@ def test_startup_falls_back_to_default_working_config(tmp_path, monkeypatch):
                             lambda *args, **kwargs: warnings.append(args))
 
         application.startup_load()
-        working = str(state_dir / 'fakenet-GUI-config.ini')
+        working = str(state_dir / 'fakenet-GUI-default.ini')
         assert os.path.isfile(working)
         assert os.path.abspath(application.model.path) == \
             os.path.abspath(working)
         assert warnings and '无法加载上次的配置文件' in warnings[0][1]
-        assert root.title().endswith('fakenet-GUI-config.ini')
+        assert root.title() == 'FakeNet-NG 配置工具'
+        assert application.config_path_var.get().endswith(
+            'fakenet-GUI-default.ini')
 
         # corrupt last config also falls back with a single warning
         corrupt = tmp_path / 'corrupt.ini'
@@ -829,16 +831,126 @@ def test_startup_falls_back_to_default_working_config(tmp_path, monkeypatch):
         root.destroy()
 
 
-def test_title_always_shows_bound_absolute_path(tmp_path):
+def test_title_fixed_and_path_row_shows_bound_absolute_path(tmp_path):
     root, application = _construct_app()
     try:
         _bind_state_dir(application, tmp_path)
-        expected = 'FakeNet-NG 配置工具 - %s' % \
-            os.path.abspath(application.model.path)
-        assert root.title() == expected
+        assert root.title() == 'FakeNet-NG 配置工具'
+        shown = application.config_path_var.get()
+        assert shown == os.path.abspath(application.model.path)
         application.model.diverter().set('DebugLevel', 'Debug')
         application._mark_dirty()
-        assert root.title() == expected + '*'
+        assert application.config_path_var.get() == shown + '*'
+        assert root.title() == 'FakeNet-NG 配置工具'  # title stays fixed
+        assert application.reveal_button is not None
+    finally:
+        root.destroy()
+
+
+def test_first_launch_loads_default_with_info_not_warning(tmp_path, monkeypatch):
+    import json as json_module
+    from fakenet.gui import app as app_module
+
+    root, application = _construct_app()
+    try:
+        state_dir = tmp_path / 'state'
+        state_dir.mkdir()
+        application._gui_state_dir = lambda: str(state_dir)
+        infos, warnings = [], []
+        monkeypatch.setattr(app_module.messagebox, 'showinfo',
+                            lambda *args, **kwargs: infos.append(args))
+        monkeypatch.setattr(app_module.messagebox, 'showwarning',
+                            lambda *args, **kwargs: warnings.append(args))
+        application.startup_load()
+        default = str(state_dir / 'fakenet-GUI-default.ini')
+        assert os.path.isfile(default)
+        assert os.path.abspath(application.model.path) == \
+            os.path.abspath(default)
+        assert not application.dirty
+        assert infos and '当前加载的是默认配置文件' in infos[0][1]
+        assert warnings == []
+        state = json_module.loads(
+            (state_dir / 'fakenet-GUI.state.json').read_text(encoding='utf-8'))
+        assert os.path.abspath(state['last_config']) == \
+            os.path.abspath(default)
+    finally:
+        root.destroy()
+
+
+def test_default_config_is_immutable_on_save(tmp_path, monkeypatch):
+    from fakenet.gui import app as app_module, configmodel
+
+    root, application = _construct_app()
+    try:
+        state_dir = tmp_path / 'state'
+        state_dir.mkdir()
+        application._gui_state_dir = lambda: str(state_dir)
+        application.new_config()
+        default = application.model.path
+        assert application._is_default_config(default)
+        application.model.diverter().set('DebugLevel', 'Debug')
+        application._mark_dirty()
+        assert application.dirty
+        before = open(default, 'rb').read() if os.path.isfile(default) else None
+
+        infos = []
+        monkeypatch.setattr(app_module.messagebox, 'showinfo',
+                            lambda *args, **kwargs: infos.append(args))
+        target = str(tmp_path / 'user.ini')
+        monkeypatch.setattr(app_module.filedialog, 'asksaveasfilename',
+                            lambda **_kwargs: target)
+        application.save()
+        assert infos and '默认配置不可被修改' in infos[0][1]
+        assert os.path.isfile(target)
+        assert os.path.abspath(application.model.path) == \
+            os.path.abspath(target)
+        if before is not None:
+            assert open(default, 'rb').read() == before
+        assert not application.dirty
+
+        # save-as onto the default path itself is refused
+        application.model.diverter().set('DebugLevel', 'Off')
+        application._mark_dirty()
+        assert application.dirty
+        errors = []
+        monkeypatch.setattr(app_module.messagebox, 'showerror',
+                            lambda *args, **kwargs: errors.append(args))
+        monkeypatch.setattr(app_module.filedialog, 'asksaveasfilename',
+                            lambda **_kwargs: default)
+        application.save(as_else=True)
+        assert errors and '默认配置不可被覆盖' in errors[0][1]
+        assert application.dirty
+    finally:
+        root.destroy()
+
+
+def test_takeover_toggle_refreshes_in_place_without_tab_rebuild():
+    root, application = _construct_app()
+    try:
+        application._render_static_tabs()
+        switch = application._egress_widgets['ExternalAccessPolicy']
+        switch.input.invoke()
+        sentinel_takeover = application.takeover_check
+        sentinel_domains = application.domain_list_widget
+        sentinel_public = application.public_rules_widget
+
+        application.takeover_check.invoke()
+        assert application.takeover_check is sentinel_takeover
+        assert application.domain_list_widget is sentinel_domains
+        assert application.public_rules_widget is sentinel_public
+        diverter = application.model.diverter()
+        assert diverter.get('ExternalTakeoverIPv4') == ''
+        assert diverter.get('ExternalAllowedDomains') == 'api.deepseek.com'
+        assert 'disabled' in application.domain_list_widget.input.state()
+        takeover_ip = application._egress_widgets['ExternalTakeoverIPv4']
+        assert takeover_ip.get() == ''
+
+        application.takeover_check.invoke()
+        assert application.takeover_check is sentinel_takeover
+        assert application.domain_list_widget is sentinel_domains
+        assert 'ExternalTakeoverIPv4' not in diverter
+        assert 'disabled' not in application.domain_list_widget.input.state()
+        assert takeover_ip.get() == ''
     finally:
         root.destroy()
 

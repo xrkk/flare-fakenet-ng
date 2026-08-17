@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import queue
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -265,8 +266,24 @@ class FakenetConfigApp(object):
         self.notebook.bind('<<NotebookTabChanged>>', self._on_tab_changed)
         self._ensure_tab(0)
 
+        config_row = ttk.Frame(self.root, padding=(10, 4, 10, 0))
+        config_row.grid(row=2, column=0, sticky='ew')
+        self.config_path_var = tk.StringVar(value='')
+        self.config_path_label = ttk.Label(
+            config_row, textvariable=self.config_path_var,
+            font=('', widgets.scaled(9), 'bold'), foreground=COLOR_PRIMARY)
+        self.config_path_label.pack(side='left')
+        self.reveal_button = ttk.Button(
+            config_row, text='📂 在 Explorer 中查看文件', width=22,
+            style='Action.TButton', command=self._reveal_in_explorer)
+        self.reveal_button.pack(side='right')
+        widgets.attach_tooltip(
+            self.reveal_button,
+            '在 Explorer 中查看文件\n在资源管理器中定位并选中当前配置文件。',
+            self._hint, '在资源管理器中定位当前配置文件')
+
         validation = ttk.Frame(self.root, padding=(10, 2, 10, 4))
-        validation.grid(row=2, column=0, sticky='ew')
+        validation.grid(row=3, column=0, sticky='ew')
         self.validation_summary_var = tk.StringVar(value='✓ 校验通过')
         self.validation_summary_label = ttk.Label(
             validation, textvariable=self.validation_summary_var,
@@ -284,9 +301,9 @@ class FakenetConfigApp(object):
         self.summary_var = self.validation_summary_var
         self.summary_label = self.validation_summary_label
 
-        ttk.Separator(self.root).grid(row=3, column=0, sticky='ew')
+        ttk.Separator(self.root).grid(row=4, column=0, sticky='ew')
         action_bar = ttk.Frame(self.root, padding=(10, 7, 10, 9))
-        action_bar.grid(row=4, column=0, sticky='ew')
+        action_bar.grid(row=5, column=0, sticky='ew')
         self.file_status_var = tk.StringVar(value='未保存配置')
         self.file_status_label = ttk.Label(
             action_bar, textvariable=self.file_status_var,
@@ -622,11 +639,7 @@ class FakenetConfigApp(object):
         if self.model is None:
             text = '未加载配置'
         else:
-            path = self.model.path or '未保存配置'
-            text = ('● 有未保存修改 · %s' if self.dirty else
-                    '✓ 已保存 · %s') % path
-            if not self.model.path and not self.dirty:
-                text = '○ 新配置尚未保存'
+            text = '● 有未保存修改' if self.dirty else '✓ 已保存'
         self.file_status_var.set(text)
 
     def _baseline_signature(self):
@@ -649,13 +662,26 @@ class FakenetConfigApp(object):
         self.dirty = (self._baseline_render is not None and
                       signature is not None and
                       signature != self._baseline_render)
+        # Title stays fixed; the bound path lives on its own highlighted row
+        # (v1.19 §12.23).
+        self.root.title(APP_TITLE)
         if self.model is not None and self.model.path:
             shown = os.path.abspath(self.model.path)
         else:
-            shown = '未命名'  # documented residual: no writable location
-        self.root.title('%s - %s%s' % (APP_TITLE, shown,
-                                       '*' if self.dirty else ''))
+            shown = '(未绑定文件)'
+        self.config_path_var.set('%s%s' % (shown, '*' if self.dirty else ''))
         self._update_file_status()
+
+    def _reveal_in_explorer(self):
+        """Select the bound configuration in Windows Explorer (§12.23)."""
+        path = os.path.abspath(self.model.path) if (
+            self.model is not None and self.model.path) else None
+        if not path:
+            return
+        if os.path.isfile(path):
+            subprocess.Popen(['explorer.exe', '/select,', path])
+        elif os.path.isdir(os.path.dirname(path)):
+            os.startfile(os.path.dirname(path))
 
     def _set_clean_baseline(self):
         self._baseline_render = self._baseline_signature()
@@ -671,9 +697,16 @@ class FakenetConfigApp(object):
     def _state_path(self):
         return os.path.join(self._gui_state_dir(), 'fakenet-GUI.state.json')
 
-    def _default_working_path(self):
+    def _default_config_path(self):
+        """Immutable default configuration beside the exe (v1.19 §12.23)."""
         return os.path.abspath(os.path.join(
-            self._gui_state_dir(), 'fakenet-GUI-config.ini'))
+            self._gui_state_dir(), 'fakenet-GUI-default.ini'))
+
+    def _is_default_config(self, path):
+        if not path:
+            return False
+        return os.path.normcase(os.path.abspath(path)) == \
+            os.path.normcase(self._default_config_path())
 
     def _read_last_config_path(self):
         try:
@@ -706,6 +739,7 @@ class FakenetConfigApp(object):
     def _startup_load(self):
         last = self._read_last_config_path()
         reason = None
+        first_launch = last is None
         if last and os.path.isfile(last):
             if self._load_path(last, show_error=False):
                 return True
@@ -716,12 +750,24 @@ class FakenetConfigApp(object):
         if reason:
             messagebox.showwarning(
                 '启动', '无法加载上次的配置文件(%s):\n%s\n\n'
-                '已改为加载默认工作配置。' % (reason, last), parent=self.root)
-        self._load_default_working_config()
+                '已改为加载默认配置文件。' % (reason, last), parent=self.root)
+        elif first_launch:
+            self.logger.info('first launch: loading default configuration')
+        self._load_default_config(notify_first_launch=first_launch)
         return True
 
-    def _load_default_working_config(self):
-        path = self._default_working_path()
+    def _load_default_config(self, notify_first_launch=False):
+        path = self._ensure_default_config_file()
+        if path is None:
+            return
+        if notify_first_launch:
+            messagebox.showinfo(
+                '启动', '当前加载的是默认配置文件:\n%s' % path,
+                parent=self.root)
+        self._load_path(path)
+
+    def _ensure_default_config_file(self):
+        path = self._default_config_path()
         if not os.path.isfile(path):
             model = configmodel.ConfigModel.new_config()
             model.path = path
@@ -729,11 +775,11 @@ class FakenetConfigApp(object):
                 model.save(path)
             except OSError as exc:
                 messagebox.showerror(
-                    '启动', '默认工作配置创建失败:\n%s\n\n%s\n\n'
+                    '启动', '默认配置文件创建失败:\n%s\n\n%s\n\n'
                     '当前会话将保持未绑定文件状态。' % (path, exc),
                     parent=self.root)
-                return
-        self._load_path(path)
+                return None
+        return path
 
     def _mark_dirty(self):
         """Compatibility alias: dirty is computed, just refresh the chrome."""
@@ -1069,14 +1115,21 @@ class FakenetConfigApp(object):
         return changes
 
     def _sync_egress_widgets_from_model(self):
-        """Display-only refresh of egress fields after model reverts."""
+        """Display-only refresh of egress fields after model reverts.
+
+        Keys absent from the model clear their widgets so removals (e.g.
+        disabling private-network takeover) are reflected in place instead
+        of rebuilding the whole tab (v1.19 §12.23).
+        """
         if not self.model:
             return
         diverter = self.model.diverter()
         for key, widget in self._egress_widgets.items():
             value = diverter.get(key)
-            if value is not None and widget.get() != value:
-                widget.set(str(value))
+            if value is None:
+                value = ''
+            if widget.get() != value:
+                widget.set(value)
 
     def _sync_active_egress_policy(self):
         """Materialize enforced values and topology for an active policy."""
@@ -1465,12 +1518,11 @@ class FakenetConfigApp(object):
                         'ExternalTakeoverProbeTimeoutMs'):
                 diverter.delete(key)
         self._mark_dirty()
-        self._building = True
-        try:
-            self._render_egress_tab()
-            changes = self._sync_active_egress_policy()
-        finally:
-            self._building = False
+        changes = self._sync_active_egress_policy()
+        # In-place refresh: no full tab rebuild, so the page does not
+        # flicker/relayout when takeover is toggled (v1.19 §12.23).
+        self._sync_egress_widgets_from_model()
+        self._refresh_locks()
         if changes and 2 in self._tabs_built:
             self._refresh_listener_list()
         self._schedule_validate()
@@ -2001,9 +2053,9 @@ class FakenetConfigApp(object):
             return
         self.logger.info('new configuration requested')
         self.model = configmodel.ConfigModel.new_config()
-        # A configuration is always bound to a file (v1.18 §12.22); the
-        # working file is only written on save/restore, not on 新建.
-        self.model.path = self._default_working_path()
+        # A configuration is always bound to a file (v1.18 §12.22); 新建
+        # rebinds to the immutable default without writing it (v1.19 §12.23).
+        self.model.path = self._default_config_path()
         self._remember_config_path(self.model.path)
         self._selected_listener = None
         self._egress_auto = {}
@@ -2024,13 +2076,25 @@ class FakenetConfigApp(object):
     def restore_defaults(self):
         if self._running:
             return
-        if self.model is None or not self.model.path:
+        if self.model is None:
+            return
+        path = os.path.abspath(self.model.path) if self.model.path else None
+        if path and self._is_default_config(path):
+            # Already bound to the immutable default: just reload it.
+            if not self.dirty:
+                return
+            if not messagebox.askyesno(
+                    '恢复默认配置', '将放弃未保存修改并重新载入默认配置?',
+                    parent=self.root):
+                return
+            self._load_path(path)
+            return
+        if not path:
             messagebox.showwarning(
                 '恢复默认配置',
                 '当前配置尚未绑定文件,请先保存配置或导入配置。',
                 parent=self.root)
             return
-        path = os.path.abspath(self.model.path)
         if not messagebox.askyesno(
                 '恢复默认配置',
                 '将使用默认配置覆盖当前文件:\n%s\n\n'
@@ -2143,6 +2207,17 @@ class FakenetConfigApp(object):
         if self._running or self.model is None:
             return
         path = self.model.path
+        # The default configuration is immutable (v1.19 §12.23): saving
+        # modifications bound to it must go through Save As.
+        if path and self._is_default_config(path):
+            if not self.dirty and not as_else:
+                return
+            if not as_else:
+                messagebox.showinfo(
+                    '保存', '默认配置不可被修改。\n请选择其他位置保存当前修改。',
+                    parent=self.root)
+            as_else = True
+            path = None
         if as_else or not path:
             default_dir = self._default_save_dir()
             path = filedialog.asksaveasfilename(
@@ -2153,6 +2228,11 @@ class FakenetConfigApp(object):
             if not path:
                 return
             path = os.path.abspath(path)
+            if self._is_default_config(path):
+                messagebox.showerror(
+                    '保存', '默认配置不可被覆盖,请选择其他文件。',
+                    parent=self.root)
+                return
             self.model.path = path
             self.model.mtime = None  # new target: don't compare mtime
         try:
