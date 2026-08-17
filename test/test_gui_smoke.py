@@ -420,11 +420,13 @@ def test_static_groups_are_two_column_but_listener_is_single_column():
 
 
 def test_compact_static_tabs_hide_unneeded_scrollbars_at_default_size():
+    from fakenet.gui.app import MAIN_WINDOW_SIZE
+
     root, application = _construct_app()
     try:
         _remove_new_config_path_warnings(application)
         application._validate_now()
-        root.geometry('980x700')
+        root.geometry(MAIN_WINDOW_SIZE)
         root.deiconify()
         application.notebook.select(application._tab_frames[0])
         root.update()
@@ -568,6 +570,78 @@ def test_takeover_toggle_materializes_conditional_locked_values(monkeypatch):
         application.takeover_check.invoke()
         assert 'ExternalTakeoverIPv4' not in diverter
         assert 'disabled' not in application.domain_list_widget.input.state()
+    finally:
+        root.destroy()
+
+
+def _widget_disabled(widget):
+    try:
+        return 'disabled' in widget.state()
+    except (AttributeError, TypeError):
+        return str(widget.cget('state')) == 'disabled'
+
+
+def test_lock_is_implicit_badge_free_with_stable_layout():
+    root, application = _construct_app()
+    try:
+        application._render_static_tabs()
+        field_widget = application._registry[('Diverter', 'externaldnsserver')]
+        children = field_widget.winfo_children()
+        layout = [child.grid_info() for child in children]
+        base_tip = field_widget._base_tip
+
+        field_widget.set_locked(True)
+        assert field_widget.winfo_children() == children
+        assert field_widget.tooltip.text == base_tip + '\n🔒 代码强制'
+        assert _widget_disabled(field_widget.input)
+
+        field_widget.set_locked(False)
+        assert field_widget.winfo_children() == children
+        assert [child.grid_info() for child in children] == layout
+        assert field_widget.tooltip.text == base_tip
+        assert not _widget_disabled(field_widget.input)
+    finally:
+        root.destroy()
+
+
+def test_master_switch_off_disables_every_egress_control():
+    root, application = _construct_app()
+    try:
+        application._render_static_tabs()
+        switch = application._egress_widgets['ExternalAccessPolicy']
+        assert not _widget_disabled(switch.input)
+        for key, widget in application._egress_widgets.items():
+            if key == 'ExternalAccessPolicy':
+                continue
+            assert _widget_disabled(widget.input), key
+        assert _widget_disabled(application.domain_list_widget.input)
+        assert _widget_disabled(application.takeover_check)
+        assert _widget_disabled(application.public_ipv4_check)
+        assert application.domain_list_widget.tooltip.text.endswith(
+            '🔒 出站策略未启用')
+
+        switch.input.invoke()
+        assert not _widget_disabled(application.domain_list_widget.input)
+        assert not _widget_disabled(application.takeover_check)
+        assert not _widget_disabled(
+            application._egress_widgets['ExternalNonAllowedAction'].input)
+        assert not application.domain_list_widget.tooltip.text.endswith(
+            '🔒 出站策略未启用')
+    finally:
+        root.destroy()
+
+
+def test_font_and_window_scale_defaults():
+    import tkinter.font as tkfont
+    from fakenet.gui import app as app_module, widgets as gui_widgets
+
+    root, application = _construct_app()
+    try:
+        assert root.geometry().split('+')[0] == app_module.MAIN_WINDOW_SIZE
+        if 'Microsoft YaHei UI' in tkfont.families(root):
+            assert tkfont.nametofont('TkDefaultFont').cget('size') == \
+                gui_widgets.scaled(9)
+        assert gui_widgets.scaled(9) == 14
     finally:
         root.destroy()
 

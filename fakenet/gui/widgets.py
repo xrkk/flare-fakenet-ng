@@ -1,15 +1,24 @@
 # -*- coding: utf-8 -*-
-"""Native field widgets for fakenet-GUI (plan v1.13 §12.17).
+"""Native field widgets for fakenet-GUI (plan v1.13 §12.17, v1.15 §12.19).
 
-One FieldWidget per schema.Field: label, type-specific input, lock badge,
-focus-driven hint callback.  Locked widgets render read-only with a
-'代码强制' badge; a forced value can be applied while locking.
+One FieldWidget per schema.Field: label, type-specific input, focus-driven
+hint callback.  Locked widgets render read-only with the lock reason shown
+in the hover tip only (no badge child, stable layout); a forced value can
+be applied while locking.
 """
 
 import tkinter as tk
 from tkinter import ttk, filedialog, simpledialog
 
 from fakenet.gui import schema
+
+# UI readability scale (plan v1.15 §12.19): all point sizes and the few
+# pixel-based metrics derive from one factor instead of per-widget tuning.
+FONT_SCALE = 1.5
+
+
+def scaled(points):
+    return int(round(points * FONT_SCALE))
 
 
 class _HoverHelp(object):
@@ -68,7 +77,8 @@ class _HoverHelp(object):
             window, text=self.text, justify='left', anchor='w',
             background='#FFFFE1', foreground='#1F2937',
             relief='solid', borderwidth=1, padx=8, pady=6,
-            wraplength=420, font=('Microsoft YaHei UI', 9)).pack()
+            wraplength=int(420 * FONT_SCALE),
+            font=('Microsoft YaHei UI', scaled(9))).pack()
         window.update_idletasks()
 
         x = self.owner.winfo_pointerx() + 14
@@ -83,6 +93,10 @@ class _HoverHelp(object):
         y = max(top, min(y, bottom - window.winfo_reqheight()))
         window.wm_geometry('%+d%+d' % (x, y))
         self.window = window
+
+    def set_text(self, text):
+        """Swap the floating tip text (implicit lock reasons, plan §12.19)."""
+        self.text = text or ''
 
     def _hide(self):
         if self.window is not None:
@@ -113,7 +127,6 @@ class FieldWidget(ttk.Frame):
         self.field = field
         self.on_change = on_change
         self.on_focus = on_focus
-        self._lock_badge = None
         self._error_label = None
         self._multiline = False
         self._bool_literals = None
@@ -122,7 +135,8 @@ class FieldWidget(ttk.Frame):
         title = '%s:' % field.label + ('（仅保真）' if field.dead else '')
         self.label = ttk.Label(
             self, text=title, width=label_width, anchor='e',
-            justify='right', wraplength=max(80, label_width * 8))
+            justify='right',
+            wraplength=max(80, label_width * scaled(8)))
         self.label.grid(row=0, column=0, sticky='ne', padx=(0, 6), pady=1)
 
         wtype = field.wtype
@@ -186,9 +200,9 @@ class FieldWidget(ttk.Frame):
 
         for widget in (self.input, self.label):
             widget.bind('<FocusIn>', self._focused)
+        self._base_tip = '%s\n%s' % (field.label, field.hint)
         self.tooltip = attach_tooltip(
-            self, '%s\n%s' % (field.label, field.hint),
-            on_focus, field.hint)
+            self, self._base_tip, on_focus, field.hint)
         self._last_reported = self.get()
 
     # -- events --------------------------------------------------------------
@@ -242,20 +256,21 @@ class FieldWidget(ttk.Frame):
         if notify and self.on_change and (force or current != previous):
             self.on_change(self.field.key, current)
 
-    def set_locked(self, locked, forced_value=None, badge='🔒 代码强制'):
+    def set_locked(self, locked, forced_value=None, reason='代码强制'):
+        """Disable the field and surface the lock reason via hover tip only.
+
+        No badge child is created or destroyed, so row layout stays stable
+        while features toggle (plan v1.15 §12.19).
+        """
         state = 'disabled' if locked else 'normal'
         for child in self.winfo_children():
             self._apply_state(child, state)
         if locked and forced_value is not None:
             self.set(forced_value)
-        if self._lock_badge is not None:
-            self._lock_badge.destroy()
-            self._lock_badge = None
-        if locked:
-            self._lock_badge = ttk.Label(self, text=badge,
-                                          style='Locked.TLabel')
-            self._lock_badge.grid(row=0, column=2, sticky='w', padx=(6, 0))
-            self.tooltip.bind_tree(self._lock_badge)
+        if locked and reason:
+            self.tooltip.set_text('%s\n🔒 %s' % (self._base_tip, reason))
+        else:
+            self.tooltip.set_text(self._base_tip)
 
     def set_error(self, message=''):
         """Show one compact inline error without changing the field value."""
@@ -265,7 +280,7 @@ class FieldWidget(ttk.Frame):
         if message:
             self._error_label = ttk.Label(
                 self, text=message, style='InlineError.TLabel',
-                justify='left', wraplength=440)
+                justify='left', wraplength=int(440 * FONT_SCALE))
             self._error_label.grid(row=1, column=1, columnspan=2,
                                    sticky='w', pady=(0, 2))
             self.tooltip.bind_tree(self._error_label)
@@ -299,7 +314,7 @@ class CsvListFieldWidget(ttk.Frame):
         self._error_label = None
         self.columnconfigure(0, weight=1)
         self.label = ttk.Label(self, text='%s:' % field.label,
-                               font=('', 9, 'bold'))
+                               font=('', scaled(9), 'bold'))
         self.label.grid(row=0, column=0, sticky='w')
         body = ttk.Frame(self)
         body.grid(row=1, column=0, sticky='nsew', pady=(2, 0))
@@ -309,7 +324,7 @@ class CsvListFieldWidget(ttk.Frame):
             body, columns=('value',), show='headings', height=height,
             selectmode='browse')
         self.input.heading('value', text='域名')
-        self.input.column('value', width=280, stretch=True)
+        self.input.column('value', width=int(280 * FONT_SCALE), stretch=True)
         self.input.grid(row=0, column=0, sticky='nsew')
         bar = ttk.Scrollbar(body, orient='vertical', command=self.input.yview)
         bar.grid(row=0, column=1, sticky='ns')
@@ -326,9 +341,9 @@ class CsvListFieldWidget(ttk.Frame):
         self.input.bind('<Double-1>', lambda _e: self._edit())
         self.input.bind('<FocusIn>', self._focused)
         self.label.bind('<FocusIn>', self._focused)
+        self._base_tip = '%s\n%s' % (field.label, field.hint)
         self.tooltip = attach_tooltip(
-            self, '%s\n%s' % (field.label, field.hint),
-            on_focus, field.hint)
+            self, self._base_tip, on_focus, field.hint)
         self.set(value)
 
     def _focused(self, _event=None):
@@ -396,8 +411,7 @@ class CsvListFieldWidget(ttk.Frame):
         if notify and self.on_change and (force or self.get() != previous):
             self._changed()
 
-    def set_locked(self, locked, forced_value=None,
-                   badge='系统或策略约束'):
+    def set_locked(self, locked, forced_value=None, reason='代码强制'):
         self._locked = bool(locked)
         if forced_value is not None:
             self.set(forced_value)
@@ -405,6 +419,10 @@ class CsvListFieldWidget(ttk.Frame):
         for button in self._buttons:
             button.state(state)
         self.input.state(state)
+        if locked and reason:
+            self.tooltip.set_text('%s\n🔒 %s' % (self._base_tip, reason))
+        else:
+            self.tooltip.set_text(self._base_tip)
 
     def set_error(self, message=''):
         if self._error_label is not None:
@@ -413,7 +431,7 @@ class CsvListFieldWidget(ttk.Frame):
         if message:
             self._error_label = ttk.Label(
                 self, text=message, style='InlineError.TLabel',
-                justify='left', wraplength=440)
+                justify='left', wraplength=int(440 * FONT_SCALE))
             self._error_label.grid(row=2, column=0, sticky='w', pady=(2, 0))
             self.tooltip.bind_tree(self._error_label)
 
@@ -431,7 +449,7 @@ class IPv4RulesFieldWidget(ttk.Frame):
         self._error_label = None
         self.columnconfigure(0, weight=1)
         self.label = ttk.Label(self, text='%s:' % field.label,
-                               font=('', 9, 'bold'))
+                               font=('', scaled(9), 'bold'))
         self.label.grid(row=0, column=0, sticky='w')
         body = ttk.Frame(self)
         body.grid(row=1, column=0, sticky='nsew', pady=(2, 0))
@@ -443,7 +461,8 @@ class IPv4RulesFieldWidget(ttk.Frame):
                                   ('ipv4', '公网 IPv4', 190),
                                   ('port', '端口', 90)):
             self.input.heading(key, text=title)
-            self.input.column(key, width=width, stretch=(key == 'ipv4'))
+            self.input.column(key, width=int(width * FONT_SCALE),
+                              stretch=(key == 'ipv4'))
         self.input.grid(row=0, column=0, sticky='nsew')
         ybar = ttk.Scrollbar(body, orient='vertical', command=self.input.yview)
         ybar.grid(row=0, column=1, sticky='ns')
@@ -459,9 +478,9 @@ class IPv4RulesFieldWidget(ttk.Frame):
             self._buttons.append(button)
         self.input.bind('<Double-1>', lambda _e: self._edit())
         self.input.bind('<FocusIn>', self._focused)
+        self._base_tip = '%s\n%s' % (field.label, field.hint)
         self.tooltip = attach_tooltip(
-            self, '%s\n%s' % (field.label, field.hint),
-            on_focus, field.hint)
+            self, self._base_tip, on_focus, field.hint)
         self.set(value)
 
     def _focused(self, _event=None):
@@ -565,13 +584,17 @@ class IPv4RulesFieldWidget(ttk.Frame):
         if notify and self.on_change and (force or self.get() != previous):
             self._changed()
 
-    def set_locked(self, locked, forced_value=None, badge=''):
+    def set_locked(self, locked, forced_value=None, reason='代码强制'):
         if forced_value is not None:
             self.set(forced_value)
         state = ['disabled'] if locked else ['!disabled']
         for button in self._buttons:
             button.state(state)
         self.input.state(state)
+        if locked and reason:
+            self.tooltip.set_text('%s\n🔒 %s' % (self._base_tip, reason))
+        else:
+            self.tooltip.set_text(self._base_tip)
 
     def set_error(self, message=''):
         if self._error_label is not None:
@@ -580,7 +603,7 @@ class IPv4RulesFieldWidget(ttk.Frame):
         if message:
             self._error_label = ttk.Label(
                 self, text=message, style='InlineError.TLabel',
-                justify='left', wraplength=500)
+                justify='left', wraplength=int(500 * FONT_SCALE))
             self._error_label.grid(row=2, column=0, sticky='w', pady=(2, 0))
             self.tooltip.bind_tree(self._error_label)
 

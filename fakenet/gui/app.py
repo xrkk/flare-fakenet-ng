@@ -28,6 +28,13 @@ VALIDATE_DEBOUNCE_MS = 300
 LOG_POLL_MS = 250
 LOG_LARGE_BYTES = 25 * 1024 * 1024
 
+# Window metrics follow the v1.15 50% readability scale (plan §12.19): the
+# 980x700 / 900x420 v1.13 defaults enlarged with the font system.
+MAIN_WINDOW_SIZE = '1470x1050'
+MAIN_WINDOW_MIN_SIZE = (1350, 960)
+VALIDATION_WINDOW_SIZE = '1350x630'
+VALIDATION_WINDOW_MIN_SIZE = (1020, 450)
+
 COLOR_BG = '#F4F6F8'
 COLOR_MUTED = '#5F6B7A'
 COLOR_PRIMARY = '#1769AA'
@@ -44,28 +51,29 @@ def configure_styles(root):
                      'TkHeadingFont'):
             try:
                 tkfont.nametofont(name).configure(
-                    family='Microsoft YaHei UI', size=9)
+                    family='Microsoft YaHei UI', size=widgets.scaled(9))
             except tk.TclError:
                 pass
     root.configure(background=COLOR_BG)
     style = ttk.Style(root)
-    style.configure('TNotebook.Tab', padding=(12, 5))
-    style.configure('TLabelframe', padding=(4, 4))
+    style.configure('TNotebook.Tab', padding=(18, 8))
+    style.configure('TLabelframe', padding=(6, 6))
     style.configure('Muted.TLabel', foreground=COLOR_MUTED)
     style.configure('Locked.TLabel', foreground=COLOR_MUTED)
     style.configure('Success.TLabel', foreground=COLOR_SUCCESS,
-                    font=('', 9, 'bold'))
+                    font=('', widgets.scaled(9), 'bold'))
     style.configure('Warning.TLabel', foreground=COLOR_WARNING,
-                    font=('', 9, 'bold'))
+                    font=('', widgets.scaled(9), 'bold'))
     style.configure('Error.TLabel', foreground=COLOR_ERROR,
-                    font=('', 9, 'bold'))
+                    font=('', widgets.scaled(9), 'bold'))
     style.configure('InlineError.TLabel', foreground=COLOR_ERROR,
-                    font=('', 8))
+                    font=('', widgets.scaled(8)))
     style.configure('SectionTitle.TLabel', foreground='#1F2937',
-                    font=('', 10, 'bold'))
-    style.configure('Primary.TButton', padding=(12, 6),
-                    foreground=COLOR_PRIMARY, font=('', 9, 'bold'))
-    style.configure('Action.TButton', padding=(10, 5))
+                    font=('', widgets.scaled(10), 'bold'))
+    style.configure('Primary.TButton', padding=(18, 9),
+                    foreground=COLOR_PRIMARY,
+                    font=('', widgets.scaled(9), 'bold'))
+    style.configure('Action.TButton', padding=(15, 8))
     return style
 
 
@@ -151,8 +159,8 @@ class FakenetConfigApp(object):
         self.logger = logging.getLogger('fakenet.GUI')
 
         root.title(APP_TITLE)
-        root.geometry('980x700')
-        root.minsize(900, 640)
+        root.geometry(MAIN_WINDOW_SIZE)
+        root.minsize(*MAIN_WINDOW_MIN_SIZE)
         configure_styles(root)
         self._build_menu()
         self._build_layout()
@@ -417,7 +425,7 @@ class FakenetConfigApp(object):
             value='自定义响应文件由监听器中的 Custom 字段引用。\n'
                   '请打开已有 INI，或新建一个响应文件后添加配置段。')
         ttk.Label(self.custom_empty, textvariable=self.custom_empty_title_var,
-                  font=('', 11, 'bold')).pack()
+                  font=('', widgets.scaled(11), 'bold')).pack()
         ttk.Label(self.custom_empty, textvariable=self.custom_empty_help_var,
                   justify='center', style='Muted.TLabel').pack(pady=(10, 8))
         self.custom_empty_add_button = ttk.Button(
@@ -463,7 +471,8 @@ class FakenetConfigApp(object):
         text_frame.pack(fill='both', expand=True)
         self.log_text = tk.Text(
             text_frame, wrap='none', state='disabled', undo=False,
-            font=('Consolas', 9), background='#FFFFFF', foreground='#1F2937')
+            font=('Consolas', widgets.scaled(9)), background='#FFFFFF',
+            foreground='#1F2937')
         ybar = ttk.Scrollbar(text_frame, orient='vertical',
                              command=self.log_text.yview)
         xbar = ttk.Scrollbar(text_frame, orient='horizontal',
@@ -505,8 +514,8 @@ class FakenetConfigApp(object):
         window = tk.Toplevel(self.root)
         window.title('配置校验详情')
         window.transient(self.root)
-        window.geometry('900x420')
-        window.minsize(680, 300)
+        window.geometry(VALIDATION_WINDOW_SIZE)
+        window.minsize(*VALIDATION_WINDOW_MIN_SIZE)
         self._validation_window = window
         header = ttk.Frame(window, padding=(8, 8, 8, 5))
         header.pack(fill='x')
@@ -709,29 +718,36 @@ class FakenetConfigApp(object):
             if field.key == 'ExternalAccessPolicy':
                 widget.set_locked(False)
             elif field.key == 'ExternalProcessRedirectImageSHA256':
-                widget.set_locked(True, badge='自动计算')
+                widget.set_locked(True, reason='自动计算')
             elif field.lock:
                 widget.set_locked(True)  # implementation details are read-only
             elif field.cond_lock == schema.COND_TAKEOVER_DOMAINS:
-                if policy and takeover:
+                if not policy:
+                    widget.set_locked(True, reason='出站策略未启用')
+                elif takeover:
                     widget.set_locked(True, forced_value='api.deepseek.com')
                 else:
                     widget.set_locked(False)
             elif field.cond_lock == schema.COND_TAKEOVER_ACTION:
-                if policy and takeover:
+                if not policy:
+                    widget.set_locked(True, reason='出站策略未启用')
+                elif takeover:
                     widget.set_locked(True, forced_value='Divert')
                 else:
                     widget.set_locked(False)
             else:
                 locked = not policy
-                if field.group == '私网接管':
-                    locked = locked or not takeover
-                elif field.key == 'ExternalAllowedIPv4Rules':
-                    locked = locked or not public_enabled
-                elif field.group == '进程重定向' and field.key != \
-                        'ExternalProcessRedirectEnabled':
-                    locked = locked or not process_enabled
-                widget.set_locked(locked)
+                reason = '出站策略未启用'
+                if not locked and field.group == '私网接管' and not takeover:
+                    locked, reason = True, '未启用私网接管'
+                elif not locked and field.key == 'ExternalAllowedIPv4Rules' \
+                        and not public_enabled:
+                    locked, reason = True, '未启用公网 IPv4 直连'
+                elif not locked and field.group == '进程重定向' and \
+                        field.key != 'ExternalProcessRedirectEnabled' and \
+                        not process_enabled:
+                    locked, reason = True, '未启用进程重定向'
+                widget.set_locked(locked, reason=reason)
         if hasattr(self, 'takeover_check'):
             self.takeover_check.state(
                 ['disabled'] if (not policy or self._running)
@@ -743,7 +759,7 @@ class FakenetConfigApp(object):
         if self._running:
             for widget in list(self._registry.values()):
                 if hasattr(widget, 'set_locked'):
-                    widget.set_locked(True, badge='FakeNet 运行中')
+                    widget.set_locked(True, reason='FakeNet 运行中')
 
     def _sync_active_egress_policy(self):
         """Materialize enforced values and topology for an active policy."""
@@ -1302,8 +1318,8 @@ class FakenetConfigApp(object):
                         (sec.name, field.key.lower()))
                     if widget is not None:
                         widget.set_locked(
-                            True, badge=('FakeNet 运行中' if self._running
-                                         else '系统自动管理'))
+                            True, reason=('FakeNet 运行中' if self._running
+                                          else '系统自动管理'))
             extras = [k for k in sec.keys() if k.lower() not in known]
             if extras:
                 box = ttk.LabelFrame(self._listener_inner,
@@ -1617,7 +1633,7 @@ class FakenetConfigApp(object):
         frame.pack(fill='x', pady=4)
         if self._running:
             for widget in self._custom_registry.values():
-                widget.set_locked(True, badge='FakeNet 运行中')
+                widget.set_locked(True, reason='FakeNet 运行中')
 
     def _on_custom_field(self, section_name, key, value):
         if self._running:
