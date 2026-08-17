@@ -130,8 +130,12 @@ def test_persistent_actions_and_file_status():
         assert '立即覆盖' in application.restore_button._hover_help.text
         assert application.file_status_var.get() == '○ 新配置尚未保存'
 
+        application.model.diverter().set('DebugLevel', 'Debug')
         application._mark_dirty()
         assert application.file_status_var.get().startswith('● 有未保存修改')
+        application.model.diverter().set('DebugLevel', 'Off')
+        application._mark_dirty()
+        assert application.file_status_var.get() == '○ 新配置尚未保存'
     finally:
         root.destroy()
 
@@ -164,7 +168,9 @@ def test_import_button_respects_unsaved_discard_refusal(monkeypatch):
     root, application = _construct_app()
     try:
         original = application.model
+        application.model.diverter().set('DebugLevel', 'Debug')
         application._mark_dirty()
+        assert application.dirty
         opened = []
         monkeypatch.setattr(
             app_module.messagebox, 'askyesno',
@@ -445,12 +451,14 @@ def test_host_visual_density_uses_wide_labels_and_compact_actions():
     try:
         application._render_static_tabs()
         application._ensure_tab(2)
+        # v1.16 §12.20: label columns auto-widen to measured titles, so the
+        # requested width is a floor now.
         assert int(application._registry[
-            ('FakeNet', 'diverttraffic')].label.cget('width')) == 20
+            ('FakeNet', 'diverttraffic')].label.cget('width')) >= 20
         assert int(application._registry[
-            ('Diverter', 'processwhitelist')].label.cget('width')) == 20
+            ('Diverter', 'processwhitelist')].label.cget('width')) >= 20
         assert int(application._registry[
-            ('Diverter', 'linuxrestrictinterface')].label.cget('width')) == 16
+            ('Diverter', 'linuxrestrictinterface')].label.cget('width')) >= 16
 
         buttons = application.listener_action_buttons
         assert [button.cget('text') for button in buttons] == [
@@ -499,8 +507,7 @@ def test_egress_policy_checkbox_materializes_locks_and_topology(tmp_path):
 
         section_count = len(application.model.listener_sections())
         dns_server = application._egress_widgets['ExternalDnsServer']
-        dns_server.set('8.8.8.8')
-        dns_server._changed()
+        dns_server.set('8.8.8.8', notify=True, force=True)
         application._validate_now()
         assert not [issue for issue in application._issues
                     if issue.level == validator.ERROR]
@@ -515,10 +522,14 @@ def test_egress_policy_checkbox_materializes_locks_and_topology(tmp_path):
         assert policy.get() == schema.EGRESS_POLICY_DISABLED
         assert application.model.diverter().get(
             'ExternalAccessPolicy') == schema.EGRESS_POLICY_DISABLED
+        # v1.16 §12.20: pristine auto-provisioned state is reverted on
+        # master-off; user edits (ExternalDnsServer) are kept.
         assert application.model.diverter().get(
-            'ExternalAllowedTCPPorts') == '443'
+            'ExternalAllowedTCPPorts') is None
+        assert application.model.diverter().get('ExternalDnsServer') == \
+            '8.8.8.8'
         assert sum((sec.get('Listener') or '') == 'DomainEgressRelay'
-                   for sec in application.model.listener_sections()) == 1
+                   for sec in application.model.listener_sections()) == 0
         disabled_path = tmp_path / 'policy-disabled.ini'
         application.model.save(str(disabled_path))
         assert configmodel.ConfigModel.load(str(disabled_path)).diverter().get(
@@ -642,6 +653,76 @@ def test_font_and_window_scale_defaults():
             assert tkfont.nametofont('TkDefaultFont').cget('size') == \
                 gui_widgets.scaled(9)
         assert gui_widgets.scaled(9) == 14
+    finally:
+        root.destroy()
+
+
+def test_master_switch_toggle_reverts_provisioning_and_dirty():
+    root, application = _construct_app()
+    try:
+        application._render_static_tabs()
+        assert not application.dirty
+        switch = application._egress_widgets['ExternalAccessPolicy']
+
+        switch.input.invoke()
+        assert application.dirty
+        assert application.model.section('DNS Server') is not None
+        assert application.model.section('DNS TCP Server') is not None
+        diff = application._unsaved_diff_lines()
+        assert any(line.startswith('+') and 'DNSListener' in line
+                   for line in diff)
+        assert any(line.startswith('+') and 'DomainEgressRelay' in line
+                   for line in diff)
+
+        switch.input.invoke()
+        assert application.model.section('DNS Server') is None
+        assert application.model.section('DNS TCP Server') is None
+        assert application.model.section('Domain Egress Relay') is None
+        assert not application.dirty
+        assert application._unsaved_diff_lines() == []
+        assert '*' not in root.title()
+
+        # user-modified auto sections survive the master-off revert
+        switch.input.invoke()
+        application.model.section('DNS Server').set('ResponseTXT', 'CUSTOM')
+        switch.input.invoke()
+        assert application.model.section('DNS Server') is not None
+        assert application.dirty
+    finally:
+        root.destroy()
+
+
+def test_treeview_rowheight_and_uniform_action_buttons():
+    import tkinter.font as tkfont
+    from tkinter import ttk as ttk_styles
+
+    root, application = _construct_app()
+    try:
+        rowheight = int(
+            ttk_styles.Style(root).configure('Treeview', 'rowheight'))
+        linespace = int(
+            tkfont.nametofont('TkDefaultFont').metrics('linespace'))
+        assert rowheight >= linespace
+        widths = {int(button.cget('width')) for button in (
+            application.import_button, application.restore_button,
+            application.save_button)}
+        assert widths == {14}
+        assert application.file_status_label is not None
+    finally:
+        root.destroy()
+
+
+def test_long_labels_stay_single_line():
+    import tkinter.font as tkfont
+
+    root, application = _construct_app()
+    try:
+        application._render_static_tabs()
+        widget = application._registry[('Diverter', 'processwhitelist')]
+        title = widget.label.cget('text')
+        assert 'Diverter' in title and '级' in title
+        font = tkfont.nametofont('TkDefaultFont')
+        assert int(widget.label.cget('wraplength')) >= font.measure(title)
     finally:
         root.destroy()
 

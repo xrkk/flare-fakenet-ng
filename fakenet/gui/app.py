@@ -8,6 +8,7 @@ main editor's vertical space.
 """
 
 import codecs
+import difflib
 import hashlib
 import logging
 import os
@@ -74,6 +75,14 @@ def configure_styles(root):
                     foreground=COLOR_PRIMARY,
                     font=('', widgets.scaled(9), 'bold'))
     style.configure('Action.TButton', padding=(15, 8))
+    # Treeview rows must follow the scaled font or entries render clipped
+    # to half their height (v1.16 §12.20).
+    try:
+        rowheight = int(tkfont.nametofont('TkDefaultFont')
+                        .metrics('linespace')) + 8
+    except tk.TclError:
+        rowheight = int(9 * widgets.FONT_SCALE * 2)
+    style.configure('Treeview', rowheight=rowheight)
     return style
 
 
@@ -132,6 +141,8 @@ class FakenetConfigApp(object):
         self.root = root
         self.model = None
         self.dirty = False
+        self._baseline_render = None   # clean-state render (v1.16 §12.20)
+        self._egress_auto = {}         # provenance of auto-provisioned state
         self._validate_job = None
         self._issues = []
         self._registry = {}       # (section, key) -> FieldWidget
@@ -275,22 +286,30 @@ class FakenetConfigApp(object):
         action_bar = ttk.Frame(self.root, padding=(10, 7, 10, 9))
         action_bar.grid(row=4, column=0, sticky='ew')
         self.file_status_var = tk.StringVar(value='未保存配置')
-        ttk.Label(action_bar, textvariable=self.file_status_var,
-                  style='Muted.TLabel').pack(side='left', fill='x',
-                                             expand=True)
+        self.file_status_label = ttk.Label(
+            action_bar, textvariable=self.file_status_var,
+            style='Muted.TLabel', cursor='hand2')
+        self.file_status_label.pack(side='left', fill='x', expand=True)
+        self.file_status_label.bind(
+            '<Button-1>', self._show_unsaved_details)
+        widgets.attach_tooltip(
+            self.file_status_label,
+            '未保存修改详情\n点击查看当前配置与最近一次保存/载入内容的逐行差异。',
+            self._hint, '点击查看未保存修改详情')
         self.launch_button = ttk.Button(
             action_bar, text='▶ 启动 FakeNet-NG', style='Primary.TButton',
             command=self.launch)
         self.launch_button.pack(side='right')
         self.save_button = ttk.Button(
-            action_bar, text='保存配置', style='Action.TButton',
+            action_bar, text='保存配置', style='Action.TButton', width=14,
             command=self.save)
         self.save_button.pack(side='right', padx=(0, 8))
         self.restore_button = ttk.Button(
-            action_bar, text='恢复默认配置', command=self.restore_defaults)
+            action_bar, text='恢复默认配置', width=14,
+            command=self.restore_defaults)
         self.restore_button.pack(side='right', padx=(0, 8))
         self.import_button = ttk.Button(
-            action_bar, text='导入配置', command=self.open_file)
+            action_bar, text='导入配置', width=14, command=self.open_file)
         self.import_button.pack(side='right', padx=(0, 8))
         self._action_buttons = [self.import_button, self.restore_button,
                                 self.save_button]
@@ -606,19 +625,85 @@ class FakenetConfigApp(object):
                 text = '○ 新配置尚未保存'
         self.file_status_var.set(text)
 
-    def _mark_dirty(self):
-        self.dirty = True
-        name = os.path.basename(self.model.path) if self.model.path \
-            else '未命名'
-        self.root.title('%s* - %s' % (name, APP_TITLE))
+    def _baseline_signature(self):
+        """Deterministic content signature used for computed dirty state."""
+        if self.model is None:
+            return None
+        try:
+            return self.model.render()
+        except Exception:  # noqa: BLE001 - never crash on status refresh
+            return None
+
+    def _refresh_dirty(self):
+        """dirty is computed against the baseline render (v1.16 §12.20).
+
+        Toggling a control back to its baseline value (including master
+        switch on/off with pristine auto-provisioning reverted) clears the
+        unsaved state instead of latching it forever.
+        """
+        signature = self._baseline_signature()
+        self.dirty = (self._baseline_render is not None and
+                      signature is not None and
+                      signature != self._baseline_render)
+        name = (os.path.basename(self.model.path) if self.model and
+                self.model.path else '未命名')
+        self.root.title('%s%s - %s' % (name, '*' if self.dirty else '',
+                                       APP_TITLE))
         self._update_file_status()
 
+    def _set_clean_baseline(self):
+        self._baseline_render = self._baseline_signature()
+        self._refresh_dirty()
+
+    def _mark_dirty(self):
+        """Compatibility alias: dirty is computed, just refresh the chrome."""
+        self._refresh_dirty()
+
     def _clear_dirty(self):
-        self.dirty = False
-        name = os.path.basename(self.model.path) if self.model.path \
-            else '未命名'
-        self.root.title('%s - %s' % (name, APP_TITLE))
-        self._update_file_status()
+        """Compatibility alias: re-baseline at a known-clean point."""
+        self._set_clean_baseline()
+
+    def _unsaved_diff_lines(self):
+        """Line-level diff between the baseline and the current content."""
+        if self.model is None or self._baseline_render is None:
+            return []
+        diff = difflib.unified_diff(
+            self._baseline_render.splitlines(),
+            (self._baseline_signature() or '').splitlines(),
+            fromfile='已保存/载入', tofile='当前', lineterm='')
+        return list(diff)
+
+    def _show_unsaved_details(self, _event=None):
+        if self._running:
+            return
+        window = tk.Toplevel(self.root)
+        window.title('未保存修改详情')
+        window.transient(self.root)
+        window.geometry('900x480')
+        window.minsize(640, 320)
+        body = ttk.Frame(window, padding=(8, 8, 8, 8))
+        body.pack(fill='both', expand=True)
+        body.rowconfigure(0, weight=1)
+        body.columnconfigure(0, weight=1)
+        text = tk.Text(
+            body, wrap='none', undo=False, font=('Consolas', widgets.scaled(9)),
+            background='#FFFFFF', foreground='#1F2937')
+        lines = self._unsaved_diff_lines()
+        content = '\n'.join(lines) if lines else \
+            '当前内容与最近一次保存/载入一致,没有未保存修改。'
+        text.insert('1.0', content)
+        text.configure(state='disabled')
+        ybar = ttk.Scrollbar(body, orient='vertical', command=text.yview)
+        xbar = ttk.Scrollbar(body, orient='horizontal', command=text.xview)
+        text.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
+        text.grid(row=0, column=0, sticky='nsew')
+        ybar.grid(row=0, column=1, sticky='ns')
+        xbar.grid(row=1, column=0, sticky='ew')
+        bar = ttk.Frame(window, padding=(8, 0, 8, 8))
+        bar.pack(fill='x')
+        ttk.Button(bar, text='关闭', width=14,
+                   command=window.destroy).pack(side='right')
+        self.unsaved_details_window = window
 
     def _schedule_validate(self):
         if self._validate_job is not None:
@@ -761,6 +846,85 @@ class FakenetConfigApp(object):
                 if hasattr(widget, 'set_locked'):
                     widget.set_locked(True, reason='FakeNet 运行中')
 
+    def _snapshot_model(self):
+        """Whole-model {section: {key: value}} copy for provenance diffing."""
+        return {name: dict(sec.items())
+                for name, sec in self.model.sections.items()}
+
+    def _record_auto_changes(self, before, after):
+        """Remember what this provisioning pass changed, with prior values.
+
+        Master-switch-off later reverts only keys/sections that are still
+        pristine (v1.16 §12.20); user-modified state is never touched.
+        """
+        for name, values in after.items():
+            previous = before.get(name)
+            deltas = []
+            for key, value in values.items():
+                old = None if previous is None else previous.get(key)
+                if old != value:
+                    deltas.append((key, old, value))
+            if not deltas:
+                continue
+            track = self._egress_auto.setdefault(
+                name, {'created': False, 'prev': {}, 'pristine': {}})
+            if previous is None:
+                track['created'] = True
+            for key, old, value in deltas:
+                track['prev'].setdefault(key, old)
+                track['pristine'][key] = value
+
+    def _deprovision_egress_topology(self):
+        """Mirror of auto-provisioning when the master switch turns off.
+
+        Removes sections the GUI itself created while their content is
+        still the pristine provisioned content; restores keys it changed
+        on pre-existing sections to their prior values.  Anything the user
+        edited stays (v1.16 §12.20).
+        """
+        changes = []
+        if not self._egress_auto or self.model is None:
+            return changes
+        for name in list(self._egress_auto):
+            track = self._egress_auto[name]
+            sec = self.model.sections.get(name)
+            if sec is None:
+                del self._egress_auto[name]
+                continue
+            current = dict(sec.items())
+            if track['created']:
+                if current == track['pristine']:
+                    self.model.delete_section(name)
+                    changes.append('[%s] 已随出站策略停用移除' % name)
+            else:
+                for key, value in track['pristine'].items():
+                    if current.get(key) != value:
+                        continue  # user edited this key: keep it
+                    old = track['prev'].get(key)
+                    if old is None:
+                        if key in current:
+                            sec.delete(key)
+                            changes.append(
+                                '[%s] %s 已还原为未设置' % (name, key))
+                    elif str(sec.get(key)) != str(old):
+                        sec.set(key, old)
+                        changes.append('[%s] %s 已还原为 %s'
+                                       % (name, key, old))
+            del self._egress_auto[name]
+        if changes:
+            self._sync_egress_widgets_from_model()
+        return changes
+
+    def _sync_egress_widgets_from_model(self):
+        """Display-only refresh of egress fields after model reverts."""
+        if not self.model:
+            return
+        diverter = self.model.diverter()
+        for key, widget in self._egress_widgets.items():
+            value = diverter.get(key)
+            if value is not None and widget.get() != value:
+                widget.set(str(value))
+
     def _sync_active_egress_policy(self):
         """Materialize enforced values and topology for an active policy."""
         diverter = self.model.diverter()
@@ -769,6 +933,7 @@ class FakenetConfigApp(object):
             schema.EGRESS_POLICY_ENABLED.lower()
         if not policy:
             return []
+        before = self._snapshot_model()
         changes = []
         values = dict(schema.LOCKED_FIELD_VALUES)
         if 'ExternalTakeoverIPv4' in diverter:
@@ -784,6 +949,7 @@ class FakenetConfigApp(object):
             if widget is not None and widget.get() != value:
                 widget.set(value)
         changes.extend(validator.ensure_domain_allowlist_topology(self.model))
+        self._record_auto_changes(before, self._snapshot_model())
         if changes:
             self._hint('已自动补齐出站策略必需配置')
         return changes
@@ -816,7 +982,11 @@ class FakenetConfigApp(object):
                 self._hash_pending = False
                 self._hash_issue = None
         if field and field.group in schema.egress_group_names():
-            changes = self._sync_active_egress_policy()
+            changes = []
+            if key == 'ExternalAccessPolicy' and value.strip().lower() == \
+                    schema.EGRESS_POLICY_DISABLED.lower():
+                changes.extend(self._deprovision_egress_topology())
+            changes.extend(self._sync_active_egress_policy())
             if changes and 2 in self._tabs_built:
                 self._refresh_listener_list()
             self._refresh_locks()
@@ -1674,6 +1844,7 @@ class FakenetConfigApp(object):
         self.model = configmodel.ConfigModel.new_config()
         self.model.path = None
         self._selected_listener = None
+        self._egress_auto = {}
         self._rebuild_all()
         self._clear_dirty()
 
@@ -1723,6 +1894,7 @@ class FakenetConfigApp(object):
         self.logger.info('default configuration restored: path=%s', path)
         self.model = replacement
         self._selected_listener = None
+        self._egress_auto = {}
         self._rebuild_all()
         self._clear_dirty()
 
@@ -1748,11 +1920,13 @@ class FakenetConfigApp(object):
         model.ensure_sections()
         self.model = model
         self._selected_listener = None
+        self._egress_auto = {}
+        # Baseline is the file as loaded (before automatic repairs), so
+        # in-memory provisioning after load still counts as unsaved —
+        # same semantics as the previous explicit mark (§12.20).
+        self._baseline_render = self._baseline_signature()
         changes = self._rebuild_all()
-        if changes:
-            self._mark_dirty()
-        else:
-            self._clear_dirty()
+        self._refresh_dirty()
         self.logger.info(
             'configuration loaded: path=%s encoding=%s bom=%s newline=%r '
             'automatic_changes=%d', self.model.path, self.model.encoding,

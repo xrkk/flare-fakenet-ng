@@ -8,6 +8,7 @@ be applied while locking.
 """
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, filedialog, simpledialog
 
 from fakenet.gui import schema
@@ -16,9 +17,40 @@ from fakenet.gui import schema
 # pixel-based metrics derive from one factor instead of per-widget tuning.
 FONT_SCALE = 1.5
 
+# Label columns auto-widen to fit measured titles up to this many '0' units
+# (plan v1.16 §12.20); longer titles still wrap at CJK/space boundaries.
+LABEL_WIDTH_CAP = 34
+
 
 def scaled(points):
     return int(round(points * FONT_SCALE))
+
+
+def _label_title(field):
+    return '%s:' % field.label + ('（仅保真）' if field.dead else '')
+
+
+def _default_font():
+    try:
+        return tkfont.nametofont('TkDefaultFont')
+    except tk.TclError:
+        return None
+
+
+def _char_pixels():
+    font = _default_font()
+    return max(1, font.measure('0')) if font is not None else scaled(8)
+
+
+def fit_label_width(fields, requested):
+    """Widen a label column so measured titles stay on one line (§12.20)."""
+    font = _default_font()
+    if font is None or not fields:
+        return requested
+    zero = _char_pixels()
+    widest = max(font.measure(_label_title(field)) for field in fields)
+    needed = (widest + zero - 1) // zero + 1
+    return min(LABEL_WIDTH_CAP, max(requested, needed))
 
 
 class _HoverHelp(object):
@@ -132,11 +164,13 @@ class FieldWidget(ttk.Frame):
         self._bool_literals = None
 
         self.columnconfigure(1, weight=1)
-        title = '%s:' % field.label + ('（仅保真）' if field.dead else '')
+        title = _label_title(field)
+        # Exact column pixels (v1.16 §12.20): measure the '0' unit instead of
+        # a points heuristic, so wrapping only happens past the real width.
+        wraplength = max(80, _char_pixels() * label_width + 6)
         self.label = ttk.Label(
             self, text=title, width=label_width, anchor='e',
-            justify='right',
-            wraplength=max(80, label_width * scaled(8)))
+            justify='right', wraplength=wraplength)
         self.label.grid(row=0, column=0, sticky='ne', padx=(0, 6), pady=1)
 
         wtype = field.wtype
@@ -619,6 +653,7 @@ def build_group_frame(parent, title, fields, getter, on_change, on_focus,
                       label_width=12):
     """Render one titled group of FieldWidgets; returns the frame."""
     box = ttk.LabelFrame(parent, text=title)
+    label_width = fit_label_width(fields, label_width)
     columns = max(1, int(columns))
     for column in range(columns):
         box.columnconfigure(column, weight=1, uniform='field-column')
