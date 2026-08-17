@@ -695,13 +695,25 @@ def test_master_switch_toggle_reverts_provisioning_and_dirty():
         root.destroy()
 
 
-def test_notebook_tabs_are_positioned_at_the_bottom():
+def test_notebook_is_bottom_most_with_control_rows_above():
     from tkinter import ttk as ttk_styles
 
     root, application = _construct_app()
     try:
-        style = ttk_styles.Style(root)
-        assert style.lookup('TNotebook', 'tabposition') == 's'
+        # Tab heads stay at the top of the notebook (default position).
+        assert ttk_styles.Style(root).lookup(
+            'TNotebook', 'tabposition') != 's'
+        notebook_row = application.notebook.grid_info()['row']
+        rows = {slave.grid_info().get('row')
+                for slave in root.grid_slaves()}
+        assert notebook_row == max(rows)  # notebook is the bottom element
+        assert notebook_row == 5
+        # control rows keep their order: hint, path, validation, separator
+        # and action bar all render above the notebook.
+        others = [slave for slave in root.grid_slaves()
+                  if slave is not application.notebook]
+        assert all(slave.grid_info().get('row', 0) < notebook_row
+                   for slave in others)
     finally:
         root.destroy()
 

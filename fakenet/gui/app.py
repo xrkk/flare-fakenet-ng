@@ -60,9 +60,6 @@ def configure_styles(root):
                 pass
     root.configure(background=COLOR_BG)
     style = ttk.Style(root)
-    # Tabs sit at the bottom edge; all tab content renders above them
-    # (v1.20 §12.24).
-    style.configure('TNotebook', tabposition='s')
     style.configure('TNotebook.Tab', padding=(18, 8))
     style.configure('TLabelframe', padding=(6, 6))
     style.configure('Muted.TLabel', foreground=COLOR_MUTED)
@@ -246,8 +243,11 @@ class FakenetConfigApp(object):
                 label=name, command=lambda n=name: self.load_template(n))
 
     def _build_layout(self):
+        # v1.21 §12.24: the hint, config-path, validation, separator and
+        # action rows live ABOVE the notebook; the notebook is the
+        # bottom-most element of the window.
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(1, weight=1)
+        self.root.rowconfigure(5, weight=1)
 
         top = ttk.Frame(self.root, padding=(10, 7, 10, 2))
         top.grid(row=0, column=0, sticky='ew')
@@ -258,8 +258,8 @@ class FakenetConfigApp(object):
             .pack(side='left', padx=16)
 
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.grid(row=1, column=0, sticky='nsew', padx=8,
-                           pady=(4, 4))
+        self.notebook.grid(row=5, column=0, sticky='nsew', padx=8,
+                           pady=(4, 8))
         self._tab_frames = []
         for title in ('基础配置', '出站策略', '监听器', '自定义响应',
                       '实时日志'):
@@ -270,7 +270,7 @@ class FakenetConfigApp(object):
         self._ensure_tab(0)
 
         config_row = ttk.Frame(self.root, padding=(10, 4, 10, 0))
-        config_row.grid(row=2, column=0, sticky='ew')
+        config_row.grid(row=1, column=0, sticky='ew')
         self.config_path_var = tk.StringVar(value='')
         self.config_path_label = ttk.Label(
             config_row, textvariable=self.config_path_var,
@@ -286,7 +286,7 @@ class FakenetConfigApp(object):
             self._hint, '在资源管理器中定位当前配置文件')
 
         validation = ttk.Frame(self.root, padding=(10, 2, 10, 4))
-        validation.grid(row=3, column=0, sticky='ew')
+        validation.grid(row=2, column=0, sticky='ew')
         self.validation_summary_var = tk.StringVar(value='✓ 校验通过')
         self.validation_summary_label = ttk.Label(
             validation, textvariable=self.validation_summary_var,
@@ -304,9 +304,9 @@ class FakenetConfigApp(object):
         self.summary_var = self.validation_summary_var
         self.summary_label = self.validation_summary_label
 
-        ttk.Separator(self.root).grid(row=4, column=0, sticky='ew')
-        action_bar = ttk.Frame(self.root, padding=(10, 7, 10, 9))
-        action_bar.grid(row=5, column=0, sticky='ew')
+        ttk.Separator(self.root).grid(row=3, column=0, sticky='ew')
+        action_bar = ttk.Frame(self.root, padding=(10, 6, 10, 4))
+        action_bar.grid(row=4, column=0, sticky='ew')
         self.file_status_var = tk.StringVar(value='未保存配置')
         self.file_status_label = ttk.Label(
             action_bar, textvariable=self.file_status_var,
