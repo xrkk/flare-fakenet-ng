@@ -12,6 +12,7 @@ import ssl
 import socket
 
 from . import *
+from fakenet.listeners.servermixins import LoggingThreadingMixIn
 
 class SMTPListener(object):
 
@@ -189,7 +190,7 @@ class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
                                                      nbi,'TCP', 'SMTP', 
                                                      self.server.config.get('usessl'))
 
-class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+class ThreadedTCPServer(LoggingThreadingMixIn, socketserver.TCPServer):
     pass
 
 ###############################################################################

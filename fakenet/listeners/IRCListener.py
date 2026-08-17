@@ -7,6 +7,7 @@ import os
 
 import threading
 import socketserver
+from fakenet.listeners.servermixins import LoggingThreadingMixIn
 
 import ssl
 import socket
@@ -318,7 +319,7 @@ class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
         self.server.diverterListenerCallbacks.logNbi(self.client_address[1],
                                                      nbi, 'TCP', 'IRC', 'No')
 
-class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+class ThreadedTCPServer(LoggingThreadingMixIn, socketserver.TCPServer):
     # Avoid [Errno 98] Address already in use due to TIME_WAIT status on TCP
     # sockets, for details see:
     # https://stackoverflow.com/questions/4465959/python-errno-98-address-already-in-use

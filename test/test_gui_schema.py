@@ -114,7 +114,8 @@ def test_listener_classes_match_modules():
         if not name.endswith('.py') or name.startswith('__'):
             continue
         stem = name[:-3]
-        if stem in ('ListenerBase', 'BannerFactory'):
+        # shared infrastructure modules, not listener classes
+        if stem in ('ListenerBase', 'BannerFactory', 'servermixins'):
             continue
         modules.add(stem)
     assert modules == set(schema.LISTENER_CLASSES), (

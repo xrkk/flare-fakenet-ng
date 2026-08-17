@@ -5,6 +5,7 @@ import logging
 import threading
 import netifaces
 import socketserver
+from fakenet.listeners.servermixins import LoggingThreadingMixIn
 from dnslib import *
 
 import socket
@@ -538,7 +539,7 @@ class TCPHandler(DNSHandler, socketserver.BaseRequestHandler):
         except Exception as e:
             self.server.logger.error('Error: %s', e)
 
-class ThreadedUDPServer(socketserver.ThreadingMixIn, socketserver.UDPServer):
+class ThreadedUDPServer(LoggingThreadingMixIn, socketserver.UDPServer):
 
     # Override SocketServer.UDPServer to add extra parameters
     def __init__(self, server_address, config, logger, RequestHandlerClass):
@@ -546,7 +547,7 @@ class ThreadedUDPServer(socketserver.ThreadingMixIn, socketserver.UDPServer):
         self.logger = logger
         socketserver.UDPServer.__init__(self, server_address, RequestHandlerClass)
 
-class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+class ThreadedTCPServer(LoggingThreadingMixIn, socketserver.TCPServer):
     
     # Override default value
     allow_reuse_address = True

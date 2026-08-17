@@ -172,10 +172,14 @@ class ThreadedTCPClientSocket(threading.Thread):
         except Exception as e:
             self.logger.debug('Listener socket exception %s' % str(e))
 
-class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+from fakenet.listeners.servermixins import LoggingThreadingMixIn
+
+
+class ThreadedTCPServer(LoggingThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
 
-class ThreadedUDPServer(socketserver.ThreadingMixIn, socketserver.UDPServer):
+
+class ThreadedUDPServer(LoggingThreadingMixIn, socketserver.UDPServer):
     daemon_threads = True
 
 def get_top_listener(config, data, listeners, diverter, orig_src_ip,
@@ -184,6 +188,11 @@ def get_top_listener(config, data, listeners, diverter, orig_src_ip,
 
     top_listener = None
     top_confidence = 0
+    if diverter is None:
+        # No diverter reference yet (startup window before
+        # acceptDiverter, or running without diversion): the original
+        # destination is unknowable, degrade gracefully (v1.22 §12.25).
+        return None
     dport = diverter.getOriginalDestPort(orig_src_ip, orig_src_port, proto)
 
     for listener in listeners:

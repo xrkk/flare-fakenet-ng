@@ -7,6 +7,7 @@ import sys
 
 import threading
 import socketserver
+from fakenet.listeners.servermixins import LoggingThreadingMixIn
 
 import socket
 import struct
@@ -304,7 +305,7 @@ class ThreadedUDPRequestHandler(socketserver.BaseRequestHandler):
         self.server.diverterListenerCallbacks.logNbi(self.client_address[1],
                 nbi, 'UDP', 'TFTP', 'No')
 
-class ThreadedUDPServer(socketserver.ThreadingMixIn, socketserver.UDPServer):
+class ThreadedUDPServer(LoggingThreadingMixIn, socketserver.UDPServer):
     pass
 
 ###############################################################################

@@ -7,6 +7,7 @@ import os
 
 import threading
 import socketserver
+from fakenet.listeners.servermixins import LoggingThreadingMixIn
 
 import ssl
 import socket
@@ -260,7 +261,7 @@ class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
                 nbi, 'TCP', 'POP', self.server.config.get('usessl'))
 
 
-class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+class ThreadedTCPServer(LoggingThreadingMixIn, socketserver.TCPServer):
     pass
 
 ###############################################################################

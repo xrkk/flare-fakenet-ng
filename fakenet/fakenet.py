@@ -386,23 +386,10 @@ class Fakenet(object):
                         self.logger.exception('Listener rollback failed')
                 raise
 
-        # Start the diverter
-        if self.diverter:
-            try:
-                self.diverter.start()
-            except Exception:
-                if self.policy_mode:
-                    self.logger.exception(
-                        'Policy diverter startup failed; rolling back listeners')
-                    for listener in reversed(
-                            self.running_listener_providers):
-                        try:
-                            self._stop_policy_listener(listener)
-                        except Exception:
-                            self.logger.exception(
-                                'Listener rollback after diverter failure failed')
-                raise
-
+        # Hand every listener its diverter reference BEFORE diversion
+        # starts: packets redirected by the diverter must never reach a
+        # proxy listener whose diverter reference is still None
+        # (v1.22 §12.25).
         for listener in self.running_listener_providers:
 
             if self.policy_mode and getattr(
@@ -429,6 +416,25 @@ class Fakenet(object):
                 listener.acceptDiverterListenerCallbacks(self.diverterListenerCallbacks)
             except AttributeError:
                 self.logger.debug("acceptDiverterListenerCallbacks() not implemented by Listener %s" % listener.name)
+
+        # Start the diverter
+        if self.diverter:
+            try:
+                self.diverter.start()
+            except Exception:
+                if self.policy_mode:
+                    self.logger.exception(
+                        'Policy diverter startup failed; rolling back listeners')
+                    for listener in reversed(
+                            self.running_listener_providers):
+                        try:
+                            self._stop_policy_listener(listener)
+                        except Exception:
+                            self.logger.exception(
+                                'Listener rollback after diverter failure failed')
+                raise
+
+
 
     def stop(self):
         with self._stop_lock:
