@@ -184,6 +184,30 @@ def snapshot_gui_logs(logs_root=None):
     return snapshot
 
 
+def kill_leftover_processes():
+    """Task-level cleanup by image name (v1.27 §12.30).
+
+    PyInstaller onefile spawns a bootstrap parent plus the real child;
+    terminating the parent leaves the GUI child running (holding the
+    single-instance mutex, §12.24.4). Kill the whole task by image so the
+    acceptance run leaves nothing behind. Only reached in the VM acceptance
+    context (physical machines refuse earlier) and only for our own images;
+    "not found" is the normal, silent case.
+    """
+    killed = []
+    for image in ('fakenet-GUI.exe', 'fakenet.exe'):
+        try:
+            proc = subprocess.run(
+                ['taskkill', '/F', '/T', '/IM', image],
+                capture_output=True,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        except OSError:
+            continue
+        if proc.returncode == 0:
+            killed.append(image)
+    return killed
+
+
 def collect_gui_logs(before, logs_root=None, target_dir=None):
     """Copy GUI logs new/changed since `before` into the evidence folder.
 
@@ -413,12 +437,16 @@ def main():
                '模式 %s;%s' % (gui_mode,
                                '6 秒后仍存活(无崩溃)' if alive else
                                '启动后即退出'))
+    killed = kill_leftover_processes()
+    if killed:
+        print('任务级清理: %s' % ', '.join(killed))
 
     return finish()
 
 
 def finish():
     failed = [r for r in RESULTS if r[0] == 'FAIL']
+    kill_leftover_processes()
     if LOG_DIR is not None:
         copied = collect_gui_logs(_GUI_LOGS_BEFORE, target_dir=os.path.join(
             LOG_DIR, 'gui-logs'))

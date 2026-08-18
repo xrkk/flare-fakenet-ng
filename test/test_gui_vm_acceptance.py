@@ -128,3 +128,62 @@ def test_gui_log_collection_handles_missing_root(tmp_path):
     assert acceptance.snapshot_gui_logs(str(tmp_path / 'nope')) == {}
     assert acceptance.collect_gui_logs(
         {}, str(tmp_path / 'nope'), str(tmp_path / 'out')) == []
+
+
+def test_kill_leftover_processes_uses_taskkill_by_image(monkeypatch):
+    calls = []
+
+    class FakeProc(object):
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return FakeProc(0)
+
+    monkeypatch.setattr(acceptance.subprocess, 'run', fake_run)
+    killed = acceptance.kill_leftover_processes()
+    assert killed == ['fakenet-GUI.exe', 'fakenet.exe']
+    assert [cmd for cmd, _ in calls] == [
+        ['taskkill', '/F', '/T', '/IM', 'fakenet-GUI.exe'],
+        ['taskkill', '/F', '/T', '/IM', 'fakenet.exe']]
+    assert all(kwargs.get('capture_output') for _, kwargs in calls)
+
+
+def test_kill_leftover_processes_silent_when_not_found(monkeypatch):
+    class FakeProc(object):
+        returncode = 1
+
+    monkeypatch.setattr(
+        acceptance.subprocess, 'run', lambda cmd, **kwargs: FakeProc())
+    assert acceptance.kill_leftover_processes() == []
+
+
+def test_export_logs_collects_package_root_artifacts(tmp_path):
+    import shutil
+    import subprocess
+
+    layout = tmp_path / 'pkg'
+    gui_vm = layout / 'test' / 'gui_vm'
+    gui_vm.mkdir(parents=True)
+    shutil.copyfile(
+        os.path.join(REPO, 'test', 'gui_vm', 'Export-Logs.ps1'),
+        str(gui_vm / 'Export-Logs.ps1'))
+    (layout / 'Logs').mkdir()
+    (layout / 'Logs' / 'fakenet-1.log').write_text('core')
+    (layout / 'Logs' / 'fakenet-GUI-1.log').write_text('gui')
+    (layout / 'packets_x.pcap').write_bytes(b'pcap')
+    (layout / 'report_x.html').write_text('report')
+    (layout / 'noise.txt').write_text('ignored')
+
+    proc = subprocess.run(
+        ['powershell.exe', '-NoLogo', '-NoProfile', '-ExecutionPolicy',
+         'Bypass', '-File', str(gui_vm / 'Export-Logs.ps1')],
+        capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+
+    exports = list((layout / 'test' / 'gui_vm' / 'Logs').glob('manual-export-*'))
+    assert len(exports) == 1
+    names = {p.name for p in exports[0].iterdir()}
+    assert names == {'fakenet-1.log', 'fakenet-GUI-1.log',
+                     'packets_x.pcap', 'report_x.html'}

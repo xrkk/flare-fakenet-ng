@@ -33,3 +33,13 @@ A6–A8 依赖 `fakenet.exe` 镜像名和同次核心日志做生命周期断言
 ## 安全说明
 
 A6 启动的 fakenet 使用**最小非侵入配置**(`DivertTraffic: No`、`DumpPackets: No`、单一 Raw 监听器):不加载 WinDivert、不改 DNS/网关,停止走 fakenet 自带的 stop-flag 机制。这仍要求在 VM 内运行——脚本在物理机上会自我拒绝。
+
+## 手动测试证据一键导出(v1.27 §12.30)
+
+`Run-Tests.cmd` 的证据收集发生在验收结束时;此后若继续用 GUI 手动启动核心做测试,
+新产生的日志/PCAP/报告不会进入验收目录。此时双击 **`Export-Logs.cmd`**(免提权):
+包根 `Logs\` 全部日志、`packets_*.pcap`、`report_*.html` 会集中拷贝到
+`test\gui_vm\Logs\manual-export-<时间戳>\`,导出仍只需拷贝 `test\gui_vm\Logs\` 一处。
+
+runner 结束时还会按镜像名做任务级清理(`fakenet-GUI.exe`/`fakenet.exe`),
+不再遗留 onefile 引导进程的孤儿子进程(§12.24.4 现象收口)。
