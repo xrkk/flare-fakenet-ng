@@ -63,6 +63,31 @@ def _split_csv(value):
     return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
+def normalize_allowed_domain(value):
+    """Normalize one configured domain entry (v1.28 section 12.31).
+
+    Entries are exact hostnames, or a single leading ``*.`` wildcard that
+    covers every strict subdomain of the suffix. ``normalize_hostname``
+    stays strict (no ``*``) for query names; only configuration parsing
+    goes through here.
+    """
+    value = str(value).strip()
+    if value.startswith('*.'):
+        return '*.' + normalize_hostname(value[2:])
+    return normalize_hostname(value)
+
+
+def _parse_allowed_domains(raw):
+    exact, wildcards = set(), set()
+    for item in _split_csv(raw):
+        entry = normalize_allowed_domain(item)
+        if entry.startswith('*.'):
+            wildcards.add(entry)
+        else:
+            exact.add(entry)
+    return frozenset(exact), frozenset(wildcards)
+
+
 def _flow_key(proto, src_ip, sport, dst_ip, dport):
     return (str(proto).upper(), str(src_ip), int(sport), str(dst_ip), int(dport))
 
@@ -417,15 +442,13 @@ class EgressPolicy(object):
                     'ExternalTakeoverDnsTTL must be between 1 and 300')
             _validate_takeover_probe_config(config)
 
-        self.allowed_domains = frozenset(
-            normalize_hostname(item)
-            for item in _split_csv(config.get("externalalloweddomains", ""))
-        )
+        self.allowed_domains, self.allowed_wildcards = (
+            _parse_allowed_domains(config.get("externalalloweddomains", "")))
         self.allowed_tcp_ports = frozenset(
             int(item) for item in _split_csv(
                 config.get("externalallowedtcpports", ""))
         )
-        if not self.allowed_domains:
+        if not self.allowed_domains and not self.allowed_wildcards:
             raise PolicyConfigError("ExternalAllowedDomains is required")
         if self.allowed_tcp_ports != frozenset([443]):
             raise PolicyConfigError("reviewed Windows mode only permits ExternalAllowedTCPPorts=443")
@@ -493,9 +516,6 @@ class EgressPolicy(object):
         if self.external_dns_server in self.local_ipv4:
             raise PolicyConfigError("ExternalDnsServer cannot be a local address")
         if self.takeover_enabled:
-            if self.allowed_domains != frozenset(['api.deepseek.com']):
-                raise PolicyConfigError(
-                    'reviewed takeover mode permits only api.deepseek.com')
             if self.takeover_ipv4 in self.local_ipv4:
                 raise PolicyConfigError(
                     'ExternalTakeoverIPv4 cannot be a local address')
@@ -751,12 +771,27 @@ class EgressPolicy(object):
         except ValueError:
             return False
 
+    def _match_allowed_domain(self, name):
+        """Canonical entry covering `name`, or None (v1.28 section 12.31).
+
+        Wildcards match any strict subdomain of their suffix; the apex
+        itself is not covered. Both collections are immutable, so this is
+        safe to consult with or without the lock held.
+        """
+        if name in self.allowed_domains:
+            return name
+        for pattern in self.allowed_wildcards:
+            suffix = pattern[1:]
+            if name.endswith(suffix) and len(name) > len(suffix):
+                return pattern
+        return None
+
     def resolve_dns_rule(self, qname):
         qname = normalize_hostname(qname)
         now = self._now()
         with self._lock:
             self._cleanup_locked(now)
-            if qname in self.allowed_domains:
+            if self._match_allowed_domain(qname) is not None:
                 return qname
             alias = self._aliases.get(qname)
             return alias[0] if alias and alias[1] > now else None
@@ -765,7 +800,7 @@ class EgressPolicy(object):
         domain = normalize_hostname(domain)
         alias = normalize_hostname(alias)
         ttl = int(ttl)
-        if domain not in self.allowed_domains or ttl <= 0:
+        if self._match_allowed_domain(domain) is None or ttl <= 0:
             return False
         with self._lock:
             self._ensure_open()
@@ -774,7 +809,7 @@ class EgressPolicy(object):
 
     def replace_leases(self, domain, records):
         domain = normalize_hostname(domain)
-        if domain not in self.allowed_domains:
+        if self._match_allowed_domain(domain) is None:
             raise ValueError("lease domain is not allowed")
         now = self._now()
         replacement = {}

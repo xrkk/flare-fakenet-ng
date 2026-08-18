@@ -108,21 +108,50 @@ class EgressPolicyTests(unittest.TestCase):
         self.assertIsNone(policy.match_relay_forward(
             'TCP', '10.0.0.5', 50002, '203.0.113.9', 443))
 
-    def test_wildcard_domains_are_rejected(self):
-        for wildcard in ('*.deepseek.com', 'api.*.com', 'deepseek.*'):
+    def test_wildcard_domain_matching_semantics(self):
+        candidate = config()
+        candidate['externalalloweddomains'] = '*.example.com'
+        policy = EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+        self.assertIsNotNone(policy.resolve_dns_rule('a.example.com'))
+        self.assertIsNotNone(policy.resolve_dns_rule('a.b.example.com'))
+        # the apex itself is not covered by its wildcard
+        self.assertIsNone(policy.resolve_dns_rule('example.com'))
+        # suffix traps and partial labels do not match
+        self.assertIsNone(policy.resolve_dns_rule('aexample.com'))
+        self.assertIsNone(
+            policy.resolve_dns_rule('a.example.com.evil.net'))
+
+        # wildcard-covered hostnames lease, alias and relay like exact ones
+        policy.replace_leases('node.example.com', [('93.184.216.34', 60)])
+        self.assertIsNotNone(policy.create_relay_mapping(
+            '10.0.0.5', 50000, '93.184.216.34', 443, '10.0.0.5', 38927))
+        self.assertTrue(policy.register_alias(
+            'node.example.com', 'alias.other.net', 60))
+        self.assertEqual('node.example.com',
+                         policy.resolve_dns_rule('alias.other.net'))
+        with self.assertRaises(ValueError):
+            policy.replace_leases('example.com', [('93.184.216.34', 60)])
+
+    def test_wildcard_domain_syntax_restricted_to_leading_star(self):
+        for bad in ('*', 'a.*.com', '*a.example.com', '*.a.*.com',
+                    '*.', 'deepseek.*'):
             candidate = config()
-            candidate['externalalloweddomains'] = wildcard
+            candidate['externalalloweddomains'] = bad
             with self.assertRaises(PolicyConfigError):
                 EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
 
-    def test_takeover_mode_pins_single_reviewed_domain(self):
-        # documents the current core restriction (egresspolicy.py): enabling
-        # private-network takeover permits only the single reviewed domain
+    def test_takeover_mode_accepts_multiple_and_wildcard_domains(self):
         candidate = takeover_config()
         candidate['externalalloweddomains'] = (
-            'api.deepseek.com,edge.example.org')
-        with self.assertRaises(PolicyConfigError):
-            EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+            'api.deepseek.com, Edge.Example.ORG, *.cdn.example.net')
+        policy = EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+        self.assertTrue(policy.takeover_enabled)
+        self.assertEqual('api.deepseek.com',
+                         policy.resolve_dns_rule('api.deepseek.com'))
+        self.assertEqual('edge.example.org',
+                         policy.resolve_dns_rule('edge.example.org'))
+        self.assertIsNotNone(
+            policy.resolve_dns_rule('a.cdn.example.net'))
 
     def test_lease_replacement_ttl_and_alias(self):
         installed = self.policy.replace_leases(
@@ -381,10 +410,12 @@ class EgressPolicyTests(unittest.TestCase):
         candidate['externalnonallowedaction'] = 'drop'
         with self.assertRaises(PolicyConfigError):
             EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+        # v1.28: takeover no longer pins the domain list to the single
+        # reviewed name; other takeover conflicts above still fail closed
         candidate = takeover_config()
         candidate['externalalloweddomains'] = 'example.com'
-        with self.assertRaises(PolicyConfigError):
-            EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+        self.assertTrue(EgressPolicy(
+            candidate, ['10.0.0.5'], [], '10.0.0.1').takeover_enabled)
 
     def test_takeover_ttl_and_probe_validation(self):
         for ttl in ('1', '60', '300'):

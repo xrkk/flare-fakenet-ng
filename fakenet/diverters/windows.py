@@ -1105,9 +1105,16 @@ class Diverter(DiverterBase, WinUtilMixin):
                 name='LocalAddressSnapshot', daemon=True)
             self.address_refresh_thread.start()
             if self.egress_policy.takeover_enabled:
+                takeover_domains = sorted(
+                    self.egress_policy.allowed_domains |
+                    self.egress_policy.allowed_wildcards)
+                summary = ', '.join(takeover_domains)
+                if len(summary) > 240:
+                    summary = summary[:237] + '...'
                 self.log_egress_event(
                     'DOMAIN_TAKEOVER_READY',
-                    allowed_domain='api.deepseek.com',
+                    allowed_domains=summary,
+                    domain_count=len(takeover_domains),
                     takeover_ip=self.egress_policy.takeover_ipv4,
                     ttl=self.egress_policy.takeover_dns_ttl)
             else:
