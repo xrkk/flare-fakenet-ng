@@ -79,6 +79,51 @@ class EgressPolicyTests(unittest.TestCase):
         with self.assertRaises(PolicyConfigError):
             normalize_hostname('api..deepseek.com')
 
+    def test_multiple_allowed_domains_resolve_independently(self):
+        candidate = config()
+        candidate['externalalloweddomains'] = (
+            'api.deepseek.com, Edge.Example.ORG')
+        policy = EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+        self.assertEqual('api.deepseek.com',
+                         policy.resolve_dns_rule('api.deepseek.com'))
+        self.assertEqual('edge.example.org',
+                         policy.resolve_dns_rule('edge.example.org'))
+        # exact-hostname semantics: neither parent nor subdomains match
+        self.assertIsNone(policy.resolve_dns_rule('deepseek.com'))
+        self.assertIsNone(policy.resolve_dns_rule('x.api.deepseek.com'))
+        self.assertIsNone(policy.resolve_dns_rule('example.org'))
+
+        policy.replace_leases('api.deepseek.com', [('93.184.216.34', 60)])
+        policy.replace_leases('edge.example.org', [('93.184.216.35', 60)])
+        first = policy.create_relay_mapping(
+            '10.0.0.5', 50000, '93.184.216.34', 443, '10.0.0.5', 38927)
+        second = policy.create_relay_mapping(
+            '10.0.0.5', 50001, '93.184.216.35', 443, '10.0.0.5', 38927)
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertIsNotNone(policy.match_relay_forward(
+            'TCP', '10.0.0.5', 50000, '93.184.216.34', 443))
+        self.assertIsNotNone(policy.match_relay_forward(
+            'TCP', '10.0.0.5', 50001, '93.184.216.35', 443))
+        self.assertIsNone(policy.match_relay_forward(
+            'TCP', '10.0.0.5', 50002, '203.0.113.9', 443))
+
+    def test_wildcard_domains_are_rejected(self):
+        for wildcard in ('*.deepseek.com', 'api.*.com', 'deepseek.*'):
+            candidate = config()
+            candidate['externalalloweddomains'] = wildcard
+            with self.assertRaises(PolicyConfigError):
+                EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+
+    def test_takeover_mode_pins_single_reviewed_domain(self):
+        # documents the current core restriction (egresspolicy.py): enabling
+        # private-network takeover permits only the single reviewed domain
+        candidate = takeover_config()
+        candidate['externalalloweddomains'] = (
+            'api.deepseek.com,edge.example.org')
+        with self.assertRaises(PolicyConfigError):
+            EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+
     def test_lease_replacement_ttl_and_alias(self):
         installed = self.policy.replace_leases(
             'api.deepseek.com', [('93.184.216.34', 5), ('127.0.0.1', 60)])
