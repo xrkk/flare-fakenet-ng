@@ -481,7 +481,7 @@ def run_a10_process_flow(fakenet_exe):
         (read_core_log(core_log) if os.path.isfile(core_log) else ''),
         60)
     if not ready:
-        result('A10 进程归因', 'FAIL', '60 秒内未见 EGRESS_CONTROL_READY')
+        result('A10 进程归因', 'FAIL', '60 秒内未见 DOMAIN_TAKEOVER_READY')
     else:
         connected, _received = policy.probe_direct_ipv4(
             policy.UNREVIEWED_IPV4, policy.UNREVIEWED_PORT)
