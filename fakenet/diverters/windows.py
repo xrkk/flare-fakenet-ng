@@ -328,7 +328,23 @@ class WindowsPacketCtx(fnpacket.PacketCtx):
             self.interface_index = -1
             self.subinterface_index = -1
         self.is_outbound = bool(getattr(wdpkt, 'is_outbound', False))
-        raw = wdpkt.raw.tobytes()
+        # Loopback TSO/LSO segments arrive from WinDivert with the IPv4
+        # total-length field still covering the whole offloaded send, i.e.
+        # field > capture buffer. pydivert patches headers in place and never
+        # rewrites that field, so WinDivertSend would reject the
+        # self-inconsistent packet with ERROR_INVALID_PARAMETER. Shrink the
+        # field to the actual buffer length before both the dpkt view and the
+        # pydivert send view are built; the segment is otherwise complete and
+        # valid, and consistent packets are left untouched.
+        self.tso_length_fix = None
+        view = wdpkt.raw
+        head = bytes(view[:4]) if len(view) >= 20 else b''
+        if head and (head[0] >> 4) == 4:
+            declared = int.from_bytes(head[2:4], 'big')
+            if declared > len(view):
+                struct.pack_into('>H', view, 2, len(view))
+                self.tso_length_fix = (declared, len(view))
+        raw = view.tobytes()
 
         super(WindowsPacketCtx, self).__init__(lbl, raw)
 
@@ -1710,6 +1726,18 @@ class Diverter(DiverterBase, WinUtilMixin):
         return Verdict.DROP_EXTERNAL
 
     def _send_packet(self, pkt):
+        fix = getattr(pkt, 'tso_length_fix', None)
+        if fix is not None:
+            stats = getattr(self, '_tso_length_stats', None)
+            if stats is None:
+                stats = self._tso_length_stats = {'count': 0, 'last': 0.0}
+            stats['count'] += 1
+            now = time.monotonic()
+            if now - stats['last'] >= 30.0:
+                stats['last'] = now
+                self.log_egress_event(
+                    'TSO_LENGTH_FIX', declared=fix[0], buffer=fix[1],
+                    total=stats['count'])
         send_start = time.monotonic()
         try:
             if self._send_windivert_packet(pkt.wdpkt, 'packet reinjection'):
