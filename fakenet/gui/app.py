@@ -982,7 +982,7 @@ class FakenetConfigApp(object):
                     locked, reason = True, '未启用私网接管'
                 elif not locked and field.key == 'ExternalAllowedIPv4Rules' \
                         and not public_enabled:
-                    locked, reason = True, '未启用公网 IPv4 直连'
+                    locked, reason = True, '未启用公网 IPv4 放行'
                 elif not locked and field.group == '进程重定向' and \
                         field.key != 'ExternalProcessRedirectEnabled' and \
                         not process_enabled:
@@ -1416,7 +1416,7 @@ class FakenetConfigApp(object):
         self.takeover_fields_frame.pack(fill='x', padx=3, pady=(0, 4))
 
         process = ttk.LabelFrame(
-            self._egress_inner, text='按指定程序重定向公网 IPv4')
+            self._egress_inner, text='按程序与原 IP 重定向公网 IPv4')
         process.grid(row=1, column=1, rowspan=2, sticky='nsew',
                      padx=3, pady=3)
         process_fields = [field_by_key[key] for key in (
@@ -1431,7 +1431,7 @@ class FakenetConfigApp(object):
             label_width=16)
         process_values.pack(fill='x', padx=3, pady=3)
 
-        public = ttk.LabelFrame(self._egress_inner, text='公网 IPv4 直连')
+        public = ttk.LabelFrame(self._egress_inner, text='公网 IPv4 放行')
         public.grid(row=2, column=0, sticky='nsew', padx=3, pady=3)
         public_key = 'ExternalAllowedIPv4Rules'
         self.public_ipv4_enabled_var = tk.BooleanVar(
@@ -1443,9 +1443,9 @@ class FakenetConfigApp(object):
         self.public_ipv4_check.pack(anchor='w', padx=7, pady=(4, 1))
         widgets.attach_tooltip(
             self.public_ipv4_check,
-            '公网 IPv4 直连\n启用后仅按下方协议、IPv4 和端口规则直连公网；'
+            '公网 IPv4 放行\n启用后仅按下方协议、IPv4 和端口规则放行走真实公网；'
             '规则仍受数量、协议和地址安全校验约束。',
-            self._hint, '启用或停用审核后的公网 IPv4 直连规则')
+            self._hint, '启用或停用审核后的公网 IPv4 放行规则')
         public_field = field_by_key[public_key]
         self.public_rules_widget = widgets.IPv4RulesFieldWidget(
             public, public_field, getter(public_key), changed, self._hint,

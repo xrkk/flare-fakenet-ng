@@ -279,12 +279,12 @@ DIVERTER_FIELDS = (
           advanced=True,
           hint='仅启用私网导向后写入;接管前只读 TCP 探测的单次超时;范围 100–5000 毫秒'),
     # -- 出站策略: 公网 IPv4 放行 -------------------------------------------
-    Field('ExternalAllowedIPv4Rules', '公网 IPv4 直连规则', T_STRINGLIST,
+    Field('ExternalAllowedIPv4Rules', '公网 IPv4 放行规则', T_STRINGLIST,
           default='', group='公网IPv4放行',
           hint='格式 协议/IPv4/端口,如 TCP/110.242.69.21/443;端口可用 *;'
                '最多 32 条、16 个 IP;存在但为空=配置错误'),
     # -- 出站策略: 进程重定向 -----------------------------------------------
-    Field('ExternalProcessRedirectEnabled', '按指定程序重定向', T_BOOL_YESNO,
+    Field('ExternalProcessRedirectEnabled', '按程序与原 IP 重定向', T_BOOL_YESNO,
           default='No', group='进程重定向', hint='仅 Windows;fail-closed'),
     Field('ExternalProcessRedirectProtocol', '重定向协议', T_ENUM,
           default='TCP', group='进程重定向', enum=('TCP',),
