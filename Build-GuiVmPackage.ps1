@@ -22,7 +22,7 @@ param(
 # SHA-256, no Logs directory, no .sha256 sidecar.
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v30'
+$packageVersion = 'v31'
 $packageName = "Windows-GUI配置工具-VM验收-$packageVersion"
 $fixedTimestamp = [DateTimeOffset]::new(
     [DateTime]::SpecifyKind([DateTime]'2000-01-01T00:00:00',
