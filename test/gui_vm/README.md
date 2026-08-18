@@ -43,3 +43,13 @@ A6 启动的 fakenet 使用**最小非侵入配置**(`DivertTraffic: No`、`Dump
 
 runner 结束时还会按镜像名做任务级清理(`fakenet-GUI.exe`/`fakenet.exe`),
 不再遗留 onefile 引导进程的孤儿子进程(§12.24.4 现象收口)。
+
+## 策略功能一键测试(v1.28 §12.31.4)
+
+双击 **`Run-Policy-Tests.cmd`**(自提权,仅 VM)可对多域名/通配符新功能做端到端验证:
+阶段 1 以 `api.deepseek.com,*.deepseek.com` 启动域名放行,断言精确域名与通配子域名
+(`www.deepseek.com`)获得真实公网租约、裸域 `deepseek.com` 与未放行的 `example.com`
+不产生真实租约;阶段 2 以同一域名列表启用私网接管,断言 `DOMAIN_TAKEOVER_READY`
+清单完整、裸域应答为接管 sink `192.168.204.1`、通配子域名照常放行。证据(核心日志、
+两份配置、`policy-results.tsv`)写入 `test\gui_vm\Logs\policy-<时间戳>\`。
+物理机/非确定 VM 状态直接拒绝(会启用真实流量劫持)。

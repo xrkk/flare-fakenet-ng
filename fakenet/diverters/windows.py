@@ -1108,7 +1108,9 @@ class Diverter(DiverterBase, WinUtilMixin):
                 takeover_domains = sorted(
                     self.egress_policy.allowed_domains |
                     self.egress_policy.allowed_wildcards)
-                summary = ', '.join(takeover_domains)
+                # no spaces inside the value: log_egress_event separates
+                # fields with spaces, so the list must stay one token
+                summary = ','.join(takeover_domains)
                 if len(summary) > 240:
                     summary = summary[:237] + '...'
                 self.log_egress_event(
