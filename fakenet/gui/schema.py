@@ -41,7 +41,6 @@ LOCK_TCP_PORTS_443 = 'LOCK_TCP_PORTS_443'
 LOCK_BOOL_YES = 'LOCK_BOOL_YES'      # must be Yes (SNI verify / IPv6 / QUIC)
 LOCK_RESOURCE_TUPLE = 'LOCK_RESOURCE_TUPLE'  # 8-tuple pinned by egresspolicy
 LOCK_PR_PROTOCOL_TCP = 'LOCK_PR_PROTOCOL_TCP'
-COND_TAKEOVER_DOMAINS = 'COND_TAKEOVER_DOMAINS'  # only api.deepseek.com
 COND_TAKEOVER_ACTION = 'COND_TAKEOVER_ACTION'    # NonAllowedAction=Divert
 COND_TAKEOVER_RESPONSEA = 'COND_TAKEOVER_RESPONSEA'  # DNS ResponseA==sink
 
@@ -206,8 +205,8 @@ DIVERTER_FIELDS = (
                '的统一出站策略,并自动补齐必需监听器'),
     Field('ExternalAllowedDomains', '真实联网域名', T_STRINGLIST,
           default='api.deepseek.com', group='基础策略',
-          cond_lock=COND_TAKEOVER_DOMAINS,
-          hint='可配置多个精确主机名,用英文逗号分隔;开启“将其他域名导向私网分析主机”后代码强制仅 api.deepseek.com'),
+          hint='英文逗号分隔;支持精确主机名与 *.example.com 通配'
+               '(匹配其任意层级子域名,不含裸域本身);私网接管下同样支持多域名'),
     Field('ExternalAllowedTCPPorts', '放行 TCP 端口', T_PORTLIST,
           default='443', group='基础策略', lock=LOCK_TCP_PORTS_443,
           hint='代码强制仅 443'),

@@ -964,13 +964,6 @@ class FakenetConfigApp(object):
                 widget.set_locked(True, reason='自动计算')
             elif field.lock:
                 widget.set_locked(True)  # implementation details are read-only
-            elif field.cond_lock == schema.COND_TAKEOVER_DOMAINS:
-                if not policy:
-                    widget.set_locked(True, reason='出站策略未启用')
-                elif takeover:
-                    widget.set_locked(True, forced_value='api.deepseek.com')
-                else:
-                    widget.set_locked(False)
             elif field.cond_lock == schema.COND_TAKEOVER_ACTION:
                 if not policy:
                     widget.set_locked(True, reason='出站策略未启用')
@@ -1162,7 +1155,6 @@ class FakenetConfigApp(object):
         values = dict(schema.LOCKED_FIELD_VALUES)
         if 'ExternalTakeoverIPv4' in diverter:
             values.update({
-                'ExternalAllowedDomains': 'api.deepseek.com',
                 'ExternalNonAllowedAction': 'Divert',
             })
         for key, value in values.items():
@@ -1406,8 +1398,7 @@ class FakenetConfigApp(object):
         widgets.attach_tooltip(
             self.takeover_check,
             '将其他域名导向私网分析主机\n'
-            '放行域名保持真实访问；其余域名解析到指定私网 IPv4。启用后，'
-            '真实联网域名按当前核心安全合同固定为唯一 api.deepseek.com。',
+            '放行域名(含通配)保持真实访问；其余域名解析到指定私网 IPv4。',
             self._hint,
             '放行域名保持真实访问；其余域名解析到指定私网 IPv4')
         takeover_fields = [field_by_key[key] for key in (
@@ -1514,21 +1505,10 @@ class FakenetConfigApp(object):
         diverter = self.model.diverter()
         enabled = self.takeover_enabled_var.get()
         if enabled:
-            domains = {item.strip().lower() for item in
-                       (diverter.get('ExternalAllowedDomains') or '').split(',')
-                       if item.strip()}
-            if domains != {'api.deepseek.com'} and not messagebox.askyesno(
-                    '启用私网导向',
-                    '此功能要求真实联网域名固定为唯一的 '
-                    'api.deepseek.com。\n\n确认替换当前域名列表并继续?',
-                    parent=self.root):
-                self.takeover_enabled_var.set(False)
-                return
             diverter.set('ExternalTakeoverIPv4', '192.168.204.1')
             diverter.set('ExternalTakeoverDnsTTL', '60')
             diverter.set('ExternalTakeoverProbeTCPPorts', '')
             diverter.set('ExternalTakeoverProbeTimeoutMs', '500')
-            diverter.set('ExternalAllowedDomains', 'api.deepseek.com')
             diverter.set('ExternalNonAllowedAction', 'Divert')
         else:
             for key in ('ExternalTakeoverIPv4', 'ExternalTakeoverDnsTTL',

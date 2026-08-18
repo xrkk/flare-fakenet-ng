@@ -219,10 +219,17 @@ def test_takeover_ttl_range():
     assert by_key(errors(model), 'ExternalTakeoverDnsTTL')
 
 
-def test_takeover_domain_lock():
-    model = enable_takeover(build(), domains='example.com')
-    assert any('仅允许 api.deepseek.com' in i.message
-               for i in errors(model))
+def test_takeover_accepts_multiple_and_wildcard_domains():
+    model = enable_takeover(
+        build(), domains='example.com,*.cdn.example.net')
+    assert not by_key(errors(model), 'ExternalAllowedDomains')
+
+
+def test_domain_list_rejects_non_leading_wildcards():
+    model = enable_policy(build())
+    for bad in ('*', 'a.*.com', '*a.example.com', '*.'):
+        model.diverter().set('ExternalAllowedDomains', bad)
+        assert by_key(errors(model), 'ExternalAllowedDomains'), bad
 
 
 def test_takeover_action_lock():

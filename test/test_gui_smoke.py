@@ -565,22 +565,25 @@ def test_loading_active_policy_auto_repairs_in_memory_and_marks_dirty(
         root.destroy()
 
 
-def test_takeover_toggle_materializes_conditional_locked_values(monkeypatch):
+def test_takeover_toggle_preserves_domain_list_and_locks(monkeypatch):
     root, application = _construct_app()
     try:
         application._render_static_tabs()
         application._egress_widgets['ExternalAccessPolicy'].input.invoke()
-        application.domain_list_widget.set('example.com', notify=True)
+        application.domain_list_widget.set(
+            'example.com,*.cdn.example.net', notify=True)
         application._egress_widgets['ExternalNonAllowedAction'].set(
             'Drop', notify=True)
+        # enabling takeover must not rewrite or lock the domain list anymore
         monkeypatch.setattr(tkinter.messagebox, 'askyesno',
-                            lambda *_args, **_kwargs: True)
+                            lambda *_args, **_kwargs: False)
         application.takeover_check.invoke()
 
         diverter = application.model.diverter()
-        assert diverter.get('ExternalAllowedDomains') == 'api.deepseek.com'
+        assert diverter.get('ExternalAllowedDomains') == (
+            'example.com, *.cdn.example.net')
         assert diverter.get('ExternalNonAllowedAction') == 'Divert'
-        assert 'disabled' in application.domain_list_widget.input.state()
+        assert 'disabled' not in application.domain_list_widget.input.state()
         application.takeover_check.invoke()
         assert 'ExternalTakeoverIPv4' not in diverter
         assert 'disabled' not in application.domain_list_widget.input.state()
@@ -971,7 +974,7 @@ def test_takeover_toggle_refreshes_in_place_without_tab_rebuild():
         diverter = application.model.diverter()
         assert diverter.get('ExternalTakeoverIPv4') == '192.168.204.1'
         assert diverter.get('ExternalAllowedDomains') == 'api.deepseek.com'
-        assert 'disabled' in application.domain_list_widget.input.state()
+        assert 'disabled' not in application.domain_list_widget.input.state()
         takeover_ip = application._egress_widgets['ExternalTakeoverIPv4']
         assert takeover_ip.get() == '192.168.204.1'
 

@@ -315,11 +315,13 @@ def _check_policy_core(model, issues):
             ERROR, 'Diverter', 'ExternalAllowedDomains',
             '出站策略启用时必填'))
     for domain in domains:
-        if not _valid_hostname(domain):
+        candidate = domain[2:] if domain.startswith('*.') else domain
+        if not _valid_hostname(candidate) or (
+                domain.startswith('*.') and not candidate):
             issues.append(Issue(
                 ERROR, 'Diverter', 'ExternalAllowedDomains',
-                '域名 %r 不合法(须为不带 scheme/端口/路径/通配的主机名)'
-                % domain))
+                '域名 %r 不合法(须为不带 scheme/端口/路径的主机名,'
+                '或 *.域名 形式的前导通配)' % domain))
 
     dns_server = (diverter.get('ExternalDnsServer') or 'Auto').strip()
     if dns_server.lower() != 'auto':
@@ -485,14 +487,6 @@ def _check_takeover(model, issues):
         issues.append(Issue(
             ERROR, 'Diverter', 'ExternalTakeoverProbeTimeoutMs',
             '须为 100-5000 毫秒'))
-
-    domains = {d.strip().lower() for d in
-               (diverter.get('ExternalAllowedDomains') or '').split(',')
-               if d.strip()}
-    if domains != {'api.deepseek.com'}:
-        issues.append(Issue(
-            ERROR, 'Diverter', 'ExternalAllowedDomains',
-            '接管模式下代码仅允许 api.deepseek.com'))
 
     action = (diverter.get('ExternalNonAllowedAction') or
               'Divert').strip().lower()
