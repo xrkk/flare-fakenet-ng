@@ -221,7 +221,7 @@ function Test-FakeNetTrafficReady {
     $text = [string](Get-Content -LiteralPath $Path -Raw `
         -ErrorAction SilentlyContinue)
     return ($text.Contains('IP_ALLOW_READY') -and
-        $text.Contains('DOMAIN_ALLOWLIST_READY'))
+        $text.Contains('EGRESS_CONTROL_READY'))
 }
 
 function Read-AndVerifyManifest {
@@ -594,7 +594,7 @@ function Invoke-ProfileRun {
         }
         if (-not $ready) { throw "Ready timeout: $Name/$ReadyEvent" }
         $readyDetail = if ($Name -eq 'baidu_tcp443') {
-            'IP_ALLOW_READY+DOMAIN_ALLOWLIST_READY'
+            'IP_ALLOW_READY+EGRESS_CONTROL_READY'
         } else { $ReadyEvent }
         Add-Result "Ready-$Name" 'PASS' $readyDetail
 

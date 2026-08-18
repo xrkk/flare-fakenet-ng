@@ -1,4 +1,4 @@
-# Windows DomainAllowList VM test bundle
+# Windows EgressControl VM test bundle
 
 Run this package only inside a disposable Windows virtual machine with a
 snapshot. The runner refuses to start FakeNet-NG unless Windows reports a

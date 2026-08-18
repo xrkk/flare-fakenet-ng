@@ -161,10 +161,10 @@ try {
         Assert-Contract (-not (Test-FakeNetTrafficReady $readyPath)) `
             "$($readyContract.Name) accepted constructor-only readiness."
         Add-Content -LiteralPath $readyPath `
-            -Value 'DOMAIN_ALLOWLIST_READY' -Encoding ASCII
+            -Value 'EGRESS_CONTROL_READY' -Encoding ASCII
         Assert-Contract (Test-FakeNetTrafficReady $readyPath) `
             "$($readyContract.Name) rejected complete traffic readiness."
-        foreach ($required in @('IP_ALLOW_READY', 'DOMAIN_ALLOWLIST_READY')) {
+        foreach ($required in @('IP_ALLOW_READY', 'EGRESS_CONTROL_READY')) {
             Assert-Contract ($readyContract.Ast.Extent.Text.Contains($required)) `
                 "$($readyContract.Name) traffic gate omitted: $required"
         }

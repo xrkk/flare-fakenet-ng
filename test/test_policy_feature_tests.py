@@ -21,7 +21,7 @@ def test_build_policy_config_agrees_with_validator(tmp_path):
     diverter = model.diverter()
     assert diverter.get('DivertTraffic') != 'No' or True  # [FakeNet] section
     assert model.fakenet().get('DivertTraffic') == 'Yes'
-    assert diverter.get('ExternalAccessPolicy') == 'DomainAllowList'
+    assert diverter.get('ExternalAccessPolicy') == 'EgressControl'
     assert diverter.get('ExternalAllowedDomains') == (
         'api.deepseek.com, *.deepseek.com')
     listeners = {sec.get('Listener') for sec in model.listener_sections()}

@@ -20,7 +20,7 @@ class DualPcapConfigurationTests(unittest.TestCase):
     def test_reviewed_policy_profiles_remain_capture_disabled(self):
         for relative in (
                 'fakenet/configs/burp.ini',
-                'fakenet/configs/domain_allowlist_windows.ini',
+                'fakenet/configs/egress_control_windows.ini',
                 'fakenet/configs/domain_reviewed_ipv4_windows.ini',
                 'fakenet/configs/domain_takeover_windows.ini'):
             with self.subTest(relative=relative):

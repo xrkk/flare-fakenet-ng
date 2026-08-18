@@ -402,7 +402,7 @@ def _parse_reviewed_ipv4_rules(config, config_keys, local_ipv4,
 
 
 class EgressPolicy(object):
-    """Thread-safe state for DomainAllowList mode."""
+    """Thread-safe state for EgressControl mode."""
 
     RELAY_TOMBSTONE_SECONDS = 120
 

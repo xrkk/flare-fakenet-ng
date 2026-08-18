@@ -193,7 +193,7 @@ class WindowsVerdictTests(unittest.TestCase):
         worker.is_alive.return_value = True
         self.diverter._stopping = threading.Event()
         self.diverter._flush_reviewed_ip_audit = mock.Mock()
-        self.diverter.domain_allowlist_mode = False
+        self.diverter.egress_control_mode = False
         self.diverter.egress_policy = None
         self.diverter.handle = None
         self.diverter.diverter_thread = worker
@@ -344,7 +344,7 @@ class WindowsVerdictTests(unittest.TestCase):
 
     def test_suspend_policy_marks_stopping_before_policy_suspend(self):
         diverter = Diverter.__new__(Diverter)
-        diverter.domain_allowlist_mode = True
+        diverter.egress_control_mode = True
         diverter._stopping = threading.Event()
         diverter.egress_policy = mock.Mock()
         diverter.egress_policy.suspend.side_effect = lambda: self.assertTrue(
@@ -390,7 +390,7 @@ class WindowsVerdictTests(unittest.TestCase):
         diverter._refresh_local_addresses()
 
         diverter.logger.critical.assert_called_once_with(
-            'DomainAllowList suspended after unsafe address change')
+            'EgressControl suspended after unsafe address change')
 
     def test_host_blacklist_cannot_grant_external_egress(self):
         packet = Packet()

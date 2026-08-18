@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$PythonPath = 'python.exe',
     [ValidateSet('baidu_tcp443')]
@@ -625,7 +625,7 @@ function Test-FakeNetTrafficReady {
     $text = [string](Get-Content -LiteralPath $Path -Raw `
         -ErrorAction SilentlyContinue)
     return ($text.Contains('IP_ALLOW_READY') -and
-        $text.Contains('DOMAIN_ALLOWLIST_READY'))
+        $text.Contains('EGRESS_CONTROL_READY'))
 }
 
 function Read-FakeNetStopReason {

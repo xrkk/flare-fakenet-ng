@@ -134,7 +134,7 @@ from .processredirect import (
     PacketTuple, ProcessRedirectAction, ProcessRedirectEngine)
 
 
-def build_domain_allowlist_filter(target_ipv4=None, frozen_local_ipv4=None):
+def build_egress_control_filter(target_ipv4=None, frozen_local_ipv4=None):
     """Build the reviewed filter without broadening disabled-mode capture."""
     base = 'outbound and (ip or ipv6)'
     if target_ipv4 is None and frozen_local_ipv4 is None:
@@ -469,7 +469,7 @@ class Diverter(DiverterBase, WinUtilMixin):
         #######################################################################
         # Initialize filter and WinDivert driver
 
-        self.domain_allowlist_mode = (
+        self.egress_control_mode = (
             self.external_access_policy == 'domainallowlist')
         self.handle = None
         self._stopping = threading.Event()
@@ -489,13 +489,13 @@ class Diverter(DiverterBase, WinUtilMixin):
         self._process_redirect_route_guard = None
         self._process_redirect_route_snapshots = ()
 
-        # DomainAllowList expands capture to IPv6 and delays opening WinDivert
+        # EgressControl expands capture to IPv6 and delays opening WinDivert
         # until every listener and callback is ready.  Disabled mode preserves
         # the legacy constructor-time open behavior.
         self.filter = ('outbound and (ip or ipv6)'
-                       if self.domain_allowlist_mode else 'outbound and ip')
+                       if self.egress_control_mode else 'outbound and ip')
 
-        if self.domain_allowlist_mode:
+        if self.egress_control_mode:
             dns_server = self._select_external_dns_server()
             if self.is_set('ExternalProcessRedirectEnabled'):
                 self._process_identity_api = WindowsProcessIdentityApi()
@@ -511,7 +511,7 @@ class Diverter(DiverterBase, WinUtilMixin):
             except (PolicyConfigError, ValueError) as exc:
                 if self._process_identity_api is not None:
                     self._process_identity_api.close()
-                self.logger.critical('Invalid DomainAllowList configuration: %s', exc)
+                self.logger.critical('Invalid EgressControl configuration: %s', exc)
                 raise
             except BaseException:
                 if self._process_identity_api is not None:
@@ -567,7 +567,7 @@ class Diverter(DiverterBase, WinUtilMixin):
         self.process_redirect_engine = ProcessRedirectEngine(
             self.egress_policy.process_redirect_rule,
             resolver, self._process_redirect_route_guard)
-        self.filter = build_domain_allowlist_filter(
+        self.filter = build_egress_control_filter(
             self.egress_policy.process_redirect_rule.target_ipv4,
             self._process_redirect_route_guard.frozen_local_ipv4)
         for snapshot in self._process_redirect_route_snapshots:
@@ -652,7 +652,7 @@ class Diverter(DiverterBase, WinUtilMixin):
         ]
         if len(relay_sections) != 1:
             raise PolicyConfigError(
-                'DomainAllowList requires exactly one DomainEgressRelay listener')
+                'EgressControl requires exactly one DomainEgressRelay listener')
         relay = relay_sections[0]
         if relay.get('protocol', '').lower() != 'tcp' or int(relay['port']) != relay_port:
             raise PolicyConfigError('DomainEgressRelay protocol/port mismatch')
@@ -666,7 +666,7 @@ class Diverter(DiverterBase, WinUtilMixin):
         }
         if dns_protocols != {'udp', 'tcp'} or len(dns_sections) != 2:
             raise PolicyConfigError(
-                'DomainAllowList requires one UDP/53 and one TCP/53 DNS listener')
+                'EgressControl requires one UDP/53 and one TCP/53 DNS listener')
         if self.egress_policy.takeover_enabled:
             for cfg in dns_sections:
                 if str(cfg.get('responsea', '')).strip() != (
@@ -1017,11 +1017,11 @@ class Diverter(DiverterBase, WinUtilMixin):
         self.handle = None
 
     def configure_policy_runtime(self, listeners):
-        if self.domain_allowlist_mode:
+        if self.egress_control_mode:
             self._policy_listeners = list(listeners)
 
     def suspend_policy(self):
-        if self.domain_allowlist_mode:
+        if self.egress_control_mode:
             # FakeNet calls this at the beginning of an orderly stop, before
             # listeners are drained.  Mark the whole diverter as stopping so
             # watchdog/refresh workers cannot misclassify that drain window.
@@ -1037,7 +1037,7 @@ class Diverter(DiverterBase, WinUtilMixin):
     # Diverter controller functions
 
     def startCallback(self):
-        if self.domain_allowlist_mode:
+        if self.egress_control_mode:
             self._open_windivert_handle()
 
         self.logger.debug('Diverting ports: ')
@@ -1048,7 +1048,7 @@ class Diverter(DiverterBase, WinUtilMixin):
         self.diverter_thread.daemon = True
         self.diverter_thread.start()
 
-        if self.domain_allowlist_mode:
+        if self.egress_control_mode:
             # Fail before changing DNS if the receiver did not become live.
             self.diverter_thread.join(0.05)
             if not self.diverter_thread.is_alive():
@@ -1062,7 +1062,7 @@ class Diverter(DiverterBase, WinUtilMixin):
             if self.is_set('modifylocaldns'):
                 self._dns_modified = True
                 self.set_dns_server(self.external_ip)
-                if self.domain_allowlist_mode:
+                if self.egress_control_mode:
                     observed = set()
                     for value in self.get_dns_servers() or []:
                         if isinstance(value, bytes):
@@ -1079,7 +1079,7 @@ class Diverter(DiverterBase, WinUtilMixin):
 
             self.flush_dns()
         except Exception:
-            if self.domain_allowlist_mode:
+            if self.egress_control_mode:
                 self.egress_policy.suspend()
                 if self.process_redirect_engine is not None:
                     self.process_redirect_engine.close('startup_rollback')
@@ -1095,7 +1095,7 @@ class Diverter(DiverterBase, WinUtilMixin):
             self.diverter_thread.join(5)
             raise
 
-        if self.domain_allowlist_mode:
+        if self.egress_control_mode:
             self.watchdog_thread = threading.Thread(
                 target=self._watch_diverter_thread,
                 name='WinDivertWatchdog', daemon=True)
@@ -1121,7 +1121,7 @@ class Diverter(DiverterBase, WinUtilMixin):
                     ttl=self.egress_policy.takeover_dns_ttl)
             else:
                 self.log_egress_event(
-                    'DOMAIN_ALLOWLIST_READY',
+                    'EGRESS_CONTROL_READY',
                     dns=self.egress_policy.external_dns_server,
                     relay_port=self.egress_policy.relay_port)
             if self.egress_policy.process_redirect_enabled:
@@ -1178,7 +1178,7 @@ class Diverter(DiverterBase, WinUtilMixin):
                     self.logger.error('ERROR: Can\'t handle packet.')
                     continue
 
-                if self.domain_allowlist_mode:
+                if self.egress_control_mode:
                     self._handle_policy_packet(wdpkt)
                 else:
                     self._handle_legacy_packet(wdpkt)
@@ -1248,7 +1248,7 @@ class Diverter(DiverterBase, WinUtilMixin):
 
         new_mapping_generation = None
         try:
-            pkt = WindowsPacketCtx('domain_allowlist', wdpkt)
+            pkt = WindowsPacketCtx('egress_control', wdpkt)
             self._timed_write_pcap(pkt)
             original = (pkt.proto, pkt.src_ip0, pkt.sport0,
                         pkt.dst_ip0, pkt.dport0)
@@ -1384,7 +1384,7 @@ class Diverter(DiverterBase, WinUtilMixin):
                     new_mapping_generation)
             self.log_egress_event('DROP_EXTERNAL', reason='policy_exception',
                                   error=type(exc).__name__)
-            self.logger.exception('DomainAllowList packet failed closed')
+            self.logger.exception('EgressControl packet failed closed')
 
     def _is_new_tcp_syn(self, pkt):
         return bool(pkt.proto == 'TCP' and
@@ -1855,7 +1855,7 @@ class Diverter(DiverterBase, WinUtilMixin):
                     if self._stopping.is_set():
                         return
                     self.logger.critical(
-                        'DomainAllowList suspended after unsafe address change')
+                        'EgressControl suspended after unsafe address change')
                     return
                 if (takeover_was_available and
                         not self.egress_policy.takeover_available()):
@@ -1931,7 +1931,7 @@ class Diverter(DiverterBase, WinUtilMixin):
                             reason=reason, error=type(exc).__name__,
                             detail=str(exc).replace(' ', '_')[:160])
                         self.logger.critical(
-                            'DomainAllowList suspended after reviewed IPv4 '
+                            'EgressControl suspended after reviewed IPv4 '
                             'route failure')
                         return
                 for domain, ip in self.egress_policy.drain_expired_leases():
@@ -1943,7 +1943,7 @@ class Diverter(DiverterBase, WinUtilMixin):
                 self.logger.exception('Failed refreshing local address snapshot')
                 self.egress_policy.suspend()
                 self.logger.critical(
-                    'DomainAllowList suspended after address refresh failure')
+                    'EgressControl suspended after address refresh failure')
                 return
 
     def stopCallback(self):

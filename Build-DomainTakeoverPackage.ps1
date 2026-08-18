@@ -530,7 +530,7 @@ try {
             'Invoke-ReviewedRoutePreflight', 'WaitForExit(2000)',
             'DNS restoration check', 'TreatControlCAsInput',
             'Show-FakeNetLogUntilStop', 'Test-FakeNetTrafficReady',
-            'DOMAIN_ALLOWLIST_READY', 'Ctrl+C')) {
+            'EGRESS_CONTROL_READY', 'Ctrl+C')) {
         if ($launcherText -notmatch [regex]::Escape($requiredMarker)) {
             throw "Launcher is missing required marker: $requiredMarker"
         }

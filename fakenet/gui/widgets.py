@@ -184,8 +184,9 @@ class FieldWidget(ttk.Frame):
                 values = (schema.EGRESS_POLICY_ENABLED,
                           schema.EGRESS_POLICY_DISABLED)
             self._bool_literals = values
-            checked = value == values[0] if wtype == schema.T_BOOL_POLICY \
-                else value != values[1]
+            checked = (schema.egress_policy_enabled(value)
+                       if wtype == schema.T_BOOL_POLICY
+                       else value != values[1])
             self.variable = tk.BooleanVar(value=checked)
             self.input = ttk.Checkbutton(
                 self, text='启用', variable=self.variable,
@@ -279,9 +280,9 @@ class FieldWidget(ttk.Frame):
             self.input.delete('1.0', 'end')
             self.input.insert('1.0', value)
         elif self._bool_literals:
-            checked = value == self._bool_literals[0] \
-                if self.field.wtype == schema.T_BOOL_POLICY \
-                else value != self._bool_literals[1]
+            checked = (schema.egress_policy_enabled(value)
+                       if self.field.wtype == schema.T_BOOL_POLICY
+                       else value != self._bool_literals[1])
             self.variable.set(checked)
         else:
             self.variable.set(value)

@@ -11,7 +11,7 @@ from fakenet.diverters.processredirect import (
     ProcessRedirectDecision)
 from fakenet.diverters.egresspolicy import PolicyConfigError
 from fakenet.diverters.windows import (
-    Diverter, ProcessRedirectRouteGuard, build_domain_allowlist_filter,
+    Diverter, ProcessRedirectRouteGuard, build_egress_control_filter,
     classify_process_redirect_ipv4_fragment)
 
 
@@ -33,10 +33,10 @@ class ProcessRedirectWindowsAdapterTests(unittest.TestCase):
     def test_disabled_filter_is_byte_for_byte_legacy_policy_filter(self):
         self.assertEqual(
             'outbound and (ip or ipv6)',
-            build_domain_allowlist_filter())
+            build_egress_control_filter())
 
     def test_enabled_filter_uses_ipv4_protocol_field_for_all_tcp_fragments(self):
-        value = build_domain_allowlist_filter(
+        value = build_egress_control_filter(
             '192.168.204.1', '10.0.0.5')
 
         self.assertEqual(
@@ -47,7 +47,7 @@ class ProcessRedirectWindowsAdapterTests(unittest.TestCase):
 
     def test_runtime_filter_preflight_records_exact_bundled_dll(self):
         diverter = Diverter.__new__(Diverter)
-        diverter.filter = build_domain_allowlist_filter(
+        diverter.filter = build_egress_control_filter(
             '192.168.204.1', '10.0.0.5')
         diverter.log_egress_event = mock.Mock()
         with tempfile.NamedTemporaryFile(delete=False) as handle:

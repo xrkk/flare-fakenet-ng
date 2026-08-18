@@ -431,7 +431,7 @@ try {
     $previousPythonPath = $env:PYTHONPATH
     Write-LongTaskNotice -Name 'FakeNetStartup' `
         -ExpectedDuration '10-70 seconds on the reviewed 4 GB VM' `
-        -HardTimeout 'PROCESS_REDIRECT_READY: 60 seconds; DOMAIN_ALLOWLIST_READY: 10 seconds' `
+        -HardTimeout 'PROCESS_REDIRECT_READY: 60 seconds; EGRESS_CONTROL_READY: 10 seconds' `
         -Detail 'Starting FakeNet-NG and WinDivert, then waiting for both READY markers.'
     try {
         $env:PYTHONPATH = $root
@@ -448,7 +448,7 @@ try {
     }
     Register-ProcessExitCodeTracking $script:FakeNet
     Wait-LogMarker $fakeLog $fakeErr 'PROCESS_REDIRECT_READY' 60
-    Wait-LogMarker $fakeLog $fakeErr 'DOMAIN_ALLOWLIST_READY' 10
+    Wait-LogMarker $fakeLog $fakeErr 'EGRESS_CONTROL_READY' 10
     Add-Result FakeNetReady PASS "pid=$($script:FakeNet.Id)"
     try {
         $writeProbe = [IO.File]::Open(

@@ -23,7 +23,7 @@ application's specific functionality and prototyping PoCs.
 Windows domain allow-list egress mode
 =====================================
 
-This tree includes an opt-in, Windows-only `DomainAllowList` egress policy.
+This tree includes an opt-in, Windows-only `EgressControl` egress policy.
 It is disabled by default. The reviewed test configuration permits only a
 controlled DNS-derived IPv4 connection to `api.deepseek.com` on TCP/443, and
 only after a local transparent relay verifies an exact cleartext TLS SNI match.
@@ -37,14 +37,14 @@ prevent data from being sent to the explicitly allowed service. The mode also
 trusts the VM's configured upstream DNS and network path and does not defend
 against an administrator- or kernel-level sample.
 
-Use `fakenet/configs/domain_allowlist_windows.ini` only in a disposable,
+Use `fakenet/configs/egress_control_windows.ini` only in a disposable,
 snapshotted Windows VM. Replace its `__EXTERNAL_DNS__` marker with an approved
 pre-FakeNet IPv4 resolver; no public-DNS fallback is supplied. The packaged VM
 runner and evidence-return instructions are in
-`test/domain_allowlist_vm/README.md`. Do not run the VM runner or FakeNet-NG on
+`test/egress_control_vm/README.md`. Do not run the VM runner or FakeNet-NG on
 the host used to review the source.
 
-For normal Windows VM operation, double-click `Start-DomainAllowList.cmd` and
+For normal Windows VM operation, double-click `Start-EgressControl.cmd` and
 accept the administrator prompt. The launcher refuses physical hosts, selects
 the DNS server already configured on the preferred default-route interface,
 checks dependencies, creates the runtime configuration, and starts FakeNet-NG
@@ -94,7 +94,7 @@ Windows reviewed public-IPv4 direct-egress extension
 ====================================================
 
 The v18 package adds manifest-bound `ExternalAllowedIPv4Rules` to the Windows
-`DomainAllowList` policy. The parser accepts only canonical global-unicast IPv4
+`EgressControl` policy. The parser accepts only canonical global-unicast IPv4
 rules in `TCP|UDP/IPv4/*|port` form; RFC1918 and special-use addresses are
 rejected. The active v18 profile is deliberately narrower than the parser:
 
@@ -134,7 +134,7 @@ Windows process-specific transparent IPv4 redirection
 ======================================================
 
 `ExternalProcessRedirectEnabled` is an opt-in Windows-only extension of
-`DomainAllowList`. One exact executable (absolute final path, SHA-256, volume
+`EgressControl`. One exact executable (absolute final path, SHA-256, volume
 serial and file ID) may open TCP connections to one reviewed public IPv4 `A`;
 FakeNet changes only the packet-layer destination to one reviewed on-link
 RFC1918 IPv4 `B`. The destination port is preserved, so the rule covers every
@@ -548,7 +548,7 @@ What it does:
  * Live validation: errors disable the launch button; warnings (missing
    paths, non-ASCII values, BOM, bare `%`) do not. Double-click an issue
    to jump to the field. The `出站策略总开关` checkbox maps exactly to
-   `ExternalAccessPolicy=Disabled/DomainAllowList`; checking it automatically
+   `ExternalAccessPolicy=Disabled/EgressControl`; checking it automatically
    writes the values that FakeNet-NG enforces (including TCP port 443) and
    provisions one relay plus UDP/53 and TCP/53 DNS listeners. Loading an active
    but incomplete configuration repairs it in memory and marks it as modified;

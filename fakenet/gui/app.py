@@ -947,9 +947,9 @@ class FakenetConfigApp(object):
         if self.model is None:
             return
         diverter = self.model.diverter()
-        policy = (diverter.get('ExternalAccessPolicy') or
-                  schema.EGRESS_POLICY_DISABLED).strip().lower() == \
-            schema.EGRESS_POLICY_ENABLED.lower()
+        policy = schema.egress_policy_enabled(
+            diverter.get('ExternalAccessPolicy') or
+            schema.EGRESS_POLICY_DISABLED)
         takeover = 'ExternalTakeoverIPv4' in diverter
         process_enabled = (diverter.get(
             'ExternalProcessRedirectEnabled') or 'No').strip().lower() == 'yes'
@@ -1145,9 +1145,9 @@ class FakenetConfigApp(object):
     def _sync_active_egress_policy(self):
         """Materialize enforced values and topology for an active policy."""
         diverter = self.model.diverter()
-        policy = (diverter.get('ExternalAccessPolicy') or
-                  schema.EGRESS_POLICY_DISABLED).strip().lower() == \
-            schema.EGRESS_POLICY_ENABLED.lower()
+        policy = schema.egress_policy_enabled(
+            diverter.get('ExternalAccessPolicy') or
+            schema.EGRESS_POLICY_DISABLED)
         if not policy:
             return []
         before = self._snapshot_model()
@@ -1164,7 +1164,7 @@ class FakenetConfigApp(object):
             widget = self._egress_widgets.get(key)
             if widget is not None and widget.get() != value:
                 widget.set(value)
-        changes.extend(validator.ensure_domain_allowlist_topology(self.model))
+        changes.extend(validator.ensure_egress_control_topology(self.model))
         self._record_auto_changes(before, self._snapshot_model())
         if changes:
             self._hint('已自动补齐出站策略必需配置')
@@ -1577,8 +1577,8 @@ class FakenetConfigApp(object):
     def _system_listener_names(self):
         result = set()
         diverter = self.model.diverter()
-        policy = (diverter.get('ExternalAccessPolicy') or '').strip().lower() \
-            == schema.EGRESS_POLICY_ENABLED.lower()
+        policy = schema.egress_policy_enabled(
+            diverter.get('ExternalAccessPolicy'))
         for sec in self.model.listener_sections():
             listener_class = (sec.get('Listener') or '').strip()
             if listener_class == 'DomainEgressRelay':
@@ -1611,8 +1611,8 @@ class FakenetConfigApp(object):
                 not self._selected_listener or locked))
             button.state(['disabled'] if disabled else ['!disabled'])
         diverter = self.model.diverter()
-        policy = (diverter.get('ExternalAccessPolicy') or '').strip().lower() \
-            == schema.EGRESS_POLICY_ENABLED.lower()
+        policy = schema.egress_policy_enabled(
+            diverter.get('ExternalAccessPolicy'))
         self.regenerate_system_button.state(
             ['disabled'] if (self._running or not policy)
             else ['!disabled'])

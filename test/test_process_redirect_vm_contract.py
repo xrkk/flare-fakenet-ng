@@ -17,7 +17,7 @@ class ProcessRedirectVmContractTests(unittest.TestCase):
         required = (
             'Test-IsVirtualMachine', 'Assert-Manifest', 'Select-ReviewedDns',
             'Invoke-RouteSnapshot', 'Find-NetRoute', 'Test-Sentinel',
-            'FNPR/1', 'PROCESS_REDIRECT_READY', 'DOMAIN_ALLOWLIST_READY',
+            'FNPR/1', 'PROCESS_REDIRECT_READY', 'EGRESS_CONTROL_READY',
             'owner-gate-10000', "'--parallel-connections','64'",
             "'16-22 minutes on the reviewed 4 GB VM'", '1500000',
             "'OfflineEnvironmentSetup'", "'FakeNetStartup'",

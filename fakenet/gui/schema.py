@@ -17,7 +17,7 @@ test/test_gui_schema.py:
 
 T_BOOL_YESNO = 'bool_yesno'          # canonical literal Yes/No
 T_BOOL_TRUEFALSE = 'bool_truefalse'  # canonical literal True/False
-T_BOOL_POLICY = 'bool_policy'        # DomainAllowList/Disabled checkbox
+T_BOOL_POLICY = 'bool_policy'        # EgressControl/Disabled checkbox
 T_INT = 'int'
 T_STRING = 'string'
 T_ENUM = 'enum'
@@ -33,7 +33,7 @@ T_HEX64 = 'hex64'
 T_TEXT = 'text'
 
 # ---------------------------------------------------------------------------
-# Lock rule ids (§5.1).  LOCK_* are unconditional while the DomainAllowList
+# Lock rule ids (§5.1).  LOCK_* are unconditional while the EgressControl
 # policy is active; COND_* activate on an additional condition.
 # ---------------------------------------------------------------------------
 
@@ -53,7 +53,7 @@ EXPECTED_RESOURCE_KEYS = (
     'ExternalRelayIdleTimeout', 'ExternalRelayBufferBytes',
 )
 
-# Values hard-pinned while ExternalAccessPolicy=DomainAllowList (§3.3).
+# Values hard-pinned while ExternalAccessPolicy=EgressControl (§3.3).
 LOCKED_FIELD_VALUES = {
     'ExternalAllowedTCPPorts': '443',
     'ExternalVerifyTLSSNI': 'Yes',
@@ -87,7 +87,16 @@ DIVERTER_SECTION = 'Diverter'
 # RespawnIPv4ResponseA special tokens (DNSListener.py:224,232).
 RESPONSEA_TOKENS = ('GetFirstNonLoopback', 'GetHostByName')
 EGRESS_POLICY_DISABLED = 'Disabled'
-EGRESS_POLICY_ENABLED = 'DomainAllowList'
+EGRESS_POLICY_ENABLED = 'EgressControl'
+# Configs written by delivered packages up to v29 use the legacy value; it
+# stays readable (treated as enabled) but the GUI always writes the new one.
+EGRESS_POLICY_LEGACY_ALIASES = ('domainallowlist',)
+
+
+def egress_policy_enabled(value):
+    normalized = str(value or '').strip().lower()
+    return (normalized == EGRESS_POLICY_ENABLED.lower() or
+            normalized in EGRESS_POLICY_LEGACY_ALIASES)
 
 
 class Field(object):

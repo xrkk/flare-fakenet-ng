@@ -4,7 +4,7 @@
 Exercises the user-authorized v1.28 core changes end to end with the real
 fakenet.exe and the real DNS data path:
 
-  Phase 1 (DomainAllowList, multi-domain + wildcard):
+  Phase 1 (EgressControl, multi-domain + wildcard):
     P1 exact domain resolves and leases a global IP
     P2 wildcard-covered subdomain resolves and leases a global IP
     P3 wildcard does not cover the apex (no lease for deepseek.com)
@@ -61,7 +61,7 @@ def build_policy_config(path, domains, takeover_ip=None):
     model = configmodel.ConfigModel.new_config()
     model.fakenet().set('DivertTraffic', 'Yes')
     diverter = model.diverter()
-    diverter.set('ExternalAccessPolicy', 'DomainAllowList')
+    diverter.set('ExternalAccessPolicy', 'EgressControl')
     diverter.set('ExternalAllowedDomains', domains)
     diverter.set('ExternalDnsServer', 'Auto')
     diverter.set('DumpPackets', 'No')
@@ -74,7 +74,7 @@ def build_policy_config(path, domains, takeover_ip=None):
         diverter.set('ExternalTakeoverDnsTTL', '60')
         diverter.set('ExternalTakeoverProbeTCPPorts', '')
         diverter.set('ExternalNonAllowedAction', 'Divert')
-    validator.ensure_domain_allowlist_topology(model)
+    validator.ensure_egress_control_topology(model)
     for section in model.listener_sections():
         if (section.get('Listener') or '') == 'DNSListener' and takeover_ip:
             section.set('ResponseA', takeover_ip)
@@ -205,7 +205,7 @@ def main():
 
     domains = '%s, %s' % (EXACT_DOMAIN, WILDCARD_ENTRY)
 
-    # -- Phase 1: DomainAllowList with multiple domains + wildcard -----------
+    # -- Phase 1: EgressControl with multiple domains + wildcard -----------
     print('\n== 阶段 1:域名放行(多域名 + 通配符)==')
     config1 = os.path.join(LOG_DIR, 'policy1.ini')
     model, errors = build_policy_config(config1, domains)
@@ -214,14 +214,14 @@ def main():
         return finish()
     stop1 = os.path.join(LOG_DIR, 'stop1.flag')
     core_log, ready = run_core_phase('phase1', config1,
-                                     'DOMAIN_ALLOWLIST_READY', stop1)
+                                     'EGRESS_CONTROL_READY', stop1)
     if core_log is None:
         return finish()
     if not ready:
-        result('P1 阶段1就绪', 'FAIL', '60 秒内未见 DOMAIN_ALLOWLIST_READY')
+        result('P1 阶段1就绪', 'FAIL', '60 秒内未见 EGRESS_CONTROL_READY')
         stop_core(stop1, core_log)
         return finish()
-    result('P1 阶段1就绪', 'PASS', 'DOMAIN_ALLOWLIST_READY 已出现')
+    result('P1 阶段1就绪', 'PASS', 'EGRESS_CONTROL_READY 已出现')
 
     for name in (EXACT_DOMAIN, WILDCARD_NAME, APEX_DOMAIN, DENY_DOMAIN):
         nslookup_addresses(name)

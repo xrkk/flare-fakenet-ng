@@ -19,7 +19,7 @@ CONFIGS = os.path.join(REPO, 'fakenet', 'configs')
 
 MAIN_INIS = (
     'default.ini', 'burp.ini', 'debug.ini',
-    'domain_allowlist_windows.ini', 'domain_reviewed_ipv4_windows.ini',
+    'egress_control_windows.ini', 'domain_reviewed_ipv4_windows.ini',
     'domain_takeover_windows.ini', 'process_redirect_windows.ini',
 )
 CUSTOM_RESPONSE_INI = 'sample_custom_response.ini'
@@ -160,8 +160,20 @@ def test_egress_policy_switch_schema_preserves_ini_literals():
     assert field.default == schema.EGRESS_POLICY_DISABLED == 'Disabled'
     assert field.enum == (
         schema.EGRESS_POLICY_DISABLED, schema.EGRESS_POLICY_ENABLED)
-    assert schema.EGRESS_POLICY_ENABLED == 'DomainAllowList'
+    assert schema.EGRESS_POLICY_ENABLED == 'EgressControl'
     assert schema.egress_group_names()[0] == '基础策略'
+
+
+def test_egress_policy_enabled_accepts_legacy_alias():
+    # Packages up to v29 wrote ExternalAccessPolicy: DomainAllowList; those
+    # configs must still load as enabled while the GUI writes EgressControl.
+    assert schema.egress_policy_enabled('EgressControl')
+    assert schema.egress_policy_enabled('egresscontrol')
+    assert schema.egress_policy_enabled('DomainAllowList')
+    assert schema.egress_policy_enabled(' domainallowlist ')
+    assert not schema.egress_policy_enabled('Disabled')
+    assert not schema.egress_policy_enabled('')
+    assert not schema.egress_policy_enabled(None)
 
 
 def test_every_visible_schema_field_has_help_text():
@@ -184,7 +196,7 @@ def test_every_visible_schema_field_has_help_text():
 # ---------------------------------------------------------------------------
 
 FUNCTIONAL_INIS = (
-    'domain_allowlist_windows.ini',
+    'egress_control_windows.ini',
     'domain_reviewed_ipv4_windows.ini',
     'domain_takeover_windows.ini',
     'process_redirect_windows.ini',

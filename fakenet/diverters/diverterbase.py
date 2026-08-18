@@ -578,8 +578,11 @@ class DiverterBase(fnconfig.Config):
         self.configure(diverter_config, portlists, stringlists, idlists)
         self.external_access_policy = str(
             self.getconfigval('ExternalAccessPolicy', 'Disabled')).lower()
-        if self.external_access_policy not in ('disabled', 'domainallowlist'):
-            raise ValueError('ExternalAccessPolicy must be Disabled or DomainAllowList')
+        if self.external_access_policy not in (
+                    'disabled', 'egresscontrol', 'domainallowlist'):
+            raise ValueError(
+                'ExternalAccessPolicy must be Disabled, EgressControl or '
+                'the legacy alias EgressControl')
         self.egress_policy = None
         self.listeners_config = dict((k.lower(), v)
                                      for k, v in listeners_config.items())
@@ -694,7 +697,7 @@ class DiverterBase(fnconfig.Config):
         if not gw_ok:
             if self.external_access_policy == 'domainallowlist':
                 raise RuntimeError(
-                    'DomainAllowList requires a gateway before startup')
+                    'EgressControl requires a gateway before startup')
             self.logger.warning('         Please configure a default ' +
                                 'gateway or route in order to intercept ' +
                                 'external traffic.')
@@ -714,7 +717,7 @@ class DiverterBase(fnconfig.Config):
         if not dns_ok:
             if self.external_access_policy == 'domainallowlist':
                 raise RuntimeError(
-                    'DomainAllowList requires an upstream DNS before startup')
+                    'EgressControl requires an upstream DNS before startup')
             self.logger.warning('         Please configure a DNS server ' +
                                 'in order to allow network resolution.')
 

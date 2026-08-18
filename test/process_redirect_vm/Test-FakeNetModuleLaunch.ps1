@@ -27,7 +27,7 @@ try {
     }
     $structured = $empty + '.structured'
     [IO.File]::WriteAllText($structured,
-        'DOMAIN_ALLOWLIST_READY PROCESS_REDIRECT_READY',
+        'EGRESS_CONTROL_READY PROCESS_REDIRECT_READY',
         [Text.Encoding]::UTF8)
     if (-not (Test-AnyLogContainsMarker `
             @($empty,$structured) 'PROCESS_REDIRECT_READY')) {

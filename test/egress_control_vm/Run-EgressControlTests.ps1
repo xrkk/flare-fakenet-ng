@@ -275,8 +275,8 @@ try {
         Pop-Location
     }
 
-    $template = Join-Path $repoRoot 'fakenet\configs\domain_allowlist_windows.ini'
-    $runtimeConfig = Join-Path $script:LogDir 'domain_allowlist_runtime.ini'
+    $template = Join-Path $repoRoot 'fakenet\configs\egress_control_windows.ini'
+    $runtimeConfig = Join-Path $script:LogDir 'egress_control_runtime.ini'
     (Get-Content -LiteralPath $template -Raw).Replace('__EXTERNAL_DNS__', $resolver) |
         Set-Content -LiteralPath $runtimeConfig -Encoding ASCII
 
@@ -315,7 +315,7 @@ try {
         Start-Sleep -Seconds 1
         if ($script:FakeNetProcess.HasExited) { break }
         if ((Test-Path $fakeLog) -and
-                (Select-String -Path $fakeLog -Pattern 'DOMAIN_ALLOWLIST_READY' -Quiet)) {
+                (Select-String -Path $fakeLog -Pattern 'EGRESS_CONTROL_READY' -Quiet)) {
             $ready = $true
             break
         }
@@ -381,7 +381,7 @@ try {
 
     Start-Sleep -Seconds 3
     $fakeText = Get-Content -LiteralPath $fakeLog -Raw
-    foreach ($event in @('DOMAIN_ALLOWLIST_READY', 'DNS_LEASE_ADD', 'REDIRECT_TLS_RELAY',
+    foreach ($event in @('EGRESS_CONTROL_READY', 'DNS_LEASE_ADD', 'REDIRECT_TLS_RELAY',
             'TLS_SNI_ALLOW', 'ALLOW_INTERNAL_UPSTREAM', 'DROP_EXTERNAL')) {
         if ($fakeText -notmatch [regex]::Escape($event)) {
             Add-Result ("Event-{0}" -f $event) 'FAIL' 'required event absent'

@@ -60,8 +60,8 @@ def _is_yes(value):
 
 def _policy_active(model):
     diverter = model.diverter()
-    return (diverter.get('ExternalAccessPolicy') or
-            'Disabled').strip().lower() == 'domainallowlist'
+    return schema.egress_policy_enabled(
+        diverter.get('ExternalAccessPolicy') or 'Disabled')
 
 
 def _takeover_ip(model):
@@ -227,7 +227,7 @@ def _check_fakenet(model, issues):
 
 
 # ---------------------------------------------------------------------------
-# Rule 4: DomainAllowList policy core
+# Rule 4: EgressControl policy core
 # ---------------------------------------------------------------------------
 
 def _usable_unicast_ipv4(text):
@@ -787,7 +787,7 @@ def validate(model):
         takeover_sink = _check_takeover(model, issues)
         _check_reviewed_rules(model, issues)
     else:
-        # Sub-policies only take effect under DomainAllowList, but a
+        # Sub-policies only take effect under EgressControl, but a
         # configured-but-invalid takeover sink still deserves an error.
         sink_text = _takeover_ip(model)
         if sink_text:
@@ -804,7 +804,7 @@ def validate(model):
     return issues
 
 
-def ensure_domain_allowlist_topology(model):
+def ensure_egress_control_topology(model):
     """Idempotent automatic provisioning (§12.15): relay + 2x DNS."""
     changes = []
     diverter = model.diverter()

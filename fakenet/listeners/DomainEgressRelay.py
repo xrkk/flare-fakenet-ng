@@ -1,6 +1,6 @@
 # Copyright 2026 Google LLC
 
-"""Local transparent TLS relay for reviewed DomainAllowList mode."""
+"""Local transparent TLS relay for reviewed EgressControl mode."""
 
 from collections import Counter, defaultdict, deque
 import logging
@@ -144,7 +144,7 @@ class DomainEgressRelay(object):
 
     def start(self):
         if not self.callbacks or not self.callbacks.egressPolicyEnabled():
-            raise RuntimeError('DomainEgressRelay requires DomainAllowList callbacks')
+            raise RuntimeError('DomainEgressRelay requires EgressControl callbacks')
         settings = self.callbacks.getEgressSettings()
         if self.port != settings['relay_port']:
             raise RuntimeError('DomainEgressRelay port does not match policy')

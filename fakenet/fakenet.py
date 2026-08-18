@@ -229,11 +229,11 @@ class Fakenet(object):
             'domainallowlist')
         if self.policy_mode and platform.system() != 'Windows':
             raise RuntimeError(
-                'DomainAllowList is implemented only for Windows')
+                'EgressControl is implemented only for Windows')
         if (self.policy_mode and str(self.fakenet_config.get(
                 'diverttraffic', 'no')).lower() != 'yes'):
             raise RuntimeError(
-                'DomainAllowList requires DivertTraffic=Yes')
+                'EgressControl requires DivertTraffic=Yes')
 
         fn_addr = '0.0.0.0'
         if self.fakenet_config.get('diverttraffic') and self.fakenet_config['diverttraffic'].lower() == 'yes':
@@ -331,7 +331,7 @@ class Fakenet(object):
                 self.logger.error("%s" % e)
                 if self.policy_mode:
                     raise RuntimeError(
-                        'DomainAllowList listener provider is unavailable: %s' %
+                        'EgressControl listener provider is unavailable: %s' %
                         listener_config['listener']) from e
 
             else:

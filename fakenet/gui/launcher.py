@@ -3,7 +3,7 @@
 
 Verdicts are fail-closed: an inconclusive VM check refuses the launch
 (audit F1).  Duplicate-instance detection approximates the PowerShell
-launchers' lock file (Start-DomainAllowList.ps1:199-210) because
+launchers' lock file (Start-EgressControl.ps1:199-210) because
 ShellExecuteExW retains the elevated process handle so the GUI can lock the
 bound configuration and tail the exact log until FakeNet exits.
 """

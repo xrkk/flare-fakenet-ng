@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$PythonPath = 'python.exe'
 )
@@ -266,7 +266,7 @@ try {
     $script:StopFlag = Join-Path $script:LogDir 'stop-fakenet.flag'
 
     @(
-        'mode=DomainAllowList',
+        'mode=EgressControl',
         'allowed_domain=api.deepseek.com',
         'allowed_tcp_port=443',
         ('dns_interface={0}' -f $selection.InterfaceAlias),
@@ -302,7 +302,7 @@ try {
         }
         if ((Test-Path -LiteralPath $fakeLog) -and
                 (Select-String -LiteralPath $fakeLog `
-                    -Pattern 'DOMAIN_ALLOWLIST_READY' -Quiet)) {
+                    -Pattern 'EGRESS_CONTROL_READY' -Quiet)) {
             $ready = $true
             break
         }

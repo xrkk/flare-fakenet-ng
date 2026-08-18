@@ -136,7 +136,7 @@ def test_diverttraffic_requires_networkmode():
 
 def enable_policy(model):
     model.fakenet().set('DivertTraffic', 'Yes')
-    model.diverter().set('ExternalAccessPolicy', 'DomainAllowList')
+    model.diverter().set('ExternalAccessPolicy', 'EgressControl')
     model.diverter().set('ExternalAllowedDomains', 'api.deepseek.com')
     model.diverter().set('ExternalDnsServer', '8.8.8.8')
     return model
@@ -169,7 +169,7 @@ def test_policy_topology_missing_pieces():
 def test_policy_topology_after_autofix():
     model = build()
     enable_policy(model)
-    validator.ensure_domain_allowlist_topology(model)
+    validator.ensure_egress_control_topology(model)
     assert not by_key(errors(model), 'ExternalAccessPolicy')
     assert not by_key(errors(model), 'Port')
 
@@ -177,7 +177,7 @@ def test_policy_topology_after_autofix():
 def test_relay_port_occupied_by_other_listener():
     model = build()
     enable_policy(model)
-    validator.ensure_domain_allowlist_topology(model)
+    validator.ensure_egress_control_topology(model)
     model.section('RawTCPListener').set('Port', '38927')
     assert any('不得占用 TLS 中继端口' in i.message for i in errors(model))
 
@@ -200,7 +200,7 @@ def test_bad_domain_name():
 
 def enable_takeover(model, sink='192.168.204.1', domains=None):
     enable_policy(model)
-    validator.ensure_domain_allowlist_topology(model)
+    validator.ensure_egress_control_topology(model)
     model.diverter().set('ExternalTakeoverIPv4', sink)
     model.diverter().set('ExternalTakeoverDnsTTL', '60')
     if domains:
@@ -258,7 +258,7 @@ def test_autofix_fills_responsea_from_sink():
     # Autofix only fills empty ResponseA values (plan: 已有值不动).
     model.section('DNS Server').set('ResponseA', '')
     model.section('DNS TCP Server').set('ResponseA', '')
-    changes = validator.ensure_domain_allowlist_topology(model)
+    changes = validator.ensure_egress_control_topology(model)
     assert model.section('DNS Server').get('ResponseA') == '192.168.204.1'
     assert model.section('DNS TCP Server').get('ResponseA') == '192.168.204.1'
     assert changes
@@ -302,7 +302,7 @@ def test_reviewed_rules_count_limits():
 def enable_process_redirect(model, path=None, sha=None, a='110.242.69.21',
                             b='192.168.204.1'):
     enable_policy(model)
-    validator.ensure_domain_allowlist_topology(model)
+    validator.ensure_egress_control_topology(model)
     model.diverter().set('ExternalTakeoverIPv4', '192.168.204.100')
     model.diverter().set('ExternalTakeoverDnsTTL', '60')
     model.diverter().set('ExternalProcessRedirectEnabled', 'Yes')

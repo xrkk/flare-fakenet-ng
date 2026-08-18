@@ -14,7 +14,7 @@ CONFIGS = os.path.join(REPO, 'fakenet', 'configs')
 
 MAIN_INIS = (
     'default.ini', 'burp.ini', 'debug.ini',
-    'domain_allowlist_windows.ini', 'domain_reviewed_ipv4_windows.ini',
+    'egress_control_windows.ini', 'domain_reviewed_ipv4_windows.ini',
     'domain_takeover_windows.ini', 'process_redirect_windows.ini',
 )
 

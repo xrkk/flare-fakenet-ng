@@ -547,7 +547,7 @@ def test_loading_active_policy_auto_repairs_in_memory_and_marks_dirty(
 
     path = tmp_path / 'active-missing-topology.ini'
     model = configmodel.ConfigModel.new_config()
-    model.diverter().set('ExternalAccessPolicy', 'DomainAllowList')
+    model.diverter().set('ExternalAccessPolicy', 'EgressControl')
     for key, value in schema.LOCKED_FIELD_VALUES.items():
         model.diverter().set(key, value)
     model.save(str(path))
