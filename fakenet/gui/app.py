@@ -178,6 +178,11 @@ class FakenetConfigApp(object):
         configure_styles(root)
         self._build_menu()
         self._build_layout()
+        # The static floor let the window be squeezed below what the laid-out
+        # content needs, clipping widgets (worst horizontally). Measuring
+        # after layout keeps the minimum exact under any font/DPI scaling.
+        root.update_idletasks()
+        root.minsize(root.winfo_reqwidth(), root.winfo_reqheight())
         self._ui_job = root.after(25, self._drain_ui_queue)
         self.new_config()
         root.protocol('WM_DELETE_WINDOW', self._on_close)
@@ -673,6 +678,16 @@ class FakenetConfigApp(object):
         else:
             shown = '(未绑定文件)'
         self.config_path_var.set('%s%s' % (shown, '*' if self.dirty else ''))
+        if hasattr(self, 'save_button'):
+            # A bound, unchanged configuration has nothing to write. Keep the
+            # button available while there are unsaved changes or no file is
+            # bound yet, so a fresh configuration can still be saved.
+            unbound = self.model is None or not self.model.path
+            try:
+                self.save_button.state(
+                    ['!disabled'] if self.dirty or unbound else ['disabled'])
+            except tk.TclError:
+                pass
         self._update_file_status()
 
     def _reveal_in_explorer(self):
@@ -1509,7 +1524,7 @@ class FakenetConfigApp(object):
                     parent=self.root):
                 self.takeover_enabled_var.set(False)
                 return
-            diverter.set('ExternalTakeoverIPv4', '')
+            diverter.set('ExternalTakeoverIPv4', '192.168.204.1')
             diverter.set('ExternalTakeoverDnsTTL', '60')
             diverter.set('ExternalTakeoverProbeTCPPorts', '')
             diverter.set('ExternalTakeoverProbeTimeoutMs', '500')

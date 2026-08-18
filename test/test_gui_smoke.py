@@ -969,11 +969,11 @@ def test_takeover_toggle_refreshes_in_place_without_tab_rebuild():
         assert application.domain_list_widget is sentinel_domains
         assert application.public_rules_widget is sentinel_public
         diverter = application.model.diverter()
-        assert diverter.get('ExternalTakeoverIPv4') == ''
+        assert diverter.get('ExternalTakeoverIPv4') == '192.168.204.1'
         assert diverter.get('ExternalAllowedDomains') == 'api.deepseek.com'
         assert 'disabled' in application.domain_list_widget.input.state()
         takeover_ip = application._egress_widgets['ExternalTakeoverIPv4']
-        assert takeover_ip.get() == ''
+        assert takeover_ip.get() == '192.168.204.1'
 
         application.takeover_check.invoke()
         assert application.takeover_check is sentinel_takeover
@@ -1330,5 +1330,39 @@ def test_unknown_listener_extra_key_has_preservation_tooltip():
                    '原样写回' in help_.text and
                    '不校验' in help_.text
                    for help_ in helps)
+    finally:
+        root.destroy()
+
+
+def test_save_button_gated_on_dirty_and_binding(tmp_path):
+    root, application = _construct_app()
+    try:
+        # fresh configuration: nothing bound yet, saving must stay possible
+        assert 'disabled' not in application.save_button.state()
+
+        path = tmp_path.joinpath('gated.ini')
+        application.model.save(str(path))
+        application.model.path = str(path)
+        application._refresh_dirty()
+        assert 'disabled' in application.save_button.state()
+
+        application.model.diverter().set('ExternalDnsTimeout', '5')
+        application._refresh_dirty()
+        assert 'disabled' not in application.save_button.state()
+
+        application.save()
+        application._refresh_dirty()
+        assert 'disabled' in application.save_button.state()
+    finally:
+        root.destroy()
+
+
+def test_window_minimum_size_covers_requested_layout():
+    root, application = _construct_app()
+    try:
+        root.update_idletasks()
+        min_w, min_h = root.minsize()
+        assert min_w >= root.winfo_reqwidth()
+        assert min_h >= root.winfo_reqheight()
     finally:
         root.destroy()

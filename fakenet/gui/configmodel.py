@@ -230,7 +230,7 @@ class ConfigModel(object):
         proxy_tcp.set('Enabled', 'True')
         proxy_tcp.set('Protocol', 'TCP')
         proxy_tcp.set('Listener', 'ProxyListener')
-        proxy_tcp.set('Port', '38926')
+        proxy_tcp.set('Port', '8080')
         proxy_tcp.set(
             'Listeners',
             'HTTPListener, RawListener, FTPListener, DNSListener, '

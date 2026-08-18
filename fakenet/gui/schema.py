@@ -290,7 +290,8 @@ DIVERTER_FIELDS = (
     Field('ExternalProcessRedirectOriginalIPv4', '原公网 IPv4 (A)', T_IPV4,
           default='', group='进程重定向', hint='全球单播 IPv4'),
     Field('ExternalProcessRedirectTargetIPv4', '目标私网 IPv4 (B)', T_IPV4,
-          default='', group='进程重定向', hint='可用 RFC1918'),
+          default='192.168.204.1', group='进程重定向', hint='可用 RFC1918;'
+          '默认 192.168.204.1,仅在启用本功能后生效'),
 )
 
 # ---------------------------------------------------------------------------
