@@ -470,7 +470,8 @@ class Diverter(DiverterBase, WinUtilMixin):
         # Initialize filter and WinDivert driver
 
         self.egress_control_mode = (
-            self.external_access_policy == 'domainallowlist')
+            self.external_access_policy in ('egresscontrol',
+                                            'domainallowlist'))
         self.handle = None
         self._stopping = threading.Event()
         self._diverter_exited = threading.Event()
@@ -479,6 +480,9 @@ class Diverter(DiverterBase, WinUtilMixin):
         self._dns_modified = False
         self._dns_service_stopped = False
         self._drop_log_state = {}
+        self._flow_audit = {}
+        self._flow_audit_suspended = False
+        self._flow_audit_last_cleanup = 0.0
         self._policy_listeners = []
         self._takeover_route_snapshot = None
         self._reviewed_route_snapshots = ()
@@ -1356,7 +1360,8 @@ class Diverter(DiverterBase, WinUtilMixin):
                                 raw_already_captured=True)
                 handled_by_base = True
 
-            verdict = self.finalize_egress_verdict(pkt, redirected)
+            verdict = self.finalize_egress_verdict(
+                pkt, relay_redirected=redirected)
             if verdict == Verdict.DROP_EXTERNAL:
                 self.log_egress_event(
                     'DROP_EXTERNAL', reason='no_authorized_route',
@@ -1699,9 +1704,89 @@ class Diverter(DiverterBase, WinUtilMixin):
         pkt.dport = self.egress_policy.relay_port
         return mapping, lease
 
-    def finalize_egress_verdict(self, pkt, relay_redirected=False,
-                                 permit=None, relay_return_fixed=False,
-                                 takeover_sink=False, reviewed_rule=None):
+    FLOW_AUDIT_IDLE_SECONDS = 120.0
+    FLOW_AUDIT_MAX_ENTRIES = 4096
+
+    def _audit_flow(self, pkt, verdict):
+        """Emit one PROCESS_FLOW event per outbound flow (plan v1.32 12.32.2).
+
+        Attribution happens on the first packet of a flow only; later
+        packets refresh the idle timestamp and TCP teardown evicts the
+        entry. Owner resolution is best-effort: any failure degrades to
+        pid/process=unknown and repeated failures suspend auditing so the
+        packet path is never disturbed.
+        """
+        try:
+            audit = getattr(self, '_flow_audit', None)
+            if (audit is None or self._flow_audit_suspended or
+                    not pkt.is_outbound or not pkt.proto):
+                return
+            now = time.monotonic()
+            key = (pkt.proto, str(pkt.src_ip0), pkt.sport0,
+                   str(pkt.dst_ip0), pkt.dport0)
+            if pkt.proto == 'TCP':
+                try:
+                    teardown = bool(int(pkt.hdr.data.flags) & 0x05)
+                except Exception:
+                    teardown = False
+                if teardown:
+                    audit.pop(key, None)
+                    return
+            entry = audit.get(key)
+            if entry is not None:
+                entry[0] = now
+                return
+            if now - getattr(self, '_flow_audit_last_cleanup', 0.0) >= 60.0:
+                self._flow_audit_last_cleanup = now
+                for stale in [k for k, v in audit.items()
+                              if now - v[0] > self.FLOW_AUDIT_IDLE_SECONDS]:
+                    del audit[stale]
+            if len(audit) >= self.FLOW_AUDIT_MAX_ENTRIES:
+                audit.clear()
+            try:
+                pid, process = self.get_pid_comm(pkt)
+            except Exception:
+                pid, process = None, None
+            if pid is None and process is None:
+                # unresolved owner on a first packet: keep the flow but do
+                # not retry per-packet; see degradation note above
+                pass
+            domain = ''
+            try:
+                lease = self.egress_policy.lease_for(pkt.dst_ip0, pkt.dport0)
+                if lease is not None:
+                    domain = lease.domain
+            except Exception:
+                domain = ''
+            audit[key] = [now]
+            self.log_egress_event(
+                'PROCESS_FLOW',
+                proto=pkt.proto, src=pkt.src_ip0, sport=pkt.sport0,
+                dst=pkt.dst_ip0, dport=pkt.dport0,
+                disposition=(verdict.value if hasattr(verdict, 'value')
+                             else str(verdict)),
+                pid=(pid if pid is not None else 'unknown'),
+                process=(str(process).replace(' ', '_')
+                         if process else 'unknown'),
+                domain=(domain or '-'))
+        except Exception:
+            # Observability must never break the packet path; a repeated
+            # failure pattern suspends auditing entirely.
+            self._flow_audit_suspended = True
+            try:
+                self.logger.debug('PROCESS_FLOW audit suspended', exc_info=True)
+            except Exception:
+                pass
+
+    def finalize_egress_verdict(self, pkt, **kwargs):
+        verdict = self._compute_egress_verdict(pkt, **kwargs)
+        if getattr(self, 'egress_control_mode', False):
+            self._audit_flow(pkt, verdict)
+        return verdict
+
+    def _compute_egress_verdict(self, pkt, relay_redirected=False,
+                                permit=None, relay_return_fixed=False,
+                                takeover_sink=False, reviewed_rule=None):
         if permit is not None:
             return Verdict.ALLOW_INTERNAL_UPSTREAM
         if relay_return_fixed:

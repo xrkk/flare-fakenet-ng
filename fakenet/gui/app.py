@@ -23,8 +23,8 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
 
-from fakenet.gui import (configmodel, launcher, schema, startup_logging,
-                         validator, widgets)
+from fakenet.gui import (configmodel, launcher, procview, schema,
+                         startup_logging, validator, widgets)
 
 APP_TITLE = 'FakeNet-NG 配置工具'
 TEMPLATE_EXCLUDE = ('sample_custom_response.ini',)
@@ -161,6 +161,7 @@ class FakenetConfigApp(object):
         self._fakenet_log_path = None
         self._log_offset = 0
         self._log_job = None
+        self._procview = None
         self._hash_generation = 0
         self._hash_pending = False
         self._hash_issue = None
@@ -514,6 +515,9 @@ class FakenetConfigApp(object):
             toolbar, text='打开日志目录', command=self._open_log_directory)
         self.open_log_dir_button.pack(side='right', padx=(0, 8))
         self.open_log_dir_button.state(['disabled'])
+        self.procview_button = ttk.Button(
+            toolbar, text='进程网络视图', command=self._open_procview)
+        self.procview_button.pack(side='right', padx=(0, 8))
         text_frame = ttk.Frame(tab, padding=(8, 0, 8, 8))
         text_frame.pack(fill='both', expand=True)
         self.log_text = tk.Text(
@@ -2490,6 +2494,25 @@ class FakenetConfigApp(object):
         self.log_text.configure(state='disabled')
         if not self.log_pause_var.get():
             self.log_text.see('end')
+        window = getattr(self, '_procview', None)
+        if window is not None:
+            try:
+                window.feed(text)
+            except Exception:
+                pass
+
+    def _open_procview(self):
+        if getattr(self, '_procview', None) is not None:
+            try:
+                self._procview.window.lift()
+                return
+            except tk.TclError:
+                self._procview = None
+        self._ensure_tab(4)
+        self._procview = procview.ProcessFlowWindow(self.root, self)
+
+    def _procview_closed(self):
+        self._procview = None
 
     def _poll_log(self, schedule=True, final=False):
         self._log_job = None

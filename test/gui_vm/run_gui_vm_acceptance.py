@@ -437,11 +437,81 @@ def main():
                '模式 %s;%s' % (gui_mode,
                                '6 秒后仍存活(无崩溃)' if alive else
                                '启动后即退出'))
+    # -- A10 process flow attribution (v1.32 12.32.2) -------------------------
+    run_a10_process_flow(fakenet_exe)
+
     killed = kill_leftover_processes()
     if killed:
         print('任务级清理: %s' % ', '.join(killed))
 
     return finish()
+
+
+def run_a10_process_flow(fakenet_exe):
+    """Egress-policy run: our own direct TCP connect must be attributed.
+
+    The runner process itself is the "sample": its outbound SYN to an
+    unreviewed global IPv4 is DIVERT_FAKE'd and must appear as a
+    PROCESS_FLOW event carrying this interpreter's pid and image name.
+    """
+    if not fakenet_exe:
+        result('A10 进程归因', 'SKIP',
+               '需要 fakenet.exe(放在脚本同目录/仓库根/dist 下重跑)', '实测')
+        return
+    import run_policy_feature_tests as policy
+    config_path = os.path.join(LOG_DIR, 'a10_config.ini')
+    model, errors = policy.build_policy_config(
+        config_path, 'api.deepseek.com, *.deepseek.com',
+        takeover_ip=policy.TAKEOVER_SINK)
+    if errors:
+        result('A10 进程归因', 'FAIL', '配置错误: %s' % errors[0].message)
+        return
+    core_log = os.path.join(LOG_DIR, 'a10_fakenet.log')
+    stop_flag = os.path.join(LOG_DIR, 'a10_stop.flag')
+    params = '-c "%s" -l "%s" -f "%s" -p -v' % (config_path, core_log,
+                                                stop_flag)
+    ok, detail = launcher.launch_elevated(
+        fakenet_exe, params, os.path.dirname(config_path))
+    if not ok:
+        result('A10 进程归因', 'FAIL', 'ShellExecute 结果: %s' % detail)
+        return
+    wait_for(launcher.is_fakenet_running, 40)
+    ready = wait_for(
+        lambda: 'EGRESS_CONTROL_READY' in
+        (read_core_log(core_log) if os.path.isfile(core_log) else ''),
+        60)
+    if not ready:
+        result('A10 进程归因', 'FAIL', '60 秒内未见 EGRESS_CONTROL_READY')
+    else:
+        connected, _received = policy.probe_direct_ipv4(
+            policy.UNREVIEWED_IPV4, policy.UNREVIEWED_PORT)
+        expected_pid = str(os.getpid())
+        expected_image = os.path.basename(sys.executable).replace(' ', '_')
+        flow_line = wait_for(lambda: any(
+            line.strip().endswith('pid=%s' % expected_pid) or
+            (' pid=%s ' % expected_pid) in line
+            for line in (read_core_log(core_log) if
+                         os.path.isfile(core_log) else '').splitlines()
+            if 'PROCESS_FLOW' in line), 30)
+        log_text = read_core_log(core_log)
+        attributed = ('PROCESS_FLOW' in log_text and
+                      'pid=%s' % expected_pid in log_text and
+                      expected_image.lower() in log_text.lower())
+        diverted = policy.divert_fake_logged(
+            log_text, policy.UNREVIEWED_IPV4)
+        result('A10 进程归因', 'PASS'
+               if connected and flow_line and attributed and diverted
+               else 'FAIL',
+               '直连 %s:%s 连接=%s;PROCESS_FLOW 含本进程 pid=%s/%s=%s;'
+               'DIVERT_FAKE=%s' % (
+                   policy.UNREVIEWED_IPV4, policy.UNREVIEWED_PORT,
+                   connected, expected_pid, expected_image,
+                   attributed, diverted))
+    if os.path.exists(stop_flag) or launcher.is_fakenet_running():
+        if not os.path.exists(stop_flag):
+            with open(stop_flag, 'w') as handle:
+                handle.write('stop\n')
+        wait_for(lambda: not launcher.is_fakenet_running(), 40)
 
 
 def finish():
