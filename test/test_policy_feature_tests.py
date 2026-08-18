@@ -89,3 +89,34 @@ def test_addresses_from_text_excludes_dns_server():
             'Addresses:  192.168.204.1\n')
     assert policy._addresses_from_text(text, '127.0.0.1') == {'192.168.204.1'}
     assert policy._addresses_from_text('no addresses', '127.0.0.1') == set()
+
+
+def test_divert_fake_logged_matches_exact_original_ip():
+    log = ('08/18/26 12:00:00 PM [INFO] Diverter DIVERT_FAKE '
+           'original_ip=93.184.216.34 original_port=80\n'
+           '08/18/26 12:00:01 PM [INFO] Diverter DIVERT_FAKE '
+           'original_ip=93.184.216.3 original_port=80\n')
+    assert policy.divert_fake_logged(log, '93.184.216.34')
+    assert not policy.divert_fake_logged(log, '93.184.216.33')
+    # end-of-log edge: no trailing space after the last field
+    tail = ('[INFO] Diverter DIVERT_FAKE '
+            'original_ip=93.184.216.34')
+    assert policy.divert_fake_logged(tail, '93.184.216.34')
+
+
+def test_reviewed_allow_logged_requires_both_markers():
+    log = ('[INFO] Diverter ALLOW_REVIEWED_IP_FIRST_FLOW rule_id=r1 '
+           'ip=93.184.216.34 proto=TCP\n'
+           '[INFO] Diverter ALLOW_INTERNAL_UPSTREAM kind=upstream '
+           'ip=1.1.1.1\n')
+    assert policy.reviewed_allow_logged(log, '93.184.216.34')
+    assert not policy.reviewed_allow_logged(log, '1.1.1.1')
+    assert not policy.reviewed_allow_logged('nothing here', '1.1.1.1')
+
+
+def test_answers_only_sink_rejects_real_and_empty_answers():
+    assert policy.answers_only_sink({'192.168.204.1'}, '192.168.204.1')
+    assert not policy.answers_only_sink(set(), '192.168.204.1')
+    assert not policy.answers_only_sink(
+        {'192.168.204.1', '101.71.73.135'}, '192.168.204.1')
+    assert not policy.answers_only_sink({'101.71.73.135'}, '192.168.204.1')

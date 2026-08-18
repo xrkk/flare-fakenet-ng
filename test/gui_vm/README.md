@@ -50,6 +50,9 @@ runner 结束时还会按镜像名做任务级清理(`fakenet-GUI.exe`/`fakenet.
 阶段 1 以 `api.deepseek.com,*.deepseek.com` 启动域名放行,断言精确域名与通配子域名
 (`www.deepseek.com`)获得真实公网租约、裸域 `deepseek.com` 与未放行的 `example.com`
 不产生真实租约;阶段 2 以同一域名列表启用私网接管,断言 `DOMAIN_TAKEOVER_READY`
-清单完整、裸域应答为接管 sink `192.168.204.1`、通配子域名照常放行。证据(核心日志、
-两份配置、`policy-results.tsv`)写入 `test\gui_vm\Logs\policy-<时间戳>\`。
+清单完整、裸域应答为接管 sink `192.168.204.1`、通配子域名照常放行;阶段 3(v1.29
+§12.32.1)验证未知公网 IPv4 直连兜底(对未审核 `93.184.216.34:80` 的 TCP 连接被
+`DIVERT_FAKE` 改道假监听器)与裸解析器 DNS 拦截(`nslookup example.com 8.8.8.8`
+应答仅为接管 sink,查询实际到达本机监听器)。证据(核心日志、
+各阶段配置、`policy-results.tsv`)写入 `test\gui_vm\Logs\policy-<时间戳>\`。
 物理机/非确定 VM 状态直接拒绝(会启用真实流量劫持)。

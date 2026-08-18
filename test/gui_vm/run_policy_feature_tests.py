@@ -15,6 +15,12 @@ fakenet.exe and the real DNS data path:
     P6 apex (not allowed) is answered with the takeover sink IPv4
     P7 wildcard-covered subdomain stays allowlisted under takeover
 
+  Phase 3 (unknown-IPv4 fallback, plan v1.29 12.32.1):
+    P11 direct TCP to an unreviewed global IPv4 is DIVERT_FAKE'd (the
+        sample never reaches the real host; it talks to a fake listener)
+    P12 a bare DNS query sent to 8.8.8.8 (not the configured upstream)
+        is intercepted and answered with the takeover sink IPv4
+
 Start via Run-Policy-Tests.cmd (self-elevates). The runner refuses on
 physical machines and unknown VM state, launches the core with generated
 configs (GUI writer + validator agreement), triggers nslookup queries
@@ -49,6 +55,9 @@ WILDCARD_NAME = 'www.deepseek.com'
 APEX_DOMAIN = 'deepseek.com'
 DENY_DOMAIN = 'example.com'
 TAKEOVER_SINK = '192.168.204.1'
+BARE_RESOLVER = '8.8.8.8'
+UNREVIEWED_IPV4 = '93.184.216.34'
+UNREVIEWED_PORT = 80
 
 
 def result(name, status, detail, level='实测'):
@@ -135,6 +144,57 @@ def nslookup_addresses(name, server='127.0.0.1', timeout=15):
         return set()
     text = (proc.stdout or '') + (proc.stderr or '')
     return _addresses_from_text(text, server)
+
+
+def divert_fake_logged(log_text, original_ip):
+    """True when the diverter logged DIVERT_FAKE for this original IP."""
+    return ('DIVERT_FAKE original_ip=%s ' % original_ip in log_text or
+            log_text.rstrip().endswith(
+                'DIVERT_FAKE original_ip=%s' % original_ip))
+
+
+def reviewed_allow_logged(log_text, original_ip):
+    marker = 'ip=%s' % original_ip
+    return any('ALLOW_REVIEWED_IP' in line and marker in line
+               for line in log_text.splitlines())
+
+
+def answers_only_sink(addresses, sink):
+    """True when every returned address is the takeover sink."""
+    return bool(addresses) and addresses == {sink}
+
+
+def probe_direct_ipv4(ip, port, timeout=10):
+    """TCP-connect to an unreviewed global IPv4 and read any response.
+
+    Returns (connected, received). Under a working divert fallback the
+    three-way handshake completes against the fake listener and the
+    listener usually answers an HTTP request with bytes.
+    """
+    import socket as _socket
+    try:
+        sock = _socket.create_connection((ip, port), timeout=timeout)
+    except OSError:
+        return False, 0
+    received = 0
+    try:
+        sock.settimeout(timeout)
+        try:
+            sock.sendall(b'GET / HTTP/1.0\r\nHost: %s\r\n\r\n' %
+                         ip.encode('ascii'))
+        except OSError:
+            pass
+        try:
+            data = sock.recv(4096)
+            received = len(data)
+        except OSError:
+            received = 0
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+    return True, received
 
 
 def run_core_phase(label, config_path, ready_marker, stop_flag):
@@ -309,6 +369,53 @@ def main():
     result('P10 阶段2干净退出', 'PASS'
            if 'FakeNet-NG exiting: rc=0' in
            acceptance.read_core_log(core_log2) else 'FAIL', 'rc=0 停止旗标')
+
+    # -- Phase 3: unknown-IPv4 fallback (v1.29 12.32.1) ----------------------
+    print('\n== 阶段 3:未知公网 IPv4 直连兜底 + 裸解析器 DNS ==')
+    config3 = os.path.join(LOG_DIR, 'policy3.ini')
+    model3, errors3 = build_policy_config(config3, domains,
+                                          takeover_ip=TAKEOVER_SINK)
+    if errors3:
+        result('P11 阶段3配置', 'FAIL', '校验错误: %s' % errors3[0].message)
+        return finish()
+    stop3 = os.path.join(LOG_DIR, 'stop3.flag')
+    core_log3, ready3 = run_core_phase('phase3', config3,
+                                       'DOMAIN_TAKEOVER_READY', stop3)
+    if core_log3 is None:
+        return finish()
+    if not ready3:
+        result('P11 接管就绪', 'FAIL', '60 秒内未见 DOMAIN_TAKEOVER_READY')
+        stop_core(stop3, core_log3)
+        return finish()
+
+    connected, received = probe_direct_ipv4(UNREVIEWED_IPV4, UNREVIEWED_PORT)
+    bare_answers = set()
+    for _ in range(3):
+        bare_answers = nslookup_addresses(DENY_DOMAIN, BARE_RESOLVER)
+        if bare_answers:
+            break
+        time.sleep(2)
+    time.sleep(3)
+    log3 = acceptance.read_core_log(core_log3)
+
+    diverted = divert_fake_logged(log3, UNREVIEWED_IPV4)
+    not_reviewed = not reviewed_allow_logged(log3, UNREVIEWED_IPV4)
+    result('P11 未知IPv4直连兜底', 'PASS'
+           if connected and diverted and not_reviewed else 'FAIL',
+           '%s:%d 连接=%s 收到%d字节;DIVERT_FAKE=%s;误放行=%s'
+           % (UNREVIEWED_IPV4, UNREVIEWED_PORT, connected, received,
+              diverted, not not_reviewed))
+    only_sink = answers_only_sink(bare_answers, TAKEOVER_SINK)
+    bare_logged = received_request_logged(log3, DENY_DOMAIN)
+    result('P12 裸解析器DNS拦截', 'PASS' if only_sink and bare_logged
+           else 'FAIL',
+           'nslookup %s %s 应答 %s(仅 sink=%s);查询到达本机监听=%s'
+           % (DENY_DOMAIN, BARE_RESOLVER, sorted(bare_answers) or '无',
+              only_sink, bare_logged))
+    stop_core(stop3, core_log3)
+    result('P13 阶段3干净退出', 'PASS'
+           if 'FakeNet-NG exiting: rc=0' in
+           acceptance.read_core_log(core_log3) else 'FAIL', 'rc=0 停止旗标')
 
     return finish()
 
