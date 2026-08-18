@@ -388,6 +388,35 @@ class WindowsPacketCtx(fnpacket.PacketCtx):
             self.wdpkt.dst_port = new_dport
 
 
+def probe_dns_resolver(resolver, timeout=1.0, port=53):
+    """Return True when `resolver` answers a minimal DNS query.
+
+    Auto upstream selection previously returned the first syntactically
+    valid candidate; on multi-NIC hosts a dead resolver (e.g. a NIC whose
+    DNS address serves nothing) was selected and every allowed-domain
+    resolution failed (v1.25 §12.28).  Any well-formed DNS reply — even
+    REFUSED — proves the resolver is alive; connection resets and
+    timeouts prove it is not.
+    """
+    from dnslib import DNSHeader, DNSQuestion, DNSRecord, QTYPE
+    import secrets
+
+    query = DNSRecord(
+        DNSHeader(id=secrets.randbelow(65536), rd=1),
+        q=DNSQuestion('probe.fakenet.invalid', getattr(QTYPE, 'SOA', 6)),
+    ).pack()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.settimeout(max(0.1, float(timeout)))
+        sock.sendto(query, (str(resolver), int(port)))
+        response = sock.recv(512)
+        return len(response) >= 12
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
 class Diverter(DiverterBase, WinUtilMixin):
 
     def __init__(self, diverter_config, listeners_config, ip_addrs,
@@ -569,6 +598,7 @@ class Diverter(DiverterBase, WinUtilMixin):
 
         local = set(self.ip_addrs.get(4, [])).union(
             [self.external_ip, self.loopback_ip, '0.0.0.0'])
+        valid = []
         for candidate in candidates:
             try:
                 address = ipaddress.ip_address(candidate)
@@ -578,9 +608,25 @@ class Diverter(DiverterBase, WinUtilMixin):
                     not address.is_loopback and not address.is_link_local and
                     not address.is_multicast and not address.is_unspecified and
                     not address.is_reserved):
-                return str(address)
-        raise PolicyConfigError(
-            'ExternalDnsServer=Auto found no usable non-local IPv4 resolver')
+                valid.append(str(address))
+        if not valid:
+            raise PolicyConfigError(
+                'ExternalDnsServer=Auto found no usable non-local IPv4 '
+                'resolver')
+        # Probe candidates so a dead resolver (common on multi-NIC hosts)
+        # is not selected just because it is first (v1.25 §12.28).
+        for candidate in valid[:3]:
+            if probe_dns_resolver(candidate):
+                if candidate != valid[0]:
+                    self.logger.warning(
+                        'Auto upstream DNS: first candidate %s did not '
+                        'answer; selected %s after probe',
+                        valid[0], candidate)
+                return candidate
+        self.logger.warning(
+            'Auto upstream DNS: no candidate answered a probe (%s); '
+            'falling back to %s', ', '.join(valid[:3]), valid[0])
+        return valid[0]
 
     def _validate_policy_listeners(self):
         relay_port = self.egress_policy.relay_port
