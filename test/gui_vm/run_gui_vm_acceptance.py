@@ -477,7 +477,7 @@ def run_a10_process_flow(fakenet_exe):
         return
     wait_for(launcher.is_fakenet_running, 40)
     ready = wait_for(
-        lambda: 'EGRESS_CONTROL_READY' in
+        lambda: 'DOMAIN_TAKEOVER_READY' in
         (read_core_log(core_log) if os.path.isfile(core_log) else ''),
         60)
     if not ready:

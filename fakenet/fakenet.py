@@ -225,8 +225,8 @@ class Fakenet(object):
     def start(self):
 
         self.policy_mode = (str(self.diverter_config.get(
-            'externalaccesspolicy', 'disabled')).lower() ==
-            'domainallowlist')
+            'externalaccesspolicy', 'disabled')).lower() in
+            ('egresscontrol', 'domainallowlist'))
         if self.policy_mode and platform.system() != 'Windows':
             raise RuntimeError(
                 'EgressControl is implemented only for Windows')

@@ -688,14 +688,14 @@ class DiverterBase(fnconfig.Config):
         gw_ok = self.check_gateways()
         if not gw_ok:
             self.logger.warning('WARNING: No gateways configured!')
-            if (self.external_access_policy != 'domainallowlist' and
+            if (self.external_access_policy not in ('egresscontrol', 'domainallowlist') and
                     self.is_set('fixgateway')):
                 gw_ok = self.fix_gateway()
                 if not gw_ok:
                     self.logger.warning('Cannot fix gateway')
 
         if not gw_ok:
-            if self.external_access_policy == 'domainallowlist':
+            if self.external_access_policy in ('egresscontrol', 'domainallowlist'):
                 raise RuntimeError(
                     'EgressControl requires a gateway before startup')
             self.logger.warning('         Please configure a default ' +
@@ -708,14 +708,14 @@ class DiverterBase(fnconfig.Config):
         dns_ok = self.check_dns_servers()
         if not dns_ok:
             self.logger.warning('WARNING: No DNS servers configured!')
-            if (self.external_access_policy != 'domainallowlist' and
+            if (self.external_access_policy not in ('egresscontrol', 'domainallowlist') and
                     self.is_set('fixdns')):
                 dns_ok = self.fix_dns()
                 if not dns_ok:
                     self.logger.warning('Cannot fix DNS')
 
         if not dns_ok:
-            if self.external_access_policy == 'domainallowlist':
+            if self.external_access_policy in ('egresscontrol', 'domainallowlist'):
                 raise RuntimeError(
                     'EgressControl requires an upstream DNS before startup')
             self.logger.warning('         Please configure a DNS server ' +
@@ -2311,8 +2311,8 @@ class DiverterListenerCallbacks():
 
     def egressPolicyEnabled(self):
         return bool(self.__diverter and
-                    self.__diverter.external_access_policy ==
-                    'domainallowlist' and
+                    self.__diverter.external_access_policy in
+                    ('egresscontrol', 'domainallowlist') and
                     self.__diverter.egress_policy)
 
     def getEgressSettings(self):
