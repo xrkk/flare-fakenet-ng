@@ -114,10 +114,21 @@ def _addresses_from_text(text, exclude):
     return found
 
 
+def received_request_logged(log_text, name):
+    """True when an A request for `name` (or its suffix-search mangled
+    form) reached the DNS listener. The v28 field run showed nslookup
+    may append the connection-specific suffix (e.g. *.localdomain) or a
+    trailing dot, so match on the name prefix, not the closing quote."""
+    return ("Received A request for domain '%s" % name) in log_text
+
+
 def nslookup_addresses(name, server='127.0.0.1', timeout=15):
+    # trailing dot = fully-qualified query: prevents the connection
+    # specific DNS suffix search from mangling the name (v28 field fix)
+    query = name if name.endswith('.') else name + '.'
     try:
         proc = subprocess.run(
-            ['nslookup', name, server], capture_output=True, text=True,
+            ['nslookup', query, server], capture_output=True, text=True,
             timeout=timeout,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     except (subprocess.TimeoutExpired, OSError):
@@ -226,9 +237,9 @@ def main():
     wildcard_ips = leased_global_ips(log_text, WILDCARD_NAME)
     apex_ips = leased_global_ips(log_text, APEX_DOMAIN)
     deny_ips = leased_global_ips(log_text, DENY_DOMAIN)
-    queried = all(
-        ("Received A request for domain '%s'" % name) in log_text
-        for name in (EXACT_DOMAIN, WILDCARD_NAME, APEX_DOMAIN, DENY_DOMAIN))
+    queried = all(received_request_logged(log_text, name)
+                  for name in (EXACT_DOMAIN, WILDCARD_NAME, APEX_DOMAIN,
+                               DENY_DOMAIN))
 
     result('P2 精确域名放行', 'PASS' if exact_ips else 'FAIL',
            '%s 租约 %s' % (EXACT_DOMAIN, sorted(exact_ips) or '无'))

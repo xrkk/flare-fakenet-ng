@@ -69,6 +69,18 @@ def test_takeover_ready_domains_parses_single_token_list():
     assert policy.takeover_ready_domains('no marker here') is None
 
 
+def test_received_request_logged_tolerates_suffix_search():
+    log = ("Received A request for domain "
+           "'api.deepseek.com.localdomain'.\n"
+           "Received A request for domain 'www.deepseek.com.'.\n")
+    assert policy.received_request_logged(log, 'api.deepseek.com')
+    assert policy.received_request_logged(log, 'www.deepseek.com')
+    assert not policy.received_request_logged(log, 'example.com')
+    assert policy.received_request_logged(log, 'api.deepseek.com')
+    assert policy.received_request_logged(log, 'www.deepseek.com')
+    assert not policy.received_request_logged(log, 'example.com')
+
+
 def test_addresses_from_text_excludes_dns_server():
     text = ('\u670d\u52a1\u5668:  UnKnown\n'
             'Address:  127.0.0.1\n'
