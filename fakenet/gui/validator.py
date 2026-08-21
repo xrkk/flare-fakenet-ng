@@ -11,9 +11,20 @@ by test_gui_schema.py and the end-to-end profile test there).
 import ipaddress
 import os
 import re
+import sys
 
 from fakenet.gui import configmodel
 from fakenet.gui import schema
+
+
+def _runtime_asset_root():
+    """Mirror ListenerBase.abs_config_path's last fallback so validated
+    relative paths resolve exactly like the listeners resolve them at
+    runtime: frozen = exe directory, source = the fakenet package dir."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 ERROR = 'error'
 WARNING = 'warning'
@@ -711,6 +722,8 @@ def _check_values(model, issues):
                 if model.path:
                     candidates.append(
                         os.path.join(os.path.dirname(model.path), value))
+                candidates.append(
+                    os.path.join(_runtime_asset_root(), value))
             if not any(os.path.exists(c) for c in candidates):
                 issues.append(Issue(
                     WARNING, sec.name, key,
@@ -868,6 +881,35 @@ def ensure_egress_control_topology(model):
             sec.set('ResponseA', sink_text)
             changes.append('[%s] ResponseA 已填为接管 sink %s'
                            % (sec.name, sink_text))
+
+    # Content listeners (plan 2026.08.21-01 I6): provision HTTPListener on
+    # 80/443 when missing so proxied/dispatched HTTP reaches a real listener.
+    # Idempotent: only creates missing sections, never edits existing ones.
+    for name, port, use_ssl in (('HTTPListener80', '80', 'No'),
+                                ('HTTPListener443', '443', 'Yes')):
+        exists = [sec for sec in _enabled_listeners(model)
+                  if (sec.get('Listener') or '') == 'HTTPListener' and
+                  _port_is(sec, int(port))]
+        if exists:
+            continue
+        existing = [sec for sec in model.listener_sections()
+                    if sec.name == name]
+        if existing:
+            sec = existing[0]
+        else:
+            sec = model.ensure_section(name)
+            sec.set('Listener', 'HTTPListener')
+            sec.set('Protocol', 'TCP')
+            sec.set('Port', port)
+            sec.set('UseSSL', use_ssl)
+            sec.set('Webroot', 'defaultFiles/')
+            sec.set('Timeout', '10')
+            sec.set('DumpHTTPPosts', 'Yes')
+            sec.set('DumpHTTPPostsFilePrefix', 'http')
+            sec.set('Hidden', 'False')
+            changes.append('[%s] 已创建(HTTPListener TCP/%s,内容监听)'
+                           % (sec.name, port))
+        sec.set('Enabled', 'True')
     return changes
 
 

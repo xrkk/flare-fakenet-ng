@@ -389,31 +389,41 @@ def activate_existing_gui(title_fragment='FakeNet-NG 配置工具'):
 
 
 def build_dev_command(config_path, log_path=None):
-    """Dev-mode elevated target: python -m fakenet.fakenet (P1)."""
+    """Dev-mode elevated target: python -m fakenet.fakenet (P1).
+
+    log_path is mandatory (plan 2026.08.21-01 I2): the per-session stop flag
+    is derived from it and -p removes the final console pause.
+    """
     ok, reason = validate_config_path(config_path)
+    if not ok:
+        raise LaunchError(reason)
+    if not log_path:
+        raise LaunchError('log_path is required for the dev launch command')
+    ok, reason = validate_log_path(log_path)
     if not ok:
         raise LaunchError(reason)
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))))
     params = '-m fakenet.fakenet -c "%s"' % config_path
-    if log_path:
-        ok, reason = validate_log_path(log_path)
-        if not ok:
-            raise LaunchError(reason)
-        params += ' --log-file "%s"' % log_path
+    params += ' --log-file "%s"' % log_path
+    params += ' -f "%s.stopflag"' % log_path
+    params += ' -p'
     return sys.executable, params, repo_root
 
 
 def build_frozen_command(exe_path, config_path, log_path=None):
+    if not log_path:
+        raise LaunchError('log_path is required for the frozen launch command')
     ok, reason = validate_config_path(config_path)
     if not ok:
         raise LaunchError(reason)
     params = '-c "%s"' % config_path
-    if log_path:
-        ok, reason = validate_log_path(log_path)
-        if not ok:
-            raise LaunchError(reason)
-        params += ' --log-file "%s"' % log_path
+    ok, reason = validate_log_path(log_path)
+    if not ok:
+        raise LaunchError(reason)
+    params += ' --log-file "%s"' % log_path
+    params += ' -f "%s.stopflag"' % log_path
+    params += ' -p'
     return exe_path, params, os.path.dirname(exe_path)
 
 

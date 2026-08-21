@@ -17,12 +17,13 @@ from tkinter import filedialog, ttk
 
 PROCESS_FLOW_RE = re.compile(
     r'^(?P<time>\d{2}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}(?: AM| PM)?)\s+'
-    r'\[[^]]+\]\s+(?P<who>\S+)\s+PROCESS_FLOW\s+(?P<fields>.+)$')
+    r'(?:\[[^]]+\]\s+){1,2}'
+    r'(?:pid=\d+\s+thread=\S+\s+)?PROCESS_FLOW\s+(?P<fields>.+)$')
 
 FIELD_RE = re.compile(r'(\w+)=("([^"]*)"|\S+)')
 
 DISPOSITIONS = (
-    '全部', 'DIVERT_FAKE', 'REDIRECT_TLS_RELAY', 'ALLOW_TAKEOVER_SINK',
+    '全部', 'DIVERT_FAKE', 'REDIRECT_TLS_RELAY',
     'ALLOW_REVIEWED_IP', 'ALLOW_INTERNAL_UPSTREAM', 'REINJECT_LOCAL',
     'DROP_EXTERNAL')
 
@@ -41,7 +42,6 @@ def parse_process_flow_line(line):
     if 'pid' not in fields or 'process' not in fields:
         return None
     fields['time'] = match.group('time')
-    fields['source'] = match.group('who')
     return fields
 
 
@@ -64,7 +64,8 @@ class ProcessFlowWindow(object):
 
         self.window = tk.Toplevel(parent)
         self.window.title('进程网络访问视图')
-        self.window.geometry('980x560')
+        self.window.geometry('980x560%s' % self._center_over_parent(
+            parent, 980, 560))
         self.window.transient(parent)
 
         toolbar = ttk.Frame(self.window)
@@ -129,6 +130,15 @@ class ProcessFlowWindow(object):
         self.window.protocol('WM_DELETE_WINDOW', self._close)
         self._render_lock = threading.Lock()
 
+    @staticmethod
+    def _center_over_parent(parent, width, height):
+        """Place the window centered over parent, clamped to the screen."""
+        x = parent.winfo_x() + (parent.winfo_width() - width) // 2
+        y = parent.winfo_y() + (parent.winfo_height() - height) // 2
+        x = max(0, min(x, max(0, parent.winfo_screenwidth() - width)))
+        y = max(0, min(y, max(0, parent.winfo_screenheight() - height)))
+        return '+%d+%d' % (x, y)
+
     # -- data ingest -------------------------------------------------------
 
     def feed(self, text):
@@ -150,8 +160,11 @@ class ProcessFlowWindow(object):
     # -- rendering ---------------------------------------------------------
 
     def _visible(self, flow):
-        if self.filter_name and self.filter_name.lower() not in \
-                flow.get('process', '').lower():
+        # The core log writes spaces inside process names as underscores
+        # (windows.py _audit_flow), so treat spaces in the filter as
+        # underscores when matching (plan 2026.08.21-01 I1).
+        needle = self.filter_name.lower().replace(' ', '_')
+        if needle and needle not in flow.get('process', '').lower():
             return False
         if self.filter_pid and flow.get('pid', '') != self.filter_pid:
             return False

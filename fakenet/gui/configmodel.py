@@ -249,6 +249,24 @@ class ConfigModel(object):
             'Listeners',
             'RawListener, DNSListener, TFTPListener, FTPListener')
         proxy_udp.set('Hidden', 'False')
+
+        # Content listeners (plan 2026.08.21-01 I6): without a real
+        # HTTPListener on 80/443 the proxy cannot dispatch HTTP and browser
+        # custom replies stay unreachable. Keys mirror upstream
+        # configs/default.ini [HTTPListener80]/[HTTPListener443].
+        for name, port, use_ssl in (('HTTPListener80', '80', 'No'),
+                                     ('HTTPListener443', '443', 'Yes')):
+            section = model.ensure_section(name)
+            section.set('Enabled', 'True')
+            section.set('Port', port)
+            section.set('Protocol', 'TCP')
+            section.set('Listener', 'HTTPListener')
+            section.set('UseSSL', use_ssl)
+            section.set('Webroot', 'defaultFiles/')
+            section.set('Timeout', '10')
+            section.set('DumpHTTPPosts', 'Yes')
+            section.set('DumpHTTPPostsFilePrefix', 'http')
+            section.set('Hidden', 'False')
         return model
 
     def render(self, header=None):

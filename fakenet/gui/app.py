@@ -19,6 +19,7 @@ import sys
 import tempfile
 import textwrap
 import threading
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
@@ -159,6 +160,10 @@ class FakenetConfigApp(object):
         self._running = False
         self._fakenet_process_handle = None
         self._fakenet_log_path = None
+        self._fakenet_stop_flag = None
+        self._fakenet_work_dir = None
+        self._fakenet_session_start = None
+        self._stop_pending = False
         self._log_offset = 0
         self._log_job = None
         self._procview = None
@@ -328,6 +333,11 @@ class FakenetConfigApp(object):
             action_bar, text='▶ 启动 FakeNet-NG', style='Primary.TButton',
             command=self.launch)
         self.launch_button.pack(side='right')
+        self.stop_button = ttk.Button(
+            action_bar, text='■ 停止 FakeNet-NG', style='Action.TButton',
+            width=16, command=self._request_stop)
+        self.stop_button.pack(side='right', padx=(0, 8))
+        self.stop_button.state(['disabled'])
         self.save_button = ttk.Button(
             action_bar, text='保存配置', style='Action.TButton', width=14,
             command=self.save)
@@ -924,6 +934,12 @@ class FakenetConfigApp(object):
         launch_disabled = errors or self._running or self._hash_pending
         self.launch_button.state(
             ['disabled'] if launch_disabled else ['!disabled'])
+        stop_button = getattr(self, 'stop_button', None)
+        if stop_button is not None:
+            stop_enabled = (self._fakenet_process_handle is not None and
+                            not self._stop_pending)
+            stop_button.state(
+                ['!disabled'] if stop_enabled else ['disabled'])
         state = ['disabled'] if self._running else ['!disabled']
         for button in self._action_buttons:
             button.state(state)
@@ -2399,14 +2415,19 @@ class FakenetConfigApp(object):
                 'FakeNet-NG 已请求启动,但未取得进程句柄;'
                 '无法安全管理本次运行状态。')
             return
-        self._begin_fakenet_session(log_path, process_handle)
+        self._begin_fakenet_session(log_path, process_handle, directory)
         message = '已启动 FakeNet-NG;配置已锁定,实时日志已打开。'
         if note:
             message += ' %s' % note
         self._hint(message)
 
-    def _begin_fakenet_session(self, log_path, process_handle):
+    def _begin_fakenet_session(self, log_path, process_handle, work_dir=None):
         self._fakenet_log_path = os.path.abspath(log_path)
+        self._fakenet_stop_flag = self._fakenet_log_path + '.stopflag'
+        self._fakenet_work_dir = (
+            os.path.abspath(work_dir) if work_dir else None)
+        self._fakenet_session_start = time.time()
+        self._stop_pending = False
         self._fakenet_process_handle = process_handle
         self._log_offset = 0
         self._log_decoder = codecs.getincrementaldecoder('utf-8')(
@@ -2485,6 +2506,69 @@ class FakenetConfigApp(object):
                              exit_code, self._fakenet_log_path)
         self._set_running_state(False)
         self._validate_now()
+        if self._stop_pending:
+            self._stop_pending = False
+            self._reveal_session_report()
+
+    def _request_stop(self):
+        """Graceful stop via the per-session stop flag (plan 2026.08.21-01 I4)."""
+        if self._stop_pending or self._fakenet_process_handle is None:
+            return
+        flag = self._fakenet_stop_flag
+        if not flag:
+            return
+        self._stop_pending = True
+        try:
+            with open(flag, 'w') as handle:
+                handle.write('stop\n')
+        except OSError as exc:
+            self._stop_pending = False
+            self._set_log_state('写入停止旗标失败: %s' % exc)
+            self.logger.error('Stop flag write failed: %s', exc)
+            return
+        self._set_log_state('已请求停止,等待 FakeNet-NG 退出…')
+        self.logger.info('Stop requested via flag: %s', flag)
+        self._update_action_states()
+
+    def _set_log_state(self, text):
+        log_state = getattr(self, 'log_state_var', None)
+        if log_state is not None:
+            log_state.set(text)
+
+    def _reveal_session_report(self):
+        """Open Explorer with the session's HTML report selected (plan I4)."""
+        work_dir = self._fakenet_work_dir
+        started = self._fakenet_session_start
+        report = None
+        if work_dir and started is not None and os.path.isdir(work_dir):
+            candidates = []
+            for name in os.listdir(work_dir):
+                if not name.startswith('report_') or \
+                        not name.endswith('.html'):
+                    continue
+                path = os.path.join(work_dir, name)
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    continue
+                if mtime >= started:
+                    candidates.append((mtime, path))
+            if candidates:
+                report = max(candidates)[1]
+        if report:
+            try:
+                subprocess.Popen(
+                    ['explorer', '/select,%s' % os.path.normpath(report)])
+                self.logger.info('Session report selected: %s', report)
+                return
+            except OSError as exc:
+                self.logger.error('Explorer select failed: %s', exc)
+        if work_dir and os.path.isdir(work_dir):
+            try:
+                os.startfile(work_dir)
+                self._set_log_state('未找到本次会话的报告,已打开工作目录。')
+            except OSError as exc:
+                self.logger.error('Open work directory failed: %s', exc)
 
     def _append_log_text(self, text):
         if not text or 4 not in self._tabs_built:
