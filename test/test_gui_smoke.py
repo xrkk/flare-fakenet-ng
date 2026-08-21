@@ -1282,7 +1282,7 @@ def test_launch_reserves_core_log_beside_selected_fakenet_exe(
             app_module.launcher, 'launch_elevated_with_handle',
             lambda *_args: (True, '已启动', 101))
         monkeypatch.setattr(application, '_begin_fakenet_session',
-                            lambda log, handle: captured.update(
+                            lambda log, handle, work_dir=None: captured.update(
                                 log=log, handle=handle))
 
         application._launch_execute()

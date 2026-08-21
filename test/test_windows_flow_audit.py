@@ -73,9 +73,9 @@ def test_first_packet_emits_process_flow_with_owner_and_domain():
     diverter.get_pid_comm = mock.Mock(return_value=(4242, 'malware.exe'))
     diverter.log_egress_event = mock.Mock()
 
-    verdict = diverter.finalize_egress_verdict(FlowPacket(), takeover_sink=True)
+    verdict = diverter.finalize_egress_verdict(FlowPacket())
 
-    assert verdict == Verdict.DROP_EXTERNAL  # sink mismatch in this stub
+    assert verdict == Verdict.DROP_EXTERNAL  # stub: sink/non-local dst
     assert diverter.log_egress_event.call_count == 1
     event, fields = diverter.log_egress_event.call_args[0][0], \
         diverter.log_egress_event.call_args[1]

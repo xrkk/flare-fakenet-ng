@@ -143,6 +143,10 @@ def build_smoke_config(path):
     diverter.delete('DefaultUDPListener')
     model.delete_section('ProxyTCPListener')
     model.delete_section('ProxyUDPListener')
+    # new_config now provisions HTTPListener80/443 content listeners
+    # (plan 2026.08.21-01 I6); the minimal smoke config stays minimal.
+    model.delete_section('HTTPListener80')
+    model.delete_section('HTTPListener443')
     sec = model.ensure_section('RawTCPListener')
     sec.set('Enabled', 'True')
     sec.set('Port', '1337')
@@ -440,6 +444,9 @@ def main():
     # -- A10 process flow attribution (v1.32 12.32.2) -------------------------
     run_a10_process_flow(fakenet_exe)
 
+    # -- A11 takeover sink connectivity (plan 2026.08.21-01 §5.2) -------------
+    run_a11_sink_reply(fakenet_exe)
+
     killed = kill_leftover_processes()
     if killed:
         print('任务级清理: %s' % ', '.join(killed))
@@ -507,6 +514,99 @@ def run_a10_process_flow(fakenet_exe):
                    policy.UNREVIEWED_IPV4, policy.UNREVIEWED_PORT,
                    connected, expected_pid, expected_image,
                    attributed, diverted))
+    if os.path.exists(stop_flag) or launcher.is_fakenet_running():
+        if not os.path.exists(stop_flag):
+            with open(stop_flag, 'w') as handle:
+                handle.write('stop\n')
+        wait_for(lambda: not launcher.is_fakenet_running(), 40)
+
+
+def run_a11_sink_reply(fakenet_exe):
+    """Takeover sink connectivity (plan 2026.08.21-01 §5.2 A11).
+
+    DNS must answer a non-allowed domain with the sink IPv4; a TCP connect
+    to sink:80 must be diverted into the local HTTPListener and return a
+    complete HTTP reply; PROCESS_FLOW must record DIVERT_FAKE for the sink
+    destination; the session report must contain this interpreter's NBI;
+    the core must exit cleanly. Under the removed ALLOW_TAKEOVER_SINK
+    pass-through this connection died at the VMware host (issue 6).
+    """
+    if not fakenet_exe:
+        result('A11 接管 sink 连通', 'SKIP',
+               '需要 fakenet.exe(放在脚本同目录/仓库根/dist 下重跑)', '实测')
+        return
+    import run_policy_feature_tests as policy
+    config_path = os.path.join(LOG_DIR, 'a11_config.ini')
+    model, errors = policy.build_policy_config(
+        config_path, 'api.deepseek.com, *.deepseek.com',
+        takeover_ip=policy.TAKEOVER_SINK)
+    if errors:
+        result('A11 接管 sink 连通', 'FAIL', '配置错误: %s' % errors[0].message)
+        return
+    work_dir = os.path.dirname(config_path)
+    core_log = os.path.join(LOG_DIR, 'a11_fakenet.log')
+    stop_flag = os.path.join(LOG_DIR, 'a11_stop.flag')
+    params = '-c "%s" -l "%s" -f "%s" -p -v' % (config_path, core_log,
+                                                stop_flag)
+    ok, detail = launcher.launch_elevated(fakenet_exe, params, work_dir)
+    if not ok:
+        result('A11 接管 sink 连通', 'FAIL', 'ShellExecute 结果: %s' % detail)
+        return
+    wait_for(launcher.is_fakenet_running, 40)
+    ready = wait_for(
+        lambda: 'DOMAIN_TAKEOVER_READY' in
+        (read_core_log(core_log) if os.path.isfile(core_log) else ''),
+        60)
+    if not ready:
+        result('A11 接管 sink 连通', 'FAIL', '60 秒内未见 DOMAIN_TAKEOVER_READY')
+    else:
+        sink = policy.TAKEOVER_SINK
+        probe_domain = 'login.example.com'
+        addresses = policy.nslookup_addresses(probe_domain)
+        answered = policy.answers_only_sink(addresses, sink)
+
+        body = b''
+        try:
+            import socket
+            sock = socket.create_connection((sink, 80), timeout=10)
+            sock.settimeout(10)
+            try:
+                sock.sendall(b'GET / HTTP/1.0\r\nHost: %s\r\n\r\n' %
+                             probe_domain.encode('ascii'))
+                body = sock.recv(4096)
+            finally:
+                sock.close()
+        except OSError:
+            body = b''
+        status_line = body.split(b'\r\n', 1)[0] if body else b''
+        http_ok = (body.startswith(b'HTTP/1.') and b' 200 ' in status_line
+                   and len(body) > 0)
+
+        log_text = read_core_log(core_log)
+        diverted = ('disposition=DIVERT_FAKE' in log_text and
+                    'dst=%s' % sink in log_text and
+                    'ALLOW_TAKEOVER_SINK' not in log_text)
+
+        report_ok = False
+        import glob as _glob
+        for report in sorted(
+                _glob.glob(os.path.join(work_dir, 'report_*.html')),
+                key=os.path.getmtime, reverse=True):
+            try:
+                with open(report, 'r', encoding='utf-8',
+                          errors='replace') as handle:
+                    if 'python.exe' in handle.read():
+                        report_ok = True
+                        break
+            except OSError:
+                continue
+
+        result('A11 接管 sink 连通', 'PASS'
+               if answered and http_ok and diverted and report_ok
+               else 'FAIL',
+               'DNS 应答=%s;sink:80 HTTP=%s(状态行 %r);DIVERT_FAKE=%s;'
+               '报告含 python.exe=%s' % (
+                   answered, http_ok, status_line[:40], diverted, report_ok))
     if os.path.exists(stop_flag) or launcher.is_fakenet_running():
         if not os.path.exists(stop_flag):
             with open(stop_flag, 'w') as handle:

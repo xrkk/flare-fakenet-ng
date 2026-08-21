@@ -25,6 +25,9 @@ class Policy(object):
 class TakeoverPolicy(Policy):
     takeover_enabled = True
     takeover_ipv4 = '192.168.204.1'
+    # Plan 2026.08.21-01 I5: sink traffic now takes the divert path, so the
+    # stub must carry the divert action the policy layer enforces.
+    non_allowed_action = 'divert'
 
     def matches_takeover_sink(self, proto, src_ip, sport, dst_ip, dport):
         try:
@@ -36,6 +39,9 @@ class TakeoverPolicy(Policy):
                 src_ip == '10.0.0.5' and
                 dst_ip == self.takeover_ipv4 and
                 1 <= sport <= 65535 and 1 <= dport <= 65535)
+
+    def match_reviewed_ip(self, packet):
+        return None
 
 
 class MappingPolicy(Policy):
@@ -448,34 +454,12 @@ class WindowsVerdictTests(unittest.TestCase):
         self.assertIsNone(self.diverter.classify_ipv6_preparse(
             bytes.fromhex('45000014'), False))
 
-    def test_takeover_sink_verdict_is_exact_for_tcp_and_udp(self):
-        self.diverter.egress_policy = TakeoverPolicy()
-        for proto in ('TCP', 'UDP'):
-            for port in (1, 443, 65535):
-                packet = Packet(
-                    proto=proto, dst='192.168.204.1', dport=port)
-                self.assertEqual(
-                    Verdict.ALLOW_TAKEOVER_SINK,
-                    self.diverter.finalize_egress_verdict(
-                        packet, takeover_sink=True))
-        for destination in ('192.168.204.2', '10.0.0.1',
-                            '93.184.216.34'):
-            packet = Packet(dst=destination, dport=443)
-            self.assertEqual(
-                Verdict.DROP_EXTERNAL,
-                self.diverter.finalize_egress_verdict(
-                    packet, takeover_sink=True))
-
-    def test_takeover_sink_is_revalidated_before_reinjection(self):
-        self.diverter.egress_policy = TakeoverPolicy()
-        packet = Packet(dst='192.168.204.1', dport=8443)
-        packet.src_ip = '10.0.0.99'
-        self.assertEqual(
-            Verdict.DROP_EXTERNAL,
-            self.diverter.finalize_egress_verdict(
-                packet, takeover_sink=True))
-
-    def test_takeover_sink_bypasses_legacy_redirect_unchanged(self):
+    def test_sink_flow_enters_divert_path(self):
+        """Plan 2026.08.21-01 I5: sink-bound traffic must fall through to
+        the divert path (handle_pkt rewrites it to a local listener)
+        instead of being allowed through unmodified — the
+        ALLOW_TAKEOVER_SINK bypass is removed. With handle_pkt mocked (no
+        rewrite happens), the unmangled sink destination fails closed."""
         self.diverter.egress_policy = TakeoverPolicy()
         packet = Packet(
             proto='UDP', dst='192.168.204.1', dport=443)
@@ -489,6 +473,8 @@ class WindowsVerdictTests(unittest.TestCase):
         self.diverter.handle_pkt = mock.Mock()
         self.diverter.apply_domain_relay_return_fixup = mock.Mock(
             return_value=None)
+        self.diverter.apply_domain_relay_forward_redirect = mock.Mock(
+            return_value=None)
         self.diverter.egress_policy.match_control_flow = mock.Mock(
             return_value=None)
 
@@ -496,11 +482,11 @@ class WindowsVerdictTests(unittest.TestCase):
                         return_value=packet):
             self.diverter._handle_policy_packet(windivert_packet)
 
-        self.diverter._send_packet.assert_called_once_with(packet)
-        self.diverter.handle_pkt.assert_not_called()
+        self.diverter.handle_pkt.assert_called_once()
+        self.assertFalse(self.diverter._send_packet.called)
         self.diverter.log_egress_event.assert_called_once_with(
-            'ALLOW_TAKEOVER_SINK', ip='192.168.204.1',
-            proto='UDP', sport=50000, dport=443)
+            'DROP_EXTERNAL', reason='no_authorized_route',
+            original_ip='192.168.204.1', original_port=443)
 
     def test_takeover_listener_response_must_match_policy(self):
         diverter = Diverter.__new__(Diverter)

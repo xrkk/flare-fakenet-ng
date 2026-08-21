@@ -125,7 +125,11 @@ def test_locate_missing_reports_none(tmp_path):
 def test_build_dev_command_uses_module_form(tmp_path):
     config = tmp_path.joinpath('c.ini')
     config.write_text('[FakeNet]\n', encoding='ascii')
-    target, params, cwd = launcher.build_dev_command(str(config))
+    logs = tmp_path / 'Logs'
+    logs.mkdir()
+    log_path = logs / 'session.log'
+    target, params, cwd = launcher.build_dev_command(
+        str(config), str(log_path))
     assert os.path.isfile(target)  # sys.executable
     assert '-m fakenet.fakenet' in params
     assert '-c' in params
@@ -146,6 +150,34 @@ def test_build_commands_include_exactly_one_explicit_log_file(tmp_path):
     for params in (dev_params, frozen_params):
         assert params.count('--log-file') == 1
         assert '"%s"' % log_path in params
+
+
+def test_build_commands_require_log_path(tmp_path):
+    config = tmp_path / 'c.ini'
+    config.write_text('[FakeNet]\n', encoding='ascii')
+    with pytest.raises(launcher.LaunchError):
+        launcher.build_dev_command(str(config))
+    with pytest.raises(launcher.LaunchError):
+        launcher.build_frozen_command(str(tmp_path / 'fakenet.exe'),
+                                      str(config))
+
+
+def test_build_commands_add_stop_flag_and_no_pause(tmp_path):
+    # Plan 2026.08.21-01 I2: the per-session stop flag is <log>.stopflag and
+    # -p removes the final console pause so GUI-launched runs need no key.
+    config = tmp_path / 'c.ini'
+    config.write_text('[FakeNet]\n', encoding='ascii')
+    logs = tmp_path / 'Logs'
+    logs.mkdir()
+    log_path = logs / 'one.log'
+
+    _target, dev_params, _cwd = launcher.build_dev_command(
+        str(config), str(log_path))
+    _target, frozen_params, _cwd = launcher.build_frozen_command(
+        str(tmp_path / 'fakenet.exe'), str(config), str(log_path))
+    for params in (dev_params, frozen_params):
+        assert '-f "%s.stopflag"' % log_path in params
+        assert params.rstrip().endswith(' -p') or ' -p ' in params
 
 
 def test_launch_elevated_with_handle_maps_success_and_cancel(monkeypatch):

@@ -65,7 +65,7 @@ def result(name, status, detail, level='实测'):
     print('  [%s] %-28s %s' % (status, name, detail))
 
 
-def build_policy_config(path, domains, takeover_ip=None):
+def build_policy_config(path, domains, takeover_ip=None, dump_packets=False):
     """GUI writer + validator agreement for a full egress-policy config."""
     model = configmodel.ConfigModel.new_config()
     model.fakenet().set('DivertTraffic', 'Yes')
@@ -73,7 +73,11 @@ def build_policy_config(path, domains, takeover_ip=None):
     diverter.set('ExternalAccessPolicy', 'EgressControl')
     diverter.set('ExternalAllowedDomains', domains)
     diverter.set('ExternalDnsServer', 'Auto')
-    diverter.set('DumpPackets', 'No')
+    diverter.set('DumpPackets', 'Yes' if dump_packets else 'No')
+    if dump_packets:
+        # P14 (plan 2026.08.21-01 §5.2) parses this phase's dual pcap to
+        # prove both directions are recorded.
+        diverter.set('DumpPacketsFilePrefix', 'packets')
     # the GUI writes these enforced values on policy activation; the
     # validator requires them to be explicit in a generated config too
     for key, value in validator.schema.LOCKED_FIELD_VALUES.items():
@@ -171,11 +175,18 @@ def probe_direct_ipv4(ip, port, timeout=10):
     three-way handshake completes against the fake listener and the
     listener usually answers an HTTP request with bytes.
     """
+    connected, _sport, received = probe_direct_ipv4_sport(ip, port, timeout)
+    return connected, received
+
+
+def probe_direct_ipv4_sport(ip, port, timeout=10):
+    """Same probe, also returning the local source port used (P14)."""
     import socket as _socket
     try:
         sock = _socket.create_connection((ip, port), timeout=timeout)
     except OSError:
-        return False, 0
+        return False, None, 0
+    sport = sock.getsockname()[1]
     received = 0
     try:
         sock.settimeout(timeout)
@@ -194,7 +205,30 @@ def probe_direct_ipv4(ip, port, timeout=10):
             sock.close()
         except OSError:
             pass
-    return True, received
+    return True, sport, received
+
+
+def parse_pcap_direction_counts(pcap_path, target_ip, sport):
+    """Count outbound packets to target_ip and inbound TCP packets to
+    sport in a DLT_RAW pcap (plan 2026.08.21-01 P14)."""
+    import socket as _socket
+    import dpkt
+    target_bytes = _socket.inet_aton(target_ip)
+    outbound = 0
+    inbound = 0
+    with open(pcap_path, 'rb') as handle:
+        reader = dpkt.pcap.Reader(handle)
+        for _ts, buf in reader:
+            try:
+                ip = dpkt.ip.IP(buf)
+            except (dpkt.UnpackError, ValueError):
+                continue
+            if bytes(ip.dst) == target_bytes:
+                outbound += 1
+            if (ip.p == dpkt.ip.IP_PROTO_TCP and
+                    getattr(ip.data, 'dport', None) == sport):
+                inbound += 1
+    return outbound, inbound
 
 
 def run_core_phase(label, config_path, ready_marker, stop_flag):
@@ -365,6 +399,35 @@ def main():
     wildcard2 = leased_global_ips(log2, WILDCARD_NAME)
     result('P9 接管通配放行', 'PASS' if wildcard2 else 'FAIL',
            '%s 租约 %s' % (WILDCARD_NAME, sorted(wildcard2) or '无'))
+
+    # P15 (plan 2026.08.21-01 §5.2): after the sink DNS answer the follow-up
+    # TCP connect must be diverted into the local HTTP listener and get a
+    # full HTTP reply (the old ALLOW_TAKEOVER_SINK pass-through died at the
+    # VMware host).
+    sink_body = b''
+    try:
+        import socket
+        sock = socket.create_connection((TAKEOVER_SINK, 80), timeout=10)
+        sock.settimeout(10)
+        try:
+            sock.sendall(b'GET / HTTP/1.0\r\nHost: %s\r\n\r\n' %
+                         APEX_DOMAIN.encode('ascii'))
+            sink_body = sock.recv(4096)
+        finally:
+            sock.close()
+    except OSError:
+        sink_body = b''
+    sink_status = sink_body.split(b'\r\n', 1)[0] if sink_body else b''
+    sink_http_ok = (sink_body.startswith(b'HTTP/1.') and
+                    b' 200 ' in sink_status)
+    log2b = acceptance.read_core_log(core_log2)
+    sink_diverted = ('disposition=DIVERT_FAKE' in log2b and
+                     'dst=%s' % TAKEOVER_SINK in log2b and
+                     'ALLOW_TAKEOVER_SINK' not in log2b)
+    result('P15 接管 sink 连通', 'PASS' if sink_http_ok and sink_diverted
+           else 'FAIL',
+           'sink:80 状态行 %r;DIVERT_FAKE dst=sink=%s'
+           % (sink_status[:40], sink_diverted))
     stop_core(stop2, core_log2)
     result('P10 阶段2干净退出', 'PASS'
            if 'FakeNet-NG exiting: rc=0' in
@@ -373,8 +436,8 @@ def main():
     # -- Phase 3: unknown-IPv4 fallback (v1.29 12.32.1) ----------------------
     print('\n== 阶段 3:未知公网 IPv4 直连兜底 + 裸解析器 DNS ==')
     config3 = os.path.join(LOG_DIR, 'policy3.ini')
-    model3, errors3 = build_policy_config(config3, domains,
-                                          takeover_ip=TAKEOVER_SINK)
+    model3, errors3 = build_policy_config(
+        config3, domains, takeover_ip=TAKEOVER_SINK, dump_packets=True)
     if errors3:
         result('P11 阶段3配置', 'FAIL', '校验错误: %s' % errors3[0].message)
         return finish()
@@ -388,7 +451,8 @@ def main():
         stop_core(stop3, core_log3)
         return finish()
 
-    connected, received = probe_direct_ipv4(UNREVIEWED_IPV4, UNREVIEWED_PORT)
+    connected, probe_sport, received = probe_direct_ipv4_sport(
+        UNREVIEWED_IPV4, UNREVIEWED_PORT)
     bare_answers = set()
     for _ in range(3):
         bare_answers = nslookup_addresses(DENY_DOMAIN, BARE_RESOLVER)
@@ -416,6 +480,28 @@ def main():
     result('P13 阶段3干净退出', 'PASS'
            if 'FakeNet-NG exiting: rc=0' in
            acceptance.read_core_log(core_log3) else 'FAIL', 'rc=0 停止旗标')
+
+    # P14 (plan 2026.08.21-01 §5.2): the phase-3 dual pcap must contain
+    # BOTH directions — outbound packets to the probe target (sample->C2)
+    # and inbound TCP packets to the probe's source port (C2->sample).
+    import glob as _glob
+    pcaps = [path for path in _glob.glob(
+        os.path.join(LOG_DIR, 'packets_*.pcap'))
+        if not path.endswith('-converted.pcap')]
+    p14_detail = '未找到 pcap'
+    p14_ok = False
+    if pcaps and probe_sport:
+        newest = max(pcaps, key=os.path.getmtime)
+        try:
+            outbound, inbound = parse_pcap_direction_counts(
+                newest, UNREVIEWED_IPV4, probe_sport)
+            p14_ok = outbound > 0 and inbound > 0
+            p14_detail = ('%s 出站(dst=%s)=%d 入站(dport=%d)=%d'
+                          % (os.path.basename(newest), UNREVIEWED_IPV4,
+                             outbound, probe_sport, inbound))
+        except Exception as exc:  # dpkt 解析失败按 FAIL 处理,不静默
+            p14_detail = 'pcap 解析失败: %s' % exc
+    result('P14 PCAP 双向捕获', 'PASS' if p14_ok else 'FAIL', p14_detail)
 
     return finish()
 
