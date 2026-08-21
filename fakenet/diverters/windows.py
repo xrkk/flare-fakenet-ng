@@ -492,6 +492,10 @@ class Diverter(DiverterBase, WinUtilMixin):
         self.process_redirect_engine = None
         self._process_redirect_route_guard = None
         self._process_redirect_route_snapshots = ()
+        # Inbound-only capture handle mirroring the outbound dual pcap
+        # (plan 2026.08.21-01 I7): records C2->sample direction packets.
+        self._inbound_capture_handle = None
+        self.inbound_capture_thread = None
 
         # EgressControl expands capture to IPv6 and delays opening WinDivert
         # until every listener and callback is ready.  Disabled mode preserves
@@ -1020,6 +1024,87 @@ class Diverter(DiverterBase, WinUtilMixin):
         self.handle.close()
         self.handle = None
 
+    def _inbound_capture_filter(self):
+        return ('inbound and (ip or ipv6)'
+                if self.egress_control_mode else 'inbound and ip')
+
+    def _open_inbound_capture(self):
+        """Open the record-only inbound WinDivert handle (plan I7).
+
+        Only active when the dual pcap writer exists (DumpPackets on). Open
+        failure is a capture failure (controlled shutdown); there is no
+        degrade-to-outbound-only path.
+        """
+        if (getattr(self, '_inbound_capture_handle', None) is not None or
+                not self.dump_packets or self.dual_pcap is None):
+            return
+        capture_filter = self._inbound_capture_filter()
+        try:
+            handle = WinDivert(filter=capture_filter, priority=1)
+            handle.open()
+        except WindowsError as exc:
+            self._record_capture_failure(PcapWriteError(
+                'inbound capture handle open failed: %s' % exc))
+            return
+        except Exception as exc:
+            self._record_capture_failure(PcapWriteError(
+                'inbound capture handle open failed: %s' % exc))
+            return
+        self._inbound_capture_handle = handle
+        self.inbound_capture_thread = threading.Thread(
+            target=self._inbound_capture_loop, name='InboundCapture',
+            daemon=True)
+        self.inbound_capture_thread.start()
+        self.log_egress_event(
+            'PCAP_INBOUND_CAPTURE_READY', filter=capture_filter)
+
+    def _inbound_capture_loop(self):
+        try:
+            while not self._stopping.is_set():
+                try:
+                    wdpkt = self._inbound_capture_handle.recv()
+                except WindowsError as exc:
+                    if exc.winerror in (4, 6, 995):
+                        return
+                    self.logger.error(
+                        'Inbound capture recv failed: %s', exc)
+                    return
+                except Exception as exc:
+                    self.logger.error('Inbound capture recv failed: %s', exc)
+                    return
+                if wdpkt is None:
+                    continue
+                raw = wdpkt.raw
+                if raw is None:
+                    continue
+                try:
+                    self.dual_pcap.write_ip_packet(bytes(raw))
+                except PcapWriteError as exc:
+                    self._record_capture_failure(exc)
+                    return
+                except Exception as exc:
+                    self._record_capture_failure(PcapWriteError(
+                        'inbound capture dispatch failed: %s' % exc))
+                    return
+                try:
+                    self._inbound_capture_handle.send(wdpkt)
+                except Exception as exc:
+                    # The packet is already recorded; a reinjection failure
+                    # loses this one inbound packet but must not kill the
+                    # pass-through loop.
+                    self.logger.error(
+                        'Inbound capture reinjection failed: %s', exc)
+        except Exception:
+            self.logger.exception(
+                'Inbound capture thread terminated unexpectedly')
+
+    def _close_inbound_capture_handle(self):
+        if self._inbound_capture_handle is None:
+            return
+        ctypes.windll.kernel32.SetLastError(0)
+        self._inbound_capture_handle.close()
+        self._inbound_capture_handle = None
+
     def configure_policy_runtime(self, listeners):
         if self.egress_control_mode:
             self._policy_listeners = list(listeners)
@@ -1059,6 +1144,10 @@ class Diverter(DiverterBase, WinUtilMixin):
                 if self.handle:
                     self._close_windivert_handle()
                 raise RuntimeError('WinDivert receiver thread failed to start')
+
+        # Record-only inbound capture (plan I7): open before any network
+        # mutation so an open failure fails the run before DNS changes.
+        self._open_inbound_capture()
 
         try:
             # Set local DNS only after policy listeners and WinDivert are
@@ -1299,22 +1388,6 @@ class Diverter(DiverterBase, WinUtilMixin):
 
             if (getattr(self, 'process_redirect_engine', None) is not None and
                     self._apply_process_redirect(pkt)):
-                return
-
-            if (pkt.proto and
-                    self.egress_policy.matches_takeover_sink(*original)):
-                verdict = self.finalize_egress_verdict(
-                    pkt, takeover_sink=True)
-                if verdict != Verdict.ALLOW_TAKEOVER_SINK:
-                    self.log_egress_event(
-                        'DROP_EXTERNAL', reason='takeover_revalidation_failed',
-                        original_ip=pkt.dst_ip0,
-                        original_port=pkt.dport0)
-                    return
-                self.log_egress_event(
-                    'ALLOW_TAKEOVER_SINK', ip=pkt.dst_ip0,
-                    proto=pkt.proto, sport=pkt.sport0, dport=pkt.dport0)
-                self._send_packet(pkt)
                 return
 
             redirected = False
@@ -1786,19 +1859,13 @@ class Diverter(DiverterBase, WinUtilMixin):
 
     def _compute_egress_verdict(self, pkt, relay_redirected=False,
                                 permit=None, relay_return_fixed=False,
-                                takeover_sink=False, reviewed_rule=None):
+                                reviewed_rule=None):
         if permit is not None:
             return Verdict.ALLOW_INTERNAL_UPSTREAM
         if relay_return_fixed:
             return (Verdict.REINJECT_LOCAL
                     if self.egress_policy.is_exact_local_ipv4(pkt.dst_ip)
                     else Verdict.DROP_EXTERNAL)
-        if takeover_sink:
-            return (Verdict.ALLOW_TAKEOVER_SINK
-                    if self.egress_policy.matches_takeover_sink(
-                        pkt.proto, pkt.src_ip, pkt.sport,
-                        pkt.dst_ip, pkt.dport) else
-                    Verdict.DROP_EXTERNAL)
         if relay_redirected:
             if (pkt.proto == 'TCP' and
                     pkt.dport == self.egress_policy.relay_port and
@@ -2061,6 +2128,26 @@ class Diverter(DiverterBase, WinUtilMixin):
             except Exception:
                 healthy = False
                 self.logger.exception('Failed suspending egress policy')
+
+        # Inbound capture shutdown (plan I7): close its handle and join its
+        # thread BEFORE the main receiver so the paired pcap writer never
+        # outlives a producer thread; the writer-gate flag mirrors the main
+        # thread timeout handling below.
+        if getattr(self, '_inbound_capture_handle', None) is not None:
+            try:
+                self._close_inbound_capture_handle()
+            except Exception:
+                healthy = False
+                self.logger.exception(
+                    'Failed closing inbound capture handle')
+        capture_worker = getattr(self, 'inbound_capture_thread', None)
+        if capture_worker and capture_worker is not threading.current_thread():
+            capture_worker.join(5)
+            if capture_worker.is_alive():
+                healthy = False
+                self._capture_writers_safe_to_close = False
+                self.logger.critical(
+                    'PCAP_DUAL_THREAD_STOP_TIMEOUT thread=inbound_capture_thread')
 
         # Closing WinDivert wakes a receiver blocked in recv(). Network state
         # restoration remains independent of handle and thread cleanup.
