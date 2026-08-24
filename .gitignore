@@ -108,3 +108,4 @@ dist
 # fakenet-GUI local build smoke artifacts (plan 2026.08.14)
 build_gui_dist/
 build_gui_work/
+**/.zcode
