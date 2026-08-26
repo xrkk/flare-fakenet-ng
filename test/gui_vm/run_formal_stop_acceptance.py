@@ -83,31 +83,21 @@ def stop_boundaries_closed(content):
     return not active, sorted('%s:%s' % item for item in active)
 
 
-def close_gui_window(pid):
-    """Post WM_CLOSE to the GUI owned by pid; never terminate the process."""
-    import ctypes
-    from ctypes import wintypes
-    user32 = ctypes.windll.user32
-    windows = []
-    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND,
-                                      wintypes.LPARAM)
-
-    @callback_type
-    def callback(hwnd, unused):
-        owner = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
-        if owner.value == pid and user32.IsWindowVisible(hwnd):
-            windows.append(hwnd)
-        return True
-
-    user32.EnumWindows(callback, 0)
-    for hwnd in windows:
-        user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
-    return bool(windows)
-
-
 def _new_mei_dirs():
     return set(glob.glob(os.path.join(tempfile.gettempdir(), '_MEI*')))
+
+
+def cleanup_round_gui(gui, mei_before):
+    """Close the real one-file GUI image, then verify its _MEI is gone."""
+    gui_ok, gui_detail = acceptance.stop_gui_smoke(gui, 'exe')
+    remaining = []
+
+    def mei_cleaned():
+        remaining[:] = sorted(_new_mei_dirs() - mei_before)
+        return not remaining
+
+    mei_ok = acceptance.wait_for(mei_cleaned, 10, interval=0.25)
+    return gui_ok, gui_detail, mei_ok, remaining
 
 
 def run_round(round_number, evidence_dir):
@@ -260,18 +250,11 @@ def run_round(round_number, evidence_dir):
           'unclosed=%s' % (','.join(active) if active else '-'))
     check('no_fakenet_residual', not launcher.is_fakenet_running(),
           '按进程镜像名只读检查')
-    mei_after = _new_mei_dirs()
-    check('no_new_onefile_mei', not (mei_after - mei_before),
-          'new=%s' % sorted(mei_after - mei_before))
-
-    close_gui_window(gui.pid)
-    try:
-        gui.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        check('gui_closed_normally', False,
-              'WM_CLOSE 后仍未退出；不强杀，停止后续轮次')
-    else:
-        check('gui_closed_normally', True, 'WM_CLOSE exit=%s' % gui.returncode)
+    gui_ok, gui_detail, mei_ok, remaining_mei = cleanup_round_gui(
+        gui, mei_before)
+    check('gui_closed_normally', gui_ok, gui_detail)
+    check('no_new_onefile_mei', mei_ok,
+          'new=%s' % remaining_mei)
 
     return persist()
 

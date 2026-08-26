@@ -59,3 +59,43 @@ def test_three_round_contract_and_onedir_gate_are_fixed():
     assert 'exit_seconds <= 5.0' in text
     assert "core_bundle_mode') != 'pyinstaller-onedir'" in text
     assert "os.path.isdir(os.path.join(REPO, '_internal'))" in text
+
+
+def test_round_cleanup_closes_gui_image_before_testing_mei(monkeypatch):
+    events = []
+    mei_states = iter(({'old', 'gui-mei'}, {'old'}))
+
+    def fake_stop_gui_smoke(gui, mode):
+        events.append(('close', gui, mode))
+        return True, 'CLOSE_REQUESTED count=1;进程已退出'
+
+    def fake_new_mei_dirs():
+        events.append(('mei',))
+        return next(mei_states)
+
+    def fake_wait(predicate, timeout, interval=1.0):
+        events.append(('wait', timeout, interval))
+        for _unused in range(2):
+            if predicate():
+                return True
+        return False
+
+    monkeypatch.setattr(
+        formal.acceptance, 'stop_gui_smoke', fake_stop_gui_smoke)
+    monkeypatch.setattr(formal, '_new_mei_dirs', fake_new_mei_dirs)
+    monkeypatch.setattr(formal.acceptance, 'wait_for', fake_wait)
+
+    result = formal.cleanup_round_gui(object(), {'old'})
+
+    assert result == (
+        True, 'CLOSE_REQUESTED count=1;进程已退出', True, [])
+    assert events[0][0] == 'close'
+    assert [event[0] for event in events].index('close') < \
+        [event[0] for event in events].index('mei')
+
+
+def test_formal_runner_does_not_close_gui_by_bootloader_pid():
+    text = RUNNER.read_text(encoding='utf-8')
+
+    assert 'close_gui_window' not in text
+    assert 'acceptance.stop_gui_smoke' in text

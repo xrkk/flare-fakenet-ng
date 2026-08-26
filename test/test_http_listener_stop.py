@@ -162,6 +162,75 @@ def test_stop_interrupts_incomplete_header_without_error_or_thread_leak():
                 if record.levelno >= logging.ERROR]
 
 
+def test_stop_records_transport_and_each_wait_boundary():
+    listener, server, thread = _start_server(timeout=2)
+    recorder = RecordingHandler()
+    server.logger.addHandler(recorder)
+    client = _connect(server)
+    try:
+        client.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\n')
+        assert _wait_active(server)
+        _stop_with_deadline(listener, thread)
+    finally:
+        client.close()
+
+    messages = [record.getMessage() for record in recorder.records]
+    assert any('HTTP_STOP_WAKE active_before=True result=signaled' in message
+               for message in messages)
+    transport = next(message for message in messages
+                     if 'HTTP_STOP_TRANSPORT ' in message)
+    assert (
+        ('active=True' in transport and 'shutdown=' in transport and
+         'close=' in transport) or
+        ('active=False' in transport and 'shutdown=not-run' in transport and
+         'close=not-run' in transport))
+    steps = [
+        'begin_shutdown', 'transport', 'server_shutdown',
+        'server_close', 'server_thread_join']
+    positions = [next(
+        index for index, message in enumerate(messages)
+        if 'HTTP_STOP_STEP step=%s ' % step in message)
+        for step in steps]
+    assert positions == sorted(positions)
+
+
+def test_stop_records_when_no_transport_is_active():
+    listener, unused_server, thread = _start_server()
+    recorder = RecordingHandler()
+    listener.logger.addHandler(recorder)
+
+    _stop_with_deadline(listener, thread)
+
+    messages = [record.getMessage() for record in recorder.records]
+    assert any('HTTP_STOP_TRANSPORT active=False' in message
+               for message in messages)
+
+
+def test_stop_interrupts_incomplete_header_repeatedly_on_windows():
+    attempts = []
+    for attempt in range(200):
+        listener, server, thread = _start_server(timeout=2)
+        recorder = RecordingHandler()
+        server.logger.addHandler(recorder)
+        client = _connect(server)
+        try:
+            client.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\n')
+            assert _wait_active(server)
+            started = time.monotonic()
+            listener.stop()
+            elapsed = time.monotonic() - started
+        finally:
+            client.close()
+        messages = [record.getMessage() for record in recorder.records]
+        attempts.append((attempt, elapsed, messages))
+        failure_detail = 'attempt=%d elapsed=%.3f\n%s' % (
+            attempt, elapsed, '\n'.join(messages))
+        assert elapsed <= 1.0, failure_detail
+        assert not thread.is_alive(), (attempt, elapsed, messages)
+        assert not [record for record in recorder.records
+                    if record.levelno >= logging.ERROR], failure_detail
+
+
 def test_stop_interrupts_incomplete_post_body():
     listener, server, thread = _start_server(timeout=2)
     client = _connect(server)

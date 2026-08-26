@@ -11,6 +11,8 @@ import importlib.machinery
 import threading
 import socketserver
 import http.server
+import io
+import select
 
 import ssl
 import socket
@@ -262,12 +264,45 @@ class HTTPListener(object):
         self.logger.debug('Stopping...')
         if self.server:
             server = self.server
-            server.begin_shutdown()
-            server.close_active_transport()
+            step_started = time.monotonic()
+            wake_result = server.begin_shutdown()
+            self.logger.info(
+                'HTTP_STOP_WAKE active_before=%s result=%s',
+                wake_result['active_before'], wake_result['result'])
+            self.logger.info(
+                'HTTP_STOP_STEP step=begin_shutdown elapsed_ms=%d',
+                int((time.monotonic() - step_started) * 1000))
+
+            step_started = time.monotonic()
+            transport_result = server.close_active_transport()
+            self.logger.info(
+                'HTTP_STOP_TRANSPORT active=%s fileno=%s timeout=%s '
+                'shutdown=%s close=%s',
+                transport_result['active'], transport_result['fileno'],
+                transport_result['timeout'], transport_result['shutdown'],
+                transport_result['close'])
+            self.logger.info(
+                'HTTP_STOP_STEP step=transport elapsed_ms=%d',
+                int((time.monotonic() - step_started) * 1000))
+
+            step_started = time.monotonic()
             server.shutdown()
+            self.logger.info(
+                'HTTP_STOP_STEP step=server_shutdown elapsed_ms=%d',
+                int((time.monotonic() - step_started) * 1000))
+
+            step_started = time.monotonic()
             server.server_close()
+            self.logger.info(
+                'HTTP_STOP_STEP step=server_close elapsed_ms=%d',
+                int((time.monotonic() - step_started) * 1000))
+
+            step_started = time.monotonic()
             if self.server_thread:
                 self.server_thread.join()
+            self.logger.info(
+                'HTTP_STOP_STEP step=server_thread_join elapsed_ms=%d',
+                int((time.monotonic() - step_started) * 1000))
             self.server = None
             self.server_thread = None
 
@@ -280,17 +315,66 @@ class HTTPListener(object):
         self.acceptDiverterListenerCallbacks(callbacks)
 
 
+class _StopAwareSocketReader(io.RawIOBase):
+
+    def __init__(self, transport, stop_reader, stop_event):
+        super(_StopAwareSocketReader, self).__init__()
+        self._transport = transport
+        self._stop_reader = stop_reader
+        self._stop_event = stop_event
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        if self._stop_event.is_set():
+            raise OSError('HTTP server is stopping')
+        if isinstance(self._transport, ssl.SSLSocket) and \
+                self._transport.pending():
+            return self._transport.recv_into(buffer)
+        timeout = self._transport.gettimeout()
+        try:
+            readable, _unused_write, _unused_error = select.select(
+                [self._transport, self._stop_reader], [], [], timeout)
+        except (OSError, ValueError):
+            if self._stop_event.is_set():
+                raise OSError('HTTP server is stopping')
+            raise
+        if self._stop_reader in readable:
+            raise OSError('HTTP server is stopping')
+        if self._transport not in readable:
+            raise socket.timeout('timed out')
+        return self._transport.recv_into(buffer)
+
+
 class ThreadedHTTPServer(http.server.HTTPServer):
 
     def __init__(self, *args, **kwargs):
         self._transport_lock = threading.Lock()
         self._active_transport = None
         self._stopping = False
+        self._stop_event = threading.Event()
         super(ThreadedHTTPServer, self).__init__(*args, **kwargs)
+        self._stop_reader, self._stop_writer = socket.socketpair()
 
     def begin_shutdown(self):
         with self._transport_lock:
+            already_stopping = self._stopping
+            active_before = self._active_transport is not None
             self._stopping = True
+            self._stop_event.set()
+        if already_stopping:
+            return {
+                'active_before': active_before,
+                'result': 'already-signaled',
+            }
+        try:
+            self._stop_writer.sendall(b'\x00')
+        except OSError as exc:
+            result = self._format_stop_socket_error(exc)
+        else:
+            result = 'signaled'
+        return {'active_before': active_before, 'result': result}
 
     def _register_transport(self, transport):
         with self._transport_lock:
@@ -309,15 +393,44 @@ class ThreadedHTTPServer(http.server.HTTPServer):
             transport = self._active_transport
             self._active_transport = None
         if transport is None:
-            return
+            return {
+                'active': False,
+                'fileno': '-',
+                'timeout': '-',
+                'shutdown': 'not-run',
+                'close': 'not-run',
+            }
+        try:
+            fileno = transport.fileno()
+        except (OSError, ValueError):
+            fileno = 'unavailable'
+        try:
+            timeout = transport.gettimeout()
+        except (OSError, ValueError):
+            timeout = 'unavailable'
+        shutdown_result = 'ok'
         try:
             transport.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
+        except OSError as exc:
+            shutdown_result = self._format_stop_socket_error(exc)
+        close_result = 'ok'
         try:
             transport.close()
-        except OSError:
-            pass
+        except OSError as exc:
+            close_result = self._format_stop_socket_error(exc)
+        return {
+            'active': True,
+            'fileno': fileno,
+            'timeout': timeout,
+            'shutdown': shutdown_result,
+            'close': close_result,
+        }
+
+    @staticmethod
+    def _format_stop_socket_error(exc):
+        return '%s(errno=%s,winerror=%s)' % (
+            type(exc).__name__, getattr(exc, 'errno', None),
+            getattr(exc, 'winerror', None))
 
     def get_request(self):
         request, client_address = super(ThreadedHTTPServer, self).get_request()
@@ -336,6 +449,16 @@ class ThreadedHTTPServer(http.server.HTTPServer):
     def shutdown_request(self, request):
         self._clear_transport(request)
         super(ThreadedHTTPServer, self).shutdown_request(request)
+
+    def server_close(self):
+        try:
+            super(ThreadedHTTPServer, self).server_close()
+        finally:
+            for control_socket in (self._stop_reader, self._stop_writer):
+                try:
+                    control_socket.close()
+                except OSError:
+                    pass
 
     def handle_error(self, request, client_address):
         exctype, value = sys.exc_info()[:2]
@@ -361,6 +484,10 @@ class ThreadedHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
     def setup(self):
         self.request.settimeout(int(self.server.config.get('timeout', 10)))
         http.server.BaseHTTPRequestHandler.setup(self)
+        self.rfile.close()
+        self.rfile = io.BufferedReader(_StopAwareSocketReader(
+            self.connection, self.server._stop_reader,
+            self.server._stop_event))
 
     def doCustomResponse(self, meth, post_data=None):
         uri = self.path
