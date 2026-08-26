@@ -163,12 +163,12 @@ def test_active_fakenet_images_silent_when_not_found(monkeypatch):
     assert acceptance.active_fakenet_images() == []
 
 
-def test_request_gui_close_uses_graceful_main_window(monkeypatch):
+def test_request_gui_close_enumerates_process_windows(monkeypatch):
     calls = []
 
     class FakeProc(object):
         returncode = 0
-        stdout = 'CLOSE_REQUESTED\n'
+        stdout = 'CLOSE_REQUESTED count=1\n'
         stderr = ''
 
     def fake_run(cmd, **kwargs):
@@ -179,11 +179,15 @@ def test_request_gui_close_uses_graceful_main_window(monkeypatch):
     ok, detail = acceptance.request_gui_close()
 
     assert ok
-    assert detail == 'CLOSE_REQUESTED'
+    assert detail == 'CLOSE_REQUESTED count=1'
     assert calls[0][0][:4] == [
         'powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive']
     command = calls[0][0][-1]
-    assert 'CloseMainWindow()' in command
+    assert 'EnumWindows' in command
+    assert 'GetWindowThreadProcessId' in command
+    assert 'PostMessageW' in command
+    assert '0x0010' in command
+    assert 'CloseMainWindow()' not in command
     assert 'taskkill' not in command.lower()
 
 
@@ -201,16 +205,20 @@ def test_stop_gui_smoke_exe_closes_child_without_terminate(monkeypatch):
             self.returncode = 0
             return 0
 
+    requests = iter(((False, 'NO_TOP_LEVEL_WINDOW'),
+                     (True, 'CLOSE_REQUESTED count=1')))
     images = iter((['fakenet-GUI.exe'], []))
     monkeypatch.setattr(
         acceptance, 'request_gui_close',
-        lambda: (True, 'CLOSE_REQUESTED'))
+        lambda: next(requests))
     monkeypatch.setattr(
         acceptance, 'active_fakenet_images', lambda: next(images, []))
 
     def fake_wait(predicate, timeout, interval=1.0):
-        assert not predicate()
-        return predicate()
+        for _unused in range(3):
+            if predicate():
+                return True
+        return False
 
     monkeypatch.setattr(
         acceptance, 'wait_for', fake_wait)
@@ -218,7 +226,7 @@ def test_stop_gui_smoke_exe_closes_child_without_terminate(monkeypatch):
     ok, detail = acceptance.stop_gui_smoke(FakeGuiProc(), 'exe')
 
     assert ok
-    assert detail == 'CLOSE_REQUESTED;进程已退出'
+    assert detail == 'CLOSE_REQUESTED count=1;进程已退出'
 
 
 def test_export_logs_collects_package_root_artifacts(tmp_path):

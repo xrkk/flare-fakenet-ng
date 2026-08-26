@@ -207,16 +207,44 @@ def active_fakenet_images():
 
 
 def request_gui_close():
-    """Ask the formal GUI instance to close through its main window."""
+    """Post WM_CLOSE to every top-level window owned by the formal GUI."""
     script = (
-        "$items = @(Get-Process -Name 'fakenet-GUI' "
-        "-ErrorAction SilentlyContinue); "
-        "if ($items.Count -eq 0) { Write-Output 'GUI_NOT_FOUND'; exit 3 }; "
-        "$requested = $false; "
-        "foreach ($item in $items) { "
-        "if ($item.CloseMainWindow()) { $requested = $true } }; "
-        "if ($requested) { Write-Output 'CLOSE_REQUESTED'; exit 0 }; "
-        "Write-Output 'NO_MAIN_WINDOW'; exit 4")
+        "Add-Type -TypeDefinition @'\n"
+        "using System;\n"
+        "using System.Runtime.InteropServices;\n"
+        "public static class FakenetWindowClose {\n"
+        "  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);\n"
+        "  [DllImport(\"user32.dll\")]\n"
+        "  public static extern bool EnumWindows(EnumWindowsProc callback, "
+        "IntPtr lParam);\n"
+        "  [DllImport(\"user32.dll\")]\n"
+        "  public static extern uint GetWindowThreadProcessId(IntPtr hWnd, "
+        "out uint processId);\n"
+        "  [DllImport(\"user32.dll\", SetLastError=true)]\n"
+        "  [return: MarshalAs(UnmanagedType.Bool)]\n"
+        "  public static extern bool PostMessageW(IntPtr hWnd, uint message, "
+        "IntPtr wParam, IntPtr lParam);\n"
+        "}\n"
+        "'@; "
+        "$pids = @(Get-Process -Name 'fakenet-GUI' "
+        "-ErrorAction SilentlyContinue | ForEach-Object { [int]$_.Id }); "
+        "if ($pids.Count -eq 0) { Write-Output 'GUI_NOT_FOUND'; exit 3 }; "
+        "$posted = [System.Collections.Generic.List[string]]::new(); "
+        "$callback = [FakenetWindowClose+EnumWindowsProc] { "
+        "param([IntPtr]$hWnd, [IntPtr]$lParam); "
+        "[uint32]$ownerPid = 0; "
+        "[void][FakenetWindowClose]::GetWindowThreadProcessId("
+        "$hWnd, [ref]$ownerPid); "
+        "if ($pids -contains [int]$ownerPid) { "
+        "if ([FakenetWindowClose]::PostMessageW("
+        "$hWnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { "
+        "[void]$posted.Add(('{0}:{1}' -f $ownerPid, $hWnd)) } }; "
+        "return $true }; "
+        "[void][FakenetWindowClose]::EnumWindows("
+        "$callback, [IntPtr]::Zero); "
+        "if ($posted.Count -gt 0) { "
+        "Write-Output ('CLOSE_REQUESTED count=' + $posted.Count); exit 0 }; "
+        "Write-Output 'NO_TOP_LEVEL_WINDOW'; exit 4")
     try:
         completed = subprocess.run(
             ['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
@@ -239,7 +267,17 @@ def stop_gui_smoke(gui_proc, gui_mode):
         gui_proc.wait(timeout=10)
         return True, '开发模式测试进程已结束'
 
-    requested, detail = request_gui_close()
+    last_detail = ['关闭请求未执行']
+
+    def request_when_window_exists():
+        requested, detail = request_gui_close()
+        last_detail[0] = detail
+        return requested
+
+    requested = wait_for(request_when_window_exists, 30, interval=0.25)
+    detail = last_detail[0]
+    if not requested:
+        return False, detail
     closed = wait_for(
         lambda: 'fakenet-GUI.exe' not in active_fakenet_images(),
         10, interval=0.25)
@@ -248,8 +286,6 @@ def stop_gui_smoke(gui_proc, gui_mode):
             gui_proc.wait(timeout=1)
         except subprocess.TimeoutExpired:
             pass
-    if not requested:
-        return False, detail
     if not closed:
         return False, '%s;10 秒内仍有 fakenet-GUI.exe' % detail
     return True, '%s;进程已退出' % detail
