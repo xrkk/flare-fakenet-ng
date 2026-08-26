@@ -29,6 +29,7 @@ against the local DNS listener and evaluates the core log. Exit codes:
 """
 
 import ipaddress
+import json
 import os
 import re
 import subprocess
@@ -48,6 +49,7 @@ import run_gui_vm_acceptance as acceptance  # noqa: E402
 EXIT_PASS, EXIT_FAIL, EXIT_REFUSED = 0, 1, 2
 RESULTS = []
 LOG_DIR = None
+FNPR_NONCE = None
 
 EXACT_DOMAIN = 'api.deepseek.com'
 WILDCARD_ENTRY = '*.deepseek.com'
@@ -259,8 +261,12 @@ def stop_core(stop_flag, core_log):
 
 
 def finish():
-    acceptance.kill_leftover_processes()
     failed = [r for r in RESULTS if r[0] == 'FAIL']
+    leftovers = acceptance.active_fakenet_images()
+    if leftovers:
+        result('P 组结束后进程残留', 'FAIL',
+               '%s；未强杀，请导出证据并回滚快照' % ','.join(leftovers))
+        failed = [r for r in RESULTS if r[0] == 'FAIL']
     if LOG_DIR is not None:
         tsv = os.path.join(LOG_DIR, 'policy-results.tsv')
         with open(tsv, 'w', encoding='utf-8') as handle:
@@ -279,7 +285,7 @@ def refuse(detail):
 
 
 def main():
-    global LOG_DIR
+    global LOG_DIR, FNPR_NONCE
 
     if os.name != 'nt':
         return refuse('仅支持 Windows')
@@ -291,6 +297,19 @@ def main():
     if vm.verdict != launcher.VERDICT_VM:
         return refuse('本机不是确定的 VM(状态 %s)——策略测试会启用真实'
                       '流量劫持,只允许在隔离 VM 内运行' % vm.verdict)
+
+    session_path = acceptance.fnpr_session_path()
+    try:
+        with open(session_path, 'r', encoding='utf-8') as handle:
+            fnpr_session = json.load(handle)
+        FNPR_NONCE = fnpr_session['nonce']
+        if not fnpr_session.get('ok'):
+            raise ValueError('preflight did not pass')
+        if time.time() - float(fnpr_session['created_epoch']) > 3600:
+            raise ValueError('preflight session is older than one hour')
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return refuse('缺少当前 Run-Tests.cmd 生成的 Sentinel 前置会话: %s'
+                      % exc)
 
     stamp = time.strftime('%Y%m%d-%H%M%S')
     LOG_DIR = os.path.join(HERE, 'Logs', 'policy-%s' % stamp)
@@ -400,34 +419,24 @@ def main():
     result('P9 接管通配放行', 'PASS' if wildcard2 else 'FAIL',
            '%s 租约 %s' % (WILDCARD_NAME, sorted(wildcard2) or '无'))
 
-    # P15 (plan 2026.08.21-01 §5.2): after the sink DNS answer the follow-up
-    # TCP connect must be diverted into the local HTTP listener and get a
-    # full HTTP reply (the old ALLOW_TAKEOVER_SINK pass-through died at the
-    # VMware host).
-    sink_body = b''
-    try:
-        import socket
-        sock = socket.create_connection((TAKEOVER_SINK, 80), timeout=10)
-        sock.settimeout(10)
-        try:
-            sock.sendall(b'GET / HTTP/1.0\r\nHost: %s\r\n\r\n' %
-                         APEX_DOMAIN.encode('ascii'))
-            sink_body = sock.recv(4096)
-        finally:
-            sock.close()
-    except OSError:
-        sink_body = b''
-    sink_status = sink_body.split(b'\r\n', 1)[0] if sink_body else b''
-    sink_http_ok = (sink_body.startswith(b'HTTP/1.') and
-                    b' 200 ' in sink_status)
+    import run_vm_diagnostics as diagnostic
+    target_ok, target = diagnostic.probe_fnpr_transports(
+        FNPR_NONCE, 'target', timeout=5.0)
+    acceptance.wait_for(
+        lambda: 'ALLOW_TAKEOVER_SINK' in
+        acceptance.read_core_log(core_log2), 10)
     log2b = acceptance.read_core_log(core_log2)
-    sink_diverted = ('disposition=DIVERT_FAKE' in log2b and
-                     'dst=%s' % TAKEOVER_SINK in log2b and
-                     'ALLOW_TAKEOVER_SINK' not in log2b)
-    result('P15 接管 sink 连通', 'PASS' if sink_http_ok and sink_diverted
+    sink_allowed = ('ALLOW_TAKEOVER_SINK' in log2b and
+                    'ip=%s' % TAKEOVER_SINK in log2b)
+    sink_diverted = ('DIVERT_FAKE' in log2b and
+                     'original_ip=%s' % TAKEOVER_SINK in log2b)
+    result('P15 接管 sink 连通',
+           'PASS' if target_ok and sink_allowed and not sink_diverted
            else 'FAIL',
-           'sink:80 状态行 %r;DIVERT_FAKE dst=sink=%s'
-           % (sink_status[:40], sink_diverted))
+           'nonce=%s;TCP=%s;UDP=%s;ALLOW_TAKEOVER_SINK=%s;'
+           '本地DIVERT_FAKE=%s' % (
+               FNPR_NONCE, target['tcp']['ok'], target['udp']['ok'],
+               sink_allowed, sink_diverted))
     stop_core(stop2, core_log2)
     result('P10 阶段2干净退出', 'PASS'
            if 'FakeNet-NG exiting: rc=0' in

@@ -1368,6 +1368,21 @@ class Diverter(DiverterBase, WinUtilMixin):
                         self._send_packet(pkt)
                     return
 
+            if self._matches_takeover_sink_route(pkt):
+                verdict = self.finalize_egress_verdict(pkt)
+                if verdict != Verdict.ALLOW_TAKEOVER_SINK:
+                    self.log_egress_event(
+                        'DROP_EXTERNAL', reason='takeover_revalidation_failed',
+                        ip=pkt.dst_ip0, proto=pkt.proto,
+                        dport=pkt.dport0)
+                    return
+                self.log_egress_event(
+                    'ALLOW_TAKEOVER_SINK', ip=pkt.dst_ip0,
+                    proto=pkt.proto, sport=pkt.sport0,
+                    dport=pkt.dport0)
+                self._send_packet(pkt)
+                return
+
             mapping = self.apply_domain_relay_return_fixup(pkt, original)
             if mapping:
                 verdict = self.finalize_egress_verdict(
@@ -1857,11 +1872,29 @@ class Diverter(DiverterBase, WinUtilMixin):
             self._audit_flow(pkt, verdict)
         return verdict
 
+    def _matches_takeover_sink_route(self, pkt):
+        """Match the exact sink only on the frozen on-link route identity."""
+        policy = getattr(self, 'egress_policy', None)
+        predicate = getattr(policy, 'matches_takeover_sink', None)
+        snapshot = getattr(self, '_takeover_route_snapshot', None)
+        if predicate is None or not snapshot:
+            return False
+        try:
+            route_matches = (
+                str(pkt.src_ip0) == str(snapshot['source_ipv4']) and
+                int(pkt.interface_index) == int(snapshot['interface_index']))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return False
+        return bool(route_matches and predicate(
+            pkt.proto, pkt.src_ip0, pkt.sport0, pkt.dst_ip0, pkt.dport0))
+
     def _compute_egress_verdict(self, pkt, relay_redirected=False,
                                 permit=None, relay_return_fixed=False,
                                 reviewed_rule=None):
         if permit is not None:
             return Verdict.ALLOW_INTERNAL_UPSTREAM
+        if self._matches_takeover_sink_route(pkt):
+            return Verdict.ALLOW_TAKEOVER_SINK
         if relay_return_fixed:
             return (Verdict.REINJECT_LOCAL
                     if self.egress_policy.is_exact_local_ipv4(pkt.dst_ip)
@@ -1953,7 +1986,15 @@ class Diverter(DiverterBase, WinUtilMixin):
                 self._drop_log_state = {
                     key: stamp for key, stamp in self._drop_log_state.items()
                     if now - stamp < 60}
-        suffix = ' '.join('%s=%s' % item for item in sorted(fields.items()))
+        if event == 'ALLOW_TAKEOVER_SINK':
+            order = ('ip', 'proto', 'sport', 'dport')
+            ordered = [(key, fields[key]) for key in order if key in fields]
+            ordered.extend(sorted(
+                (key, value) for key, value in fields.items()
+                if key not in order))
+        else:
+            ordered = sorted(fields.items())
+        suffix = ' '.join('%s=%s' % item for item in ordered)
         self.logger.info('%s%s', event, (' ' + suffix) if suffix else '')
 
     def _watch_diverter_thread(self):

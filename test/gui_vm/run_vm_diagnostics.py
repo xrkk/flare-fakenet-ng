@@ -18,6 +18,7 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -43,6 +44,8 @@ TEST_TCP_IPV4 = '198.51.100.10'
 TEST_TCP_PORT = 80
 DIAGNOSTIC_DNS_SUFFIX = 'invalid'
 GUI_STOP_OBSERVE_SECONDS = 30
+STOP_TRACE_POLL_SECONDS = 0.05
+STOP_TRACE_TAG = '[DEBUG-STOP03]'
 
 
 def utc_now_text():
@@ -76,6 +79,12 @@ def create_evidence_paths(log_root, stamp=None):
             log_root, 'diagnostic-session-%s.json' % stamp),
         'anomalies': os.path.join(
             log_root, 'diagnostic-core-anomalies-%s.txt' % stamp),
+        'stop_process': os.path.join(
+            log_root, 'diagnostic-stop-process-%s.tsv' % stamp),
+        'bootloader_console': os.path.join(
+            log_root, 'diagnostic-stop-bootloader-%s.txt' % stamp),
+        'console_stop': os.path.join(
+            log_root, 'diagnostic-stop-console-helper-%s.stop' % stamp),
     }
 
 
@@ -108,6 +117,11 @@ def package_identity():
             'package_version': manifest.get('package_version'),
             'package_mode': manifest.get('package_mode'),
             'source_commit': manifest.get('source_commit'),
+            'source_snapshot_mode': manifest.get('source_snapshot_mode'),
+            'core_bundle_mode': manifest.get('core_bundle_mode'),
+            'core_bootloader_debug': manifest.get(
+                'core_bootloader_debug'),
+            'core_runtime_hook': manifest.get('core_runtime_hook'),
             'fakenet_exe_sha256': manifest.get('fakenet_exe_sha256'),
             'fakenet_gui_exe_sha256': manifest.get(
                 'fakenet_gui_exe_sha256'),
@@ -513,6 +527,312 @@ def read_text(path):
         return ''
 
 
+class StopProcessMonitor(object):
+    """Observe the frozen child, one-file parent, and _MEI lifecycle."""
+
+    def __init__(self, log_root, output_path, bootloader_console_path,
+                 console_stop_path, poll_seconds=STOP_TRACE_POLL_SECONDS):
+        self.log_root = log_root
+        self.output_path = output_path
+        self.bootloader_console_path = bootloader_console_path
+        self.console_stop_path = console_stop_path
+        self.poll_seconds = poll_seconds
+        self.before_traces = set(os.path.abspath(path) for path in glob.glob(
+            os.path.join(log_root, 'diagnostic-stop-runtime-*.jsonl')))
+        self.events = []
+        self._seen_runtime_events = set()
+        self._stop = threading.Event()
+        self._terminal = threading.Event()
+        self._thread = None
+        self._console_helper = None
+        self._child_handle = None
+        self._parent_handle = None
+        self.child_pid = None
+        self.parent_pid = None
+        self.mei_path = None
+        self._child_alive = None
+        self._parent_alive = None
+        self._mei_exists = None
+        self._cleanup_window_recorded = False
+
+    def _record(self, event, detail, monotonic_ns=None, utc=None):
+        row = {
+            'event': event,
+            'utc': utc or utc_now_text(),
+            'monotonic_ns': (time.monotonic_ns() if monotonic_ns is None
+                             else int(monotonic_ns)),
+            'detail': detail,
+        }
+        self.events.append(row)
+        write_tsv(
+            self.output_path,
+            ('event', 'utc', 'monotonic_ns', 'detail'),
+            [(item['event'], item['utc'], item['monotonic_ns'],
+              item['detail']) for item in self.events])
+
+    @staticmethod
+    def _open_process(pid):
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = [wintypes.DWORD, wintypes.BOOL,
+                                 wintypes.DWORD]
+        open_process.restype = wintypes.HANDLE
+        return open_process(0x00100000 | 0x1000, False, pid)
+
+    @staticmethod
+    def _process_state(handle):
+        import ctypes
+        from ctypes import wintypes
+        if not handle:
+            return False, 'handle-unavailable'
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        wait = kernel32.WaitForSingleObject
+        wait.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        wait.restype = wintypes.DWORD
+        result = wait(handle, 0)
+        if result == 258:
+            return True, 'STILL_ACTIVE'
+        if result != 0:
+            return False, 'wait-result=%d winerror=%d' % (
+                result, ctypes.get_last_error())
+        code = wintypes.DWORD()
+        get_exit = kernel32.GetExitCodeProcess
+        get_exit.argtypes = [wintypes.HANDLE,
+                             ctypes.POINTER(wintypes.DWORD)]
+        get_exit.restype = wintypes.BOOL
+        if not get_exit(handle, ctypes.byref(code)):
+            return False, 'exit-code-unavailable-winerror=%d' % (
+                ctypes.get_last_error())
+        return False, 'exit_code=%d' % int(code.value)
+
+    @staticmethod
+    def _close_process(handle):
+        if not handle:
+            return
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle(handle)
+
+    def _start_console_helper(self):
+        helper = os.path.join(SCRIPT_DIR, 'capture_windows_console.py')
+        creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        command = [
+            sys.executable, helper, str(self.parent_pid),
+            self.bootloader_console_path, self.console_stop_path,
+        ]
+        try:
+            self._console_helper = subprocess.Popen(
+                command, cwd=REPO, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=creationflags)
+            self._record(
+                'bootloader_console_capture_started',
+                'helper_pid=%s target_parent_pid=%s output=%s' % (
+                    self._console_helper.pid, self.parent_pid,
+                    self.bootloader_console_path))
+        except OSError as exc:
+            self._record('bootloader_console_capture_failed', str(exc))
+
+    def _load_runtime_trace(self):
+        candidates = sorted(
+            os.path.abspath(path) for path in glob.glob(os.path.join(
+                self.log_root, 'diagnostic-stop-runtime-*.jsonl'))
+            if os.path.abspath(path) not in self.before_traces)
+        for path in candidates:
+            for line in read_text(path).splitlines():
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if record.get('tag') != STOP_TRACE_TAG:
+                    continue
+                identity = (
+                    path, record.get('event'), record.get('monotonic_ns'))
+                if identity in self._seen_runtime_events:
+                    continue
+                self._seen_runtime_events.add(identity)
+                event = record.get('event') or 'runtime_event_unknown'
+                detail = 'trace=%s pid=%s parent_pid=%s mei=%s' % (
+                    path, record.get('pid'), record.get('parent_pid'),
+                    record.get('mei_path', '-'))
+                self._record(
+                    event, detail, record.get('monotonic_ns'),
+                    record.get('utc'))
+                if event == 'python_runtime_started' and \
+                        self.child_pid is None:
+                    self.child_pid = int(record['pid'])
+                    self.parent_pid = int(record['parent_pid'])
+                    self.mei_path = os.path.abspath(record['mei_path'])
+                    self._child_handle = self._open_process(self.child_pid)
+                    self._parent_handle = self._open_process(self.parent_pid)
+                    self._record(
+                        'frozen_process_identity_bound',
+                        'child_pid=%d onefile_parent_pid=%d mei=%s' % (
+                            self.child_pid, self.parent_pid, self.mei_path))
+                    self._start_console_helper()
+
+    def _observe_states(self):
+        if self.child_pid is None:
+            return
+        child_alive, child_detail = self._process_state(self._child_handle)
+        parent_alive, parent_detail = self._process_state(
+            self._parent_handle)
+        mei_exists = os.path.isdir(self.mei_path)
+        if child_alive != self._child_alive:
+            self._child_alive = child_alive
+            self._record(
+                'python_child_alive' if child_alive else
+                'python_child_exit_observed',
+                'pid=%d %s' % (self.child_pid, child_detail))
+        if parent_alive != self._parent_alive:
+            self._parent_alive = parent_alive
+            self._record(
+                'onefile_parent_alive' if parent_alive else
+                'onefile_parent_exit_observed',
+                'pid=%d %s' % (self.parent_pid, parent_detail))
+        if mei_exists != self._mei_exists:
+            self._mei_exists = mei_exists
+            self._record(
+                'mei_directory_present' if mei_exists else
+                'mei_directory_missing_observed',
+                self.mei_path)
+        if not child_alive and parent_alive and mei_exists and \
+                not self._cleanup_window_recorded:
+            self._cleanup_window_recorded = True
+            self._record(
+                'onefile_cleanup_window_observed',
+                'python child exited while parent and _MEI remained')
+        if not parent_alive and not mei_exists:
+            self._terminal.set()
+
+    def _run(self):
+        self._record('stop_process_monitor_started',
+                     'poll_seconds=%.3f' % self.poll_seconds)
+        try:
+            while not self._stop.is_set():
+                self._load_runtime_trace()
+                self._observe_states()
+                if self._terminal.is_set():
+                    break
+                self._stop.wait(self.poll_seconds)
+        except Exception as exc:  # noqa: BLE001 - evidence must record failure
+            self._record('stop_process_monitor_failed',
+                         '%s: %s' % (type(exc).__name__, exc))
+        finally:
+            self._record('stop_process_monitor_finished',
+                         'terminal=%s' % self._terminal.is_set())
+
+    def start(self):
+        self._thread = threading.Thread(
+            target=self._run, name='StopProcessMonitor', daemon=True)
+        self._thread.start()
+
+    def finish(self, timeout=5.0):
+        self._terminal.wait(timeout)
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        try:
+            with open(self.console_stop_path, 'w', encoding='ascii') as handle:
+                handle.write('stop\n')
+        except OSError:
+            pass
+        if self._console_helper is not None:
+            try:
+                self._console_helper.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                self._record(
+                    'bootloader_console_capture_incomplete',
+                    'helper did not stop within 5 seconds')
+        self._close_process(self._child_handle)
+        self._close_process(self._parent_handle)
+
+
+def summarize_stop_trace(events):
+    """Return stable diagnostic results from monitor/runtime event rows."""
+    first = {}
+    for item in events:
+        first.setdefault(item['event'], item)
+
+    def elapsed(start_name, end_name):
+        start = first.get(start_name)
+        end = first.get(end_name)
+        if not start or not end:
+            return None
+        return max(0.0, (
+            end['monotonic_ns'] - start['monotonic_ns']) / 1_000_000_000.0)
+
+    atexit_to_parent = elapsed(
+        'python_atexit_last', 'onefile_parent_exit_observed')
+    child_to_parent = elapsed(
+        'python_child_exit_observed', 'onefile_parent_exit_observed')
+    atexit_to_mei = elapsed(
+        'python_atexit_last', 'mei_directory_missing_observed')
+    identity_ok = 'frozen_process_identity_bound' in first
+    cleanup_window = 'onefile_cleanup_window_observed' in first
+    if identity_ok and cleanup_window and atexit_to_parent is not None and \
+            atexit_to_parent >= 10.0:
+        classification = 'PYINSTALLER_CLEANUP_WINDOW_OBSERVED'
+    elif identity_ok and atexit_to_parent is not None and \
+            atexit_to_parent <= 1.0:
+        classification = 'ONEFILE_PARENT_EXIT_PROMPT'
+    elif identity_ok:
+        classification = 'ONEFILE_TIMELINE_CAPTURED_INCONCLUSIVE'
+    else:
+        classification = 'RUNTIME_IDENTITY_MISSING'
+    detail = (
+        'classification=%s atexit_to_parent_seconds=%s '
+        'child_to_parent_seconds=%s atexit_to_mei_missing_seconds=%s' % (
+            classification,
+            '%.3f' % atexit_to_parent if atexit_to_parent is not None else '-',
+            '%.3f' % child_to_parent if child_to_parent is not None else '-',
+            '%.3f' % atexit_to_mei if atexit_to_mei is not None else '-'))
+    return {
+        'identity_ok': identity_ok,
+        'atexit_seen': 'python_atexit_last' in first,
+        'child_exit_seen': 'python_child_exit_observed' in first,
+        'parent_exit_seen': 'onefile_parent_exit_observed' in first,
+        'mei_missing_seen': 'mei_directory_missing_observed' in first,
+        'cleanup_window_seen': cleanup_window,
+        'classification': classification,
+        'detail': detail,
+    }
+
+
+def evaluate_bootloader_console(content):
+    # Console rows may wrap long bootloader messages at the current buffer
+    # width.  Whitespace folding preserves the diagnostic phrases while
+    # making the parser independent of that presentation detail.
+    normalized = ' '.join(content.split())
+    failed = normalized.count(
+        'LOADER: failed to remove temporary directory')
+    waits = len(re.findall(
+        r'LOADER: waiting \d+ milliseconds before trying to remove '
+        r'temporary directory again', normalized))
+    attempts = len(re.findall(
+        r'LOADER: trying to remove temporary directory \(attempt \d+ / \d+\)',
+        normalized))
+    removed = ('LOADER: temporary directory ' in normalized and
+               ' was successfully removed.' in normalized)
+    debug_present = 'LOADER:' in normalized
+    detail = ('debug_present=%s initial_remove_failed=%s retry_waits=%d '
+              'retry_attempts=%d eventually_removed=%s' % (
+                  debug_present, bool(failed), waits, attempts, removed))
+    return {
+        'debug_present': debug_present,
+        'initial_remove_failed': bool(failed),
+        'retry_waits': waits,
+        'retry_attempts': attempts,
+        'eventually_removed': removed,
+        'detail': detail,
+    }
+
+
 def _parse_gui_log_time(line):
     match = re.match(r'^(\d\d/\d\d/\d\d \d\d:\d\d:\d\d [AP]M)', line)
     if not match:
@@ -543,6 +863,42 @@ def evaluate_gui_stop_log(content):
     if requested:
         return False, 'stop request logged but GUI did not observe session exit'
     return False, 'GUI stop request marker missing'
+
+
+def evaluate_gui_stop_debug_log(content):
+    markers = {}
+    names = (
+        'gui_stop_callback_received',
+        'gui_stop_feedback_visible',
+        'gui_process_wait_end',
+        'gui_finish_session_begin',
+    )
+    for line in content.splitlines():
+        if STOP_TRACE_TAG not in line:
+            continue
+        for name in names:
+            if name not in line:
+                continue
+            match = re.search(r'monotonic_ns=(\d+)', line)
+            if match:
+                markers.setdefault(name, int(match.group(1)))
+    callback = markers.get('gui_stop_callback_received')
+    if callback is None:
+        return False, 'diagnostic GUI callback marker missing'
+
+    def delta(name):
+        value = markers.get(name)
+        if value is None:
+            return '-'
+        return '%.3f' % max(0.0, (value - callback) / 1_000_000_000.0)
+
+    complete = all(name in markers for name in names)
+    return complete, (
+        'feedback_seconds=%s process_handle_seconds=%s '
+        'ui_finish_callback_seconds=%s' % (
+            delta('gui_stop_feedback_visible'),
+            delta('gui_process_wait_end'),
+            delta('gui_finish_session_begin')))
 
 
 def wait_for_gui_stop_observation(log_root, before, timeout=None):
@@ -708,8 +1064,12 @@ def main():
           flush=True)
     print('  3. 等待本控制台显示“现在点击停止”后，点击 GUI 的“停止”。',
           flush=True)
-    print('之后本工具会自动等待 45 秒并导出证据。不要使用任务管理器强杀。',
-          flush=True)
+    print('之后本工具会自动观察 Python 子进程、one-file 父进程、_MEI 清理'
+          '和 GUI 反馈并导出证据。不要使用任务管理器强杀。', flush=True)
+    stop_monitor = StopProcessMonitor(
+        log_root, evidence_paths['stop_process'],
+        evidence_paths['bootloader_console'], evidence_paths['console_stop'])
+    stop_monitor.start()
     gui_process = subprocess.Popen([gui_exe], cwd=REPO)
     record_timeline('gui_launched', 'pid=%s' % gui_process.pid)
     print('[WAIT] GUI 已打开；等待本次核心日志。sentinel nonce=%s' % nonce,
@@ -825,6 +1185,47 @@ def main():
             gui_log_path = gui_candidates[0]
         record_result('gui_stop_observation', 'INCOMPLETE',
                       'core session did not complete')
+
+    stop_monitor.finish(timeout=5.0)
+    stop_summary = summarize_stop_trace(stop_monitor.events)
+    record_result(
+        'stop_frozen_process_identity',
+        'PASS' if stop_summary['identity_ok'] else 'FAIL',
+        stop_summary['detail'])
+    record_result(
+        'stop_python_atexit_boundary',
+        'PASS' if stop_summary['atexit_seen'] else 'FAIL',
+        stop_summary['detail'])
+    record_result(
+        'stop_onefile_parent_exit',
+        'PASS' if stop_summary['parent_exit_seen'] else 'FAIL',
+        stop_summary['detail'])
+    record_result(
+        'stop_mei_cleanup_observation',
+        'PASS' if stop_summary['mei_missing_seen'] else 'FAIL',
+        stop_summary['detail'])
+    record_result(
+        'stop_delay_classification',
+        'CAPTURED' if stop_summary['identity_ok'] else 'FAIL',
+        stop_summary['detail'])
+    print('[STOP TRACE] %s' % stop_summary['detail'], flush=True)
+
+    bootloader_content = read_text(evidence_paths['bootloader_console'])
+    bootloader = evaluate_bootloader_console(bootloader_content)
+    record_result(
+        'stop_bootloader_debug',
+        'CAPTURED' if bootloader['debug_present'] else 'FAIL',
+        '%s path=%s' % (
+            bootloader['detail'], evidence_paths['bootloader_console']))
+    print('[BOOTLOADER] %s' % bootloader['detail'], flush=True)
+    if gui_log_path:
+        gui_debug_ok, gui_debug_detail = evaluate_gui_stop_debug_log(
+            read_text(gui_log_path))
+        record_result('gui_stop_monotonic_timeline',
+                      'PASS' if gui_debug_ok else 'FAIL', gui_debug_detail)
+    else:
+        record_result('gui_stop_monotonic_timeline', 'FAIL',
+                      'GUI log unavailable')
 
     if stop_seen_monotonic is None:
         final_core_content = read_text(core_path) if core_path else ''

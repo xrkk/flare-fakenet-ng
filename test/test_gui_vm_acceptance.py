@@ -130,33 +130,37 @@ def test_gui_log_collection_handles_missing_root(tmp_path):
         {}, str(tmp_path / 'nope'), str(tmp_path / 'out')) == []
 
 
-def test_kill_leftover_processes_uses_taskkill_by_image(monkeypatch):
+def test_active_fakenet_images_is_read_only(monkeypatch):
     calls = []
 
     class FakeProc(object):
         def __init__(self, returncode):
             self.returncode = returncode
+            self.stdout = '"fakenet-GUI.exe","1"\n"fakenet.exe","2"\n'
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
         return FakeProc(0)
 
     monkeypatch.setattr(acceptance.subprocess, 'run', fake_run)
-    killed = acceptance.kill_leftover_processes()
-    assert killed == ['fakenet-GUI.exe', 'fakenet.exe']
+    active = acceptance.active_fakenet_images()
+    assert active == ['fakenet-GUI.exe', 'fakenet.exe']
     assert [cmd for cmd, _ in calls] == [
-        ['taskkill', '/F', '/T', '/IM', 'fakenet-GUI.exe'],
-        ['taskkill', '/F', '/T', '/IM', 'fakenet.exe']]
+        ['tasklist.exe', '/FI', 'IMAGENAME eq fakenet-GUI.exe',
+         '/FO', 'CSV', '/NH'],
+        ['tasklist.exe', '/FI', 'IMAGENAME eq fakenet.exe',
+         '/FO', 'CSV', '/NH']]
     assert all(kwargs.get('capture_output') for _, kwargs in calls)
 
 
-def test_kill_leftover_processes_silent_when_not_found(monkeypatch):
+def test_active_fakenet_images_silent_when_not_found(monkeypatch):
     class FakeProc(object):
         returncode = 1
+        stdout = 'INFO: No tasks are running'
 
     monkeypatch.setattr(
         acceptance.subprocess, 'run', lambda cmd, **kwargs: FakeProc())
-    assert acceptance.kill_leftover_processes() == []
+    assert acceptance.active_fakenet_images() == []
 
 
 def test_export_logs_collects_package_root_artifacts(tmp_path):
@@ -200,7 +204,11 @@ def test_export_logs_collects_package_root_artifacts(tmp_path):
 
     exports = list((layout / 'test' / 'gui_vm' / 'Logs').glob(
         'diagnostic-export-*'))
-    assert len(exports) == 1
+    if (not exports and os.environ.get('WINEPREFIX') and
+            not proc.stdout and not proc.stderr):
+        import pytest
+        pytest.skip('Wine powershell.exe stub did not execute the script')
+    assert len(exports) == 1, (proc.stdout, proc.stderr)
     names = {p.name for p in exports[0].iterdir()}
     assert names == {
         'config-01-manual.ini', 'config-sources.tsv',

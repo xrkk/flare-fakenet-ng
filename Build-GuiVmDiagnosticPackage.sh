@@ -8,6 +8,12 @@ PYTHON_VERSION='3.11.9'
 PYTHON_INSTALLER_SHA256='5ee42c4eee1e6b4464bb23722f90b45303f79442df63083f05322f1785f5fdde'
 BUILD_CONTEXT="${TMPDIR:-/tmp}/flare-fakenet-ng-gui-vm-builder"
 PYTHON_INSTALLER="$BUILD_CONTEXT/python-$PYTHON_VERSION-amd64.exe"
+MODE="${1:-package}"
+
+if [[ $# -gt 1 ]] || [[ "$MODE" != 'package' && "$MODE" != '--image-only' ]]; then
+    echo "Usage: $0 [--image-only]" >&2
+    exit 2
+fi
 
 mkdir -p "$BUILD_CONTEXT"
 
@@ -27,11 +33,18 @@ docker build --file "$DOCKERFILE_DIR/Dockerfile" \
     --build-arg "HOST_GID=$(id -g)" \
     --tag "$IMAGE_NAME" "$BUILD_CONTEXT"
 
-echo '[3/3] Building v33 diagnostic package from committed HEAD...'
+if [[ "$MODE" == '--image-only' ]]; then
+    echo "Builder image ready: $IMAGE_NAME"
+    docker image inspect --format 'Image ID: {{.Id}}' "$IMAGE_NAME"
+    exit 0
+fi
+
+echo '[3/3] Building v33 diagnostic-03 from HEAD plus the explicit diagnostic overlay...'
 docker run --rm \
     --user "$(id -u):$(id -g)" \
     --env HOME=/tmp \
     --volume "$SCRIPT_DIR:/workspace" \
     "$IMAGE_NAME" \
     python3 /workspace/tools/build_gui_vm_diagnostic_wine.py \
-        --repo /workspace --source-commit HEAD --output /workspace/dist
+        --repo /workspace --source-commit HEAD --output /workspace/dist \
+        --worktree-overlay

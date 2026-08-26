@@ -59,7 +59,11 @@ class SSLWrapper(object):
         else:
             ctx.sni_callback = self.sni_callback
             ctx.load_cert_chain(certfile=self.ca_cert, keyfile=self.ca_key)
-            return ctx.wrap_socket(s, server_side=True)
+            # Register accepted TLS transports with the HTTP server before
+            # the handshake begins so graceful stop can interrupt a stalled
+            # client without changing normal TLS negotiation semantics.
+            return ctx.wrap_socket(
+                s, server_side=True, do_handshake_on_connect=False)
 
     def create_cert(self, cn, ca_cert=None, ca_key=None, cert_dir=None):
         """

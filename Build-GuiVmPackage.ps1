@@ -29,9 +29,9 @@ $isDiagnostic = $PackageMode -eq 'Diagnostic'
 $packageVersion = if ($PackageVersion) {
     $PackageVersion
 } elseif ($isDiagnostic) {
-    'v33-diagnostic-02'
+    'v33-diagnostic-03'
 } else {
-    'v33'
+    'v34'
 }
 if ($packageVersion -notmatch '^v[0-9]+(?:-diagnostic-[0-9]+)?$') {
     throw ('Invalid package version: ' + $packageVersion)
@@ -47,9 +47,9 @@ $packageEntry = if ($isDiagnostic) {
     'test/gui_vm/Run-Tests.cmd'
 }
 $planVersion = if ($isDiagnostic) {
-    '2026.08.26-01 v0.2'
+    '2026.08.26-01 v0.5'
 } else {
-    '2026.08.21-01 v0.2'
+    '2026.08.26-01 v0.7'
 }
 $fixedTimestamp = [DateTimeOffset]::new(
     [DateTime]::SpecifyKind([DateTime]'2000-01-01T00:00:00',
@@ -133,12 +133,61 @@ try {
         Remove-Item -LiteralPath $archivedDist -Recurse -Force
     }
 
+    if ($isDiagnostic) {
+        $coreSpecPath = Join-Path $stage 'fakenet.spec'
+        $runtimeHookPath = Join-Path $stage `
+            'test\gui_vm\stop_trace_runtime_hook.py'
+        if (-not (Test-Path -LiteralPath $runtimeHookPath -PathType Leaf)) {
+            throw 'Diagnostic SourceCommit lacks stop_trace_runtime_hook.py.'
+        }
+        $coreSpecText = Get-Content -LiteralPath $coreSpecPath -Raw
+        if (-not $coreSpecText.Contains('runtime_hooks=[]') -or
+                -not $coreSpecText.Contains('debug=False,') -or
+                -not $coreSpecText.Contains('exclude_binaries=True')) {
+            throw 'Core spec lacks diagnostic injection markers.'
+        }
+        $coreSpecText = $coreSpecText.Replace(
+            "          [],`n          exclude_binaries=True,`n",
+            "          a.binaries + driver_files,`n" +
+            "          a.zipfiles,`n          a.datas,`n")
+        $coreSpecText = $coreSpecText.Replace(
+            "coll = COLLECT(exe,`n" +
+            "               a.binaries + driver_files,`n" +
+            "               a.zipfiles,`n               a.datas,`n",
+            "coll = COLLECT(exe,`n")
+        $coreSpecText = $coreSpecText.Replace(
+            'runtime_hooks=[]',
+            "runtime_hooks=['test/gui_vm/stop_trace_runtime_hook.py']")
+        $coreSpecText = $coreSpecText.Replace('debug=False,', 'debug=True,')
+        [IO.File]::WriteAllText(
+            $coreSpecPath, $coreSpecText, [Text.UTF8Encoding]::new($false))
+    }
+
     # Build both executables FROM THE STAGED TREE so packaged binaries
     # correspond to the packaged source (manifest binds both by hash).
     $pythonVersion = ((& python -c 'import platform;print(platform.python_version())') 2>&1).ToString().Trim()
     $pyinstallerVersion = ((& python -m PyInstaller --version) 2>&1).ToString().Trim()
     Invoke-PyInstaller $stage 'fakenet.spec' $stage (Join-Path $buildRoot 'work-fakenet')
     Invoke-PyInstaller $stage 'fakenet-GUI.spec' $stage (Join-Path $buildRoot 'work-gui')
+    $collectDir = Join-Path $stage 'fakenet-dat'
+    if ($isDiagnostic) {
+        if (Test-Path -LiteralPath $collectDir) {
+            Remove-Item -LiteralPath $collectDir -Recurse -Force
+        }
+    } else {
+        if (-not (Test-Path -LiteralPath $collectDir -PathType Container)) {
+            throw 'Expected onedir core output missing: fakenet-dat.'
+        }
+        foreach ($item in Get-ChildItem -LiteralPath $collectDir -Force) {
+            $destination = Join-Path $stage $item.Name
+            if (Test-Path -LiteralPath $destination) {
+                throw ('Onedir payload conflicts with staged source: ' +
+                    $item.Name)
+            }
+            Move-Item -LiteralPath $item.FullName -Destination $stage
+        }
+        Remove-Item -LiteralPath $collectDir -Recurse -Force
+    }
     $fakenetExe = Join-Path $stage 'fakenet.exe'
     $guiExe = Join-Path $stage 'fakenet-GUI.exe'
     foreach ($binary in @($fakenetExe,$guiExe)) {
@@ -146,10 +195,10 @@ try {
             throw ('Expected build output missing: ' + $binary)
         }
     }
-    # fakenet.spec's legacy COLLECT step also emits a redundant dir copy.
-    $collectDir = Join-Path $stage 'fakenet-dat'
-    if (Test-Path -LiteralPath $collectDir) {
-        Remove-Item -LiteralPath $collectDir -Recurse -Force
+    if (-not $isDiagnostic -and
+            -not (Test-Path -LiteralPath (Join-Path $stage '_internal')
+                -PathType Container)) {
+        throw 'Onedir payload missing _internal directory.'
     }
 
     # Flatten the official release layout next to the exes (mirrors
@@ -177,6 +226,10 @@ try {
     # Syntax gates on the acceptance payload before it ships.
     python -m py_compile (Join-Path $stage 'test\gui_vm\run_gui_vm_acceptance.py')
     if ($LASTEXITCODE -ne 0) { throw 'Acceptance runner syntax failed.' }
+    python -m py_compile (Join-Path $stage 'test\gui_vm\run_policy_feature_tests.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Policy runner syntax failed.' }
+    python -m py_compile (Join-Path $stage 'test\gui_vm\run_formal_stop_acceptance.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Formal stop runner syntax failed.' }
     if (-not (Test-Path -LiteralPath (Join-Path $stage 'test\gui_vm\Run-Tests.cmd'))) {
         throw 'Run-Tests.cmd missing from staged tree.'
     }
@@ -187,8 +240,13 @@ try {
             'test\gui_vm\Run-Diagnostics.cmd'
         $diagnosticExporter = Join-Path $stage `
             'test\gui_vm\Export-Logs.ps1'
+        $diagnosticConsoleCapture = Join-Path $stage `
+            'test\gui_vm\capture_windows_console.py'
+        $diagnosticRuntimeHook = Join-Path $stage `
+            'test\gui_vm\stop_trace_runtime_hook.py'
         foreach ($required in @(
-                $diagnosticRunner, $diagnosticCommand, $diagnosticExporter)) {
+                $diagnosticRunner, $diagnosticCommand, $diagnosticExporter,
+                $diagnosticConsoleCapture, $diagnosticRuntimeHook)) {
             if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
                 throw ('Diagnostic payload missing from SourceCommit: ' +
                     $required)
@@ -197,6 +255,10 @@ try {
         python -m py_compile $diagnosticRunner
         if ($LASTEXITCODE -ne 0) {
             throw 'Diagnostic runner syntax failed.'
+        }
+        python -m py_compile $diagnosticConsoleCapture $diagnosticRuntimeHook
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Diagnostic stop trace helper syntax failed.'
         }
         $coreSource = Get-Content -LiteralPath `
             (Join-Path $stage 'fakenet\fakenet.py') -Raw
@@ -208,7 +270,9 @@ try {
         if ($runnerSource -notmatch 'probe_takeover_path' -or
                 $runnerSource -notmatch 'diagnostic-results-' -or
                 $runnerSource -notmatch 'diagnostic-network-before-' -or
-                $runnerSource -notmatch 'wait_for_gui_stop_observation') {
+                $runnerSource -notmatch 'wait_for_gui_stop_observation' -or
+                $runnerSource -notmatch 'StopProcessMonitor' -or
+                $runnerSource -notmatch 'evaluate_bootloader_console') {
             throw 'Diagnostic SourceCommit lacks strengthened path evidence.'
         }
         $exportSource = Get-Content -LiteralPath $diagnosticExporter -Raw
@@ -242,6 +306,13 @@ try {
         package_mode=$PackageMode.ToLowerInvariant()
         plan_version=$planVersion
         source_commit=$resolvedCommit
+        core_bundle_mode=$(if ($isDiagnostic) {
+            'pyinstaller-onefile-diagnostic-debug'
+        } else { 'pyinstaller-onedir' })
+        core_bootloader_debug=$isDiagnostic
+        core_runtime_hook=$(if ($isDiagnostic) {
+            'test/gui_vm/stop_trace_runtime_hook.py'
+        } else { $null })
         python_version=$pythonVersion
         pyinstaller_version=$pyinstallerVersion
         fakenet_exe_sha256=$fakenetHash

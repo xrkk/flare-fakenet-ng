@@ -191,6 +191,67 @@ class VmDiagnosticTests(unittest.TestCase):
             self.assertIn('dns_takeover\tPASS\t192.168.204.1', results)
             self.assertIn('target_tcp\tFAIL\tnonce mismatch', results)
             self.assertIn('action_prompt\t2026-08-26T05:00:00Z', timeline)
+            self.assertTrue(paths['stop_process'].endswith('.tsv'))
+            self.assertTrue(paths['bootloader_console'].endswith('.txt'))
+
+    def test_stop_trace_classifies_onefile_cleanup_window(self):
+        base = 1_000_000_000
+        events = [
+            {'event': 'frozen_process_identity_bound',
+             'monotonic_ns': base},
+            {'event': 'python_atexit_last',
+             'monotonic_ns': base + 1_000_000_000},
+            {'event': 'python_child_exit_observed',
+             'monotonic_ns': base + 1_050_000_000},
+            {'event': 'onefile_cleanup_window_observed',
+             'monotonic_ns': base + 1_100_000_000},
+            {'event': 'mei_directory_missing_observed',
+             'monotonic_ns': base + 16_000_000_000},
+            {'event': 'onefile_parent_exit_observed',
+             'monotonic_ns': base + 16_100_000_000},
+        ]
+
+        summary = DIAGNOSTICS.summarize_stop_trace(events)
+
+        self.assertEqual(
+            'PYINSTALLER_CLEANUP_WINDOW_OBSERVED',
+            summary['classification'])
+        self.assertTrue(summary['cleanup_window_seen'])
+        self.assertIn('atexit_to_parent_seconds=15.100', summary['detail'])
+
+    def test_bootloader_console_evidence_counts_cleanup_retries(self):
+        content = '\n'.join([
+            'LOADER: failed to remove temporary directory - attempting to '
+            'mitigate the situation...',
+            'LOADER: waiting 1000 milliseconds before trying to remove '
+            'temporary directory again...',
+            'LOADER: trying to remove temporary directory (attempt 1 / 15)...',
+            'LOADER: temporary directory C:\\Temp\\_MEI1 was successfully '
+            'removed.',
+        ])
+
+        result = DIAGNOSTICS.evaluate_bootloader_console(content)
+
+        self.assertTrue(result['debug_present'])
+        self.assertTrue(result['initial_remove_failed'])
+        self.assertEqual(1, result['retry_waits'])
+        self.assertEqual(1, result['retry_attempts'])
+        self.assertTrue(result['eventually_removed'])
+
+    def test_gui_monotonic_timeline_uses_callback_as_t0(self):
+        content = '\n'.join([
+            '[DEBUG-STOP03] gui_stop_callback_received monotonic_ns=1000',
+            '[DEBUG-STOP03] gui_stop_feedback_visible monotonic_ns=2000',
+            '[DEBUG-STOP03] gui_process_wait_end monotonic_ns=5000001000',
+            '[DEBUG-STOP03] gui_finish_session_begin monotonic_ns=5100001000',
+        ])
+
+        ok, detail = DIAGNOSTICS.evaluate_gui_stop_debug_log(content)
+
+        self.assertTrue(ok, detail)
+        self.assertIn('feedback_seconds=0.000', detail)
+        self.assertIn('process_handle_seconds=5.000', detail)
+        self.assertIn('ui_finish_callback_seconds=5.100', detail)
 
     def test_core_log_states_distinguish_config_and_stop(self):
         state, unused = DIAGNOSTICS.evaluate_core_log(
@@ -234,6 +295,10 @@ class VmDiagnosticTests(unittest.TestCase):
                 'diagnostic-timeline-', 'diagnostic-network-before-',
                 'diagnostic-network-after-', 'wait_for_gui_stop_observation'):
             self.assertIn(marker, source)
+        for marker in (
+                'StopProcessMonitor', 'evaluate_bootloader_console',
+                'capture_windows_console.py', 'stop_delay_classification'):
+            self.assertIn(marker, source)
         for forbidden in ('taskkill', 'TerminateProcess', 'New-NetRoute',
                           'Set-DnsClientServerAddress'):
             self.assertNotIn(forbidden, source)
@@ -245,8 +310,21 @@ class VmDiagnosticTests(unittest.TestCase):
             encoding='utf-8-sig')
         for marker in (
                 'Logs\\diagnostic-*.tsv', 'Logs\\diagnostic-*.txt',
-                'Logs\\diagnostic-*.json', 'UTF8Encoding $false'):
+                'Logs\\diagnostic-*.json', 'Logs\\diagnostic-*.jsonl',
+                'UTF8Encoding $false'):
             self.assertIn(marker, exporter)
+
+    def test_diagnostic_stop_runtime_hook_is_diagnostic_only(self):
+        hook = (ROOT / 'test' / 'gui_vm' /
+                'stop_trace_runtime_hook.py').read_text(encoding='utf-8')
+        console = (ROOT / 'test' / 'gui_vm' /
+                   'capture_windows_console.py').read_text(encoding='utf-8')
+        for marker in (
+                '[DEBUG-STOP03]', 'python_runtime_started',
+                'python_atexit_last', 'sys._MEIPASS'):
+            self.assertIn(marker, hook)
+        for marker in ('AttachConsole', 'CONOUT$', 'ReadConsoleOutputCharacterW'):
+            self.assertIn(marker, console)
 
     def test_gui_logs_launch_time_config_identity(self):
         source = (ROOT / 'fakenet' / 'gui' / 'app.py').read_text(
@@ -263,14 +341,14 @@ class VmDiagnosticTests(unittest.TestCase):
             encoding='utf-8')
         for marker in (
                 "ValidateSet('Acceptance', 'Diagnostic')",
-                "'v33-diagnostic-02'",
+                "'v33-diagnostic-03'",
                 'Windows-GUI配置工具-VM诊断-',
                 'STOP_PHASE_BEGIN phase=complete',
                 'Run-Diagnostics.cmd',
                 'package_mode=$PackageMode.ToLowerInvariant()'):
             self.assertIn(marker, builder)
         self.assertIn('-PackageMode Diagnostic', command)
-        self.assertIn('-PackageVersion v33-diagnostic-02', command)
+        self.assertIn('-PackageVersion v33-diagnostic-03', command)
 
 
 if __name__ == '__main__':

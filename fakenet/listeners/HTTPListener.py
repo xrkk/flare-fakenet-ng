@@ -261,8 +261,15 @@ class HTTPListener(object):
     def stop(self):
         self.logger.debug('Stopping...')
         if self.server:
-            self.server.shutdown()
-            self.server.server_close()
+            server = self.server
+            server.begin_shutdown()
+            server.close_active_transport()
+            server.shutdown()
+            server.server_close()
+            if self.server_thread:
+                self.server_thread.join()
+            self.server = None
+            self.server_thread = None
 
     def acceptDiverterListenerCallbacks(self, diverterListenerCallbacks):
         self.diverterListenerCallbacks = diverterListenerCallbacks
@@ -275,9 +282,72 @@ class HTTPListener(object):
 
 class ThreadedHTTPServer(http.server.HTTPServer):
 
+    def __init__(self, *args, **kwargs):
+        self._transport_lock = threading.Lock()
+        self._active_transport = None
+        self._stopping = False
+        super(ThreadedHTTPServer, self).__init__(*args, **kwargs)
+
+    def begin_shutdown(self):
+        with self._transport_lock:
+            self._stopping = True
+
+    def _register_transport(self, transport):
+        with self._transport_lock:
+            if self._stopping:
+                return False
+            self._active_transport = transport
+            return True
+
+    def _clear_transport(self, transport):
+        with self._transport_lock:
+            if self._active_transport is transport:
+                self._active_transport = None
+
+    def close_active_transport(self):
+        with self._transport_lock:
+            transport = self._active_transport
+            self._active_transport = None
+        if transport is None:
+            return
+        try:
+            transport.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            transport.close()
+        except OSError:
+            pass
+
+    def get_request(self):
+        request, client_address = super(ThreadedHTTPServer, self).get_request()
+        if not self._register_transport(request):
+            request.close()
+            raise OSError('HTTP server is stopping')
+        try:
+            if isinstance(request, ssl.SSLSocket):
+                request.do_handshake()
+        except Exception:
+            self._clear_transport(request)
+            request.close()
+            raise
+        return request, client_address
+
+    def shutdown_request(self, request):
+        self._clear_transport(request)
+        super(ThreadedHTTPServer, self).shutdown_request(request)
+
     def handle_error(self, request, client_address):
         exctype, value = sys.exc_info()[:2]
-        self.logger.error('Error: %s', value)
+        with self._transport_lock:
+            stopping = self._stopping
+        expected = (exctype is not None and
+                    issubclass(exctype, (OSError, ssl.SSLError)))
+        if stopping and expected:
+            self.logger.debug('HTTP request interrupted during stop: %s',
+                              value)
+            return
+        self.logger.error('Error: %s', value, exc_info=sys.exc_info())
 
 class ThreadedHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
 

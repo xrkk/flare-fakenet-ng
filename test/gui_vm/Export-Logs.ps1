@@ -45,6 +45,7 @@ New-Item -ItemType Directory -Path $target | Out-Null
 $copied = 0
 $patterns = @('Logs\*.log', 'Logs\*.pcap', 'Logs\diagnostic-*.tsv',
               'Logs\diagnostic-*.txt', 'Logs\diagnostic-*.json',
+              'Logs\diagnostic-*.jsonl',
               'packets_*.pcap', 'packets_*.pcap.md5', 'report_*.html')
 foreach ($pattern in $patterns) {
     $items = Get-ChildItem -Path (Join-Path $packageRoot $pattern) -File `
@@ -86,6 +87,26 @@ foreach ($source in ($configPaths.Values | Sort-Object)) {
     Copy-Item -LiteralPath $source `
         -Destination (Join-Path $target $destinationName) -Force
     $configSources += ("{0}`t{1}" -f $destinationName, $source)
+    $copied++
+}
+
+# Formal v34 runners persist their result/timeline/network/session evidence
+# below test\gui_vm\Logs.  Copy only files created in this invocation and
+# exclude export directories (including the target currently being built).
+$runnerEvidence = Get-ChildItem -LiteralPath $logRoot -File -Recurse `
+    -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTimeUtc -ge $sinceBoundaryUtc } |
+    Where-Object { -not $_.FullName.StartsWith(
+        $target, [StringComparison]::OrdinalIgnoreCase) } |
+    Where-Object { $_.FullName -notmatch '\\(?:diagnostic|manual|formal-v34)-export-' }
+foreach ($item in $runnerEvidence) {
+    $relative = $item.FullName.Substring($logRoot.Length).TrimStart('\')
+    $safeName = 'runner-' + ($relative -replace '[\\/:*?"<>|]', '_')
+    Copy-Item -LiteralPath $item.FullName `
+        -Destination (Join-Path $target $safeName) -Force
+    if ($item.Extension -ieq '.ini') {
+        $configSources += ("{0}`t{1}" -f $safeName, $item.FullName)
+    }
     $copied++
 }
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false

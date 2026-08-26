@@ -13,11 +13,27 @@ import tempfile
 import zipfile
 
 
-PACKAGE_VERSION = 'v33-diagnostic-02'
+PACKAGE_VERSION = 'v33-diagnostic-03'
 PACKAGE_NAME = 'Windows-GUI配置工具-VM诊断-' + PACKAGE_VERSION
-PLAN_VERSION = '2026.08.26-01 v0.2'
+PLAN_VERSION = '2026.08.26-01 v0.5'
 WINDOWS_PYTHON = r'C:\Python311\python.exe'
 FIXED_ZIP_TIME = (2000, 1, 1, 0, 0, 0)
+WORKTREE_OVERLAY_PATHS = (
+    'Build-GuiVmDiagnosticPackage.cmd',
+    'Build-GuiVmDiagnosticPackage.sh',
+    'Build-GuiVmPackage.ps1',
+    'PLAN/2026.08.26/2026.08.26-01-v33实机问题分阶段修复方案.md',
+    'PLAN/FaknetNG.md',
+    'fakenet/gui/app.py',
+    'test/gui_vm/Export-Logs.ps1',
+    'test/gui_vm/README.md',
+    'test/gui_vm/capture_windows_console.py',
+    'test/gui_vm/run_vm_diagnostics.py',
+    'test/gui_vm/stop_trace_runtime_hook.py',
+    'test/test_gui_vm_diagnostic_wine_builder.py',
+    'test/test_vm_diagnostics.py',
+    'tools/build_gui_vm_diagnostic_wine.py',
+)
 
 
 def run(command, cwd=None, capture=False):
@@ -64,6 +80,54 @@ def copy_tree(source, destination):
     shutil.copytree(source, destination, dirs_exist_ok=True)
 
 
+def overlay_worktree(repo, stage):
+    rows = []
+    for relative in WORKTREE_OVERLAY_PATHS:
+        source = repo / relative
+        destination = stage / relative
+        if not source.is_file():
+            raise RuntimeError('Worktree overlay file missing: %s' % source)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        rows.append({
+            'path': relative,
+            'size': destination.stat().st_size,
+            'sha256': sha256(destination),
+        })
+    return rows
+
+
+def prepare_diagnostic_core_spec(stage):
+    spec_path = stage / 'fakenet.spec'
+    source = spec_path.read_text(encoding='utf-8')
+    onedir_exe = '          [],\n          exclude_binaries=True,\n'
+    onefile_exe = (
+        '          a.binaries + driver_files,\n'
+        '          a.zipfiles,\n'
+        '          a.datas,\n')
+    onedir_collect = (
+        'coll = COLLECT(exe,\n'
+        '               a.binaries + driver_files,\n'
+        '               a.zipfiles,\n'
+        '               a.datas,\n')
+    if onedir_exe not in source or onedir_collect not in source:
+        raise RuntimeError('Core spec onedir markers missing')
+    source = source.replace(onedir_exe, onefile_exe, 1)
+    source = source.replace(onedir_collect, 'coll = COLLECT(exe,\n', 1)
+    runtime_old = '             runtime_hooks=[],'
+    runtime_new = (
+        "             runtime_hooks=['test/gui_vm/"
+        "stop_trace_runtime_hook.py'],")
+    if runtime_old not in source:
+        raise RuntimeError('Core spec runtime_hooks marker missing')
+    source = source.replace(runtime_old, runtime_new, 1)
+    if '          debug=False,' not in source:
+        raise RuntimeError('Core spec debug marker missing')
+    source = source.replace('          debug=False,',
+                            '          debug=True,', 1)
+    spec_path.write_text(source, encoding='utf-8')
+
+
 def iter_package_files(stage):
     for path in sorted(Path(stage).rglob('*'), key=lambda item: str(item)):
         if not path.is_file():
@@ -95,6 +159,8 @@ def verify_diagnostic_source(stage):
     required = (
         stage / 'test' / 'gui_vm' / 'Run-Diagnostics.cmd',
         stage / 'test' / 'gui_vm' / 'run_vm_diagnostics.py',
+        stage / 'test' / 'gui_vm' / 'capture_windows_console.py',
+        stage / 'test' / 'gui_vm' / 'stop_trace_runtime_hook.py',
         stage / 'Start-FNPR-Sentinel.sh',
     )
     for path in required:
@@ -111,13 +177,14 @@ def verify_diagnostic_source(stage):
         encoding='utf-8')
     for marker in ('probe_takeover_path', 'diagnostic-results-',
                    'diagnostic-network-before-',
-                   'wait_for_gui_stop_observation'):
+                   'wait_for_gui_stop_observation', 'StopProcessMonitor',
+                   'evaluate_bootloader_console'):
         if marker not in runner:
             raise RuntimeError('Strengthened diagnostic marker missing: %s' %
                                marker)
 
 
-def build(repo, source_commit, output_root):
+def build(repo, source_commit, output_root, worktree_overlay=False):
     resolved = captured([
         'git', '-C', str(repo), 'rev-parse', source_commit + '^{commit}'])
     destination = output_root / (PACKAGE_NAME + '.zip')
@@ -133,7 +200,9 @@ def build(repo, source_commit, output_root):
         with zipfile.ZipFile(source_zip) as archive:
             archive.extractall(stage)
         shutil.rmtree(stage / 'dist', ignore_errors=True)
+        overlay_rows = overlay_worktree(repo, stage) if worktree_overlay else []
         verify_diagnostic_source(stage)
+        prepare_diagnostic_core_spec(stage)
 
         stage_windows = wine_path(stage)
         core_work = build_root / 'work-fakenet'
@@ -161,8 +230,13 @@ def build(repo, source_commit, output_root):
                   stage / 'listeners' / 'ssl_utils')
         remove_pycache(stage)
 
-        runner = stage / 'test' / 'gui_vm' / 'run_vm_diagnostics.py'
-        run(['python3', '-m', 'py_compile', str(runner)])
+        diagnostic_python = (
+            stage / 'test' / 'gui_vm' / 'run_vm_diagnostics.py',
+            stage / 'test' / 'gui_vm' / 'capture_windows_console.py',
+            stage / 'test' / 'gui_vm' / 'stop_trace_runtime_hook.py',
+        )
+        for source in diagnostic_python:
+            run(['python3', '-m', 'py_compile', str(source)])
         remove_pycache(stage)
 
         python_version = wine_python(
@@ -185,9 +259,17 @@ def build(repo, source_commit, output_root):
             'package_mode': 'diagnostic',
             'plan_version': PLAN_VERSION,
             'source_commit': resolved,
+            'source_snapshot_mode': (
+                'base-commit-plus-explicit-worktree-overlay'
+                if worktree_overlay else 'commit'),
+            'source_overlay_files': overlay_rows,
             'python_version': python_version,
             'pyinstaller_version': pyinstaller_version,
             'builder': 'docker-wine-windows-python',
+            'core_bundle_mode': 'pyinstaller-onefile-diagnostic-debug',
+            'core_bootloader_debug': True,
+            'core_runtime_hook': (
+                'test/gui_vm/stop_trace_runtime_hook.py'),
             'built_at_utc': datetime.datetime.now(
                 datetime.timezone.utc).isoformat(),
             'fakenet_exe_sha256': sha256(fakenet_exe),
@@ -213,9 +295,10 @@ def main():
     parser.add_argument('--repo', default='/workspace')
     parser.add_argument('--source-commit', default='HEAD')
     parser.add_argument('--output', default='/workspace/dist')
+    parser.add_argument('--worktree-overlay', action='store_true')
     args = parser.parse_args()
     build(Path(args.repo).resolve(), args.source_commit,
-          Path(args.output).resolve())
+          Path(args.output).resolve(), args.worktree_overlay)
 
 
 if __name__ == '__main__':

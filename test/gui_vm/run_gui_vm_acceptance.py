@@ -13,6 +13,7 @@ Exit codes: 0 = all PASS, 1 = any FAIL, 2 = REFUSED (precondition).
 """
 
 import os
+import json
 import re
 import subprocess
 import sys
@@ -29,6 +30,7 @@ EXIT_PASS, EXIT_FAIL, EXIT_REFUSED = 0, 1, 2
 RESULTS = []
 LOG_DIR = None
 _GUI_LOGS_BEFORE = {}
+FNPR_NONCE = None
 CORE_STARTED_MARKER = 'FakeNet-NG started successfully'
 CORE_FAILURE_MARKERS = (
     'Traceback (most recent call last):',
@@ -188,28 +190,46 @@ def snapshot_gui_logs(logs_root=None):
     return snapshot
 
 
-def kill_leftover_processes():
-    """Task-level cleanup by image name (v1.27 §12.30).
-
-    PyInstaller onefile spawns a bootstrap parent plus the real child;
-    terminating the parent leaves the GUI child running (holding the
-    single-instance mutex, §12.24.4). Kill the whole task by image so the
-    acceptance run leaves nothing behind. Only reached in the VM acceptance
-    context (physical machines refuse earlier) and only for our own images;
-    "not found" is the normal, silent case.
-    """
-    killed = []
+def active_fakenet_images():
+    """Read-only leftover check; passing runs never hide state with taskkill."""
+    active = []
     for image in ('fakenet-GUI.exe', 'fakenet.exe'):
         try:
             proc = subprocess.run(
-                ['taskkill', '/F', '/T', '/IM', image],
-                capture_output=True,
+                ['tasklist.exe', '/FI', 'IMAGENAME eq %s' % image,
+                 '/FO', 'CSV', '/NH'], capture_output=True, text=True,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         except OSError:
             continue
-        if proc.returncode == 0:
-            killed.append(image)
-    return killed
+        if proc.returncode == 0 and image.lower() in (proc.stdout or '').lower():
+            active.append(image)
+    return active
+
+
+def fnpr_session_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'Logs', 'fnpr-active-session.json')
+
+
+def preflight_fnpr_sentinel():
+    """Run the sole cross-host preflight before any WinDivert/DNS change."""
+    import run_vm_diagnostics as diagnostic
+    ok, nonce, transports = diagnostic.wait_for_sentinel()
+    path = fnpr_session_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = {
+        'nonce': nonce,
+        'sentinel_ipv4': diagnostic.SENTINEL_IPV4,
+        'sentinel_port': diagnostic.SENTINEL_PORT,
+        'preflight': transports,
+        'ok': bool(ok),
+        'created_epoch': time.time(),
+    }
+    with open(path, 'w', encoding='utf-8') as handle:
+        json.dump(payload, handle, ensure_ascii=False, sort_keys=True,
+                  indent=2)
+        handle.write('\n')
+    return ok, nonce, transports, path
 
 
 def collect_gui_logs(before, logs_root=None, target_dir=None):
@@ -243,7 +263,7 @@ def collect_gui_logs(before, logs_root=None, target_dir=None):
 
 
 def main():
-    global LOG_DIR
+    global LOG_DIR, FNPR_NONCE
 
     if os.name != 'nt':
         return refuse('仅支持 Windows')
@@ -270,6 +290,22 @@ def main():
     result('A1 VM 判定放行', 'PASS',
            'Win32_ComputerSystem 匹配 VM 特征(%s / %s)'
            % (vm.manufacturer, vm.model))
+
+    if launcher.is_fakenet_running():
+        return refuse('前置检查发现已有 fakenet.exe；请回滚/重启隔离 VM，'
+                      '本工具不会用强杀掩盖现场')
+    preflight_ok, FNPR_NONCE, transports, session_path = \
+        preflight_fnpr_sentinel()
+    for transport in ('tcp', 'udp'):
+        item = transports[transport]
+        result('Sentinel 前置 %s' % transport.upper(),
+               'PASS' if item['ok'] else 'FAIL',
+               'nonce=%s;%s' % (FNPR_NONCE, item['detail']))
+    if not preflight_ok:
+        print('前置证据: %s' % session_path, flush=True)
+        return EXIT_REFUSED
+    print('[NEXT] Ubuntu 端无需再输入命令；请保持 Sentinel 窗口运行。',
+          flush=True)
 
     # -- A2 physical-machine refusal (classifier-level inside a VM) ---------
     physical = launcher.parse_vm_state('Dell Inc.', 'OptiPlex 7090')
@@ -413,8 +449,8 @@ def main():
                 wait_for(
                     lambda: not launcher.is_fakenet_running(), 10)
         if launcher.is_fakenet_running():
-            subprocess.run(['taskkill', '/F', '/IM', 'fakenet.exe'],
-                           capture_output=True)
+            result('A8 停止后无残留', 'FAIL',
+                   'fakenet.exe 仍在运行；不执行 taskkill，请导出证据并回滚快照')
 
     # -- A9 GUI launch smoke ----------------------------------------------------
     gui_exe = find_file('fakenet-GUI.exe')
@@ -446,10 +482,6 @@ def main():
 
     # -- A11 takeover sink connectivity (plan 2026.08.21-01 §5.2) -------------
     run_a11_sink_reply(fakenet_exe)
-
-    killed = kill_leftover_processes()
-    if killed:
-        print('任务级清理: %s' % ', '.join(killed))
 
     return finish()
 
@@ -522,15 +554,7 @@ def run_a10_process_flow(fakenet_exe):
 
 
 def run_a11_sink_reply(fakenet_exe):
-    """Takeover sink connectivity (plan 2026.08.21-01 §5.2 A11).
-
-    DNS must answer a non-allowed domain with the sink IPv4; a TCP connect
-    to sink:80 must be diverted into the local HTTPListener and return a
-    complete HTTP reply; PROCESS_FLOW must record DIVERT_FAKE for the sink
-    destination; the session report must contain this interpreter's NBI;
-    the core must exit cleanly. Under the removed ALLOW_TAKEOVER_SINK
-    pass-through this connection died at the VMware host (issue 6).
-    """
+    """A11 proves same-nonce TCP+UDP delivery reaches Ubuntu, not localhost."""
     if not fakenet_exe:
         result('A11 接管 sink 连通', 'SKIP',
                '需要 fakenet.exe(放在脚本同目录/仓库根/dist 下重跑)', '实测')
@@ -565,27 +589,15 @@ def run_a11_sink_reply(fakenet_exe):
         addresses = policy.nslookup_addresses(probe_domain)
         answered = policy.answers_only_sink(addresses, sink)
 
-        body = b''
-        try:
-            import socket
-            sock = socket.create_connection((sink, 80), timeout=10)
-            sock.settimeout(10)
-            try:
-                sock.sendall(b'GET / HTTP/1.0\r\nHost: %s\r\n\r\n' %
-                             probe_domain.encode('ascii'))
-                body = sock.recv(4096)
-            finally:
-                sock.close()
-        except OSError:
-            body = b''
-        status_line = body.split(b'\r\n', 1)[0] if body else b''
-        http_ok = (body.startswith(b'HTTP/1.') and b' 200 ' in status_line
-                   and len(body) > 0)
-
+        import run_vm_diagnostics as diagnostic
+        target_ok, target = diagnostic.probe_fnpr_transports(
+            FNPR_NONCE, 'target', timeout=5.0)
+        wait_for(lambda: 'ALLOW_TAKEOVER_SINK' in read_core_log(core_log), 10)
         log_text = read_core_log(core_log)
-        diverted = ('disposition=DIVERT_FAKE' in log_text and
-                    'dst=%s' % sink in log_text and
-                    'ALLOW_TAKEOVER_SINK' not in log_text)
+        allowed = ('ALLOW_TAKEOVER_SINK' in log_text and
+                   'ip=%s' % sink in log_text)
+        local_divert = ('DIVERT_FAKE' in log_text and
+                        'original_ip=%s' % sink in log_text)
 
         report_ok = False
         import glob as _glob
@@ -602,11 +614,12 @@ def run_a11_sink_reply(fakenet_exe):
                 continue
 
         result('A11 接管 sink 连通', 'PASS'
-               if answered and http_ok and diverted and report_ok
+               if answered and target_ok and allowed and not local_divert
                else 'FAIL',
-               'DNS 应答=%s;sink:80 HTTP=%s(状态行 %r);DIVERT_FAKE=%s;'
-               '报告含 python.exe=%s' % (
-                   answered, http_ok, status_line[:40], diverted, report_ok))
+               'DNS 应答=%s;nonce=%s;TCP=%s;UDP=%s;Ubuntu裁决=%s;'
+               '本地DIVERT_FAKE=%s' % (
+                   answered, FNPR_NONCE, target['tcp']['ok'],
+                   target['udp']['ok'], allowed, local_divert))
     if os.path.exists(stop_flag) or launcher.is_fakenet_running():
         if not os.path.exists(stop_flag):
             with open(stop_flag, 'w') as handle:
@@ -616,7 +629,11 @@ def run_a11_sink_reply(fakenet_exe):
 
 def finish():
     failed = [r for r in RESULTS if r[0] == 'FAIL']
-    kill_leftover_processes()
+    leftovers = active_fakenet_images()
+    if leftovers:
+        result('结束后进程残留', 'FAIL',
+               '%s；未强杀，请导出证据并回滚快照' % ','.join(leftovers))
+        failed = [r for r in RESULTS if r[0] == 'FAIL']
     if LOG_DIR is not None:
         copied = collect_gui_logs(_GUI_LOGS_BEFORE, target_dir=os.path.join(
             LOG_DIR, 'gui-logs'))

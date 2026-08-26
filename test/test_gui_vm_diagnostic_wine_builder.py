@@ -16,6 +16,8 @@ class DiagnosticWineBuilderTests(unittest.TestCase):
                 'C:\\\\Python311\\\\python.exe',
                 'netifaces-plus==0.12.5',
                 'pydivert==2.0.9', 'pyinstaller==6.22.0',
+                'pytest==8.3.5',
+                'ENTRYPOINT ["/usr/bin/tini", "--"]',
                 'chown -R "${HOST_UID}:${HOST_GID}"',
                 'sha256sum -c -'):
             self.assertIn(marker, dockerfile)
@@ -28,6 +30,9 @@ class DiagnosticWineBuilderTests(unittest.TestCase):
         self.assertIn('--build-arg "HOST_UID=$(id -u)"', wrapper)
         self.assertIn('sha256sum --check', wrapper)
         self.assertIn('--source-commit HEAD', wrapper)
+        self.assertIn('--worktree-overlay', wrapper)
+        self.assertIn("MODE=\"${1:-package}\"", wrapper)
+        self.assertIn("MODE\" == '--image-only'", wrapper)
         self.assertNotIn('--privileged', wrapper)
         self.assertNotIn('--network host', wrapper)
 
@@ -37,10 +42,16 @@ class DiagnosticWineBuilderTests(unittest.TestCase):
                        encoding='utf-8')
         for marker in (
                 'Refusing to overwrite', "!= b'MZ'",
-                "PACKAGE_VERSION = 'v33-diagnostic-02'",
+                "PACKAGE_VERSION = 'v33-diagnostic-03'",
                 'STOP_PHASE_BEGIN phase=complete',
                 'STOP_PROVIDER_BEGIN name=%s',
                 'probe_takeover_path', 'diagnostic-results-',
+                'prepare_diagnostic_core_spec',
+                'Core spec onedir markers missing',
+                'stop_trace_runtime_hook.py',
+                "'core_bundle_mode': 'pyinstaller-onefile-diagnostic-debug'",
+                "'core_bootloader_debug': True",
+                "'source_overlay_files': overlay_rows",
                 'core_work.mkdir()', 'gui_work.mkdir()',
                 "'source_commit': resolved",
                 "'acceptance_entry': 'test/gui_vm/Run-Diagnostics.cmd'"):

@@ -14,7 +14,7 @@ RUN dpkg --add-architecture i386 \
     && sed -i 's/ noble main$/ noble main universe/' /etc/apt/sources.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates curl git python3 unzip wine wine32:i386 wine64 xvfb \
+        ca-certificates curl git python3 tini unzip wine wine32:i386 wine64 xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 COPY python-${PYTHON_VERSION}-amd64.exe /tmp/python-amd64.exe
@@ -31,10 +31,11 @@ RUN echo "${PYTHON_INSTALLER_SHA256}  /tmp/python-amd64.exe" | sha256sum -c - \
 RUN xvfb-run -a wine C:\\Python311\\python.exe -m pip install \
         --disable-pip-version-check --no-cache-dir \
         certifi cryptography dnslib dpkt jinja2 netifaces-plus==0.12.5 pyftpdlib \
-        pyopenssl pydivert==2.0.9 pyinstaller==6.22.0 \
+        pyopenssl pydivert==2.0.9 pyinstaller==6.22.0 pytest==8.3.5 \
     && xvfb-run -a wine C:\\Python311\\python.exe -c \
-        "import netifaces; assert callable(netifaces.interfaces); assert callable(netifaces.ifaddresses)" \
+        "import certifi, cryptography, dnslib, dpkt, jinja2, netifaces, OpenSSL, pydivert, PyInstaller, pytest; assert callable(netifaces.interfaces); assert callable(netifaces.ifaddresses)" \
     && xvfb-run -a wine C:\\Python311\\python.exe -m PyInstaller --version \
+    && xvfb-run -a wine C:\\Python311\\python.exe -m pytest --version \
     && chmod -R a+rwX "${WINEPREFIX}"
 
 ARG HOST_UID=1000
@@ -42,3 +43,7 @@ ARG HOST_GID=1000
 RUN chown -R "${HOST_UID}:${HOST_GID}" "${WINEPREFIX}"
 
 WORKDIR /workspace
+
+# Keep xvfb-run out of PID 1 so Xvfb's SIGUSR1 readiness notification is
+# delivered to its shell trap when the image is used by ACC-002/ACC-006.
+ENTRYPOINT ["/usr/bin/tini", "--"]

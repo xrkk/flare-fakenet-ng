@@ -3,7 +3,7 @@ setlocal
 title Build FakeNet-NG v33 Diagnostic Package
 cd /d "%~dp0"
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Build-GuiVmPackage.ps1" -SourceCommit HEAD -PackageMode Diagnostic -PackageVersion v33-diagnostic-02
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Build-GuiVmPackage.ps1" -SourceCommit HEAD -PackageMode Diagnostic -PackageVersion v33-diagnostic-03
 set "BUILD_EXIT=%ERRORLEVEL%"
 
 echo.

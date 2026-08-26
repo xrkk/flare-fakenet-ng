@@ -454,13 +454,10 @@ class WindowsVerdictTests(unittest.TestCase):
         self.assertIsNone(self.diverter.classify_ipv6_preparse(
             bytes.fromhex('45000014'), False))
 
-    def test_sink_flow_enters_divert_path(self):
-        """Plan 2026.08.21-01 I5: sink-bound traffic must fall through to
-        the divert path (handle_pkt rewrites it to a local listener)
-        instead of being allowed through unmodified — the
-        ALLOW_TAKEOVER_SINK bypass is removed. With handle_pkt mocked (no
-        rewrite happens), the unmangled sink destination fails closed."""
+    def test_exact_sink_flow_is_reinjected_without_local_redirect(self):
         self.diverter.egress_policy = TakeoverPolicy()
+        self.diverter._takeover_route_snapshot = {
+            'source_ipv4': '10.0.0.5', 'interface_index': 7}
         packet = Packet(
             proto='UDP', dst='192.168.204.1', dport=443)
         windivert_packet = mock.Mock()
@@ -482,11 +479,61 @@ class WindowsVerdictTests(unittest.TestCase):
                         return_value=packet):
             self.diverter._handle_policy_packet(windivert_packet)
 
-        self.diverter.handle_pkt.assert_called_once()
-        self.assertFalse(self.diverter._send_packet.called)
+        self.diverter.handle_pkt.assert_not_called()
+        self.diverter._send_packet.assert_called_once_with(packet)
         self.diverter.log_egress_event.assert_called_once_with(
-            'DROP_EXTERNAL', reason='no_authorized_route',
-            original_ip='192.168.204.1', original_port=443)
+            'ALLOW_TAKEOVER_SINK', ip='192.168.204.1', proto='UDP',
+            sport=50000, dport=443)
+
+    def test_sink_verdict_requires_exact_protocol_address_and_route(self):
+        self.diverter.egress_policy = TakeoverPolicy()
+        self.diverter._takeover_route_snapshot = {
+            'source_ipv4': '10.0.0.5', 'interface_index': 7}
+
+        for proto in ('TCP', 'UDP'):
+            packet = Packet(proto=proto, dst='192.168.204.1', dport=8443)
+            self.assertEqual(
+                Verdict.ALLOW_TAKEOVER_SINK,
+                self.diverter._compute_egress_verdict(packet))
+            self.assertEqual(('192.168.204.1', 8443),
+                             (packet.dst_ip, packet.dport))
+
+        negative = (
+            Packet(proto='ICMP', dst='192.168.204.1', dport=0),
+            Packet(proto='TCP', dst='192.168.204.2'),
+            Packet(proto='UDP', dst='8.8.8.8'),
+            Packet(proto='TCP', src='10.0.0.6', dst='192.168.204.1'),
+        )
+        wrong_interface = Packet(proto='UDP', dst='192.168.204.1')
+        wrong_interface.interface_index = 8
+        for packet in negative + (wrong_interface,):
+            self.assertNotEqual(
+                Verdict.ALLOW_TAKEOVER_SINK,
+                self.diverter._compute_egress_verdict(packet))
+
+    def test_suspended_takeover_cannot_receive_sink_verdict(self):
+        policy = TakeoverPolicy()
+        policy.matches_takeover_sink = mock.Mock(return_value=False)
+        self.diverter.egress_policy = policy
+        self.diverter._takeover_route_snapshot = {
+            'source_ipv4': '10.0.0.5', 'interface_index': 7}
+
+        verdict = self.diverter._compute_egress_verdict(
+            Packet(proto='TCP', dst='192.168.204.1'))
+
+        self.assertNotEqual(Verdict.ALLOW_TAKEOVER_SINK, verdict)
+
+    def test_sink_event_uses_fixed_field_order(self):
+        self.diverter.logger = mock.Mock()
+        self.diverter._drop_log_state = {}
+
+        self.diverter.log_egress_event(
+            'ALLOW_TAKEOVER_SINK', ip='192.168.204.1', proto='TCP',
+            sport=50000, dport=443)
+
+        self.diverter.logger.info.assert_called_once_with(
+            '%s%s', 'ALLOW_TAKEOVER_SINK',
+            ' ip=192.168.204.1 proto=TCP sport=50000 dport=443')
 
     def test_takeover_listener_response_must_match_policy(self):
         diverter = Diverter.__new__(Diverter)

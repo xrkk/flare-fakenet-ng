@@ -1,5 +1,6 @@
 import importlib.util
 import logging
+import os
 import pathlib
 import stat
 import subprocess
@@ -121,11 +122,13 @@ class FnprSentinelTests(unittest.TestCase):
                 'ip route add', 'apt install', 'pip install', 'curl ',
                 'wget ', 'sudo '):
             self.assertNotIn(forbidden, shell)
-        self.assertTrue(shell_path.stat().st_mode & stat.S_IXUSR)
-        syntax = subprocess.run(
-            ['bash', '-n', str(shell_path)], capture_output=True, text=True)
-        self.assertEqual('', syntax.stderr)
-        self.assertEqual(0, syntax.returncode)
+        if os.name != 'nt':
+            self.assertTrue(shell_path.stat().st_mode & stat.S_IXUSR)
+            syntax = subprocess.run(
+                ['bash', '-n', str(shell_path)], capture_output=True,
+                text=True)
+            self.assertEqual('', syntax.stderr)
+            self.assertEqual(0, syntax.returncode)
 
 
 if __name__ == '__main__':

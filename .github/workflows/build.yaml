@@ -47,7 +47,11 @@ jobs:
         run: |
           # Create release directory and copy required files to it
           New-Item -ItemType Directory -Path $env:ReleaseDir
-          Copy-Item "dist\fakenet.exe" -Destination "$env:ReleaseDir\fakenet.exe"
+          if (-not (Test-Path "dist\fakenet-dat\fakenet.exe") -or
+              -not (Test-Path "dist\fakenet-dat\_internal")) {
+            throw "PyInstaller onedir output is incomplete."
+          }
+          Copy-Item "dist\fakenet-dat\*" -Destination $env:ReleaseDir -Recurse
           if (Test-Path "dist\fakenet-GUI.exe") {
             Copy-Item "dist\fakenet-GUI.exe" -Destination "$env:ReleaseDir\fakenet-GUI.exe"
           } else {

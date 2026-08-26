@@ -68,8 +68,8 @@ def test_parse_process_flow_line_rejects_other_events():
     assert procview.parse_process_flow_line('') is None
 
 
-def test_dispositions_list_has_no_removed_sink_verdict():
-    assert 'ALLOW_TAKEOVER_SINK' not in procview.DISPOSITIONS
+def test_dispositions_list_includes_exact_sink_verdict():
+    assert 'ALLOW_TAKEOVER_SINK' in procview.DISPOSITIONS
     assert 'DIVERT_FAKE' in procview.DISPOSITIONS
 
 

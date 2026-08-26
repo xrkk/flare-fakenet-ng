@@ -29,9 +29,8 @@ pyz = PYZ(a.pure, a.zipped_data,
              cipher=block_cipher)
 exe = EXE(pyz,
           a.scripts,
-          a.binaries + driver_files,
-          a.zipfiles,
-          a.datas,
+          [],
+          exclude_binaries=True,
           icon='resources/fakenet.ico',
           name='fakenet',
           debug=False,
@@ -41,6 +40,9 @@ exe = EXE(pyz,
           uac_admin=True)
 
 coll = COLLECT(exe,
+               a.binaries + driver_files,
+               a.zipfiles,
+               a.datas,
                strip=False,
                upx=True,
                name='fakenet-dat'

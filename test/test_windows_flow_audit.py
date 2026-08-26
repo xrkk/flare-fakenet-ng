@@ -87,6 +87,25 @@ def test_first_packet_emits_process_flow_with_owner_and_domain():
     assert fields['dst'] == '93.184.216.34'
 
 
+def test_takeover_sink_disposition_is_visible_in_process_flow():
+    diverter = make_diverter()
+    diverter.egress_policy.matches_takeover_sink = mock.Mock(
+        return_value=True)
+    diverter._takeover_route_snapshot = {
+        'source_ipv4': '10.0.0.5', 'interface_index': 7}
+    diverter.get_pid_comm = mock.Mock(return_value=(4242, 'sample.exe'))
+    diverter.log_egress_event = mock.Mock()
+    packet = FlowPacket(dst_ip0='192.168.204.1',
+                        dst_ip='192.168.204.1')
+    packet.interface_index = 7
+
+    verdict = diverter.finalize_egress_verdict(packet)
+
+    assert verdict == Verdict.ALLOW_TAKEOVER_SINK
+    assert diverter.log_egress_event.call_args[1]['disposition'] == (
+        'ALLOW_TAKEOVER_SINK')
+
+
 def test_subsequent_packets_do_not_reemit_and_tcp_teardown_evicts():
     diverter = make_diverter()
     diverter.get_pid_comm = mock.Mock(return_value=(1, 'a.exe'))
