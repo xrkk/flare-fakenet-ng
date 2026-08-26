@@ -206,6 +206,55 @@ def active_fakenet_images():
     return active
 
 
+def request_gui_close():
+    """Ask the formal GUI instance to close through its main window."""
+    script = (
+        "$items = @(Get-Process -Name 'fakenet-GUI' "
+        "-ErrorAction SilentlyContinue); "
+        "if ($items.Count -eq 0) { Write-Output 'GUI_NOT_FOUND'; exit 3 }; "
+        "$requested = $false; "
+        "foreach ($item in $items) { "
+        "if ($item.CloseMainWindow()) { $requested = $true } }; "
+        "if ($requested) { Write-Output 'CLOSE_REQUESTED'; exit 0 }; "
+        "Write-Output 'NO_MAIN_WINDOW'; exit 4")
+    try:
+        completed = subprocess.run(
+            ['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
+             '-ExecutionPolicy', 'Bypass', '-Command', script],
+            capture_output=True, text=True, timeout=15,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, '关闭请求异常: %s' % exc
+    output = (completed.stdout or completed.stderr or '').strip()
+    return (completed.returncode == 0 and
+            'CLOSE_REQUESTED' in output), (output or
+                                           '关闭请求 rc=%d' %
+                                           completed.returncode)
+
+
+def stop_gui_smoke(gui_proc, gui_mode):
+    """Close the A9 GUI without force-killing a one-file child process."""
+    if gui_mode != 'exe':
+        gui_proc.terminate()
+        gui_proc.wait(timeout=10)
+        return True, '开发模式测试进程已结束'
+
+    requested, detail = request_gui_close()
+    closed = wait_for(
+        lambda: 'fakenet-GUI.exe' not in active_fakenet_images(),
+        10, interval=0.25)
+    if closed:
+        try:
+            gui_proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+    if not requested:
+        return False, detail
+    if not closed:
+        return False, '%s;10 秒内仍有 fakenet-GUI.exe' % detail
+    return True, '%s;进程已退出' % detail
+
+
 def fnpr_session_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         'Logs', 'fnpr-active-session.json')
@@ -291,9 +340,11 @@ def main():
            'Win32_ComputerSystem 匹配 VM 特征(%s / %s)'
            % (vm.manufacturer, vm.model))
 
-    if launcher.is_fakenet_running():
-        return refuse('前置检查发现已有 fakenet.exe；请回滚/重启隔离 VM，'
-                      '本工具不会用强杀掩盖现场')
+    existing_images = active_fakenet_images()
+    if existing_images:
+        return refuse('前置检查发现已有 %s；请回滚/重启隔离 VM，'
+                      '本工具不会用强杀掩盖现场' %
+                      ','.join(existing_images))
     preflight_ok, FNPR_NONCE, transports, session_path = \
         preflight_fnpr_sentinel()
     for transport in ('tcp', 'udp'):
@@ -467,16 +518,16 @@ def main():
             if gui_mode == 'dev' else 0)
         time.sleep(6)
         alive = gui_proc.poll() is None
-        gui_proc.terminate()
-        gui_proc.wait(timeout=10)
+        closed, close_detail = stop_gui_smoke(gui_proc, gui_mode)
     except Exception as exc:  # noqa: BLE001 - recorded as evidence
         alive = False
         result('A9 GUI 启动冒烟', 'FAIL', '异常: %s' % exc)
     else:
-        result('A9 GUI 启动冒烟', 'PASS' if alive else 'FAIL',
-               '模式 %s;%s' % (gui_mode,
-                               '6 秒后仍存活(无崩溃)' if alive else
-                               '启动后即退出'))
+        result('A9 GUI 启动冒烟', 'PASS' if alive and closed else 'FAIL',
+               '模式 %s;%s;%s' % (
+                   gui_mode,
+                   '6 秒后仍存活(无崩溃)' if alive else '启动后即退出',
+                   close_detail))
     # -- A10 process flow attribution (v1.32 12.32.2) -------------------------
     run_a10_process_flow(fakenet_exe)
 

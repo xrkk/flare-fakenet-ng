@@ -163,6 +163,64 @@ def test_active_fakenet_images_silent_when_not_found(monkeypatch):
     assert acceptance.active_fakenet_images() == []
 
 
+def test_request_gui_close_uses_graceful_main_window(monkeypatch):
+    calls = []
+
+    class FakeProc(object):
+        returncode = 0
+        stdout = 'CLOSE_REQUESTED\n'
+        stderr = ''
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return FakeProc()
+
+    monkeypatch.setattr(acceptance.subprocess, 'run', fake_run)
+    ok, detail = acceptance.request_gui_close()
+
+    assert ok
+    assert detail == 'CLOSE_REQUESTED'
+    assert calls[0][0][:4] == [
+        'powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive']
+    command = calls[0][0][-1]
+    assert 'CloseMainWindow()' in command
+    assert 'taskkill' not in command.lower()
+
+
+def test_stop_gui_smoke_exe_closes_child_without_terminate(monkeypatch):
+    class FakeGuiProc(object):
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            raise AssertionError('formal exe cleanup must be graceful')
+
+        def wait(self, timeout):
+            self.returncode = 0
+            return 0
+
+    images = iter((['fakenet-GUI.exe'], []))
+    monkeypatch.setattr(
+        acceptance, 'request_gui_close',
+        lambda: (True, 'CLOSE_REQUESTED'))
+    monkeypatch.setattr(
+        acceptance, 'active_fakenet_images', lambda: next(images, []))
+
+    def fake_wait(predicate, timeout, interval=1.0):
+        assert not predicate()
+        return predicate()
+
+    monkeypatch.setattr(
+        acceptance, 'wait_for', fake_wait)
+
+    ok, detail = acceptance.stop_gui_smoke(FakeGuiProc(), 'exe')
+
+    assert ok
+    assert detail == 'CLOSE_REQUESTED;进程已退出'
+
+
 def test_export_logs_collects_package_root_artifacts(tmp_path):
     import datetime
     import shutil
