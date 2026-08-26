@@ -116,7 +116,11 @@ pid/映像名且处置为 `DIVERT_FAKE`。
 `DOMAIN_TAKEOVER_READY` 后复用前置 nonce，要求 Ubuntu Sentinel 同时回显 TCP/UDP，
 核心记录 `ALLOW_TAKEOVER_SINK`，且 sink 不得出现本地 `DIVERT_FAKE`。证据(核心日志、
 各阶段配置、`policy-results.tsv`)写入 `test\gui_vm\Logs\policy-<时间戳>\`。
-P16～P20 在阶段 2 继续执行邻接私网、ICMP、IPv6 和 route-drift 负向矩阵。route-drift
+P16～P20 在阶段 2 继续执行邻接私网、ICMP、IPv6 和 route-drift 负向矩阵。
+P18 以核心实际的 `DROP_EXTERNAL reason=external_ipv6` 作为外部 IPv6 拒绝证据；
+`unknown_ip_version` 只表示既非 IPv4 也非 IPv6 的未知版本，不作为正常 IPv6 门禁。
+正式入口使用运行时退出码串联 A/P/三轮停止，P 或停止组失败时不得被旧退出码覆盖。
+route-drift
 只把当前 IPv4 接口 metric 临时增加 17，等待核心记录
 `TAKEOVER_SUSPEND reason=route_snapshot_changed`，确认 TCP/UDP 都不能再获得 sink
 放行，然后在 `finally` 中恢复原 `AutomaticMetric`/`InterfaceMetric`；原值、漂移值、

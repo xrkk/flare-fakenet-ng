@@ -309,17 +309,17 @@ def exercise_acc008_negative_matrix(core_log, nonce):
            '%s;ALLOW_TAKEOVER_SINK before=%d after=%d' % (
                icmp_detail, icmp_before, icmp_after))
 
-    ipv6_before = after_icmp.count(
-        'DROP_EXTERNAL reason=unknown_ip_version')
+    ipv6_drop_marker = 'DROP_EXTERNAL reason=external_ipv6'
+    ipv6_before = after_icmp.count(ipv6_drop_marker)
     interface_index = route['interface_index'] if route else 0
     ipv6_target = 'ff02::1%%%d' % interface_index if interface_index else '::1'
     ipv6_detail = _run_ping(
         ['-6', '-n', '1', '-w', '1000', ipv6_target])
     ipv6_seen = acceptance.wait_for(
         lambda: acceptance.read_core_log(core_log).count(
-            'DROP_EXTERNAL reason=unknown_ip_version') > ipv6_before, 10)
+            ipv6_drop_marker) > ipv6_before, 10)
     result('P18 IPv6 fail-closed', 'PASS' if ipv6_seen else 'FAIL',
-           '%s;target=%s;DROP_EXTERNAL=%s' % (
+           '%s;target=%s;external_ipv6_drop=%s' % (
                ipv6_detail, ipv6_target, ipv6_seen))
 
     evidence = {

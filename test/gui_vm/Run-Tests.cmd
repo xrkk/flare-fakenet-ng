@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableExtensions EnableDelayedExpansion
 title FakeNet-NG - GUI Configuration Tool VM Acceptance
 
 rem One formal entry: self-elevate, preflight Ubuntu once, then run A/P.
@@ -24,13 +24,13 @@ set "P_EXIT=1"
 set "S_EXIT=1"
 if %A_EXIT% EQU 0 (
     %PYTHON_CMD% "%~dp0run_policy_feature_tests.py"
-    set "P_EXIT=%ERRORLEVEL%"
+    set "P_EXIT=!ERRORLEVEL!"
 ) else (
     echo [STOP] A group did not pass; P group was not started.
 )
 if %A_EXIT% EQU 0 if %P_EXIT% EQU 0 (
     %PYTHON_CMD% "%~dp0run_formal_stop_acceptance.py"
-    set "S_EXIT=%ERRORLEVEL%"
+    set "S_EXIT=!ERRORLEVEL!"
 ) else (
     echo [STOP] A/P groups did not both pass; three-round GUI stop was not started.
 )

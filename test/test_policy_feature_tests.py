@@ -214,3 +214,54 @@ def test_route_drift_restores_original_metric_when_probe_setup_fails(
     assert any(row[1] == 'P20 route drift 精确恢复' and row[0] == 'PASS'
                for row in policy.RESULTS)
     assert (tmp_path / 'route-drift-evidence.json').is_file()
+
+
+def test_acc008_ipv6_probe_accepts_the_product_external_ipv6_drop(
+        monkeypatch, tmp_path):
+    import run_vm_diagnostics as diagnostic
+
+    marker = (
+        'TAKEOVER_ROUTE_OK destination_prefix=192.168.204.0/24 '
+        'interface_alias=Ethernet0 interface_index=11 interface_metric=25 '
+        'next_hop=0.0.0.0 route_metric=256 source_ipv4=192.168.204.169\n')
+    state = {'ipv6_sent': False}
+
+    def read_core_log(_path):
+        text = marker + 'TAKEOVER_SUSPEND reason=route_snapshot_changed\n'
+        if state['ipv6_sent']:
+            text += 'DROP_EXTERNAL reason=external_ipv6\n'
+        return text
+
+    def run_ping(arguments):
+        if '-6' in arguments:
+            state['ipv6_sent'] = True
+        return 'rc=1;sent=1;received=0'
+
+    original = {
+        'interface_index': 11,
+        'automatic_metric': 'Enabled',
+        'interface_metric': 25,
+    }
+    monkeypatch.setattr(policy.acceptance, 'read_core_log', read_core_log)
+    monkeypatch.setattr(
+        policy.acceptance, 'wait_for', lambda predicate, timeout: predicate())
+    monkeypatch.setattr(
+        policy, '_send_adjacent_private_probe',
+        lambda nonce: ('192.168.204.2', 'sent'))
+    monkeypatch.setattr(policy, '_run_ping', run_ping)
+    monkeypatch.setattr(policy.time, 'sleep', lambda seconds: None)
+    monkeypatch.setattr(
+        policy, 'read_interface_metric', lambda index: dict(original))
+    monkeypatch.setattr(policy, 'set_interface_metric', lambda index, metric: None)
+    monkeypatch.setattr(policy, 'restore_interface_metric', lambda value: None)
+    monkeypatch.setattr(
+        diagnostic, 'probe_fnpr_transports',
+        lambda *args, **kwargs: (
+            False, {'tcp': {'ok': False}, 'udp': {'ok': False}}))
+    monkeypatch.setattr(policy, 'LOG_DIR', str(tmp_path))
+    policy.RESULTS[:] = []
+
+    policy.exercise_acc008_negative_matrix('core.log', 'nonce')
+
+    assert any(row[1] == 'P18 IPv6 fail-closed' and row[0] == 'PASS'
+               for row in policy.RESULTS)

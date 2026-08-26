@@ -36,6 +36,17 @@ def test_unique_formal_entry_orders_preflight_ap_and_three_stop_rounds():
     assert 'taskkill' not in cmd.lower()
 
 
+def test_unique_formal_entry_captures_policy_and_stop_exit_codes_at_runtime():
+    cmd = (ROOT / 'test' / 'gui_vm' / 'Run-Tests.cmd').read_text(
+        encoding='utf-8')
+
+    assert 'setlocal EnableExtensions EnableDelayedExpansion' in cmd
+    assert 'set "P_EXIT=!ERRORLEVEL!"' in cmd
+    assert 'set "S_EXIT=!ERRORLEVEL!"' in cmd
+    assert 'set "P_EXIT=%ERRORLEVEL%"' not in cmd
+    assert 'set "S_EXIT=%ERRORLEVEL%"' not in cmd
+
+
 def test_formal_runners_require_real_sink_and_never_force_kill():
     paths = [
         ROOT / 'test' / 'gui_vm' / 'run_gui_vm_acceptance.py',
