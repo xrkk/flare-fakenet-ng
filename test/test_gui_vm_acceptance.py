@@ -229,6 +229,83 @@ def test_stop_gui_smoke_exe_closes_child_without_terminate(monkeypatch):
     assert detail == 'CLOSE_REQUESTED count=1;进程已退出'
 
 
+def test_formal_preflight_refusal_is_persisted_for_the_next_export():
+    runner = open(RUNNER_PATH, 'r', encoding='utf-8').read()
+    diagnostic_path = os.path.join(
+        REPO, 'test', 'gui_vm', 'run_vm_diagnostics.py')
+    diagnostic = open(diagnostic_path, 'r', encoding='utf-8').read()
+    exporter_path = os.path.join(REPO, 'test', 'gui_vm', 'Export-Logs.ps1')
+    exporter = open(exporter_path, 'r', encoding='utf-8-sig').read()
+
+    for marker in (
+            'preflight-refused-', 'refusal-transcript.txt',
+            'refusal-evidence.json', 'exit_code', 'network_unchanged',
+            'core_not_started'):
+        assert marker in runner
+    assert 'transcript_sink' in diagnostic
+    assert 'Logs\\preflight-refused-*' in exporter
+
+
+def test_preflight_refusal_evidence_proves_no_network_or_core_change(
+        monkeypatch, tmp_path):
+    import json
+    import sys
+    import types
+
+    session_path = tmp_path / 'Logs' / 'fnpr-active-session.json'
+
+    def capture(path, label):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write(label + '\n')
+        return {
+            'dns-client': (0, 'dns-original'),
+            'route-ipv4': (0, 'route-original'),
+        }
+
+    def wait(transcript_sink=None):
+        transcript_sink.extend([
+            '[ACTION REQUIRED 1/1]',
+            '[REFUSED] Ubuntu Sentinel 前置失败',
+            '未启动 GUI，未修改 Windows 网络。',
+        ])
+        return False, 'diag-refused', {
+            'tcp': {'ok': False, 'detail': 'unreachable'},
+            'udp': {'ok': False, 'detail': 'unreachable'},
+        }
+
+    def write_json(path, value):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump(value, handle)
+
+    diagnostic = types.SimpleNamespace(
+        SENTINEL_IPV4='192.168.204.1', SENTINEL_PORT=443,
+        capture_network_snapshot=capture, wait_for_sentinel=wait,
+        write_json=write_json,
+        package_identity=lambda: {'source_commit': 'test-commit'})
+    monkeypatch.setitem(sys.modules, 'run_vm_diagnostics', diagnostic)
+    monkeypatch.setattr(
+        acceptance, 'fnpr_session_path', lambda: str(session_path))
+    monkeypatch.setattr(acceptance, 'active_fakenet_images', lambda: [])
+
+    ok, nonce, transports, evidence_path = \
+        acceptance.preflight_fnpr_sentinel()
+
+    assert not ok
+    assert nonce == 'diag-refused'
+    assert not transports['tcp']['ok'] and not transports['udp']['ok']
+    evidence = json.loads(open(
+        evidence_path, 'r', encoding='utf-8').read())
+    assert evidence['exit_code'] == acceptance.EXIT_REFUSED
+    assert evidence['network_unchanged']
+    assert evidence['core_not_started']
+    transcript = open(
+        evidence['transcript'], 'r', encoding='utf-8').read()
+    assert '[REFUSED]' in transcript
+    assert '[EVIDENCE]' in transcript
+
+
 def test_export_logs_collects_package_root_artifacts(tmp_path):
     import datetime
     import shutil

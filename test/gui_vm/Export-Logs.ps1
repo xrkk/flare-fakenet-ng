@@ -91,7 +91,8 @@ foreach ($source in ($configPaths.Values | Sort-Object)) {
 }
 
 # Formal v34 runners persist their result/timeline/network/session evidence
-# below test\gui_vm\Logs.  Copy only files created in this invocation and
+# below test\gui_vm\Logs, including Logs\preflight-refused-* evidence. Copy
+# only files created in this invocation and
 # exclude export directories (including the target currently being built).
 $runnerEvidence = Get-ChildItem -LiteralPath $logRoot -File -Recurse `
     -ErrorAction SilentlyContinue |

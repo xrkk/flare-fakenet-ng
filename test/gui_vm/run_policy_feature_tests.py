@@ -14,6 +14,8 @@ fakenet.exe and the real DNS data path:
     P5 DOMAIN_TAKEOVER_READY lists every configured domain/wildcard
     P6 apex (not allowed) is answered with the takeover sink IPv4
     P7 wildcard-covered subdomain stays allowlisted under takeover
+    P16-P20 exercise adjacent-private/ICMP/IPv6 fail-closed behavior and
+            a temporary interface-metric route drift with exact restoration
 
   Phase 3 (unknown-IPv4 fallback, plan v1.29 12.32.1):
     P11 direct TCP to an unreviewed global IPv4 is DIVERT_FAKE'd (the
@@ -32,9 +34,11 @@ import ipaddress
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
+import uuid
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
@@ -168,6 +172,230 @@ def reviewed_allow_logged(log_text, original_ip):
 def answers_only_sink(addresses, sink):
     """True when every returned address is the takeover sink."""
     return bool(addresses) and addresses == {sink}
+
+
+def takeover_route_identity(log_text):
+    """Parse the frozen route identity emitted by the real Windows core."""
+    lines = [line for line in log_text.splitlines()
+             if 'TAKEOVER_ROUTE_OK ' in line]
+    if not lines:
+        return None
+    fields = dict(re.findall(r'(\w+)=([^\s]+)', lines[-1]))
+    try:
+        return {
+            'interface_index': int(fields['interface_index']),
+            'interface_metric': int(fields['interface_metric']),
+            'destination_prefix': fields['destination_prefix'],
+            'next_hop': fields['next_hop'],
+            'source_ipv4': fields['source_ipv4'],
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _powershell_json(script, timeout=20):
+    completed = subprocess.run(
+        ['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
+         '-ExecutionPolicy', 'Bypass', '-Command', script],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        timeout=timeout,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stderr or completed.stdout).strip() or
+                           'PowerShell returned no diagnostic')
+    lines = [line for line in completed.stdout.splitlines() if line.strip()]
+    if not lines:
+        raise RuntimeError('PowerShell returned no JSON')
+    return json.loads(lines[-1])
+
+
+def read_interface_metric(interface_index):
+    index = int(interface_index)
+    script = (
+        "$i=Get-NetIPInterface -AddressFamily IPv4 -InterfaceIndex %d "
+        "-ErrorAction Stop | Select-Object -First 1;"
+        "[PSCustomObject]@{interface_index=[int]$i.InterfaceIndex;"
+        "automatic_metric=[string]$i.AutomaticMetric;"
+        "interface_metric=[int]$i.InterfaceMetric}|"
+        "ConvertTo-Json -Compress" % index)
+    value = _powershell_json(script)
+    return {
+        'interface_index': int(value['interface_index']),
+        'automatic_metric': str(value['automatic_metric']),
+        'interface_metric': int(value['interface_metric']),
+    }
+
+
+def set_interface_metric(interface_index, metric):
+    index = int(interface_index)
+    value = int(metric)
+    script = (
+        "Set-NetIPInterface -AddressFamily IPv4 -InterfaceIndex %d "
+        "-AutomaticMetric Disabled -InterfaceMetric %d -ErrorAction Stop;"
+        "[PSCustomObject]@{ok=$true}|ConvertTo-Json -Compress"
+        % (index, value))
+    _powershell_json(script)
+
+
+def restore_interface_metric(original):
+    index = int(original['interface_index'])
+    automatic = str(original['automatic_metric']).lower() == 'enabled'
+    if automatic:
+        command = (
+            "Set-NetIPInterface -AddressFamily IPv4 -InterfaceIndex %d "
+            "-AutomaticMetric Enabled -ErrorAction Stop;" % index)
+    else:
+        command = (
+            "Set-NetIPInterface -AddressFamily IPv4 -InterfaceIndex %d "
+            "-AutomaticMetric Disabled -InterfaceMetric %d "
+            "-ErrorAction Stop;" % (index, int(original['interface_metric'])))
+    _powershell_json(
+        command + "[PSCustomObject]@{ok=$true}|ConvertTo-Json -Compress")
+
+
+def _run_ping(arguments):
+    try:
+        completed = subprocess.run(
+            ['ping.exe'] + list(arguments), stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, timeout=10,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        detail = 'rc=%d' % completed.returncode
+        if completed.stdout:
+            detail += ';' + completed.stdout.splitlines()[-1].strip()
+        return detail
+    except (OSError, subprocess.SubprocessError) as exc:
+        return '%s: %s' % (type(exc).__name__, exc)
+
+
+def _send_adjacent_private_probe(nonce):
+    adjacent = str(ipaddress.ip_address(TAKEOVER_SINK) + 1)
+    payload = ('FNPR/1|%s|target\n' % nonce).encode('ascii')
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.settimeout(1)
+        sock.sendto(payload, (adjacent, UNREVIEWED_PORT))
+        detail = 'bounded UDP sent'
+    except OSError as exc:
+        detail = 'send result: %s' % exc
+    finally:
+        sock.close()
+    return adjacent, detail
+
+
+def exercise_acc008_negative_matrix(core_log, nonce):
+    """Exercise the reviewed real-VM negative matrix and restore route state."""
+    import run_vm_diagnostics as diagnostic
+
+    initial = acceptance.read_core_log(core_log)
+    route = takeover_route_identity(initial)
+    adjacent, adjacent_detail = _send_adjacent_private_probe(nonce)
+    time.sleep(1)
+    after_adjacent = acceptance.read_core_log(core_log)
+    adjacent_allowed = (
+        'ALLOW_TAKEOVER_SINK ip=%s ' % adjacent in after_adjacent)
+    result('P16 邻接私网不扩散', 'PASS' if not adjacent_allowed else 'FAIL',
+           '%s;%s;ALLOW_TAKEOVER_SINK=%s' % (
+               adjacent, adjacent_detail, adjacent_allowed))
+
+    icmp_before = after_adjacent.count(
+        'ALLOW_TAKEOVER_SINK ip=%s proto=ICMP' % TAKEOVER_SINK)
+    icmp_detail = _run_ping(['-n', '1', '-w', '1000', TAKEOVER_SINK])
+    time.sleep(1)
+    after_icmp = acceptance.read_core_log(core_log)
+    icmp_after = after_icmp.count(
+        'ALLOW_TAKEOVER_SINK ip=%s proto=ICMP' % TAKEOVER_SINK)
+    result('P17 ICMP 不得命中 sink',
+           'PASS' if icmp_after == icmp_before else 'FAIL',
+           '%s;ALLOW_TAKEOVER_SINK before=%d after=%d' % (
+               icmp_detail, icmp_before, icmp_after))
+
+    ipv6_before = after_icmp.count(
+        'DROP_EXTERNAL reason=unknown_ip_version')
+    interface_index = route['interface_index'] if route else 0
+    ipv6_target = 'ff02::1%%%d' % interface_index if interface_index else '::1'
+    ipv6_detail = _run_ping(
+        ['-6', '-n', '1', '-w', '1000', ipv6_target])
+    ipv6_seen = acceptance.wait_for(
+        lambda: acceptance.read_core_log(core_log).count(
+            'DROP_EXTERNAL reason=unknown_ip_version') > ipv6_before, 10)
+    result('P18 IPv6 fail-closed', 'PASS' if ipv6_seen else 'FAIL',
+           '%s;target=%s;DROP_EXTERNAL=%s' % (
+               ipv6_detail, ipv6_target, ipv6_seen))
+
+    evidence = {
+        'route_marker': route,
+        'original_interface': None,
+        'drifted_interface': None,
+        'restored_interface': None,
+        'restore_matches_original': False,
+        'takeover_suspended': False,
+        'negative_target_tcp': None,
+        'negative_target_udp': None,
+        'errors': [],
+    }
+    original = None
+    drift_applied = False
+    try:
+        if not route:
+            raise RuntimeError('TAKEOVER_ROUTE_OK identity missing')
+        original = read_interface_metric(route['interface_index'])
+        evidence['original_interface'] = original
+        drift_metric = original['interface_metric'] + 17
+        drift_applied = True
+        set_interface_metric(route['interface_index'], drift_metric)
+        evidence['drifted_interface'] = read_interface_metric(
+            route['interface_index'])
+        suspended = acceptance.wait_for(
+            lambda: ('TAKEOVER_SUSPEND' in
+                     acceptance.read_core_log(core_log) and
+                     'reason=route_snapshot_changed' in
+                     acceptance.read_core_log(core_log)), 20)
+        evidence['takeover_suspended'] = suspended
+        allow_before = acceptance.read_core_log(core_log).count(
+            'ALLOW_TAKEOVER_SINK')
+        negative_ok, negative = diagnostic.probe_fnpr_transports(
+            'negative-%s' % uuid.uuid4().hex, 'target', timeout=3.0)
+        evidence['negative_target_tcp'] = negative['tcp']['ok']
+        evidence['negative_target_udp'] = negative['udp']['ok']
+        time.sleep(1)
+        allow_after = acceptance.read_core_log(core_log).count(
+            'ALLOW_TAKEOVER_SINK')
+        drift_ok = (suspended and not negative_ok and
+                    not negative['tcp']['ok'] and
+                    not negative['udp']['ok'] and
+                    allow_after == allow_before)
+        result('P19 route drift 挂起 sink',
+               'PASS' if drift_ok else 'FAIL',
+               'suspended=%s;TCP=%s;UDP=%s;allow_before=%d;allow_after=%d'
+               % (suspended, negative['tcp']['ok'], negative['udp']['ok'],
+                  allow_before, allow_after))
+    except Exception as exc:  # evidence failure is an explicit FAIL
+        evidence['errors'].append('%s: %s' % (type(exc).__name__, exc))
+        result('P19 route drift 挂起 sink', 'FAIL', evidence['errors'][-1])
+    finally:
+        if drift_applied and original is not None:
+            try:
+                restore_interface_metric(original)
+                time.sleep(1)
+                restored = read_interface_metric(original['interface_index'])
+                evidence['restored_interface'] = restored
+                evidence['restore_matches_original'] = restored == original
+            except Exception as exc:  # restoration failure stays visible
+                evidence['errors'].append(
+                    'restore %s: %s' % (type(exc).__name__, exc))
+
+    result('P20 route drift 精确恢复',
+           'PASS' if evidence['restore_matches_original'] else 'FAIL',
+           'original=%s;restored=%s;errors=%s' % (
+               evidence['original_interface'],
+               evidence['restored_interface'],
+               evidence['errors'] or '-'))
+    evidence_path = os.path.join(LOG_DIR, 'route-drift-evidence.json')
+    with open(evidence_path, 'w', encoding='utf-8', newline='') as handle:
+        json.dump(evidence, handle, ensure_ascii=False, indent=2,
+                  sort_keys=True)
+        handle.write('\n')
+    return evidence
 
 
 def probe_direct_ipv4(ip, port, timeout=10):
@@ -437,6 +665,7 @@ def main():
            '本地DIVERT_FAKE=%s' % (
                FNPR_NONCE, target['tcp']['ok'], target['udp']['ok'],
                sink_allowed, sink_diverted))
+    exercise_acc008_negative_matrix(core_log2, FNPR_NONCE)
     stop_core(stop2, core_log2)
     result('P10 阶段2干净退出', 'PASS'
            if 'FakeNet-NG exiting: rc=0' in

@@ -224,37 +224,41 @@ def _format_transport_failures(transports):
     return '; '.join(failures) if failures else 'TCP/UDP 同 nonce 前置通过'
 
 
-def wait_for_sentinel():
+def wait_for_sentinel(transcript_sink=None):
+    def emit(message=''):
+        print(message, flush=True)
+        if transcript_sink is not None:
+            transcript_sink.append(message)
+
     nonce = 'diag-%s' % uuid.uuid4().hex
     ok, transports = probe_fnpr_transports(nonce, 'preflight')
     detail = _format_transport_failures(transports)
     if ok:
-        print('[PASS] Ubuntu Sentinel: %s' % detail, flush=True)
+        emit('[PASS] Ubuntu Sentinel: %s' % detail)
         return True, nonce, transports
 
-    print('', flush=True)
-    print('[ACTION REQUIRED 1/1]', flush=True)
-    print('在 Ubuntu 运行仓库根目录的 Start-FNPR-Sentinel.sh，'
-          '并保持窗口打开。', flush=True)
-    print('Windows 端正在等待 %s:%s 的 TCP+UDP，同一窗口无需输入其他命令。'
-          % (SENTINEL_IPV4, SENTINEL_PORT), flush=True)
+    emit('')
+    emit('[ACTION REQUIRED 1/1]')
+    emit('在 Ubuntu 运行仓库根目录的 Start-FNPR-Sentinel.sh，'
+         '并保持窗口打开。')
+    emit('Windows 端正在等待 %s:%s 的 TCP+UDP，同一窗口无需输入其他命令。'
+         % (SENTINEL_IPV4, SENTINEL_PORT))
     deadline = time.monotonic() + SENTINEL_WAIT_SECONDS
     attempt = 0
     while time.monotonic() < deadline:
         attempt += 1
         remaining = max(0, int(deadline - time.monotonic()))
-        print('[WAIT] Ubuntu Sentinel 尚未就绪，剩余约 %d 秒；上次结果: %s'
-              % (remaining, detail), flush=True)
+        emit('[WAIT] Ubuntu Sentinel 尚未就绪，剩余约 %d 秒；上次结果: %s'
+             % (remaining, detail))
         time.sleep(min(SENTINEL_RETRY_SECONDS,
                        max(0, deadline - time.monotonic())))
         ok, transports = probe_fnpr_transports(nonce, 'preflight')
         detail = _format_transport_failures(transports)
         if ok:
-            print('[PASS] Ubuntu Sentinel: %s; nonce=%s' % (detail, nonce),
-                  flush=True)
+            emit('[PASS] Ubuntu Sentinel: %s; nonce=%s' % (detail, nonce))
             return True, nonce, transports
-    print('[REFUSED] Ubuntu Sentinel 前置失败: %s' % detail, flush=True)
-    print('未启动 GUI，未修改 Windows 网络。', flush=True)
+    emit('[REFUSED] Ubuntu Sentinel 前置失败: %s' % detail)
+    emit('未启动 GUI，未修改 Windows 网络。')
     return False, nonce, transports
 
 

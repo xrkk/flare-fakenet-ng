@@ -15,6 +15,7 @@ Exit codes: 0 = all PASS, 1 = any FAIL, 2 = REFUSED (precondition).
 import os
 import json
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -299,9 +300,21 @@ def fnpr_session_path():
 def preflight_fnpr_sentinel():
     """Run the sole cross-host preflight before any WinDivert/DNS change."""
     import run_vm_diagnostics as diagnostic
-    ok, nonce, transports = diagnostic.wait_for_sentinel()
     path = fnpr_session_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    log_root = os.path.dirname(path)
+    os.makedirs(log_root, exist_ok=True)
+    stamp = '%s-%d' % (time.strftime('%Y%m%d-%H%M%S'), os.getpid())
+    refusal_dir = os.path.join(log_root, 'preflight-refused-' + stamp)
+    os.makedirs(refusal_dir)
+    network_before_path = os.path.join(
+        refusal_dir, 'network-before.txt')
+    network_after_path = os.path.join(
+        refusal_dir, 'network-after.txt')
+    network_before = diagnostic.capture_network_snapshot(
+        network_before_path, 'preflight-refusal-before')
+    transcript = []
+    ok, nonce, transports = diagnostic.wait_for_sentinel(
+        transcript_sink=transcript)
     payload = {
         'nonce': nonce,
         'sentinel_ipv4': diagnostic.SENTINEL_IPV4,
@@ -310,11 +323,40 @@ def preflight_fnpr_sentinel():
         'ok': bool(ok),
         'created_epoch': time.time(),
     }
-    with open(path, 'w', encoding='utf-8') as handle:
-        json.dump(payload, handle, ensure_ascii=False, sort_keys=True,
-                  indent=2)
-        handle.write('\n')
-    return ok, nonce, transports, path
+    diagnostic.write_json(path, payload)
+    if ok:
+        shutil.rmtree(refusal_dir, ignore_errors=True)
+        return ok, nonce, transports, path
+
+    network_after = diagnostic.capture_network_snapshot(
+        network_after_path, 'preflight-refusal-after')
+    network_unchanged = all(
+        network_before.get(section) == network_after.get(section)
+        for section in ('dns-client', 'route-ipv4'))
+    core_not_started = not active_fakenet_images()
+    transcript_path = os.path.join(
+        refusal_dir, 'refusal-transcript.txt')
+    evidence_path = os.path.join(
+        refusal_dir, 'refusal-evidence.json')
+    evidence = diagnostic.package_identity()
+    evidence.update({
+        'exit_code': EXIT_REFUSED,
+        'nonce': nonce,
+        'sentinel_ipv4': diagnostic.SENTINEL_IPV4,
+        'sentinel_port': diagnostic.SENTINEL_PORT,
+        'transports': transports,
+        'network_unchanged': network_unchanged,
+        'core_not_started': core_not_started,
+        'network_before': network_before_path,
+        'network_after': network_after_path,
+        'transcript': transcript_path,
+    })
+    diagnostic.write_json(evidence_path, evidence)
+    transcript.append('[EVIDENCE] %s' % evidence_path)
+    with open(transcript_path, 'w', encoding='utf-8', newline='') as handle:
+        handle.write('\n'.join(transcript) + '\n')
+    print('[EVIDENCE] %s' % evidence_path, flush=True)
+    return ok, nonce, transports, evidence_path
 
 
 def collect_gui_logs(before, logs_root=None, target_dir=None):

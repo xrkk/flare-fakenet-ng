@@ -116,4 +116,15 @@ pid/映像名且处置为 `DIVERT_FAKE`。
 `DOMAIN_TAKEOVER_READY` 后复用前置 nonce，要求 Ubuntu Sentinel 同时回显 TCP/UDP，
 核心记录 `ALLOW_TAKEOVER_SINK`，且 sink 不得出现本地 `DIVERT_FAKE`。证据(核心日志、
 各阶段配置、`policy-results.tsv`)写入 `test\gui_vm\Logs\policy-<时间戳>\`。
+P16～P20 在阶段 2 继续执行邻接私网、ICMP、IPv6 和 route-drift 负向矩阵。route-drift
+只把当前 IPv4 接口 metric 临时增加 17，等待核心记录
+`TAKEOVER_SUSPEND reason=route_snapshot_changed`，确认 TCP/UDP 都不能再获得 sink
+放行，然后在 `finally` 中恢复原 `AutomaticMetric`/`InterfaceMetric`；原值、漂移值、
+恢复值和负向探针结果固定写入 `route-drift-evidence.json`。恢复不精确即 P20 FAIL，
+不得继续把该轮结果当作通过。
+
+若 Sentinel 在 120 秒内仍未启动，正式入口在任何核心或网络修改前以 REFUSED/2
+退出，并在 `test\gui_vm\Logs\preflight-refused-<时间戳>\` 保存控制台 transcript、
+TCP/UDP 失败、包身份、网络前后快照和“核心未启动”证据；同次 `Export-Logs.ps1`
+会把这些文件纳入逐文件 SHA-256 清单，用户不需要另行录屏或猜测命令。
 物理机/非确定 VM 状态直接拒绝(会启用真实流量劫持)。

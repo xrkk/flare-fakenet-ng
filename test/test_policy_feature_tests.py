@@ -120,3 +120,97 @@ def test_answers_only_sink_rejects_real_and_empty_answers():
     assert not policy.answers_only_sink(
         {'192.168.204.1', '101.71.73.135'}, '192.168.204.1')
     assert not policy.answers_only_sink({'101.71.73.135'}, '192.168.204.1')
+
+
+def test_acc008_real_negative_matrix_is_part_of_the_formal_runner():
+    source = open(RUNNER_PATH, 'r', encoding='utf-8').read()
+
+    for marker in (
+            'P16 邻接私网不扩散',
+            'P17 ICMP 不得命中 sink',
+            'P18 IPv6 fail-closed',
+            'P19 route drift 挂起 sink',
+            'P20 route drift 精确恢复',
+            'TAKEOVER_SUSPEND',
+            'route_snapshot_changed',
+            'Set-NetIPInterface',
+            'AutomaticMetric',
+            'finally:'):
+        assert marker in source
+
+
+def test_route_drift_evidence_contract_is_machine_readable():
+    source = open(RUNNER_PATH, 'r', encoding='utf-8').read()
+
+    for marker in (
+            'route-drift-evidence.json',
+            'original_interface',
+            'drifted_interface',
+            'restored_interface',
+            'restore_matches_original',
+            'negative_target_tcp',
+            'negative_target_udp'):
+        assert marker in source
+
+
+def test_takeover_route_identity_parses_real_core_marker():
+    parsed = policy.takeover_route_identity(
+        '[INFO] TAKEOVER_ROUTE_OK destination_prefix=192.168.204.0/24 '
+        'interface_alias=Ethernet0 interface_index=11 interface_metric=25 '
+        'next_hop=0.0.0.0 route_metric=256 source_ipv4=192.168.204.169')
+
+    assert parsed == {
+        'interface_index': 11,
+        'interface_metric': 25,
+        'destination_prefix': '192.168.204.0/24',
+        'next_hop': '0.0.0.0',
+        'source_ipv4': '192.168.204.169',
+    }
+
+
+def test_takeover_route_identity_fails_closed_on_incomplete_marker():
+    assert policy.takeover_route_identity(
+        '[INFO] TAKEOVER_ROUTE_OK interface_index=11') is None
+
+
+def test_route_drift_restores_original_metric_when_probe_setup_fails(
+        monkeypatch, tmp_path):
+    marker = (
+        'TAKEOVER_ROUTE_OK destination_prefix=192.168.204.0/24 '
+        'interface_alias=Ethernet0 interface_index=11 interface_metric=25 '
+        'next_hop=0.0.0.0 route_metric=256 source_ipv4=192.168.204.169\n')
+    original = {
+        'interface_index': 11,
+        'automatic_metric': 'Enabled',
+        'interface_metric': 25,
+    }
+    restored = []
+    metrics = iter((original, original))
+    monkeypatch.setattr(policy.acceptance, 'read_core_log', lambda path: marker)
+    monkeypatch.setattr(
+        policy.acceptance, 'wait_for', lambda predicate, timeout: True)
+    monkeypatch.setattr(
+        policy, '_send_adjacent_private_probe',
+        lambda nonce: ('192.168.204.2', 'sent'))
+    monkeypatch.setattr(policy, '_run_ping', lambda args: 'rc=0')
+    monkeypatch.setattr(policy.time, 'sleep', lambda seconds: None)
+    monkeypatch.setattr(policy, 'read_interface_metric', lambda index: next(metrics))
+
+    def fail_after_possible_change(index, metric):
+        raise RuntimeError('set result unavailable')
+
+    monkeypatch.setattr(policy, 'set_interface_metric', fail_after_possible_change)
+    monkeypatch.setattr(
+        policy, 'restore_interface_metric', lambda value: restored.append(value))
+    monkeypatch.setattr(policy, 'LOG_DIR', str(tmp_path))
+    policy.RESULTS[:] = []
+
+    evidence = policy.exercise_acc008_negative_matrix('core.log', 'nonce')
+
+    assert restored == [original]
+    assert evidence['restore_matches_original']
+    assert any(row[1] == 'P19 route drift 挂起 sink' and row[0] == 'FAIL'
+               for row in policy.RESULTS)
+    assert any(row[1] == 'P20 route drift 精确恢复' and row[0] == 'PASS'
+               for row in policy.RESULTS)
+    assert (tmp_path / 'route-drift-evidence.json').is_file()
