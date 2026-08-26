@@ -66,6 +66,36 @@ class FakenetStopLifecycleTests(unittest.TestCase):
         ], events)
         self.assertEqual(1, fakenet.diverter.stop_calls)
 
+    def test_policy_stop_logs_each_diagnostic_boundary(self):
+        fakenet, unused = self._fakenet()
+        fakenet.logger.setLevel(logging.INFO)
+
+        with self.assertLogs('FakeNet', level='INFO') as captured:
+            self.assertTrue(fakenet.stop())
+
+        messages = [record.getMessage() for record in captured.records]
+        expected_in_order = [
+            'STOP_PHASE_BEGIN phase=complete',
+            'STOP_PHASE_BEGIN phase=policy_suspend',
+            'STOP_PHASE_END phase=policy_suspend',
+            'STOP_PHASE_BEGIN phase=listeners',
+            'STOP_PROVIDER_BEGIN name=two',
+            'STOP_PROVIDER_END name=two',
+            'STOP_PROVIDER_BEGIN name=one',
+            'STOP_PROVIDER_END name=one',
+            'STOP_PHASE_END phase=listeners',
+            'STOP_PHASE_BEGIN phase=diverter',
+            'STOP_PHASE_END phase=diverter',
+            'STOP_PHASE_END phase=complete',
+        ]
+        positions = []
+        for marker in expected_in_order:
+            positions.append(next(
+                index for index, message in enumerate(messages)
+                if marker in message))
+        self.assertEqual(sorted(positions), positions)
+        self.assertTrue(messages[-1].endswith('healthy=True'))
+
     def test_wait_for_capture_failure_delegates_to_diverter(self):
         fakenet, unused = self._fakenet()
         fakenet.diverter.failure.set()

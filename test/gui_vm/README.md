@@ -38,8 +38,33 @@ A6 启动的 fakenet 使用**最小非侵入配置**(`DivertTraffic: No`、`Dump
 
 `Run-Tests.cmd` 的证据收集发生在验收结束时;此后若继续用 GUI 手动启动核心做测试,
 新产生的日志/PCAP/报告不会进入验收目录。此时双击 **`Export-Logs.cmd`**(免提权):
-包根 `Logs\` 全部日志、`packets_*.pcap`、`report_*.html` 会集中拷贝到
-`test\gui_vm\Logs\manual-export-<时间戳>\`,导出仍只需拷贝 `test\gui_vm\Logs\` 一处。
+包根 `Logs\` 日志、`packets_*.pcap`、`report_*.html`, 以及日志中记录的实际启动 INI
+会集中拷贝到 `test\gui_vm\Logs\manual-export-<时间戳>\`.导出目录还包含
+`config-sources.tsv`、`stop-diagnosis.txt` 和 `evidence-sha256.tsv`.
+
+导出完成后控制台会直接打印:
+
+- 是否找到并复制了当次 INI;
+- 最新核心日志中最深的未闭合 `STOP_PHASE/STOP_PROVIDER` 边界;
+- 缺少 INI 或诊断标记时的明确失败原因.
+
+用户不需要自己猜测卡住位置;将整个新生成的
+`manual-export-<时间戳>` 目录回传即可。
+
+## v33 诊断包一键入口
+
+诊断包使用独立名称 `Windows-GUI配置工具-VM诊断-v33-diagnostic-01.zip`,
+不覆盖或冒充 v33/v34 交付包。解压到隔离 Windows VM 后双击
+`test\gui_vm\Run-Diagnostics.cmd`。该入口自动请求一次 UAC、验证 Ubuntu
+Sentinel 的同 nonce TCP/UDP、打开 GUI、等待启动、建立一条有界 TEST-NET
+活动连接、观察 GUI 停止请求 45 秒，并调用导出器生成
+`diagnostic-export-<时间戳>`。
+
+控制台会在需要人工操作时逐项打印。Windows 侧无需输入命令；用户只需按
+提示在 GUI 中启用接管、保存到非默认 INI、启动和点击停止。若 Ubuntu
+Sentinel 尚未启动，控制台只要求在 Ubuntu 运行一次
+`Start-FNPR-Sentinel.sh`。诊断器不会强杀挂起核心；捕获后应回传打印的
+`EVIDENCE_PATH` 目录并回滚 VM 快照。
 
 runner 结束时还会按镜像名做任务级清理(`fakenet-GUI.exe`/`fakenet.exe`),
 不再遗留 onefile 引导进程的孤儿子进程(§12.24.4 现象收口)。

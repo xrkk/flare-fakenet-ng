@@ -1,7 +1,10 @@
 ﻿[CmdletBinding()]
 param(
     [string]$SourceCommit = 'HEAD',
-    [string]$OutputDirectory = ''
+    [string]$OutputDirectory = '',
+    [ValidateSet('Acceptance', 'Diagnostic')]
+    [string]$PackageMode = 'Acceptance',
+    [string]$PackageVersion = ''
 )
 
 # One-click GUI VM acceptance package (plan 2026.08.14 §12.5).
@@ -22,8 +25,32 @@ param(
 # SHA-256, no Logs directory, no .sha256 sidecar.
 
 $ErrorActionPreference = 'Stop'
-$packageVersion = 'v33'
-$packageName = "Windows-GUI配置工具-VM验收-$packageVersion"
+$isDiagnostic = $PackageMode -eq 'Diagnostic'
+$packageVersion = if ($PackageVersion) {
+    $PackageVersion
+} elseif ($isDiagnostic) {
+    'v33-diagnostic-01'
+} else {
+    'v33'
+}
+if ($packageVersion -notmatch '^v[0-9]+(?:-diagnostic-[0-9]+)?$') {
+    throw ('Invalid package version: ' + $packageVersion)
+}
+$packageName = if ($isDiagnostic) {
+    "Windows-GUI配置工具-VM诊断-$packageVersion"
+} else {
+    "Windows-GUI配置工具-VM验收-$packageVersion"
+}
+$packageEntry = if ($isDiagnostic) {
+    'test/gui_vm/Run-Diagnostics.cmd'
+} else {
+    'test/gui_vm/Run-Tests.cmd'
+}
+$planVersion = if ($isDiagnostic) {
+    '2026.08.26-01 v0.2'
+} else {
+    '2026.08.21-01 v0.2'
+}
 $fixedTimestamp = [DateTimeOffset]::new(
     [DateTime]::SpecifyKind([DateTime]'2000-01-01T00:00:00',
         [DateTimeKind]::Utc))
@@ -153,6 +180,36 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $stage 'test\gui_vm\Run-Tests.cmd'))) {
         throw 'Run-Tests.cmd missing from staged tree.'
     }
+    if ($isDiagnostic) {
+        $diagnosticRunner = Join-Path $stage `
+            'test\gui_vm\run_vm_diagnostics.py'
+        $diagnosticCommand = Join-Path $stage `
+            'test\gui_vm\Run-Diagnostics.cmd'
+        $diagnosticExporter = Join-Path $stage `
+            'test\gui_vm\Export-Logs.ps1'
+        foreach ($required in @(
+                $diagnosticRunner, $diagnosticCommand, $diagnosticExporter)) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+                throw ('Diagnostic payload missing from SourceCommit: ' +
+                    $required)
+            }
+        }
+        python -m py_compile $diagnosticRunner
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Diagnostic runner syntax failed.'
+        }
+        $coreSource = Get-Content -LiteralPath `
+            (Join-Path $stage 'fakenet\fakenet.py') -Raw
+        if ($coreSource -notmatch 'STOP_PHASE_BEGIN phase=complete' -or
+                $coreSource -notmatch 'STOP_PROVIDER_BEGIN name=%s') {
+            throw 'Diagnostic SourceCommit lacks required stop instrumentation.'
+        }
+        $exportSource = Get-Content -LiteralPath $diagnosticExporter -Raw
+        if ($exportSource -notmatch 'stop-diagnosis\.txt' -or
+                $exportSource -notmatch 'EVIDENCE_PATH=') {
+            throw 'Diagnostic SourceCommit lacks deterministic evidence export.'
+        }
+    }
     Get-ChildItem -LiteralPath $stage -Filter '__pycache__' -Directory -Recurse |
         Remove-Item -Recurse -Force
 
@@ -175,13 +232,14 @@ try {
     $manifest = [ordered]@{
         schema_version=1
         package_version=$packageVersion
-        plan_version='2026.08.21-01 v0.2'
+        package_mode=$PackageMode.ToLowerInvariant()
+        plan_version=$planVersion
         source_commit=$resolvedCommit
         python_version=$pythonVersion
         pyinstaller_version=$pyinstallerVersion
         fakenet_exe_sha256=$fakenetHash
         fakenet_gui_exe_sha256=$guiHash
-        acceptance_entry='test/gui_vm/Run-Tests.cmd'
+        acceptance_entry=$packageEntry
         evidence_levels='results.tsv 标注 实测/等效'
         logs_plaintext=$true
         files=$rows
@@ -194,6 +252,8 @@ try {
     New-DeterministicZip $stage $zipPath
     Write-Host ('Package: ' + $zipPath)
     Write-Host ('Source commit: ' + $resolvedCommit)
+    Write-Host ('Package mode: ' + $PackageMode)
+    Write-Host ('One-click entry: ' + $packageEntry)
     Write-Host ('fakenet.exe sha256: ' + $fakenetHash)
     Write-Host ('fakenet-GUI.exe sha256: ' + $guiHash)
     Write-Host 'No Logs directory and no .sha256 sidecar were generated.'

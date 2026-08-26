@@ -52,8 +52,14 @@ try {
     if ($existing) {
         throw ("TCP/$listenPort is already listening on $bindIPv4 or all interfaces.")
     }
+    $existingUdp = @(Get-NetUDPEndpoint -LocalPort $listenPort `
+        -ErrorAction SilentlyContinue |
+        Where-Object LocalAddress -in @($bindIPv4, '0.0.0.0'))
+    if ($existingUdp) {
+        throw ("UDP/$listenPort is already bound on $bindIPv4 or all interfaces.")
+    }
     $runtime = Find-Python3
-    Write-Host "Starting FNPR/1 sentinel on $bindIPv4`:$listenPort"
+    Write-Host "Starting FNPR/1 TCP+UDP sentinel on $bindIPv4`:$listenPort"
     Write-Host 'This listener accepts only bounded FNPR/1 nonce probes.'
     Write-Host 'Press Ctrl+C to stop.'
     Write-Host ('Plain log: ' + $logPath)

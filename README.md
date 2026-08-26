@@ -178,11 +178,24 @@ WinDivert baseline or pre-start quiescence check fails. Linux rejects an enabled
 process-redirection setting; Linux implementation remains a separate TODO.
 
 For the reviewed VM acceptance profile only, the host-side `FNPR/1` nonce
-sentinel can be started by double-clicking `Start-FNPR-Sentinel.cmd`. It binds
-only `192.168.204.1:443`, accepts the bounded `FNPR/1|nonce|role` test line,
-and writes plain logs under `dist\Logs`. Ctrl+C stops it. This auxiliary tool
-does not change firewall, adapter or route settings, is not started by FakeNet,
-and is not required by the production redirection protocol after acceptance.
+sentinel can be started on Windows by double-clicking
+`Start-FNPR-Sentinel.cmd`, or on Linux by running
+`./Start-FNPR-Sentinel.sh`. The Linux launcher performs the same read-only
+address and bind preflight; set `FNPR_PYTHON` only when a non-default Python 3
+interpreter is required. Binding TCP/443 may require sufficient local
+privileges. Both launchers bind TCP and UDP only on `192.168.204.1:443`, accept
+the bounded `FNPR/1|nonce|role` test line on both transports, record the
+transport with each nonce, and write plain logs under `dist/Logs`. Ctrl+C stops
+both listeners. Neither launcher changes firewall, adapter or route settings,
+downloads dependencies, or starts FakeNet. The sentinel is not required by the
+production redirection protocol after acceptance.
+
+The root launchers have deliberate platform boundaries. `Start-EgressControl`
+and `Start-ReviewedIPv4` exercise reviewed Windows-only WinDivert policies, so
+they have `.cmd`/`.ps1` entry points and no misleading Linux `.sh` equivalent.
+The Linux dual-PCAP acceptance path is independently available at
+`test/dual_pcap_linux/Run-Tests.sh`. Windows GUI, policy, reviewed-IPv4 and
+process-redirection VM acceptance runners remain Windows-only by contract.
 
 Installation
 ============

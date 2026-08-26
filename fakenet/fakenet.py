@@ -451,47 +451,90 @@ class Fakenet(object):
             return self._stop_result
 
         self.logger.info("Stopping...")
+        stop_started = time.monotonic()
+        self.logger.info('STOP_PHASE_BEGIN phase=complete')
         first_error = None
         healthy = True
         try:
             if self.policy_mode and self.diverter:
+                phase_started = time.monotonic()
+                self.logger.info(
+                    'STOP_PHASE_BEGIN phase=policy_suspend')
                 try:
                     self.diverter.suspend_policy()
                 except BaseException as exc:
                     first_error = exc
                     healthy = False
                     self.logger.exception('Policy suspension failed')
+                finally:
+                    self.logger.info(
+                        'STOP_PHASE_END phase=policy_suspend '
+                        'elapsed_ms=%d healthy=%s',
+                        int((time.monotonic() - phase_started) * 1000),
+                        first_error is None)
 
             providers = (reversed(self.running_listener_providers)
                          if self.policy_mode else
                          iter(self.running_listener_providers))
+            phase_started = time.monotonic()
+            self.logger.info('STOP_PHASE_BEGIN phase=listeners')
             for provider in providers:
+                provider_name = getattr(
+                    provider, 'name', type(provider).__name__)
+                provider_started = time.monotonic()
+                provider_healthy = True
+                self.logger.info(
+                    'STOP_PROVIDER_BEGIN name=%s', provider_name)
                 try:
                     if self.policy_mode:
                         self._stop_policy_listener(provider)
                     else:
                         provider.stop()
                 except BaseException as exc:
+                    provider_healthy = False
                     if first_error is None:
                         first_error = exc
                     healthy = False
                     self.logger.exception(
-                        'Listener failed during stop: %s', provider.name)
+                        'Listener failed during stop: %s', provider_name)
+                finally:
+                    self.logger.info(
+                        'STOP_PROVIDER_END name=%s elapsed_ms=%d healthy=%s',
+                        provider_name,
+                        int((time.monotonic() - provider_started) * 1000),
+                        provider_healthy)
+            self.logger.info(
+                'STOP_PHASE_END phase=listeners elapsed_ms=%d healthy=%s',
+                int((time.monotonic() - phase_started) * 1000), healthy)
 
             if self.diverter:
+                phase_started = time.monotonic()
+                diverter_healthy = True
+                self.logger.info('STOP_PHASE_BEGIN phase=diverter')
                 try:
                     if self.diverter.stop() is False:
+                        diverter_healthy = False
                         healthy = False
                 except BaseException as exc:
+                    diverter_healthy = False
                     if first_error is None:
                         first_error = exc
                     healthy = False
                     self.logger.exception('Diverter failed during stop')
+                finally:
+                    self.logger.info(
+                        'STOP_PHASE_END phase=diverter elapsed_ms=%d '
+                        'healthy=%s',
+                        int((time.monotonic() - phase_started) * 1000),
+                        diverter_healthy)
 
             if first_error is not None:
                 raise first_error
             return healthy
         finally:
+            self.logger.info(
+                'STOP_PHASE_END phase=complete elapsed_ms=%d healthy=%s',
+                int((time.monotonic() - stop_started) * 1000), healthy)
             with self._stop_lock:
                 self._stop_result = healthy
                 self._stop_error = first_error

@@ -160,6 +160,7 @@ def test_kill_leftover_processes_silent_when_not_found(monkeypatch):
 
 
 def test_export_logs_collects_package_root_artifacts(tmp_path):
+    import datetime
     import shutil
     import subprocess
 
@@ -170,20 +171,50 @@ def test_export_logs_collects_package_root_artifacts(tmp_path):
         os.path.join(REPO, 'test', 'gui_vm', 'Export-Logs.ps1'),
         str(gui_vm / 'Export-Logs.ps1'))
     (layout / 'Logs').mkdir()
-    (layout / 'Logs' / 'fakenet-1.log').write_text('core')
+    config = layout / 'configs' / 'manual.ini'
+    config.parent.mkdir()
+    config.write_text('[FakeNet]\nDivertTraffic: Yes\n', encoding='utf-8')
+    (layout / 'Logs' / 'fakenet-1.log').write_text(
+        'Loaded configuration file: %s\n'
+        'STOP_PHASE_BEGIN phase=complete\n'
+        'STOP_PROVIDER_BEGIN name=DomainEgressRelay\n' % config,
+        encoding='utf-8')
     (layout / 'Logs' / 'fakenet-GUI-1.log').write_text('gui')
+    old_log = layout / 'Logs' / 'fakenet-old.log'
+    old_log.write_text('old session', encoding='utf-8')
+    old_time = datetime.datetime.now().timestamp() - 3600
+    os.utime(str(old_log), (old_time, old_time))
     (layout / 'packets_x.pcap').write_bytes(b'pcap')
     (layout / 'report_x.html').write_text('report')
     (layout / 'noise.txt').write_text('ignored')
 
+    since_utc = (datetime.datetime.now(datetime.timezone.utc) -
+                 datetime.timedelta(seconds=60)).isoformat().replace(
+                     '+00:00', 'Z')
     proc = subprocess.run(
         ['powershell.exe', '-NoLogo', '-NoProfile', '-ExecutionPolicy',
-         'Bypass', '-File', str(gui_vm / 'Export-Logs.ps1')],
+         'Bypass', '-File', str(gui_vm / 'Export-Logs.ps1'),
+         '-SinceUtc', since_utc, '-SessionLabel', 'diagnostic'],
         capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, proc.stderr
 
-    exports = list((layout / 'test' / 'gui_vm' / 'Logs').glob('manual-export-*'))
+    exports = list((layout / 'test' / 'gui_vm' / 'Logs').glob(
+        'diagnostic-export-*'))
     assert len(exports) == 1
     names = {p.name for p in exports[0].iterdir()}
-    assert names == {'fakenet-1.log', 'fakenet-GUI-1.log',
-                     'packets_x.pcap', 'report_x.html'}
+    assert names == {
+        'config-01-manual.ini', 'config-sources.tsv',
+        'evidence-sha256.tsv', 'fakenet-1.log', 'fakenet-GUI-1.log',
+        'packets_x.pcap', 'report_x.html', 'stop-diagnosis.txt'}
+    assert (exports[0] / 'config-01-manual.ini').read_text(
+        encoding='utf-8-sig') == '[FakeNet]\nDivertTraffic: Yes\n'
+    hashes = (exports[0] / 'evidence-sha256.tsv').read_text(
+        encoding='utf-8-sig')
+    assert 'config-01-manual.ini' in hashes
+    assert 'stop-diagnosis.txt' in hashes
+    diagnosis = (exports[0] / 'stop-diagnosis.txt').read_text(
+        encoding='utf-8-sig')
+    assert 'status=unclosed-stop-boundary' in diagnosis
+    assert 'STOP_PROVIDER_BEGIN name=DomainEgressRelay' in diagnosis
+    assert 'fakenet-old.log' not in names
+    assert 'EVIDENCE_PATH=' in proc.stdout

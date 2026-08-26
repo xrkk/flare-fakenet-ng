@@ -9,6 +9,7 @@ import re
 import socket
 import socketserver
 import sys
+import threading
 import time
 
 
@@ -72,18 +73,41 @@ class FnprRequestHandler(socketserver.BaseRequestHandler):
             nonce, role = parse_request(bytes(data))
             self.request.sendall(build_response(nonce))
             log_event(self.server.logger, 'probe_ok', peer=peer,
-                      role=role, nonce=nonce, bytes=len(data))
+                      role=role, nonce=nonce, bytes=len(data),
+                      transport='tcp')
         except Exception as exc:
             log_event(self.server.logger, 'probe_rejected', peer=peer,
                       reason=type(exc).__name__, detail=str(exc)[:160],
-                      bytes=len(data))
+                      bytes=len(data), transport='tcp')
 
 
-class FnprServer(socketserver.ThreadingTCPServer):
+class FnprUdpRequestHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        data, response_socket = self.request
+        peer = '%s:%s' % self.client_address
+        try:
+            nonce, role = parse_request(data)
+            response_socket.sendto(build_response(nonce), self.client_address)
+            log_event(self.server.logger, 'probe_ok', peer=peer,
+                      role=role, nonce=nonce, bytes=len(data),
+                      transport='udp')
+        except Exception as exc:
+            log_event(self.server.logger, 'probe_rejected', peer=peer,
+                      reason=type(exc).__name__, detail=str(exc)[:160],
+                      bytes=len(data), transport='udp')
+
+
+class FnprTcpServer(socketserver.ThreadingTCPServer):
     address_family = socket.AF_INET
     allow_reuse_address = True
     daemon_threads = True
     request_queue_size = 64
+
+
+class FnprUdpServer(socketserver.ThreadingUDPServer):
+    address_family = socket.AF_INET
+    allow_reuse_address = True
+    daemon_threads = True
 
 
 def configure_logger(path):
@@ -105,23 +129,51 @@ def main(argv=None):
     parser.add_argument('--log', required=True)
     args = parser.parse_args(argv)
     logger = configure_logger(args.log)
+    tcp_server = None
+    udp_server = None
     try:
-        server = FnprServer((BIND_IPV4, LISTEN_PORT), FnprRequestHandler)
+        tcp_server = FnprTcpServer(
+            (BIND_IPV4, LISTEN_PORT), FnprRequestHandler)
+        udp_server = FnprUdpServer(
+            (BIND_IPV4, LISTEN_PORT), FnprUdpRequestHandler)
     except OSError as exc:
+        if tcp_server is not None:
+            tcp_server.server_close()
         log_event(logger, 'start_failed', bind=BIND_IPV4, port=LISTEN_PORT,
                   reason=type(exc).__name__, detail=str(exc)[:160])
         return 1
-    server.logger = logger
+    tcp_server.logger = logger
+    udp_server.logger = logger
     log_event(logger, 'ready', bind=BIND_IPV4, port=LISTEN_PORT,
-              protocol='FNPR/1', max_request_bytes=MAX_REQUEST_BYTES)
+              protocol='FNPR/1', transports='tcp,udp',
+              max_request_bytes=MAX_REQUEST_BYTES)
+    servers = (tcp_server, udp_server)
+    threads = []
+    for transport, server in zip(('tcp', 'udp'), servers):
+        thread = threading.Thread(
+            target=server.serve_forever,
+            kwargs={'poll_interval': 0.25},
+            name='fnpr-%s' % transport)
+        thread.daemon = True
+        thread.start()
+        threads.append(thread)
+    failed = False
     try:
-        server.serve_forever(poll_interval=0.25)
+        while all(thread.is_alive() for thread in threads):
+            time.sleep(0.25)
+        failed = True
+        log_event(logger, 'server_thread_stopped_unexpectedly')
     except KeyboardInterrupt:
         log_event(logger, 'stop_requested', reason='KeyboardInterrupt')
     finally:
-        server.server_close()
+        for server in servers:
+            server.shutdown()
+        for thread in threads:
+            thread.join(SOCKET_TIMEOUT_SECONDS)
+        for server in servers:
+            server.server_close()
         log_event(logger, 'stopped')
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == '__main__':
