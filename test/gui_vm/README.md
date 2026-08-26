@@ -53,12 +53,27 @@ A6 启动的 fakenet 使用**最小非侵入配置**(`DivertTraffic: No`、`Dump
 
 ## v33 诊断包一键入口
 
-诊断包使用独立名称 `Windows-GUI配置工具-VM诊断-v33-diagnostic-01.zip`,
+当前补强诊断包使用独立名称 `Windows-GUI配置工具-VM诊断-v33-diagnostic-02.zip`,
 不覆盖或冒充 v33/v34 交付包。解压到隔离 Windows VM 后双击
 `test\gui_vm\Run-Diagnostics.cmd`。该入口自动请求一次 UAC、验证 Ubuntu
 Sentinel 的同 nonce TCP/UDP、打开 GUI、等待启动、建立一条有界 TEST-NET
 活动连接、观察 GUI 停止请求 45 秒，并调用导出器生成
 `diagnostic-export-<时间戳>`。
+
+增强后的诊断器不再把“启动前能直连 Ubuntu”当成接管成功：核心进入
+takeover 后，它会使用本轮同一 nonce 先查询一个唯一未放行域名，
+分别记录本地 DNS 直查和 Windows 系统解析结果，再对应答的
+`192.168.204.1:443` 发送 TCP/UDP `role=target` 请求。Ubuntu Sentinel 必须
+出现相同 nonce 的两种传输记录，才会输出端到端 PASS；任一传输失败
+不会阻止另一传输继续取证。
+
+导出目录额外包含 `diagnostic-results-*.tsv`、`diagnostic-timeline-*.tsv`、
+`diagnostic-network-before/after-*.txt`、`diagnostic-session-*.json` 和
+`diagnostic-core-anomalies-*.txt`。它们分别固定每个检查的 PASS/FAIL、
+人工点击提示到核心停止的时序、启动前后 DNS/路由/进程快照、包与
+nonce 身份，以及所有错误和关键接管/停止标记。核心完成停止后，诊断器
+还会最多等待 30 秒，确认 GUI 何时显示会话已退出，避免再把显示延迟
+误判为核心没有停止。
 
 控制台会在需要人工操作时逐项打印。Windows 侧无需输入命令；用户只需按
 提示在 GUI 中启用接管、保存到非默认 INI、启动和点击停止。若 Ubuntu

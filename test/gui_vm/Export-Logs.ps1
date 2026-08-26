@@ -43,8 +43,9 @@ $target = Join-Path $logRoot ($targetPrefix + $stamp)
 New-Item -ItemType Directory -Path $target | Out-Null
 
 $copied = 0
-$patterns = @('Logs\*.log', 'Logs\*.pcap', 'packets_*.pcap',
-              'packets_*.pcap.md5', 'report_*.html')
+$patterns = @('Logs\*.log', 'Logs\*.pcap', 'Logs\diagnostic-*.tsv',
+              'Logs\diagnostic-*.txt', 'Logs\diagnostic-*.json',
+              'packets_*.pcap', 'packets_*.pcap.md5', 'report_*.html')
 foreach ($pattern in $patterns) {
     $items = Get-ChildItem -Path (Join-Path $packageRoot $pattern) -File `
         -ErrorAction SilentlyContinue |
@@ -87,9 +88,12 @@ foreach ($source in ($configPaths.Values | Sort-Object)) {
     $configSources += ("{0}`t{1}" -f $destinationName, $source)
     $copied++
 }
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
 if ($configSources.Count -gt 0) {
-    $configSources | Set-Content `
-        -LiteralPath (Join-Path $target 'config-sources.tsv') -Encoding UTF8
+    [System.IO.File]::WriteAllLines(
+        (Join-Path $target 'config-sources.tsv'),
+        [string[]]$configSources,
+        $utf8NoBom)
 }
 
 $latestCoreLog = Get-ChildItem `
@@ -140,8 +144,10 @@ if (-not $latestCoreLog) {
     $stopDiagnosis += ('source_log={0}' -f $latestCoreLog.FullName)
     $stopDiagnosis += 'status=no-unclosed-stop-boundary'
 }
-$stopDiagnosis | Set-Content `
-    -LiteralPath (Join-Path $target 'stop-diagnosis.txt') -Encoding UTF8
+[System.IO.File]::WriteAllLines(
+    (Join-Path $target 'stop-diagnosis.txt'),
+    [string[]]$stopDiagnosis,
+    $utf8NoBom)
 
 # Bind every exported artifact to this evidence directory.  The hash file is
 # intentionally computed last and does not include itself.
@@ -151,8 +157,10 @@ foreach ($item in Get-ChildItem -LiteralPath $target -File | Sort-Object Name) {
         -Algorithm SHA256).Hash.ToLowerInvariant()
     $hashLines += ("{0}`t{1}" -f $hash, $item.Name)
 }
-$hashLines | Set-Content `
-    -LiteralPath (Join-Path $target 'evidence-sha256.tsv') -Encoding UTF8
+[System.IO.File]::WriteAllLines(
+    (Join-Path $target 'evidence-sha256.tsv'),
+    [string[]]$hashLines,
+    $utf8NoBom)
 
 Write-Host ('Exported {0} file(s) to:' -f $copied)
 Write-Host $target

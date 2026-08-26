@@ -29,7 +29,7 @@ $isDiagnostic = $PackageMode -eq 'Diagnostic'
 $packageVersion = if ($PackageVersion) {
     $PackageVersion
 } elseif ($isDiagnostic) {
-    'v33-diagnostic-01'
+    'v33-diagnostic-02'
 } else {
     'v33'
 }
@@ -203,6 +203,13 @@ try {
         if ($coreSource -notmatch 'STOP_PHASE_BEGIN phase=complete' -or
                 $coreSource -notmatch 'STOP_PROVIDER_BEGIN name=%s') {
             throw 'Diagnostic SourceCommit lacks required stop instrumentation.'
+        }
+        $runnerSource = Get-Content -LiteralPath $diagnosticRunner -Raw
+        if ($runnerSource -notmatch 'probe_takeover_path' -or
+                $runnerSource -notmatch 'diagnostic-results-' -or
+                $runnerSource -notmatch 'diagnostic-network-before-' -or
+                $runnerSource -notmatch 'wait_for_gui_stop_observation') {
+            throw 'Diagnostic SourceCommit lacks strengthened path evidence.'
         }
         $exportSource = Get-Content -LiteralPath $diagnosticExporter -Raw
         if ($exportSource -notmatch 'stop-diagnosis\.txt' -or

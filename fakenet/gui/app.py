@@ -48,6 +48,23 @@ COLOR_WARNING = '#B7791F'
 COLOR_ERROR = '#C9362B'
 
 
+def config_file_evidence(path):
+    """Return a bounded identity snapshot for the exact launch-time INI."""
+    before = os.stat(path)
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(block)
+    after = os.stat(path)
+    return {
+        'sha256': digest.hexdigest(),
+        'size': after.st_size,
+        'mtime_ns': after.st_mtime_ns,
+        'stable': (before.st_size == after.st_size and
+                   before.st_mtime_ns == after.st_mtime_ns),
+    }
+
+
 def configure_styles(root):
     """Apply a restrained Windows analysis-workbench visual system."""
     available = set(tkfont.families(root))
@@ -2360,6 +2377,17 @@ class FakenetConfigApp(object):
         if not ok:
             self._launch_abort('配置路径无效: %s' % reason)
             return
+        try:
+            config_evidence = config_file_evidence(config_path)
+            self.logger.info(
+                'FakeNet config evidence: path=%s sha256=%s size=%d '
+                'mtime_ns=%d stable=%s', config_path,
+                config_evidence['sha256'], config_evidence['size'],
+                config_evidence['mtime_ns'], config_evidence['stable'])
+        except OSError as exc:
+            self.logger.error(
+                'FakeNet config evidence unavailable: path=%s error=%s',
+                config_path, exc)
         if os.name != 'nt':
             messagebox.showinfo(
                 '启动', 'Linux 下不提供直接启动。\n请手动运行:\n%s'
