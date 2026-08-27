@@ -3,185 +3,517 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>FakeNet-NG payload report</title>
+  <title>FAKENET-NG</title>
   <style>
-    :root { color-scheme: dark; --bg:#2e3440; --panel:#3b4252; --ink:#eceff4;
-            --muted:#d8dee9; --accent:#88c0d0; --bad:#bf616a; --good:#a3be8c; }
-    body { margin:0; padding:1.5rem; background:var(--bg); color:var(--ink);
-           font-family:"Courier New",monospace; line-height:1.4; }
-    main { max-width:100rem; margin:auto; }
-    h1 { margin-top:0; font-size:1.8rem; }
-    h2 { font-size:1.2rem; margin-bottom:.4rem; }
-    .panel { background:var(--panel); border-radius:.35rem; padding:1rem;
-             margin:0 0 1rem; overflow-wrap:anywhere; }
-    .health { display:grid; grid-template-columns:repeat(auto-fit,minmax(12rem,1fr));
-              gap:.5rem; list-style:none; padding:0; }
-    .health li { padding:.5rem; background:var(--bg); border-left:.3rem solid var(--good); }
-    .health li.bad { border-left-color:var(--bad); }
-    .flow { border-top:1px solid #4c566a; padding-top:.8rem; margin-top:.8rem; }
-    .flow:first-child { border-top:0; margin-top:0; }
-    .meta { color:var(--muted); }
-    .payload { margin:.5rem 0 0; padding:.6rem; background:var(--bg); }
-    .payload pre { white-space:pre-wrap; word-break:break-all; max-height:28rem;
-                   overflow:auto; margin:.3rem 0; }
-    button { color:var(--bg); background:var(--accent); border:0; border-radius:.2rem;
-             padding:.35rem .6rem; cursor:pointer; font-family:inherit; }
-    input { color:var(--ink); background:var(--bg); border:1px solid var(--muted);
-            padding:.5rem; width:min(100%,34rem); font-family:inherit; }
-    .hidden { display:none; }
-    .error { color:#bf616a; }
+    /* Original FakeNet-NG report structure and Nord palette. */
+    :root { --bg:#2e3440; --panel:#4c566a; --ink:#d8dee9; --paper:#eceff4;
+            --accent:#5e81ac; --hover:#88c0d0; --open:#a3be8c; --bad:#bf616a; }
+    * { box-sizing:border-box; }
+    body { margin:0; padding:0 1rem 5rem; background:var(--bg); color:var(--ink);
+           font-family:"Courier New",monospace; }
+    .main-header-text { text-align:center; }
+    .main-header-text h1 { margin:2rem 0 0; color:var(--paper);
+                           font-size:clamp(2.7rem,7vw,4rem); }
+    .main-header-text h2 { margin:.35rem 0 1.5rem; color:var(--paper);
+                           font-size:clamp(1.4rem,4vw,2.5rem); }
+    .report-section,.capture-status { max-width:100rem; margin:0 auto 1.5rem; }
+    .section-title { margin:2rem 0 .8rem; text-align:center; color:var(--paper); }
+    .search-container { display:flex; align-items:center; justify-content:center;
+                        gap:.65rem; margin:1rem auto 0; }
+    .search-input { width:min(70%,52rem); padding:.7rem; border:1px solid var(--ink);
+                    border-radius:5px; color:var(--bg); background:var(--paper);
+                    font:inherit; transition:width .3s; }
+    .search-input:focus { width:min(90%,70rem); outline:0; box-shadow:0 0 4px #81a1c1; }
+    .button-container { display:flex; flex-wrap:wrap; justify-content:center;
+                        gap:.4rem; margin:.6rem 0 1.4rem; }
+    button { font-family:inherit; }
+    .copy-button,.copy-selected-button,.copy-filtered-data,.disclaimer-button,
+    .payload-action { padding:.55rem .9rem; border:0; border-radius:5px; cursor:pointer;
+                      background:var(--accent); color:var(--paper); }
+    .copy-button:hover,.copy-selected-button:hover,.copy-filtered-data:hover,
+    .disclaimer-button:hover,.payload-action:hover { background:var(--hover); }
+    .capture-status { padding:.75rem 1rem; border-left:.4rem solid var(--open);
+                      background:var(--panel); }
+    .capture-status.bad { border-left-color:var(--bad); }
+    .capture-facts { margin-top:.35rem; font-size:.88rem; }
+    .collapsible-container { width:100%; margin-bottom:.55rem; }
+    .group-heading { display:grid; grid-template-columns:auto minmax(0,1fr);
+                     align-items:stretch; gap:.55rem; width:100%; }
+    .group-heading.no-select { grid-template-columns:minmax(0,1fr); gap:0; }
+    .group-checkbox { width:1.2rem; margin:0; cursor:pointer; }
+    .collapsible { width:100%; padding:1rem; border:0; overflow:hidden; cursor:pointer;
+                   text-align:left; background:var(--panel); color:var(--paper);
+                   font-size:1rem; transition:background .2s; }
+    .collapsible:hover { background:var(--accent); }
+    .collapsible.expanded { background:var(--open); color:var(--bg); }
+    .collapsible::before { content:"\25b6  "; }
+    .collapsible.expanded::before { content:"\25bc  "; }
+    .content { display:none; padding:.65rem 0 .2rem 1.6rem; overflow:hidden; }
+    .content.expanded { display:block; }
+    .table-container { width:100%; overflow-x:auto; background:var(--panel); }
+    table { width:100%; table-layout:fixed; border-collapse:collapse; color:var(--bg); }
+    th,td { min-width:11rem; padding:.65rem; border-bottom:1px solid var(--ink);
+            background:var(--ink); text-align:left; vertical-align:top;
+            overflow-wrap:anywhere; }
+    tr:nth-child(even) td { background:var(--paper); }
+    tr:hover td { background:#8fbcbb; }
+    .checkbox-column { width:4.5rem; min-width:4.5rem; }
+    .action-column { width:9rem; min-width:9rem; }
+    .nested { margin:0; padding-left:1.25rem; font-weight:normal; }
+    .nested li { margin-bottom:.35rem; }
+    .nbi-value { white-space:pre-wrap; word-break:break-word; }
+    .empty-message { padding:1rem; background:var(--panel); color:var(--paper); }
+    .hidden { display:none !important; }
+    .flow-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));
+                    gap:.5rem 1rem; padding:.7rem 1rem; background:var(--panel); }
+    .direction-table th:nth-child(1) { width:8rem; }
+    .direction-table th:nth-child(3) { width:8rem; }
+    .direction-table th:nth-child(4) { width:18rem; }
+    .payload-viewer { display:none; margin-top:.6rem; padding:.75rem;
+                      background:var(--bg); color:var(--ink); }
+    .payload-viewer.expanded { display:block; }
+    .payload-toolbar { display:flex; flex-wrap:wrap; gap:.4rem; margin-bottom:.6rem; }
+    .payload-action.active { background:var(--open); color:var(--bg); }
+    .payload-output { width:100%; min-height:8rem; max-height:38rem; margin:0;
+                      padding:.75rem; overflow:auto; border:1px solid var(--panel);
+                      background:#242933; color:var(--paper); white-space:pre-wrap;
+                      overflow-wrap:anywhere; tab-size:4; }
+    .payload-note { margin:.55rem 0 0; font-size:.83rem; }
+    .disclaimer-popup { display:none; position:fixed; inset:0; z-index:10;
+                        align-items:center; justify-content:center; padding:1rem;
+                        background:rgba(0,0,0,.65); }
+    .disclaimer-popup.expanded { display:flex; }
+    .popup-content { position:relative; width:min(56rem,95vw); max-height:85vh;
+                     padding:1.25rem 1.5rem; overflow:auto; border-radius:5px;
+                     background:var(--bg); color:var(--paper); }
+    .popup-header { margin-bottom:.8rem; color:var(--bad); text-align:center;
+                    font-size:2rem; font-weight:bold; }
+    .popup-close { position:absolute; top:.45rem; right:.7rem; border:0; cursor:pointer;
+                   background:transparent; color:var(--paper); font-size:2rem; }
+    .copy-popup { display:none; position:fixed; z-index:20; left:50%; bottom:2rem;
+                  transform:translateX(-50%); padding:.7rem 1rem; border-radius:5px;
+                  background:var(--open); color:var(--bg); font-weight:bold; }
+    .copy-popup.expanded { display:block; }
+    .go-top-button { display:none; position:fixed; right:1.5rem; bottom:1.5rem;
+                     z-index:5; padding:.65rem .9rem; border:0; border-radius:5px;
+                     cursor:pointer; background:#3498db; color:white; }
+    .go-top-button.expanded { display:block; }
+    @media (max-width:700px) {
+      body { padding-inline:.5rem; } .content { padding-left:.6rem; }
+      .search-input,.search-input:focus { width:100%; } th,td { min-width:9rem; }
+    }
   </style>
 </head>
 <body>
-<main>
-  <h1>FakeNet-NG payload report</h1>
-  <section class="panel" aria-labelledby="capture-heading">
-    <h2 id="capture-heading">Capture health</h2>
-    <ul id="health" class="health"></ul>
-    <p id="limitation" class="error"></p>
-  </section>
-  <section class="panel" aria-labelledby="flow-heading">
-    <h2 id="flow-heading">TCP/UDP payloads</h2>
-    <label for="search">Search flows </label>
-    <input id="search" type="search" autocomplete="off">
-    <div id="flows"></div>
-  </section>
-  <section class="panel" aria-labelledby="nbi-heading">
-    <h2 id="nbi-heading">Listener NBI (interpretation layer)</h2>
-    <pre id="nbis"></pre>
-  </section>
-</main>
+  <header class="main-header-text">
+    <h1>FAKENET-NG</h1>
+    <h2>Network-Based Indicators</h2>
+  </header>
 
-<!-- The only byte-bearing source is this inert, escaped JSON model. -->
-<script type="application/json" id="payload-data">{{ payload_report_json|safe }}</script>
-<script>
-(function () {
-  "use strict";
-  var state;
-  var source = document.getElementById("payload-data");
-  try { state = JSON.parse(source.textContent || "{}"); }
-  catch (error) {
-    var failure = document.createElement("p");
-    failure.className = "error";
-    failure.textContent = "Unable to read payload report model.";
-    document.getElementById("flows").appendChild(failure);
-    return;
-  }
+  <div class="search-container">
+    <label for="searchInput">Search</label>
+    <input type="search" class="search-input" id="searchInput" autocomplete="off"
+           placeholder="Type to search processes, NBIs, flows, endpoints...">
+  </div>
+  <div class="button-container">
+    <button class="copy-button" id="copyAllButton" type="button">Copy All NBIs</button>
+    <button class="copy-selected-button" id="copySelectedButton" type="button">Copy Selected NBIs</button>
+    <button class="copy-filtered-data" id="copyFilteredButton" type="button">Copy Filtered NBIs</button>
+    <button class="disclaimer-button" id="disclaimerButton" type="button">Disclaimer</button>
+  </div>
 
-  function text(parent, value) {
-    var node = document.createElement("span");
-    node.textContent = String(value === undefined || value === null ? "" : value);
-    parent.appendChild(node);
-    return node;
-  }
-  function line(parent, label, value) {
-    var row = document.createElement("div");
-    var name = document.createElement("strong");
-    name.textContent = label + ": ";
-    row.appendChild(name);
-    text(row, value);
-    parent.appendChild(row);
-  }
-  function bytesFromBase64(value) {
-    var binary = atob(value || "");
-    var bytes = new Uint8Array(binary.length);
-    for (var i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-    return bytes;
-  }
-  function hex(bytes) {
-    var result = [];
-    for (var i = 0; i < bytes.length; i += 1) {
-      result.push(bytes[i].toString(16).padStart(2, "0"));
+  <div id="captureStatus" class="capture-status"></div>
+  <main>
+    <section class="report-section" aria-labelledby="nbiHeading">
+      <h2 class="section-title" id="nbiHeading">Network-Based Indicators</h2>
+      <div id="nbis"></div>
+    </section>
+    <section class="report-section" aria-labelledby="payloadHeading">
+      <h2 class="section-title" id="payloadHeading">Captured TCP/UDP Payloads</h2>
+      <div id="flows"></div>
+    </section>
+  </main>
+
+  <div class="disclaimer-popup" id="disclaimerPopup" role="dialog"
+       aria-modal="true" aria-labelledby="disclaimerHeading">
+    <div class="popup-content">
+      <button class="popup-close" id="disclaimerClose" type="button"
+              aria-label="Close disclaimer">&times;</button>
+      <div class="popup-header" id="disclaimerHeading">Disclaimer</div>
+      <ol>
+        <li>FakeNet infers application protocols, but custom protocols may be identified incorrectly. Use PCAP as the definitive protocol source.</li>
+        <li>Long sessions may reuse ports. Use flow identity, timestamps and PCAP evidence when interpreting traffic.</li>
+        <li>MultiHost mode may use placeholder ownership values for remote processes.</li>
+        <li>ICMP is not represented in this NBI view; use PCAP for ICMP analysis.</li>
+        <li>The DNS listener's configured analysis address is not by itself a malware NBI.</li>
+        <li>UTF-8 text is a convenience view. Hex, Base64, SHA-256 and downloaded bytes are lossless.</li>
+      </ol>
+    </div>
+  </div>
+  <div class="copy-popup" id="copyPopup" role="status">Copied!</div>
+  <button class="go-top-button" id="goTopButton" type="button">Top</button>
+
+  <!-- The report's only byte-bearing source remains inert and independently verifiable. -->
+  <script type="application/json" id="payload-data">{{ payload_report_json|safe }}</script>
+  <script>
+  (function () {
+    "use strict";
+    var model;
+    try {
+      model = JSON.parse(document.getElementById("payload-data").textContent || "{}");
+    } catch (error) {
+      document.getElementById("nbis").textContent = "Unable to read the embedded report model.";
+      return;
     }
-    return result.join("");
-  }
-  function utf8(bytes) {
-    try { return new TextDecoder("utf-8", {fatal:true}).decode(bytes); }
-    catch (error) { return null; }
-  }
-  function copy(value, button) {
-    var done = function () { button.textContent = "Copied"; };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(value).then(done, function () {});
+
+    function make(tag, cls, value) {
+      var node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (value !== undefined && value !== null) node.textContent = String(value);
+      return node;
     }
-  }
-  function directionBlock(parent, direction) {
-    var panel = document.createElement("div");
-    panel.className = "payload";
-    line(panel, "Direction", direction.direction);
-    line(panel, "Endpoints", (direction.source.ip + ":" + direction.source.port +
-                              " -> " + direction.destination.ip + ":" +
-                              direction.destination.port));
-    line(panel, "Bytes", direction.bytes);
-    line(panel, "SHA-256", direction.sha256);
-    var bytes = bytesFromBase64(direction.base64);
-    var base64Row = document.createElement("div");
-    var base64Label = document.createElement("strong");
-    base64Label.textContent = "Base64: ";
-    base64Row.appendChild(base64Label);
-    text(base64Row, direction.base64);
-    var button = document.createElement("button");
-    button.type = "button";
-    button.textContent = "Copy Base64";
-    button.addEventListener("click", function () { copy(direction.base64, button); });
-    base64Row.appendChild(document.createTextNode(" "));
-    base64Row.appendChild(button);
-    panel.appendChild(base64Row);
-    var hexPre = document.createElement("pre");
-    hexPre.textContent = hex(bytes);
-    panel.appendChild(hexPre);
-    var decoded = utf8(bytes);
-    var textLabel = document.createElement("div");
-    textLabel.textContent = decoded === null ? "UTF-8 text unavailable (bytes shown losslessly)." : decoded;
-    panel.appendChild(textLabel);
-    if (direction.datagrams) {
-      var datagrams = document.createElement("div");
-      line(datagrams, "UDP datagrams", direction.datagrams.length);
-      direction.datagrams.forEach(function (datagram) {
-        line(datagrams, "datagram " + datagram.ordinal,
-             "offset=" + datagram.offset + " length=" + datagram.length +
-             " sha256=" + datagram.sha256);
+    function valueText(value) {
+      if (value === undefined || value === null) return "";
+      return typeof value === "object" ? JSON.stringify(value, null, 2) : String(value);
+    }
+    function addFact(parent, label, value) {
+      var row = make("div");
+      row.appendChild(make("strong", null, label + ": "));
+      row.appendChild(document.createTextNode(valueText(value)));
+      parent.appendChild(row);
+    }
+    function setOpen(button, content, open) {
+      button.classList.toggle("expanded", open);
+      content.classList.toggle("expanded", open);
+      button.setAttribute("aria-expanded", String(open));
+    }
+    function collapsible(label, searchValue, selectable) {
+      var box = make("div", "collapsible-container searchable");
+      box.dataset.search = valueText(searchValue || label).toLowerCase();
+      var heading = make("div", "group-heading");
+      var check = make("input", "group-checkbox");
+      check.type = "checkbox";
+      check.setAttribute("aria-label", "Select group");
+      if (!selectable) {
+        check.classList.add("hidden");
+        heading.classList.add("no-select");
+      }
+      var button = make("button", "collapsible", label);
+      button.type = "button";
+      button.setAttribute("aria-expanded", "false");
+      var content = make("div", "content");
+      button.addEventListener("click", function () {
+        setOpen(button, content, !content.classList.contains("expanded"));
       });
-      panel.appendChild(datagrams);
-    }
-    parent.appendChild(panel);
-  }
-  function render() {
-    var health = document.getElementById("health");
-    health.textContent = "";
-    var capture = state.capture || {};
-    ["writer_health", "coverage_health", "reassembly_health", "overall_health"].forEach(function (key) {
-      var item = document.createElement("li");
-      if (!capture[key]) item.className = "bad";
-      text(item, key + "=" + String(capture[key]));
-      health.appendChild(item);
-    });
-    document.getElementById("limitation").textContent = capture.limitation || "";
-    var root = document.getElementById("flows");
-    root.textContent = "";
-    (state.flows || []).forEach(function (flow) {
-      var card = document.createElement("article");
-      card.className = "flow";
-      card.dataset.search = JSON.stringify(flow).toLowerCase();
-      line(card, "Flow", flow.id);
-      line(card, "Protocol", flow.protocol);
-      line(card, "Owner", flow.owner + " / pid=" + flow.pid + " / process=" + flow.process);
-      line(card, "Disposition", flow.disposition + " / domain=" + flow.domain);
-      Object.keys(flow.directions || {}).forEach(function (key) {
-        directionBlock(card, flow.directions[key]);
+      check.addEventListener("change", function () {
+        content.querySelectorAll(".nbi-checkbox").forEach(function (item) {
+          item.checked = check.checked;
+        });
       });
-      root.appendChild(card);
+      heading.appendChild(check); heading.appendChild(button);
+      box.appendChild(heading); box.appendChild(content);
+      return {box:box, button:button, content:content};
+    }
+    function nbiCopy(process, protocol, entry) {
+      var lines = ["Process ID: " + valueText(process.pid),
+        "Process Name: " + valueText(process.process),
+        "Application Protocol: " + valueText(protocol),
+        "Transport Layer Protocol: " + valueText(entry.transport_layer_proto),
+        "Source port: " + valueText(entry.sport),
+        "Destination IP: " + valueText(entry.dst_ip),
+        "Destination port: " + valueText(entry.dport),
+        "SSL encrypted: " + valueText(entry.is_ssl_encrypted),
+        "Network mode: " + valueText(entry.network_mode),
+        "Flow ID: " + valueText(entry.flow_id)];
+      Object.keys(entry.nbi || {}).forEach(function (key) {
+        lines.push(key + ": " + valueText(entry.nbi[key]));
+      });
+      return lines.join("\n");
+    }
+    function legacyCopy(value, done) {
+      var field = make("textarea");
+      field.value = value; field.setAttribute("readonly", "readonly");
+      field.style.position = "fixed"; field.style.left = "-10000px";
+      document.body.appendChild(field); field.select(); document.execCommand("copy");
+      document.body.removeChild(field); done();
+    }
+    function copyText(value) {
+      function done() {
+        var popup = document.getElementById("copyPopup");
+        popup.classList.add("expanded");
+        window.setTimeout(function () { popup.classList.remove("expanded"); }, 1200);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(value).then(done, function () { legacyCopy(value, done); });
+      } else legacyCopy(value, done);
+    }
+    function infoItem(list, label, value) {
+      var item = make("li");
+      item.appendChild(make("strong", null, label + ": "));
+      item.appendChild(document.createTextNode(valueText(value)));
+      list.appendChild(item);
+    }
+
+    function renderNbis() {
+      var root = document.getElementById("nbis");
+      var processes = model.nbis || [];
+      root.textContent = "";
+      if (!processes.length) {
+        root.appendChild(make("div", "empty-message", "No listener NBIs were recorded."));
+        return;
+      }
+      processes.forEach(function (process) {
+        var processGroup = collapsible("Process ID: " + valueText(process.pid) +
+          ", Process Name: " + valueText(process.process), process, true);
+        processGroup.box.classList.add("nbi-process-group");
+        (process.protocols || []).forEach(function (protocol) {
+          var protocolGroup = collapsible(valueText(protocol.protocol).toUpperCase(), protocol, true);
+          protocolGroup.box.classList.add("nbi-protocol-group");
+          var wrap = make("div", "table-container");
+          var table = make("table");
+          var head = make("thead"), headings = make("tr");
+          ["Select", "NBI", "Additional Information", "Actions"].forEach(function (label, index) {
+            headings.appendChild(make("th", index === 0 ? "checkbox-column" :
+              (index === 3 ? "action-column" : null), label));
+          });
+          head.appendChild(headings); table.appendChild(head);
+          var body = make("tbody");
+          (protocol.entries || []).forEach(function (entry) {
+            var row = make("tr", "nbi-row searchable");
+            row.dataset.search = valueText({pid:process.pid, process:process.process,
+              protocol:protocol.protocol, entry:entry}).toLowerCase();
+            row.copyText = nbiCopy(process, protocol.protocol, entry);
+            var selectCell = make("td", "checkbox-column");
+            var check = make("input", "nbi-checkbox");
+            check.type = "checkbox"; check.setAttribute("aria-label", "Select NBI");
+            selectCell.appendChild(check); row.appendChild(selectCell);
+            var nbiCell = make("td"), nbiList = make("ul", "nested");
+            Object.keys(entry.nbi || {}).forEach(function (key) {
+              var item = make("li");
+              item.appendChild(make("strong", null, key + ": "));
+              item.appendChild(make("span", "nbi-value", valueText(entry.nbi[key])));
+              nbiList.appendChild(item);
+            });
+            if (!nbiList.childNodes.length) nbiList.appendChild(make("li", null, "No interpreted value"));
+            nbiCell.appendChild(nbiList); row.appendChild(nbiCell);
+            var infoCell = make("td"), info = make("ul", "nested");
+            [["Transport Layer Protocol",entry.transport_layer_proto],
+             ["Source port",entry.sport],["Destination IP",entry.dst_ip],
+             ["Destination port",entry.dport],["SSL encrypted",entry.is_ssl_encrypted],
+             ["Network mode",entry.network_mode],["Flow ID",entry.flow_id]].forEach(
+              function (pair) { infoItem(info, pair[0], pair[1]); });
+            infoCell.appendChild(info); row.appendChild(infoCell);
+            var action = make("td", "action-column");
+            var copy = make("button", "copy-button", "Copy"); copy.type = "button";
+            copy.addEventListener("click", function () { copyText(row.copyText); });
+            action.appendChild(copy); row.appendChild(action); body.appendChild(row);
+          });
+          table.appendChild(body); wrap.appendChild(table);
+          protocolGroup.content.appendChild(wrap);
+          processGroup.content.appendChild(protocolGroup.box);
+        });
+        root.appendChild(processGroup.box);
+      });
+    }
+
+    function bytesFromBase64(value) {
+      var binary = atob(value || ""), bytes = new Uint8Array(binary.length);
+      for (var index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      return bytes;
+    }
+    function fullHexdump(bytes) {
+      var lines = [];
+      for (var offset = 0; offset < bytes.length; offset += 16) {
+        var hex = [], ascii = [];
+        for (var index = 0; index < 16; index += 1) {
+          if (offset + index < bytes.length) {
+            var value = bytes[offset + index];
+            hex.push(value.toString(16).padStart(2, "0"));
+            ascii.push(value >= 32 && value <= 126 ? String.fromCharCode(value) : ".");
+          } else { hex.push("  "); ascii.push(" "); }
+        }
+        lines.push(offset.toString(16).padStart(8, "0") + "  " +
+          hex.slice(0,8).join(" ") + "  " + hex.slice(8).join(" ") + "  |" + ascii.join("") + "|");
+      }
+      return lines.join("\n");
+    }
+    function utf8(bytes) {
+      try { return new TextDecoder("utf-8", {fatal:false}).decode(bytes); }
+      catch (error) {
+        var chars = [];
+        for (var index = 0; index < bytes.length; index += 1) chars.push(String.fromCharCode(bytes[index]));
+        return chars.join("");
+      }
+    }
+    function download(bytes, flow, direction) {
+      var link = make("a"), blob = new Blob([bytes], {type:"application/octet-stream"});
+      link.href = URL.createObjectURL(blob);
+      link.download = valueText(flow.id) + "-" + valueText(direction.direction) + ".bin";
+      document.body.appendChild(link); link.click(); document.body.removeChild(link);
+      window.setTimeout(function () { URL.revokeObjectURL(link.href); }, 0);
+    }
+    function viewer(flow, direction) {
+      var box = make("div", "payload-viewer"), toolbar = make("div", "payload-toolbar");
+      var output = make("pre", "payload-output"), note = make("p", "payload-note");
+      var bytes = null, active = null, cache = {};
+      function getBytes() { if (bytes === null) bytes = bytesFromBase64(direction.base64); return bytes; }
+      function getMode(mode) {
+        if (cache[mode] !== undefined) return cache[mode];
+        if (mode === "text") cache[mode] = utf8(getBytes());
+        if (mode === "hex") cache[mode] = fullHexdump(getBytes());
+        if (mode === "base64") cache[mode] = direction.base64 || "";
+        return cache[mode];
+      }
+      function show(mode, button) {
+        active = mode; output.textContent = getMode(mode);
+        toolbar.querySelectorAll(".mode-button").forEach(function (item) {
+          item.classList.toggle("active", item === button);
+        });
+        note.textContent = mode === "text" ?
+          "UTF-8 may contain replacement characters; Hex, Base64 and binary download remain lossless." :
+          "Complete " + mode + " representation; no payload bytes are truncated.";
+      }
+      [["UTF-8 Text","text"],["Full Hexdump","hex"],["Full Base64","base64"]].forEach(
+        function (item) {
+          var button = make("button", "payload-action mode-button", item[0]); button.type = "button";
+          button.addEventListener("click", function () { show(item[1], button); });
+          toolbar.appendChild(button);
+        });
+      var copy = make("button", "payload-action", "Copy Current View"); copy.type = "button";
+      copy.addEventListener("click", function () {
+        if (active === null) toolbar.querySelector(".mode-button").click();
+        copyText(output.textContent);
+      });
+      var save = make("button", "payload-action", "Download Raw Bytes"); save.type = "button";
+      save.addEventListener("click", function () { download(getBytes(), flow, direction); });
+      toolbar.appendChild(copy); toolbar.appendChild(save);
+      box.appendChild(toolbar); box.appendChild(output); box.appendChild(note);
+      return box;
+    }
+
+    function renderFlows() {
+      var root = document.getElementById("flows"), flows = model.flows || [];
+      root.textContent = "";
+      if (!flows.length) {
+        root.appendChild(make("div", "empty-message", "No TCP/UDP payload capture is available.")); return;
+      }
+      flows.forEach(function (flow) {
+        var endpoint = valueText(flow.source && flow.source.ip) + ":" +
+          valueText(flow.source && flow.source.port) + " -> " +
+          valueText(flow.destination && flow.destination.ip) + ":" +
+          valueText(flow.destination && flow.destination.port);
+        var group = collapsible("Process ID: " + valueText(flow.pid) +
+          ", Process Name: " + valueText(flow.process) + " | " +
+          valueText(flow.protocol).toUpperCase() + " | " + endpoint,
+          {id:flow.id,pid:flow.pid,process:flow.process,protocol:flow.protocol,
+           owner:flow.owner,disposition:flow.disposition,domain:flow.domain,
+           source:flow.source,destination:flow.destination}, false);
+        group.box.classList.add("flow-group");
+        var summary = make("div", "flow-summary");
+        [["Flow ID",flow.id],["Owner",flow.owner],["Disposition",flow.disposition],
+         ["Domain",flow.domain],["Started",flow.started_at],["Ended",flow.ended_at]].forEach(
+          function (pair) { addFact(summary, pair[0], pair[1]); });
+        group.content.appendChild(summary);
+        var wrap = make("div", "table-container"), table = make("table", "direction-table");
+        var head = make("thead"), headings = make("tr");
+        ["Direction","Endpoints","Bytes","Integrity / Content"].forEach(function (label) {
+          headings.appendChild(make("th", null, label));
+        });
+        head.appendChild(headings); table.appendChild(head);
+        var body = make("tbody");
+        Object.keys(flow.directions || {}).forEach(function (key) {
+          var direction = flow.directions[key], row = make("tr");
+          row.appendChild(make("td", null, valueText(direction.direction).toUpperCase()));
+          row.appendChild(make("td", null, valueText(direction.source && direction.source.ip) + ":" +
+            valueText(direction.source && direction.source.port) + " -> " +
+            valueText(direction.destination && direction.destination.ip) + ":" +
+            valueText(direction.destination && direction.destination.port)));
+          row.appendChild(make("td", null, direction.bytes));
+          var actions = make("td"); addFact(actions, "SHA-256", direction.sha256);
+          if (direction.datagrams) addFact(actions, "UDP datagrams", direction.datagrams.length);
+          var toggle = make("button", "payload-action", "View Full Payload"); toggle.type = "button";
+          var view = viewer(flow, direction);
+          toggle.addEventListener("click", function () {
+            var open = !view.classList.contains("expanded");
+            view.classList.toggle("expanded", open);
+            toggle.textContent = open ? "Hide Payload" : "View Full Payload";
+            if (open && !view.querySelector(".mode-button.active")) view.querySelector(".mode-button").click();
+          });
+          actions.appendChild(toggle); actions.appendChild(view); row.appendChild(actions); body.appendChild(row);
+        });
+        table.appendChild(body); wrap.appendChild(table); group.content.appendChild(wrap);
+        root.appendChild(group.box);
+      });
+    }
+
+    function captureStatus() {
+      var capture = model.capture || {}, root = document.getElementById("captureStatus");
+      var healthy = capture.overall_health === true;
+      root.classList.toggle("bad", !healthy); root.textContent = "";
+      root.appendChild(make("strong", null, healthy ? "Capture status: complete" :
+        "Capture status: payload capture unavailable or incomplete"));
+      root.appendChild(make("div", "capture-facts", "Raw packets: " +
+        valueText(capture.raw_record_count) + " | Converted packets: " +
+        valueText(capture.converted_record_count) + " | Observations: " +
+        valueText(capture.observation_record_count)));
+      if (capture.limitation) root.appendChild(make("div", null, capture.limitation));
+    }
+    function copyNbis(mode) {
+      var rows = Array.from(document.querySelectorAll(".nbi-row"));
+      if (mode === "selected") rows = rows.filter(function (row) {
+        return row.querySelector(".nbi-checkbox").checked;
+      });
+      if (mode === "filtered") rows = rows.filter(function (row) {
+        return !row.classList.contains("hidden");
+      });
+      copyText(rows.map(function (row) { return row.copyText; }).join("\n\n"));
+    }
+    function search() {
+      var query = document.getElementById("searchInput").value.toLowerCase().trim();
+      document.querySelectorAll(".nbi-row,.flow-group").forEach(function (node) {
+        node.classList.toggle("hidden", Boolean(query) &&
+          (node.dataset.search || "").indexOf(query) === -1);
+      });
+      document.querySelectorAll(".nbi-protocol-group").forEach(function (group) {
+        var ownMatch = !query || (group.dataset.search || "").indexOf(query) !== -1;
+        var rowMatch = Boolean(group.querySelector(".nbi-row:not(.hidden)"));
+        group.classList.toggle("hidden", Boolean(query) && !ownMatch && !rowMatch);
+      });
+      document.querySelectorAll(".nbi-process-group").forEach(function (group) {
+        var ownMatch = !query || (group.dataset.search || "").indexOf(query) !== -1;
+        var childMatch = Boolean(group.querySelector(".nbi-protocol-group:not(.hidden)"));
+        group.classList.toggle("hidden", Boolean(query) && !ownMatch && !childMatch);
+      });
+      if (query) document.querySelectorAll(
+        ".nbi-process-group:not(.hidden),.nbi-protocol-group:not(.hidden),.flow-group:not(.hidden)"
+      ).forEach(function (group) {
+        var button = group.querySelector(":scope > .group-heading > .collapsible");
+        var content = group.querySelector(":scope > .content");
+        setOpen(button, content, true);
+      });
+    }
+
+    captureStatus(); renderNbis(); renderFlows();
+    document.getElementById("searchInput").addEventListener("input", search);
+    document.getElementById("copyAllButton").addEventListener("click", function () { copyNbis("all"); });
+    document.getElementById("copySelectedButton").addEventListener("click", function () { copyNbis("selected"); });
+    document.getElementById("copyFilteredButton").addEventListener("click", function () { copyNbis("filtered"); });
+    var disclaimer = document.getElementById("disclaimerPopup");
+    document.getElementById("disclaimerButton").addEventListener("click", function () {
+      disclaimer.classList.add("expanded");
     });
-    document.getElementById("nbis").textContent = JSON.stringify(state.nbis || [], null, 2);
-  }
-  render();
-  document.getElementById("search").addEventListener("input", function (event) {
-    var query = event.target.value.toLowerCase();
-    document.querySelectorAll(".flow").forEach(function (flow) {
-      flow.classList.toggle("hidden", query !== "" && flow.dataset.search.indexOf(query) === -1);
+    document.getElementById("disclaimerClose").addEventListener("click", function () {
+      disclaimer.classList.remove("expanded");
     });
-  });
-}());
-</script>
+    disclaimer.addEventListener("click", function (event) {
+      if (event.target === disclaimer) disclaimer.classList.remove("expanded");
+    });
+    var topButton = document.getElementById("goTopButton");
+    window.addEventListener("scroll", function () {
+      topButton.classList.toggle("expanded", window.scrollY > 400);
+    });
+    topButton.addEventListener("click", function () { window.scrollTo({top:0,behavior:"smooth"}); });
+  }());
+  </script>
 </body>
 </html>

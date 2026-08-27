@@ -289,6 +289,18 @@ class PayloadReportTests(unittest.TestCase):
             Path(__file__).parents[1] / 'fakenet' / 'configs'))).get_template(
                 'html_report_template.html')
         html = template.render(payload_report_json=safe_json_dumps(model))
+        # Keep the original FakeNet-NG report's human-facing hierarchy and
+        # interactions while the inert payload model remains authoritative.
+        for marker in (
+                'FAKENET-NG', 'Network-Based Indicators',
+                'Copy All NBIs', 'Copy Selected NBIs',
+                'Copy Filtered NBIs', 'Disclaimer',
+                '"collapsible"', '"table-container"',
+                'Captured TCP/UDP Payloads', 'View Full Payload',
+                'UTF-8 Text', 'Full Hexdump', 'Full Base64',
+                'Download Raw Bytes'):
+            self.assertIn(marker, html)
+        self.assertNotIn('showing first 256 bytes', html)
         self.assertIn('innerHTML', html)
         self.assertIn('https://example.invalid/path', html)
         self.assertNotIn('</script><script>', html.lower())
