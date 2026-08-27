@@ -41,11 +41,11 @@ if %A_EXIT% EQU 1 set "TEST_EXIT=1"
 if %P_EXIT% NEQ 0 if %A_EXIT% EQU 0 set "TEST_EXIT=%P_EXIT%"
 if %S_EXIT% NEQ 0 if %A_EXIT% EQU 0 if %P_EXIT% EQU 0 set "TEST_EXIT=%S_EXIT%"
 
-powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0Export-Logs.ps1" -SinceUtc "%SESSION_START_UTC%" -SessionLabel "formal-v34"
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0Export-Logs.ps1" -SinceUtc "%SESSION_START_UTC%" -SessionLabel "formal-v35"
 if %ERRORLEVEL% NEQ 0 set "TEST_EXIT=1"
 
 echo.
-echo Formal v34 A/P acceptance exit code: %TEST_EXIT%  (0=PASS 1=FAIL 2=REFUSED)
+echo Formal v35 A/P acceptance exit code: %TEST_EXIT%  (0=PASS 1=FAIL 2=REFUSED)
 echo Evidence path is printed above and plain logs are under: %~dp0Logs
 pause
 exit /b %TEST_EXIT%

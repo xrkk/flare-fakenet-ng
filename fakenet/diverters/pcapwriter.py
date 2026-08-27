@@ -59,6 +59,12 @@ class DualPcapWriter(object):
         self._created_paths = []
         self._raw_write_count = 0
         self._ethernet_write_count = 0
+        # These values are intentionally public read-only-by-convention
+        # seams.  DiverterBase uses them to bind its in-memory observation
+        # index to the exact record written by the paired writer without
+        # adding another hot-path disk write.
+        self.last_record_ordinal = 0
+        self.last_timestamp = None
         self._rejected_input_count = 0
         self._last_rejection_log = None
         self._write_error = None
@@ -164,6 +170,8 @@ class DualPcapWriter(object):
                 else:
                     self._ethernet_write(ethernet_bytes, timestamp)
                 self._ethernet_write_count += 1
+                self.last_record_ordinal = self._raw_write_count
+                self.last_timestamp = timestamp
             except Exception as exc:
                 self._write_error = PcapWriteError(
                     'paired pcap write failed: %s' % exc)

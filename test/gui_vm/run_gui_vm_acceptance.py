@@ -692,7 +692,7 @@ def run_a11_sink_reply(fakenet_exe):
     config_path = os.path.join(LOG_DIR, 'a11_config.ini')
     model, errors = policy.build_policy_config(
         config_path, 'api.deepseek.com, *.deepseek.com',
-        takeover_ip=policy.TAKEOVER_SINK)
+        takeover_ip=policy.TAKEOVER_SINK, dump_packets=True)
     if errors:
         result('A11 接管 sink 连通', 'FAIL', '配置错误: %s' % errors[0].message)
         return
@@ -710,9 +710,10 @@ def run_a11_sink_reply(fakenet_exe):
         lambda: 'DOMAIN_TAKEOVER_READY' in
         (read_core_log(core_log) if os.path.isfile(core_log) else ''),
         60)
-    if not ready:
-        result('A11 接管 sink 连通', 'FAIL', '60 秒内未见 DOMAIN_TAKEOVER_READY')
-    else:
+    answered = target_ok = allowed = False
+    local_divert = True
+    target = {'tcp': {'ok': False}, 'udp': {'ok': False}}
+    if ready:
         sink = policy.TAKEOVER_SINK
         probe_domain = 'login.example.com'
         addresses = policy.nslookup_addresses(probe_domain)
@@ -727,32 +728,59 @@ def run_a11_sink_reply(fakenet_exe):
                    'ip=%s' % sink in log_text)
         local_divert = policy.divert_fake_logged(log_text, sink)
 
-        report_ok = False
-        import glob as _glob
-        for report in sorted(
-                _glob.glob(os.path.join(work_dir, 'report_*.html')),
-                key=os.path.getmtime, reverse=True):
-            try:
-                with open(report, 'r', encoding='utf-8',
-                          errors='replace') as handle:
-                    if 'python.exe' in handle.read():
-                        report_ok = True
-                        break
-            except OSError:
-                continue
-
-        result('A11 接管 sink 连通', 'PASS'
-               if answered and target_ok and allowed and not local_divert
-               else 'FAIL',
-               'DNS 应答=%s;nonce=%s;TCP=%s;UDP=%s;Ubuntu裁决=%s;'
-               '本地DIVERT_FAKE=%s' % (
-                   answered, FNPR_NONCE, target['tcp']['ok'],
-                   target['udp']['ok'], allowed, local_divert))
     if os.path.exists(stop_flag) or launcher.is_fakenet_running():
         if not os.path.exists(stop_flag):
             with open(stop_flag, 'w') as handle:
                 handle.write('stop\n')
         wait_for(lambda: not launcher.is_fakenet_running(), 40)
+
+    log_text = read_core_log(core_log) if os.path.isfile(core_log) else ''
+    queue_ok = True
+    for role in ('main', 'inbound'):
+        lines = [line for line in log_text.splitlines()
+                 if ('WINDIVERT_QUEUE_PARAM' in line and
+                     'handle_role=%s' % role in line)]
+        queue_ok = queue_ok and bool(lines) and all(
+            marker in lines[-1] for marker in (
+                'queue_len=8192', 'queue_time_ms=2048',
+                'queue_size_bytes=33554432'))
+
+    report_ok = False
+    report_detail = 'missing'
+    report_markers = re.findall(
+        r'Generated new HTML report:\s*(.+)$', log_text, re.M)
+    report_path = None
+    if len(report_markers) == 1:
+        report_path = report_markers[0].strip()
+        if not os.path.isabs(report_path):
+            report_path = os.path.join(work_dir, report_path)
+    if report_path and os.path.isfile(report_path):
+        try:
+            import verify_payload_report as payload_report_verifier
+            verification = payload_report_verifier.verify(report_path)
+            verification_path = os.path.join(
+                LOG_DIR, 'a11-html-verification.json')
+            with open(verification_path, 'w', encoding='utf-8') as handle:
+                json.dump(verification, handle, ensure_ascii=False,
+                          indent=2, sort_keys=True)
+                handle.write('\n')
+            report_ok = verification.get('verdict') == 'PASS'
+            report_detail = verification_path
+        except Exception as exc:
+            report_detail = str(exc)
+    elif report_markers:
+        report_detail = 'ambiguous/missing report markers=%d' % len(
+            report_markers)
+
+    result('A11 接管 sink 连通', 'PASS'
+           if (ready and answered and target_ok and allowed and
+               not local_divert and not launcher.is_fakenet_running() and
+               queue_ok and report_ok) else 'FAIL',
+           'ready=%s;DNS 应答=%s;nonce=%s;TCP=%s;UDP=%s;Ubuntu裁决=%s;'
+           '本地DIVERT_FAKE=%s;queue=%s;HTML=%s' % (
+               ready, answered, FNPR_NONCE, target['tcp']['ok'],
+               target['udp']['ok'], allowed, local_divert, queue_ok,
+               report_detail))
 
 
 def finish():

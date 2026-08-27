@@ -31,7 +31,7 @@ $packageVersion = if ($PackageVersion) {
 } elseif ($isDiagnostic) {
     'v33-diagnostic-03'
 } else {
-    'v34'
+    'v35'
 }
 if ($packageVersion -notmatch '^v[0-9]+(?:-diagnostic-[0-9]+)?$') {
     throw ('Invalid package version: ' + $packageVersion)
@@ -49,7 +49,12 @@ $packageEntry = if ($isDiagnostic) {
 $planVersion = if ($isDiagnostic) {
     '2026.08.26-01 v0.5'
 } else {
-    '2026.08.26-01 v0.7'
+    '2026.08.27-01 v0.2'
+}
+$planBlob = if ($isDiagnostic) {
+    $null
+} else {
+    '0bd8aea9a56d97f165b05e5fc6a68b08f06b4d20'
 }
 $fixedTimestamp = [DateTimeOffset]::new(
     [DateTime]::SpecifyKind([DateTime]'2000-01-01T00:00:00',
@@ -114,6 +119,15 @@ function Invoke-PyInstaller([string]$WorkingDirectory,[string]$Spec,
 $repoRoot = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 $resolvedCommit = Invoke-GitCaptured @(
     '-C',$repoRoot,'rev-parse',("{0}^{{commit}}" -f $SourceCommit))
+if (-not $isDiagnostic) {
+    $resolvedPlanBlob = Invoke-GitCaptured @(
+        '-C',$repoRoot,'rev-parse',
+        ("{0}:PLAN/2026.08.27/2026.08.27-01-PCAP捕获完整性与双向载荷HTML报告修复方案.md" -f $resolvedCommit))
+    if ($resolvedPlanBlob -ne $planBlob) {
+        throw ('SourceCommit reviewed plan blob mismatch: ' +
+            $resolvedPlanBlob + ' != ' + $planBlob)
+    }
+}
 $outputRoot = if ($OutputDirectory) {
     [IO.Path]::GetFullPath($OutputDirectory)
 } else { Join-Path $repoRoot 'dist' }
@@ -230,8 +244,32 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Policy runner syntax failed.' }
     python -m py_compile (Join-Path $stage 'test\gui_vm\run_formal_stop_acceptance.py')
     if ($LASTEXITCODE -ne 0) { throw 'Formal stop runner syntax failed.' }
+    python -m py_compile (Join-Path $stage 'test\gui_vm\verify_payload_report.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Payload report verifier syntax failed.' }
+    python -m py_compile (Join-Path $stage 'test\gui_vm\run_sample_payload_acceptance.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Sample payload runner syntax failed.' }
+    python -m py_compile (Join-Path $stage 'test\gui_vm\verify_payload_integrity.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Three-way verifier syntax failed.' }
+    python -m py_compile (Join-Path $stage 'test\gui_vm\verify_reassembly.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Reassembly verifier syntax failed.' }
+    python -m py_compile (Join-Path $stage 'test\gui_vm\generate_payload_report_fixture.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Payload fixture generator syntax failed.' }
+    python -m py_compile (Join-Path $stage 'tools\replay_sample_payload.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Historical replay syntax failed.' }
     if (-not (Test-Path -LiteralPath (Join-Path $stage 'test\gui_vm\Run-Tests.cmd'))) {
         throw 'Run-Tests.cmd missing from staged tree.'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $stage 'test\gui_vm\Run-SamplePayloadAcceptance.cmd'))) {
+        throw 'Sample payload acceptance entry missing from staged tree.'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $stage 'test\gui_vm\verify_reassembly.py'))) {
+        throw 'Reassembly verifier missing from staged tree.'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $stage 'test\gui_vm\generate_payload_report_fixture.py'))) {
+        throw 'Payload fixture generator missing from staged tree.'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $stage 'tools\replay_sample_payload.py'))) {
+        throw 'Historical replay tool missing from staged tree.'
     }
     if ($isDiagnostic) {
         $diagnosticRunner = Join-Path $stage `
@@ -305,6 +343,7 @@ try {
         package_version=$packageVersion
         package_mode=$PackageMode.ToLowerInvariant()
         plan_version=$planVersion
+        plan_blob=$planBlob
         source_commit=$resolvedCommit
         core_bundle_mode=$(if ($isDiagnostic) {
             'pyinstaller-onefile-diagnostic-debug'
@@ -318,6 +357,14 @@ try {
         fakenet_exe_sha256=$fakenetHash
         fakenet_gui_exe_sha256=$guiHash
         acceptance_entry=$packageEntry
+        sample_payload_entry=$(if ($isDiagnostic) {
+            $null
+        } else { 'test/gui_vm/Run-SamplePayloadAcceptance.cmd' })
+        payload_report_schema='fakenet.payload-report.v1'
+        payload_verifier='test/gui_vm/verify_payload_report.py'
+        payload_integrity_verifier='test/gui_vm/verify_payload_integrity.py'
+        capture_queue='length=8192;time_ms=2048;size_bytes=33554432'
+        zip_entry_timestamp_utc='2000-01-01T00:00:00Z'
         evidence_levels='results.tsv 标注 实测/等效'
         logs_plaintext=$true
         files=$rows

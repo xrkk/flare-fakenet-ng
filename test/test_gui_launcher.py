@@ -150,6 +150,7 @@ def test_build_commands_include_exactly_one_explicit_log_file(tmp_path):
     for params in (dev_params, frozen_params):
         assert params.count('--log-file') == 1
         assert '"%s"' % log_path in params
+        assert params.count('--no-console-output') == 1
 
 
 def test_build_commands_require_log_path(tmp_path):

@@ -10,9 +10,64 @@
    - **验收驱动脚本本身需要 VM 内有 Python ≥3.8(仅标准库依赖;两个 exe 已自带各自运行时)。**
 2. 在 Ubuntu 仓库根目录运行一次 `./Start-FNPR-Sentinel.sh` 并保持窗口；然后在 Windows VM 双击唯一正式入口 `Run-Tests.cmd`，同意一次 UAC。若尚未启动 Sentinel，控制台会打印这条完整命令并等待，无需猜测。
 3. A/P 自动检查通过后，控制台会引导三轮 GUI 启动/停止；每轮只按提示在 GUI 点击启动和停止，不需要输入 Windows 命令。脚本自动记录同 nonce TCP/UDP、停止反馈、顶层句柄、残留、DNS/路由恢复和 onedir 身份。
-4. 结果:控制台汇总 + `Logs\<时间戳>\results.tsv`，并自动导出 `formal-v34-export-<时间戳>`；只需回传控制台打印的 `EVIDENCE_PATH` 整个目录。
+4. 结果:控制台汇总 + `Logs\<时间戳>\results.tsv`，并自动导出 `formal-v35-export-<时间戳>`；只需回传控制台打印的 `EVIDENCE_PATH` 整个目录。
 
 退出码:`0` 全部通过 / `1` 存在失败 / `2` REFUSED(前置条件不满足:物理机、VM 检测不确定、未提权)。
+
+## v35 完整 payload 三方验收
+
+正式包还包含 `Run-SamplePayloadAcceptance.cmd`。它只能在隔离 Windows VM
+管理员会话中双击运行。先在同一包的 GUI 中载入实际样本配置并启动 FakeNet-NG；
+入口会精确绑定该 GUI 当前拥有的核心日志/停止旗标，在绑定失败时于启动捕获前
+REFUSED。绑定成功后它启动 NIC-only、全包长 `pktmon`，控制台只要求用户启动
+样本并在双向流量出现后点击 GUI Stop。入口不会在宿主机或 Docker 启动样本，
+也不会在安全前置失败时启动捕获。
+
+完成后证据目录为包根
+`test\gui_vm\Logs\sample-payload-YYYYMMDD-HHMMSS\`，包含
+`wire.etl`、`wire.pcapng`、FakeNet raw/converted PCAP、核心/GUI 日志、实际
+INI、`html-verification.json`、`payload-verification.json`、`results.tsv` 和
+`evidence-sha256.tsv`。`verify_payload_report.py` 只解析不执行 HTML，确认
+`fakenet.payload-report.v1`、单一 Base64、字节数/哈希、无 CDN 与危险 DOM sink；
+`verify_payload_integrity.py` 再按 `ALLOW_TAKEOVER_SINK` 流比较 NIC、FakeNet
+raw PCAP 与 HTML 的两个方向，同时要求同一流绑定实际样本 PID/进程、实际 INI
+明确 `DumpPackets=Yes` 且核心日志没有 capture fatal。三方任一缺失或不一致
+返回 `1`，物理机、未提权、pktmon 缺失或无法唯一绑定活动 GUI 会话且尚未开始
+捕获返回 `2`。
+
+该入口不要求在控制台输入 Enter 或其他额外命令。它只在看到隔离 VM 判定后
+启动 pktmon；操作者启动样本并点击 GUI 的停止按钮后，脚本自动记录停止旗标的
+GUI 反馈（不超过 1 秒）、GUI 所有的核心进程句柄返回（不超过 5 秒）以及核心
+`rc=0` 和正常会话结束，满足这些条件后才停止/转换 pktmon 并导出证据。EOF、
+Ctrl-C、异常和失败路径均记录失败并执行一次 pktmon stop。
+
+离线重组夹具使用包根内的 `verify_reassembly.py`：
+`python test/gui_vm/verify_reassembly.py --raw-pcap <raw.pcap> --index-json <index.json> --converted-pcap <converted.pcap> --matrix --output <reassembly-verification.json>`。
+它只读取隔离夹具，按 `fakenet.reassembly-verification.v1` 输出每流/方向的
+长度与 SHA-256，并实际执行 TCP 乱序/重传/多观察去重、32 位序号回绕、
+gap/conflict fail-closed、端口复用新代次以及 IPv6 UDP 双向/重复报文矩阵；
+任一预期不一致返回 `1`。
+
+旧样本只读回放命令（在仓库根、固定 Docker/Wine 镜像中执行）为
+`python tools/replay_sample_payload.py`。它固定读取 `dist/样本实测`，只在
+`dist/样本实测-回放-v35` 生成 `diagnostic-replay.html`、
+`replay-verification.json` 和 `evidence-sha256.tsv`；JSON 通过后仍把已知的
+266 秒运行时捕获空窗标为 `UNHEALTHY_HISTORICAL_REPLAY`，不把旧会话冒充健康报告。
+
+## Ubuntu Docker 正式构建
+
+在 Ubuntu 仓库根执行 `./Build-GuiVmPackage.sh` 会先只读检查固定镜像
+`flare-fakenet-ng/gui-vm-diagnostic-builder:py3119-pyi6220`，再以仓库
+`HEAD` 的不可变 source commit 运行 `tools/build_gui_vm_package_wine.py`。
+首个未占用输出目录为 `dist/v35-r1/`（随后自动递增），不会覆盖旧 ZIP；也可
+传入 `source-commit`、`output-root` 和包内路径。归档源码会先以仓库
+pydivert 2.1.0 运行 Windows-Python 全量回归（占用端口的 HTTP 组独立运行，
+只接受既有两个环境 SKIP）；测试失败时不会进入 PyInstaller。成功目录同时包含
+正式 ZIP、`gui-vm-manifest.json` 和重新读取 ZIP 后生成的
+`package-verification.json`，三者绑定 source commit、方案 v0.2/blob、逐文件
+size/SHA-256 和固定 ZIP 时间戳。该入口只复现正式 v35 onedir PowerShell 合同，
+不替代真实 Windows VM 的 WinDivert、GUI、路由恢复或 pktmon 验收。镜像缺失时
+先执行 `./Build-GuiVmDiagnosticPackage.sh --image-only`，该模式不生成 ZIP。
 
 ## 验收项与证据级别
 
@@ -55,7 +110,7 @@ A6 启动的 fakenet 使用**最小非侵入配置**(`DivertTraffic: No`、`Dump
 ## v33 诊断包一键入口
 
 当前停止专项诊断包使用独立名称 `Windows-GUI配置工具-VM诊断-v33-diagnostic-03.zip`,
-不覆盖或冒充 v33/v34 交付包。解压到隔离 Windows VM 后双击
+不覆盖或冒充 v33/v34/v35 交付包。解压到隔离 Windows VM 后双击
 `test\gui_vm\Run-Diagnostics.cmd`。该入口自动请求一次 UAC、验证 Ubuntu
 Sentinel 的同 nonce TCP/UDP、打开 GUI、等待启动、建立一条有界 TEST-NET
 活动连接、观察 GUI 停止请求，并调用导出器生成
@@ -104,7 +159,7 @@ pid/映像名且处置为 `DIVERT_FAKE`。
 
 ## 策略功能一键测试(v1.28 §12.31.4)
 
-正式 v34 由唯一 **`Run-Tests.cmd`** 自动串联以下策略检查；`Run-Policy-Tests.cmd`
+正式 v35 由唯一 **`Run-Tests.cmd`** 自动串联以下策略检查；`Run-Policy-Tests.cmd`
 仅保留为开发期单组入口，不能替代正式验收，也必须读取同次正式 Sentinel 前置会话:
 阶段 1 以 `api.deepseek.com,*.deepseek.com` 启动域名放行,断言精确域名与通配子域名
 (`www.deepseek.com`)获得真实公网租约、裸域 `deepseek.com` 与未放行的 `example.com`

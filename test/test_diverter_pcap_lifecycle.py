@@ -27,6 +27,11 @@ class FailingCapture(object):
         raise self.error
 
 
+class RejectingCapture(object):
+    def write_ip_packet(self, raw):
+        return False
+
+
 class ClosingCapture(object):
     def __init__(self, events):
         self.events = events
@@ -98,6 +103,16 @@ class DiverterPcapLifecycleTests(unittest.TestCase):
             line for line in captured.output
             if 'PCAP_DUAL_WRITE_FAILED' in line]))
 
+    def test_writer_rejection_is_fail_closed(self):
+        diverter = self._diverter()
+        diverter.dual_pcap = RejectingCapture()
+
+        with self.assertRaisesRegex(PcapWriteError, 'rejected packet'):
+            diverter.write_pcap(Packet())
+
+        self.assertRegex(str(diverter.capture_failure), 'rejected packet')
+        self.assertTrue(diverter._stopping.is_set())
+
     def test_start_opens_capture_before_callback_and_rolls_back_empty_failure(self):
         with tempfile.TemporaryDirectory() as tempdir:
             prefix = os.path.join(tempdir, 'packets')
@@ -140,7 +155,7 @@ class DiverterPcapLifecycleTests(unittest.TestCase):
             self.assertTrue(diverter.stop())
             self.assertEqual(1, diverter.stop_callback_calls)
 
-    def test_normal_stop_reports_then_platform_then_capture_and_is_idempotent(self):
+    def test_normal_stop_closes_platform_and_capture_before_reports(self):
         diverter = self._diverter()
         capture = ClosingCapture(diverter.events)
         diverter.dual_pcap = capture
@@ -149,12 +164,12 @@ class DiverterPcapLifecycleTests(unittest.TestCase):
         self.assertTrue(diverter.stop())
 
         self.assertEqual([
-            'nbi-report', 'html-report', 'platform-stop', 'capture-close'
+            'platform-stop', 'capture-close', 'nbi-report', 'html-report'
         ], diverter.events)
         self.assertEqual(1, diverter.stop_callback_calls)
         self.assertEqual(1, capture.close_calls)
 
-    def test_capture_fatal_stops_platform_and_capture_before_best_effort_reports(self):
+    def test_capture_fatal_stops_platform_and_capture_without_success_report(self):
         diverter = self._diverter()
         capture = ClosingCapture(diverter.events)
         diverter.dual_pcap = capture
@@ -163,9 +178,7 @@ class DiverterPcapLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(PcapWriteError, 'injected fatal'):
             diverter.stop()
 
-        self.assertEqual([
-            'platform-stop', 'capture-close', 'nbi-report', 'html-report'
-        ], diverter.events)
+        self.assertEqual(['platform-stop', 'capture-close'], diverter.events)
         self.assertEqual(1, diverter.stop_callback_calls)
         self.assertEqual(1, capture.close_calls)
 

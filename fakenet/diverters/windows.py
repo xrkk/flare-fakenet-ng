@@ -134,6 +134,14 @@ from .processredirect import (
     PacketTuple, ProcessRedirectAction, ProcessRedirectEngine)
 
 
+# WinDivert 1.3.0 limits from the repository-pinned pydivert wheel.  These
+# are explicit bindings rather than assumptions about driver defaults: every
+# handle is set and read back before it can receive a packet.
+WINDIVERT_QUEUE_LENGTH = CAPTURE_QUEUE_EXPECTED['queue_len']
+WINDIVERT_QUEUE_TIME_MS = CAPTURE_QUEUE_EXPECTED['queue_time_ms']
+WINDIVERT_QUEUE_SIZE_BYTES = CAPTURE_QUEUE_EXPECTED['queue_size_bytes']
+
+
 def build_egress_control_filter(target_ipv4=None, frozen_local_ipv4=None):
     """Build the reviewed filter without broadening disabled-mode capture."""
     base = 'outbound and (ip or ipv6)'
@@ -447,6 +455,7 @@ class Diverter(DiverterBase, WinUtilMixin):
                                        ip_addrs, logging_level)
 
         self.running_on_windows = True
+        self._capture_queue_required = True
 
         if not self.single_host_mode:
             self.logger.critical('Windows diverter currently only supports '
@@ -948,21 +957,16 @@ class Diverter(DiverterBase, WinUtilMixin):
         try:
             self.handle = WinDivert(filter=self.filter)
             self.handle.open()
-            # Record the effective WinDivert queue limits so the evidence log
-            # pins the exact threshold packets age out against. Best-effort:
-            # the diverter runs on documented driver defaults if this fails.
-            self._windivert_queue_time_ms = 2000
-            try:
-                from pydivert import Param
-                queue_time_ms = int(self.handle.get_param(Param.QUEUE_TIME))
-                queue_len = int(self.handle.get_param(Param.QUEUE_LEN))
-                queue_size = int(self.handle.get_param(Param.QUEUE_SIZE))
-                self._windivert_queue_time_ms = queue_time_ms
-                self.log_egress_event(
-                    'WINDIVERT_QUEUE_PARAM', queue_time_ms=queue_time_ms,
-                    queue_len=queue_len, queue_size_bytes=queue_size)
-            except Exception:
-                pass
+            self._configure_windivert_queue(self.handle, 'main')
+        except PcapWriteError as exc:
+            if self.handle is not None:
+                try:
+                    self.handle.close()
+                except Exception:
+                    pass
+            self.handle = None
+            self._record_capture_failure(exc)
+            raise
         except WindowsError as e:
             if e.winerror == 5:
                 self.logger.critical('ERROR: Insufficient privileges to run '
@@ -979,6 +983,43 @@ class Diverter(DiverterBase, WinUtilMixin):
                                      'WinDivert driver: %s', e)
             self.handle = None
             raise
+
+    def _configure_windivert_queue(self, handle, role):
+        """Set and verify all queue parameters for one capture handle."""
+        from pydivert import Param
+
+        expected = (
+            ('queue_len', Param.QUEUE_LEN, WINDIVERT_QUEUE_LENGTH),
+            ('queue_time_ms', Param.QUEUE_TIME, WINDIVERT_QUEUE_TIME_MS),
+            ('queue_size_bytes', Param.QUEUE_SIZE, WINDIVERT_QUEUE_SIZE_BYTES),
+        )
+        readback = {}
+        try:
+            for field, param, value in expected:
+                result = handle.set_param(param, value)
+                if result is False:
+                    raise PcapWriteError(
+                        '%s WinDivert %s set returned false' % (role, field))
+                actual = int(handle.get_param(param))
+                if actual != value:
+                    raise PcapWriteError(
+                        '%s WinDivert %s readback %d != %d' %
+                        (role, field, actual, value))
+                readback[field] = actual
+        except PcapWriteError:
+            raise
+        except Exception as exc:
+            raise PcapWriteError(
+                '%s WinDivert queue parameter set/readback failed: %s' %
+                (role, exc)) from exc
+        self._capture_queue_bindings[role] = readback
+        if role == 'main':
+            self._windivert_queue_time_ms = readback['queue_time_ms']
+        self.log_egress_event(
+            'WINDIVERT_QUEUE_PARAM', handle_role=role,
+            queue_time_ms=readback['queue_time_ms'],
+            queue_len=readback['queue_len'],
+            queue_size_bytes=readback['queue_size_bytes'])
 
     def _validate_process_redirect_windivert_runtime(self):
         """Validate the exact enabled filter against the DLL about to load."""
@@ -1042,13 +1083,24 @@ class Diverter(DiverterBase, WinUtilMixin):
         try:
             handle = WinDivert(filter=capture_filter, priority=1)
             handle.open()
+            self._configure_windivert_queue(handle, 'inbound')
         except WindowsError as exc:
+            try:
+                if 'handle' in locals():
+                    handle.close()
+            except Exception:
+                pass
             self._record_capture_failure(PcapWriteError(
                 'inbound capture handle open failed: %s' % exc))
             return
         except Exception as exc:
+            try:
+                if 'handle' in locals():
+                    handle.close()
+            except Exception:
+                pass
             self._record_capture_failure(PcapWriteError(
-                'inbound capture handle open failed: %s' % exc))
+                'inbound capture handle queue setup failed: %s' % exc))
             return
         self._inbound_capture_handle = handle
         self.inbound_capture_thread = threading.Thread(
@@ -1059,8 +1111,13 @@ class Diverter(DiverterBase, WinUtilMixin):
             'PCAP_INBOUND_CAPTURE_READY', filter=capture_filter)
 
     def _inbound_capture_loop(self):
+        prev_recv_return = None
         try:
             while not self._stopping.is_set():
+                loop_top = time.monotonic()
+                if not self._check_recv_cycle_gap(
+                        'inbound', prev_recv_return, loop_top):
+                    return
                 try:
                     wdpkt = self._inbound_capture_handle.recv()
                 except WindowsError as exc:
@@ -1068,23 +1125,35 @@ class Diverter(DiverterBase, WinUtilMixin):
                         return
                     self.logger.error(
                         'Inbound capture recv failed: %s', exc)
+                    self._record_capture_failure(PcapWriteError(
+                        'inbound capture recv failed: %s' % exc))
                     return
                 except Exception as exc:
                     self.logger.error('Inbound capture recv failed: %s', exc)
+                    self._record_capture_failure(PcapWriteError(
+                        'inbound capture recv failed: %s' % exc))
                     return
+                prev_recv_return = time.monotonic()
                 if wdpkt is None:
                     continue
                 raw = wdpkt.raw
                 if raw is None:
                     continue
                 try:
-                    self.dual_pcap.write_ip_packet(bytes(raw))
+                    if self.record_raw_capture(bytes(raw),
+                                               observation_role='inbound',
+                                               direction='inbound') is False:
+                        self._record_capture_failure(PcapWriteError(
+                            'inbound capture writer rejected packet'))
+                        return
                 except PcapWriteError as exc:
-                    self._record_capture_failure(exc)
+                    if not getattr(self, '_capture_failure_already_reported', False):
+                        self._record_capture_failure(exc)
                     return
                 except Exception as exc:
-                    self._record_capture_failure(PcapWriteError(
-                        'inbound capture dispatch failed: %s' % exc))
+                    if not getattr(self, '_capture_failure_already_reported', False):
+                        self._record_capture_failure(PcapWriteError(
+                            'inbound capture dispatch failed: %s' % exc))
                     return
                 try:
                     self._inbound_capture_handle.send(wdpkt)
@@ -1094,9 +1163,42 @@ class Diverter(DiverterBase, WinUtilMixin):
                     # pass-through loop.
                     self.logger.error(
                         'Inbound capture reinjection failed: %s', exc)
-        except Exception:
+        except Exception as exc:
             self.logger.exception(
                 'Inbound capture thread terminated unexpectedly')
+            if not self._stopping.is_set():
+                self._record_capture_failure(PcapWriteError(
+                    'inbound capture thread terminated unexpectedly: %s' % exc))
+
+    def _check_recv_cycle_gap(self, role, previous_return, now=None):
+        """Fail closed when one receiver cycle reaches the queue-age limit."""
+        if previous_return is None:
+            return True
+        now = time.monotonic() if now is None else now
+        binding = getattr(self, '_capture_queue_bindings', {}).get(role, {})
+        queue_time_ms = binding.get('queue_time_ms')
+        if queue_time_ms is None and role == 'main':
+            queue_time_ms = getattr(self, '_windivert_queue_time_ms', None)
+        if queue_time_ms is None:
+            if not getattr(self, '_capture_queue_required', False):
+                return True
+            self._record_capture_failure(PcapWriteError(
+                '%s WinDivert queue time is not verified' % role))
+            return False
+        gap_ms = (now - previous_return) * 1000.0
+        if gap_ms >= float(queue_time_ms):
+            try:
+                self.log_egress_event(
+                    'WINDIVERT_RECV_CYCLE_GAP', handle_role=role,
+                    gap_ms=int(gap_ms), queue_time_ms=int(queue_time_ms),
+                    epoch_ms=int(time.time() * 1000))
+            except Exception:
+                pass
+            self._record_capture_failure(PcapWriteError(
+                '%s WinDivert recv cycle gap %.3f ms reached queue time %d ms' %
+                (role, gap_ms, int(queue_time_ms))))
+            return False
+        return True
 
     def _close_inbound_capture_handle(self):
         if self._inbound_capture_handle is None:
@@ -1131,6 +1233,14 @@ class Diverter(DiverterBase, WinUtilMixin):
 
         self.logger.debug('Diverting ports: ')
         self._stopping.clear()
+
+        # Open and fully configure the record-only handle before starting the
+        # main receiver.  A queue setup failure must stop startup before any
+        # receiver can process its first packet.
+        self._open_inbound_capture()
+        if self.capture_failure is not None:
+            raise self.capture_failure
+
         self._diverter_exited.clear()
         self.diverter_thread = threading.Thread(
             target=self.divert_thread, name='WinDivert')
@@ -1144,10 +1254,6 @@ class Diverter(DiverterBase, WinUtilMixin):
                 if self.handle:
                     self._close_windivert_handle()
                 raise RuntimeError('WinDivert receiver thread failed to start')
-
-        # Record-only inbound capture (plan I7): open before any network
-        # mutation so an open failure fails the run before DNS changes.
-        self._open_inbound_capture()
 
         try:
             # Set local DNS only after policy listeners and WinDivert are
@@ -1230,7 +1336,6 @@ class Diverter(DiverterBase, WinUtilMixin):
 
     def divert_thread(self):
         prev_recv_return = None
-        last_gap_log = 0.0
         self._hp_stats = {
             'cycle': [0.0, 0, 0.0],
             'pcap': [0.0, 0, 0.0],
@@ -1239,28 +1344,12 @@ class Diverter(DiverterBase, WinUtilMixin):
         try:
             while not self._stopping.is_set():
                 loop_top = time.monotonic()
-                # Observability: the delta from the previous recv() return to
-                # now is wall time this single thread spent processing one
-                # packet (owner resolution, route guard, inject). When it
-                # approaches the WinDivert queue time, packets that arrived
-                # meanwhile age out of the kernel queue and are silently
-                # dropped before ever reaching this loop. Best-effort only;
-                # instrumentation must never disturb the packet path.
                 if prev_recv_return is not None:
                     stall_ms = (loop_top - prev_recv_return) * 1000.0
                     self._hp_accumulate('cycle', stall_ms)
-                    if (stall_ms > 1000.0 and
-                            loop_top - last_gap_log > 1.0):
-                        last_gap_log = loop_top
-                        try:
-                            self.log_egress_event(
-                                'WINDIVERT_RECV_CYCLE_GAP',
-                                gap_ms=int(stall_ms),
-                                queue_time_ms=getattr(
-                                    self, '_windivert_queue_time_ms', 2000),
-                                epoch_ms=int(time.time() * 1000))
-                        except Exception:
-                            pass
+                    if not self._check_recv_cycle_gap(
+                            'main', prev_recv_return, loop_top):
+                        return
                 if loop_top - self._hp_last_flush >= 10.0:
                     self._hp_last_flush = loop_top
                     self._hp_flush()
@@ -1279,14 +1368,20 @@ class Diverter(DiverterBase, WinUtilMixin):
         except WindowsError as e:
             if e.winerror in [4, 6, 995]:
                 return
-            else:
-                raise
+            self.logger.error(
+                'WinDivert receiver recv failed: %s', e)
+            if not self._stopping.is_set():
+                self._record_capture_failure(PcapWriteError(
+                    'WinDivert receiver recv failed: %s' % e))
         except PcapWriteError:
             # write_pcap has already registered the fatal condition and
             # signalled the main thread. Do not reinject the current packet.
             return
         except Exception:
             self.logger.exception('WinDivert receiver terminated unexpectedly')
+            if not self._stopping.is_set():
+                self._record_capture_failure(PcapWriteError(
+                    'WinDivert receiver terminated unexpectedly'))
         finally:
             self._diverter_exited.set()
 
@@ -1297,6 +1392,11 @@ class Diverter(DiverterBase, WinUtilMixin):
 
     def _handle_legacy_packet(self, wdpkt):
         pkt = WindowsPacketCtx('divert_thread', wdpkt)
+        try:
+            pkt._capture_direction = (
+                'outbound' if getattr(pkt, 'is_outbound', False) else 'inbound')
+        except AttributeError:
+            pass
         cb3, cb4 = self._callbacks()
         self.handle_pkt(pkt, cb3, cb4)
         self._send_packet(pkt)
@@ -1342,6 +1442,11 @@ class Diverter(DiverterBase, WinUtilMixin):
         new_mapping_generation = None
         try:
             pkt = WindowsPacketCtx('egress_control', wdpkt)
+            try:
+                pkt._capture_direction = (
+                    'outbound' if getattr(pkt, 'is_outbound', False) else 'inbound')
+            except AttributeError:
+                pass
             self._timed_write_pcap(pkt)
             original = (pkt.proto, pkt.src_ip0, pkt.sport0,
                         pkt.dst_ip0, pkt.dport0)
@@ -1846,6 +1951,15 @@ class Diverter(DiverterBase, WinUtilMixin):
                     domain = lease.domain
             except Exception:
                 domain = ''
+            flow_id = getattr(pkt, '_capture_flow_id', None)
+            registry = getattr(self, '_capture_flow_registry', None)
+            if flow_id is not None and registry is not None:
+                registry.update(
+                    flow_id, owner=(process or 'unknown'), pid=pid,
+                    process=(process or 'unknown'),
+                    disposition=(verdict.value if hasattr(verdict, 'value')
+                                 else str(verdict)),
+                    domain=(domain or 'unknown'))
             audit[key] = [now]
             self.log_egress_event(
                 'PROCESS_FLOW',

@@ -90,7 +90,7 @@ foreach ($source in ($configPaths.Values | Sort-Object)) {
     $copied++
 }
 
-# Formal v34 runners persist their result/timeline/network/session evidence
+# Formal v35 runners persist their result/timeline/network/session evidence
 # below test\gui_vm\Logs, including Logs\preflight-refused-* evidence. Copy
 # only files created in this invocation and
 # exclude export directories (including the target currently being built).
@@ -99,7 +99,7 @@ $runnerEvidence = Get-ChildItem -LiteralPath $logRoot -File -Recurse `
     Where-Object { $_.LastWriteTimeUtc -ge $sinceBoundaryUtc } |
     Where-Object { -not $_.FullName.StartsWith(
         $target, [StringComparison]::OrdinalIgnoreCase) } |
-    Where-Object { $_.FullName -notmatch '\\(?:diagnostic|manual|formal-v34)-export-' }
+    Where-Object { $_.FullName -notmatch '\\(?:diagnostic|manual|formal-v35)-export-' }
 foreach ($item in $runnerEvidence) {
     $relative = $item.FullName.Substring($logRoot.Length).TrimStart('\')
     $safeName = 'runner-' + ($relative -replace '[\\/:*?"<>|]', '_')

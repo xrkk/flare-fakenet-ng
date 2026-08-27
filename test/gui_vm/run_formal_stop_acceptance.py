@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Formal v34 three-round GUI stop acceptance (IMP-005 / ACC-003)."""
+"""Formal v35 three-round GUI stop acceptance (IMP-005 / ACC-003)."""
 
 import datetime
 import glob
@@ -131,7 +131,7 @@ def run_round(round_number, evidence_dir):
         check('clean_start', False, '存在 fakenet 进程；不强杀')
         return persist()
 
-    nonce = 'v34-r%d-%s' % (round_number, uuid.uuid4().hex)
+    nonce = 'v35-r%d-%s' % (round_number, uuid.uuid4().hex)
     preflight_ok, preflight = diagnostic.probe_fnpr_transports(
         nonce, 'preflight')
     for transport in ('tcp', 'udp'):

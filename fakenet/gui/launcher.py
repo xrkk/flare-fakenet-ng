@@ -405,6 +405,7 @@ def build_dev_command(config_path, log_path=None):
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))))
     params = '-m fakenet.fakenet -c "%s"' % config_path
+    params += ' --no-console-output'
     params += ' --log-file "%s"' % log_path
     params += ' -f "%s.stopflag"' % log_path
     params += ' -p'
@@ -418,6 +419,7 @@ def build_frozen_command(exe_path, config_path, log_path=None):
     if not ok:
         raise LaunchError(reason)
     params = '-c "%s"' % config_path
+    params += ' --no-console-output'
     ok, reason = validate_log_path(log_path)
     if not ok:
         raise LaunchError(reason)

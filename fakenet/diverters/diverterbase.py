@@ -14,10 +14,23 @@ import subprocess
 from . import fnpacket
 from . import fnconfig
 from .pcapwriter import DualPcapWriter, PcapWriteError
+from ..payload_report import (CaptureObservationIndex, PayloadReportError,
+                              SessionFlowRegistry, _serialize_nbis,
+                              build_payload_report, safe_json_dumps,
+                              validate_rendered_payload_report)
 from .debuglevels import *
 from collections import namedtuple
 from collections import OrderedDict
 from pathlib import Path
+
+
+CAPTURE_QUEUE_ROLES = ('main', 'inbound')
+CAPTURE_QUEUE_FIELDS = ('queue_len', 'queue_time_ms', 'queue_size_bytes')
+CAPTURE_QUEUE_EXPECTED = {
+    'queue_len': 8192,
+    'queue_time_ms': 2048,
+    'queue_size_bytes': 33554432,
+}
 
 
 class DivertParms(object):
@@ -795,12 +808,37 @@ class DiverterBase(fnconfig.Config):
         self._capture_failure_lock = threading.Lock()
         self._capture_failure = None
         self._capture_close_summary = None
+        self._capture_observation_index = CaptureObservationIndex()
+        self._capture_flow_registry = SessionFlowRegistry()
+        self._capture_write_lock = threading.Lock()
+        self._capture_queue_bindings = {}
+        self._capture_queue_required = False
+        # None means that the sealed-PCAP reassembly has not run yet.  It is
+        # deliberately not treated as healthy in the final summary.
+        self._capture_reassembly_health = None
         self._capture_writers_safe_to_close = True
         self._stop_lock = threading.Lock()
         self._stop_complete = threading.Event()
         self._stop_started = False
         self._stop_result = None
         self._stop_error = None
+
+    def _capture_queue_bindings_complete(self):
+        """Return whether every required capture handle has full readback.
+
+        The Windows capture contract has two independent receivers.  A single
+        populated binding, or a binding containing only queue-time data, does
+        not prove that both handles were configured and read back all three
+        bounded queue parameters.
+        """
+        if not getattr(self, '_capture_queue_required', False):
+            return True
+        bindings = getattr(self, '_capture_queue_bindings', {}) or {}
+        return all(
+            isinstance(bindings.get(role), dict) and
+            all(bindings[role].get(field) == CAPTURE_QUEUE_EXPECTED[field]
+                for field in CAPTURE_QUEUE_FIELDS)
+            for role in CAPTURE_QUEUE_ROLES)
 
     def _start_capture(self):
         if not self.dump_packets or self.dual_pcap is not None:
@@ -849,16 +887,40 @@ class DiverterBase(fnconfig.Config):
         summary = self.dual_pcap.close(
             discard_if_empty=discard_if_empty)
         self._capture_close_summary = summary
+        self._log_capture_health_summary()
+        writer_health = bool(summary.healthy)
+        coverage_health = (self.capture_failure is None and
+                           self._capture_queue_bindings_complete())
+        reassembly_health = getattr(self, '_capture_reassembly_health', None)
+        if ((not writer_health or not coverage_health or
+             reassembly_health is False) and self.capture_failure is None):
+            self._record_capture_failure(PcapWriteError(
+                'paired pcap close, capture coverage, or reassembly verification failed'))
+        return summary
+
+    def _log_capture_health_summary(self):
+        """Emit the final structured health dimensions after each lifecycle edge."""
+        summary = self._capture_close_summary
+        if summary is None:
+            return
+        writer_health = bool(summary.healthy)
+        coverage_health = (self.capture_failure is None and
+                           self._capture_queue_bindings_complete())
+        reassembly = getattr(self, '_capture_reassembly_health', None)
+        reassembly_text = ('true' if reassembly is True else
+                           'false' if reassembly is False else 'pending')
+        overall = ('true' if writer_health and coverage_health is True and
+                   reassembly is True else
+                   'false' if reassembly is False or not writer_health or
+                   not coverage_health else 'pending')
         self.logger.info(
             'PCAP_DUAL_SUMMARY raw=%s ethernet=%s raw_count=%d '
-            'ethernet_count=%d rejected_count=%d healthy=%s',
-            summary.raw_filename, summary.ethernet_filename,
+            'ethernet_count=%d rejected_count=%d writer_health=%s '
+            'coverage_health=%s reassembly_health=%s overall_health=%s '
+            'healthy=%s', summary.raw_filename, summary.ethernet_filename,
             summary.raw_write_count, summary.ethernet_write_count,
-            summary.rejected_input_count, summary.healthy)
-        if not summary.healthy and self.capture_failure is None:
-            self._record_capture_failure(PcapWriteError(
-                'paired pcap close or count verification failed'))
-        return summary
+            summary.rejected_input_count, writer_health, coverage_health,
+            reassembly_text, overall, summary.healthy)
 
     def _generate_reports(self):
         first_error = None
@@ -887,18 +949,16 @@ class DiverterBase(fnconfig.Config):
             return self._stop_result
 
         self.logger.info('Stopping...')
-        capture_fatal = self.capture_failure is not None
         report_error = None
         cleanup_error = None
         result = True
         try:
-            if not capture_fatal:
-                report_error = self._generate_reports()
-
             try:
                 callback_result = self.stopCallback()
                 if callback_result is False:
                     result = False
+                    cleanup_error = RuntimeError(
+                        'Platform cleanup reported failure')
             except BaseException as exc:
                 cleanup_error = exc
                 result = False
@@ -914,10 +974,16 @@ class DiverterBase(fnconfig.Config):
                 self.logger.error('Capture close failed: %s', exc,
                                   exc_info=True)
 
-            if capture_fatal:
-                # Fatal capture shutdown restores networking and closes the
-                # writers before potentially slow report generation.
-                self._generate_reports()
+            capture_fatal = self.capture_failure is not None
+            if not capture_fatal and cleanup_error is None:
+                # Reports consume the sealed PCAP and the completed in-memory
+                # flow registry.  A fatal capture is diagnostic-only: retain
+                # its PCAP/logs but never publish a normal success report.
+                report_error = self._generate_reports()
+            elif capture_fatal:
+                self.logger.error(
+                    'HTML_REPORT_SUPPRESSED reason=capture_fatal error=%s',
+                    self.capture_failure)
 
             final_error = self.capture_failure or cleanup_error or report_error
             if final_error is not None:
@@ -1368,19 +1434,115 @@ class DiverterBase(fnconfig.Config):
         Side-effects:
             Calls dpkt.pcap.Writer.writekpt to persist the octets
         """
-        if self.dual_pcap:
-            try:
-                raw_bytes = bytes(pkt.octets)
-                mangled = 'mangled' if pkt.mangled else 'initial'
-                self.pdebug(DPCAP, 'Writing %s packet %s' %
-                            (mangled, pkt.hdrToStr2()))
-                return self.dual_pcap.write_ip_packet(raw_bytes)
-            except PcapWriteError as exc:
-                raise self._record_capture_failure(exc)
-            except Exception as exc:
-                failure = PcapWriteError(
-                    'packet snapshot or capture dispatch failed: %s' % exc)
-                raise self._record_capture_failure(failure) from exc
+        if not self.dual_pcap:
+            return None
+        if not hasattr(self, '_capture_write_lock'):
+            self._capture_write_lock = threading.Lock()
+        try:
+            with self._capture_write_lock:
+                return self._write_pcap_locked(pkt)
+        except PcapWriteError as exc:
+            raise self._record_capture_failure(exc)
+        except Exception as exc:
+            failure = PcapWriteError(
+                'packet snapshot or capture dispatch failed: %s' % exc)
+            raise self._record_capture_failure(failure) from exc
+
+    def _write_pcap_locked(self, pkt):
+        if not hasattr(self, '_capture_observation_index'):
+            self._capture_observation_index = CaptureObservationIndex()
+        if not hasattr(self, '_capture_flow_registry'):
+            self._capture_flow_registry = SessionFlowRegistry()
+        raw_bytes = bytes(pkt.octets)
+        logical_packet_id = getattr(pkt, '_capture_logical_packet_id', None)
+        if logical_packet_id is None:
+            logical_packet_id = (
+                self._capture_observation_index.new_logical_packet_id())
+            pkt._capture_logical_packet_id = logical_packet_id
+        observation_role = ('final' if pkt.mangled else 'initial')
+        direction = getattr(pkt, '_capture_direction', 'unknown')
+        timestamp = time.time()
+        flow_id = self._capture_flow_registry.observe_packet(
+            raw_bytes, direction=direction, timestamp=timestamp,
+            logical_packet_id=logical_packet_id)
+        mangled = 'mangled' if pkt.mangled else 'initial'
+        self.pdebug(DPCAP, 'Writing %s packet %s' %
+                    (mangled, pkt.hdrToStr2()))
+        written = self.dual_pcap.write_ip_packet(raw_bytes)
+        if written is False:
+            raise self._record_capture_failure(PcapWriteError(
+                'paired pcap writer rejected packet'))
+        writer_ordinal = getattr(self.dual_pcap,
+                                 'last_record_ordinal', None)
+        if not isinstance(writer_ordinal, int) or writer_ordinal <= 0:
+            writer_ordinal = len(self._capture_observation_index) + 1
+        writer_timestamp = getattr(self.dual_pcap, 'last_timestamp', None)
+        entry = self._capture_observation_index.record(
+            raw_bytes, observation_role,
+            logical_packet_id=logical_packet_id, flow_id=flow_id,
+            direction=direction,
+            timestamp=(writer_timestamp if isinstance(
+                writer_timestamp, (int, float)) else timestamp),
+            record_ordinal=writer_ordinal)
+        pkt._capture_flow_id = flow_id
+        pkt._capture_observation = entry
+        return True
+
+    def record_raw_capture(self, raw_bytes, observation_role='inbound',
+                           direction='inbound', logical_packet_id=None):
+        """Write and index a packet received by a record-only capture handle."""
+        if not self.dual_pcap:
+            return False
+        if not hasattr(self, '_capture_write_lock'):
+            self._capture_write_lock = threading.Lock()
+        try:
+            with self._capture_write_lock:
+                return self._record_raw_capture_locked(
+                    raw_bytes, observation_role, direction,
+                    logical_packet_id)
+        except PcapWriteError as exc:
+            self._capture_failure_already_reported = True
+            raise self._record_capture_failure(exc)
+        except Exception as exc:
+            failure = PcapWriteError(
+                'raw packet capture/index failed: %s' % exc)
+            self._capture_failure_already_reported = True
+            raise self._record_capture_failure(failure) from exc
+
+    def _record_raw_capture_locked(self, raw_bytes, observation_role,
+                                   direction, logical_packet_id):
+        # A few platform/unit seams construct a minimal Diverter object
+        # without running the full constructor.  Keep the index lazy at
+        # that seam; normal production construction initializes it before
+        # the first writer is opened.
+        if not hasattr(self, '_capture_observation_index'):
+            self._capture_observation_index = CaptureObservationIndex()
+        if not hasattr(self, '_capture_flow_registry'):
+            self._capture_flow_registry = SessionFlowRegistry()
+        raw_bytes = bytes(raw_bytes)
+        if logical_packet_id is None:
+            logical_packet_id = (
+                self._capture_observation_index.new_logical_packet_id())
+        timestamp = time.time()
+        flow_id = self._capture_flow_registry.observe_packet(
+            raw_bytes, direction=direction, timestamp=timestamp,
+            logical_packet_id=logical_packet_id)
+        written = self.dual_pcap.write_ip_packet(raw_bytes)
+        if written is False:
+            raise self._record_capture_failure(PcapWriteError(
+                'paired pcap writer rejected packet'))
+        writer_ordinal = getattr(self.dual_pcap,
+                                 'last_record_ordinal', None)
+        if not isinstance(writer_ordinal, int) or writer_ordinal <= 0:
+            writer_ordinal = len(self._capture_observation_index) + 1
+        writer_timestamp = getattr(self.dual_pcap, 'last_timestamp', None)
+        return self._capture_observation_index.record(
+            raw_bytes, observation_role,
+            logical_packet_id=logical_packet_id, flow_id=flow_id,
+            direction=direction,
+            timestamp=(writer_timestamp if isinstance(
+                writer_timestamp, (int, float)) else timestamp),
+            record_ordinal=writer_ordinal)
 
     def handle_pkt(self, pkt, callbacks3, callbacks4,
                    raw_already_captured=False):
@@ -2031,6 +2193,12 @@ class DiverterBase(fnconfig.Config):
                                          'comm', 'dport0', 'proto'])
         self.sessions[pkt.sport] = session(pkt.dst_ip, pkt.dport, pid,
                                            comm, pkt._dport0, pkt.proto)
+        flow_id = getattr(pkt, '_capture_flow_id', None)
+        registry = getattr(self, '_capture_flow_registry', None)
+        if flow_id is not None and registry is not None:
+            registry.update(
+                flow_id, owner=(comm or 'unknown'), pid=pid,
+                process=(comm or 'unknown'))
 
     def maybeExecuteCmd(self, pkt, pid, comm):
         """Execute any ExecuteCmd associated with this port/listener.
@@ -2204,10 +2372,7 @@ class DiverterBase(fnconfig.Config):
             self.logger.info("\r")
 
     def generate_html_report(self):
-        """Generates an interactive HTML report containing NBI summary saved
-        to the main working directory of flare-fakenet-ng. Called by stop() method
-        of diverter.
-        """
+        """Atomically publish an offline report after the paired PCAP is sealed."""
         if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
             # Inside a Pyinstaller bundle
             fakenet_dir_path = os.path.dirname(sys.executable)
@@ -2218,14 +2383,92 @@ class DiverterBase(fnconfig.Config):
         template_loader = jinja2.FileSystemLoader(searchpath=os.path.dirname(template_file))
         template_env = jinja2.Environment(loader=template_loader)
         template = template_env.get_template(os.path.basename(template_file))
-        
-        timestamp = time.strftime('%Y%m%d_%H%M%S')
-        output_filename = f"report_{timestamp}.html"
 
-        with open(output_filename, "w") as output_file:
-            output_file.write(template.render(nbis=self.nbis))
-        
-        self.logger.info(f"Generated new HTML report: {output_filename}")
+        if self.dump_packets:
+            if self.dual_pcap is None or self._capture_close_summary is None:
+                raise PayloadReportError(
+                    'cannot generate payload report before paired PCAP closes')
+            if self.capture_failure is not None:
+                raise PayloadReportError(
+                    'cannot generate payload report after capture failure: %s' %
+                    self.capture_failure)
+            try:
+                payload_model = build_payload_report(
+                    self._capture_close_summary.raw_filename,
+                    self._capture_observation_index,
+                    flow_registry=self._capture_flow_registry,
+                    nbis=self.nbis,
+                    capture_health={
+                        'writer_health': self._capture_close_summary.healthy,
+                        'coverage_health': self._capture_queue_bindings_complete(),
+                        'reassembly_health': True,
+                    },
+                    converted_pcap_path=(
+                        self._capture_close_summary.ethernet_filename),
+                )
+            except PayloadReportError as exc:
+                self._capture_reassembly_health = False
+                self._log_capture_health_summary()
+                if self.capture_failure is None:
+                    self._record_capture_failure(PcapWriteError(
+                        'payload reassembly/report verification failed: %s' % exc))
+                    self._log_capture_health_summary()
+                raise
+            self._capture_reassembly_health = True
+            self._log_capture_health_summary()
+        else:
+            # DumpPackets=No is an explicit, mechanically visible limitation;
+            # it must not be presented as a complete-capture success report.
+            payload_model = {
+                'schema': 'fakenet.payload-report.v1',
+                'encoding': 'base64',
+                'capture': {
+                    'raw_pcap': None, 'converted_pcap': None,
+                    'raw_record_count': 0, 'converted_record_count': 0,
+                    'observation_record_count': 0, 'writer_health': True,
+                    'coverage_health': False, 'reassembly_health': False,
+                    'overall_health': False, 'marker': 'capture-disabled',
+                    'limitation': 'DumpPackets=No; payload capture unavailable',
+                },
+                # DumpPackets=No is an explicit capture limitation, not a
+                # request to discard the existing listener interpretation
+                # report.  Keep NBI values in the same inert model while
+                # making the unhealthy/disabled capture state unambiguous.
+                'flows': [],
+                'nbis': _serialize_nbis(
+                    self.nbis,
+                    registry=getattr(self, '_capture_flow_registry', None)),
+            }
+
+        rendered = template.render(
+            payload_report_json=safe_json_dumps(payload_model))
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        output_filename = 'report_%s.html' % timestamp
+        suffix = 1
+        while os.path.exists(output_filename):
+            output_filename = 'report_%s_%d.html' % (timestamp, suffix)
+            suffix += 1
+        temporary_filename = '%s.tmp-%s' % (output_filename, os.getpid())
+        try:
+            with open(temporary_filename, 'x', encoding='utf-8',
+                      newline='\n') as output_file:
+                output_file.write(rendered)
+                output_file.flush()
+                os.fsync(output_file.fileno())
+            with open(temporary_filename, 'r', encoding='utf-8') as input_file:
+                validate_rendered_payload_report(
+                    input_file.read(), payload_model)
+            os.replace(temporary_filename, output_filename)
+        except Exception:
+            try:
+                if os.path.exists(temporary_filename):
+                    os.unlink(temporary_filename)
+            except OSError:
+                self.logger.error('Unable to clean partial report %s',
+                                  temporary_filename, exc_info=True)
+            raise
+        self.logger.info('Generated new HTML report: %s', output_filename)
+        return output_filename
 
     def isProcessBlackListed(self, proto, sport=None, process_name=None, dport=None):
         """Checks if a process is blacklisted.

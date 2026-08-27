@@ -32,6 +32,108 @@ class _FakePacket(object):
 
 
 class InboundCaptureTests(unittest.TestCase):
+    def test_queue_parameters_are_set_and_read_back_for_each_handle(self):
+        diverter = make_diverter()
+        diverter._capture_queue_bindings = {}
+        handle = mock.Mock()
+        values = {}
+        from pydivert import Param
+
+        def set_param(param, value):
+            values[param] = value
+            return True
+
+        def get_param(param):
+            return values[param]
+
+        handle.set_param.side_effect = set_param
+        handle.get_param.side_effect = get_param
+        diverter.log_egress_event = mock.Mock()
+        diverter._configure_windivert_queue(handle, 'main')
+        diverter._configure_windivert_queue(handle, 'inbound')
+        self.assertEqual(8192, values[Param.QUEUE_LEN])
+        self.assertEqual(2048, values[Param.QUEUE_TIME])
+        self.assertEqual(33554432, values[Param.QUEUE_SIZE])
+        self.assertEqual(8192, diverter._capture_queue_bindings['inbound']['queue_len'])
+
+    def test_queue_set_failure_is_fatal_for_each_handle_role(self):
+        from pydivert import Param
+
+        for role in ('main', 'inbound'):
+            with self.subTest(role=role):
+                diverter = make_diverter()
+                diverter._capture_queue_bindings = {}
+                diverter.log_egress_event = mock.Mock()
+                handle = mock.Mock()
+                handle.set_param.return_value = False
+
+                with self.assertRaisesRegex(
+                        PcapWriteError,
+                        '%s WinDivert queue_len set returned false' % role):
+                    diverter._configure_windivert_queue(handle, role)
+
+                handle.set_param.assert_called_once_with(Param.QUEUE_LEN, 8192)
+                handle.get_param.assert_not_called()
+                self.assertNotIn(role, diverter._capture_queue_bindings)
+                diverter.log_egress_event.assert_not_called()
+
+    def test_queue_readback_mismatch_is_fatal_for_each_handle_role(self):
+        from pydivert import Param
+
+        for role in ('main', 'inbound'):
+            with self.subTest(role=role):
+                diverter = make_diverter()
+                diverter._capture_queue_bindings = {}
+                diverter.log_egress_event = mock.Mock()
+                handle = mock.Mock()
+                handle.set_param.return_value = True
+                handle.get_param.return_value = 8191
+
+                with self.assertRaisesRegex(
+                        PcapWriteError,
+                        '%s WinDivert queue_len readback 8191 != 8192' % role):
+                    diverter._configure_windivert_queue(handle, role)
+
+                handle.set_param.assert_called_once_with(Param.QUEUE_LEN, 8192)
+                handle.get_param.assert_called_once_with(Param.QUEUE_LEN)
+                self.assertNotIn(role, diverter._capture_queue_bindings)
+                diverter.log_egress_event.assert_not_called()
+
+    def test_recv_gap_boundary_is_fail_closed_and_single_record(self):
+        diverter = make_diverter()
+        diverter._initialize_capture_state()
+        diverter._capture_queue_required = True
+        diverter._capture_queue_bindings = {
+            'main': {'queue_time_ms': 2048},
+            'inbound': {'queue_time_ms': 2048},
+        }
+        self.assertTrue(diverter._check_recv_cycle_gap('main', 10.0, 12.047))
+        self.assertFalse(diverter._check_recv_cycle_gap('main', 10.0, 12.048))
+        self.assertFalse(diverter._check_recv_cycle_gap('main', 10.0, 12.100))
+        self.assertIsNotNone(diverter.capture_failure)
+
+    def test_coverage_requires_complete_main_and_inbound_queue_readback(self):
+        diverter = make_diverter()
+        diverter._initialize_capture_state()
+        diverter._capture_queue_required = True
+        complete = {
+            'queue_len': 8192, 'queue_time_ms': 2048,
+            'queue_size_bytes': 33554432,
+        }
+        diverter._capture_queue_bindings = {
+            'main': dict(complete), 'inbound': dict(complete),
+        }
+        self.assertTrue(diverter._capture_queue_bindings_complete())
+        diverter._capture_queue_bindings.pop('inbound')
+        self.assertFalse(diverter._capture_queue_bindings_complete())
+        diverter._capture_queue_bindings['inbound'] = {
+            'queue_time_ms': 2048,
+        }
+        self.assertFalse(diverter._capture_queue_bindings_complete())
+        diverter._capture_queue_bindings['inbound'] = dict(complete)
+        diverter._capture_queue_bindings['inbound']['queue_len'] = 4096
+        self.assertFalse(diverter._capture_queue_bindings_complete())
+
     def test_loop_records_and_reinjects_each_packet(self):
         diverter = make_diverter()
         packets = [_FakePacket(b'\x45\x00\x00\x14'),

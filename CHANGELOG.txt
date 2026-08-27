@@ -1,3 +1,8 @@
+Version 3.6
+-----------
+* Add capture-complete bidirectional TCP/UDP payload reports with fail-closed
+  WinDivert coverage checks and offline-safe HTML export
+
 Version 3.5
 -----------
 * Add support for blacklisting ICMP packets based on ICMP IDs in Windows

@@ -342,7 +342,12 @@ def collect_nbi(sport, hexdump_lines, proto, is_ssl_encrypted,
         diverterCallbacks):
     nbi = {}
     # Show upto 16 lines of hex dump
+    # Listener NBIs remain a human-friendly interpretation layer.  The
+    # capture-backed payload report is the byte-complete authority; preserve
+    # this bounded legacy field but label its scope so it cannot be mistaken
+    # for the full application payload.
     nbi['Data Hexdump'] = hexdump_lines[:16]
+    nbi['Data Hexdump Scope'] = 'preview (first 256 bytes only)'
 
     # Report diverter everytime we capture an NBI
     # Using an empty string for application_layer_protocol in Raw Listener so

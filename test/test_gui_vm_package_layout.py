@@ -18,13 +18,18 @@ def test_vm_builder_flattens_onedir_to_package_root():
         encoding='utf-8-sig')
 
     for marker in (
-            "'v34'", "'2026.08.26-01 v0.7'",
+            "'v35'", "'2026.08.27-01 v0.2'",
+            "'0bd8aea9a56d97f165b05e5fc6a68b08f06b4d20'",
             "Join-Path $stage 'fakenet-dat'",
             'Move-Item -LiteralPath $item.FullName -Destination $stage',
             "Join-Path $stage '_internal'",
             "'pyinstaller-onedir'",
             "'test/gui_vm/Run-Tests.cmd'",
-            "run_formal_stop_acceptance.py"):
+            'Run-SamplePayloadAcceptance.cmd',
+            "'fakenet.payload-report.v1'",
+            "run_formal_stop_acceptance.py",
+            "verify_reassembly.py", "generate_payload_report_fixture.py",
+            "tools\\replay_sample_payload.py"):
         assert marker in source
     assert "} else { 'pyinstaller-onefile' })" not in source
 
