@@ -994,24 +994,27 @@ class Diverter(DiverterBase, WinUtilMixin):
             ('queue_size_bytes', Param.QUEUE_SIZE, WINDIVERT_QUEUE_SIZE_BYTES),
         )
         readback = {}
-        try:
-            for field, param, value in expected:
+        for field, param, value in expected:
+            try:
                 result = handle.set_param(param, value)
-                if result is False:
-                    raise PcapWriteError(
-                        '%s WinDivert %s set returned false' % (role, field))
+            except Exception as exc:
+                raise PcapWriteError(
+                    '%s WinDivert %s set value=%d failed: %s' %
+                    (role, field, value, exc)) from exc
+            if result is False:
+                raise PcapWriteError(
+                    '%s WinDivert %s set returned false' % (role, field))
+            try:
                 actual = int(handle.get_param(param))
-                if actual != value:
-                    raise PcapWriteError(
-                        '%s WinDivert %s readback %d != %d' %
-                        (role, field, actual, value))
-                readback[field] = actual
-        except PcapWriteError:
-            raise
-        except Exception as exc:
-            raise PcapWriteError(
-                '%s WinDivert queue parameter set/readback failed: %s' %
-                (role, exc)) from exc
+            except Exception as exc:
+                raise PcapWriteError(
+                    '%s WinDivert %s readback after value=%d failed: %s' %
+                    (role, field, value, exc)) from exc
+            if actual != value:
+                raise PcapWriteError(
+                    '%s WinDivert %s readback %d != %d' %
+                    (role, field, actual, value))
+            readback[field] = actual
         self._capture_queue_bindings[role] = readback
         if role == 'main':
             self._windivert_queue_time_ms = readback['queue_time_ms']

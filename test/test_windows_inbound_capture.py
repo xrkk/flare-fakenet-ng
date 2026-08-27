@@ -99,6 +99,30 @@ class InboundCaptureTests(unittest.TestCase):
                 self.assertNotIn(role, diverter._capture_queue_bindings)
                 diverter.log_egress_event.assert_not_called()
 
+    def test_queue_set_exception_identifies_field_stage_and_value(self):
+        from pydivert import Param
+
+        diverter = make_diverter()
+        diverter._capture_queue_bindings = {}
+        diverter.log_egress_event = mock.Mock()
+        handle = mock.Mock()
+        handle.set_param.side_effect = (
+            True, True, OSError(87, 'invalid parameter'))
+        handle.get_param.side_effect = (8192, 2048)
+
+        with self.assertRaisesRegex(
+                PcapWriteError,
+                'main WinDivert queue_size_bytes set value=33554432 failed'):
+            diverter._configure_windivert_queue(handle, 'main')
+
+        self.assertEqual([
+            mock.call(Param.QUEUE_LEN, 8192),
+            mock.call(Param.QUEUE_TIME, 2048),
+            mock.call(Param.QUEUE_SIZE, 33554432),
+        ], handle.set_param.call_args_list)
+        self.assertNotIn('main', diverter._capture_queue_bindings)
+        diverter.log_egress_event.assert_not_called()
+
     def test_recv_gap_boundary_is_fail_closed_and_single_record(self):
         diverter = make_diverter()
         diverter._initialize_capture_state()
