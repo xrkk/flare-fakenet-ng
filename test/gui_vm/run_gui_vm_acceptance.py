@@ -742,8 +742,9 @@ def run_a11_sink_reply(fakenet_exe):
                      'handle_role=%s' % role in line)]
         queue_ok = queue_ok and bool(lines) and all(
             marker in lines[-1] for marker in (
-                'queue_len=8192', 'queue_time_ms=2048',
-                'queue_size_bytes=33554432'))
+                'queue_len=8192', 'queue_time_ms=2048'))
+        queue_ok = queue_ok and all(
+            'queue_size_bytes' not in line for line in lines)
 
     report_ok = False
     report_detail = 'missing'

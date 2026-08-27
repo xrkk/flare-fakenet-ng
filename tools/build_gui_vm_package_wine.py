@@ -23,8 +23,8 @@ import xml.etree.ElementTree as ElementTree
 PACKAGE_VERSION = 'v35'
 PACKAGE_NAME = 'Windows-GUI配置工具-VM验收-' + PACKAGE_VERSION
 STAGE_DIRECTORY = 'stage'
-PLAN_VERSION = '2026.08.27-01 v0.2'
-PLAN_BLOB = '0bd8aea9a56d97f165b05e5fc6a68b08f06b4d20'
+PLAN_VERSION = '2026.08.27-01 v0.3'
+PLAN_BLOB = '88406db0d83b44f6c0258cadfd08d82efae2a685'
 WINDOWS_PYTHON = r'C:\Python311\python.exe'
 XVFB_SERVER_ARGS = '-screen 0 1920x1080x24'
 FIXED_ZIP_TIME = (2000, 1, 1, 0, 0, 0)
@@ -302,7 +302,7 @@ def verify_source(stage):
     build_script = (stage / 'Build-GuiVmPackage.ps1').read_text(
         encoding='utf-8-sig')
     if "'v35'" not in build_script or PLAN_VERSION not in build_script:
-        raise RuntimeError('PowerShell formal package contract is not v35/v0.2')
+        raise RuntimeError('PowerShell formal package contract is not v35/v0.3')
     source = (stage / 'fakenet' / 'fakenet.py').read_text(encoding='utf-8')
     if 'Version 3.6' not in source:
         raise RuntimeError('formal source version banner is not 3.6')
@@ -421,7 +421,7 @@ def build(repo, source_commit, output_root, output_directory=None):
             'payload_integrity_verifier': 'test/gui_vm/verify_payload_integrity.py',
             'historical_replay_entry': 'tools/replay_sample_payload.py',
             'payload_report_schema': 'fakenet.payload-report.v1',
-            'capture_queue': 'length=8192;time_ms=2048;size_bytes=33554432',
+            'capture_queue': 'length=8192;time_ms=2048',
             'logs_plaintext': True,
             'built_at_utc': datetime.datetime.now(
                 datetime.timezone.utc).isoformat(),

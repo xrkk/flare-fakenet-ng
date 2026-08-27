@@ -18,8 +18,8 @@ def test_vm_builder_flattens_onedir_to_package_root():
         encoding='utf-8-sig')
 
     for marker in (
-            "'v35'", "'2026.08.27-01 v0.2'",
-            "'0bd8aea9a56d97f165b05e5fc6a68b08f06b4d20'",
+            "'v35'", "'2026.08.27-01 v0.3'",
+            "'88406db0d83b44f6c0258cadfd08d82efae2a685'",
             "Join-Path $stage 'fakenet-dat'",
             'Move-Item -LiteralPath $item.FullName -Destination $stage',
             "Join-Path $stage '_internal'",
@@ -31,6 +31,8 @@ def test_vm_builder_flattens_onedir_to_package_root():
             "verify_reassembly.py", "generate_payload_report_fixture.py",
             "tools\\replay_sample_payload.py"):
         assert marker in source
+    assert "capture_queue='length=8192;time_ms=2048'" in source
+    assert 'size_bytes=33554432' not in source
     assert "} else { 'pyinstaller-onefile' })" not in source
 
 

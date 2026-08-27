@@ -49,12 +49,12 @@ $packageEntry = if ($isDiagnostic) {
 $planVersion = if ($isDiagnostic) {
     '2026.08.26-01 v0.5'
 } else {
-    '2026.08.27-01 v0.2'
+    '2026.08.27-01 v0.3'
 }
 $planBlob = if ($isDiagnostic) {
     $null
 } else {
-    '0bd8aea9a56d97f165b05e5fc6a68b08f06b4d20'
+    '88406db0d83b44f6c0258cadfd08d82efae2a685'
 }
 $fixedTimestamp = [DateTimeOffset]::new(
     [DateTime]::SpecifyKind([DateTime]'2000-01-01T00:00:00',
@@ -363,7 +363,7 @@ try {
         payload_report_schema='fakenet.payload-report.v1'
         payload_verifier='test/gui_vm/verify_payload_report.py'
         payload_integrity_verifier='test/gui_vm/verify_payload_integrity.py'
-        capture_queue='length=8192;time_ms=2048;size_bytes=33554432'
+        capture_queue='length=8192;time_ms=2048'
         zip_entry_timestamp_utc='2000-01-01T00:00:00Z'
         evidence_levels='results.tsv 标注 实测/等效'
         logs_plaintext=$true

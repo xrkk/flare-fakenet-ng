@@ -64,8 +64,10 @@ gap/conflict fail-closed、端口复用新代次以及 IPv6 UDP 双向/重复报
 pydivert 2.1.0 运行 Windows-Python 全量回归（占用端口的 HTTP 组独立运行，
 只接受既有两个环境 SKIP）；测试失败时不会进入 PyInstaller。成功目录同时包含
 正式 ZIP、`gui-vm-manifest.json` 和重新读取 ZIP 后生成的
-`package-verification.json`，三者绑定 source commit、方案 v0.2/blob、逐文件
-size/SHA-256 和固定 ZIP 时间戳。该入口只复现正式 v35 onedir PowerShell 合同，
+`package-verification.json`，三者绑定 source commit、方案 v0.3/blob、逐文件
+size/SHA-256 和固定 ZIP 时间戳；方案 blob 为
+`88406db0d83b44f6c0258cadfd08d82efae2a685`。该入口只复现正式 v35 onedir
+PowerShell 合同，
 不替代真实 Windows VM 的 WinDivert、GUI、路由恢复或 pktmon 验收。镜像缺失时
 先执行 `./Build-GuiVmDiagnosticPackage.sh --image-only`，该模式不生成 ZIP。
 

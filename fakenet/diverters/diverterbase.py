@@ -25,11 +25,10 @@ from pathlib import Path
 
 
 CAPTURE_QUEUE_ROLES = ('main', 'inbound')
-CAPTURE_QUEUE_FIELDS = ('queue_len', 'queue_time_ms', 'queue_size_bytes')
+CAPTURE_QUEUE_FIELDS = ('queue_len', 'queue_time_ms')
 CAPTURE_QUEUE_EXPECTED = {
     'queue_len': 8192,
     'queue_time_ms': 2048,
-    'queue_size_bytes': 33554432,
 }
 
 
@@ -828,8 +827,8 @@ class DiverterBase(fnconfig.Config):
 
         The Windows capture contract has two independent receivers.  A single
         populated binding, or a binding containing only queue-time data, does
-        not prove that both handles were configured and read back all three
-        bounded queue parameters.
+        not prove that both handles were configured and read back both
+        queue parameters supported by the bundled WinDivert 1.3 driver.
         """
         if not getattr(self, '_capture_queue_required', False):
             return True

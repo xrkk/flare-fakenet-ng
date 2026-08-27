@@ -139,7 +139,6 @@ from .processredirect import (
 # handle is set and read back before it can receive a packet.
 WINDIVERT_QUEUE_LENGTH = CAPTURE_QUEUE_EXPECTED['queue_len']
 WINDIVERT_QUEUE_TIME_MS = CAPTURE_QUEUE_EXPECTED['queue_time_ms']
-WINDIVERT_QUEUE_SIZE_BYTES = CAPTURE_QUEUE_EXPECTED['queue_size_bytes']
 
 
 def build_egress_control_filter(target_ipv4=None, frozen_local_ipv4=None):
@@ -991,7 +990,6 @@ class Diverter(DiverterBase, WinUtilMixin):
         expected = (
             ('queue_len', Param.QUEUE_LEN, WINDIVERT_QUEUE_LENGTH),
             ('queue_time_ms', Param.QUEUE_TIME, WINDIVERT_QUEUE_TIME_MS),
-            ('queue_size_bytes', Param.QUEUE_SIZE, WINDIVERT_QUEUE_SIZE_BYTES),
         )
         readback = {}
         for field, param, value in expected:
@@ -1021,8 +1019,7 @@ class Diverter(DiverterBase, WinUtilMixin):
         self.log_egress_event(
             'WINDIVERT_QUEUE_PARAM', handle_role=role,
             queue_time_ms=readback['queue_time_ms'],
-            queue_len=readback['queue_len'],
-            queue_size_bytes=readback['queue_size_bytes'])
+            queue_len=readback['queue_len'])
 
     def _validate_process_redirect_windivert_runtime(self):
         """Validate the exact enabled filter against the DLL about to load."""

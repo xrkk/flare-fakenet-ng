@@ -53,7 +53,13 @@ class InboundCaptureTests(unittest.TestCase):
         diverter._configure_windivert_queue(handle, 'inbound')
         self.assertEqual(8192, values[Param.QUEUE_LEN])
         self.assertEqual(2048, values[Param.QUEUE_TIME])
-        self.assertEqual(33554432, values[Param.QUEUE_SIZE])
+        self.assertNotIn(Param.QUEUE_SIZE, values)
+        self.assertEqual([
+            mock.call(Param.QUEUE_LEN, 8192),
+            mock.call(Param.QUEUE_TIME, 2048),
+            mock.call(Param.QUEUE_LEN, 8192),
+            mock.call(Param.QUEUE_TIME, 2048),
+        ], handle.set_param.call_args_list)
         self.assertEqual(8192, diverter._capture_queue_bindings['inbound']['queue_len'])
 
     def test_queue_set_failure_is_fatal_for_each_handle_role(self):
@@ -99,7 +105,7 @@ class InboundCaptureTests(unittest.TestCase):
                 self.assertNotIn(role, diverter._capture_queue_bindings)
                 diverter.log_egress_event.assert_not_called()
 
-    def test_queue_set_exception_identifies_field_stage_and_value(self):
+    def test_supported_queue_set_exception_identifies_field_stage_and_value(self):
         from pydivert import Param
 
         diverter = make_diverter()
@@ -107,18 +113,17 @@ class InboundCaptureTests(unittest.TestCase):
         diverter.log_egress_event = mock.Mock()
         handle = mock.Mock()
         handle.set_param.side_effect = (
-            True, True, OSError(87, 'invalid parameter'))
-        handle.get_param.side_effect = (8192, 2048)
+            True, OSError(87, 'invalid parameter'))
+        handle.get_param.side_effect = (8192,)
 
         with self.assertRaisesRegex(
                 PcapWriteError,
-                'main WinDivert queue_size_bytes set value=33554432 failed'):
+                'main WinDivert queue_time_ms set value=2048 failed'):
             diverter._configure_windivert_queue(handle, 'main')
 
         self.assertEqual([
             mock.call(Param.QUEUE_LEN, 8192),
             mock.call(Param.QUEUE_TIME, 2048),
-            mock.call(Param.QUEUE_SIZE, 33554432),
         ], handle.set_param.call_args_list)
         self.assertNotIn('main', diverter._capture_queue_bindings)
         diverter.log_egress_event.assert_not_called()
@@ -142,7 +147,6 @@ class InboundCaptureTests(unittest.TestCase):
         diverter._capture_queue_required = True
         complete = {
             'queue_len': 8192, 'queue_time_ms': 2048,
-            'queue_size_bytes': 33554432,
         }
         diverter._capture_queue_bindings = {
             'main': dict(complete), 'inbound': dict(complete),

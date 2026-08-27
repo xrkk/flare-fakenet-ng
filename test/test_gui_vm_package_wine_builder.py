@@ -33,8 +33,8 @@ def test_wine_python_commands_pin_reviewed_xvfb_geometry():
 def test_formal_wine_builder_is_v35_and_uses_immutable_source():
     text = BUILDER.read_text(encoding='utf-8')
     assert builder.PACKAGE_VERSION == 'v35'
-    assert builder.PLAN_VERSION == '2026.08.27-01 v0.2'
-    assert builder.PLAN_BLOB == '0bd8aea9a56d97f165b05e5fc6a68b08f06b4d20'
+    assert builder.PLAN_VERSION == '2026.08.27-01 v0.3'
+    assert builder.PLAN_BLOB == '88406db0d83b44f6c0258cadfd08d82efae2a685'
     plan = (ROOT / 'PLAN' / '2026.08.27' /
             '2026.08.27-01-PCAP捕获完整性与双向载荷HTML报告修复方案.md')
     # Wine's Z: drive cannot reliably address this Chinese filename.  The
@@ -47,6 +47,8 @@ def test_formal_wine_builder_is_v35_and_uses_immutable_source():
     assert "'source_snapshot_mode': 'commit'" in text
     assert 'Refusing to overwrite' in text
     assert 'fakenet.payload-report.v1' in text
+    assert "'capture_queue': 'length=8192;time_ms=2048'" in text
+    assert 'size_bytes=33554432' not in text
 
 
 def test_formal_wine_entry_requires_pinned_image_and_scoped_output():

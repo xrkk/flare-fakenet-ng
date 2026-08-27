@@ -257,7 +257,8 @@ def test_a11_uses_exact_sink_divert_matching_at_the_call_site():
     assert 'verify_payload_report' in a11
     assert "'queue_len=8192'" in a11
     assert "'queue_time_ms=2048'" in a11
-    assert "'queue_size_bytes=33554432'" in a11
+    assert "'queue_size_bytes=33554432'" not in a11
+    assert "'queue_size_bytes' not in line" in a11
 
 
 def test_preflight_refusal_evidence_proves_no_network_or_core_change(
