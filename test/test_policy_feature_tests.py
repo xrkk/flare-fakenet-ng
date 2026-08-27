@@ -123,6 +123,31 @@ def test_p15_uses_exact_sink_divert_matching_at_the_call_site():
     assert "'original_ip=%s' % TAKEOVER_SINK in log2b" not in p15
 
 
+def test_adjacent_private_probe_avoids_the_active_http_listener_port(
+        monkeypatch):
+    sent = []
+
+    class FakeSocket(object):
+        def settimeout(self, seconds):
+            pass
+
+        def sendto(self, payload, destination):
+            sent.append((payload, destination))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(policy.socket, 'socket', lambda *args: FakeSocket())
+
+    adjacent, detail = policy._send_adjacent_private_probe('nonce')
+
+    assert adjacent == '192.168.204.2'
+    assert detail == 'bounded UDP sent'
+    assert sent == [(b'FNPR/1|nonce|target\n',
+                     ('192.168.204.2', 65000))]
+    assert policy.ADJACENT_PRIVATE_PROBE_PORT != policy.UNREVIEWED_PORT
+
+
 def test_answers_only_sink_rejects_real_and_empty_answers():
     assert policy.answers_only_sink({'192.168.204.1'}, '192.168.204.1')
     assert not policy.answers_only_sink(set(), '192.168.204.1')

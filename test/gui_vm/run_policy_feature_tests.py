@@ -64,6 +64,10 @@ TAKEOVER_SINK = '192.168.204.1'
 BARE_RESOLVER = '8.8.8.8'
 UNREVIEWED_IPV4 = '93.184.216.34'
 UNREVIEWED_PORT = 80
+# P16 only needs an adjacent-private policy classification.  Do not target
+# an active listener port: ProxyUDP would otherwise forward the probe to the
+# TCP-only HTTP listener and Windows would report an unrelated UDP reset.
+ADJACENT_PRIVATE_PROBE_PORT = 65000
 
 
 def result(name, status, detail, level='实测'):
@@ -273,7 +277,7 @@ def _send_adjacent_private_probe(nonce):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.settimeout(1)
-        sock.sendto(payload, (adjacent, UNREVIEWED_PORT))
+        sock.sendto(payload, (adjacent, ADJACENT_PRIVATE_PROBE_PORT))
         detail = 'bounded UDP sent'
     except OSError as exc:
         detail = 'send result: %s' % exc
