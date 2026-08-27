@@ -109,3 +109,6 @@ dist
 build_gui_dist/
 build_gui_work/
 **/.zcode
+
+build_fn_work
+**/.codex
