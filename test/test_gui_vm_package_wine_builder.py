@@ -15,6 +15,13 @@ builder = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(builder)
 
 
+def test_internal_stage_directory_is_ascii_for_wine():
+    assert builder.STAGE_DIRECTORY == 'stage'
+    assert builder.STAGE_DIRECTORY.isascii()
+    assert '/' not in builder.STAGE_DIRECTORY
+    assert '\\' not in builder.STAGE_DIRECTORY
+
+
 def test_formal_wine_builder_is_v35_and_uses_immutable_source():
     text = BUILDER.read_text(encoding='utf-8')
     assert builder.PACKAGE_VERSION == 'v35'

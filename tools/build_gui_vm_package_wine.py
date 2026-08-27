@@ -22,6 +22,7 @@ import xml.etree.ElementTree as ElementTree
 
 PACKAGE_VERSION = 'v35'
 PACKAGE_NAME = 'Windows-GUI配置工具-VM验收-' + PACKAGE_VERSION
+STAGE_DIRECTORY = 'stage'
 PLAN_VERSION = '2026.08.27-01 v0.2'
 PLAN_BLOB = '0bd8aea9a56d97f165b05e5fc6a68b08f06b4d20'
 WINDOWS_PYTHON = r'C:\Python311\python.exe'
@@ -319,7 +320,10 @@ def build(repo, source_commit, output_root, output_directory=None):
     with tempfile.TemporaryDirectory(prefix='fakenet-gui-v35-') as tmp:
         build_root = Path(tmp)
         source_zip = build_root / 'source.zip'
-        stage = build_root / PACKAGE_NAME
+        # Wine cannot reliably use a Unix working directory containing the
+        # Chinese package display name. Keep the internal compilation stage
+        # ASCII-only; PACKAGE_NAME remains the external ZIP/root directory.
+        stage = build_root / STAGE_DIRECTORY
         run(['git', '-C', str(repo), 'archive', '--format=zip',
              '--output', str(source_zip), resolved])
         with zipfile.ZipFile(source_zip) as archive:
