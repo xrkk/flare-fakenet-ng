@@ -58,7 +58,7 @@ def test_formal_runners_require_real_sink_and_never_force_kill():
     assert "probe_fnpr_transports" in text
     assert "'target'" in text
     assert 'ALLOW_TAKEOVER_SINK' in text
-    assert "'DIVERT_FAKE'" in text
+    assert 'divert_fake_logged' in text
     assert "['taskkill'" not in text
 
 

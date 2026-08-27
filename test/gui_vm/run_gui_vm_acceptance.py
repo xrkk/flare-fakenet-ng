@@ -725,8 +725,7 @@ def run_a11_sink_reply(fakenet_exe):
         log_text = read_core_log(core_log)
         allowed = ('ALLOW_TAKEOVER_SINK' in log_text and
                    'ip=%s' % sink in log_text)
-        local_divert = ('DIVERT_FAKE' in log_text and
-                        'original_ip=%s' % sink in log_text)
+        local_divert = policy.divert_fake_logged(log_text, sink)
 
         report_ok = False
         import glob as _glob

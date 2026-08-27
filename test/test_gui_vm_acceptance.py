@@ -246,6 +246,15 @@ def test_formal_preflight_refusal_is_persisted_for_the_next_export():
     assert 'Logs\\preflight-refused-*' in exporter
 
 
+def test_a11_uses_exact_sink_divert_matching_at_the_call_site():
+    source = open(RUNNER_PATH, 'r', encoding='utf-8').read()
+    a11 = source[source.index('def run_a11_sink_reply'):
+                 source.index('\ndef ', source.index('def run_a11_sink_reply') + 1)]
+
+    assert 'local_divert = policy.divert_fake_logged(log_text, sink)' in a11
+    assert "'original_ip=%s' % sink in log_text" not in a11
+
+
 def test_preflight_refusal_evidence_proves_no_network_or_core_change(
         monkeypatch, tmp_path):
     import json
