@@ -656,8 +656,7 @@ def main():
     log2b = acceptance.read_core_log(core_log2)
     sink_allowed = ('ALLOW_TAKEOVER_SINK' in log2b and
                     'ip=%s' % TAKEOVER_SINK in log2b)
-    sink_diverted = ('DIVERT_FAKE' in log2b and
-                     'original_ip=%s' % TAKEOVER_SINK in log2b)
+    sink_diverted = divert_fake_logged(log2b, TAKEOVER_SINK)
     result('P15 接管 sink 连通',
            'PASS' if target_ok and sink_allowed and not sink_diverted
            else 'FAIL',

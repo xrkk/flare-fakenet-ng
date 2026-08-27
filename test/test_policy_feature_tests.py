@@ -114,6 +114,15 @@ def test_reviewed_allow_logged_requires_both_markers():
     assert not policy.reviewed_allow_logged('nothing here', '1.1.1.1')
 
 
+def test_p15_uses_exact_sink_divert_matching_at_the_call_site():
+    source = open(RUNNER_PATH, 'r', encoding='utf-8').read()
+    p15 = source[source.index("result('P15 接管 sink 连通'") - 900:
+                 source.index("result('P15 接管 sink 连通'")]
+
+    assert 'sink_diverted = divert_fake_logged(log2b, TAKEOVER_SINK)' in p15
+    assert "'original_ip=%s' % TAKEOVER_SINK in log2b" not in p15
+
+
 def test_answers_only_sink_rejects_real_and_empty_answers():
     assert policy.answers_only_sink({'192.168.204.1'}, '192.168.204.1')
     assert not policy.answers_only_sink(set(), '192.168.204.1')
