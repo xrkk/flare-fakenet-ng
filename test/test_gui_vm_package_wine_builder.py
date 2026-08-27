@@ -22,6 +22,14 @@ def test_internal_stage_directory_is_ascii_for_wine():
     assert '\\' not in builder.STAGE_DIRECTORY
 
 
+def test_wine_python_commands_pin_reviewed_xvfb_geometry():
+    command = builder.wine_command(['-c', 'print(1)'])
+    assert command[:6] == [
+        'xvfb-run', '-a', '-s', '-screen 0 1920x1080x24',
+        'wine', builder.WINDOWS_PYTHON]
+    assert command[6:] == ['-c', 'print(1)']
+
+
 def test_formal_wine_builder_is_v35_and_uses_immutable_source():
     text = BUILDER.read_text(encoding='utf-8')
     assert builder.PACKAGE_VERSION == 'v35'

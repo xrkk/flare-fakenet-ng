@@ -26,6 +26,7 @@ STAGE_DIRECTORY = 'stage'
 PLAN_VERSION = '2026.08.27-01 v0.2'
 PLAN_BLOB = '0bd8aea9a56d97f165b05e5fc6a68b08f06b4d20'
 WINDOWS_PYTHON = r'C:\Python311\python.exe'
+XVFB_SERVER_ARGS = '-screen 0 1920x1080x24'
 FIXED_ZIP_TIME = (2000, 1, 1, 0, 0, 0)
 PYDIVERT_WHEEL = 'pydivert-2.1.0-py2.py3-none-any.whl'
 HTTP_CONFLICT_TESTS = ('test/test_http_listener_stop.py',)
@@ -51,9 +52,15 @@ def wine_path(path):
     return captured(['winepath', '-w', str(Path(path).resolve())])
 
 
-def wine_python(arguments, cwd=None, capture=False, env=None):
-    command = ['xvfb-run', '-a', 'wine', WINDOWS_PYTHON]
+def wine_command(arguments):
+    command = ['xvfb-run', '-a', '-s', XVFB_SERVER_ARGS,
+               'wine', WINDOWS_PYTHON]
     command.extend(str(item) for item in arguments)
+    return command
+
+
+def wine_python(arguments, cwd=None, capture=False, env=None):
+    command = wine_command(arguments)
     if capture:
         return captured(command, cwd=cwd, env=env)
     run(command, cwd=cwd, env=env)
@@ -62,8 +69,7 @@ def wine_python(arguments, cwd=None, capture=False, env=None):
 
 def wine_python_logged(arguments, cwd, log_path, env=None):
     """Run archived-source Windows Python and persist its complete output."""
-    command = ['xvfb-run', '-a', 'wine', WINDOWS_PYTHON]
-    command.extend(str(item) for item in arguments)
+    command = wine_command(arguments)
     print('+ ' + ' '.join(command), flush=True)
     try:
         completed = subprocess.run(
