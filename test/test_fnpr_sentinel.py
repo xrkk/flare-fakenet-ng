@@ -98,7 +98,7 @@ class FnprSentinelTests(unittest.TestCase):
         shell = shell_path.read_text(encoding='utf-8')
         for marker in (
                 "bindIPv4 = '192.168.204.1'", 'listenPort = 443',
-                "Join-Path $PSScriptRoot 'dist\\Logs'", 'Get-NetIPAddress',
+                "Join-Path $PSScriptRoot 'Logs'", 'Get-NetIPAddress',
                 'Get-NetTCPConnection', 'Get-NetUDPEndpoint',
                 'TCP+UDP sentinel', 'Press Ctrl+C to stop.',
                 'No dependency is downloaded automatically.'):
@@ -111,7 +111,7 @@ class FnprSentinelTests(unittest.TestCase):
 
         for marker in (
                 "BIND_IPV4='192.168.204.1'", "LISTEN_PORT='443'",
-                'dist/Logs', 'ip -4 -o addr show',
+                'SCRIPT_DIR/Logs', 'ip -4 -o addr show',
                 'socket.SOCK_DGRAM', 'TCP+UDP sentinel',
                 'Press Ctrl+C to stop.',
                 'No dependency is downloaded automatically.',

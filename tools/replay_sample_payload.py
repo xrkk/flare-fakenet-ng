@@ -305,8 +305,8 @@ def replay(input_root, output_root):
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input-root', default='dist/样本实测')
-    parser.add_argument('--output-root', default='dist/样本实测-回放-v35')
+    parser.add_argument('--input-root', default='Logs/样本实测')
+    parser.add_argument('--output-root', default='Logs/样本实测-回放-v35')
     args = parser.parse_args(argv)
     try:
         result = replay(args.input_root, args.output_root)

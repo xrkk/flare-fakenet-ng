@@ -28,7 +28,7 @@ class ProcessRedirectVmContractTests(unittest.TestCase):
             'verify_process_redirect.py', 'verify_dual_pcap.py',
             'DualPcapVerification', 'Stop-FakeNet',
             'dns-before.txt', 'dns-after.txt', 'Plain logs available at:',
-            "Join-Path $root 'dist\\Logs'",
+            "Join-Path $root 'Logs'",
         )
         for marker in required:
             self.assertIn(marker, text, marker)

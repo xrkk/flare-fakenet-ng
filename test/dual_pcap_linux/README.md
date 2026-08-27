@@ -48,7 +48,7 @@ Linux 现有生产 NFQUEUE 只接入 IPv4。runner 会如实把 IPv4 标记为�
 日志不压缩，直接保存在：
 
 ```text
-dist/Logs/dual-pcap-linux-v1-YYYYMMDD-HHMMSS/
+Logs/dual-pcap-linux-v1-YYYYMMDD-HHMMSS/
 ```
 
 回传整个明文目录即可。`results.tsv` 和 `summary.json` 是汇总；每个用例保留

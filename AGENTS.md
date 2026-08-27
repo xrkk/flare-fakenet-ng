@@ -1,5 +1,13 @@
 # FakeNet-NG repository guidance
 
+## Output directory policy
+
+Reserve repository-root `dist/` for distributable artifacts such as release ZIPs,
+manifests, and package-verification files. Write runtime logs, PCAPs, HTML reports,
+build diagnostics, replay output, and acceptance evidence under repository-root
+`Logs/`, which is local and gitignored. New launchers and test runners must default
+to `Logs/`; an active plan may name a more specific evidence subdirectory there.
+
 ## Ubuntu Docker/Wine Windows build environment
 
 When work involves Windows executables, PyInstaller, GUI VM packages, or Windows-Python tests, inspect and reuse the repository's Docker/Wine builder before declaring that Ubuntu lacks a Windows build environment.

@@ -8,7 +8,7 @@ readonly LISTEN_PORT='443'
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)" || exit 1
 readonly SCRIPT_DIR
 readonly SENTINEL_PATH="$SCRIPT_DIR/fnpr_sentinel.py"
-readonly LOG_ROOT="$SCRIPT_DIR/dist/Logs"
+readonly LOG_ROOT="$SCRIPT_DIR/Logs"
 readonly STAMP="$(date '+%Y%m%d-%H%M%S')"
 readonly LOG_DIR="$LOG_ROOT/fnpr-sentinel-$STAMP"
 readonly LOG_PATH="$LOG_DIR/sentinel.log"

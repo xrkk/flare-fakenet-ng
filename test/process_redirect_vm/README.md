@@ -35,6 +35,6 @@ runner also announces the later stop/capture-conversion/verification phase,
 which commonly takes another 1-5 minutes depending on capture size.
 
 After execution, copy the newest plain directory under package-root
-`dist\Logs` to the review machine without compression. Include `wire.pcapng`,
+the repository-root `Logs` directory to the review machine without compression. Include `wire.pcapng`,
 `fakenet.log`, `fakenet.err.log`, the client
 JSONL files, route/driver evidence, DNS snapshots, and `results.tsv`.

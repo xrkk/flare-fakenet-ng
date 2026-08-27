@@ -193,7 +193,7 @@ if (-not (Test-IsAdministrator)) {
 
 try {
     $repoRoot = Resolve-RepositoryRoot
-    $logRoot = Join-Path $repoRoot 'dist\Logs'
+    $logRoot = Join-Path $repoRoot 'Logs'
     New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
 
     $script:LockPath = Join-Path $logRoot 'domain-allowlist-start.lock'

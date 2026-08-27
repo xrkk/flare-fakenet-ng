@@ -57,7 +57,7 @@ foreach ($required in @(
         throw ('Verifier runtime-failure contract is missing: ' + $required)
     }
 }
-if (-not $cmd.Contains('%~dp0..\..\dist\Logs')) {
+if (-not $cmd.Contains('%~dp0..\..\Logs')) {
     throw 'CMD launcher still prints the wrong Logs directory.'
 }
 $negativeResult = $runner.IndexOf('Add-Result NonTargetIsolation PASS')

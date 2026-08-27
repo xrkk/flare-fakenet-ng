@@ -49,8 +49,8 @@ gap/conflict fail-closed、端口复用新代次以及 IPv6 UDP 双向/重复报
 任一预期不一致返回 `1`。
 
 旧样本只读回放命令（在仓库根、固定 Docker/Wine 镜像中执行）为
-`python tools/replay_sample_payload.py`。它固定读取 `dist/样本实测`，只在
-`dist/样本实测-回放-v35` 生成 `diagnostic-replay.html`、
+`python tools/replay_sample_payload.py`。它固定读取 `Logs/样本实测`，只在
+`Logs/样本实测-回放-v35` 生成 `diagnostic-replay.html`、
 `replay-verification.json` 和 `evidence-sha256.tsv`；JSON 通过后仍把已知的
 266 秒运行时捕获空窗标为 `UNHEALTHY_HISTORICAL_REPLAY`，不把旧会话冒充健康报告。
 

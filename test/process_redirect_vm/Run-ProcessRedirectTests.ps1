@@ -324,7 +324,7 @@ if (-not (Test-IsAdministrator)) {
 }
 
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$logRoot = Join-Path $root 'dist\Logs'
+$logRoot = Join-Path $root 'Logs'
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $script:LogDir = Join-Path $logRoot ("process-redirect-$packageVersion-$stamp")
 New-Item -ItemType Directory -Path $script:LogDir -Force | Out-Null

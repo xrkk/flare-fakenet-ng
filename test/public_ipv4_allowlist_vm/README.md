@@ -34,6 +34,6 @@ only that the pinned address still serves `www.baidu.com`. The pinned address
 may rotate because its DNS TTL is short. A missing address or failed TLS check
 stops acceptance; no second address is used as fallback.
 
-After the run, copy the newest directory under `Logs` back to `dist\Logs`
+After the run, copy the newest directory under `Logs` back to the repository-root `Logs`
 without compression. Preserve the `.pcapng` file alongside the plain-text
 logs.

@@ -53,7 +53,7 @@ sample and keep the launcher window open. FakeNet-NG activity is displayed live
 in that window and also retained on disk. Press Enter when analysis is finished;
 the launcher then requests a graceful stop and checks DNS recovery. Plain logs
 and before/after DNS snapshots are written below
-`dist/Logs/domain-allowlist-start-*`.
+`Logs/domain-allowlist-start-*`.
 
 Windows private-IP domain takeover mode
 =======================================
@@ -185,7 +185,7 @@ address and bind preflight; set `FNPR_PYTHON` only when a non-default Python 3
 interpreter is required. Binding TCP/443 may require sufficient local
 privileges. Both launchers bind TCP and UDP only on `192.168.204.1:443`, accept
 the bounded `FNPR/1|nonce|role` test line on both transports, record the
-transport with each nonce, and write plain logs under `dist/Logs`. Ctrl+C stops
+transport with each nonce, and write plain logs under `Logs`. Ctrl+C stops
 both listeners. Neither launcher changes firewall, adapter or route settings,
 downloads dependencies, or starts FakeNet. The sentinel is not required by the
 production redirection protocol after acceptance.

@@ -31,7 +31,7 @@ TARGET_PORT = 53535
 MARKER = 'dual-pcap-linux-v1'
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
-LOG_ROOT = REPO_ROOT / 'dist' / 'Logs'
+LOG_ROOT = REPO_ROOT / 'Logs'
 REQUIRED_COMMANDS = (
     'iptables', 'iptables-save', 'iptables-restore',
     'ip6tables-save', 'ip6tables-restore', 'ip')
