@@ -35,6 +35,13 @@ raw PCAP 与 HTML 的两个方向，同时要求同一流绑定实际样本 PID/
 返回 `1`，物理机、未提权、pktmon 缺失或无法唯一绑定活动 GUI 会话且尚未开始
 捕获返回 `2`。
 
+三方比较窗口从 pktmon 成功启动、控制台打印 `ACTION 1` 的时刻开始。GUI 会话在
+此之前已经产生的后台 `ALLOW_TAKEOVER_SINK` 流会在 JSON 中逐条标为
+`started_before_sample_capture_window`，不会拿完整会话的 FakeNet/HTML 载荷与较晚
+开始的 NIC 捕获做错误等值比较；窗口开始后的全部接管流仍逐条比较，任一流或方向
+在 pktmon 中缺失都保持 FAIL。JSON 同时明确给出唯一具有非空双向载荷的样本
+PID/进程；没有候选或出现多个进程候选时均 FAIL。
+
 该入口不要求在控制台输入 Enter 或其他额外命令。它只在看到隔离 VM 判定后
 启动 pktmon；操作者启动样本并点击 GUI 的停止按钮后，脚本自动记录停止旗标的
 GUI 反馈（不超过 1 秒）、GUI 所有的核心进程句柄返回（不超过 5 秒）以及核心

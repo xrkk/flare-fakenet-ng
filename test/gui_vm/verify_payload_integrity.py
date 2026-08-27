@@ -7,6 +7,7 @@ import configparser
 import hashlib
 import ipaddress
 import json
+import math
 import os
 import re
 import struct
@@ -15,6 +16,14 @@ import sys
 SCHEMA = 'fakenet.payload-verification.v1'
 TCP_SEQUENCE_MODULUS = 1 << 32
 TCP_SEQUENCE_HALF = 1 << 31
+
+
+class VerificationFailure(ValueError):
+    """A failed verdict whose structured comparison evidence is available."""
+
+    def __init__(self, message, result=None):
+        super().__init__(message)
+        self.result = result
 
 
 def _sha256(data):
@@ -291,16 +300,67 @@ def _capture_payload(records):
     return _wire_payload(records)
 
 
-def verify(raw_pcap, wire_pcapng, html, log, ini):
+def _input_facts(raw_pcap, wire_pcapng, html, log, ini):
+    return {name: {'path': os.path.abspath(path),
+                   'sha256': _sha256(_read(path))}
+            for name, path in (('raw_pcap', raw_pcap),
+                               ('wire_pcapng', wire_pcapng),
+                               ('html', html), ('log', log), ('ini', ini))}
+
+
+def verify(raw_pcap, wire_pcapng, html, log, ini,
+           capture_started_at=None):
     model = _html_model(html)
     records = _wire_records(wire_pcapng)
     wire = _wire_payload(records)
     raw = _capture_payload(_raw_records(raw_pcap))
     log_text = _read(log).decode('utf-8', errors='replace')
-    allowed = [flow for flow in model.get('flows', [])
-               if flow.get('disposition') == 'ALLOW_TAKEOVER_SINK']
-    if not allowed:
+    all_allowed = [flow for flow in model.get('flows', [])
+                   if flow.get('disposition') == 'ALLOW_TAKEOVER_SINK']
+    if not all_allowed:
         raise ValueError('no ALLOW_TAKEOVER_SINK flow in HTML model')
+
+    excluded = []
+    if capture_started_at is None:
+        allowed = all_allowed
+        capture_window = {
+            'mode': 'whole-session',
+            'started_at_epoch': None,
+            'selected_flow_ids': [flow.get('id') for flow in allowed],
+            'excluded_flows': excluded,
+        }
+    else:
+        capture_started_at = float(capture_started_at)
+        if not math.isfinite(capture_started_at) or capture_started_at < 0:
+            raise ValueError('capture start epoch is invalid')
+        allowed = []
+        for flow in all_allowed:
+            try:
+                started_at = float(flow['started_at'])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    'ALLOW_TAKEOVER_SINK flow start time is missing') from exc
+            if not math.isfinite(started_at):
+                raise ValueError(
+                    'ALLOW_TAKEOVER_SINK flow start time is invalid')
+            if started_at < capture_started_at:
+                excluded.append({
+                    'flow_id': flow.get('id'),
+                    'started_at': started_at,
+                    'reason': 'started_before_sample_capture_window',
+                })
+            else:
+                allowed.append(flow)
+        capture_window = {
+            'mode': 'runner-action-window',
+            'started_at_epoch': capture_started_at,
+            'selected_flow_ids': [flow.get('id') for flow in allowed],
+            'excluded_flows': excluded,
+        }
+        if not allowed:
+            raise ValueError(
+                'no ALLOW_TAKEOVER_SINK flow started in the sample capture window')
+
     for flow in allowed:
         if (flow.get('owner') in (None, '', 'unknown') or
                 flow.get('process') in (None, '', 'unknown') or
@@ -345,23 +405,12 @@ def verify(raw_pcap, wire_pcapng, html, log, ini):
                 'raw_match': raw_bytes == html_bytes,
                 'match': wire_bytes == html_bytes and raw_bytes == html_bytes,
             })
-    if not comparisons or not all(item['match'] for item in comparisons):
-        raise ValueError('wire/raw/FakeNet/HTML payload mismatch')
-    if not any(item['direction'] == 'outbound' and item['fakenet_bytes'] > 0
-               for item in comparisons):
-        raise ValueError('no non-empty outbound payload direction')
-    if not any(item['direction'] == 'inbound' and item['fakenet_bytes'] > 0
-               for item in comparisons):
-        raise ValueError('no non-empty inbound payload direction')
-    if 'ALLOW_TAKEOVER_SINK' not in log_text:
-        raise ValueError('ALLOW_TAKEOVER_SINK evidence is absent from log')
     fatal_markers = (
         'PCAP_DUAL_WRITE_FAILED', 'HTML_REPORT_SUPPRESSED',
         'overall_health=false', 'Traceback (most recent call last):',
         'FakeNet-NG terminated with an error',
     )
-    if any(marker in log_text for marker in fatal_markers):
-        raise ValueError('capture/core fatal marker is present in log')
+    capture_fatal = any(marker in log_text for marker in fatal_markers)
     if not os.path.isfile(ini):
         raise ValueError('actual INI evidence is missing')
     parser = configparser.ConfigParser(interpolation=None)
@@ -371,33 +420,78 @@ def verify(raw_pcap, wire_pcapng, html, log, ini):
         dump_packets = parser.getboolean('Diverter', 'DumpPackets')
     except Exception as exc:
         raise ValueError('actual INI DumpPackets setting is unreadable') from exc
-    if not dump_packets:
-        raise ValueError('actual INI does not enable DumpPackets')
-    return {
+
+    result = {
         'schema': SCHEMA,
-        'inputs': {name: {'path': os.path.abspath(path),
-                          'sha256': _sha256(_read(path))}
-                   for name, path in (('raw_pcap', raw_pcap),
-                                      ('wire_pcapng', wire_pcapng),
-                                      ('html', html), ('log', log),
-                                      ('ini', ini))},
+        'inputs': _input_facts(raw_pcap, wire_pcapng, html, log, ini),
+        'capture_window': capture_window,
         'comparisons': comparisons,
-        'gap_conflict': False, 'capture_fatal': False,
-        'process_binding': 'PASS', 'dump_packets': True,
-        'verdict': 'PASS',
+        'gap_conflict': False, 'capture_fatal': capture_fatal,
+        'process_binding': {'verdict': 'PENDING'},
+        'dump_packets': dump_packets,
+        'verdict': 'FAIL',
     }
+
+    def reject(message, mismatches=None):
+        result['error'] = message
+        if mismatches is not None:
+            result['mismatches'] = mismatches
+        raise VerificationFailure(message, result)
+
+    if 'ALLOW_TAKEOVER_SINK' not in log_text:
+        reject('ALLOW_TAKEOVER_SINK evidence is absent from log')
+    if capture_fatal:
+        reject('capture/core fatal marker is present in log')
+    if not dump_packets:
+        reject('actual INI does not enable DumpPackets')
+    mismatches = [item for item in comparisons if not item['match']]
+    if not comparisons or mismatches:
+        reject('wire/raw/FakeNet/HTML payload mismatch', mismatches)
+
+    comparisons_by_flow = {}
+    for item in comparisons:
+        comparisons_by_flow.setdefault(item['flow_id'], []).append(item)
+    bidirectional = []
+    for flow in allowed:
+        items = comparisons_by_flow.get(flow['id'], [])
+        has_outbound = any(
+            item['direction'] == 'outbound' and item['fakenet_bytes'] > 0
+            for item in items)
+        has_inbound = any(
+            item['direction'] == 'inbound' and item['fakenet_bytes'] > 0
+            for item in items)
+        if has_outbound and has_inbound:
+            bidirectional.append(flow)
+    if not bidirectional:
+        reject('no single sample flow has non-empty outbound and inbound payload')
+    bindings = {(flow.get('pid'), flow.get('process'), flow.get('owner'))
+                for flow in bidirectional}
+    if len(bindings) != 1:
+        reject('sample process binding is not unique')
+    pid, process, owner = next(iter(bindings))
+    result['process_binding'] = {
+        'verdict': 'PASS', 'pid': pid, 'process': process, 'owner': owner,
+        'flow_ids': [flow['id'] for flow in bidirectional],
+    }
+    result['verdict'] = 'PASS'
+    return result
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
     for name in ('raw-pcap', 'wire-pcapng', 'html', 'log', 'ini'):
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--capture-started-at', type=float)
     parser.add_argument('--output', required=True)
     args = parser.parse_args(argv)
     try:
         result = verify(args.raw_pcap, args.wire_pcapng, args.html,
-                        args.log, args.ini)
+                        args.log, args.ini, args.capture_started_at)
         code = 0
+    except VerificationFailure as exc:
+        result = exc.result or {
+            'schema': SCHEMA, 'verdict': 'FAIL', 'error': str(exc)}
+        code = 1
     except Exception as exc:
         result = {'schema': SCHEMA, 'verdict': 'FAIL', 'error': str(exc)}
         code = 1

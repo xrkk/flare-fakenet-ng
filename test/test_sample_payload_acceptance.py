@@ -207,6 +207,20 @@ class SamplePayloadAcceptanceTests(unittest.TestCase):
         self.assertIn('finally:', source)
         self.assertIn('_stop_pktmon(pktmon_state, transcript)', source)
 
+    def test_integrity_command_carries_the_operator_capture_boundary(self):
+        command = runner._payload_integrity_command(
+            r'C:\package', {
+                'raw_pcap': r'C:\evidence\raw.pcap',
+                'html': r'C:\evidence\report.html',
+                'core_log': r'C:\evidence\core.log',
+                'config': r'C:\evidence\session.ini',
+            }, r'C:\evidence\wire.pcapng', r'C:\evidence', 1234.5)
+
+        boundary = command.index('--capture-started-at')
+        self.assertEqual('1234.500000', command[boundary + 1])
+        self.assertEqual('--output', command[-2])
+        self.assertTrue(command[-1].endswith('payload-verification.json'))
+
 
 if __name__ == '__main__':
     unittest.main()

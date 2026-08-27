@@ -351,6 +351,22 @@ def _copy_session_evidence(root, output, session):
     return copied
 
 
+def _payload_integrity_command(root, copied, wire, output,
+                               capture_started_at):
+    integrity = os.path.join(root, 'test', 'gui_vm',
+                             'verify_payload_integrity.py')
+    return [
+        sys.executable, integrity,
+        '--raw-pcap', copied['raw_pcap'],
+        '--wire-pcapng', wire,
+        '--html', copied['html'],
+        '--log', copied['core_log'],
+        '--ini', copied['config'],
+        '--capture-started-at', '%.6f' % capture_started_at,
+        '--output', os.path.join(output, 'payload-verification.json'),
+    ]
+
+
 def run(root, gui_exe=None):
     del gui_exe  # retained only for command-line compatibility with v35 drafts
     refusal, session = _preflight(root)
@@ -376,6 +392,7 @@ def run(root, gui_exe=None):
         'pktmon': dict(pktmon_state),
         'events': [],
     }
+    capture_started_at = None
     with open(transcript_path, 'w', encoding='utf-8', newline='\n') as transcript:
         try:
             _run(['pktmon', 'filter', 'remove'], transcript, check=False)
@@ -390,6 +407,18 @@ def run(root, gui_exe=None):
                  '--file-name', pktmon_state['wire_etl'], '--comp', 'nics'],
                 transcript)
             pktmon_state['start_returncode'] = start_result.returncode
+            # The tested window begins only after pktmon reports that capture
+            # is active and immediately before the operator is told to launch
+            # the sample.  The GUI/core session may legitimately contain older
+            # background flows that are outside this independent wire window.
+            capture_started_at = time.time()
+            observation['capture_window'] = {
+                'started_at_epoch': capture_started_at,
+                'started_at_utc': datetime.datetime.fromtimestamp(
+                    capture_started_at, datetime.timezone.utc
+                ).isoformat().replace('+00:00', 'Z'),
+                'operator_action': 'start_sample',
+            }
             print('ACTION 1: Start the sample only inside this isolated VM.')
             print('ACTION 2: Wait for both directions of payload, then click the GUI Stop button.')
             print('WAIT: This tool detects the stop flag and exports evidence automatically.')
@@ -432,13 +461,9 @@ def run(root, gui_exe=None):
             if not os.path.isfile(wire):
                 raise RuntimeError(
                     'three-way verifier inputs are incomplete (raw/wire/log/INI)')
-            integrity = os.path.join(root, 'test', 'gui_vm',
-                                     'verify_payload_integrity.py')
             three_way = os.path.join(output, 'payload-verification.json')
-            _run([sys.executable, integrity, '--raw-pcap', copied['raw_pcap'],
-                  '--wire-pcapng', wire, '--html', html,
-                  '--log', copied['core_log'], '--ini', copied['config'],
-                  '--output', three_way], transcript)
+            _run(_payload_integrity_command(
+                root, copied, wire, output, capture_started_at), transcript)
             with open(os.path.join(output, 'results.tsv'), 'w',
                       encoding='utf-8', newline='\n') as results:
                 results.write('check\tstatus\tdetail\n')

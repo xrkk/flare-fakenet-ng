@@ -172,6 +172,127 @@ class PayloadIntegrityVerifierTests(unittest.TestCase):
                 verifier.verify(str(raw_path), str(wire_path),
                                 str(html_path), str(log_path), str(ini_path))
 
+    def test_capture_window_excludes_only_flows_started_before_operator_action(self):
+        background = ipv4_tcp(
+            '192.0.2.10', '198.51.100.20', 39999, 443, 10, b'background')
+        outbound = ipv4_tcp(
+            '192.0.2.10', '198.51.100.20', 40000, 3585, 100, b'hello')
+        inbound = ipv4_tcp(
+            '198.51.100.20', '192.0.2.10', 3585, 40000, 200, b'world')
+
+        def direction(identifier, source, destination, name, payload):
+            return {
+                'id': identifier, 'direction': name,
+                'source': {'ip': source[0], 'port': source[1]},
+                'destination': {'ip': destination[0], 'port': destination[1]},
+                'bytes': len(payload),
+                'sha256': hashlib.sha256(payload).hexdigest(),
+                'base64': base64.b64encode(payload).decode('ascii'),
+            }
+
+        def flow(identifier, port, process, pid, started_at, directions):
+            return {
+                'id': identifier, 'protocol': 'TCP', 'ip_version': 4,
+                'owner': process, 'pid': pid, 'process': process,
+                'domain': 'unknown',
+                'source': {'ip': '192.0.2.10', 'port': port},
+                'destination': {
+                    'ip': '198.51.100.20',
+                    'port': 443 if port == 39999 else 3585,
+                },
+                'disposition': 'ALLOW_TAKEOVER_SINK',
+                'started_at': started_at, 'ended_at': started_at + 1,
+                'directions': directions,
+            }
+
+        model = {
+            'schema': 'fakenet.payload-report.v1',
+            'capture': {'overall_health': True},
+            'flows': [
+                flow('flow-background', 39999, 'svchost.exe', 100, 5.0, {
+                    'outbound': direction(
+                        'flow-background-outbound',
+                        ('192.0.2.10', 39999),
+                        ('198.51.100.20', 443), 'outbound', b'background'),
+                }),
+                flow('flow-sample', 40000, 'sample.exe', 4321, 20.0, {
+                    'outbound': direction(
+                        'flow-sample-outbound',
+                        ('192.0.2.10', 40000),
+                        ('198.51.100.20', 3585), 'outbound', b'hello'),
+                    'inbound': direction(
+                        'flow-sample-inbound',
+                        ('198.51.100.20', 3585),
+                        ('192.0.2.10', 40000), 'inbound', b'world'),
+                }),
+            ],
+        }
+        frames = [
+            b'\x02\x00\x00\x00\x00\x02\x02\x00\x00\x00\x00\x01\x08\x00' +
+            outbound,
+            b'\x02\x00\x00\x00\x00\x01\x02\x00\x00\x00\x00\x02\x08\x00' +
+            inbound,
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw_path = root / 'raw.pcap'
+            wire_path = root / 'wire.pcapng'
+            html_path = root / 'report.html'
+            log_path = root / 'fakenet.log'
+            ini_path = root / 'fakenet.ini'
+            raw_path.write_bytes(pcap([background, outbound, inbound]))
+            wire_path.write_bytes(pcapng(frames))
+            html_path.write_text(
+                '<script id="payload-data" type="application/json">%s</script>' %
+                json.dumps(model), encoding='utf-8')
+            log_path.write_text(
+                'PROCESS_FLOW ALLOW_TAKEOVER_SINK\n', encoding='utf-8')
+            ini_path.write_text(
+                '[Diverter]\nDumpPackets=Yes\n', encoding='utf-8')
+
+            result = verifier.verify(
+                str(raw_path), str(wire_path), str(html_path), str(log_path),
+                str(ini_path), capture_started_at=10.0)
+
+            self.assertEqual('PASS', result['verdict'])
+            self.assertEqual(['flow-sample'],
+                             result['capture_window']['selected_flow_ids'])
+            self.assertEqual(
+                'flow-background',
+                result['capture_window']['excluded_flows'][0]['flow_id'])
+            self.assertEqual(4321, result['process_binding']['pid'])
+            self.assertEqual('sample.exe', result['process_binding']['process'])
+
+            wire_path.write_bytes(pcapng(frames[:1]))
+            with self.assertRaisesRegex(
+                    verifier.VerificationFailure, 'mismatch') as failure:
+                verifier.verify(
+                    str(raw_path), str(wire_path), str(html_path),
+                    str(log_path), str(ini_path), capture_started_at=10.0)
+            mismatch = failure.exception.result
+            self.assertEqual('FAIL', mismatch['verdict'])
+            self.assertEqual(1, len(mismatch['mismatches']))
+            self.assertEqual('flow-sample-inbound',
+                             mismatch['mismatches'][0]['direction_id'])
+            self.assertEqual(0, mismatch['mismatches'][0]['wire_bytes'])
+            self.assertEqual(5, mismatch['mismatches'][0]['fakenet_bytes'])
+
+            output_path = root / 'verification.json'
+            code = verifier.main([
+                '--raw-pcap', str(raw_path),
+                '--wire-pcapng', str(wire_path),
+                '--html', str(html_path),
+                '--log', str(log_path),
+                '--ini', str(ini_path),
+                '--capture-started-at', '10.0',
+                '--output', str(output_path),
+            ])
+            persisted = json.loads(output_path.read_text(encoding='utf-8'))
+            self.assertEqual(1, code)
+            self.assertEqual('FAIL', persisted['verdict'])
+            self.assertEqual('flow-sample-inbound',
+                             persisted['mismatches'][0]['direction_id'])
+
 
 if __name__ == '__main__':
     unittest.main()
