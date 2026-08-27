@@ -113,6 +113,39 @@ class PayloadReportTests(unittest.TestCase):
             item['base64'] for item in flow['directions'].values()
             if item['direction'] == 'inbound')))
 
+    def test_loopback_capture_direction_does_not_merge_tcp_sequence_spaces(self):
+        local_ip = '192.168.204.216'
+        client_port = 45200
+        server_port = 53
+        paths = self.make_capture([
+            {'raw': tcp_packet(local_ip, local_ip, client_port, server_port,
+                               1602296955, flags=dpkt.tcp.TH_SYN),
+             'logical': 'syn', 'direction': 'outbound'},
+            {'raw': tcp_packet(local_ip, local_ip, server_port, client_port,
+                               2046131497,
+                               flags=dpkt.tcp.TH_SYN | dpkt.tcp.TH_ACK),
+             'logical': 'syn-ack', 'direction': 'outbound'},
+            {'raw': tcp_packet(local_ip, local_ip, client_port, server_port,
+                               1602296956, b'client-request'),
+             'logical': 'request', 'direction': 'outbound'},
+            {'raw': tcp_packet(local_ip, local_ip, server_port, client_port,
+                               2046131498, b'server-response'),
+             'logical': 'response', 'direction': 'outbound'},
+        ])
+
+        model = build_payload_report(
+            paths[0], paths[2], paths[3], capture_health={
+                'writer_health': True, 'coverage_health': True,
+                'reassembly_health': True})
+
+        flow = model['flows'][0]
+        outbound = flow['directions']['outbound']
+        inbound = flow['directions']['inbound']
+        self.assertEqual(b'client-request',
+                         base64.b64decode(outbound['base64']))
+        self.assertEqual(b'server-response',
+                         base64.b64decode(inbound['base64']))
+
     def test_tcp_conflict_and_internal_gap_fail_closed(self):
         conflict = self.make_capture([
             {'raw': tcp_packet('192.0.2.10', '198.51.100.20', 1, 2, 100,

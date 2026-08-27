@@ -681,10 +681,16 @@ def build_payload_report(raw_pcap_path, observation_index, flow_registry=None,
         if model is None:
             model = _flow_model(registry_flow, flow_id, facts, timestamp)
             flow_models[flow_id] = model
-        direction = entry.get('direction', 'unknown')
+        # A capture backend's per-packet direction is not a stable stream
+        # identity.  In particular, WinDivert reports both sides of some
+        # loopback conversations as outbound.  The flow registry owns the
+        # endpoint-orientation mapping and deliberately assigns the reverse
+        # endpoint the opposite direction, keeping the two independent TCP
+        # sequence spaces separate.
+        direction = registry.direction_for(
+            flow_id, facts['src'], facts['sport'], facts['dst'], facts['dport'])
         if direction not in DIRECTIONS or direction == 'unknown':
-            direction = registry.direction_for(
-                flow_id, facts['src'], facts['sport'], facts['dst'], facts['dport'])
+            direction = entry.get('direction', 'unknown')
         if direction not in DIRECTIONS:
             direction = 'unknown'
         direction_key = (facts['src'], facts['sport'], facts['dst'], facts['dport'])
