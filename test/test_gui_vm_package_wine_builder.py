@@ -69,6 +69,14 @@ def test_archived_regression_gate_precedes_pyinstaller_and_is_split():
     assert 'Windows-Python command failed' in text
 
 
+def test_onedir_is_flattened_before_root_pe_validation():
+    text = BUILDER.read_text(encoding='utf-8')
+    collect = text.index("collect_dir = stage / 'fakenet-dat'")
+    flatten = text.index("shutil.move(str(item), str(destination_item))")
+    pe_check = text.index("fakenet_exe = stage / 'fakenet.exe'")
+    assert collect < flatten < pe_check
+
+
 def test_junit_summary_exposes_exact_skip_set_for_failure_gate():
     xml = '''<?xml version="1.0"?>
 <testsuites><testsuite tests="3" failures="0" errors="0" skipped="2">

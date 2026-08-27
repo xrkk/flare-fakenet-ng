@@ -356,11 +356,6 @@ def build(repo, source_commit, output_root, output_directory=None):
             '--distpath', stage_windows, '--workpath', wine_path(gui_work),
             '--noconfirm'], cwd=stage, env=regression_env)
 
-        fakenet_exe = stage / 'fakenet.exe'
-        gui_exe = stage / 'fakenet-GUI.exe'
-        for binary in (fakenet_exe, gui_exe):
-            if not binary.is_file() or binary.read_bytes()[:2] != b'MZ':
-                raise RuntimeError('Windows PE output missing: %s' % binary)
         collect_dir = stage / 'fakenet-dat'
         if not collect_dir.is_dir():
             raise RuntimeError('formal onedir output missing fakenet-dat')
@@ -371,6 +366,11 @@ def build(repo, source_commit, output_root, output_directory=None):
                                    item.name)
             shutil.move(str(item), str(destination_item))
         shutil.rmtree(collect_dir)
+        fakenet_exe = stage / 'fakenet.exe'
+        gui_exe = stage / 'fakenet-GUI.exe'
+        for binary in (fakenet_exe, gui_exe):
+            if not binary.is_file() or binary.read_bytes()[:2] != b'MZ':
+                raise RuntimeError('Windows PE output missing: %s' % binary)
         if not (stage / '_internal').is_dir():
             raise RuntimeError('formal onedir payload missing _internal')
 
