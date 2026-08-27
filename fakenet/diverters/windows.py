@@ -1081,7 +1081,14 @@ class Diverter(DiverterBase, WinUtilMixin):
             return
         capture_filter = self._inbound_capture_filter()
         try:
-            handle = WinDivert(filter=capture_filter, priority=1)
+            # This handle is observational only.  WinDivert's default mode
+            # removes matching packets from the stack until userspace sends
+            # them again; doing that here made an otherwise record-only seam
+            # participate in delivery and broke local DNS on the real VM.
+            # SNIFF copies packets to our queue while the originals continue
+            # through the stack, so this receiver cannot alter delivery.
+            handle = WinDivert(filter=capture_filter, priority=1,
+                               flags=Flag.SNIFF)
             handle.open()
             self._configure_windivert_queue(handle, 'inbound')
         except WindowsError as exc:
@@ -1108,7 +1115,8 @@ class Diverter(DiverterBase, WinUtilMixin):
             daemon=True)
         self.inbound_capture_thread.start()
         self.log_egress_event(
-            'PCAP_INBOUND_CAPTURE_READY', filter=capture_filter)
+            'PCAP_INBOUND_CAPTURE_READY', filter=capture_filter,
+            capture_mode='sniff')
 
     def _inbound_capture_loop(self):
         prev_recv_return = None
@@ -1155,14 +1163,6 @@ class Diverter(DiverterBase, WinUtilMixin):
                         self._record_capture_failure(PcapWriteError(
                             'inbound capture dispatch failed: %s' % exc))
                     return
-                try:
-                    self._inbound_capture_handle.send(wdpkt)
-                except Exception as exc:
-                    # The packet is already recorded; a reinjection failure
-                    # loses this one inbound packet but must not kill the
-                    # pass-through loop.
-                    self.logger.error(
-                        'Inbound capture reinjection failed: %s', exc)
         except Exception as exc:
             self.logger.exception(
                 'Inbound capture thread terminated unexpectedly')

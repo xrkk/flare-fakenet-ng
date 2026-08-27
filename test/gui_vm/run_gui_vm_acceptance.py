@@ -745,6 +745,11 @@ def run_a11_sink_reply(fakenet_exe):
                 'queue_len=8192', 'queue_time_ms=2048'))
         queue_ok = queue_ok and all(
             'queue_size_bytes' not in line for line in lines)
+    sniff_markers = [
+        line for line in log_text.splitlines()
+        if 'PCAP_INBOUND_CAPTURE_READY' in line]
+    sniff_ok = (len(sniff_markers) == 1 and
+                'capture_mode=sniff' in sniff_markers[0])
 
     report_ok = False
     report_detail = 'missing'
@@ -776,12 +781,12 @@ def run_a11_sink_reply(fakenet_exe):
     result('A11 接管 sink 连通', 'PASS'
            if (ready and answered and target_ok and allowed and
                not local_divert and not launcher.is_fakenet_running() and
-               queue_ok and report_ok) else 'FAIL',
+               queue_ok and sniff_ok and report_ok) else 'FAIL',
            'ready=%s;DNS 应答=%s;nonce=%s;TCP=%s;UDP=%s;Ubuntu裁决=%s;'
-           '本地DIVERT_FAKE=%s;queue=%s;HTML=%s' % (
+           '本地DIVERT_FAKE=%s;queue=%s;inbound_sniff=%s;HTML=%s' % (
                ready, answered, FNPR_NONCE, target['tcp']['ok'],
                target['udp']['ok'], allowed, local_divert, queue_ok,
-               report_detail))
+               sniff_ok, report_detail))
 
 
 def finish():

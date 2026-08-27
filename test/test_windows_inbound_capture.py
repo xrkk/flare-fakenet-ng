@@ -2,7 +2,7 @@
 """Host-side lifecycle checks for the inbound capture thread
 (plan 2026.08.21-01 I7/I9.4).
 
-Covers: normal receive->record->reinjection, handle-closing exit codes,
+Covers: passive receive->record, handle-closing exit codes,
 pcap write failure mapping to a capture failure, and the shutdown ordering
 (close capture handle -> join thread -> only then the writer may close).
 """
@@ -162,11 +162,33 @@ class InboundCaptureTests(unittest.TestCase):
         diverter._capture_queue_bindings['inbound']['queue_len'] = 4096
         self.assertFalse(diverter._capture_queue_bindings_complete())
 
-    def test_loop_records_and_reinjects_each_packet(self):
+    def test_open_uses_passive_sniff_mode(self):
+        from pydivert import Flag
+
+        diverter = make_diverter()
+        diverter.dump_packets = True
+        diverter.dual_pcap = object()
+        diverter._capture_queue_bindings = {}
+        diverter._configure_windivert_queue = mock.Mock()
+        diverter._record_capture_failure = mock.Mock()
+        diverter.log_egress_event = mock.Mock()
+        handle = mock.Mock()
+
+        with mock.patch.object(windows, 'WinDivert',
+                               return_value=handle) as windivert_cls, \
+                mock.patch.object(threading.Thread, 'start'):
+            diverter._open_inbound_capture()
+
+        windivert_cls.assert_called_once_with(
+            filter='inbound and ip', priority=1, flags=Flag.SNIFF)
+        handle.open.assert_called_once_with()
+        diverter._configure_windivert_queue.assert_called_once_with(
+            handle, 'inbound')
+
+    def test_loop_records_without_reinjecting_sniffed_packets(self):
         diverter = make_diverter()
         packets = [_FakePacket(b'\x45\x00\x00\x14'),
                    _FakePacket(b'\x45\x00\x00\x15')]
-        sent = list(packets)
         writer = mock.Mock()
 
         def recv():
@@ -186,8 +208,7 @@ class InboundCaptureTests(unittest.TestCase):
         self.assertEqual(
             [call[0][0] for call in writer.write_ip_packet.call_args_list],
             [b'\x45\x00\x00\x14', b'\x45\x00\x00\x15'])
-        handle.send.assert_any_call(sent[0])
-        handle.send.assert_any_call(sent[1])
+        handle.send.assert_not_called()
         diverter._record_capture_failure.assert_not_called()
 
     def test_windows_error_995_exits_without_failure(self):
