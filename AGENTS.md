@@ -30,3 +30,13 @@ Real Windows VM execution remains necessary for WinDivert, Windows GUI/process-h
 ## Approved-plan implementation retries
 
 While implementing an already reviewed plan whose status is `已审核, 可以实施`, an in-scope failure found by build or acceptance evidence may be corrected, committed as a new intermediate source snapshot, and rebuilt without asking the user for repeated authorization. Keep each retry mechanically attributable to the active plan and recorded evidence, preserve unrelated work and failed artifacts, use a distinct output directory when a package name would collide, and update the implementation record. An intermediate commit or successful build does not make an ACC pass; continue through the required real-environment acceptance. This standing authorization covers local commits and rebuilds, not `git push`, branch changes, scope expansion, requirement changes, or destructive replacement of evidence.
+
+## Win10 acceptance VM reset
+
+For repeatable FakeNet-NG acceptance, reset only this verified VMware Workstation VM:
+
+- VMX: `/home/adminn/vmware-machines/win10h2-MalBox-20241110/win10h2-MalBox-20241110.vmx`
+- Snapshot: `Snapshot 183-FakenetNG测试专用`
+- Verified guest identity: computer `DESKTOP-3FI41GR`, MAC `00:0c:29:4c:fd:c0`, BIOS UUID `56 4d e0 b3 b2 3d 3d 9f-4d 52 3e c2 2c 4c fd c0`
+
+Before resetting, export any guest-only evidence that must survive into repository-root `Logs/`. Run the following host-session sequence with `/usr/bin/vmrun -T ws`: confirm `list` names the exact VMX; confirm `listSnapshots <vmx> showTree` contains exactly one matching snapshot; `stop <vmx> soft` when the VM is running; confirm it stopped; `revertToSnapshot <vmx> 'Snapshot 183-FakenetNG测试专用'`; then `start <vmx> gui`. A soft-stop failure is a stopping condition: report it instead of escalating to `hard`. Completion requires a successful Win10VM MCP read-only call after startup, normally PowerShell `$env:COMPUTERNAME`, returning `DESKTOP-3FI41GR`. The host command may need the real VMware user session because an isolated process can report zero running VMs.
