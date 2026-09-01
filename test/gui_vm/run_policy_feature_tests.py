@@ -93,6 +93,11 @@ def build_policy_config(path, domains, takeover_ip=None, dump_packets=False):
     for key, value in validator.schema.LOCKED_FIELD_VALUES.items():
         diverter.set(key, value)
     if takeover_ip:
+        # A VMware host-only gateway can also be selected by Auto DNS.  When
+        # the Ubuntu takeover sink uses that address, the core correctly
+        # rejects the ambiguous topology.  Freeze the existing bare-resolver
+        # test address for takeover phases so the two roles stay distinct.
+        diverter.set('ExternalDnsServer', BARE_RESOLVER)
         diverter.set('ExternalTakeoverIPv4', takeover_ip)
         diverter.set('ExternalTakeoverDnsTTL', '60')
         diverter.set('ExternalTakeoverProbeTCPPorts', '')
