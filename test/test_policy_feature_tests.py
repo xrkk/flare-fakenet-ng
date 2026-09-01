@@ -24,7 +24,7 @@ def test_build_policy_config_agrees_with_validator(tmp_path):
     assert diverter.get('ExternalAccessPolicy') == 'EgressControl'
     assert diverter.get('ExternalAllowedDomains') == (
         'api.deepseek.com, *.deepseek.com')
-    assert diverter.get('ExternalDnsServer') == 'Auto'
+    assert diverter.get('ExternalDnsServer') == policy.UPSTREAM_DNS
     listeners = {sec.get('Listener') for sec in model.listener_sections()}
     assert 'DomainEgressRelay' in listeners
     assert 'DNSListener' in listeners
@@ -38,7 +38,7 @@ def test_build_policy_config_takeover_topology(tmp_path):
     assert not errors
     diverter = model.diverter()
     assert diverter.get('ExternalTakeoverIPv4') == policy.TAKEOVER_SINK
-    assert diverter.get('ExternalDnsServer') == policy.BARE_RESOLVER
+    assert diverter.get('ExternalDnsServer') == policy.UPSTREAM_DNS
     assert diverter.get('ExternalDnsServer') != policy.TAKEOVER_SINK
     assert diverter.get('ExternalTakeoverDnsTTL') == '60'
     assert diverter.get('ExternalNonAllowedAction') == 'Divert'

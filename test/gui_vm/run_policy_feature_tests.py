@@ -61,6 +61,7 @@ WILDCARD_NAME = 'www.deepseek.com'
 APEX_DOMAIN = 'deepseek.com'
 DENY_DOMAIN = 'example.com'
 TAKEOVER_SINK = '192.168.204.1'
+UPSTREAM_DNS = '192.168.204.2'
 BARE_RESOLVER = '8.8.8.8'
 UNREVIEWED_IPV4 = '93.184.216.34'
 UNREVIEWED_PORT = 80
@@ -82,7 +83,10 @@ def build_policy_config(path, domains, takeover_ip=None, dump_packets=False):
     diverter = model.diverter()
     diverter.set('ExternalAccessPolicy', 'EgressControl')
     diverter.set('ExternalAllowedDomains', domains)
-    diverter.set('ExternalDnsServer', 'Auto')
+    # The acceptance snapshot's system DNS still points at the Ubuntu
+    # Sentinel/takeover host (.1), which intentionally does not provide DNS.
+    # VMware NAT DNS at .2 is the verified upstream for this fixed test VM.
+    diverter.set('ExternalDnsServer', UPSTREAM_DNS)
     diverter.set('DumpPackets', 'Yes' if dump_packets else 'No')
     if dump_packets:
         # P14 (plan 2026.08.21-01 §5.2) parses this phase's dual pcap to
@@ -93,11 +97,6 @@ def build_policy_config(path, domains, takeover_ip=None, dump_packets=False):
     for key, value in validator.schema.LOCKED_FIELD_VALUES.items():
         diverter.set(key, value)
     if takeover_ip:
-        # A VMware host-only gateway can also be selected by Auto DNS.  When
-        # the Ubuntu takeover sink uses that address, the core correctly
-        # rejects the ambiguous topology.  Freeze the existing bare-resolver
-        # test address for takeover phases so the two roles stay distinct.
-        diverter.set('ExternalDnsServer', BARE_RESOLVER)
         diverter.set('ExternalTakeoverIPv4', takeover_ip)
         diverter.set('ExternalTakeoverDnsTTL', '60')
         diverter.set('ExternalTakeoverProbeTCPPorts', '')
