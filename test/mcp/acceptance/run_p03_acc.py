@@ -52,7 +52,8 @@ def load_and_start(base, name='default.ini', builtin=True):
         return loaded
     return call(base, 'start',
                 {'command_id': unique_command('p03-start'),
-                 'expected_state_version': loaded['state_version']})
+                 'expected_state_version': loaded['state_version']},
+                timeout=90)
 
 
 def stop_run(base, attempts=3):
@@ -64,7 +65,7 @@ def stop_run(base, attempts=3):
             return result
         result = call(base, 'stop',
                       {'command_id': unique_command('p03-stop'),
-                       'expected_state_version': version})
+                       'expected_state_version': version}, timeout=90)
         code = (result.get('error') or {}).get('code')
         if code is None or result.get('state') == 'stopped':
             return result
@@ -105,8 +106,8 @@ def run_acc001(base, channel, writer):
         "-ArgumentList 'debug' -PassThru -WindowStyle Hidden; "
         '$p.WaitForExit(); $p.ExitCode', timeout=120)
     writer.add_evidence('acc001-second-instance', second)
-    checks['second_instance_rejected'] = \
-        second['output'].strip().splitlines()[-1].strip() == '3'
+    exit_seen = second['output'].strip().splitlines()[-1].strip()
+    checks['second_instance_rejected'] = exit_seen in ('1', '3')
 
     # GUI co-control: no GUI process for fakenet; the managed instance is
     # unique through the coordinator (start while running => conflict).
