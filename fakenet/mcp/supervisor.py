@@ -216,6 +216,14 @@ class RealSupervisor:
                 time.sleep(0.2)
             if start_error:
                 self._teardown()
+                if self._snapshot is not None and \
+                        self._last_snapshot_fields is not None:
+                    try:
+                        self._snapshot.clear_recovery(
+                            **self._last_snapshot_fields)
+                    except Exception:  # noqa: BLE001
+                        logger.exception('clearing marker after failed '
+                                         'start failed')
                 return {'state': 'failed', 'changed': True,
                         'failure_reason': start_error['reason'],
                         'run_id': None, 'controller': None,

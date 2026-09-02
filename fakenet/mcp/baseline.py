@@ -14,6 +14,10 @@ from pathlib import Path
 
 BASELINE_FIELDS = ('routes', 'dns_servers', 'windivert_processes',
                    'listen_ports', 'services')
+# P03 recovery-consistency sections: volatile outputs (netstat PIDs, service
+# state races) never gate recovery in P03; the P04 audit matrix refines the
+# listen/service comparison (sub-plan P03 IMP-P03-04 boundary).
+RECOVERY_COMPARE_FIELDS = ('routes', 'dns_servers', 'windivert_processes')
 
 
 def _run(command, timeout=60):
@@ -84,7 +88,7 @@ class BaselineStore:
             return None
         current = capture()
         differences = {}
-        for field in BASELINE_FIELDS:
+        for field in RECOVERY_COMPARE_FIELDS:
             before = (baseline.get('sections') or {}).get(field, '')
             after = current.get(field, '')
             if before != after:

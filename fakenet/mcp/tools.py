@@ -114,13 +114,6 @@ def register_tools(server, ctx):
     def tool_result(payload):
         return payload
 
-    @server.tool()
-    def ping() -> dict:
-        controller, classification = ctx.controller_identity()
-        return {'service': MCP_PACKAGE_NAME, 'version': MCP_PACKAGE_VERSION,
-                'protocol': '2026-07-28',
-                'controller_header': classification}
-
     # -- read-only diagnostics --------------------------------------------
     @server.tool()
     def get_status() -> dict:
