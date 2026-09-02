@@ -969,9 +969,12 @@ class Diverter(DiverterBase, WinUtilMixin):
         try:
             valid, position, message = WinDivert.check_filter(self.filter)
         except Exception as exc:
+            cause = getattr(exc, '__cause__', None)
             raise PolicyConfigError(
                 'control-link exclusion filter validation failed to load '
-                'the WinDivert DLL') from exc
+                'the WinDivert DLL: %r (cause=%r, dll=%s)' % (
+                    exc, cause, getattr(windivert_dll, 'DLL_PATH', '?'))) \
+                from exc
         if not valid:
             raise PolicyConfigError(
                 'WinDivert rejected control-link excluded filter at %s: %s'
