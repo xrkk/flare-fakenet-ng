@@ -46,9 +46,11 @@ def apply_control_link_exclusion(filter_string, exclude_ip, exclude_port):
         return 'outbound and ip and %s' % negative
     if filter_string == DUAL_BASE:
         return '(outbound and ip and %s) or (outbound and ipv6)' % negative
-    if filter_string.startswith(DUAL_BASE):
-        head = '(outbound and ip and %s) or (outbound and ipv6)' % negative
-        return head + filter_string[len(DUAL_BASE):]
+    for prefix in (DUAL_BASE, '(%s)' % DUAL_BASE):
+        if filter_string.startswith(prefix):
+            head = '(outbound and ip and %s) or (outbound and ipv6)' % \
+                negative
+            return head + filter_string[len(prefix):]
     raise ControlFilterError(
         'unrecognized main filter shape for control-link exclusion: %r'
         % filter_string[:120])
