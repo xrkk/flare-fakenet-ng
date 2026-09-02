@@ -217,11 +217,24 @@ def smoke_frozen_exe(onedir, build_root):
     env['FAKENETNG_MCP_PROGRAMDATA'] = wine_path(programdata)
     env['PYTHONIOENCODING'] = 'utf-8'
     log_path = build_root / 'smoke-exe.txt'
+    output_chunks = []
+
     process = subprocess.Popen(
         ['xvfb-run', '-a', '-s', XVFB_SERVER_ARGS, 'wine',
          wine_path(exe), 'debug'],
-        stdout=log_path.open('w', encoding='utf-8'),
-        stderr=subprocess.STDOUT, env=env, text=True)
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL, env=env, text=True)
+
+    def _drain():
+        for line in process.stdout:
+            output_chunks.append(line)
+
+    reader = threading.Thread(target=_drain, daemon=True)
+    reader.start()
+
+    def _flush_log():
+        log_path.write_text(''.join(output_chunks), encoding='utf-8')
+
     try:
         base = 'http://127.0.0.1:%d/mcp' % SMOKE_PORT
         envelope = {
@@ -267,9 +280,8 @@ def smoke_frozen_exe(onedir, build_root):
                 except (urllib.error.URLError, OSError):
                     pass
                 time.sleep(1.0)
-            log_tail = '\n'.join(
-                log_path.read_text(encoding='utf-8',
-                                   errors='replace').splitlines()[-40:])
+            _flush_log()
+            log_tail = '\n'.join(''.join(output_chunks).splitlines()[-40:])
             raise RuntimeError('frozen exe smoke: service never became '
                                'ready; exe log tail:\n%s' % log_tail)
 
@@ -301,6 +313,8 @@ def smoke_frozen_exe(onedir, build_root):
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=15)
+        reader.join(timeout=10)
+        _flush_log()
 
 
 def iter_package_files(stage):
