@@ -44,6 +44,7 @@ def _free_port():
 def endpoint(tmp_path_factory):
     programdata = tmp_path_factory.mktemp('p02-programdata')
     os.environ['FAKENETNG_MCP_PROGRAMDATA'] = str(programdata)
+    os.environ['FAKENETNG_MCP_TESTDOUBLE'] = '1'
     port = _free_port()
     config = ServiceConfig(listen_ip='127.0.0.1', listen_port=port,
                            allowed_host_ips=['127.0.0.1'])
@@ -67,6 +68,7 @@ def endpoint(tmp_path_factory):
     yield 'http://127.0.0.1:%d/mcp' % port
     server_module.request_shutdown()
     os.environ.pop('FAKENETNG_MCP_PROGRAMDATA', None)
+    os.environ.pop('FAKENETNG_MCP_TESTDOUBLE', None)
 
 
 def envelope():

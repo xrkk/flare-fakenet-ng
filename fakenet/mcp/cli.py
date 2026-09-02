@@ -165,6 +165,11 @@ def service_main(controller):
     stop_event = (controller.stop_event if controller is not None
                   else threading.Event())
 
+    from fakenet.mcp import jobobject
+
+    job_handle = jobobject.setup_kill_on_close_job()
+    _ = job_handle  # keep alive for the process lifetime
+
     try:
         cfg = config_module.ServiceConfig.load()
     except config_module.ConfigError as exc:
@@ -191,7 +196,19 @@ def service_main(controller):
         except RuntimeError as exc:
             logger.error('firewall verification error: %s', exc)
 
+    from fakenet.mcp import paths as mcp_paths
     from fakenet.mcp import server as server_module
+    from fakenet.mcp import snapshot as mcp_snapshot
+    from fakenet.mcp.baseline import BaselineStore
+    from fakenet.mcp.supervisor import perform_startup_recovery
+
+    dirs = mcp_paths.ensure_data_directories()
+    if os.environ.get('FAKENETNG_MCP_TESTDOUBLE') != '1':
+        outcome = perform_startup_recovery(
+            mcp_snapshot.StateSnapshot(dirs['state'] / 'state.json'),
+            BaselineStore(dirs['baselines']),
+            _RecoveryCoordinatorView())
+        logger.info('startup recovery outcome: %s', outcome)
 
     ready = threading.Event()
     failure = {'code': 0}
@@ -285,3 +302,14 @@ def main(argv=None):
         parser.print_help()
         return 2
     return args.func(args)
+
+
+class _RecoveryCoordinatorView:
+    """Minimal failure-reason carrier for the startup recovery path."""
+
+    def __init__(self):
+        self._failure_reason = None
+
+    @property
+    def failure_reason(self):
+        return self._failure_reason

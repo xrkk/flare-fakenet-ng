@@ -18,6 +18,18 @@ from fakenet.mcp.transportguard import (classify_controller_header,
                                         controller_header_state)
 
 
+def _make_snapshot(dirs):
+    from fakenet.mcp.snapshot import StateSnapshot
+
+    return StateSnapshot(dirs['state'] / 'state.json')
+
+
+def _make_baseline_store(dirs):
+    from fakenet.mcp.baseline import BaselineStore
+
+    return BaselineStore(dirs['baselines'])
+
+
 def _builtin_configs_root():
     """Built-in (read-only) configs ship next to the frozen exe; in source
     checkouts they live in the fakenet package directory."""
@@ -33,18 +45,50 @@ def _builtin_configs_root():
 
 class AppContext:
 
-    def __init__(self, config, runner=None, store=None, coordinator=None):
+    def __init__(self, config, runner=None, store=None, coordinator=None,
+                 real_supervisor=None):
         from fakenet.mcp import paths
 
         self.config = config
         dirs = paths.ensure_data_directories()
-        self.runner = runner or LifecycleDouble()
         self.store = store or ConfigStore(
             custom_root=dirs['configs_custom'],
             builtin_root=_builtin_configs_root(),
             audit_path=dirs['logs'] / 'config-audit.jsonl')
+        if runner is not None:
+            self.runner = runner
+        elif real_supervisor is not None:
+            self.runner = real_supervisor
+        else:
+            import os
+
+            if os.environ.get('FAKENETNG_MCP_TESTDOUBLE') == '1':
+                self.runner = LifecycleDouble()
+            else:
+                from fakenet.mcp.supervisor import RealSupervisor
+
+                log_path = dirs['logs'] / 'service.log'
+                self.runner = RealSupervisor(
+                    snapshot=_make_snapshot(dirs),
+                    baseline_store=_make_baseline_store(dirs),
+                    config_path_resolver=self._default_config_resolver,
+                    exclusion={
+                        'ip': (config.allowed_host_ips[0]
+                               if config.allowed_host_ips else ''),
+                        'port': str(config.listen_port),
+                    },
+                    log_reader=lambda: (
+                        log_path.read_text(encoding='utf-8',
+                                           errors='replace')[-65536:]
+                        if log_path.is_file() else ''),
+                )
         self.coordinator = coordinator or Coordinator(self.runner)
         self.artifacts_root = dirs['artifacts']
+
+    def _default_config_resolver(self, name, builtin):
+        if builtin:
+            return str(self.store.builtin_root / name)
+        return str(self.store.custom_root / name)
 
     # ---------------------------------------------------------------------
     def controller_identity(self):

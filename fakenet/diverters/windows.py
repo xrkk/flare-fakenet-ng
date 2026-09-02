@@ -128,6 +128,8 @@ ROUTE_PROBE_UDP_PORT = 9
 _REVIEWED_ROUTE_QUERY_TIMEOUT_SECONDS = 2
 _PROCESS_REDIRECT_ROUTE_QUERY_TIMEOUT_SECONDS = 10
 
+from fakenet.mcp.controlfilter import (
+    ControlFilterError, build_control_link_exclusion_clause)
 from .egresspolicy import (EgressPolicy, PolicyConfigError,
                            ReviewedPacketTuple, Verdict)
 from .processredirect import (
@@ -645,6 +647,8 @@ class Diverter(DiverterBase, WinUtilMixin):
             raise PolicyConfigError(
                 'ExternalDnsServer=Auto found no usable non-local IPv4 '
                 'resolver')
+        if configured.lower() != 'auto':
+            return valid[0]
         # Probe candidates so a dead resolver (common on multi-NIC hosts)
         # is not selected just because it is first (v1.25 §12.28).
         for candidate in valid[:3]:
@@ -655,10 +659,9 @@ class Diverter(DiverterBase, WinUtilMixin):
                         'answer; selected %s after probe',
                         valid[0], candidate)
                 return candidate
-        self.logger.warning(
-            'Auto upstream DNS: no candidate answered a probe (%s); '
-            'falling back to %s', ', '.join(valid[:3]), valid[0])
-        return valid[0]
+        raise PolicyConfigError(
+            'ExternalDnsServer=Auto: no configured resolver answered a '
+            'probe (%s)' % ', '.join(valid[:3]))
 
     def _validate_policy_listeners(self):
         relay_port = self.egress_policy.relay_port
@@ -948,9 +951,36 @@ class Diverter(DiverterBase, WinUtilMixin):
                 raise
             return process.returncode, stdout, stderr
 
+    def _apply_control_link_exclusion(self):
+        """P03: apply the MCP control-link exclusion to the FINAL main
+        filter right before the handle opens, so both filter construction
+        paths (base assignment and the egress-control rebuild) are covered;
+        exclusion params present but unverifiable => fail closed."""
+        try:
+            clause = build_control_link_exclusion_clause(
+                self.diverter_config.get('ControlLinkExcludeIp'),
+                self.diverter_config.get('ControlLinkExcludePort'))
+        except ControlFilterError as exc:
+            raise PolicyConfigError(str(exc)) from exc
+        if clause is None:
+            return
+        if clause not in self.filter:
+            self.filter = '(%s) and %s' % (self.filter, clause)
+        try:
+            valid, position, message = WinDivert.check_filter(self.filter)
+        except Exception as exc:
+            raise PolicyConfigError(
+                'control-link exclusion filter validation failed to load '
+                'the WinDivert DLL') from exc
+        if not valid:
+            raise PolicyConfigError(
+                'WinDivert rejected control-link excluded filter at %s: %s'
+                % (position, message or 'unknown filter error'))
+
     def _open_windivert_handle(self):
         if self.handle is not None:
             return
+        self._apply_control_link_exclusion()
         if getattr(self, 'process_redirect_engine', None) is not None:
             self._validate_process_redirect_windivert_runtime()
         try:
