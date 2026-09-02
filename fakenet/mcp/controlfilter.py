@@ -16,6 +16,44 @@ class ControlFilterError(ValueError):
     pass
 
 
+LEGACY_BASE = 'outbound and ip'
+DUAL_BASE = 'outbound and (ip or ipv6)'
+
+
+def apply_control_link_exclusion(filter_string, exclude_ip, exclude_port):
+    """Append the control-link exclusion to a known main-filter shape.
+
+    WinDivert's language has no unary negation, so the exclusion uses the
+    De-Morgan form ``ip.DstAddr != H or tcp.SrcPort != P`` and is folded
+    only into the IPv4 arm, leaving IPv6 capture semantics untouched.
+
+    Recognized shapes (the only ones the diverter produces):
+      * ``outbound and ip``                                (legacy)
+      * ``outbound and (ip or ipv6)``                      (egress control)
+      * ``(...)`` starting with the dual base              (process-redirect
+        rebuild, where the base appears as a leading arm)
+
+    Unknown shapes raise ControlFilterError => fail closed.
+    """
+    clause = build_control_link_exclusion_clause(exclude_ip, exclude_port)
+    if clause is None:
+        return filter_string
+    ip, port = str(exclude_ip).strip(), str(exclude_port).strip()
+    negative = '(ip.DstAddr != %s or tcp.SrcPort != %s)' % (ip, port)
+    if negative in filter_string:
+        return filter_string
+    if filter_string == LEGACY_BASE:
+        return 'outbound and ip and %s' % negative
+    if filter_string == DUAL_BASE:
+        return '(outbound and ip and %s) or (outbound and ipv6)' % negative
+    if filter_string.startswith(DUAL_BASE):
+        head = '(outbound and ip and %s) or (outbound and ipv6)' % negative
+        return head + filter_string[len(DUAL_BASE):]
+    raise ControlFilterError(
+        'unrecognized main filter shape for control-link exclusion: %r'
+        % filter_string[:120])
+
+
 def build_control_link_exclusion_clause(exclude_ip, exclude_port):
     """Return the `not (...)` clause, or None when no exclusion is set.
 

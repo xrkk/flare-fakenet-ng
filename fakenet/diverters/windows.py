@@ -129,7 +129,7 @@ _REVIEWED_ROUTE_QUERY_TIMEOUT_SECONDS = 2
 _PROCESS_REDIRECT_ROUTE_QUERY_TIMEOUT_SECONDS = 10
 
 from fakenet.mcp.controlfilter import (
-    ControlFilterError, build_control_link_exclusion_clause)
+    ControlFilterError, apply_control_link_exclusion)
 from .egresspolicy import (EgressPolicy, PolicyConfigError,
                            ReviewedPacketTuple, Verdict)
 from .processredirect import (
@@ -957,15 +957,14 @@ class Diverter(DiverterBase, WinUtilMixin):
         paths (base assignment and the egress-control rebuild) are covered;
         exclusion params present but unverifiable => fail closed."""
         try:
-            clause = build_control_link_exclusion_clause(
+            self.filter = apply_control_link_exclusion(
+                self.filter,
                 self._dict.get('controllinkexcludeip'),
                 self._dict.get('controllinkexcludeport'))
         except ControlFilterError as exc:
             raise PolicyConfigError(str(exc)) from exc
-        if clause is None:
+        if self.filter is None:
             return
-        if clause not in self.filter:
-            self.filter = '(%s) and %s' % (self.filter, clause)
         try:
             valid, position, message = WinDivert.check_filter(self.filter)
         except Exception as exc:

@@ -7,6 +7,7 @@ import pytest
 
 from fakenet.mcp.baseline import BASELINE_FIELDS
 from fakenet.mcp.controlfilter import (ControlFilterError,
+                                       apply_control_link_exclusion,
                                        build_control_link_exclusion_clause)
 from fakenet.mcp.snapshot import SnapshotError, StateSnapshot
 from fakenet.mcp.supervisor import perform_startup_recovery
@@ -15,6 +16,31 @@ from fakenet.mcp.supervisor import perform_startup_recovery
 def test_clause_built_for_valid_pair():
     assert build_control_link_exclusion_clause('192.168.204.1', 28788) == \
         '!(ip.DstAddr == 192.168.204.1 and tcp.SrcPort == 28788)'
+
+
+def test_apply_exclusion_known_shapes():
+    negative = '(ip.DstAddr != 192.168.204.1 or tcp.SrcPort != 28788)'
+    assert apply_control_link_exclusion(
+        'outbound and ip', '192.168.204.1', '28788') == \
+        'outbound and ip and %s' % negative
+    assert apply_control_link_exclusion(
+        'outbound and (ip or ipv6)', '192.168.204.1', '28788') == \
+        '(outbound and ip and %s) or (outbound and ipv6)' % negative
+    rebuilt = ('(outbound and (ip or ipv6)) or (inbound and ip and '
+               'ip.SrcAddr == 1.2.3.4 and ip.DstAddr == 5.6.7.8 and '
+               'ip.Protocol == 6)')
+    applied = apply_control_link_exclusion(
+        rebuilt, '192.168.204.1', '28788')
+    assert applied.startswith(
+        '(outbound and ip and %s) or (outbound and ipv6)) or (' % negative)
+    assert apply_control_link_exclusion(
+        'outbound and ip', '', '') == 'outbound and ip'
+
+
+def test_apply_exclusion_unknown_shape_fails_closed():
+    with pytest.raises(ControlFilterError):
+        apply_control_link_exclusion(
+            'something else entirely', '192.168.204.1', '28788')
 
 
 def test_clause_none_when_unset():
