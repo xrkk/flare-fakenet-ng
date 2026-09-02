@@ -420,7 +420,7 @@ class RealSupervisor:
                 controller=coord.controller,
                 controller_valid=True, kind='protective_stop',
                 describe={'reason': reason},
-                execute=lambda c: self.stop(c))
+                execute=lambda c: self.stop(c), internal=True)
         except Exception:  # noqa: BLE001 - raw stop then forced release
             logger.exception('protective stop via coordinator failed; '
                              'falling back to raw stop + forced release')

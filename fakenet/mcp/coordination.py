@@ -91,7 +91,8 @@ class Coordinator:
 
     # -- mutation surface --------------------------------------------------
     def submit(self, *, command_id, expected_version, controller,
-               controller_valid, kind, describe, execute):
+               controller_valid, kind, describe, execute,
+               internal=False):
         """Run one serialized mutation.
 
         ``execute`` is called with this coordinator while the lock is held;
@@ -99,8 +100,10 @@ class Coordinator:
         """
         with self._lock:
             # 0. controlled-exit gate (P04 IMP-P04-06): once draining,
-            # every new mutation is rejected immediately, never queued.
-            if self._draining:
+            # every new CLIENT mutation is rejected immediately, never
+            # queued; the service's own protective/controlled stop is an
+            # internal transition and may proceed.
+            if self._draining and not internal:
                 raise errors.McpError(
                     errors.NOT_ALLOWED_IN_STATE,
                     'service is in controlled shutdown; new mutations '

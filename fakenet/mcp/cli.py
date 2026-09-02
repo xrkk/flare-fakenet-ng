@@ -239,7 +239,8 @@ def service_main(controller):
                     controller=context.coordinator.controller,
                     controller_valid=True, kind='service_controlled_stop',
                     describe={},
-                    execute=lambda coord: context.runner.stop(coord))
+                    execute=lambda coord: context.runner.stop(coord),
+                    internal=True)
             logger.info('controlled exit convergence complete')
         except Exception:  # noqa: BLE001
             logger.exception('controlled exit convergence failed; '
