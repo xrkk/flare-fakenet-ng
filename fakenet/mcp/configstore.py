@@ -114,14 +114,15 @@ class ConfigStore:
     # -- path resolution ---------------------------------------------------
     def _custom_path(self, name):
         validate_name(name)
-        candidate = (self.custom_root / name).resolve()
+        raw = self.custom_root / name
+        if raw.is_symlink():
+            raise errors.McpError(
+                errors.PATH_ESCAPE_BLOCKED, 'symlink rejected',
+                {'name': name})
+        candidate = raw.resolve()
         if candidate.parent != self.custom_root.resolve():
             raise errors.McpError(
                 errors.PATH_ESCAPE_BLOCKED, 'resolved path escapes root',
-                {'name': name})
-        if candidate.is_symlink():
-            raise errors.McpError(
-                errors.PATH_ESCAPE_BLOCKED, 'symlink rejected',
                 {'name': name})
         return candidate
 

@@ -23,7 +23,9 @@ def _can_symlink():
             link = os.path.join(tmp, 'l.ini')
             open(target, 'w').close()
             os.symlink(target, link)
-            return True
+            # Some Wine configurations silently materialize a copy instead
+            # of a real link; only run when a true symlink round-trips.
+            return os.path.islink(link)
     except OSError:
         return False
 
