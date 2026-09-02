@@ -141,6 +141,12 @@ class RealSupervisor:
                 if self._coordinator is not None and \
                         self._coordinator.snapshot()['state'] == 'starting':
                     self._coordinator.update_health_state('healthy')
+            elif self._worker is not None and not self._worker.is_alive() \
+                    and not self._init_evidence():
+                self._failure_reason = 'run thread exited without init'
+                if self._coordinator is not None:
+                    self._coordinator.update_health_state(
+                        'failed', self._failure_reason)
             else:
                 logger.warning('health revoked/demoted: %s', reason)
                 self._failure_reason = reason
@@ -279,18 +285,40 @@ class RealSupervisor:
             self._stop_event.set()
             from fakenet.payload_report import PayloadReportError
 
-            try:
-                self._fakenet.stop()
-            except PayloadReportError as exc:
-                # Platform cleanup and capture close already succeeded when
-                # the report layer raises; the report artifact itself is a
-                # P04 concern, not an environment recovery failure.
-                logger.warning('payload report generation failed: %r', exc)
-            except Exception as exc:  # noqa: BLE001
-                logger.exception('fakenet stop raised')
+            stop_outcome = {}
+
+            def guarded_stop():
+                try:
+                    self._fakenet.stop()
+                except PayloadReportError as exc:
+                    # Platform cleanup and capture close already succeeded
+                    # when the report layer raises; the report artifact is a
+                    # P04 concern, not an environment recovery failure.
+                    stop_outcome['report_warning'] = repr(exc)
+                except BaseException as exc:  # noqa: BLE001
+                    stop_outcome['error'] = exc
+
+            stop_worker = threading.Thread(target=guarded_stop, daemon=True)
+            stop_worker.start()
+            stop_worker.join(self._stop_grace)
+            if stop_worker.is_alive():
+                # Bounded stop (FB-005 P03 share): keep the recovery marker,
+                # drop references and report failed; the next service start
+                # runs the recovery audit.
+                logger.error('stop grace (%ss) exceeded', self._stop_grace)
                 self._teardown()
                 return {'state': 'failed', 'changed': True,
-                        'failure_reason': 'stop failed: %r' % exc,
+                        'failure_reason': 'stop grace exceeded',
+                        'run_id': None, 'release_controller': True}
+            if 'report_warning' in stop_outcome:
+                logger.warning('payload report generation failed: %s',
+                               stop_outcome['report_warning'])
+            if 'error' in stop_outcome:
+                logger.error('fakenet stop raised: %r', stop_outcome['error'])
+                self._teardown()
+                return {'state': 'failed', 'changed': True,
+                        'failure_reason': 'stop failed: %r' %
+                                          stop_outcome['error'],
                         'run_id': None, 'release_controller': True}
             self._restore_cwd()
             run_id = coordinator.snapshot().get('run_id')
