@@ -166,10 +166,14 @@ def service_main(controller):
     stop_event = (controller.stop_event if controller is not None
                   else threading.Event())
 
-    from fakenet.mcp import jobobject
+    if controller is not None:
+        # kill-on-close job belongs to the SCM-hosted service process; the
+        # foreground debug path deliberately runs without self-assignment
+        # (record 025 covers the service, not interactive debug runs).
+        from fakenet.mcp import jobobject
 
-    job_handle = jobobject.setup_kill_on_close_job()
-    _ = job_handle  # keep alive for the process lifetime
+        job_handle = jobobject.setup_kill_on_close_job()
+        _ = job_handle  # keep alive for the process lifetime
 
     try:
         cfg = config_module.ServiceConfig.load()

@@ -25,6 +25,7 @@ config path BEFORE Fakenet parses it) -> write recovery-marked snapshot
 
 import hashlib
 import logging
+import os
 import re
 import threading
 import time
@@ -163,12 +164,18 @@ class RealSupervisor:
                 config_identity['name'], config_identity.get('builtin'))
             self._verify_config_sha(config_path, config_identity['sha256'])
 
-            # IMP-P03-05 frozen order: lock BEFORE reading/parsing.
+            # IMP-P03-05 frozen order: lock BEFORE reading/parsing — the
+            # active config is locked whether builtin or custom.
             from fakenet.mcp.configlock import ActivityLock
 
-            if not config_identity.get('builtin'):
-                self._activity_lock = ActivityLock(config_path).acquire()
+            self._activity_lock = ActivityLock(config_path).acquire()
 
+            # Fakenet resolves packaged resources (defaultFiles/, report
+            # templates) relative to the process CWD; the service runs from
+            # System32, so pin the CWD to the package root for the run.
+            package_root = os.path.dirname(os.path.abspath(config_path))
+            self._previous_cwd = os.getcwd()
+            os.chdir(package_root)
             instance = Fakenet()
             instance.parse_config(config_path)
             self._inject_exclusion(instance)
@@ -224,11 +231,15 @@ class RealSupervisor:
                     not self._init_evidence():
                 time.sleep(0.2)
             if start_error:
+                logger.error('managed start failed: %s',
+                             start_error['reason'])
                 try:
                     instance.stop()
                 except BaseException:  # noqa: BLE001 - best-effort rollback
                     logger.exception('rollback stop after failed start '
                                      'raised')
+                finally:
+                    self._restore_cwd()
                 self._teardown()
                 if self._snapshot is not None and \
                         self._last_snapshot_fields is not None:
@@ -273,6 +284,7 @@ class RealSupervisor:
                 return {'state': 'failed', 'changed': True,
                         'failure_reason': 'stop failed: %r' % exc,
                         'run_id': None, 'release_controller': True}
+            self._restore_cwd()
             run_id = coordinator.snapshot().get('run_id')
             if self._baseline_store is not None and run_id:
                 differences = self._baseline_store.diff(str(run_id))
@@ -324,6 +336,15 @@ class RealSupervisor:
             self._exclusion.get('ip', '')
         instance.diverter_config['ControlLinkExcludePort'] = \
             self._exclusion.get('port', '')
+
+    def _restore_cwd(self):
+        previous = getattr(self, '_previous_cwd', None)
+        if previous:
+            try:
+                os.chdir(previous)
+            except OSError:
+                pass
+            self._previous_cwd = None
 
     def _teardown(self):
         self._fakenet = None
