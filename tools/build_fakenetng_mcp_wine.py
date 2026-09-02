@@ -285,17 +285,25 @@ def smoke_frozen_exe(onedir, build_root):
             raise RuntimeError('frozen exe smoke: service never became '
                                'ready; exe log tail:\n%s' % log_tail)
 
+        def parse_tool_result(text):
+            envelope = json.loads(text)
+            return json.loads(envelope['result']['content'][0]['text'])
+
         discover_text = wait_ready()
         if '2026-07-28' not in discover_text:
             raise RuntimeError('frozen exe smoke: discover missing version')
         status, text = post(body, full_headers)
-        if status != 200 or '"valid_uuid"' not in text:
+        if status != 200:
             raise RuntimeError(
                 'frozen exe smoke: ping failed (%d): %s' % (status, text[:300]))
+        if parse_tool_result(text)['controller_header'] != 'valid_uuid':
+            raise RuntimeError('frozen exe smoke: controller header not '
+                               'delivered: %s' % text[:300])
         bare = {k: v for k, v in full_headers.items()
                 if k != 'X-FakeNet-Controller-ID'}
         status, text = post(body, bare)
-        if status != 200 or '"missing"' not in text:
+        if status != 200 or \
+                parse_tool_result(text)['controller_header'] != 'missing':
             raise RuntimeError('frozen exe smoke: headerless ping unexpected: '
                                '(%d) %s' % (status, text[:200]))
         no_version = {k: v for k, v in bare.items()
