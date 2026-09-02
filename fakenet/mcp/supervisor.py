@@ -29,6 +29,8 @@ import re
 import threading
 import time
 
+from fakenet.mcp import errors
+
 logger = logging.getLogger('fakenetng-mcp.supervisor')
 
 HEALTH_INTERVAL_SECONDS = 2.0
@@ -71,6 +73,9 @@ class RealSupervisor:
         self._snapshot = snapshot
         self._baseline_store = baseline_store
         self._exclusion = dict(exclusion or {})
+        self._coordinator = None
+        self._activity_lock = None
+        self._last_snapshot_fields = None
         self._log_exception_at = None
         self._log_exception_seen = False
 
@@ -127,20 +132,40 @@ class RealSupervisor:
     def _health_loop(self):
         while not self._stop_event.wait(self._health_interval):
             healthy, reason = self.evaluate_health()
-            if not healthy and self._fakenet is not None:
-                logger.warning('health revoked: %s', reason)
+            if self._fakenet is None:
+                continue
+            if healthy:
+                if self._coordinator is not None and \
+                        self._coordinator.snapshot()['state'] == 'starting':
+                    self._coordinator.update_health_state('healthy')
+            else:
+                logger.warning('health revoked/demoted: %s', reason)
                 self._failure_reason = reason
+                if self._coordinator is not None:
+                    previous = self._coordinator.snapshot()['state']
+                    if previous in ('healthy', 'starting', 'degraded'):
+                        self._coordinator.update_health_state(
+                            'degraded' if previous != 'starting'
+                            else 'starting', reason)
 
     # -- lifecycle operations (Coordinator execute callbacks) --------------
     def start(self, coordinator, controller, config_identity):
         with self._lock:
             if self._fakenet is not None:
-                raise RuntimeError('supervisor already started')
+                raise errors.McpError(
+                    errors.NOT_ALLOWED_IN_STATE,
+                    'a managed FakeNet-NG run is already active')
             from fakenet.fakenet import Fakenet
 
             config_path = self._resolve_config_path(
                 config_identity['name'], config_identity.get('builtin'))
             self._verify_config_sha(config_path, config_identity['sha256'])
+
+            # IMP-P03-05 frozen order: lock BEFORE reading/parsing.
+            from fakenet.mcp.configlock import ActivityLock
+
+            if not config_identity.get('builtin'):
+                self._activity_lock = ActivityLock(config_path).acquire()
 
             instance = Fakenet()
             instance.parse_config(config_path)
@@ -158,9 +183,18 @@ class RealSupervisor:
                     baseline_path=str(getattr(self._baseline_store, 'root',
                                               '')),
                     needs_recovery=True)
+            self._last_snapshot_fields = {
+                'run_id': run_id, 'controller_id': None,
+                'state_version': coordinator.snapshot()['state_version'],
+                'command_id': None,
+                'config_sha256': config_identity['sha256'],
+                'baseline_path': str(getattr(self._baseline_store, 'root',
+                                             '')),
+            }
 
             self._failure_reason = None
             self._stop_event.clear()
+            self._coordinator = coordinator
             self._fakenet = instance
 
             start_error = {}
@@ -212,6 +246,13 @@ class RealSupervisor:
                         'run_id': None, 'release_controller': True}
             run_id = coordinator.snapshot().get('run_id')
             self._teardown()
+            if self._snapshot is not None and \
+                    self._last_snapshot_fields is not None:
+                try:
+                    self._snapshot.clear_recovery(
+                        **self._last_snapshot_fields)
+                except Exception:  # noqa: BLE001 - snapshot is a note
+                    logger.exception('clearing recovery marker failed')
             return {'state': 'stopped', 'changed': True, 'run_id': None,
                     'failure_reason': None, 'release_controller': True}
 
@@ -245,6 +286,10 @@ class RealSupervisor:
     def _teardown(self):
         self._fakenet = None
         self._worker = None
+        self._coordinator = None
+        if self._activity_lock is not None:
+            self._activity_lock.release()
+            self._activity_lock = None
         if self._health_thread is not None:
             self._health_thread = None
 

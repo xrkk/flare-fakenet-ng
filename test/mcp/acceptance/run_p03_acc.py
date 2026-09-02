@@ -90,11 +90,13 @@ def run_acc001(base, channel, writer):
 
     # Second service instance attempt: starting the exe manually must exit 3
     second = channel.powershell(
-        "Start-Process -FilePath 'C:\\FakeNetMCP\\candidate\\fakenetng-mcp.exe'"
-        " -ArgumentList 'debug' -Wait -PassThru -WindowStyle Hidden | "
-        'Select-Object -ExpandProperty ExitCode', timeout=120)
+        "$p = Start-Process -FilePath "
+        "'C:\\FakeNetMCP\\candidate\\fakenetng-mcp.exe' "
+        "-ArgumentList 'debug' -PassThru -WindowStyle Hidden; "
+        '$p.WaitForExit(); $p.ExitCode', timeout=120)
     writer.add_evidence('acc001-second-instance', second)
-    checks['second_instance_rejected'] = second['output'].strip() == '3'
+    checks['second_instance_rejected'] = \
+        second['output'].strip().splitlines()[-1].strip() == '3'
 
     # GUI co-control: no GUI process for fakenet; the managed instance is
     # unique through the coordinator (start while running => conflict).
@@ -137,7 +139,7 @@ def run_acc004(base, channel, writer):
     version = status(base)['state_version']
     created = call(base, 'create_config',
                    {'name': 'broken-%s.ini' % unique_command('x')[:8],
-                    'content': '[FakeNet]\nDumpPackets = definitely-not\n',
+                    'content': 'no-section-header garbage = broken\n',
                     'command_id': unique_command('a4-bad'),
                     'expected_state_version': version})
     if created.get('error') is None:
@@ -378,6 +380,7 @@ def run_acc009(base, channel, writer):
     restarted = call(base, 'restart',
                      {'command_id': unique_command('a9-restart'),
                       'expected_state_version': version})
+    writer.add_evidence('acc009-restart-payload', restarted)
     checks['restart_ok'] = restarted.get('error') is None
     checks['restart_binds_original_run'] = \
         restarted.get('run_id') == run_before

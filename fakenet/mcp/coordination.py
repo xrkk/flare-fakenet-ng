@@ -174,6 +174,15 @@ class Coordinator:
                 self._commands.popitem(last=False)
             return dict(response)
 
+    def update_health_state(self, state, failure_reason=None):
+        """Autonomous health transition (observation, not a mutation):
+        records state/failure_reason without touching state_version."""
+        with self._lock:
+            self._state = state
+            self._failure_reason = failure_reason
+            self._events.record('health', state=state,
+                                failure_reason=failure_reason)
+
     def forget_commands(self):
         """Test/verification hook: simulate process restart semantics."""
         with self._lock:
