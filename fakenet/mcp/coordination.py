@@ -60,6 +60,7 @@ class Coordinator:
         self._config_identity = None
         self._commands = OrderedDict()
         self._draining = False
+        self._last_run_outcome = None
 
     # -- read-only surface -------------------------------------------------
     def snapshot(self):
@@ -165,6 +166,9 @@ class Coordinator:
                 'command.completed', command_id=command_id, kind=kind,
                 state=self._state, state_version=self._state_version)
 
+            if result.get('release_controller') and \
+                    result.get('state') == 'stopped':
+                self._last_run_outcome = 'ok'
             response = {
                 'state': self._state,
                 'state_version': self._state_version,
@@ -172,6 +176,7 @@ class Coordinator:
                 'changed': bool(result.get('changed', True)),
                 'error': None,
                 'command_id': command_id,
+                'last_run_outcome': self._last_run_outcome,
             }
             self._commands[command_id] = {
                 'controller': controller, 'response': response,
@@ -180,6 +185,23 @@ class Coordinator:
             if len(self._commands) > COMMAND_CACHE_LIMIT:
                 self._commands.popitem(last=False)
             return dict(response)
+
+    def record_terminal_failure(self, reason):
+        """P04: protective-stop bookkeeping — the coordinator released the
+        run (run_id/controller cleared) but lands in failed with
+        last_run_outcome=failed and the reason kept observable."""
+        with self._lock:
+            self._run_id = None
+            self._controller = None
+            self._state = 'failed'
+            self._failure_reason = reason
+            self._last_run_outcome = 'failed'
+            self._events.record('terminal_failure', reason=reason)
+
+    @property
+    def last_run_outcome(self):
+        with self._lock:
+            return getattr(self, '_last_run_outcome', None)
 
     def begin_draining(self):
         with self._lock:

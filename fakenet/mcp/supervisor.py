@@ -407,12 +407,29 @@ class RealSupervisor:
             self._collect_incident(reason)
         except Exception:  # noqa: BLE001 - evidence must not block cleanup
             logger.exception('incident collection failed')
-        if self._coordinator is not None:
-            self._coordinator.update_health_state('failed', reason)
+        coord = self._coordinator
+        if coord is None:
+            return
+        coord.update_health_state('failed', reason)
+        import uuid as _uuid
+
         try:
-            self.stop(self._coordinator)
-        except Exception:  # noqa: BLE001
-            logger.exception('protective stop failed')
+            coord.submit(
+                command_id='protective-stop-%s' % _uuid.uuid4(),
+                expected_version=coord.snapshot()['state_version'],
+                controller=coord.controller,
+                controller_valid=True, kind='protective_stop',
+                describe={'reason': reason},
+                execute=lambda c: self.stop(c))
+        except Exception:  # noqa: BLE001 - raw stop then forced release
+            logger.exception('protective stop via coordinator failed; '
+                             'falling back to raw stop + forced release')
+            try:
+                self.stop(coord)
+            except Exception:  # noqa: BLE001
+                logger.exception('raw protective stop failed')
+        finally:
+            coord.record_terminal_failure(reason)
 
     def _collect_incident(self, reason):
         from fakenet.mcp.incident import IncidentCollector
