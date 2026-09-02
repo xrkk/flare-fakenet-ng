@@ -99,9 +99,10 @@ def wine_python_logged(arguments, cwd, log_path, env=None):
     output = completed.stdout or ''
     log_path.write_text(output, encoding='utf-8')
     if completed.returncode != 0:
+        tail = '\n'.join(output.splitlines()[-30:])
         raise RuntimeError(
-            'Windows-Python command failed (%d); see %s' %
-            (completed.returncode, log_path))
+            'Windows-Python command failed (%d); log tail:\n%s' %
+            (completed.returncode, tail))
     return completed
 
 
@@ -266,8 +267,11 @@ def smoke_frozen_exe(onedir, build_root):
                 except (urllib.error.URLError, OSError):
                     pass
                 time.sleep(1.0)
-            raise RuntimeError('frozen exe smoke: service never became ready '
-                               '(see %s)' % log_path)
+            log_tail = '\n'.join(
+                log_path.read_text(encoding='utf-8',
+                                   errors='replace').splitlines()[-40:])
+            raise RuntimeError('frozen exe smoke: service never became '
+                               'ready; exe log tail:\n%s' % log_tail)
 
         discover_text = wait_ready()
         if '2026-07-28' not in discover_text:
