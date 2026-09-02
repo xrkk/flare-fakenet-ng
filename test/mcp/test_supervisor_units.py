@@ -14,7 +14,7 @@ from fakenet.mcp.supervisor import perform_startup_recovery
 
 def test_clause_built_for_valid_pair():
     assert build_control_link_exclusion_clause('192.168.204.1', 28788) == \
-        'not (ip.DstAddr == 192.168.204.1 and tcp.SrcPort == 28788)'
+        '!(ip.DstAddr == 192.168.204.1 and tcp.SrcPort == 28788)'
 
 
 def test_clause_none_when_unset():

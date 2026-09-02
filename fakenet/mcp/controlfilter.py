@@ -41,5 +41,6 @@ def build_control_link_exclusion_clause(exclude_ip, exclude_port):
         raise ControlFilterError(
             'ControlLinkExcludeIp must be a canonical IPv4 address '
             '(fail closed)')
-    return 'not (ip.DstAddr == %s and tcp.SrcPort == %s)' % (
+    # WinDivert's filter language spells negation '!'; 'not' is a parse error.
+    return '!(ip.DstAddr == %s and tcp.SrcPort == %s)' % (
         exclude_ip, exclude_port)
