@@ -274,7 +274,8 @@ def service_main(controller):
 
             threading.Thread(target=_watch, daemon=True).start()
             threading.Thread(target=lambda: (ready_watch.wait(30),
-                                             ready.set()), daemon=True)
+                                             ready.set()),
+                             daemon=True).start()
             instance.run()
             server_stop.set()
             ready.set()
