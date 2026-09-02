@@ -48,6 +48,35 @@ def _sc(*args):
     return completed
 
 
+def _terminate_existing_service():
+    """Stop the old service and wait until the SCM fully releases it.
+
+    ``sc create`` fails with 1072 (marked for deletion) when the previous
+    instance still has open handles; poll until ``sc query`` reports 1060.
+    """
+    import time
+
+    _sc('stop', SERVICE_NAME)
+    queryex = _sc('queryex', SERVICE_NAME)
+    for line in (queryex.stdout or '').splitlines():
+        line = line.strip()
+        if line.startswith('PID'):
+            parts = line.split()
+            if len(parts) >= 3 and parts[-1].isdigit() and parts[-1] != '0':
+                subprocess.run(['taskkill', '/F', '/PID', parts[-1]],
+                               capture_output=True, text=True)
+            break
+    _sc('delete', SERVICE_NAME)
+    deadline = time.time() + 20.0
+    while time.time() < deadline:
+        probe = _sc('query', SERVICE_NAME)
+        text = (probe.stdout or '') + (probe.stderr or '')
+        # sc.exe returns 0 even on failure; the 1060 text is the signal.
+        if '1060' in text:
+            return
+        time.sleep(0.5)
+
+
 def _exe_path():
     return os.path.abspath(sys.executable)
 
@@ -64,10 +93,17 @@ def cmd_install(args):
     paths.ensure_data_directories()
     cfg.save()
     bin_path = '"%s" run' % _exe_path()
-    _sc('stop', SERVICE_NAME)
-    _sc('delete', SERVICE_NAME)  # idempotent reinstall
-    created = _sc('create', SERVICE_NAME, 'binPath=', bin_path,
-                  'start=', 'auto', 'DisplayName=', 'FakeNet-NG MCP (fakenetng-mcp)')
+    _terminate_existing_service()
+    created = None
+    for attempt in range(3):
+        created = _sc('create', SERVICE_NAME, 'binPath=', bin_path,
+                      'start=', 'auto', 'DisplayName=',
+                      'FakeNet-NG MCP (fakenetng-mcp)')
+        if created.returncode == 0:
+            break
+        import time
+
+        time.sleep(2.0)
     if created.returncode != 0:
         print('sc create failed: %s%s' % (created.stdout, created.stderr),
               file=sys.stderr)
