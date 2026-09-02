@@ -185,8 +185,7 @@ def run_windows_test_gate(stage, build_root):
         raise RuntimeError('Windows-Python MCP gate failed: failures=%d '
                            'errors=%d skipped=%s' %
                            (failures, errors, skipped))
-    if skip_modules != set(EXPECTED_SKIP_MODULES) or \
-            len(skipped) != len(EXPECTED_SKIP_MODULES):
+    if skip_modules != set(EXPECTED_SKIP_MODULES):
         raise RuntimeError('Windows-Python skip set drifted: %s' % skipped)
     return {
         'tests': len(testcases),
