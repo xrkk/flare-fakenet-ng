@@ -35,6 +35,7 @@ from fakenet.mcp import errors
 logger = logging.getLogger('fakenetng-mcp.supervisor')
 
 HEALTH_INTERVAL_SECONDS = 2.0
+RESTART_SETTLE_SECONDS = 5.0
 UNHANDLED_EXCEPTION_PATTERN = re.compile(
     r'Traceback \(most recent call last\)|Unhandled exception', re.I)
 
@@ -343,6 +344,12 @@ class RealSupervisor:
 
     def restart(self, coordinator, controller, config_identity):
         self.stop(coordinator)
+        # Real-VM evidence (P03 round): OS socket TIME_WAIT and the
+        # WinDivert service teardown race an immediate in-process restart;
+        # a bounded settle makes restart deterministic. Record 023 requires
+        # restart to actually bring the run back, so the settle is part of
+        # the stop->start sequence, not a retry fallback.
+        time.sleep(RESTART_SETTLE_SECONDS)
         return self.start(coordinator, controller, config_identity)
 
     # -- helpers -------------------------------------------------------------
