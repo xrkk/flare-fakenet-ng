@@ -336,11 +336,16 @@ def run_acc009(base, channel, writer):
                             'custom management on real lifecycle')
     checks = {}
     lock_name = 'lock-probe-%s.ini' % unique_command('lp')[:8]
+    # A minimal ini runs no listeners (init evidence never satisfied); the
+    # lock probe needs a fully runnable custom config, so clone default.ini.
+    builtin = call(base, 'read_config', {'name': 'default.ini'},
+                   controller=None)
+    lock_content = builtin.get('content') or VALID_INI
     created_lock = call(base, 'create_config',
-                        {'name': lock_name, 'content': VALID_INI,
+                        {'name': lock_name, 'content': lock_content,
                          'command_id': unique_command('lp-c'),
                          'expected_state_version':
-                             status(base)['state_version']})
+                             status(base)['state_version']}, timeout=60)
     loaded_lock = call(base, 'load_config',
                        {'name': lock_name,
                         'command_id': unique_command('lp-l'),
@@ -386,7 +391,8 @@ def run_acc009(base, channel, writer):
     # cleanup probe config
     try:
         call(base, 'delete_config',
-             {'name': lock_name, 'expected_sha256': sha_of(VALID_INI),
+             {'name': lock_name,
+              'expected_sha256': sha_of(lock_content),
               'command_id': unique_command('lp-d'),
               'expected_state_version': status(base)['state_version']})
     except Exception:  # noqa: BLE001
