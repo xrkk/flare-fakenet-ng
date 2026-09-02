@@ -298,15 +298,17 @@ class RealSupervisor:
                 return {'state': 'stopped', 'changed': False}
             if self.stop_blocker is not None:
                 self.stop_blocker()
-            if self._faults is not None:
-                self._faults.before_listener_phase()
-                self._faults.on_stop_error()
             self._stop_event.set()
             from fakenet.payload_report import PayloadReportError
 
             stop_outcome = {}
 
             def guarded_stop():
+                if self._faults is not None:
+                    # Fault hooks live INSIDE the guarded stop so a hung
+                    # fault (policy_pause) is bounded by the stop grace.
+                    self._faults.before_listener_phase()
+                    self._faults.on_stop_error()
                 try:
                     self._fakenet.stop()
                 except PayloadReportError as exc:
