@@ -59,6 +59,7 @@ class Coordinator:
         self._failure_reason = None
         self._config_identity = None
         self._commands = OrderedDict()
+        self._draining = False
 
     # -- read-only surface -------------------------------------------------
     def snapshot(self):
@@ -96,7 +97,13 @@ class Coordinator:
         it returns ``dict(result fields)`` and may raise ``McpError``.
         """
         with self._lock:
-            # 1. identity gate (before replay, frozen order).
+            # 0. controlled-exit gate (P04 IMP-P04-06): once draining,
+            # every new mutation is rejected immediately, never queued.
+            if self._draining:
+                raise errors.McpError(
+                    errors.NOT_ALLOWED_IN_STATE,
+                    'service is in controlled shutdown; new mutations '
+                    'rejected')
             if not controller_valid:
                 raise errors.McpError(
                     errors.CONTROLLER_IDENTITY_MISSING,
@@ -173,6 +180,16 @@ class Coordinator:
             if len(self._commands) > COMMAND_CACHE_LIMIT:
                 self._commands.popitem(last=False)
             return dict(response)
+
+    def begin_draining(self):
+        with self._lock:
+            self._draining = True
+            self._events.record('draining.begin')
+
+    @property
+    def draining(self):
+        with self._lock:
+            return self._draining
 
     def update_health_state(self, state, failure_reason=None):
         """Autonomous health transition (observation, not a mutation):

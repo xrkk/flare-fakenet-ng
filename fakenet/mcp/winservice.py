@@ -18,7 +18,7 @@ SERVICE_DISPLAY_NAME = 'FakeNet-NG MCP (fakenetng-mcp)'
 _SERVICE_EXIT_ERROR = 1066
 
 
-def build_service_class(service_main):
+def build_service_class(service_main, orchestrator=None):
     """Return a ServiceFramework subclass running ``service_main(stop_event)``.
 
     ``service_main`` returns 0 for a clean stop or non-zero for a
@@ -58,10 +58,37 @@ def build_service_class(service_main):
 
             self.stop_event = threading.Event()
             self.svcmgr = servicemanager
+            self.orchestrator = None
 
         def SvcStop(self):
-            self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
+            # P04 IMP-P04-06: controlled exit — checkpoint refresh keeps the
+            # SCM from force-killing the long convergence (which would
+            # degrade this into the ACC-007 crash path).
+            self.ReportServiceStatus(
+                win32service.SERVICE_STOP_PENDING,
+                waitHint=_STOP_HINT_MS + 30000)
+            self._checkpoint_thread = threading.Thread(
+                target=self._refresh_checkpoints, daemon=True)
+            self._checkpoint_thread.start()
+            hook = controlled_exit_hook
+            if hook is not None:
+                threading.Thread(target=hook, daemon=True).start()
             self.stop_event.set()
+
+        def _refresh_checkpoints(self):
+            import servicemanager
+            import time
+
+            checkpoint = 1
+            while not self.stop_event.wait(10):
+                checkpoint += 1
+                try:
+                    self.ReportServiceStatus(
+                        win32service.SERVICE_STOP_PENDING,
+                        waitHint=_STOP_HINT_MS + 30000,
+                        checkpoint=checkpoint)
+                except Exception:  # noqa: BLE001 - best effort
+                    return
 
         def SvcDoRun(self):
             self.svcmgr.LogInfoMsg('%s starting' % SERVICE_NAME)

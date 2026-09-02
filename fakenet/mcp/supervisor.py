@@ -27,6 +27,7 @@ import hashlib
 import logging
 import os
 import re
+import sys
 import threading
 import time
 
@@ -36,6 +37,7 @@ logger = logging.getLogger('fakenetng-mcp.supervisor')
 
 HEALTH_INTERVAL_SECONDS = 2.0
 RESTART_SETTLE_SECONDS = 5.0
+UNHEALTHY_TERMINAL_CYCLES = 2
 UNHANDLED_EXCEPTION_PATTERN = re.compile(
     r'Traceback \(most recent call last\)|Unhandled exception', re.I)
 
@@ -53,8 +55,9 @@ class RealSupervisor:
 
     def __init__(self, coordination_cls=None, snapshot=None,
                  baseline_store=None, config_path_resolver=None,
-                 stop_grace_seconds=30.0, health_interval=None,
-                 log_reader=None, probe_impl=None, exclusion=None):
+                 stop_grace_seconds=60.0, health_interval=None,
+                 log_reader=None, probe_impl=None, exclusion=None,
+                 artifacts_root=None, fault_injector=None):
         from fakenet.mcp.snapshot import StateSnapshot
         from fakenet.mcp.baseline import BaselineStore
 
@@ -80,8 +83,11 @@ class RealSupervisor:
         self._coordinator = None
         self._activity_lock = None
         self._last_snapshot_fields = None
-        self._log_exception_at = None
-        self._log_exception_seen = False
+        self._artifacts_root = artifacts_root
+        self._faults = fault_injector
+        self._terminal_evidence = None
+        self._last_run_outcome = None
+        self._log_exception_seen_count = 0
 
     # -- health inputs -----------------------------------------------------
     def _probe(self):
@@ -139,6 +145,7 @@ class RealSupervisor:
             if self._fakenet is None:
                 continue
             if healthy:
+                self._log_exception_seen_count = 0
                 if self._coordinator is not None and \
                         self._coordinator.snapshot()['state'] == 'starting':
                     self._coordinator.update_health_state('healthy')
@@ -148,6 +155,13 @@ class RealSupervisor:
                 if self._coordinator is not None:
                     self._coordinator.update_health_state(
                         'failed', self._failure_reason)
+            elif healthy is False and reason and \
+                    'unhandled exception' in reason:
+                self._log_exception_seen_count += 1
+                probe_dead = not self._probe()
+                if probe_dead or self._log_exception_seen_count >= \
+                        UNHEALTHY_TERMINAL_CYCLES:
+                    self._handle_terminal_failure(reason)
             else:
                 logger.warning('health revoked/demoted: %s', reason)
                 self._failure_reason = reason
@@ -175,6 +189,7 @@ class RealSupervisor:
             # active config is locked whether builtin or custom.
             from fakenet.mcp.configlock import ActivityLock
 
+            self._active_config_path = config_path
             self._activity_lock = ActivityLock(config_path).acquire()
 
             # Fakenet resolves packaged resources (defaultFiles/, report
@@ -283,6 +298,9 @@ class RealSupervisor:
                 return {'state': 'stopped', 'changed': False}
             if self.stop_blocker is not None:
                 self.stop_blocker()
+            if self._faults is not None:
+                self._faults.before_listener_phase()
+                self._faults.on_stop_error()
             self._stop_event.set()
             from fakenet.payload_report import PayloadReportError
 
@@ -379,6 +397,53 @@ class RealSupervisor:
             self._exclusion.get('ip', '')
         instance.diverter_config['ControlLinkExcludePort'] = \
             self._exclusion.get('port', '')
+
+    def _handle_terminal_failure(self, reason):
+        """Terminal internal failure (record 034): bounded incident first,
+        then the unified stop sequence; never waits for the controller."""
+        logger.error('terminal internal failure: %s', reason)
+        self._terminal_evidence = reason
+        try:
+            self._collect_incident(reason)
+        except Exception:  # noqa: BLE001 - evidence must not block cleanup
+            logger.exception('incident collection failed')
+        if self._coordinator is not None:
+            self._coordinator.update_health_state('failed', reason)
+        try:
+            self.stop(self._coordinator)
+        except Exception:  # noqa: BLE001
+            logger.exception('protective stop failed')
+
+    def _collect_incident(self, reason):
+        from fakenet.mcp.incident import IncidentCollector
+
+        if not self._artifacts_root or not self._coordinator:
+            return
+        run_id = self._coordinator.snapshot().get('run_id')
+        if not run_id:
+            return
+        context = {
+            'timeline': self._coordinator.events(500),
+            'versions': {
+                'python': sys.version,
+                'platform': sys.platform,
+                'service': 'fakenetng-mcp',
+            },
+            'config_path': getattr(self, '_active_config_path', None),
+            'stdout_stderr': '',
+            'run_log_window': self._log_reader(
+                getattr(self, '_log_offset', 0)) if self._log_reader else '',
+            'exception_text': reason,
+            'final_filter': getattr(self._fakenet.diverter, 'filter', None)
+            if self._fakenet and getattr(self._fakenet, 'diverter', None)
+            else None,
+            'baseline_diff': {},
+            'artifact_metadata': [],
+            'dump_reason': 'unhandled exception signature' if 'exception'
+                           in reason else None,
+        }
+        collector = IncidentCollector(self._artifacts_root, run_id)
+        collector.collect(context)
 
     def _restore_cwd(self):
         previous = getattr(self, '_previous_cwd', None)

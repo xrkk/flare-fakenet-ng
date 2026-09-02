@@ -30,6 +30,57 @@ def _run(command, timeout=60):
         return ''
 
 
+def _normalize(section, value):
+    """Section-specific normalization for the FULL audit comparison (P04):
+    strip volatile rows (PIDs, non-LISTEN states, ordering, duplicates)."""
+    if value is None:
+        return ''
+    text = str(value)
+    if section == 'routes':
+        lines = [line.strip() for line in text.splitlines()
+                 if line.strip() and not line.startswith('=')]
+        return '\n'.join(sorted(set(lines)))
+    if section == 'dns_servers':
+        return '\n'.join(sorted(set(
+            line.strip() for line in text.splitlines() if line.strip())))
+    if section == 'windivert_processes':
+        return '\n'.join(sorted(set(
+            line.strip() for line in text.splitlines()
+            if line.strip() and '===' not in line and
+            'Image Name' not in line and '=====' not in line)))
+    if section == 'listen_ports':
+        keep = []
+        for line in text.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[3].upper() == 'LISTENING':
+                keep.append(' '.join(parts[:3]))  # proto/local/foreign
+        return '\n'.join(sorted(set(keep)))
+    if section == 'services':
+        keep = []
+        for line in text.splitlines():
+            if any(name in line for name in ('dnscache', 'mpssvc',
+                                             'Dnscache', 'Mpssvc',
+                                             'DNS Client', 'Windows '
+                                             'Defender Firewall')):
+                keep.append(line.strip().rstrip('RunningStopped'))
+        return '\n'.join(sorted(set(keep)))
+    return text.strip()
+
+
+def audit_compare(baseline_sections, current_sections):
+    """Full five-section audit diff with per-section normalization; used by
+    the P04 recovery auditor (the P03 startup path keeps its stable-section
+    recovery equality)."""
+    differences = {}
+    for section in BASELINE_FIELDS:
+        before = _normalize(section,
+                            (baseline_sections or {}).get(section))
+        after = _normalize(section, (current_sections or {}).get(section))
+        if before != after:
+            differences[section] = {'before': before, 'after': after}
+    return differences
+
+
 def capture():
     """Collect the current environment baseline sections."""
     routes = _run(['route', 'print', '-4'])
@@ -94,3 +145,11 @@ class BaselineStore:
             if before != after:
                 differences[field] = {'before': before, 'after': after}
         return differences
+
+    def full_audit_diff(self, run_id):
+        """P04 full recovery audit: all five normalized sections must match
+        the pre-start baseline."""
+        baseline = self.load(run_id)
+        if baseline is None:
+            return {'__missing_baseline__': True}
+        return audit_compare(baseline.get('sections'), capture())

@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 
 from fakenet.mcp import MCP_PACKAGE_NAME, MCP_PACKAGE_VERSION
 from fakenet.mcp import config as config_module
@@ -208,6 +209,8 @@ def service_main(controller):
     from fakenet.mcp.supervisor import perform_startup_recovery
 
     dirs = mcp_paths.ensure_data_directories()
+    context = None  # populated below when the server context is built
+
     if os.environ.get('FAKENETNG_MCP_TESTDOUBLE') != '1':
         outcome = perform_startup_recovery(
             mcp_snapshot.StateSnapshot(dirs['state'] / 'state.json'),
@@ -218,8 +221,73 @@ def service_main(controller):
     ready = threading.Event()
     failure = {'code': 0}
     server_stop = threading.Event()
+    controlled_exit = threading.Event()
+
+    def begin_controlled_exit():
+        """P04 IMP-P04-06: invoked by SvcStop — reject new mutations,
+        keep queries alive, run the full stop+recovery audit, then allow
+        the endpoint to close and report the real outcome to the SCM."""
+        try:
+            context.coordinator.begin_draining()
+            if context.coordinator.running:
+                version = context.coordinator.snapshot()['state_version']
+                import uuid as _uuid
+
+                context.coordinator.submit(
+                    command_id='controlled-exit-%s' % _uuid.uuid4(),
+                    expected_version=version,
+                    controller=context.coordinator.controller,
+                    controller_valid=True, kind='service_controlled_stop',
+                    describe={},
+                    execute=lambda coord: context.runner.stop(coord))
+            logger.info('controlled exit convergence complete')
+        except Exception:  # noqa: BLE001
+            logger.exception('controlled exit convergence failed; '
+                             'service reports failed, not a clean stop')
+        finally:
+            controlled_exit.set()
+            server_module.request_shutdown()
 
     def serve():
+        try:
+            import fakenet.mcp.server as srv
+
+            app = srv.TransportGuardMiddleware(
+                srv.build_mcp_server(cfg).streamable_http_app(
+                    streamable_http_path='/mcp', json_response=True,
+                    stateless_http=True, host=cfg.listen_ip),
+                endpoint_path='/mcp', logger=None)
+            import uvicorn
+
+            config_uvicorn = uvicorn.Config(
+                app, host=cfg.listen_ip, port=cfg.listen_port,
+                log_level=cfg.log_level.lower(), lifespan='on',
+                access_log=False, log_config=None)
+            instance = uvicorn.Server(config_uvicorn)
+            srv._active_server = instance
+            ready_watch = threading.Event()
+
+            def _watch():
+                while not instance.started and not instance.should_exit:
+                    time.sleep(0.05)
+                ready_watch.set()
+
+            threading.Thread(target=_watch, daemon=True).start()
+            threading.Thread(target=lambda: (ready_watch.wait(30),
+                                             ready.set()), daemon=True)
+            instance.run()
+            server_stop.set()
+            ready.set()
+        except SystemExit:
+            failure['code'] = 1
+        except Exception:
+            logger.exception('server loop failed')
+            failure['code'] = 1
+        finally:
+            ready.set()
+            server_stop.set()
+
+    def serve_old():
         try:
             server_module.run_server(cfg, ready_event=ready)
         except SystemExit:
@@ -231,6 +299,9 @@ def service_main(controller):
             ready.set()
             server_stop.set()
 
+    import fakenet.mcp.winservice as winservice_module
+
+    winservice_module.controlled_exit_hook = begin_controlled_exit
     thread = threading.Thread(target=serve, name='mcp-server', daemon=True)
     thread.start()
     if not ready.wait(timeout=_SERVICE_READY_TIMEOUT_S):
