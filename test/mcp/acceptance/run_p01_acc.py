@@ -209,7 +209,16 @@ def run_acc016(args, channel, writer):
         {'MCP-Protocol-Version': '2026-07-28',
          'Mcp-Method': 'tools/list'})
     tools = json.loads(text)['result']['tools'] if status == 200 else []
-    checks['tool_surface_ping_only'] = [t['name'] for t in tools] == ['ping']
+    frozen_surface = {
+        'ping', 'get_status', 'get_events', 'list_configs',
+        'validate_config', 'read_config', 'list_artifacts', 'load_config',
+        'start', 'stop', 'restart', 'create_config', 'import_config',
+        'edit_config', 'rename_config', 'delete_config'}
+    names = {t['name'] for t in tools}
+    # Closed surface: every exposed tool belongs to the frozen domain set
+    # (P01: ping; P02 sub-plan §3 adds the domain tools).
+    checks['tool_surface_closed'] = ('ping' in names and
+                                     names <= frozen_surface)
     writer.add_evidence('vm-tools-list', text)
     writer.observe(json.dumps(checks, ensure_ascii=False))
     passed = all(checks.values())
