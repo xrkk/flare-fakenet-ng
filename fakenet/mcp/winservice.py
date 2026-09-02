@@ -10,6 +10,7 @@ controlled-shutdown contract itself still lands in P03/P04.
 """
 
 import logging
+import threading
 
 logger = logging.getLogger('fakenetng-mcp.service')
 
