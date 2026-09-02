@@ -423,7 +423,7 @@ def run_acc009(base, channel, writer):
     version = status(base)['state_version']
     restarted = call(base, 'restart',
                      {'command_id': unique_command('a9-restart'),
-                      'expected_state_version': version})
+                      'expected_state_version': version}, timeout=150)
     writer.add_evidence('acc009-restart-payload', restarted)
     checks['restart_ok'] = restarted.get('error') is None
     checks['restart_binds_original_run'] = \
@@ -464,6 +464,16 @@ def main():
     exit_code = EXIT_TOOL_ERROR
     try:
         identity = channel.computer_name()
+        # Cross-ACC hygiene: a previous ACC may have left a run active or
+        # the service in a non-stopped terminal state; force-idle first.
+        try:
+            if status(base).get('run_id') or \
+                    status(base).get('state') not in ('stopped',):
+                stop_run(base)
+                wait_state(base, lambda s: s.get('state') in (
+                    'stopped', 'failed'), timeout=60)
+        except Exception:  # noqa: BLE001
+            pass
         if 'DESKTOP-3FI41GR' not in identity:
             writer.blocker = {'reason': 'unexpected VM: %s' % identity}
             exit_code = EXIT_BLOCKED
