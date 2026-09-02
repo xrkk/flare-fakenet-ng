@@ -19,7 +19,7 @@ from fakenet.mcp.transportguard import (TransportGuardMiddleware,
                                         controller_header_state)
 
 
-def build_mcp_server(config=None):
+def build_mcp_server(config=None, context=None):
     """Create the MCPServer instance with the probe and domain tools."""
     from mcp.server.mcpserver import MCPServer
 
@@ -39,15 +39,16 @@ def build_mcp_server(config=None):
             'controller_header': classify_controller_header(controller),
         }
 
-    context = AppContext(config) if config is not None else None
+    if context is None and config is not None:
+        context = AppContext(config)
     if context is not None:
         register_tools(server, context)
     return server
 
 
-def build_app(config: ServiceConfig, logger=None):
+def build_app(config: ServiceConfig, logger=None, context=None):
     """Return the guarded ASGI app bound to the configured endpoint path."""
-    server = build_mcp_server(config)
+    server = build_mcp_server(config, context=context)
     starlette_app = server.streamable_http_app(
         streamable_http_path=MCP_ENDPOINT_PATH,
         json_response=True,

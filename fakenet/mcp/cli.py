@@ -253,7 +253,8 @@ def service_main(controller):
             import fakenet.mcp.server as srv
 
             app = srv.TransportGuardMiddleware(
-                srv.build_mcp_server(cfg).streamable_http_app(
+                srv.build_mcp_server(cfg, context=context)
+                .streamable_http_app(
                     streamable_http_path='/mcp', json_response=True,
                     stateless_http=True, host=cfg.listen_ip),
                 endpoint_path='/mcp', logger=None)
