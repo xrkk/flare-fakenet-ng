@@ -87,6 +87,7 @@ class AppContext:
                     snapshot=_make_snapshot(dirs),
                     baseline_store=_make_baseline_store(dirs),
                     config_path_resolver=self._default_config_resolver,
+                    artifacts_root=dirs['artifacts'],
                     exclusion={
                         'ip': (config.allowed_host_ips[0]
                                if config.allowed_host_ips else ''),
