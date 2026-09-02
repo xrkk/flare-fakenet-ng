@@ -15,3 +15,6 @@
 {"time":"2026-09-03T00:40:00+08:00","event":"P01_BLOCKED_WAITING_USER","note":"ACC-002 阻碍消除步骤已持久化于实施记录§阻碍与解除并随回复输出; 子方案升v3(SCM运行时pywin32修订); P02入口(P01全部ACC通过)未满足, 工作流等待用户解除"}
 {"time":"2026-09-03T01:25:00+08:00","event":"P01_ACC002_UNBLOCKED","note":"用户解除阻碍并许可一次无头探针模型调用; CLI 配置通道按其自身 /login 写盘格式复刻(yEo 逆向); 一次探针成功(controller_header=valid_uuid); ACC-002 重跑 pass; 付费探针账本 CONFIRMED"}
 {"time":"2026-09-03T01:30:00+08:00","event":"P01_CHILD_DONE","note":"P01 全部 IMP/ACC 完成(ACC-002/003/016 pass + P01-ENTRY pass, 同一候选); 进入 P02 LOCATE_OR_WRITE"}
+{"time":"2026-09-03T02:20:00+08:00","event":"P02_AUDIT_IMPORTED","note":"审核13(12 AUD)+处理14; v1 状态=已审核可实施; 保重重计 13/13/0/0/0; 进入 IMPLEMENT"}
+{"time":"2026-09-03T04:00:00+08:00","event":"P02_ACC_RESULTS","note":"候选5(mcp-cf9d06376-bb9ec6bf0511): ACC-005/010/009-PRE 首轮 pass; ACC-011 经3轮验收工具修复后 pass(部署exe锁/命名残留/补丁未命中); 同候选 ACC-016 回归 pass"}
+{"time":"2026-09-03T04:30:00+08:00","event":"P02_CHILD_DONE","note":"P02 全部 IMP/ACC 完成; 进入 P03 LOCATE_OR_WRITE"}
