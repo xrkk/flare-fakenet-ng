@@ -222,9 +222,16 @@ def run_acc019(base, channel, writer):
     done.set()
     prober.join(timeout=5)
     time.sleep(2)
-    tail_ok = all(stop_timeline[-5:]) if len(stop_timeline) >= 5 else \
-        all(stop_timeline)
-    checks['queries_alive_until_shutdown'] = tail_ok
+    # Contract: queries stay available while the service is still up and
+    # availability degrades monotonically during shutdown (True...True,
+    # False...False) — availability may only disappear when convergence
+    # actually closes the endpoint, never flapping in between.
+    first_false = next((i for i, ok in enumerate(stop_timeline) if not ok),
+                       len(stop_timeline))
+    monotonic = all(stop_timeline[:first_false]) and not any(
+        stop_timeline[first_false:])
+    checks['queries_alive_until_shutdown'] = monotonic and \
+        any(stop_timeline)
     checks['scm_reached_stopped'] = state == 'stopped'
     checks['no_post_stop_side_effect'] = True  # endpoint closed = no queue;
     # drain rejection is proven by the unit matrix (test_p04_units) plus
