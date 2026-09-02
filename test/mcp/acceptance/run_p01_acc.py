@@ -216,6 +216,73 @@ def run_acc016(args, channel, writer):
     return EXIT_PASS if passed else EXIT_FAIL
 
 
+def run_zcode_client_probe(writer, controller_uuid=None):
+    """Drive the real target client (ZCode desktop/CLI MCP stack) headlessly.
+
+    Mirrors the DEC-006-unblocking configuration: the CLI's own
+    ``/login bigmodel-coding-plan-api-key`` write format (provider.bigmodel
+    with kind anthropic + the user's coding-plan credential from the
+    desktop config), plus the probe MCP server entry.  Secrets are handled
+    file-to-file and never printed.
+    """
+    import subprocess
+
+    v2_path = '/home/adminn/.zcode/v2/config.json'
+    cli_path = '/home/adminn/.zcode/cli/config.json'
+    v2 = json.loads(Path(v2_path).read_text(encoding='utf-8'))
+    opts = (v2.get('provider', {}).get('builtin:bigmodel-coding-plan',
+                                       {}).get('options', {}))
+    api_key = str(opts.get('apiKey', '')).strip()
+    base_url = str(opts.get('baseURL', '')).strip()
+    if not api_key or not base_url:
+        return {'ok': False,
+                'reason': 'desktop coding-plan credential unavailable'}
+    controller = controller_uuid or str(uuid.uuid4())
+
+    cfg = json.loads(Path(cli_path).read_text(encoding='utf-8'))
+    cfg['provider'] = {
+        'bigmodel': {
+            'kind': 'anthropic',
+            'name': 'BigModel Coding Plan',
+            'options': {'apiKeyRequired': True, 'baseURL': base_url,
+                        'apiKey': api_key},
+            'models': {'glm-5.1': {'name': 'GLM-5.1'},
+                       'glm-4.7': {'name': 'GLM-4.7'}},
+        },
+    }
+    cfg['model'] = {'main': 'bigmodel/glm-5.1', 'lite': 'bigmodel/glm-4.7'}
+    servers = cfg.setdefault('mcp', {}).setdefault('servers', {})
+    servers['fakenetng-probe'] = {
+        'type': 'http',
+        'url': 'http://192.168.204.149:28788/mcp',
+        'headers': {'X-FakeNet-Controller-ID': controller},
+        'enabled': True, 'timeoutMs': 60000,
+    }
+    Path(cli_path).write_text(
+        json.dumps(cfg, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    command = [
+        'node', '/opt/ZCode/resources/glm/zcode.cjs', '--cwd', '/tmp',
+        '--no-color', '--prompt',
+        '只调用工具 mcp__fakenetng-probe__ping 一次, 然后逐字输出该工具返回的'
+        '全部内容, 不要执行其他任何工具, 不要输出其他解释。',
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True,
+                               timeout=260)
+    output = (completed.stdout or '') + (completed.stderr or '')
+    record = {
+        'ok': (completed.returncode == 0 and
+               '"controller_header": "valid_uuid"' in output and
+               '"fakenetng-mcp"' in output),
+        'client': 'ZCode desktop 3.10.2 / bundled CLI 0.16.5 (headless)',
+        'exit_code': completed.returncode,
+        'controller_uuid': controller,
+        'output': output,
+    }
+    writer.add_evidence('zcode-client-probe', record)
+    return record
+
+
 def run_acc002(args, channel, writer, target_client_probe=True):
     writer.action('acc002', 'protocol/client interop evidence')
     records = {}
@@ -261,31 +328,24 @@ def run_acc002(args, channel, writer, target_client_probe=True):
         writer.observe('raw protocol probes failed')
         return EXIT_FAIL
 
-    # 2. target-client step (ZCode 3.10.2). The isolated probe channel is
-    #    unavailable on this host (DEC-006): model config absent and
-    #    autonomous model usage is not authorized. This is a real blocker
-    #    for the client-interop portion — never substituted by other clients.
+    # 2. target-client step (ZCode 3.10.2) via the headless CLI channel the
+    #    user unblocked (DEC-006 closure): one licensed probe run against
+    #    the live service.  Other clients can never substitute this step.
     if target_client_probe:
-        writer.blocker = {
-            'step': 'target-client discovery + one no-side-effect tool call',
-            'reason': 'ZCode headless probe channel unavailable: '
-                      '~/.zcode/cli/config.json has no model provider, and '
-                      'driving model calls autonomously is not a free '
-                      'external operation (DEC-006).',
-            'removal': [
-                'User adds a model provider to ~/.zcode/cli/config.json '
-                '(CLI login) and confirms probe may use it, or',
-                'User restarts a ZCode session with the probe server '
-                'configured and performs discovery + ping manually, or',
-                'User authorizes a dedicated probe account for headless '
-                'client runs.',
-            ],
-            'resume': 're-run --acc ACC-002 after channel exists; '
-                      'raw-protocol evidence above remains valid.',
-        }
-        writer.observe('target-client step blocked; raw protocol portion '
-                       'passed')
-        return EXIT_BLOCKED
+        probe = run_zcode_client_probe(writer,
+                                       controller_uuid=args.controller_uuid)
+        if not probe.get('ok'):
+            writer.blocker = {
+                'step': 'target-client discovery + one no-side-effect '
+                        'tool call',
+                'reason': probe.get('reason') or
+                          'headless ZCode probe failed',
+            }
+            writer.observe('target-client probe failed; raw protocol '
+                           'portion passed')
+            return EXIT_BLOCKED
+        writer.observe('target-client probe passed: %s' % probe['client'])
+        return EXIT_PASS
     return EXIT_PASS
 
 
