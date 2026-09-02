@@ -210,8 +210,9 @@ class RealSupervisor:
             def run():
                 try:
                     instance.start()
-                except SystemExit:
-                    start_error['reason'] = 'fakenet start exited'
+                except SystemExit as exc:
+                    start_error['reason'] = (
+                        'fakenet start exited (code=%r)' % exc.code)
                 except Exception as exc:  # noqa: BLE001
                     start_error['reason'] = repr(exc)
 
@@ -223,6 +224,11 @@ class RealSupervisor:
                     not self._init_evidence():
                 time.sleep(0.2)
             if start_error:
+                try:
+                    instance.stop()
+                except BaseException:  # noqa: BLE001 - best-effort rollback
+                    logger.exception('rollback stop after failed start '
+                                     'raised')
                 self._teardown()
                 if self._snapshot is not None and \
                         self._last_snapshot_fields is not None:
