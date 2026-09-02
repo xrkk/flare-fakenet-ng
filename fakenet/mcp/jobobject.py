@@ -57,6 +57,16 @@ def setup_kill_on_close_job():
         ]
 
     kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wt.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [wt.LPVOID, wt.LPCWSTR]
+    kernel32.GetCurrentProcess.restype = wt.HANDLE
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.AssignProcessToJobObject.restype = wt.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [
+        wt.HANDLE, wt.HANDLE]
+    kernel32.SetInformationJobObject.restype = wt.BOOL
+    kernel32.SetInformationJobObject.argtypes = [
+        wt.HANDLE, ctypes.c_int, wt.LPVOID, wt.DWORD]
     job = kernel32.CreateJobObjectW(None, None)  # unnamed on purpose
     if not job:
         raise RuntimeError('CreateJobObjectW failed: %d' %
