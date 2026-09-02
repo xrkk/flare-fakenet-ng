@@ -66,6 +66,8 @@ class RealSupervisor:
         self._failure_reason = None
         self._log_reader = log_reader
         self._probe_impl = probe_impl
+        self._log_offset = 0
+        self._log_size_probe = None
         # Test hooks (sub-plan P03 IMP-P03-08 frozen injection means).
         self.stop_blocker = None
         self.fail_health_probe = False
@@ -103,7 +105,7 @@ class RealSupervisor:
         if self._log_reader is None:
             return False
         try:
-            content = self._log_reader()
+            content = self._log_reader(self._log_offset)
         except Exception:  # noqa: BLE001 - diagnostics must not kill health
             return False
         return bool(UNHANDLED_EXCEPTION_PATTERN.search(content or ''))
@@ -195,6 +197,12 @@ class RealSupervisor:
             self._failure_reason = None
             self._stop_event.clear()
             self._coordinator = coordinator
+            # Only this run's log window participates in the exception scan
+            # (older tracebacks in the same file must not revoke health).
+            try:
+                self._log_offset = self._current_log_size()
+            except Exception:  # noqa: BLE001
+                self._log_offset = 0
             self._fakenet = instance
 
             start_error = {}
@@ -269,6 +277,11 @@ class RealSupervisor:
         return self.start(coordinator, controller, config_identity)
 
     # -- helpers -------------------------------------------------------------
+    def _current_log_size(self):
+        if self._log_size_probe is None:
+            return 0
+        return self._log_size_probe()
+
     def _resolve_config_path(self, name, builtin):
         if self._config_path_resolver is not None:
             return self._config_path_resolver(name, builtin)
