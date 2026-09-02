@@ -60,6 +60,16 @@ a = Analysis(['fakenet/mcp/__main__.py'],
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# WinDivert drivers, mirroring the formal fakenet.spec contract: pydivert
+# bundles its own copy, and the repo-root windivert/ files guarantee the
+# service can load the driver for the real lifecycle (P03).
+driver_files = [
+    ('WinDivert64.dll', 'windivert/WinDivert64.dll', 'BINARY'),
+    ('WinDivert64.sys', 'windivert/WinDivert64.sys', 'BINARY'),
+    ('WinDivert32.dll', 'windivert/WinDivert32.dll', 'BINARY'),
+    ('WinDivert32.sys', 'windivert/WinDivert32.sys', 'BINARY'),
+]
+
 exe = EXE(pyz,
           a.scripts,
           [],
@@ -72,7 +82,7 @@ exe = EXE(pyz,
           console=True)
 
 coll = COLLECT(exe,
-               a.binaries + a.datas,
+               a.binaries + driver_files + a.datas,
                strip=False,
                upx=False,
                name='fakenetng-mcp-dist')
