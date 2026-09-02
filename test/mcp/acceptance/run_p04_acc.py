@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from helpers import (EXIT_BLOCKED, EXIT_FAIL, EXIT_PASS,  # noqa: E402
                      EXIT_TOOL_ERROR, EvidenceWriter, StepError, Win10VmChannel)
 from run_p02_acc import CONTROLLER_A, VALID_INI, call, sha_of, status  # noqa: E402
+from pathlib import PureWindowsPath  # noqa: E402
 from run_p03_acc import continuous_probe, load_and_start, stop_run, unique_command  # noqa: E402
 
 
@@ -104,7 +105,8 @@ def run_acc014(base, channel, writer):
     writer.add_evidence('acc014-incident-tree', incident_dir)
     files = [line.strip() for line in incident_dir['output'].splitlines()
              if line.strip()]
-    names = {Path(line).name for line in files}
+    # Windows backslash paths are not split by POSIX pathlib — normalize.
+    names = {line.replace('\\', '/').split('/')[-1] for line in files}
     checks['manifest_present'] = any(
         name == 'manifest.json' for name in names)
     checks['basic_layer_coverage'] = bool(
@@ -197,7 +199,7 @@ def run_acc019(base, channel, writer):
         while not done.is_set():
             try:
                 payload = call(base, 'ping', controller=None, timeout=5)
-                stop_timeline.append(payload.get('service') == 'fakenet-ng-mcp')
+                stop_timeline.append(payload.get('service') == 'fakenetng-mcp')
             except Exception:  # noqa: BLE001
                 stop_timeline.append(False)
             time.sleep(0.4)
