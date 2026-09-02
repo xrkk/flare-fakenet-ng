@@ -252,8 +252,15 @@ class RealSupervisor:
             if self.stop_blocker is not None:
                 self.stop_blocker()
             self._stop_event.set()
+            from fakenet.payload_report import PayloadReportError
+
             try:
                 self._fakenet.stop()
+            except PayloadReportError as exc:
+                # Platform cleanup and capture close already succeeded when
+                # the report layer raises; the report artifact itself is a
+                # P04 concern, not an environment recovery failure.
+                logger.warning('payload report generation failed: %r', exc)
             except Exception as exc:  # noqa: BLE001
                 logger.exception('fakenet stop raised')
                 self._teardown()
@@ -261,6 +268,14 @@ class RealSupervisor:
                         'failure_reason': 'stop failed: %r' % exc,
                         'run_id': None, 'release_controller': True}
             run_id = coordinator.snapshot().get('run_id')
+            if self._baseline_store is not None and run_id:
+                differences = self._baseline_store.diff(str(run_id))
+                if differences:
+                    self._teardown()
+                    return {'state': 'failed', 'changed': True,
+                            'failure_reason':
+                                'environment differs from pre-start baseline',
+                            'run_id': None, 'release_controller': True}
             self._teardown()
             if self._snapshot is not None and \
                     self._last_snapshot_fields is not None:
