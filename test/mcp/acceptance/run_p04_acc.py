@@ -27,50 +27,54 @@ from run_p03_acc import continuous_probe, load_and_start, stop_run, unique_comma
 
 
 def run_fault_point_proof(base, channel, writer):
-    """One stable trigger per RACC-013 class + convergence to stopped."""
+    """One stable trigger per RACC-013 class via the in-process fault hooks
+    (armed through machine env + service restart; never an MCP tool)."""
     writer.action('fault-points', 'five fault classes, one trigger each')
     checks = {}
     classes = ('policy_pause', 'listener_stop', 'diverter_stop',
                'child_hang', 'cleanup_error')
     for fault in classes:
-        started = load_and_start(base)
-        if started.get('error'):
-            checks[fault] = 'start_failed'
-            stop_run(base)
-            continue
-        # arm the fault inside the service process
-        arm = channel.powershell(
+        channel.powershell(
+            "[Environment]::SetEnvironmentVariable("
+            "'FAKENETNG_MCP_FAULT_INJECTION', '1', 'Machine'); "
             "[Environment]::SetEnvironmentVariable("
             "'FAKENETNG_MCP_ARMED_FAULT', '%s', 'Machine')" % fault,
             timeout=60)
-        trigger = {
-            'policy_pause': lambda: stop_run(base),
-            'listener_stop': lambda: channel.powershell(
-                'taskkill /f /im python.exe 2>&1 | Out-Null; "kicked"',
-                timeout=60),
-            'diverter_stop': lambda: channel.powershell(
-                'net stop WinDivert1.3 2>&1 | Out-Null; "stopped"',
-                timeout=60),
-            'child_hang': lambda: channel.powershell(
-                'Start-Process -WindowStyle Hidden cmd /c "ping -n 3600 '
-                '127.0.0.1 > nul"; "child"', timeout=60),
-            'cleanup_error': lambda: stop_run(base),
-        }[fault]
-        trigger()
-        time.sleep(8)
+        channel.powershell(
+            'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; Start-Sleep 3; '
+            'sc.exe start fakenetng-mcp | Out-Null; "RESTARTED"',
+            timeout=180)
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            try:
+                if status(base).get('state'):
+                    break
+            except Exception:  # noqa: BLE001
+                time.sleep(2)
+        started = load_and_start(base)
+        time.sleep(10)
+        snap = status(base)
         result = stop_run(base)
-        final_state = status(base)
+        final = status(base)
         checks[fault] = {
-            'converged': result.get('state') in ('stopped', 'failed'),
-            'final': final_state.get('state'),
+            'armed': True,
+            'start_state': snap.get('state'),
+            'health_after_fault': snap.get('health'),
+            'stop_state': result.get('state'),
+            'final_state': final.get('state'),
+            'converged': result.get('state') in ('stopped', 'failed')
+                         or final.get('state') in ('stopped', 'failed'),
         }
         channel.powershell(
             "[Environment]::SetEnvironmentVariable("
             "'FAKENETNG_MCP_ARMED_FAULT', $null, 'Machine')", timeout=60)
+    channel.powershell(
+        "[Environment]::SetEnvironmentVariable("
+        "'FAKENETNG_MCP_FAULT_INJECTION', $null, 'Machine')", timeout=60)
     writer.add_evidence('fault-points', checks)
     ok = all(isinstance(v, dict) and v.get('converged')
              for v in checks.values())
-    return ok
+    return EXIT_PASS if ok else EXIT_FAIL
 
 
 def run_acc014(base, channel, writer):

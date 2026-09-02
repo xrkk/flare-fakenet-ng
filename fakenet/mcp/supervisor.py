@@ -84,6 +84,11 @@ class RealSupervisor:
         self._activity_lock = None
         self._last_snapshot_fields = None
         self._artifacts_root = artifacts_root
+        if fault_injector is None:
+            from fakenet.mcp import faultinject
+
+            if faultinject.enabled():
+                fault_injector = faultinject.FaultInjector()
         self._faults = fault_injector
         self._terminal_evidence = None
         self._last_run_outcome = None
@@ -284,6 +289,18 @@ class RealSupervisor:
                         'run_id': None, 'controller': None,
                         'release_controller': True,
                         'config_identity': config_identity}
+            if self._faults is not None:
+                # Run-path fault classes fire once after a successful start
+                # (env-armed, test builds only).
+                listeners = getattr(instance, 'running_listener_providers',
+                                   None) or []
+                try:
+                    self._faults.inject_listener_stop(listeners)
+                    self._faults.inject_diverter_stop(
+                        getattr(instance, 'diverter', None))
+                    self._faults.inject_child_hang()
+                except Exception:  # noqa: BLE001 - injection is test-only
+                    logger.exception('fault injection raised')
             state = 'healthy' if self.evaluate_health()[0] else 'starting'
             self._health_thread = threading.Thread(
                 target=self._health_loop, name='fakenet-health', daemon=True)
@@ -474,6 +491,11 @@ class RealSupervisor:
             self._previous_cwd = None
 
     def _teardown(self):
+        if self._faults is not None:
+            try:
+                self._faults.release()
+            except Exception:  # noqa: BLE001
+                pass
         self._fakenet = None
         self._worker = None
         self._coordinator = None
