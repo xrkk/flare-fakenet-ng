@@ -32,7 +32,7 @@ def test_apply_exclusion_known_shapes():
     applied = apply_control_link_exclusion(
         rebuilt, '192.168.204.1', '28788')
     assert applied.startswith(
-        '(outbound and ip and %s) or (outbound and ipv6)) or (' % negative)
+        '(outbound and ip and %s) or (outbound and ipv6) or (' % negative)
     assert apply_control_link_exclusion(
         'outbound and ip', '', '') == 'outbound and ip'
 
