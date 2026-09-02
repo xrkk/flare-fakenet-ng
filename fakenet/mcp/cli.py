@@ -23,13 +23,17 @@ _SERVICE_READY_TIMEOUT_S = 60.0
 
 
 def _setup_logging():
-    handlers = [logging.StreamHandler(sys.stderr)]
+    handlers = []
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler(sys.stderr))
     try:
         dirs = paths.ensure_data_directories()
         handlers.append(logging.FileHandler(
             dirs['logs'] / 'service.log', encoding='utf-8'))
     except OSError:
         pass
+    if not handlers:
+        handlers.append(logging.NullHandler())
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s %(levelname)s %(name)s %(message)s',

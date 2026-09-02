@@ -79,9 +79,13 @@ def run_server(config: ServiceConfig, ready_event=None, stop_hook=None):
 
     logger = logging.getLogger(MCP_PACKAGE_NAME)
     app = build_app(config, logger=logger)
+    # log_config=None keeps uvicorn from installing its ColourizedFormatter,
+    # which calls sys.stdout.isatty() and crashes in SCM service context
+    # where the standard streams are absent.
     server_config = uvicorn.Config(
         app, host=config.listen_ip, port=config.listen_port,
-        log_level=config.log_level.lower(), lifespan='on', access_log=False)
+        log_level=config.log_level.lower(), lifespan='on', access_log=False,
+        log_config=None)
     instance = uvicorn.Server(server_config)
     _active_server = instance
 
