@@ -37,12 +37,18 @@ def acquire(programdata_root=None):
     """Acquire the single-instance guard or raise SingleInstanceError."""
     if os.name == 'nt':
         import ctypes
+        import ctypes.wintypes as wt
 
-        handle = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.CreateMutexW.restype = wt.HANDLE
+        kernel32.CreateMutexW.argtypes = [wt.LPVOID, wt.BOOL, wt.LPCWSTR]
+        kernel32.CloseHandle.restype = wt.BOOL
+        kernel32.CloseHandle.argtypes = [wt.HANDLE]
+        handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
         if not handle:
             raise SingleInstanceError('CreateMutexW failed')
-        if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
-            ctypes.windll.kernel32.CloseHandle(handle)
+        if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+            kernel32.CloseHandle(handle)
             raise SingleInstanceError(
                 'another fakenetng-mcp instance already runs (%s)' % MUTEX_NAME)
         return handle

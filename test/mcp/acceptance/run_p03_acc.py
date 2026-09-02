@@ -281,6 +281,10 @@ def run_acc008(base, channel, writer):
     # Atomic replace + fields: covered by unit matrix; on the VM assert the
     # file exists during a run with all seven fields.
     started = load_and_start(base)
+    writer.add_evidence('acc008-start-payload', started)
+    healthy, snap_status = wait_state(
+        base, lambda s: s.get('state') == 'healthy', timeout=45)
+    checks['run_reached_healthy'] = healthy
     snap_raw = channel.powershell(
         'Get-Content (Join-Path $env:ProgramData '
         "'FakeNet-NG-MCP\\state\\state.json') | Out-String", timeout=60)
@@ -319,6 +323,8 @@ def run_acc008(base, channel, writer):
     lines = [line.strip() for line in listing['output'].splitlines()
              if line.strip().isdigit()]
     checks['no_db_engine_modules'] = len(lines) < 2 or lines[1] == '0'
+    stop_result = stop_run(base)
+    writer.add_evidence('acc008-stop', stop_result or {})
     writer.add_evidence('acc008-checks', checks)
     return EXIT_PASS if all(checks.values()) else EXIT_FAIL
 
@@ -334,13 +340,17 @@ def run_acc009(base, channel, writer):
 
     # MCP-level lock already rejects edits (config_in_use); OS-level lock:
     # external PowerShell write/delete attempts fail.
+    if active.get('builtin'):
+        active_dir = 'C:\\FakeNetMCP\\candidate\\configs'
+    else:
+        active_dir = ('$env:ProgramData + '
+                      "'\\FakeNet-NG-MCP\\configs\\custom'")
     ext = channel.powershell(
-        "$p = Join-Path $env:ProgramData ('FakeNet-NG-MCP\\configs\\custom\\' "
-        "+ '%s'); "
+        "$base = %s; $p = Join-Path $base '%s'; "
         "try { Set-Content $p 'tampered' -ErrorAction Stop; 'WRITE_OK' } "
         "catch { 'WRITE_BLOCKED' }; "
         "try { Remove-Item $p -ErrorAction Stop; 'DELETE_OK' } "
-        "catch { 'DELETE_BLOCKED' }" % active_name, timeout=90)
+        "catch { 'DELETE_BLOCKED' }" % (active_dir, active_name), timeout=90)
     writer.add_evidence('acc009-external-lock', ext)
     out = ext['output']
     checks['external_write_blocked'] = 'WRITE_BLOCKED' in out
@@ -353,12 +363,11 @@ def run_acc009(base, channel, writer):
     stop = stop_run(base)
     checks['clean_stop'] = stop.get('error') is None
     ext2 = channel.powershell(
-        "$p = Join-Path $env:ProgramData ('FakeNet-NG-MCP\\configs\\custom\\' "
-        "+ '%s'); "
+        "$base = %s; $p = Join-Path $base '%s'; "
         "try { Set-Content $p 'after-stop' -ErrorAction Stop; 'WRITE_OK' } "
         "catch { 'WRITE_BLOCKED' }; "
         "try { Remove-Item $p -ErrorAction Stop; 'DELETE_OK' } catch "
-        "{ 'DELETE_BLOCKED' }" % active_name, timeout=90)
+        "{ 'DELETE_BLOCKED' }" % (active_dir, active_name), timeout=90)
     writer.add_evidence('acc009-unlock-after-stop', ext2)
     checks['unlocked_after_stop'] = 'WRITE_OK' in ext2['output'] or \
         'DELETE_OK' in ext2['output']
@@ -388,7 +397,8 @@ def run_acc009(base, channel, writer):
         # construct the link: sub-check blocked, overall verdict fails
 
     # real restart binding (record 023 real-run share)
-    load_and_start(base)
+    second = load_and_start(base)
+    writer.add_evidence('acc009-second-start', second)
     run_before = status(base).get('run_id')
     version = status(base)['state_version']
     restarted = call(base, 'restart',
