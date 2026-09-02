@@ -188,6 +188,10 @@ def run_acc010(base, writer):
 
 def run_acc011(base, channel, writer):
     writer.action('acc011', 'serial mutations, replay, restart semantics')
+    # Prior ACC rounds leave configs behind; use a run-unique name space.
+    import uuid as _uuid
+
+    run_token = _uuid.uuid4().hex[:8]
     version = status(base)['state_version']
 
     # concurrent identical-version mutations: exactly one wins
@@ -196,7 +200,8 @@ def run_acc011(base, channel, writer):
 
     def worker(index):
         payload = call(base, 'create_config',
-                       {'name': 'race-%d.ini' % index, 'content': VALID_INI,
+                       {'name': 'race-%s-%d.ini' % (run_token, index),
+                        'content': VALID_INI,
                         'command_id': unique_command('race-%d' % index),
                         'expected_state_version': version})
         with lock:
@@ -217,11 +222,13 @@ def run_acc011(base, channel, writer):
     version = status(base)['state_version']
     cmd = unique_command('replay')
     first = call(base, 'create_config',
-                 {'name': 'replay.ini', 'content': VALID_INI,
+                 {'name': 'replay-%s.ini' % run_token, 'content': VALID_INI,
                   'command_id': cmd, 'expected_state_version': version})
     replay = call(base, 'create_config',
-                  {'name': 'replay.ini', 'content': OTHER_INI,
+                  {'name': 'replay-%s.ini' % run_token, 'content': OTHER_INI,
                    'command_id': cmd, 'expected_state_version': 999})
+    writer.add_evidence('acc011-replay-pair',
+                        {'first': first, 'replay': replay})
     checks['replay_returns_original'] = (
         first.get('error') is None and replay.get('replayed') is True and
         replay['state_version'] == first['state_version'])
@@ -231,11 +238,17 @@ def run_acc011(base, channel, writer):
          'command_id': unique_command('stale'),
          'expected_state_version': 1})) == 'state_conflict'
 
-    # real service restart clears the command cache (record 038)
-    channel.powershell('sc.exe stop fakenetng-mcp; '
-                       'Start-Sleep 3; sc.exe start fakenetng-mcp',
-                       timeout=180)
-    deadline = time.time() + 90
+    # real service restart clears the command cache (record 038):
+    # stop, confirm the process is gone, then start and wait for the port.
+    channel.powershell(
+        'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; Start-Sleep 3; '
+        'Get-Process fakenetng-mcp -ErrorAction SilentlyContinue | '
+        'Stop-Process -Force; Start-Sleep 2; '
+        '$p = Get-Process fakenetng-mcp -ErrorAction SilentlyContinue; '
+        'if ($p) { "STILL_RUNNING" } else { "GONE" }', timeout=180)
+    channel.powershell('sc.exe start fakenetng-mcp | Out-Null; "STARTED"',
+                       timeout=120)
+    deadline = time.time() + 120
     while time.time() < deadline:
         try:
             probe = status(base)
@@ -244,10 +257,15 @@ def run_acc011(base, channel, writer):
         except Exception:  # noqa: BLE001
             time.sleep(2)
     version = status(base)['state_version']
-    post_restart = call(base, 'create_config',
-                        {'name': 'replay.ini', 'content': OTHER_INI,
+    post_restart = call(base, 'edit_config',
+                        {'name': 'replay-%s.ini' % run_token,
+                         'content': OTHER_INI,
+                         'expected_sha256': sha_of(VALID_INI),
                          'command_id': cmd,
                          'expected_state_version': version})
+    writer.add_evidence('acc011-post-restart',
+                        {'version_before': version,
+                         'post_restart': post_restart})
     checks['restart_forgets_commands'] = (
         post_restart.get('replayed') is not True and
         post_restart.get('error') is None)
