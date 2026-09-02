@@ -31,8 +31,9 @@ if os.name == 'nt':
     import ctypes.wintypes as wt
 
     _HANDLER_EX = ctypes.WINFUNCTYPE(wt.DWORD, wt.DWORD, wt.DWORD, wt.DWORD)
+    # WINFUNCTYPE first argument None == void return (wintypes has no VOID).
     _SERVICE_MAIN = ctypes.WINFUNCTYPE(
-        wt.VOID, wt.DWORD, ctypes.POINTER(ctypes.c_wchar_p))
+        None, wt.DWORD, ctypes.POINTER(ctypes.c_wchar_p))
 
     class _SERVICE_TABLE_ENTRY(ctypes.Structure):
         _fields_ = [
