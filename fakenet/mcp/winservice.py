@@ -66,7 +66,7 @@ def build_service_class(service_main, orchestrator=None):
             # degrade this into the ACC-007 crash path).
             self.ReportServiceStatus(
                 win32service.SERVICE_STOP_PENDING,
-                waitHint=_STOP_HINT_MS + 30000)
+                waitHint=_WAIT_HINT_MS + 30000)
             self._checkpoint_thread = threading.Thread(
                 target=self._refresh_checkpoints, daemon=True)
             self._checkpoint_thread.start()
@@ -85,7 +85,7 @@ def build_service_class(service_main, orchestrator=None):
                 try:
                     self.ReportServiceStatus(
                         win32service.SERVICE_STOP_PENDING,
-                        waitHint=_STOP_HINT_MS + 30000,
+                        waitHint=_WAIT_HINT_MS + 30000,
                         checkpoint=checkpoint)
                 except Exception:  # noqa: BLE001 - best effort
                     return
