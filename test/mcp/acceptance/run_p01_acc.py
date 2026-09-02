@@ -141,10 +141,10 @@ def collect_acc016_core(args, channel, writer):
         'sc.exe qc fakenetng-mcp; sc.exe query fakenetng-mcp', timeout=120)
     writer.add_evidence('vm-sc-qc-query', core)
     layout = channel.powershell(
-        '$d="%PROGRAMDATA%\\FakeNet-NG-MCP"; '
+        "$d = Join-Path $env:ProgramData 'FakeNet-NG-MCP'; "
         'Get-ChildItem -Recurse $d | Select-Object FullName | '
         'Format-Table -AutoSize | Out-String -Width 300; '
-        'Get-Content ($d + "\\configs\\service.json")', timeout=120)
+        "Get-Content (Join-Path $d 'configs\\service.json')", timeout=120)
     writer.add_evidence('vm-programdata-layout', layout)
     process = channel.powershell(
         'Get-Process fakenetng-mcp -ErrorAction SilentlyContinue | '
@@ -160,15 +160,20 @@ def collect_acc016_core(args, channel, writer):
     listen = channel.powershell(
         'netstat -ano | findstr :%d' % args.listen_port, timeout=60)
     writer.add_evidence('vm-netstat', listen)
+    share_lines = [line for line in net_use['output'].splitlines()
+                   if '\\\\' in line]
+    listening_lines = [line for line in listen['output'].splitlines()
+                       if 'LISTENING' in line.upper()]
+    wildcard_listens = [line for line in listening_lines
+                        if line.split()[1].startswith('0.0.0.0:') or
+                        line.split()[1].startswith('[::]')]
     return {
         'sc_qc': core['output'],
         'owner': process['output'],
-        'net_use_empty': len([line for line in
-                              net_use['output'].splitlines()
-                              if 'fakenetng-mcp' not in line and
-                              line.strip() and
-                              'There are no entries' not in line]) == 0,
-        'listen_lines': listen['output'],
+        'layout': layout['output'],
+        'net_use_empty': not share_lines,
+        'listening_lines': listening_lines,
+        'wildcard_listens': wildcard_listens,
     }
 
 
@@ -187,15 +192,14 @@ def run_acc016(args, channel, writer):
         'running': 'RUNNING' in qc,
         'owner_system': 'OWNER=NT AUTHORITY\\SYSTEM' in core['owner'],
         'net_use_empty': core['net_use_empty'],
-        'listen_scoped': args.listen_ip in core['listen_lines'] and
-                         '0.0.0.0' not in core['listen_lines'],
-        'programdata_dirs': all(name in json.dumps(
-            channel.powershell(
-                'Get-ChildItem -Recurse "%PROGRAMDATA%\\FakeNet-NG-MCP" | '
-                'Select-Object -ExpandProperty FullName | '
-                'Out-String -Width 300')['output'])
-            for name in ('configs\\custom', 'state', 'logs', 'baselines',
-                         'artifacts')),
+        'listen_scoped': (bool(core['listening_lines']) and
+                          not core['wildcard_listens'] and
+                          all(args.listen_ip in line
+                              for line in core['listening_lines'])),
+        'programdata_dirs': all(
+            name in core['layout']
+            for name in ('configs\\custom', '\\state', '\\logs',
+                         '\\baselines', '\\artifacts', 'service.json')),
     }
     # 工具面负向: P01 工具清单仅 ping
     status, headers, text = http_post(
@@ -217,6 +221,11 @@ def run_acc002(args, channel, writer, target_client_probe=True):
     records = {}
     # 1. raw protocol evidence (逐消息 POST, 必需头, SSE/JSON, 版本协商)
     controller = args.controller_uuid or str(uuid.uuid4())
+
+    def ping_result(text):
+        envelope = json.loads(text)
+        return json.loads(envelope['result']['content'][0]['text'])
+
     status, headers, text = http_post(
         args.target_base_url + '/mcp', ping_body(),
         {**PING_HEADERS, 'X-FakeNet-Controller-ID': controller})
@@ -240,9 +249,11 @@ def run_acc002(args, channel, writer, target_client_probe=True):
     writer.add_evidence('raw-protocol-probes', records)
 
     ok = (records['ping_with_controller']['status'] == 200 and
-          '"valid_uuid"' in records['ping_with_controller']['body'] and
+          ping_result(records['ping_with_controller']['body'])
+          ['controller_header'] == 'valid_uuid' and
           records['ping_without_controller']['status'] == 200 and
-          '"missing"' in records['ping_without_controller']['body'] and
+          ping_result(records['ping_without_controller']['body'])
+          ['controller_header'] == 'missing' and
           records['unknown_version']['status'] == 400 and
           '-32022' in records['unknown_version']['body'] and
           records['discover']['status'] == 200)
@@ -287,17 +298,26 @@ def run_acc003(args, channel, writer):
         timeout=60)
     writer.add_evidence('vm-listen', listen)
     writer.add_evidence('vm-firewall-rule', rule)
-    scope_ok = (args.listen_ip in listen['output'] and
-                '0.0.0.0' not in listen['output'] and
+    listening_lines = [line for line in listen['output'].splitlines()
+                       if 'LISTENING' in line.upper()]
+    wildcard = [line for line in listening_lines
+                if line.split()[1].startswith('0.0.0.0:') or
+                line.split()[1].startswith('[::]')]
+    scope_ok = (bool(listening_lines) and not wildcard and
+                all(args.listen_ip in line for line in listening_lines) and
                 args.allowed_host in rule['output'] and
                 str(args.listen_port) in rule['output'])
 
-    # Idempotency: second install must not duplicate the rule.
+    # Idempotency: the single rule must appear exactly once.
     duplicate = channel.powershell(
         '(netsh advfirewall firewall show rule name="FakeNet-NG MCP" | '
         'Select-String -Pattern "FakeNet-NG MCP").Count', timeout=60)
     writer.add_evidence('vm-rule-count', duplicate)
-    idempotent = ': 1' in duplicate['output'] or ':1' in duplicate['output']
+    try:
+        idempotent = duplicate['output'].strip().splitlines()[-1].strip() \
+            == '1'
+    except (IndexError, ValueError):
+        idempotent = False
 
     # Firewall-enabled negative/positive round with channel protection.
     fw = channel.powershell(
@@ -316,7 +336,8 @@ def run_acc003(args, channel, writer):
         time.sleep(2)
         try:
             allowed = helpers_probe(args.target_base_url)
-            negative_probe = local_ip_tool(args) if local_ip_tool else None
+            negative_probe = probe_from_non_allowed_source(
+                args.target_base_url)
             enabled_round = {'allowed_host_ping': allowed,
                              'non_allowed_probe': negative_probe}
         finally:
