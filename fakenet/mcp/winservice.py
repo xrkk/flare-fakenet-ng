@@ -15,6 +15,7 @@ logger = logging.getLogger('fakenetng-mcp.service')
 
 SERVICE_NAME = 'fakenetng-mcp'
 SERVICE_DISPLAY_NAME = 'FakeNet-NG MCP (fakenetng-mcp)'
+_WAIT_HINT_MS = 15000
 _SERVICE_EXIT_ERROR = 1066
 
 
