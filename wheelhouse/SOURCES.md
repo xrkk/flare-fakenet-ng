@@ -62,6 +62,7 @@ against mcp==2.1.1 in a scratch venv before being recorded here.
 | pydantic | 2.13.5 | `pydantic-2.13.5-py3-none-any.whl` | `346a034f080da3755d8e9cb5e00e8b07de1d39e4f6e2c87d8ab7cafa0b269a73` | PyPI official release |
 | pydantic-core | 2.46.5 | `pydantic_core-2.46.5-cp311-cp311-win_amd64.whl` | `40375c2d05acec10323e45dfe2077ac44bc74659008614af5069034e2cfc781c` | PyPI official release |
 | pyjwt | 2.13.0 | `pyjwt-2.13.0-py3-none-any.whl` | `66adcc2aff09b3f1bbd95fc1e1577df8ac8723c978552fd43304c8a290ac5728` | PyPI official release |
+| pywin32 | 312 | `pywin32-312-cp311-cp311-win_amd64.whl` | `d11417d84412f859b722fad0841b3614459ed0047f7542d8362e77884f6b6e8a` | PyPI official release (mcp==2.1.1 win32 marker dependency) |
 | python-multipart | 0.0.32 | `python_multipart-0.0.32-py3-none-any.whl` | `ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23` | PyPI official release |
 | referencing | 0.37.0 | `referencing-0.37.0-py3-none-any.whl` | `381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231` | PyPI official release |
 | rpds-py | 2026.6.3 | `rpds_py-2026.6.3-cp311-cp311-win_amd64.whl` | `2c54a076ca4d370980ab57bc0e31df57bbe8d41340436a90ef8b1219a3cbb127` | PyPI official release |
