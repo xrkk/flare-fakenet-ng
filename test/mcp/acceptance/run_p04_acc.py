@@ -318,8 +318,7 @@ def main():
         elif args.acc == 'ACC-019':
             exit_code = run_acc019(base, channel, writer)
         elif args.acc == 'FAULT-POINTS':
-            exit_code = EXIT_PASS if run_fault_point_proof(
-                base, channel, writer) else EXIT_FAIL
+            exit_code = run_fault_point_proof(base, channel, writer)
     except StepError as exc:
         writer.blocker = {'reason': str(exc)}
         exit_code = EXIT_BLOCKED
