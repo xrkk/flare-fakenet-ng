@@ -499,6 +499,10 @@ def build(repo, source_commit, output_root, output_directory=None):
         package.mkdir()
         shutil.copytree(onedir, package, dirs_exist_ok=True)
         shutil.copytree(stage / 'fakenet' / 'configs', package / 'configs')
+        shutil.copytree(stage / 'fakenet' / 'defaultFiles',
+                        package / 'defaultFiles')
+        shutil.copytree(stage / 'fakenet' / 'listeners' / 'ssl_utils',
+                        package / 'listeners' / 'ssl_utils')
         (package / 'install-fakenetng-mcp.ps1').write_text(
             INSTALL_PS1, encoding='utf-8-sig')
         (package / 'uninstall-fakenetng-mcp.ps1').write_text(
