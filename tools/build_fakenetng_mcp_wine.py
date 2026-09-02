@@ -148,7 +148,8 @@ def offline_install_sdk(stage, build_root):
     wine_python_logged(
         ['-m', 'pip', 'install', '--disable-pip-version-check',
          '--no-cache-dir', '--no-index',
-         '--find-links', find_links, MCP_SDK_PIN],
+         '--find-links', find_links, MCP_SDK_PIN,
+         'pydivert==2.1.0'],
         stage, log)
     freeze = build_root / 'sdk-freeze.txt'
     wine_python_logged(['-m', 'pip', 'freeze'], stage, freeze)
