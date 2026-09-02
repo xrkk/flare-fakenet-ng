@@ -1,0 +1,15 @@
+{"time":"2026-09-02T22:05:00+08:00","event":"WORKFLOW_CREATED","workflow_id":"fakenetng-mcp-20260902-6ada6479","正文blob":"e682ae75a5dd8f4d2c0c8fa0267eb9cdee59d795"}
+{"time":"2026-09-02T22:06:00+08:00","event":"PARAMS_PERSISTED","note":"入口参数规范化并写入 有效参数.json; 子方案顺序由总纲§1.1/§8定位; 长程目录按正文默认规则确定"}
+{"time":"2026-09-02T22:07:00+08:00","event":"PREFLIGHT_READ_COMPLETE","note":"完整读取正文/需求文档全文(2737行)/总纲v2/03自评/04审核/05审核处理/AGENTS.md; 契约对象blob已固定"}
+{"time":"2026-09-02T22:08:00+08:00","event":"PREFLIGHT_GATES_PASSED","note":"总纲审核闭环通过; 顺序唯一; 审核者sub-plan-reviewer可用; 付费外发=不涉及; 自动恢复=平台Goal恢复; 启动工作区快照48条已持久化"}
+{"time":"2026-09-02T22:08:30+08:00","event":"STATE_RUNNING","from":"PREFLIGHT","to":"RUNNING","current_child":"P01","stage":"LOCATE_OR_WRITE"}
+{"time":"2026-09-02T22:30:00+08:00","event":"P01_SELF_REVIEW_DONE","note":"子方案v1自评通过(五项计数6/6/0/0/0); 审核路线=必须首次第三方审核; 自评记录07已持久化"}
+{"time":"2026-09-02T22:50:00+08:00","event":"P01_AUDIT_DONE","note":"sub-plan-reviewer 首次全面审核完成: 记录08(SHA-256 cfd2f312, blob 75abc557)持久化核实; 结论=存在不同意见; 8 AUD; 独立保真计数 6/5/0/1/0"}
+{"time":"2026-09-02T23:00:00+08:00","event":"P01_AUDIT_IMPORTED","note":"审核处理记录09持久化; 8 AUD 全部同意并修改闭合; 子方案升v2(blob 2f3744ac); 再次审核触发全部未命中; 状态=已审核, 可以实施; 进入 IMPLEMENT"}
+{"time":"2026-09-02T23:10:00+08:00","event":"P01_IMP_PROGRESS","note":"IMP-01: ZCode 探针通道核实为真实阻碍(无模型配置+自主模型调用未授权, DEC-006); IMP-02: wheelhouse 24+1(pywin32)轮子+SOURCES.md+SDK冒烟; IMP-03/04/05/07: fakenet/mcp 全部模块+30测试(venv 30/30; Wine 全过仅 posix 单实例2跳过)"}
+{"time":"2026-09-02T23:15:00+08:00","event":"P01_IMP06_BUILD_RETRIES","note":"构建1: Wine pip 缺 pywin32(marker依赖)失败->补轮子; 构建2: 门禁跳过计数笔误失败->修复; 构建3: PyInstaller冻结成功但冻结后冒烟未就绪->失败原因待日志; 构建4: 失败日志尾部并入异常, 重跑中; 中间提交 441382a/2a7b6dd/b6df0f4(+日志尾部修复)"}
+{"time":"2026-09-02T23:40:00+08:00","event":"P01_IMP06_DONE","note":"构建#7 成功: 候选 mcp-cd4b2607c-d36b1ca476d9 (dist/mcp-r1, ZIP d36b1ca4..., Windows测试门禁32 PASS, Wine冻结冒烟 PASS, manifest 含目标客户端身份); 历程: pywin32补轮->门禁计数->PYI-216(stdout句柄)->wintypes.VOID->冒烟JSON解析"}
+{"time":"2026-09-02T23:45:00+08:00","event":"P01_IMP09_VM_RESET","note":"VM 按门禁重置: 快照唯一(count=1), 单次 revertToSnapshot, VMX checkpoint.vmState=Snapshot99.vmsn, vmware -x, 完成门禁 Win10VM MCP = DESKTOP-3FI41GR(首轮)"}
+{"time":"2026-09-02T23:55:00+08:00","event":"P01_IMP09_DEPLOY","note":"候选1部署成功(下载哈希一致/122文件/install+防火墙+sc create LocalSystem auto); 但服务卡 START_PENDING: 真机根因=SCM 无控制台流下 uvicorn ColourizedFormatter 调 sys.stdout.isatty() 崩溃; 已修复(log_config=None+stderr守卫)+提交, 构建#8 进行中"}
+{"time":"2026-09-03T00:15:00+08:00","event":"P01_ACC_RESULTS","note":"候选4(mcp-c32803520-672e070e8b81, pywin32运行时): ACC-016 pass; ACC-003 pass(含防火墙启用复验+非允许源阻断); P01-ENTRY pass; ACC-002 blocked(raw协议全过, ZCode客户端步骤受阻于模型配置缺失/付费授权, DEC-006)"}
+{"time":"2026-09-03T00:40:00+08:00","event":"P01_BLOCKED_WAITING_USER","note":"ACC-002 阻碍消除步骤已持久化于实施记录§阻碍与解除并随回复输出; 子方案升v3(SCM运行时pywin32修订); P02入口(P01全部ACC通过)未满足, 工作流等待用户解除"}
