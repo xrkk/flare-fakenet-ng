@@ -202,6 +202,7 @@ def run_acc006(base, channel, writer):
     writer.action('acc006', 'real health: three conditions, no fake healthy')
     checks = {}
     started = load_and_start(base)
+    writer.add_evidence('acc006-start-payload', started)
     checks['start_ok'] = started.get('error') is None
     healthy, snap = wait_state(
         base, lambda s: s.get('state') == 'healthy', timeout=30)
@@ -333,18 +334,29 @@ def run_acc009(base, channel, writer):
     writer.action('acc009', 'P03-final: real lock, reparse points, full '
                             'custom management on real lifecycle')
     checks = {}
-    started = load_and_start(base)
+    lock_name = 'lock-probe-%s.ini' % unique_command('lp')[:8]
+    created_lock = call(base, 'create_config',
+                        {'name': lock_name, 'content': VALID_INI,
+                         'command_id': unique_command('lp-c'),
+                         'expected_state_version':
+                             status(base)['state_version']})
+    loaded_lock = call(base, 'load_config',
+                       {'name': lock_name,
+                        'command_id': unique_command('lp-l'),
+                        'expected_state_version':
+                            created_lock['state_version']})
+    started = call(base, 'start',
+                   {'command_id': unique_command('lp-s'),
+                    'expected_state_version':
+                        loaded_lock['state_version']})
     checks['start_ok'] = started.get('error') is None
     active = status(base).get('config_identity') or {}
     active_name = active.get('name')
 
     # MCP-level lock already rejects edits (config_in_use); OS-level lock:
     # external PowerShell write/delete attempts fail.
-    if active.get('builtin'):
-        active_dir = 'C:\\FakeNetMCP\\candidate\\configs'
-    else:
-        active_dir = ('$env:ProgramData + '
-                      "'\\FakeNet-NG-MCP\\configs\\custom'")
+    active_dir = ('$env:ProgramData + '
+                  "'\\FakeNet-NG-MCP\\configs\\custom'")
     ext = channel.powershell(
         "$base = %s; $p = Join-Path $base '%s'; "
         "try { Set-Content $p 'tampered' -ErrorAction Stop; 'WRITE_OK' } "
@@ -369,8 +381,15 @@ def run_acc009(base, channel, writer):
         "try { Remove-Item $p -ErrorAction Stop; 'DELETE_OK' } catch "
         "{ 'DELETE_BLOCKED' }" % (active_dir, active_name), timeout=90)
     writer.add_evidence('acc009-unlock-after-stop', ext2)
-    checks['unlocked_after_stop'] = 'WRITE_OK' in ext2['output'] or \
-        'DELETE_OK' in ext2['output']
+    checks['unlocked_after_stop'] = 'WRITE_OK' in ext2['output']
+    # cleanup probe config
+    try:
+        call(base, 'delete_config',
+             {'name': lock_name, 'expected_sha256': sha_of(VALID_INI),
+              'command_id': unique_command('lp-d'),
+              'expected_state_version': status(base)['state_version']})
+    except Exception:  # noqa: BLE001
+        pass
 
     # reparse point escape: junction inside custom root pointing outside.
     reparse = channel.powershell(

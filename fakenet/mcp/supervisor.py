@@ -172,8 +172,16 @@ class RealSupervisor:
 
             # Fakenet resolves packaged resources (defaultFiles/, report
             # templates) relative to the process CWD; the service runs from
-            # System32, so pin the CWD to the package root for the run.
-            package_root = os.path.dirname(os.path.abspath(config_path))
+            # System32, so pin the CWD to the package root (exe directory
+            # when frozen, source root otherwise) for the run.
+            import sys
+
+            if getattr(sys, 'frozen', False):
+                package_root = os.path.dirname(os.path.abspath(
+                    sys.executable))
+            else:
+                package_root = os.path.dirname(os.path.dirname(
+                    os.path.dirname(os.path.abspath(__file__))))
             self._previous_cwd = os.getcwd()
             os.chdir(package_root)
             instance = Fakenet()
