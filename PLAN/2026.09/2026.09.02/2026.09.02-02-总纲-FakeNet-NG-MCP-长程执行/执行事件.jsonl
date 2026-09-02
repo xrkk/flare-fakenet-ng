@@ -22,3 +22,5 @@
 {"time":"2026-09-03T06:00:00+08:00","event":"P03_AUDIT_IMPORTED","note":"审核18(10 AUD, 高危=filter重建覆盖)+处理19; v1 可实施; 进入 IMPLEMENT"}
 {"time":"2026-09-03T05:50:00+08:00","event":"P03_ACC_RESULTS","note":"候选 r23(mcp-c9376869a-6ad29cc16091): 六项 P03 ACC 全 pass(链路存活/健康撤销/Job收敛/SCM恢复/快照语义/真实锁+重解析点+restart); ACC-016 回归 pass; 历经 r6-r23 十八次可归因构建"}
 {"time":"2026-09-03T06:00:00+08:00","event":"P03_CHILD_DONE","note":"P03 全部 IMP/ACC 完成; 进入 P04 LOCATE_OR_WRITE"}
+{"time":"2026-09-03T06:20:00+08:00","event":"P04_SELF_REVIEW_DONE","note":"子方案21 v0 自评通过(保真 12/12); 审核路线=必须首次第三方审核; 自评记录22持久化"}
+{"time":"2026-09-03T07:00:00+08:00","event":"P04_AUDIT_IMPORTED","note":"审核23(10 AUD, 高危=恢复审计细化缺失)+处理24; v1 可实施; 进入 IMPLEMENT"}
