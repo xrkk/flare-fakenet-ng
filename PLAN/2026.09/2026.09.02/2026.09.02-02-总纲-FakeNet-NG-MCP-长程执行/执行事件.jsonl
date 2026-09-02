@@ -13,3 +13,5 @@
 {"time":"2026-09-02T23:55:00+08:00","event":"P01_IMP09_DEPLOY","note":"候选1部署成功(下载哈希一致/122文件/install+防火墙+sc create LocalSystem auto); 但服务卡 START_PENDING: 真机根因=SCM 无控制台流下 uvicorn ColourizedFormatter 调 sys.stdout.isatty() 崩溃; 已修复(log_config=None+stderr守卫)+提交, 构建#8 进行中"}
 {"time":"2026-09-03T00:15:00+08:00","event":"P01_ACC_RESULTS","note":"候选4(mcp-c32803520-672e070e8b81, pywin32运行时): ACC-016 pass; ACC-003 pass(含防火墙启用复验+非允许源阻断); P01-ENTRY pass; ACC-002 blocked(raw协议全过, ZCode客户端步骤受阻于模型配置缺失/付费授权, DEC-006)"}
 {"time":"2026-09-03T00:40:00+08:00","event":"P01_BLOCKED_WAITING_USER","note":"ACC-002 阻碍消除步骤已持久化于实施记录§阻碍与解除并随回复输出; 子方案升v3(SCM运行时pywin32修订); P02入口(P01全部ACC通过)未满足, 工作流等待用户解除"}
+{"time":"2026-09-03T01:25:00+08:00","event":"P01_ACC002_UNBLOCKED","note":"用户解除阻碍并许可一次无头探针模型调用; CLI 配置通道按其自身 /login 写盘格式复刻(yEo 逆向); 一次探针成功(controller_header=valid_uuid); ACC-002 重跑 pass; 付费探针账本 CONFIRMED"}
+{"time":"2026-09-03T01:30:00+08:00","event":"P01_CHILD_DONE","note":"P01 全部 IMP/ACC 完成(ACC-002/003/016 pass + P01-ENTRY pass, 同一候选); 进入 P02 LOCATE_OR_WRITE"}
