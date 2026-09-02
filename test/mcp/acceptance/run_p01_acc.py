@@ -539,6 +539,7 @@ def main():
 
     exit_code = EXIT_TOOL_ERROR
     guest_identity = 'unknown'
+    package_sha = args.package_sha256
     try:
         identity = channel.computer_name()
         writer.action('vm-identity', '%s @ %s' % (identity, args.vm_identity))
