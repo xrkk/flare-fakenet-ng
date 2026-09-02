@@ -41,6 +41,7 @@ WINDOWS_PYTHON = r'C:\Python311\python.exe'
 XVFB_SERVER_ARGS = '-screen 0 1920x1080x24'
 FIXED_ZIP_TIME = (2000, 1, 1, 0, 0, 0)
 MCP_SDK_PIN = 'mcp==2.1.1'
+PYDIVERT_WHEEL = 'pydivert-2.1.0-py2.py3-none-any.whl'
 HTTP_CONFLICT_TESTS = ('test/test_http_listener_stop.py',)
 EXPECTED_SKIP_MODULES = frozenset(('test_singleinstance',
                                     'test_configstore_links',
@@ -171,20 +172,30 @@ def run_windows_test_gate(stage, build_root):
     wheel = stage / 'wheelhouse' / PYDIVERT_WHEEL
     if not wheel.is_file():
         raise RuntimeError('fixed pydivert wheel is missing from archive')
+    pydivert_root = build_root / 'pydivert21'
+    pydivert_root.mkdir(exist_ok=True)
+    with zipfile.ZipFile(wheel) as archive:
+        archive.extractall(pydivert_root)
+    pydivert_windows = wine_path(pydivert_root).replace('\\', '/').lower()
+    pydivert_prefix = pydivert_windows.rstrip('/') + '/'
+    env = os.environ.copy()
+    env['PYTHONPATH'] = pydivert_prefix
+    env['PYTHONDONTWRITEBYTECODE'] = '1'
+    env['PYTHONIOENCODING'] = 'utf-8'
 
     main_xml = validation / 'windows-pytest-main.xml'
     main_log = validation / 'windows-pytest-main.txt'
     main_args = ['-m', 'pytest', '-q', '--disable-warnings']
     main_args.extend('--ignore=%s' % path for path in HTTP_CONFLICT_TESTS)
     main_args.extend(['--junitxml', wine_path(main_xml)])
-    wine_python_logged(main_args, stage, main_log)
+    wine_python_logged(main_args, stage, main_log, env=env)
 
     http_xml = validation / 'windows-pytest-http.xml'
     http_log = validation / 'windows-pytest-http.txt'
     http_args = ['-m', 'pytest', '-q', '--disable-warnings']
     http_args.extend(HTTP_CONFLICT_TESTS)
     http_args.extend(['--junitxml', wine_path(http_xml)])
-    wine_python_logged(http_args, stage, http_log)
+    wine_python_logged(http_args, stage, http_log, env=env)
 
     summaries = {}
     skip_modules = set()
