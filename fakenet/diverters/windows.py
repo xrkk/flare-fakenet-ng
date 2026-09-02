@@ -958,8 +958,8 @@ class Diverter(DiverterBase, WinUtilMixin):
         exclusion params present but unverifiable => fail closed."""
         try:
             clause = build_control_link_exclusion_clause(
-                self.diverter_config.get('ControlLinkExcludeIp'),
-                self.diverter_config.get('ControlLinkExcludePort'))
+                self._dict.get('controllinkexcludeip'),
+                self._dict.get('controllinkexcludeport'))
         except ControlFilterError as exc:
             raise PolicyConfigError(str(exc)) from exc
         if clause is None:
