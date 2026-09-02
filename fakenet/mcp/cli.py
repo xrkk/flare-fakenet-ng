@@ -89,6 +89,7 @@ def cmd_install(args):
         listen_ip=args.listen_ip,
         listen_port=args.port,
         allowed_host_ips=args.allowed_host,
+        extra_control_ports=getattr(args, 'extra_exclude_port', []) or [],
         source='install-cli')
     paths.ensure_data_directories()
     cfg.save()
@@ -276,6 +277,10 @@ def build_parser():
                          default=config_module.DEFAULT_PORT)
     install.add_argument('--allowed-host', action='append', required=True,
                          help='allowed host source IP (repeatable)')
+    install.add_argument('--extra-exclude-port', action='append',
+                         default=[], type=int,
+                         help='extra host-only port excluded from the main '
+                              'capture filter (repeatable)')
     install.set_defaults(func=cmd_install)
 
     uninstall = sub.add_parser('uninstall', help='remove the service')

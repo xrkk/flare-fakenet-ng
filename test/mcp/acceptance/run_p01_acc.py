@@ -130,12 +130,15 @@ def _deploy_with_server(args, channel, writer, vm_dir, serve_root, package,
                 remote_zip, vm_dir, vm_dir), timeout=600)
         writer.add_evidence('vm-expand', expand)
 
+        extra_ports = list(getattr(args, 'extra_exclude_port', []) or [])
+        extra_ps = ''.join(
+            ' -ExtraExcludePort %d' % port for port in extra_ports)
         install = channel.powershell(
             "powershell -ExecutionPolicy Bypass -File '%s\\"
             'install-fakenetng-mcp.ps1\' -ListenIp %s -Port %d '
-            '-AllowedHost %s; exit $LASTEXITCODE' % (
+            '-AllowedHost %s%s; exit $LASTEXITCODE' % (
                 vm_dir, args.listen_ip, args.listen_port,
-                args.allowed_host), timeout=600)
+                args.allowed_host, extra_ps), timeout=600)
         writer.add_evidence('vm-install', install)
         start = channel.powershell(
             'sc.exe start fakenetng-mcp', timeout=120)
@@ -524,6 +527,8 @@ def main():
     parser.add_argument('--controller-uuid')
     parser.add_argument('--vm-package-dir',
                         default='C:\\FakeNetMCP\\candidate')
+    parser.add_argument('--extra-exclude-port', action='append',
+                        default=[], type=int)
     parser.add_argument('--run-firewall-round', action='store_true')
     parser.add_argument('--deploy', action='store_true',
                         help='deploy/install the package before checks')

@@ -68,20 +68,38 @@ class AppContext:
                 from fakenet.mcp.supervisor import RealSupervisor
 
                 log_path = dirs['logs'] / 'service.log'
-                self.runner = RealSupervisor(
+
+                def log_reader(offset=0):
+                    if not log_path.is_file():
+                        return ''
+                    with open(log_path, 'rb') as handle:
+                        handle.seek(0, 2)
+                        size = handle.tell()
+                        handle.seek(min(offset, size))
+                        window = handle.read()[-65536:]
+                    return window.decode('utf-8', 'replace')
+
+                def log_size():
+                    return log_path.stat().st_size if \
+                        log_path.is_file() else 0
+
+                supervisor = RealSupervisor(
                     snapshot=_make_snapshot(dirs),
                     baseline_store=_make_baseline_store(dirs),
                     config_path_resolver=self._default_config_resolver,
                     exclusion={
                         'ip': (config.allowed_host_ips[0]
                                if config.allowed_host_ips else ''),
-                        'port': str(config.listen_port),
+                        'port': ','.join(
+                            str(port) for port in
+                            [config.listen_port] +
+                            list(getattr(config, 'extra_control_ports',
+                                         []))),
                     },
-                    log_reader=lambda: (
-                        log_path.read_text(encoding='utf-8',
-                                           errors='replace')[-65536:]
-                        if log_path.is_file() else ''),
+                    log_reader=log_reader,
                 )
+                supervisor._log_size_probe = log_size
+                self.runner = supervisor
         self.coordinator = coordinator or Coordinator(self.runner)
         self.artifacts_root = dirs['artifacts']
 

@@ -21,7 +21,7 @@ class ConfigError(ValueError):
 class ServiceConfig:
 
     def __init__(self, listen_ip, listen_port, allowed_host_ips,
-                 log_level='INFO', source=None):
+                 log_level='INFO', extra_control_ports=None, source=None):
         if not isinstance(listen_ip, str) or not listen_ip.strip():
             raise ConfigError('listen_ip must be a non-empty string')
         listen_ip = listen_ip.strip()
@@ -40,6 +40,18 @@ class ServiceConfig:
         self.listen_port = int(listen_port)
         self.allowed_host_ips = [item.strip() for item in allowed_host_ips]
         self.log_level = str(log_level or 'INFO').upper()
+        if extra_control_ports is None:
+            extra_control_ports = []
+        if isinstance(extra_control_ports, (int, str)):
+            extra_control_ports = [extra_control_ports]
+        clean_ports = []
+        for item in extra_control_ports:
+            port = int(item)
+            if not (1 <= port <= 65535):
+                raise ConfigError('extra control ports must be in 1..65535')
+            if port != int(listen_port) and port not in clean_ports:
+                clean_ports.append(port)
+        self.extra_control_ports = clean_ports
         self.source = str(source) if source else None
 
     def to_dict(self):
@@ -48,6 +60,7 @@ class ServiceConfig:
             'listen_port': self.listen_port,
             'allowed_host_ips': list(self.allowed_host_ips),
             'log_level': self.log_level,
+            'extra_control_ports': list(self.extra_control_ports),
         }
 
     @classmethod
@@ -60,6 +73,7 @@ class ServiceConfig:
             listen_port=data['listen_port'],
             allowed_host_ips=data['allowed_host_ips'],
             log_level=data.get('log_level', 'INFO'),
+            extra_control_ports=data.get('extra_control_ports', []),
             source=source,
         )
 

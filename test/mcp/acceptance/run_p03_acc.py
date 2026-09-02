@@ -55,11 +55,21 @@ def load_and_start(base, name='default.ini', builtin=True):
                  'expected_state_version': loaded['state_version']})
 
 
-def stop_run(base):
-    version = status(base)['state_version']
-    return call(base, 'stop',
-                {'command_id': unique_command('p03-stop'),
-                 'expected_state_version': version})
+def stop_run(base, attempts=3):
+    result = None
+    for attempt in range(attempts):
+        try:
+            version = status(base)['state_version']
+        except Exception:  # noqa: BLE001
+            return result
+        result = call(base, 'stop',
+                      {'command_id': unique_command('p03-stop'),
+                       'expected_state_version': version})
+        code = (result.get('error') or {}).get('code')
+        if code is None or result.get('state') == 'stopped':
+            return result
+        time.sleep(1.0)
+    return result
 
 
 def wait_state(base, predicate, timeout=60):
@@ -113,10 +123,10 @@ def run_acc001(base, channel, writer):
                         {'command_id': unique_command('a1-start2'),
                          'expected_state_version':
                              status(base)['state_version']})
+    writer.add_evidence('acc001-second-start', second_start)
     checks['second_managed_instance_rejected'] = err_of(second_start) in (
         'state_conflict', 'operation_busy', 'not_allowed_in_state')
-    if status(base).get('run_id'):
-        stop_run(base)
+    stop_run(base)
     writer.add_evidence('acc001-checks', checks)
     return EXIT_PASS if all(checks.values()) else EXIT_FAIL
 
@@ -134,6 +144,9 @@ def run_acc004(base, channel, writer):
     stop_run(base)
     ok_after, _ = continuous_probe(base, 4)
     checks['link_alive_after_stop'] = ok_after
+    if not all(checks.values()):
+        writer.add_evidence('acc004-checks', checks)
+        return EXIT_FAIL
 
     # (2) initialization failure: invalid config refused (fail closed).
     version = status(base)['state_version']
@@ -213,10 +226,11 @@ def run_acc006(base, channel, writer):
     checks['reason_observable'] = bool(
         (snap2 or {}).get('failure_reason')) or \
         (snap2 or {}).get('health', {}).get('probe') != 'pass'
-    stop_run(base)
+    stop_result = stop_run(base)
     stopped, _ = wait_state(base, lambda s: s.get('state') == 'stopped',
                             timeout=60)
     checks['stop_returns_to_stopped'] = stopped
+    writer.add_evidence('acc006-stop', stop_result or {})
     writer.add_evidence('acc006-checks', checks)
     return EXIT_PASS if all(checks.values()) else EXIT_FAIL
 

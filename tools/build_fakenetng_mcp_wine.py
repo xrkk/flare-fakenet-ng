@@ -419,14 +419,17 @@ INSTALL_PS1 = """# fakenetng-mcp installer (P01)
 param(
     [Parameter(Mandatory=$true)][string]$ListenIp,
     [int]$Port = 28788,
-    [Parameter(Mandatory=$true)][string]$AllowedHost
+    [Parameter(Mandatory=$true)][string]$AllowedHost,
+    [int[]]$ExtraExcludePort = @()
 )
 $ErrorActionPreference = 'Stop'
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'install-fakenetng-mcp must run elevated (Administrator)'
 }
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-& (Join-Path $root 'fakenetng-mcp.exe') install --listen-ip $ListenIp --port $Port --allowed-host $AllowedHost
+$extra = @()
+foreach ($p in $ExtraExcludePort) { $extra += @('--extra-exclude-port', $p) }
+& (Join-Path $root 'fakenetng-mcp.exe') install --listen-ip $ListenIp --port $Port --allowed-host $AllowedHost @extra
 if ($LASTEXITCODE -ne 0) { throw "fakenetng-mcp install failed: $LASTEXITCODE" }
 Write-Host 'fakenetng-mcp installed. Start it with: sc start fakenetng-mcp (or fakenetng-mcp.exe start)'
 """

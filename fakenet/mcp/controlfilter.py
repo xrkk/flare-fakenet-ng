@@ -24,8 +24,8 @@ def apply_control_link_exclusion(filter_string, exclude_ip, exclude_port):
     """Append the control-link exclusion to a known main-filter shape.
 
     WinDivert's language has no unary negation, so the exclusion uses the
-    De-Morgan form ``ip.DstAddr != H or tcp.SrcPort != P`` and is folded
-    only into the IPv4 arm, leaving IPv6 capture semantics untouched.
+    De-Morgan form ``ip.DstAddr != H or (tcp.SrcPort != P1 and ...)`` and
+    is folded only into the IPv4 arm, leaving IPv6 semantics untouched.
 
     Recognized shapes (the only ones the diverter produces):
       * ``outbound and ip``                                (legacy)
@@ -38,8 +38,11 @@ def apply_control_link_exclusion(filter_string, exclude_ip, exclude_port):
     clause = build_control_link_exclusion_clause(exclude_ip, exclude_port)
     if clause is None:
         return filter_string
-    ip, port = str(exclude_ip).strip(), str(exclude_port).strip()
-    negative = '(ip.DstAddr != %s or tcp.SrcPort != %s)' % (ip, port)
+    ports = [item.strip() for item in
+             str(exclude_port).strip().split(',') if item.strip()]
+    keep_port = ' and '.join('tcp.SrcPort != %s' % port for port in ports)
+    negative = '(ip.DstAddr != %s or (%s))' % (
+        str(exclude_ip).strip(), keep_port)
     if negative in filter_string:
         return filter_string
     if filter_string == LEGACY_BASE:
@@ -57,21 +60,27 @@ def apply_control_link_exclusion(filter_string, exclude_ip, exclude_port):
 
 
 def build_control_link_exclusion_clause(exclude_ip, exclude_port):
-    """Return the `not (...)` clause, or None when no exclusion is set.
+    """Return the exclusion clause, or None when no exclusion is set.
 
-    Raises ControlFilterError (fail closed) on partial/invalid input; the
-    clause evaluates false for non-IPv4 packets so IPv6 capture semantics
-    are unchanged.
+    ``exclude_port`` accepts a single port or a comma-separated port list
+    (control port plus any host-only observation channels).  Raises
+    ControlFilterError (fail closed) on partial/invalid input; the clause
+    evaluates false for non-IPv4 packets so IPv6 semantics are unchanged.
     """
     exclude_ip = str(exclude_ip if exclude_ip is not None else '').strip()
-    exclude_port = str(
-        exclude_port if exclude_port is not None else '').strip()
-    if not exclude_ip and not exclude_port:
+    ports = [item.strip() for item in str(
+        exclude_port if exclude_port is not None else '').split(',')]
+    if not exclude_ip and not any(ports):
         return None
-    if not exclude_ip or not exclude_port or not exclude_port.isdigit():
+    if not exclude_ip or not any(ports):
         raise ControlFilterError(
-            'ControlLink exclusion requires ControlLinkExcludeIp and a '
+            'ControlLink exclusion requires ControlLinkExcludeIp and '
             'numeric ControlLinkExcludePort (fail closed)')
+    for port in ports:
+        if not port or not port.isdigit():
+            raise ControlFilterError(
+                'ControlLinkExcludePort entries must be numeric '
+                '(fail closed)')
     try:
         address = ipaddress.ip_address(exclude_ip)
     except ValueError as exc:
@@ -81,6 +90,11 @@ def build_control_link_exclusion_clause(exclude_ip, exclude_port):
         raise ControlFilterError(
             'ControlLinkExcludeIp must be a canonical IPv4 address '
             '(fail closed)')
-    # WinDivert's filter language spells negation '!'; 'not' is a parse error.
-    return '!(ip.DstAddr == %s and tcp.SrcPort == %s)' % (
-        exclude_ip, exclude_port)
+    keep_port = ' and '.join('tcp.SrcPort != %s' % port for port in ports)
+    # De Morgan over the port list: keep unless (dst==host AND any port hit)
+    return '(ip.DstAddr != %s or (%s))' % (exclude_ip, keep_port)
+
+
+def exclusion_clause(filter_string, exclude_ip, exclude_port):
+    """Backward-compatible single-entry alias used by older callers."""
+    return build_control_link_exclusion_clause(exclude_ip, exclude_port)

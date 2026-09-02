@@ -15,11 +15,15 @@ from fakenet.mcp.supervisor import perform_startup_recovery
 
 def test_clause_built_for_valid_pair():
     assert build_control_link_exclusion_clause('192.168.204.1', 28788) == \
-        '!(ip.DstAddr == 192.168.204.1 and tcp.SrcPort == 28788)'
+        '(ip.DstAddr != 192.168.204.1 or (tcp.SrcPort != 28788))'
+    assert build_control_link_exclusion_clause(
+        '192.168.204.1', '28788,28787') == \
+        '(ip.DstAddr != 192.168.204.1 or ' \
+        '(tcp.SrcPort != 28788 and tcp.SrcPort != 28787))'
 
 
 def test_apply_exclusion_known_shapes():
-    negative = '(ip.DstAddr != 192.168.204.1 or tcp.SrcPort != 28788)'
+    negative = ('(ip.DstAddr != 192.168.204.1 or (tcp.SrcPort != 28788))')
     assert apply_control_link_exclusion(
         'outbound and ip', '192.168.204.1', '28788') == \
         'outbound and ip and %s' % negative
