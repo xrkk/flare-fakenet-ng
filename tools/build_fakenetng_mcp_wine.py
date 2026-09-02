@@ -41,8 +41,11 @@ WINDOWS_PYTHON = r'C:\Python311\python.exe'
 XVFB_SERVER_ARGS = '-screen 0 1920x1080x24'
 FIXED_ZIP_TIME = (2000, 1, 1, 0, 0, 0)
 MCP_SDK_PIN = 'mcp==2.1.1'
+HTTP_CONFLICT_TESTS = ('test/test_http_listener_stop.py',)
 EXPECTED_SKIP_MODULES = frozenset(('test_singleinstance',
-                                    'test_configstore_links'))
+                                    'test_configstore_links',
+                                    'test_gui_configmodel',
+                                    'test_gui_vm_acceptance'))
 SMOKE_PORT = 39887
 SMOKE_CONTROLLER = '11111111-2222-4333-8444-555555555555'
 TARGET_CLIENT_IDENTITY = {
@@ -160,43 +163,61 @@ def offline_install_sdk(stage, build_root):
 
 
 def run_windows_test_gate(stage, build_root):
+    """Full-repo Windows-Python regression (the candidate touches shared
+    diverter code), grouped like the formal v35 gate: the port-owning HTTP
+    group runs isolated, everything else in the main pass."""
     validation = build_root / 'build-validation'
     validation.mkdir(parents=True, exist_ok=True)
-    xml_path = validation / 'windows-pytest-mcp.xml'
-    log_path = validation / 'windows-pytest-mcp.txt'
-    args = ['-m', 'pytest', '-q', '--disable-warnings', 'test/mcp',
-            '--junitxml', wine_path(xml_path)]
-    wine_python_logged(args, stage, log_path)
+    wheel = stage / 'wheelhouse' / PYDIVERT_WHEEL
+    if not wheel.is_file():
+        raise RuntimeError('fixed pydivert wheel is missing from archive')
 
-    root = ElementTree.parse(xml_path).getroot()
-    testcases = list(root.iter('testcase'))
-    failures = sum(1 for item in testcases if item.find('failure') is not None)
-    errors = sum(1 for item in testcases if item.find('error') is not None)
-    skipped = []
-    for item in testcases:
-        if item.find('skipped') is not None:
-            skipped.append('%s::%s' % (
-                item.attrib.get('classname', ''), item.attrib.get('name', '')))
+    main_xml = validation / 'windows-pytest-main.xml'
+    main_log = validation / 'windows-pytest-main.txt'
+    main_args = ['-m', 'pytest', '-q', '--disable-warnings']
+    main_args.extend('--ignore=%s' % path for path in HTTP_CONFLICT_TESTS)
+    main_args.extend(['--junitxml', wine_path(main_xml)])
+    wine_python_logged(main_args, stage, main_log)
+
+    http_xml = validation / 'windows-pytest-http.xml'
+    http_log = validation / 'windows-pytest-http.txt'
+    http_args = ['-m', 'pytest', '-q', '--disable-warnings']
+    http_args.extend(HTTP_CONFLICT_TESTS)
+    http_args.extend(['--junitxml', wine_path(http_xml)])
+    wine_python_logged(http_args, stage, http_log)
+
+    summaries = {}
     skip_modules = set()
-    for identity in skipped:
-        lowered = identity.lower()
-        for module in EXPECTED_SKIP_MODULES:
-            if module in lowered:
-                skip_modules.add(module)
-    if failures or errors:
-        raise RuntimeError('Windows-Python MCP gate failed: failures=%d '
-                           'errors=%d skipped=%s' %
-                           (failures, errors, skipped))
+    for group, xml in (('main', main_xml), ('http', http_xml)):
+        root = ElementTree.parse(xml).getroot()
+        testcases = list(root.iter('testcase'))
+        failures = sum(1 for item in testcases
+                       if item.find('failure') is not None)
+        errors = sum(1 for item in testcases
+                     if item.find('error') is not None)
+        skipped_ids = []
+        for item in testcases:
+            if item.find('skipped') is not None:
+                skipped_ids.append('%s::%s' % (
+                    item.attrib.get('classname', ''),
+                    item.attrib.get('name', '')))
+        for identity in skipped_ids:
+            lowered = identity.lower()
+            for module in EXPECTED_SKIP_MODULES:
+                if module in lowered:
+                    skip_modules.add(module)
+        if failures or errors:
+            raise RuntimeError(
+                'Windows-Python gate failed (%s): failures=%d errors=%d '
+                'skipped=%s' % (group, failures, errors, skipped_ids))
+        summaries[group] = {'tests': len(testcases), 'failures': failures,
+                            'errors': errors,
+                            'skipped': len(skipped_ids)}
     if skip_modules != set(EXPECTED_SKIP_MODULES):
-        raise RuntimeError('Windows-Python skip set drifted: %s' % skipped)
-    return {
-        'tests': len(testcases),
-        'failures': failures,
-        'errors': errors,
-        'skipped': skipped,
-        'expected_skip_modules': sorted(EXPECTED_SKIP_MODULES),
-        'verdict': 'PASS',
-    }
+        raise RuntimeError('Windows-Python skip set drifted: %s' %
+                           sorted(skip_modules))
+    return {'verdict': 'PASS', 'expected_skip_modules':
+            sorted(EXPECTED_SKIP_MODULES), 'groups': summaries}
 
 
 def smoke_frozen_exe(onedir, build_root):
