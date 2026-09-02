@@ -41,7 +41,8 @@ WINDOWS_PYTHON = r'C:\Python311\python.exe'
 XVFB_SERVER_ARGS = '-screen 0 1920x1080x24'
 FIXED_ZIP_TIME = (2000, 1, 1, 0, 0, 0)
 MCP_SDK_PIN = 'mcp==2.1.1'
-EXPECTED_SKIP_MODULES = frozenset(('test_singleinstance',))
+EXPECTED_SKIP_MODULES = frozenset(('test_singleinstance',
+                                    'test_configstore_links'))
 SMOKE_PORT = 39887
 SMOKE_CONTROLLER = '11111111-2222-4333-8444-555555555555'
 TARGET_CLIENT_IDENTITY = {

@@ -196,13 +196,19 @@ def test_server_discover(endpoint):
     assert json.loads(text)['result']['supportedVersions'] == ['2026-07-28']
 
 
-def test_tools_list_only_probe_surface(endpoint):
+def test_tools_list_frozen_surface(endpoint):
     body = {'jsonrpc': '2.0', 'id': 4, 'method': 'tools/list',
             'params': {'_meta': _envelope()}}
     status, text = _post(endpoint, body,
                          {'MCP-Protocol-Version': '2026-07-28',
                           'Mcp-Method': 'tools/list'})
     assert status == 200
-    names = [tool['name']
-             for tool in json.loads(text)['result']['tools']]
-    assert names == ['ping']
+    names = sorted(tool['name']
+                   for tool in json.loads(text)['result']['tools'])
+    # P01 probe surface plus the P02 domain tools (sub-plan P02 §3).
+    assert names == sorted([
+        'ping', 'get_status', 'get_events', 'list_configs',
+        'validate_config', 'read_config', 'list_artifacts', 'load_config',
+        'start', 'stop', 'restart', 'create_config', 'import_config',
+        'edit_config', 'rename_config', 'delete_config',
+    ])

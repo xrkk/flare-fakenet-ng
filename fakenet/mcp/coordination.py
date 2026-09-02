@@ -1,0 +1,188 @@
+# Copyright 2026 Google LLC
+"""Serial mutation coordinator: identity, state version, idempotency, events.
+
+Sub-plan P02 §3 frozen semantics:
+
+* all mutations execute strictly serially under one lock; conflicting
+  requests are rejected immediately (no queueing);
+* controller identity is validated BEFORE command-id replay, so a different
+  controller replaying someone else's command_id gets ``controller_conflict``
+  instead of the cached result (anti replay-hijack);
+* a duplicate ``command_id`` from the same controller replays the original
+  result without re-executing; the cache lives in-process only (LRU 256) and
+  a process restart forgets it (records 023/038: no command continuation);
+* ``expected_state_version`` must equal the current version; mismatches are
+  ``state_conflict``; every accepted mutation bumps the version;
+* no timers anywhere: controller ownership never times out (record 022).
+"""
+
+import logging
+import threading
+import time
+import uuid
+from collections import OrderedDict, deque
+
+from fakenet.mcp import errors
+
+logger = logging.getLogger('fakenetng-mcp.coordination')
+
+COMMAND_CACHE_LIMIT = 256
+EVENT_BUFFER_LIMIT = 500
+
+
+class EventLog:
+
+    def __init__(self, limit=EVENT_BUFFER_LIMIT):
+        self._entries = deque(maxlen=limit)
+
+    def record(self, event_type, **fields):
+        entry = {'timestamp': time.time(), 'kind': event_type}
+        entry.update(fields)
+        self._entries.append(entry)
+        return entry
+
+    def snapshot(self, limit=None):
+        items = list(self._entries)
+        return items[-limit:] if limit else items
+
+
+class Coordinator:
+
+    def __init__(self, runner, event_log=None):
+        self._lock = threading.RLock()
+        self._runner = runner
+        self._events = event_log or EventLog()
+        self._state = 'stopped'
+        self._state_version = 1
+        self._run_id = None
+        self._controller = None
+        self._failure_reason = None
+        self._config_identity = None
+        self._commands = OrderedDict()
+
+    # -- read-only surface -------------------------------------------------
+    def snapshot(self):
+        with self._lock:
+            return {
+                'state': self._state,
+                'state_version': self._state_version,
+                'run_id': self._run_id,
+                'controller': self._controller,
+                'failure_reason': self._failure_reason,
+                'config_identity': self._config_identity,
+                'health': self._runner.health_detail(self._state),
+            }
+
+    def events(self, limit=None):
+        with self._lock:
+            return self._events.snapshot(limit)
+
+    @property
+    def running(self):
+        with self._lock:
+            return self._run_id is not None
+
+    @property
+    def controller(self):
+        with self._lock:
+            return self._controller
+
+    # -- mutation surface --------------------------------------------------
+    def submit(self, *, command_id, expected_version, controller,
+               controller_valid, kind, describe, execute):
+        """Run one serialized mutation.
+
+        ``execute`` is called with this coordinator while the lock is held;
+        it returns ``dict(result fields)`` and may raise ``McpError``.
+        """
+        with self._lock:
+            # 1. identity gate (before replay, frozen order).
+            if not controller_valid:
+                raise errors.McpError(
+                    errors.CONTROLLER_IDENTITY_MISSING,
+                    'mutation requires a valid X-FakeNet-Controller-ID '
+                    'header')
+            if self._controller is not None and controller != self._controller:
+                raise errors.McpError(
+                    errors.CONTROLLER_CONFLICT,
+                    'another controller owns the active run',
+                    {'active_controller': self._controller})
+            if controller is None:
+                raise errors.McpError(
+                    errors.CONTROLLER_IDENTITY_MISSING,
+                    'mutation requires controller identity')
+
+            # 2. replay gate (same controller only).
+            cached = self._commands.get(command_id)
+            if cached is not None:
+                if cached.get('controller') != controller:
+                    raise errors.McpError(
+                        errors.CONTROLLER_CONFLICT,
+                        'command_id belongs to another controller')
+                replay = dict(cached['response'])
+                replay['replayed'] = True
+                return replay
+
+            # 3. version gate.
+            if expected_version != self._state_version:
+                raise errors.McpError(
+                    errors.STATE_CONFLICT,
+                    'expected_state_version does not match current state',
+                    {'expected': expected_version,
+                     'current': self._state_version})
+
+            self._events.record('command.accepted', command_id=command_id,
+                                controller=controller, kind=kind)
+            try:
+                result = execute(self)
+            except errors.McpError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.exception('command %s crashed', command_id)
+                raise errors.McpError(
+                    errors.INTERNAL_ERROR, 'command execution failed',
+                    {'command_id': command_id, 'reason': repr(exc)[:200]})
+
+            self._state_version += 1
+            self._run_id = result.get('run_id', self._run_id)
+            if 'state' in result:
+                self._state = result['state']
+            self._failure_reason = result.get('failure_reason')
+            if result.get('controller') is not None:
+                self._controller = result['controller']
+            if result.get('release_controller'):
+                self._controller = None
+            if 'config_identity' in result:
+                self._config_identity = result['config_identity']
+            self._events.record(
+                'command.completed', command_id=command_id, kind=kind,
+                state=self._state, state_version=self._state_version)
+
+            response = {
+                'state': self._state,
+                'state_version': self._state_version,
+                'run_id': self._run_id,
+                'changed': bool(result.get('changed', True)),
+                'error': None,
+                'command_id': command_id,
+            }
+            self._commands[command_id] = {
+                'controller': controller, 'response': response,
+                'describe': describe,
+            }
+            if len(self._commands) > COMMAND_CACHE_LIMIT:
+                self._commands.popitem(last=False)
+            return dict(response)
+
+    def forget_commands(self):
+        """Test/verification hook: simulate process restart semantics."""
+        with self._lock:
+            self._commands.clear()
+
+    # -- helpers used by executions ---------------------------------------
+    def new_run_id(self):
+        return str(uuid.uuid4())
+
+    def set_config_identity(self, identity):
+        with self._lock:
+            self._config_identity = identity
