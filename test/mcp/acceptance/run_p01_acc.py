@@ -100,6 +100,12 @@ def deploy_package(args, channel, writer, vm_dir):
 
 def _deploy_with_server(args, channel, writer, vm_dir, serve_root, package,
                         package_sha):
+    # Stop the running service BEFORE touching files: a live exe locks the
+    # onedir payload and Expand-Archive would silently keep the old binary.
+    channel.powershell(
+        'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; '
+        'Get-Process fakenetng-mcp -ErrorAction SilentlyContinue | '
+        'Stop-Process -Force; Start-Sleep 2; "STOPPED"', timeout=120)
     with PackageServer(serve_root) as server:
         remote_zip = 'C:\\FakeNetMCP\\%s.zip' % args.candidate_id
         url = '%s/%s' % (server.base_url,
@@ -217,8 +223,7 @@ def run_acc016(args, channel, writer):
     names = {t['name'] for t in tools}
     # Closed surface: every exposed tool belongs to the frozen domain set
     # (P01: ping; P02 sub-plan §3 adds the domain tools).
-    checks['tool_surface_closed'] = ('ping' in names and
-                                     names <= frozen_surface)
+    checks['tool_surface_closed'] = names == frozen_surface
     writer.add_evidence('vm-tools-list', text)
     writer.observe(json.dumps(checks, ensure_ascii=False))
     passed = all(checks.values())
