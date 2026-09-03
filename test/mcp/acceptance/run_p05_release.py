@@ -29,7 +29,7 @@ from helpers import (EXIT_BLOCKED, EXIT_FAIL, EXIT_PASS,  # noqa: E402
                      EXIT_TOOL_ERROR, EvidenceWriter, Win10VmChannel)
 from run_p02_acc import call  # noqa: E402
 from run_p03_acc import continuous_probe, stop_run, unique_command, wait_state  # noqa: E402
-from run_p04_acc import FAULTS  # noqa: E402
+from fakenet.mcp.faultinject import FAULTS  # noqa: E402
 
 DEFAULT_INI = 'default.ini'
 CUSTOM_INI = 'release-custom.ini'
