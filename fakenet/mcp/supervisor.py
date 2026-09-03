@@ -373,8 +373,13 @@ class RealSupervisor:
             if stop_worker.is_alive():
                 # Bounded stop (FB-005 P03 share): keep the recovery marker,
                 # drop references and report failed; the next service start
-                # runs the recovery audit.
+                # runs the recovery audit. The hung stop never reaches its
+                # own socket release, so run the best-effort listener sweep
+                # here — a grace-exceeded stop must not leak listening ports
+                # into the fault-matrix environment audit (r41 gate:
+                # policy_pause round 1 flagged listen_ports drift).
                 logger.error('stop grace (%ss) exceeded', self._stop_grace)
+                self._force_close_listener_sockets(self._fakenet)
                 self._teardown()
                 return {'state': 'failed', 'changed': True,
                         'failure_reason': 'stop grace exceeded',
