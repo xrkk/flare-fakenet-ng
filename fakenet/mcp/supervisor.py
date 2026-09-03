@@ -157,9 +157,7 @@ class RealSupervisor:
             elif self._worker is not None and not self._worker.is_alive() \
                     and not self._init_evidence():
                 self._failure_reason = 'run thread exited without init'
-                if self._coordinator is not None:
-                    self._coordinator.update_health_state(
-                        'failed', self._failure_reason)
+                self._handle_terminal_failure(self._failure_reason)
             elif healthy is False and reason and \
                     'unhandled exception' in reason:
                 self._log_exception_seen_count += 1
