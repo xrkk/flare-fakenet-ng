@@ -392,9 +392,10 @@ def run_acc009_pre(base, channel, writer):
                    {'command_id': unique_command('astop'),
                     'expected_state_version': status(base)[
                         'state_version']}, timeout=300)
+    _after_name = 'after-run-%s.ini' % unique_command('ar')[:8]
     _after = call(
         base, 'create_config',
-        {'name': 'after-run.ini', 'content': VALID_INI,
+        {'name': _after_name, 'content': VALID_INI,
          'command_id': unique_command('ar2'),
          'expected_state_version':
              stopped['state_version']},
@@ -405,7 +406,7 @@ def run_acc009_pre(base, channel, writer):
         # once with a fresh version
         _after = call(
             base, 'create_config',
-            {'name': 'after-run.ini', 'content': VALID_INI,
+            {'name': _after_name + 'x', 'content': VALID_INI,
              'command_id': unique_command('ar3'),
              'expected_state_version':
                  status(base)['state_version']},
