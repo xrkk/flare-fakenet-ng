@@ -451,6 +451,16 @@ def main():
     base = args.target_base_url
     exit_code = EXIT_TOOL_ERROR
     try:
+        # Cross-ACC hygiene: stop any leftover active run before dispatch.
+        try:
+            _snap = call(base, 'get_status', controller=None, timeout=10)
+            if _snap.get('run_id') or _snap.get('state') not in ('stopped',):
+                _v = _snap['state_version']
+                call(base, 'stop',
+                     {'command_id': 'p02-idle-%s' % unique_command('i'),
+                      'expected_state_version': _v}, timeout=300)
+        except Exception:  # noqa: BLE001
+            pass
         identity = channel.computer_name()
         if 'DESKTOP-3FI41GR' not in identity:
             writer.blocker = {'reason': 'unexpected VM: %s' % identity}
