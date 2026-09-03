@@ -392,13 +392,25 @@ def run_acc009_pre(base, channel, writer):
                    {'command_id': unique_command('astop'),
                     'expected_state_version': status(base)[
                         'state_version']}, timeout=300)
-    checks['stopped_other_controller_writes'] = call(
+    _after = call(
         base, 'create_config',
         {'name': 'after-run.ini', 'content': VALID_INI,
          'command_id': unique_command('ar2'),
          'expected_state_version':
              stopped['state_version']},
-        controller=CONTROLLER_B).get('error') is None
+        controller=CONTROLLER_B, timeout=180)
+    if _after.get('error') and (_after['error'].get('code') in
+                                ('state_conflict',)):
+        # the stop's own version bump can race the snapshot read; retry
+        # once with a fresh version
+        _after = call(
+            base, 'create_config',
+            {'name': 'after-run.ini', 'content': VALID_INI,
+             'command_id': unique_command('ar3'),
+             'expected_state_version':
+                 status(base)['state_version']},
+            controller=CONTROLLER_B, timeout=180)
+    checks['stopped_other_controller_writes'] = _after.get('error') is None
 
     # audit integrity for every class incl. failures
     audit_raw = channel.powershell(
