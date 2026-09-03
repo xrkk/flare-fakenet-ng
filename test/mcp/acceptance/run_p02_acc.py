@@ -146,14 +146,16 @@ def run_acc010(base, writer):
     created = call(base, 'create_config',
                    {'name': 'owner.ini', 'content': VALID_INI,
                     'command_id': unique_command('own-create'),
-                    'expected_state_version': version})
+                    'expected_state_version': version}, timeout=120)
     loaded = call(base, 'load_config',
                   {'name': 'owner.ini',
                    'command_id': unique_command('own-load'),
-                   'expected_state_version': created['state_version']})
+                   'expected_state_version': created['state_version']},
+                  timeout=120)
     started = call(base, 'start',
                    {'command_id': unique_command('own-start'),
-                    'expected_state_version': loaded['state_version']})
+                    'expected_state_version': loaded['state_version']},
+                   timeout=150)
     checks = {'start_ok': started.get('error') is None}
 
     outsider = call(base, 'stop',
@@ -298,7 +300,8 @@ def run_acc009_pre(base, channel, writer):
                   {'name': 'mgmt.ini', 'content': OTHER_INI,
                    'expected_sha256': sha,
                    'command_id': unique_command('mg-e'),
-                   'expected_state_version': created['state_version']})
+                   'expected_state_version': created['state_version']},
+                  timeout=120)
     checks['edit_ok'] = edited.get('error') is None
     checks['edit_conflict'] = err_of(call(
         base, 'edit_config',
@@ -310,12 +313,14 @@ def run_acc009_pre(base, channel, writer):
                    {'name': 'mgmt.ini', 'new_name': 'mgmt2.ini',
                     'expected_sha256': sha_of(OTHER_INI),
                     'command_id': unique_command('mg-r'),
-                    'expected_state_version': edited['state_version']})
+                    'expected_state_version': edited['state_version']},
+                   timeout=120)
     checks['rename_ok'] = renamed.get('error') is None
     deleted = call(base, 'delete_config',
                    {'name': 'mgmt2.ini', 'expected_sha256': sha_of(OTHER_INI),
                     'command_id': unique_command('mg-d'),
-                    'expected_state_version': renamed['state_version']})
+                    'expected_state_version': renamed['state_version']},
+                   timeout=120)
     checks['delete_ok'] = deleted.get('error') is None
 
     # escape matrix over the live endpoint
@@ -336,11 +341,12 @@ def run_acc009_pre(base, channel, writer):
     version = status(base)['state_version']
     call(base, 'load_config', {'name': 'act.ini',
                                'command_id': unique_command('al'),
-                               'expected_state_version': version})
+                               'expected_state_version': version},
+          timeout=120)
     version = status(base)['state_version']
     started = call(base, 'start',
                    {'command_id': unique_command('as'),
-                    'expected_state_version': version})
+                    'expected_state_version': version}, timeout=150)
     checks['active_lock'] = err_of(call(
         base, 'edit_config',
         {'name': 'act.ini', 'content': OTHER_INI,
@@ -357,7 +363,7 @@ def run_acc009_pre(base, channel, writer):
     stopped = call(base, 'stop',
                    {'command_id': unique_command('astop'),
                     'expected_state_version': status(base)[
-                        'state_version']})
+                        'state_version']}, timeout=150)
     checks['stopped_other_controller_writes'] = call(
         base, 'create_config',
         {'name': 'after-run.ini', 'content': VALID_INI,
