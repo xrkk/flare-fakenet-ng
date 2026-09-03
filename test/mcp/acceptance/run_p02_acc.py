@@ -94,6 +94,22 @@ def unique_command(prefix):
 
 
 # ---------------------------------------------------------------------------
+
+def _wait_healthy(base, timeout=45):
+    import time as _t
+    deadline = _t.time() + timeout
+    last = None
+    while _t.time() < deadline:
+        try:
+            last = call(base, 'get_status', controller=None, timeout=10)
+            if last.get('state') in ('healthy', 'degraded'):
+                return True, last
+        except Exception:  # noqa: BLE001
+            pass
+        _t.sleep(1.0)
+    return False, last
+
+
 def run_acc005(base, writer):
     writer.action('acc005', 'read-only zero side effects + negative matrix')
     before = status(base)
@@ -347,6 +363,8 @@ def run_acc009_pre(base, channel, writer):
     started = call(base, 'start',
                    {'command_id': unique_command('as'),
                     'expected_state_version': version}, timeout=150)
+    _healthy, _snap = _wait_healthy(base)
+    checks['run_reached_healthy'] = _healthy
     checks['active_lock'] = err_of(call(
         base, 'edit_config',
         {'name': 'act.ini', 'content': OTHER_INI,
