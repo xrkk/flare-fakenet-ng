@@ -162,12 +162,13 @@ def run_acc010(base, writer):
     _builtin = call(base, 'read_config', {'name': 'default.ini'},
                     controller=None)
     _runnable = _builtin.get('content') or VALID_INI
+    owner_name = 'owner-%s.ini' % unique_command('o')[:8]
     created = call(base, 'create_config',
-                   {'name': 'owner.ini', 'content': _runnable,
+                   {'name': owner_name, 'content': _runnable,
                     'command_id': unique_command('own-create'),
                     'expected_state_version': version}, timeout=180)
     loaded = call(base, 'load_config',
-                  {'name': 'owner.ini',
+                  {'name': owner_name,
                    'command_id': unique_command('own-load'),
                    'expected_state_version': created['state_version']},
                   timeout=180)
@@ -355,15 +356,16 @@ def run_acc009_pre(base, channel, writer):
 
     # active-config lock + authorization split
     version = status(base)['state_version']
+    act_name = 'act-%s.ini' % unique_command('a')[:8]
     _builtin = call(base, 'read_config', {'name': 'default.ini'},
                     controller=None)
     _runnable = _builtin.get('content') or VALID_INI
     call(base, 'create_config',
-         {'name': 'act.ini', 'content': _runnable,
+         {'name': act_name, 'content': _runnable,
           'command_id': unique_command('ac'),
           'expected_state_version': version}, timeout=180)
     version = status(base)['state_version']
-    call(base, 'load_config', {'name': 'act.ini',
+    call(base, 'load_config', {'name': act_name,
                                'command_id': unique_command('al'),
                                'expected_state_version': version},
           timeout=180)
@@ -375,7 +377,7 @@ def run_acc009_pre(base, channel, writer):
     checks['run_reached_healthy'] = _healthy
     checks['active_lock'] = err_of(call(
         base, 'edit_config',
-        {'name': 'act.ini', 'content': OTHER_INI,
+        {'name': act_name, 'content': OTHER_INI,
          'expected_sha256': sha_of(_runnable),
          'command_id': unique_command('ae'),
          'expected_state_version': started['state_version']}, timeout=180)) == \
