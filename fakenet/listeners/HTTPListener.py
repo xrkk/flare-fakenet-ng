@@ -285,11 +285,22 @@ class HTTPListener(object):
                 'HTTP_STOP_STEP step=transport elapsed_ms=%d',
                 int((time.monotonic() - step_started) * 1000))
 
-            step_started = time.monotonic()
-            server.shutdown()
-            self.logger.info(
-                'HTTP_STOP_STEP step=server_shutdown elapsed_ms=%d',
-                int((time.monotonic() - step_started) * 1000))
+            if self.server_thread is not None and \
+                    self.server_thread.is_alive():
+                step_started = time.monotonic()
+                server.shutdown()
+                self.logger.info(
+                    'HTTP_STOP_STEP step=server_shutdown elapsed_ms=%d',
+                    int((time.monotonic() - step_started) * 1000))
+            else:
+                # A start that failed between server creation and the
+                # serve thread (e.g. SSL wrapper init) leaves a server
+                # that never ran serve_forever; BaseServer.shutdown()
+                # would wait forever on its shut-down event (r40 gate:
+                # rollback wedged 5+ minutes in server_shutdown).
+                self.logger.info(
+                    'HTTP_STOP_STEP step=server_shutdown skipped='
+                    'never_served')
 
             step_started = time.monotonic()
             server.server_close()

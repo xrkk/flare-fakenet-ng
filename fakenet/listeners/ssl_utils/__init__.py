@@ -245,15 +245,18 @@ class SSLWrapper(object):
         return self._run_process(argv)
 
     def __del__(self):
-        if (not self.config.get('networkmode', None) == 'multihost' and 
-                not self.config.get('static_ca').lower() == 'yes'): 
-            self._remove_root_ca(self.ca_cn)
-        shutil.rmtree(self.abs_config_path(self.config.get('cert_dir', None)), ignore_errors=True)
-        if self.config.get("webroot"):
-            crl = os.path.join(self.config.get("webroot"), "ca.crl")
-            if os.path.exists(crl):
-                os.remove(crl)
-        return
+        # Historically this GC-time destructor removed the generated root CA
+        # from the OS trust stores and rmtree'd cert_dir. In the in-process
+        # model one process hosts MANY wrappers across runs, and a stale
+        # wrapper's GC fires at arbitrary times — the rmtree raced a fresh
+        # wrapper's makedirs/cert writes mid-startup (r40 gate round 23:
+        # ENOENT on port 443). Cleanup must be lifecycle-owned, not GC-owned;
+        # on-disk certs are tiny and overwritten per run.
+        try:
+            self.logger.debug('SSLWrapper collected; deferred cleanup '
+                              'skipped (lifecycle-owned)')
+        except Exception:  # noqa: BLE001 - destructor must never raise
+            pass
 
     def abs_config_path(self, path):
         """
