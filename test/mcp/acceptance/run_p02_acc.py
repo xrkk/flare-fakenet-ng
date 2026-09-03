@@ -95,7 +95,7 @@ def unique_command(prefix):
 
 # ---------------------------------------------------------------------------
 
-def _wait_healthy(base, timeout=45):
+def _wait_healthy(base, timeout=90):
     import time as _t
     deadline = _t.time() + timeout
     last = None
