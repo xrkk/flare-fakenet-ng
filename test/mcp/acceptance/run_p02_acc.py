@@ -176,11 +176,13 @@ def run_acc010(base, writer):
                     'expected_state_version': loaded['state_version']},
                    timeout=150)
     checks = {'start_ok': started.get('error') is None}
+    _healthy, _snap = _wait_healthy(base)
+    checks['run_reached_healthy'] = _healthy
 
     outsider = call(base, 'stop',
                     {'command_id': unique_command('b-stop'),
                      'expected_state_version': started['state_version']},
-                    controller=CONTROLLER_B)
+                    controller=CONTROLLER_B, timeout=150)
     checks['outsider_rejected'] = err_of(outsider) == 'controller_conflict'
     checks['outsider_reads_ok'] = status(base).get('state') in (
         'healthy', 'degraded')
