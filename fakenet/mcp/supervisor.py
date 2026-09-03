@@ -267,11 +267,13 @@ class RealSupervisor:
                 logger.error('managed start failed: %s',
                              start_error['reason'])
                 try:
-                    instance.stop()
-                except BaseException:  # noqa: BLE001 - best-effort rollback
-                    logger.exception('rollback stop after failed start '
-                                     'raised')
+                    try:
+                        instance.stop()
+                    except BaseException:  # noqa: BLE001 - rollback
+                        logger.exception('rollback stop after failed start '
+                                         'raised')
                 finally:
+                    self._force_close_listener_sockets(instance)
                     self._restore_cwd()
                 self._teardown()
                 if self._snapshot is not None and \
@@ -346,6 +348,7 @@ class RealSupervisor:
                 return {'state': 'failed', 'changed': True,
                         'failure_reason': 'stop grace exceeded',
                         'run_id': None, 'release_controller': True}
+            self._force_close_listener_sockets(self._fakenet)
             if 'report_warning' in stop_outcome:
                 logger.warning('payload report generation failed: %s',
                                stop_outcome['report_warning'])
@@ -487,6 +490,31 @@ class RealSupervisor:
             except OSError:
                 pass
             self._previous_cwd = None
+
+    @staticmethod
+    def _force_close_listener_sockets(instance):
+        """P05 release gate evidence: FakeNet's own listener stop can leave
+        sockets open in the in-process model (the CLI process used to exit,
+        releasing them). Best-effort, logged sweep so a stopped run never
+        leaks listening ports into the next round."""
+        providers = getattr(instance, 'running_listener_providers', None) \
+            or []
+        for provider in providers:
+            for attr in ('server', 'sock', 'socket'):
+                target = getattr(provider, attr, None)
+                if target is None:
+                    continue
+                closer = getattr(target, 'server_close', None) or \
+                    getattr(target, 'close', None)
+                if closer is None:
+                    continue
+                try:
+                    closer()
+                    logger.info('listener %s.%s force-closed',
+                                type(provider).__name__, attr)
+                except Exception as exc:  # noqa: BLE001 - best effort
+                    logger.debug('listener %s.%s close raised %r',
+                                 type(provider).__name__, attr, exc)
 
     def _teardown(self):
         if self._faults is not None:
