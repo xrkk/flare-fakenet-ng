@@ -293,7 +293,7 @@ def run_acc009_pre(base, channel, writer):
     created = call(base, 'create_config',
                    {'name': 'mgmt.ini', 'content': VALID_INI,
                     'command_id': unique_command('mg-c'),
-                    'expected_state_version': version})
+                    'expected_state_version': version}, timeout=120)
     checks['create_ok'] = created.get('error') is None
     sha = sha_of(VALID_INI)
     edited = call(base, 'edit_config',
