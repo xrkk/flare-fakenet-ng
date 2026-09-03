@@ -63,21 +63,24 @@ class ReleaseGate:
 
     # -- environment capture (host-driven, P04 normalization) -------------
     def capture_sections(self):
+        # Every capture ends with a success marker so a native tool's
+        # non-zero exit (e.g. tasklist /m with no matching module) cannot
+        # fail the whole probe.
         out = {}
         out['routes'] = self.channel.powershell(
-            'route print -4 | Out-String', timeout=60)['output']
+            'route print -4 | Out-String; "S"', timeout=60)['output']
         out['dns_servers'] = self.channel.powershell(
             'Get-DnsClientServerAddress -AddressFamily IPv4 | Select-Object '
-            'InterfaceAlias,ServerAddresses | ConvertTo-Json -Compress',
-            timeout=60)['output']
+            'InterfaceAlias,ServerAddresses | ConvertTo-Json -Compass 2>$null'
+            '; "S"', timeout=60)['output'].replace(' -Compass ', ' -Compress ')
         out['windivert_processes'] = self.channel.powershell(
-            'tasklist /m WinDivert*.sys 2>$null | Out-String',
+            'tasklist /m WinDivert*.sys 2>$null | Out-String; "S"',
             timeout=60)['output']
         out['listen_ports'] = self.channel.powershell(
-            'netstat -ano | Out-String', timeout=60)['output']
+            'netstat -ano | Out-String; "S"', timeout=60)['output']
         out['services'] = self.channel.powershell(
             'Get-Service dnscache,mpssvc | Select-Object Name,Status | '
-            'ConvertTo-Json -Compress', timeout=60)['output']
+            'ConvertTo-Json -Compress; "S"', timeout=60)['output']
         return out
 
     def audit_diff(self, before):
