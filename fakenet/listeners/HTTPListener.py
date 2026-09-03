@@ -366,7 +366,18 @@ class ThreadedHTTPServer(http.server.HTTPServer):
         self._stopping = False
         self._stop_event = threading.Event()
         super(ThreadedHTTPServer, self).__init__(*args, **kwargs)
-        self._stop_reader, self._stop_writer = socket.socketpair()
+        # A bound+connected UDP pair creates the stop channel with ZERO
+        # network traffic. socket.socketpair() on Windows emulates with a
+        # loopback TCP connect whose handshake is diverted by an active
+        # WinDivert filter, leaving accept() blocked forever (r39 py-spy
+        # stack evidence). Stop wakeups that get diverted are still safe:
+        # the serve loop exits on the _stopping flag at its select timeout.
+        self._stop_reader = socket.socket(socket.AF_INET,
+                                          socket.SOCK_DGRAM)
+        self._stop_reader.bind(('127.0.0.1', 0))
+        self._stop_writer = socket.socket(socket.AF_INET,
+                                          socket.SOCK_DGRAM)
+        self._stop_writer.connect(self._stop_reader.getsockname())
 
     def begin_shutdown(self):
         with self._transport_lock:
