@@ -43,6 +43,8 @@ def build_mcp_server(config=None, context=None):
         context = AppContext(config)
     if context is not None:
         register_tools(server, context)
+    global _active_context
+    _active_context = context
     return server
 
 
@@ -60,6 +62,7 @@ def build_app(config: ServiceConfig, logger=None, context=None):
 
 
 _active_server = None
+_active_context = None
 
 
 def request_shutdown():

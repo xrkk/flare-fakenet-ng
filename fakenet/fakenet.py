@@ -350,7 +350,12 @@ class Fakenet(object):
                                           listener_config['listener'],
                                           listener_config['port'])
                         self.logger.error(" %s" % e)
-                        sys.exit(1)
+                        # Embedded (in-process) callers must see a rollback-able
+                        # exception, not CLI process-exit semantics.
+                        raise RuntimeError(
+                            'listener %s failed to start on port %s: %s' %
+                            (listener_config['listener'],
+                             listener_config['port'], e)) from e
 
         if self.policy_mode:
             # Configure policy listener dependencies before any bind or worker

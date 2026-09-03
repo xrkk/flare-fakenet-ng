@@ -802,6 +802,7 @@ class DiverterBase(fnconfig.Config):
         self.pcap_converted_filename = ''
         self.pcap_prefix = 'packets'
         self.dump_packets = False
+        self._capture_started = False
         self._dual_pcap_factory = DualPcapWriter
         self._capture_failure_event = threading.Event()
         self._capture_failure_lock = threading.Lock()
@@ -851,6 +852,7 @@ class DiverterBase(fnconfig.Config):
             self.pcap_converted_filename)
         self.dual_pcap = self._dual_pcap_factory(
             self.pcap_filename, self.pcap_converted_filename, self.logger)
+        self._capture_started = True
 
     @property
     def capture_failure(self):
@@ -974,7 +976,10 @@ class DiverterBase(fnconfig.Config):
                                   exc_info=True)
 
             capture_fatal = self.capture_failure is not None
-            if not capture_fatal and cleanup_error is None:
+            never_started = (self.dump_packets and self.dual_pcap is None
+                             and not self._capture_started)
+            if not capture_fatal and cleanup_error is None and \
+                    not never_started:
                 # Reports consume the sealed PCAP and the completed in-memory
                 # flow registry.  A fatal capture is diagnostic-only: retain
                 # its PCAP/logs but never publish a normal success report.
@@ -983,6 +988,13 @@ class DiverterBase(fnconfig.Config):
                 self.logger.error(
                     'HTML_REPORT_SUPPRESSED reason=capture_fatal error=%s',
                     self.capture_failure)
+            elif never_started:
+                # A start that died before diverter.start() (e.g. the
+                # rollback stop of a failed listener startup) has no capture
+                # to seal or report; report absence must not fail the stop's
+                # environment recovery.
+                self.logger.error(
+                    'HTML_REPORT_SUPPRESSED reason=capture_never_started')
 
             final_error = self.capture_failure or cleanup_error or report_error
             if final_error is not None:

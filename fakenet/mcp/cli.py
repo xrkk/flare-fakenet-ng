@@ -209,7 +209,9 @@ def service_main(controller):
     from fakenet.mcp.supervisor import perform_startup_recovery
 
     dirs = mcp_paths.ensure_data_directories()
-    context = None  # populated below when the server context is built
+    context = None  # build_mcp_server constructs the AppContext; the live
+    # instance is retrieved via server_module._active_context (it is never
+    # assigned to this name).
 
     if os.environ.get('FAKENETNG_MCP_TESTDOUBLE') != '1':
         outcome = perform_startup_recovery(
@@ -228,20 +230,30 @@ def service_main(controller):
         keep queries alive, run the full stop+recovery audit, then allow
         the endpoint to close and report the real outcome to the SCM."""
         try:
-            context.coordinator.begin_draining()
-            if context.coordinator.running:
-                version = context.coordinator.snapshot()['state_version']
-                import uuid as _uuid
+            # The AppContext is built inside server.build_mcp_server; the
+            # outer `context` name stays None (r37 evidence: every SvcStop
+            # crashed here with AttributeError and fell back to a degraded,
+            # non-converging stop). Resolve the live context instead.
+            ctx = getattr(server_module, '_active_context', None)
+            if ctx is None:
+                logger.warning('controlled exit: server context not built '
+                               'yet; skipping convergence')
+            else:
+                ctx.coordinator.begin_draining()
+                if ctx.coordinator.running:
+                    version = ctx.coordinator.snapshot()['state_version']
+                    import uuid as _uuid
 
-                context.coordinator.submit(
-                    command_id='controlled-exit-%s' % _uuid.uuid4(),
-                    expected_version=version,
-                    controller=context.coordinator.controller,
-                    controller_valid=True, kind='service_controlled_stop',
-                    describe={},
-                    execute=lambda coord: context.runner.stop(coord),
-                    internal=True)
-            logger.info('controlled exit convergence complete')
+                    ctx.coordinator.submit(
+                        command_id='controlled-exit-%s' % _uuid.uuid4(),
+                        expected_version=version,
+                        controller=ctx.coordinator.controller,
+                        controller_valid=True,
+                        kind='service_controlled_stop',
+                        describe={},
+                        execute=lambda coord: ctx.runner.stop(coord),
+                        internal=True)
+                logger.info('controlled exit convergence complete')
         except Exception:  # noqa: BLE001
             logger.exception('controlled exit convergence failed; '
                              'service reports failed, not a clean stop')

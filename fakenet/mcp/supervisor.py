@@ -255,6 +255,13 @@ class RealSupervisor:
                         'fakenet start exited (code=%r)' % exc.code)
                 except Exception as exc:  # noqa: BLE001
                     start_error['reason'] = repr(exc)
+                finally:
+                    if start_error:
+                        # Never let a start-thread death pass silently: the
+                        # r37 gate showed orphaned errors (evidence loop had
+                        # already returned healthy) hiding half-started runs.
+                        logger.error('fakenet start thread ended with error: '
+                                     '%s', start_error['reason'])
 
             self._worker = threading.Thread(target=run, name='fakenet-run',
                                             daemon=True)
@@ -263,9 +270,18 @@ class RealSupervisor:
             while time.time() < deadline and not start_error and \
                     not self._init_evidence():
                 time.sleep(0.2)
-            if start_error:
+            # Construction-phase evidence (WinDivert queue params, DNS probe)
+            # can satisfy the loop while the listener loop is still binding
+            # (the SSL listener alone takes seconds). The start thread must
+            # FINISH before any state is reported: returning early lets a
+            # concurrent stop race the listener loop and leak every socket
+            # bound after the stop passed that provider.
+            self._worker.join(max(0.5, deadline - time.time()))
+            if start_error or self._worker.is_alive():
                 logger.error('managed start failed: %s',
-                             start_error['reason'])
+                             start_error.get('reason') or
+                             'start thread did not finish within the '
+                             'startup budget')
                 try:
                     try:
                         instance.stop()
@@ -315,6 +331,14 @@ class RealSupervisor:
                 return {'state': 'stopped', 'changed': False}
             if self.stop_blocker is not None:
                 self.stop_blocker()
+            if self._worker is not None and self._worker.is_alive():
+                # Belt-and-braces vs a start thread that outlived its budget
+                # (start() already joins before reporting state; this guards
+                # any future path that skips that join — stopping mid-start
+                # leaves listeners that bind AFTER the stop, forever).
+                logger.warning('stop requested while start thread is still '
+                               'running; waiting for it to finish')
+                self._worker.join(min(self._stop_grace, 30.0))
             self._stop_event.set()
             from fakenet.payload_report import PayloadReportError
 
