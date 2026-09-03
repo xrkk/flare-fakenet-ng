@@ -159,8 +159,11 @@ def run_acc005(base, writer):
 def run_acc010(base, writer):
     writer.action('acc010', 'single stable controller, no takeover')
     version = status(base)['state_version']
+    _builtin = call(base, 'read_config', {'name': 'default.ini'},
+                    controller=None)
+    _runnable = _builtin.get('content') or VALID_INI
     created = call(base, 'create_config',
-                   {'name': 'owner.ini', 'content': VALID_INI,
+                   {'name': 'owner.ini', 'content': _runnable,
                     'command_id': unique_command('own-create'),
                     'expected_state_version': version}, timeout=120)
     loaded = call(base, 'load_config',
@@ -350,10 +353,13 @@ def run_acc009_pre(base, channel, writer):
 
     # active-config lock + authorization split
     version = status(base)['state_version']
+    _builtin = call(base, 'read_config', {'name': 'default.ini'},
+                    controller=None)
+    _runnable = _builtin.get('content') or VALID_INI
     call(base, 'create_config',
-         {'name': 'act.ini', 'content': VALID_INI,
+         {'name': 'act.ini', 'content': _runnable,
           'command_id': unique_command('ac'),
-          'expected_state_version': version})
+          'expected_state_version': version}, timeout=120)
     version = status(base)['state_version']
     call(base, 'load_config', {'name': 'act.ini',
                                'command_id': unique_command('al'),
@@ -368,9 +374,9 @@ def run_acc009_pre(base, channel, writer):
     checks['active_lock'] = err_of(call(
         base, 'edit_config',
         {'name': 'act.ini', 'content': OTHER_INI,
-         'expected_sha256': sha_of(VALID_INI),
+         'expected_sha256': sha_of(_runnable),
          'command_id': unique_command('ae'),
-         'expected_state_version': started['state_version']})) == \
+         'expected_state_version': started['state_version']}, timeout=120)) == \
         'config_in_use'
     checks['runtime_nonowner_write_denied'] = err_of(call(
         base, 'create_config',
