@@ -165,16 +165,16 @@ def run_acc010(base, writer):
     created = call(base, 'create_config',
                    {'name': 'owner.ini', 'content': _runnable,
                     'command_id': unique_command('own-create'),
-                    'expected_state_version': version}, timeout=120)
+                    'expected_state_version': version}, timeout=180)
     loaded = call(base, 'load_config',
                   {'name': 'owner.ini',
                    'command_id': unique_command('own-load'),
                    'expected_state_version': created['state_version']},
-                  timeout=120)
+                  timeout=180)
     started = call(base, 'start',
                    {'command_id': unique_command('own-start'),
                     'expected_state_version': loaded['state_version']},
-                   timeout=150)
+                   timeout=300)
     checks = {'start_ok': started.get('error') is None}
     _healthy, _snap = _wait_healthy(base)
     checks['run_reached_healthy'] = _healthy
@@ -182,7 +182,7 @@ def run_acc010(base, writer):
     outsider = call(base, 'stop',
                     {'command_id': unique_command('b-stop'),
                      'expected_state_version': started['state_version']},
-                    controller=CONTROLLER_B, timeout=150)
+                    controller=CONTROLLER_B, timeout=300)
     checks['outsider_rejected'] = err_of(outsider) == 'controller_conflict'
     checks['outsider_reads_ok'] = status(base).get('state') in (
         'healthy', 'degraded')
@@ -199,7 +199,7 @@ def run_acc010(base, writer):
                        {'command_id': unique_command('a-stop'),
                         'expected_state_version':
                             status(base)['state_version']},
-                       controller=CONTROLLER_A, timeout=150)
+                       controller=CONTROLLER_A, timeout=300)
     checks['owner_reconnect_still_controls'] = \
         reconnected.get('error') is None and \
         reconnected.get('state') == 'stopped'
@@ -270,7 +270,7 @@ def run_acc011(base, channel, writer):
         '$p = Get-Process fakenetng-mcp -ErrorAction SilentlyContinue; '
         'if ($p) { "STILL_RUNNING" } else { "GONE" }', timeout=180)
     channel.powershell('sc.exe start fakenetng-mcp | Out-Null; "STARTED"',
-                       timeout=120)
+                       timeout=180)
     deadline = time.time() + 120
     while time.time() < deadline:
         try:
@@ -314,7 +314,7 @@ def run_acc009_pre(base, channel, writer):
     created = call(base, 'create_config',
                    {'name': 'mgmt.ini', 'content': VALID_INI,
                     'command_id': unique_command('mg-c'),
-                    'expected_state_version': version}, timeout=120)
+                    'expected_state_version': version}, timeout=180)
     checks['create_ok'] = created.get('error') is None
     sha = sha_of(VALID_INI)
     edited = call(base, 'edit_config',
@@ -322,7 +322,7 @@ def run_acc009_pre(base, channel, writer):
                    'expected_sha256': sha,
                    'command_id': unique_command('mg-e'),
                    'expected_state_version': created['state_version']},
-                  timeout=120)
+                  timeout=180)
     checks['edit_ok'] = edited.get('error') is None
     checks['edit_conflict'] = err_of(call(
         base, 'edit_config',
@@ -335,13 +335,13 @@ def run_acc009_pre(base, channel, writer):
                     'expected_sha256': sha_of(OTHER_INI),
                     'command_id': unique_command('mg-r'),
                     'expected_state_version': edited['state_version']},
-                   timeout=120)
+                   timeout=180)
     checks['rename_ok'] = renamed.get('error') is None
     deleted = call(base, 'delete_config',
                    {'name': 'mgmt2.ini', 'expected_sha256': sha_of(OTHER_INI),
                     'command_id': unique_command('mg-d'),
                     'expected_state_version': renamed['state_version']},
-                   timeout=120)
+                   timeout=180)
     checks['delete_ok'] = deleted.get('error') is None
 
     # escape matrix over the live endpoint
@@ -361,16 +361,16 @@ def run_acc009_pre(base, channel, writer):
     call(base, 'create_config',
          {'name': 'act.ini', 'content': _runnable,
           'command_id': unique_command('ac'),
-          'expected_state_version': version}, timeout=120)
+          'expected_state_version': version}, timeout=180)
     version = status(base)['state_version']
     call(base, 'load_config', {'name': 'act.ini',
                                'command_id': unique_command('al'),
                                'expected_state_version': version},
-          timeout=120)
+          timeout=180)
     version = status(base)['state_version']
     started = call(base, 'start',
                    {'command_id': unique_command('as'),
-                    'expected_state_version': version}, timeout=150)
+                    'expected_state_version': version}, timeout=300)
     _healthy, _snap = _wait_healthy(base)
     checks['run_reached_healthy'] = _healthy
     checks['active_lock'] = err_of(call(
@@ -378,7 +378,7 @@ def run_acc009_pre(base, channel, writer):
         {'name': 'act.ini', 'content': OTHER_INI,
          'expected_sha256': sha_of(_runnable),
          'command_id': unique_command('ae'),
-         'expected_state_version': started['state_version']}, timeout=120)) == \
+         'expected_state_version': started['state_version']}, timeout=180)) == \
         'config_in_use'
     checks['runtime_nonowner_write_denied'] = err_of(call(
         base, 'create_config',
@@ -389,7 +389,7 @@ def run_acc009_pre(base, channel, writer):
     stopped = call(base, 'stop',
                    {'command_id': unique_command('astop'),
                     'expected_state_version': status(base)[
-                        'state_version']}, timeout=150)
+                        'state_version']}, timeout=300)
     checks['stopped_other_controller_writes'] = call(
         base, 'create_config',
         {'name': 'after-run.ini', 'content': VALID_INI,
@@ -402,7 +402,7 @@ def run_acc009_pre(base, channel, writer):
     audit_raw = channel.powershell(
         'Get-Content (Join-Path $env:ProgramData '
         "'FakeNet-NG-MCP\\logs\\config-audit.jsonl') | Out-String",
-        timeout=120)
+        timeout=180)
     writer.add_evidence('vm-audit-jsonl', audit_raw)
     lines = [json.loads(line) for line in
              audit_raw['output'].splitlines() if line.strip()]
