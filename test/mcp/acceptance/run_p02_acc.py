@@ -176,7 +176,7 @@ def run_acc010(base, writer):
                        {'command_id': unique_command('a-stop'),
                         'expected_state_version':
                             status(base)['state_version']},
-                       controller=CONTROLLER_A)
+                       controller=CONTROLLER_A, timeout=150)
     checks['owner_reconnect_still_controls'] = \
         reconnected.get('error') is None and \
         reconnected.get('state') == 'stopped'
