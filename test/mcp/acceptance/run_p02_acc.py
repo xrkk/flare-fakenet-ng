@@ -411,6 +411,8 @@ def run_acc009_pre(base, channel, writer):
                  status(base)['state_version']},
             controller=CONTROLLER_B, timeout=180)
     checks['stopped_other_controller_writes'] = _after.get('error') is None
+    writer.add_evidence('acc009pre-stop-payload', stopped)
+    writer.add_evidence('acc009pre-after-payload', _after)
 
     # audit integrity for every class incl. failures
     audit_raw = channel.powershell(
