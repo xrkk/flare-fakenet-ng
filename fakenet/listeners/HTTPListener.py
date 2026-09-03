@@ -349,6 +349,17 @@ class _StopAwareSocketReader(io.RawIOBase):
 
 class ThreadedHTTPServer(http.server.HTTPServer):
 
+    def server_bind(self):
+        # Binding must never depend on external name resolution.
+        # http.server.HTTPServer.server_bind resolves getfqdn(host); under
+        # an active WinDivert filter that reverse-DNS query is diverted and
+        # blackholed, stalling listener startup for the resolver's full
+        # retry budget (r38 gate: >30s per HTTP listener).
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = port
+
     def __init__(self, *args, **kwargs):
         self._transport_lock = threading.Lock()
         self._active_transport = None

@@ -283,6 +283,11 @@ class RealSupervisor:
                              'start thread did not finish within the '
                              'startup budget')
                 try:
+                    if self._worker.is_alive():
+                        # The rollback stop must not race a still-running
+                        # start thread (a listener bound after the rollback
+                        # passes it leaks); give it a short final grace.
+                        self._worker.join(10.0)
                     try:
                         instance.stop()
                     except BaseException:  # noqa: BLE001 - rollback
@@ -301,7 +306,9 @@ class RealSupervisor:
                         logger.exception('clearing marker after failed '
                                          'start failed')
                 return {'state': 'failed', 'changed': True,
-                        'failure_reason': start_error['reason'],
+                        'failure_reason': start_error.get('reason') or
+                        'start thread did not finish within the startup '
+                        'budget',
                         'run_id': None, 'controller': None,
                         'release_controller': True,
                         'config_identity': config_identity}
