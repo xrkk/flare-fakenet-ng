@@ -362,7 +362,10 @@ class RealSupervisor:
             self._restore_cwd()
             run_id = coordinator.snapshot().get('run_id')
             if self._baseline_store is not None and run_id:
-                differences = self._baseline_store.diff(str(run_id))
+                # P04 normalized audit comparison (per-section volatility
+                # immunity); the raw diff misfires on netstat PID noise.
+                differences = self._baseline_store.full_audit_diff(
+                    str(run_id))
                 if differences:
                     self._teardown()
                     return {'state': 'failed', 'changed': True,
