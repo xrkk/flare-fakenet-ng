@@ -26,3 +26,4 @@
 {"time":"2026-09-03T07:00:00+08:00","event":"P04_AUDIT_IMPORTED","note":"审核23(10 AUD, 高危=恢复审计细化缺失)+处理24; v1 可实施; 进入 IMPLEMENT"}
 {"time":"2026-09-03T09:20:00+08:00","event":"P04_ACC_RESULTS","note":"候选34(mcp-cdcfee761-d59bd6af1f05): ACC-014/015/018/019 pass + FAULT-POINTS 五类收敛 pass + ACC-016 回归 pass; r24-r34 十一次可归因构建"}
 {"time":"2026-09-03T09:30:00+08:00","event":"P04_CHILD_DONE","note":"P04 全部 IMP/ACC 完成; 进入 P05 LOCATE_OR_WRITE"}
+{"time":"2026-09-03T10:30:00+08:00","event":"P05_AUDIT_IMPORTED","note":"审核28(9 AUD, 高危=同一候选合同缺口)+处理29; v1 可实施(全 ACC 在最终候选重跑); 进入 IMPLEMENT"}
