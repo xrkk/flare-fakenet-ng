@@ -586,6 +586,18 @@ def main():
     exit_code = EXIT_TOOL_ERROR
     try:
         identity = channel.computer_name()
+        # A previously blocked scenario may leave the Windows service
+        # itself stopped (endpoint refused). CHK-019 family: bring it back
+        # before any hygiene/state probing.
+        try:
+            status(base)
+        except Exception:  # noqa: BLE001
+            channel.powershell(
+                'sc.exe start fakenetng-mcp 2>&1 | Out-Null; "SVC_START"',
+                timeout=120)
+            from run_p03_acc import wait_state
+            wait_state(base, lambda s: s.get('state') is not None,
+                       timeout=120)
         try:
             snap = status(base)
             if snap.get('run_id') or snap.get('state') not in ('stopped',):
