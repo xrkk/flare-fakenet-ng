@@ -679,8 +679,13 @@ def run_acc008(base, channel, writer):
           'expected_state_version': status(base)['state_version']})
 
     # (5) missing snapshot with NO residue => recovery treats as stopped.
-    channel.powershell('Remove-Item (%s) -Force; "MARKER_GONE"' % state_file,
-                       timeout=60)
+    # Clear leftover baselines so the residue check is truly empty.
+    channel.powershell(
+        'Remove-Item (%s) -Force; '
+        'Get-ChildItem (Join-Path $env:ProgramData '
+        '"FakeNet-NG-MCP\\baselines") -Filter *.json -ErrorAction '
+        'SilentlyContinue | Remove-Item -Force; "CLEAN"' % state_file,
+        timeout=90)
     restart_service(channel)
     back, snap5 = wait_state(base, lambda s: s.get('state') is not None,
                              timeout=150)
