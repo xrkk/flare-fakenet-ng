@@ -3,6 +3,8 @@
 
 import json
 
+import os
+
 import pytest
 
 from fakenet.mcp.baseline import BASELINE_FIELDS
@@ -91,6 +93,8 @@ def test_loopback_exclusion_unknown_shape_fails_closed():
         apply_loopback_exclusion('inbound and icmp')
 
 
+@pytest.mark.skipif(os.name != 'nt',
+                    reason='WinDivert DLL only loadable on Windows/Wine')
 def test_loopback_exclusion_filter_text_is_windivert_valid():
     from fakenet.mcp.controlfilter import apply_loopback_exclusion
     pytest.importorskip('pydivert')
