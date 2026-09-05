@@ -96,8 +96,8 @@ def run_acc014(base, channel, writer):
         channel.powershell(
             "Add-Content (Join-Path $env:ProgramData "
             "'FakeNet-NG-MCP\\logs\\service.log') "
-            "'Traceback (most recent call last): fault-class %s'",
-            timeout=60) % klass
+            ("'Traceback (most recent call last): fault-class %s'" % klass),
+            timeout=60)
         time.sleep(8)
         converged, snap = _wait_terminal(base, timeout=30)
         if not converged:
