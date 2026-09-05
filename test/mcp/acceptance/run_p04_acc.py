@@ -528,13 +528,13 @@ def run_acc019(base, channel, writer, args=None):
                                  'from ACC-008 on the same candidate'})
 
     # upgrade simulation: service stopped -> files replaceable, and the
-    # upgrade simulation: service stopped -> files replaceable, and the
     # upgrade waiter only proceeds after full convergence (STOPPED above).
+    # Post-ff48f64 onedir layout: the exe sits at the package root.
     upgrade = channel.powershell(
-        "Copy-Item 'C:\\Progra~1\\FakeNet-NG-MCP\\candidate\\fakenetng-mcp.exe' "
-        "'C:\\Progra~1\\FakeNet-NG-MCP\\candidate\\fakenetng-mcp.exe.upgrade-probe' "
+        "Copy-Item 'C:\\Progra~1\\FakeNet-NG-MCP\\fakenetng-mcp.exe' "
+        "'C:\\Progra~1\\FakeNet-NG-MCP\\fakenetng-mcp.exe.upgrade-probe' "
         '-Force; "REPLACED"; '
-        "Remove-Item 'C:\\Progra~1\\FakeNet-NG-MCP\\candidate\\"
+        "Remove-Item 'C:\\Progra~1\\FakeNet-NG-MCP\\"
         "fakenetng-mcp.exe.upgrade-probe' -Force", timeout=60)
     checks['upgrade_replace_after_stopped'] = 'REPLACED' in \
         upgrade['output']
