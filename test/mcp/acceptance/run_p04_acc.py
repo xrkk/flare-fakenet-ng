@@ -197,7 +197,7 @@ def run_acc014(base, channel, writer):
         '$exc = Join-Path $dir "exception.txt"; '
         'if (Test-Path $exc) { Get-Content $exc -Raw } else { "NO_EXC" }; '
         '"||"; (Get-Content $m.FullName -Raw | '
-        'ConvertFrom-Json).items | ConvertTo-Json -Compress',
+        'ConvertFrom-Json).entries | ConvertTo-Json -Compress',
         timeout=120)
     writer.add_evidence('acc014-localization-input', localize)
     localization_ok = False
