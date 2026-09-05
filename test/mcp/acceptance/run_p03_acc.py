@@ -76,8 +76,12 @@ def stop_run(base, attempts=3):
 
 def restart_service(channel):
     channel.powershell(
-        'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; Start-Sleep 3; '
-        'sc.exe start fakenetng-mcp | Out-Null; "RESTARTED"', timeout=180)
+        '$svc = Get-Service fakenetng-mcp; '
+        'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; '
+        '$t = 0; while($svc.Status -ne "Stopped" -and $t -lt 60) { '
+        'Start-Sleep 2; $t += 2; $svc.Refresh() }; '
+        'sc.exe start fakenetng-mcp | Out-Null; Start-Sleep 6; '
+        '"RESTARTED"', timeout=180)
 
 
 def clear_and_restart(channel):
@@ -301,6 +305,11 @@ def run_acc004(base, channel, writer):
         writer.add_evidence('acc004-exception-probe', timeline)
         checks['link_alive_during_exception'] = ok
         stop_run(base)
+        # Clear the failed state from the terminal failure before the
+        # remaining scenarios (the service must be in stopped state).
+        restart_service(channel)
+        import time as _t
+        _t.sleep(3)
     else:
         checks['unhandled_exception_revokes_health'] = False
         checks['link_alive_during_exception'] = False
