@@ -496,23 +496,39 @@ def run_acc019(base, channel, writer):
         marker in phase_text for marker in
         ('phase=listeners', 'phase=diverter', 'phase=complete'))
 
-        # recovery-audit failure: use the cleanup_error fault to make the
-    # stop's cleanup fail; the service must retain failed with a reason.
-    from run_p03_acc import arm_fault, disarm_fault
-    arm_fault(channel, 'cleanup_error')
+        # recovery-audit failure: kill the service mid-run (marker stays),
+    # add an environment drift, restart; recovery must report failed with
+    # an observable reason (same mechanism as ACC-008 variant 3).
     load_and_start(base)
-    failed_stop = stop_run(base)
-    writer.add_evidence('acc019-audit-failure-stop', failed_stop)
-    snap_fail = status(base)
+    channel.powershell(
+        'Get-Process fakenetng-mcp | Stop-Process -Force; "KILLED"',
+        timeout=60)
+    time.sleep(2)
+    channel.powershell(
+        '$l = [System.Net.Sockets.TcpListener]::new('
+        '[Net.IPAddress]::Any, 47892); $l.Start(); "DRIFT_UP"', timeout=60)
+    channel.powershell(
+        'sc.exe start fakenetng-mcp | Out-Null; Start-Sleep 8; "RESTARTED"',
+        timeout=120)
+    back_fail, snap_fail = wait_state(
+        base, lambda st: st.get('state') is not None, timeout=120)
+    writer.add_evidence('acc019-audit-failure', snap_fail or {})
     checks['audit_failure_retains_failed'] = \
-        failed_stop.get('state') == 'failed' or \
-        snap_fail.get('state') == 'failed'
+        (snap_fail or {}).get('state') == 'failed'
     checks['audit_failure_reason_observable'] = bool(
-        failed_stop.get('failure_reason') or
-        snap_fail.get('failure_reason'))
-    disarm_fault(channel)
+        (snap_fail or {}).get('failure_reason'))
+    # cleanup drift + restore service
+    channel.powershell(
+        'Get-NetTCPConnection -LocalPort 47892 -State Listen '
+        '-ErrorAction SilentlyContinue | ForEach-Object { '
+        'Stop-Process -Id $_.OwningProcess -Force -ErrorAction '
+        'SilentlyContinue }; "DRIFT_DOWN"', timeout=90)
+    channel.powershell(
+        'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; Start-Sleep 2; '
+        'sc.exe start fakenetng-mcp | Out-Null; Start-Sleep 6; "RESTORED"',
+        timeout=120)
 
-    # upgrade simulation: service stopped -> files replaceable, and the
+        # upgrade simulation: service stopped -> files replaceable, and the
     # upgrade waiter only proceeds after full convergence (STOPPED above).
     upgrade = channel.powershell(
         "Copy-Item 'C:\\FakeNetMCP\\candidate\\fakenetng-mcp.exe' "
