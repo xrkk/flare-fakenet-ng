@@ -19,9 +19,12 @@ class ArtifactRegistry:
     def run_dir(self, run_id):
         return self.root / str(run_id)
 
-    def register_fakenet_outputs(self, run_id, package_root):
+    def register_fakenet_outputs(self, run_id, package_root, keep=None):
         """Register the artifacts a finished FakeNet run leaves next to the
-        package (PCAPs, fakenet log, report) plus the incident pack."""
+        package (PCAPs, fakenet log, report) plus the incident pack.
+        ``keep(path) -> bool`` filters which files belong to the run (the
+        supervisor passes an mtime window so earlier runs' outputs are
+        not re-registered on every stop)."""
         import shutil
 
         run_dir = self.run_dir(run_id)
@@ -31,6 +34,8 @@ class ArtifactRegistry:
         for pattern in ('*.pcap', '*.log', '*report*.html', '*.json'):
             for path in sorted(source.glob(pattern)):
                 if path.parent != source:
+                    continue
+                if keep is not None and not keep(path):
                     continue
                 destination = run_dir / ('fakenet-' + path.name)
                 if not destination.exists():

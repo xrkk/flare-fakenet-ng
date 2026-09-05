@@ -93,6 +93,9 @@ class RealSupervisor:
         self._terminal_evidence = None
         self._last_run_outcome = None
         self._log_exception_seen_count = 0
+        # Wall-clock stamp of the current run's start; artifact
+        # registration only picks up files this run produced.
+        self._run_started_at = None
 
     # -- health inputs -----------------------------------------------------
     def _probe(self):
@@ -187,6 +190,7 @@ class RealSupervisor:
             config_path = self._resolve_config_path(
                 config_identity['name'], config_identity.get('builtin'))
             self._verify_config_sha(config_path, config_identity['sha256'])
+            self._run_started_at = time.time()
 
             # IMP-P03-05 frozen order: lock BEFORE reading/parsing — the
             # active config is locked whether builtin or custom.
@@ -558,7 +562,10 @@ class RealSupervisor:
 
     def _register_run_artifacts(self, run_id):
         """CHK-029: copy the run's FakeNet outputs (PCAPs, log, report)
-        from the package root into the managed artifacts tree."""
+        from the package root into the managed artifacts tree. Only files
+        produced DURING this run are registered — earlier runs' outputs
+        stay where they are; re-copying them every stop made registration
+        grow quadratically over a release matrix (r54/r55 evidence)."""
         if not run_id or not self._artifacts_root:
             return
         try:
@@ -570,8 +577,19 @@ class RealSupervisor:
             else:
                 package_root = os.path.dirname(os.path.dirname(
                     os.path.dirname(os.path.abspath(__file__))))
+            started = self._run_started_at
             registry = ArtifactRegistry(self._artifacts_root)
-            copied = registry.register_fakenet_outputs(run_id, package_root)
+
+            def _fresh(path):
+                if started is None:
+                    return True
+                try:
+                    return path.stat().st_mtime >= started - 1.0
+                except OSError:
+                    return False
+
+            copied = registry.register_fakenet_outputs(
+                run_id, package_root, keep=_fresh)
             if copied:
                 logger.info('registered %d run artifacts for %s',
                             len(copied), run_id)
@@ -612,6 +630,7 @@ class RealSupervisor:
         self._fakenet = None
         self._worker = None
         self._coordinator = None
+        self._run_started_at = None
         if self._activity_lock is not None:
             self._activity_lock.release()
             self._activity_lock = None

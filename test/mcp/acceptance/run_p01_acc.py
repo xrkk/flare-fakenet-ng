@@ -156,8 +156,11 @@ def collect_acc016_core(args, channel, writer):
     writer.add_evidence('vm-sc-qc-query', core)
     layout = channel.powershell(
         "$d = Join-Path $env:ProgramData 'FakeNet-NG-MCP'; "
-        'Get-ChildItem -Recurse $d | Select-Object FullName | '
+        'Get-ChildItem $d | Select-Object Name | '
         'Format-Table -AutoSize | Out-String -Width 300; '
+        '"ARTIFACTS_FILES=" + (Get-ChildItem -Recurse (Join-Path $d '
+        "'artifacts') -File -ErrorAction SilentlyContinue | "
+        'Measure-Object | Select-Object -ExpandProperty Count); '
         "Get-Content (Join-Path $d 'configs\\service.json')", timeout=120)
     writer.add_evidence('vm-programdata-layout', layout)
     process = channel.powershell(
