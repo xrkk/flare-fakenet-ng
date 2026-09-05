@@ -594,7 +594,7 @@ def main():
         elif args.acc == 'ACC-015':
             exit_code = run_acc015(base, channel, writer)
         elif args.acc == 'ACC-018':
-            exit_code = run_acc018(writer)
+            exit_code = run_acc018(base, channel, writer)
         elif args.acc == 'ACC-019':
             exit_code = run_acc019(base, channel, writer)
         elif args.acc == 'FAULT-POINTS':

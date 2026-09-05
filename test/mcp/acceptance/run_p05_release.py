@@ -148,6 +148,32 @@ class ReleaseGate:
             (created.get('error') or {}).get('code') == 'name_conflict'
 
     # -- one normal round --------------------------------------------------
+
+    def config_lock_probe(self, index, during_run):
+        """CHK-010: prove the activity lock state each round."""
+        name = 'lockprobe-%d.ini' % index
+        version = call(self.base, 'get_status')['state_version']
+        created = call(self.base, 'create_config',
+                       {'name': name, 'content': VALID_INI,
+                        'command_id': unique_command('lp%d-c' % index),
+                        'expected_state_version': version}, timeout=60)
+        version = status(self.base)['state_version']
+        new_name = name + ('.held' if during_run else '.free')
+        payload = call(self.base, 'rename_config',
+                       {'name': name, 'new_name': new_name,
+                        'expected_sha256': sha_of(VALID_INI),
+                        'command_id': unique_command('lp%d-r' % index),
+                        'expected_state_version': version}, timeout=60)
+        outcome = 'config_in_use' if during_run else (
+            'released' if payload.get('error') is None
+            else (payload.get('error') or {}).get('code', 'error'))
+        call(self.base, 'delete_config',
+             {'name': new_name, 'expected_sha256': sha_of(VALID_INI),
+              'command_id': unique_command('lp%d-d' % index),
+              'expected_state_version': status(self.base)['state_version']},
+             timeout=60)
+        return outcome
+
     def run_normal_round(self, index, config_name):
         record = {'round': index, 'config': config_name,
                   'started_at': now_iso(), 'vm': self.vm_continuity()}
@@ -508,6 +534,7 @@ def main():
         elif args.mode == 'summary':
             exit_code = gate.mode_summary(writer)
     except Exception as exc:  # noqa: BLE001
+        import traceback; traceback.print_exc()
         writer.blocker = {'reason': 'tool error: %r' % exc}
         exit_code = EXIT_TOOL_ERROR
 
