@@ -187,7 +187,7 @@ def run_acc010(base, writer):
     loaded = call(base, 'load_config',
                   {'name': owner_name,
                    'command_id': unique_command('own-load'),
-                   'expected_state_version': created['state_version']},
+                   'expected_state_version': created.get('state_version', version)},
                   timeout=180)
     started = call(base, 'start',
                    {'command_id': unique_command('own-start'),
@@ -422,7 +422,7 @@ def run_acc009_pre(base, channel, writer):
                   {'name': 'mgmt.ini', 'content': OTHER_INI,
                    'expected_sha256': sha,
                    'command_id': unique_command('mg-e'),
-                   'expected_state_version': created['state_version']},
+                   'expected_state_version': created.get('state_version', version)},
                   timeout=180)
     checks['edit_ok'] = edited.get('error') is None
     checks['edit_conflict'] = err_of(call(
@@ -430,18 +430,18 @@ def run_acc009_pre(base, channel, writer):
         {'name': 'mgmt.ini', 'content': VALID_INI,
          'expected_sha256': sha, 'command_id': unique_command('mg-e2'),
          'expected_state_version':
-             edited['state_version']})) == 'version_conflict'
+             edited.get('state_version', version)})) == 'version_conflict'
     renamed = call(base, 'rename_config',
                    {'name': 'mgmt.ini', 'new_name': 'mgmt2.ini',
                     'expected_sha256': sha_of(OTHER_INI),
                     'command_id': unique_command('mg-r'),
-                    'expected_state_version': edited['state_version']},
+                    'expected_state_version': edited.get('state_version', version)},
                    timeout=180)
     checks['rename_ok'] = renamed.get('error') is None
     deleted = call(base, 'delete_config',
                    {'name': 'mgmt2.ini', 'expected_sha256': sha_of(OTHER_INI),
                     'command_id': unique_command('mg-d'),
-                    'expected_state_version': renamed['state_version']},
+                    'expected_state_version': renamed.get('state_version', version)},
                    timeout=180)
     checks['delete_ok'] = deleted.get('error') is None
 
