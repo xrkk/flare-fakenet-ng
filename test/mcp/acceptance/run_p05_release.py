@@ -217,6 +217,9 @@ class ReleaseGate:
         record['audit_diff'] = {k: True for k in diff} if diff else {}
         if diff:
             record['failure'] = 'environment drift: %s' % sorted(diff)
+            record['audit_diff_detail'] = {
+                key: (value if isinstance(value, dict) else str(value))
+                for key, value in diff.items()}
         record['ended_at'] = now_iso()
         return record
 
