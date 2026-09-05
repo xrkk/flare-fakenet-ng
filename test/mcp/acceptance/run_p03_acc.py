@@ -24,6 +24,7 @@ from run_p02_acc import (CONTROLLER_A, CONTROLLER_B, VALID_INI, call,  # noqa: E
                          envelope, err_of, sha_of, status, unique_command)
 
 HEALTH_INTERVAL_S = 2.0
+_DEFAULT_BASE = 'http://192.168.204.149:28788'
 PROBE_ROUNDS = 8
 
 
@@ -88,7 +89,7 @@ def clear_and_restart(channel):
     restart_service(channel)
 
 
-def arm_fault(channel, fault):
+def arm_fault(channel, fault, base=None):
     """Arm one in-process fault class and restart the service (P04 hooks)."""
     channel.powershell(
         "[Environment]::SetEnvironmentVariable("
@@ -100,13 +101,13 @@ def arm_fault(channel, fault):
     deadline = time.time() + 60
     while time.time() < deadline:
         try:
-            if status(base).get('state'):
+            if status(base or _DEFAULT_BASE).get('state'):
                 break
         except Exception:  # noqa: BLE001
             time.sleep(2)
 
 
-def disarm_fault(channel):
+def disarm_fault(channel, base=None):
     clear_and_restart(channel)
     deadline = time.time() + 60
     while time.time() < deadline:
