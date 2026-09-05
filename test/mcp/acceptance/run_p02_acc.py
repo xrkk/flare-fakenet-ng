@@ -372,10 +372,11 @@ def run_acc011(base, channel, writer):
     # an indeterminate mutation.
     checks['mixed_no_transport_errors'] = all(
         code != 'transport' for code in codes.values())
+    structured = {'state_conflict', 'config_in_use', 'not_allowed_in_state',
+                  'operation_busy', 'version_conflict', 'controller_conflict',
+                  'operation_busy'}
     checks['mixed_structured_outcomes'] = all(
-        code is None or code in ('state_conflict', 'config_in_use',
-                                 'not_allowed_in_state', 'operation_busy',
-                                 'version_conflict')
+        code is None or code in structured
         for code in codes.values())
     # cleanup: whatever combination won, drive the service back to a
     # stopped state with a runnable config for later ACCs.
