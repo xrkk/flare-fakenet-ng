@@ -383,10 +383,11 @@ def run_acc011(base, channel, writer):
     # cleanup: whatever combination won, drive the service back to a
     # stopped state with a runnable config for later ACCs.
     stop_run(base)
+    time.sleep(3)  # settle after mixed lifecycle
     snap = status(base)
     call(base, 'load_config',
          {'name': 'default.ini', 'command_id': unique_command('mix-rs'),
-          'expected_state_version': snap['state_version']})
+          'expected_state_version': snap.get('state_version', 1)})
     checks['service_consistent_after_mixed'] = \
         status(base).get('state') in ('stopped', 'failed')
 
