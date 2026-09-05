@@ -866,7 +866,7 @@ def main():
                         choices=['ACC-001', 'ACC-004', 'ACC-006', 'ACC-007',
                                  'ACC-008', 'ACC-009'])
     parser.add_argument('--gui-exe',
-                        default='C:\\FakeNetMCP\\gui\\FakeNet-NG.exe',
+                        default='',
                         help='deployed GUI exe for the ACC-001 mutual-'
                              'exclusion evidence')
     parser.add_argument('--source-commit', required=True)
