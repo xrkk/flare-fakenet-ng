@@ -480,7 +480,8 @@ def run_acc009_pre(base, channel, writer):
         {'name': act_name, 'content': OTHER_INI,
          'expected_sha256': sha_of(_runnable),
          'command_id': unique_command('ae'),
-         'expected_state_version': started['state_version']}, timeout=180)) == \
+         'expected_state_version': started.get('state_version',
+                           status(base)['state_version'])}, timeout=180)) == \
         'config_in_use'
     checks['runtime_nonowner_write_denied'] = err_of(call(
         base, 'create_config',
