@@ -191,7 +191,8 @@ def run_acc010(base, writer):
                   timeout=180)
     started = call(base, 'start',
                    {'command_id': unique_command('own-start'),
-                    'expected_state_version': loaded['state_version']},
+                    'expected_state_version': loaded.get('state_version',
+                       status(base)['state_version'])},
                    timeout=300)
     checks = {'start_ok': started.get('error') is None}
     _healthy, _snap = _wait_healthy(base)
