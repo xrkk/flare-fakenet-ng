@@ -250,6 +250,16 @@ class ConfigStore:
             return exc
 
         if not exists and not allow_create:
+            # Distinguish builtin (read-only) from genuinely absent configs
+            # so the builtin protection is observable (CHK-004).
+            try:
+                record = self.read(name)
+            except errors.McpError:
+                record = {}
+            if record.get('builtin'):
+                raise refuse(errors.BUILTIN_READONLY,
+                             'builtin configs are read-only',
+                             {'name': name})
             raise refuse(errors.CONFIG_NOT_FOUND, 'config not found',
                          {'name': name})
         if exists and allow_create:
