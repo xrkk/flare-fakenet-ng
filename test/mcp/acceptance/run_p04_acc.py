@@ -195,9 +195,11 @@ def run_acc014(base, channel, writer):
         items = json.loads(parts[1]) if len(parts) == 2 else []
         if isinstance(items, dict):
             items = [items]
+        if not isinstance(items, list):
+            items = []
         localization_ok = bool(parts[0].strip()) and \
             parts[0].strip() != 'NO_EXC' and len(items) >= 14
-    except (ValueError, IndexError):
+    except (ValueError, IndexError, TypeError):
         localization_ok = False
     checks['developer_localizable_from_package'] = localization_ok
     writer.add_evidence('acc014-checks', checks)
