@@ -45,16 +45,31 @@ def continuous_probe(base, seconds, controller=None):
 
 
 def load_and_start(base, name='default.ini', builtin=True):
-    version = status(base)['state_version']
-    loaded = call(base, 'load_config',
-                  {'name': name, 'command_id': unique_command('p03-load'),
-                   'expected_state_version': version})
-    if loaded.get('error'):
-        return loaded
-    return call(base, 'start',
-                {'command_id': unique_command('p03-start'),
-                 'expected_state_version': loaded['state_version']},
-                timeout=90)
+    def attempt():
+        version = status(base)['state_version']
+        loaded = call(base, 'load_config',
+                      {'name': name,
+                       'command_id': unique_command('p03-load'),
+                       'expected_state_version': version})
+        if loaded.get('error'):
+            return loaded
+        return call(base, 'start',
+                    {'command_id': unique_command('p03-start'),
+                     'expected_state_version': loaded['state_version']},
+                    timeout=90)
+
+    result = attempt()
+    if result.get('state') == 'failed' and not result.get('error'):
+        # Right after an uncontrolled exit + SCM restart the adapter can
+        # still be reconfiguring; the diverter then fails closed with
+        # "No active ethernet interfaces detected" (r58c ACC-008 round-1
+        # start; the service stayed responsive). Every caller of this
+        # helper expects a successful start, so one bounded settle +
+        # retry is safe: transient adapter races recover, persistent
+        # failures still fail.
+        time.sleep(10)
+        result = attempt()
+    return result
 
 
 def stop_run(base, attempts=3):
