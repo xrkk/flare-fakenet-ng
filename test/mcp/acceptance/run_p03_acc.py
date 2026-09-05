@@ -781,14 +781,15 @@ def run_acc009(base, channel, writer):
     # import_config: valid import lands as a new custom config; a
     # link-escaping import target is refused.
     version = status(base)['state_version']
+    import_name = 'imported-%s.ini' % unique_command('im')[:6]
     imported = call(base, 'import_config',
-                    {'name': 'imported-%s.ini' % unique_command('im')[:6],
+                    {'name': import_name,
                      'content': VALID_INI,
                      'command_id': unique_command('a9-im'),
                      'expected_state_version': version}, timeout=120)
     checks['import_config_ok'] = imported.get('error') is None and \
         call(base, 'read_config',
-             {'name': imported.get('name', 'x.ini')},
+             {'name': import_name},
              controller=None).get('error') is None
     bad_import = call(base, 'import_config',
                       {'name': '../escape-%s.ini' % unique_command('be')[:6],
