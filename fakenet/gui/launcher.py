@@ -34,6 +34,11 @@ WAIT_OBJECT_0 = 0
 WAIT_FAILED = 0xFFFFFFFF
 INFINITE = 0xFFFFFFFF
 GUI_MUTEX_NAME = r'Local\FLARE_FakeNet_NG_GUI_Config_Tool'
+# CHK-002 (REQ-001/CON-001/NON-001): GUI and headless MCP supervisor are
+# mutually exclusive. Both sides contend on this shared cross-session mutex
+# (the MCP service acquires it in fakenet/mcp/singleinstance.py). Global\
+# so the session-0 LocalSystem service sees the user-session GUI.
+SHARED_OPERATOR_MUTEX_NAME = r'Global\FakeNet-NG-SoleOperator'
 
 WINDOWS_ONLY_NOTE = 'VM 检测仅支持 Windows'
 
@@ -342,6 +347,28 @@ def close_handle(handle):
 
 def acquire_gui_mutex(name=GUI_MUTEX_NAME):
     """Return ``(handle, already_running)`` for the per-session GUI mutex."""
+    if os.name != 'nt':
+        return None, False
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    create = kernel32.CreateMutexW
+    create.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    create.restype = wintypes.HANDLE
+    ctypes.set_last_error(0)
+    handle = create(None, False, name)
+    error = ctypes.get_last_error()
+    if not handle:
+        raise OSError(error, 'CreateMutexW failed')
+    return int(handle), error == ERROR_ALREADY_EXISTS
+
+
+def acquire_shared_operator_mutex(name=SHARED_OPERATOR_MUTEX_NAME):
+    """CHK-002: return ``(handle, mcp_running)`` for the sole-operator mutex.
+
+    ``mcp_running`` true means the headless MCP supervisor (session-0
+    service) already holds the shared mutex and the GUI must refuse to
+    start. The handle must stay open for the GUI's lifetime; on refusal it
+    is closed by the caller.
+    """
     if os.name != 'nt':
         return None, False
     kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)

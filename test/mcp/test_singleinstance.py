@@ -28,3 +28,27 @@ def test_acquire_or_exit_exits_with_3(tmp_path, capsys):
         assert 'another fakenetng-mcp' in capsys.readouterr().err
     finally:
         del guard
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='posix flock path tested here')
+def test_shared_operator_mutex_conflict_reports_gui(tmp_path):
+    """CHK-002: a held sole-operator lock (the GUI side) refuses MCP start."""
+    import fcntl
+
+    holder = open(tmp_path / 'sole-operator.lock', 'a+')
+    fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(singleinstance.SingleInstanceError) as excinfo:
+            singleinstance.acquire(tmp_path)
+        assert 'GUI' in str(excinfo.value)
+        assert 'mutually exclusive' in str(excinfo.value)
+    finally:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+        holder.close()
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='posix flock path tested here')
+def test_guard_holds_both_locks(tmp_path):
+    guard = singleinstance.acquire(tmp_path)
+    assert len(guard.handles) == 2
+    del guard

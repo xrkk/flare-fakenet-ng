@@ -69,6 +69,33 @@ def main():
                     0 if activated else 1)
         return 0 if activated else 1
 
+    # CHK-002: GUI and the headless MCP supervisor are mutually exclusive;
+    # refuse to start when the service holds the shared sole-operator mutex.
+    shared_handle = None
+    try:
+        shared_handle, mcp_running = \
+            launcher.acquire_shared_operator_mutex()
+    except BaseException as exc:
+        _close_splash()
+        logger.exception('fakenet-GUI shared mutex creation failed')
+        _native_warning('fakenet-GUI 启动失败',
+                        '无法建立与 MCP 的互斥锁,已拒绝运行:\n%s' % exc)
+        launcher.close_handle(mutex_handle)
+        logger.info('fakenet-GUI exiting: rc=1')
+        return 1
+    if mcp_running:
+        _close_splash()
+        logger.warning('GUI refused: headless MCP supervisor is running '
+                       '(mutual exclusion)')
+        _native_warning('fakenet-NG MCP 服务运行中',
+                        '无头 MCP 主管服务(fakenetng-mcp)正在运行,'
+                        '与图形界面互斥。\n请先停止该服务后再启动配置工具。')
+        launcher.close_handle(shared_handle)
+        launcher.close_handle(mutex_handle)
+        logger.info('fakenet-GUI refused by mutual exclusion: rc=1')
+        return 1
+    _ = shared_handle  # keep the handle alive for the GUI lifetime
+
     try:
         import tkinter as tk
         from tkinter import messagebox
