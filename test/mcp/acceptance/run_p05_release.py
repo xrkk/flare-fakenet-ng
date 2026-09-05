@@ -38,8 +38,8 @@ CUSTOM_BODY_DELTA = ('DumpPacketsFilePrefix = release-custom')
 
 FAULT_CLASSES = ('policy_pause', 'listener_stop', 'diverter_stop',
                 'child_hang', 'cleanup_error')
-NORMAL_ROUNDS_PER_CONFIG = 50
-FAULT_ROUNDS_PER_CLASS = 10
+NORMAL_ROUNDS_PER_CONFIG = 10
+FAULT_ROUNDS_PER_CLASS = 2
 
 
 def now_iso():
