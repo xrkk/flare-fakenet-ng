@@ -781,14 +781,16 @@ def run_acc008(base, channel, writer):
         _recovery_outcome(channel) == 'stopped' and \
         (snap5 or {}).get('state') == 'stopped'
 
-    # (6) deliverables carry no banned DB/framework engines.
+    # (6) deliverables carry no banned DB/framework engines. The onedir
+    # install puts _internal next to the exe at the package root (the
+    # former candidate\_internal layout moved in ff48f64).
     listing = channel.powershell(
-        "Get-ChildItem -Recurse 'C:\\Progra~1\\FakeNet-NG-MCP\\candidate\\_internal' "
+        "Get-ChildItem -Recurse 'C:\\Progra~1\\FakeNet-NG-MCP\\_internal' "
         '-Filter *.pyc | Measure-Object | Select-Object -ExpandProperty '
         'Count; Get-ChildItem '
-        "'C:\\Progra~1\\FakeNet-NG-MCP\\candidate\\_internal' | "
+        "'C:\\Progra~1\\FakeNet-NG-MCP\\_internal' | "
         'Where-Object {$_.Name -match "sqlite|dbm"} | Measure-Object | '
-        'Select-Object -ExpandProperty Count', timeout=120)
+        'Select-Object -ExpandProperty Count; "SCAN_OK"', timeout=120)
     writer.add_evidence('acc008-framework-scan', listing)
     lines = [line.strip() for line in listing['output'].splitlines()
              if line.strip().isdigit()]
