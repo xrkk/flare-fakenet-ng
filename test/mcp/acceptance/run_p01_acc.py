@@ -108,12 +108,13 @@ def _deploy_with_server(args, channel, writer, vm_dir, serve_root, package,
         'Get-Process fakenetng-mcp -ErrorAction SilentlyContinue | '
         'Stop-Process -Force; Start-Sleep 2; "STOPPED"', timeout=120)
     with PackageServer(serve_root) as server:
-        remote_zip = 'C:\\Program Files\\FakeNet-NG-MCP\\%s.zip' % args.candidate_id
+        remote_zip = ('$d\\%s.zip' % args.candidate_id)
         url = '%s/%s' % (server.base_url,
                          urllib.request.quote(package.name))
         download = channel.powershell(
             "[Net.ServicePointManager]::SecurityProtocol='Tls12'; "
-            'New-Item -ItemType Directory -Force -Path C:\\Program Files\\FakeNet-NG-MCP | '
+            "$d = 'C:\\Program Files\\FakeNet-NG-MCP'; "
+            'New-Item -ItemType Directory -Force -Path $d | '
             'Out-Null; '
             "Invoke-WebRequest -Uri '%s' -OutFile '%s'; "
             '(Get-FileHash \'%s\' -Algorithm SHA256).Hash.ToLower()' % (
