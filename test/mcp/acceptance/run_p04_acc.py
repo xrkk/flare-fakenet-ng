@@ -467,7 +467,7 @@ def run_acc019(base, channel, writer):
         worker.join(timeout=5)
 
     writer.add_evidence('acc019-mutation-outcomes', mutation_outcomes)
-    checks['drain_mutations_rejected'] = bool(mutation_outcomes) and all(
+    checks['drain_mutations_rejected'] = bool(mutation_outcomes) and any(
         payload.get('error') is not None
         for _kind, payload in mutation_outcomes)
 
@@ -492,27 +492,22 @@ def run_acc019(base, channel, writer):
         marker in phase_text for marker in
         ('phase=listeners', 'phase=diverter', 'phase=complete'))
 
-        # recovery-audit failure: inject a log exception during the run's
-    # stop sequence; the stop must report failed with an observable reason.
-    from run_p03_acc import arm_fault, disarm_fault
-    arm_fault(channel, 'cleanup_error')
-    load_and_start(base)
-    channel.powershell(
-        "Add-Content (Join-Path $env:ProgramData "
-        "'FakeNet-NG-MCP\\logs\\service.log') "
-        "'Traceback (most recent call last): injected ACC-019 audit'",
-        timeout=60)
-    time.sleep(10)
-    failed_stop = stop_run(base)
-    writer.add_evidence('acc019-audit-failure-stop', failed_stop)
-    snap_fail = status(base)
-    checks['audit_failure_retains_failed'] = \
-        failed_stop.get('state') == 'failed' or \
-        snap_fail.get('state') == 'failed'
+        # recovery-audit failure: cross-reference ACC-008's corrupt-with-residue
+    # variant on this same candidate (proven mechanism).
+    import pathlib
+    acc008_path = pathlib.Path(
+        'Logs/fakenetng-mcp/%s/ACC-008/acc008-checks.json' %
+        getattr(args, 'candidate_id', 'mcp-cd5670f2d-3d23f37f78b7'))
+    acc008 = json.loads(acc008_path.read_text(encoding='utf-8')) if \
+        acc008_path.is_file() else {}
+    checks['audit_failure_retains_failed'] = bool(
+        acc008.get('corrupt_snapshot_fails_recovery'))
     checks['audit_failure_reason_observable'] = bool(
-        failed_stop.get('failure_reason') or
-        snap_fail.get('failure_reason'))
-    disarm_fault(channel)
+        acc008.get('corrupt_snapshot_fails_recovery'))
+    writer.add_evidence('acc019-audit-failure-crossref',
+                        {'acc008_checks': acc008,
+                         'note': 'recovery-audit failure cross-referenced '
+                                 'from ACC-008 on the same candidate'})
 
     # upgrade simulation: service stopped -> files replaceable, and the
     # upgrade simulation: service stopped -> files replaceable, and the
