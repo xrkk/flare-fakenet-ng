@@ -180,6 +180,10 @@ class ReleaseGate:
             return record
         ok, timeline = continuous_probe(self.base, 4)
         record['probe'] = {'all_ok': ok, 'samples': len(timeline)}
+        if not ok:
+            record['failure'] = 'link probe failed during round'
+            stop_run(self.base, attempts=2)
+            return record
         record['lock_held_during_run'] = \
             self.config_lock_probe(index, during_run=True) == 'config_in_use'
         stopped = stop_run(self.base, attempts=4)

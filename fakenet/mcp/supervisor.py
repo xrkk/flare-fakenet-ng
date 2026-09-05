@@ -380,10 +380,20 @@ class RealSupervisor:
                 # policy_pause round 1 flagged listen_ports drift).
                 logger.error('stop grace (%ss) exceeded', self._stop_grace)
                 self._force_close_listener_sockets(self._fakenet)
-                self._teardown()
+                # CHK-017: retain the recovery marker and run_id — the
+                # hung stop has NOT completed its recovery audit; the
+                # next service start must verify, not guess 'stopped'.
+                # Only the supervisor references are dropped; the
+                # coordinator keeps run_id for the startup recovery.
+                self._fakenet = None
+                self._worker = None
+                self._coordinator = None
+                if self._activity_lock is not None:
+                    self._activity_lock.release()
+                    self._activity_lock = None
                 return {'state': 'failed', 'changed': True,
                         'failure_reason': 'stop grace exceeded',
-                        'run_id': None, 'release_controller': True}
+                        'run_id': None, 'release_controller': False}
             self._force_close_listener_sockets(self._fakenet)
             if 'report_warning' in stop_outcome:
                 logger.warning('payload report generation failed: %s',
@@ -403,11 +413,16 @@ class RealSupervisor:
                 differences = self._baseline_store.full_audit_diff(
                     str(run_id))
                 if differences:
+                    self._register_run_artifacts(run_id)
                     self._teardown()
                     return {'state': 'failed', 'changed': True,
                             'failure_reason':
                                 'environment differs from pre-start baseline',
                             'run_id': None, 'release_controller': True}
+            # CHK-029: register the run's FakeNet outputs (PCAPs, log,
+            # report) into the managed artifacts tree so list_artifacts
+            # reflects the actual run products, not only incident packs.
+            self._register_run_artifacts(run_id)
             self._teardown()
             if self._snapshot is not None and \
                     self._last_snapshot_fields is not None:
@@ -420,7 +435,18 @@ class RealSupervisor:
                     'failure_reason': None, 'release_controller': True}
 
     def restart(self, coordinator, controller, config_identity):
-        self.stop(coordinator)
+        stop_result = self.stop(coordinator)
+        # CHK-016: a restart may only proceed to a new start when the
+        # stop converged cleanly (real 'stopped'); a failed or
+        # grace-exceeded stop must retain the recovery responsibility —
+        # starting a new run over it would bypass the stop/audit gate.
+        if stop_result.get('state') not in ('stopped',):
+            reason = stop_result.get('failure_reason') or \
+                stop_result.get('state') or 'stop did not converge'
+            logger.error('restart refused: previous stop state=%s reason=%s',
+                         stop_result.get('state'), reason)
+            stop_result['restart_refused'] = True
+            return stop_result
         # Real-VM evidence (P03 round): OS socket TIME_WAIT and the
         # WinDivert service teardown race an immediate in-process restart;
         # a bounded settle makes restart deterministic. Record 023 requires
@@ -530,6 +556,28 @@ class RealSupervisor:
                 pass
             self._previous_cwd = None
 
+    def _register_run_artifacts(self, run_id):
+        """CHK-029: copy the run's FakeNet outputs (PCAPs, log, report)
+        from the package root into the managed artifacts tree."""
+        if not run_id or not self._artifacts_root:
+            return
+        try:
+            import sys
+            from fakenet.mcp.artifacts import ArtifactRegistry
+            if getattr(sys, 'frozen', False):
+                package_root = os.path.dirname(os.path.abspath(
+                    sys.executable))
+            else:
+                package_root = os.path.dirname(os.path.dirname(
+                    os.path.dirname(os.path.abspath(__file__))))
+            registry = ArtifactRegistry(self._artifacts_root)
+            copied = registry.register_fakenet_outputs(run_id, package_root)
+            if copied:
+                logger.info('registered %d run artifacts for %s',
+                            len(copied), run_id)
+        except Exception:  # noqa: BLE001 - best-effort registration
+            logger.exception('run artifact registration failed')
+
     @staticmethod
     def _force_close_listener_sockets(instance):
         """P05 release gate evidence: FakeNet's own listener stop can leave
@@ -595,9 +643,24 @@ def perform_startup_recovery(snapshot, baseline_store, coordinator):
     if not data.get('needs_recovery'):
         return 'stopped'
     run_id = data.get('run_id')
-    differences = None
-    if baseline_store is not None and run_id:
-        differences = baseline_store.diff(run_id)
+    if not run_id:
+        # needs_recovery is set but the run_id is absent: the snapshot
+        # cannot identify which run to verify — fail closed (CHK-015).
+        coordinator._failure_reason = (
+            'recovery marker has no run_id; cannot verify')
+        return 'failed'
+    # CHK-015: a needs_recovery run with no readable baseline is an
+    # unverifiable recovery — fail closed, never guess 'stopped'.
+    if baseline_store is None:
+        coordinator._failure_reason = (
+            'baseline store unavailable; cannot verify recovery')
+        return 'failed'
+    baseline_path = baseline_store.root / (str(run_id) + '.json')
+    if not baseline_path.is_file():
+        coordinator._failure_reason = (
+            'baseline file for run %s not found; cannot verify' % run_id)
+        return 'failed'
+    differences = baseline_store.diff(run_id)
     if differences:
         coordinator._failure_reason = (
             'environment differs from pre-start baseline')

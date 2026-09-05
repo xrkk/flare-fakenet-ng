@@ -147,7 +147,7 @@ def run_acc001(base, channel, writer, args=None):
     # Second service instance attempt: starting the exe manually must exit 3
     second = channel.powershell(
         "$p = Start-Process -FilePath "
-        "'C:\\FakeNetMCP\\candidate\\fakenetng-mcp.exe' "
+        "'C:\\Program Files\\FakeNet-NG-MCP\\candidate\\fakenetng-mcp.exe' "
         "-ArgumentList 'debug' -PassThru -WindowStyle Hidden; "
         '$p.WaitForExit(); $p.ExitCode', timeout=120)
     writer.add_evidence('acc001-second-instance', second)
@@ -316,7 +316,7 @@ def run_acc004(base, channel, writer):
         'ControlLinkExcludePort: 28788\n')
     # The diverter reads these keys from its OWN section, so patch [Diverter].
     bad_filter_ini = (builtin.get('content') or VALID_INI).replace(
-        '[Diverter]', '[Diverter]\nControlLinkExcludeIp: 999.999.1.1\n'
+        '[Diverter]', '[Diverter]\nControlLinkExcludeIp: not-an-ip\n'
         'ControlLinkExcludePort: 28788', 1)
     version = status(base)['state_version']
     created = call(base, 'create_config',
@@ -700,10 +700,10 @@ def run_acc008(base, channel, writer):
 
     # (6) deliverables carry no banned DB/framework engines.
     listing = channel.powershell(
-        "Get-ChildItem -Recurse 'C:\\FakeNetMCP\\candidate\\_internal' "
+        "Get-ChildItem -Recurse 'C:\\Program Files\\FakeNet-NG-MCP\\candidate\\_internal' "
         '-Filter *.pyc | Measure-Object | Select-Object -ExpandProperty '
         'Count; Get-ChildItem '
-        "'C:\\FakeNetMCP\\candidate\\_internal' | "
+        "'C:\\Program Files\\FakeNet-NG-MCP\\candidate\\_internal' | "
         'Where-Object {$_.Name -match "sqlite|dbm"} | Measure-Object | '
         'Select-Object -ExpandProperty Count', timeout=120)
     writer.add_evidence('acc008-framework-scan', listing)

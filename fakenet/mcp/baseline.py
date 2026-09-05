@@ -17,7 +17,7 @@ BASELINE_FIELDS = ('routes', 'dns_servers', 'windivert_processes',
 # P03 recovery-consistency sections: volatile outputs (netstat PIDs, service
 # state races) never gate recovery in P03; the P04 audit matrix refines the
 # listen/service comparison (sub-plan P03 IMP-P03-04 boundary).
-RECOVERY_COMPARE_FIELDS = ('routes', 'dns_servers', 'windivert_processes')
+RECOVERY_COMPARE_FIELDS = BASELINE_FIELDS
 
 
 def _run(command, timeout=60):
@@ -52,8 +52,14 @@ def _normalize(section, value):
         keep = []
         for line in text.splitlines():
             parts = line.split()
-            if len(parts) >= 4 and parts[3].upper() == 'LISTENING':
-                keep.append(' '.join(parts[:3]))  # proto/local/foreign
+            if len(parts) >= 4:
+                state = parts[3].upper()
+                # TCP: only LISTENING sockets are attributable listeners
+                # UDP: has no state column; keep the proto/local pair
+                if state == 'LISTENING':
+                    keep.append(' '.join(parts[:3]))
+                elif parts[0].upper().startswith('UDP'):
+                    keep.append(' '.join(parts[:2]))  # proto/local
         return '\n'.join(sorted(set(keep)))
     if section == 'services':
         keep = []
@@ -82,28 +88,34 @@ def audit_compare(baseline_sections, current_sections):
 
 
 def capture():
-    """Collect the current environment baseline sections."""
-    routes = _run(['route', 'print', '-4'])
-    dns = _run(['powershell', '-NoProfile', '-Command',
-                'Get-DnsClientServerAddress -AddressFamily IPv4 | '
-                'Select-Object InterfaceAlias,ServerAddresses | '
-                'ConvertTo-Json -Compress'])
-    processes = _run(['powershell', '-NoProfile', '-Command',
-                      '(tasklist /m WinDivert*.sys 2>$null) + '
-                      '(Get-Process fakenetng-mcp,fakenet '
-                      '-ErrorAction SilentlyContinue | '
-                      'Select-Object -ExpandProperty ProcessName) | '
-                      'Out-String'])
-    ports = _run(['netstat', '-ano'])
-    services = _run(['powershell', '-NoProfile', '-Command',
-                     'Get-Service dnscache,mpssvc | '
-                     'Select-Object Name,Status | ConvertTo-Json -Compress'])
+    """Collect the current environment baseline sections.
+
+    Each value is ``text`` on success or ``'__COLLECTION_FAILED__'`` when
+    the collection command itself failed — the auditor treats a failed
+    section as UNKNOWN (never silently equal, CHK-018)."""
+    _FAIL = '__COLLECTION_FAILED__'
+    routes, ok_r = _run(['route', 'print', '-4'])
+    dns, ok_d = _run(['powershell', '-NoProfile', '-Command',
+                      'Get-DnsClientServerAddress -AddressFamily IPv4 | '
+                      'Select-Object InterfaceAlias,ServerAddresses | '
+                      'ConvertTo-Json -Compress'])
+    processes, ok_p = _run(['powershell', '-NoProfile', '-Command',
+                            '(tasklist /m WinDivert*.sys 2>$null) + '
+                            '(Get-Process fakenetng-mcp,fakenet '
+                            '-ErrorAction SilentlyContinue | '
+                            'Select-Object -ExpandProperty ProcessName) | '
+                            'Out-String'])
+    ports, ok_n = _run(['netstat', '-ano'])
+    services, ok_s = _run(['powershell', '-NoProfile', '-Command',
+                           'Get-Service dnscache,mpssvc | '
+                           'Select-Object Name,Status | '
+                           'ConvertTo-Json -Compress'])
     return {
-        'routes': routes.strip(),
-        'dns_servers': dns.strip(),
-        'windivert_processes': processes.strip(),
-        'listen_ports': ports.strip(),
-        'services': services.strip(),
+        'routes': routes.strip() if ok_r else _FAIL,
+        'dns_servers': dns.strip() if ok_d else _FAIL,
+        'windivert_processes': processes.strip() if ok_p else _FAIL,
+        'listen_ports': ports.strip() if ok_n else _FAIL,
+        'services': services.strip() if ok_s else _FAIL,
     }
 
 

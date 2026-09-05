@@ -61,6 +61,10 @@ class Coordinator:
         self._commands = OrderedDict()
         self._draining = False
         self._last_run_outcome = None
+        # CHK-022: long-running mutations execute WITHOUT holding the
+        # metadata lock; this flag immediately rejects concurrent
+        # mutations and keeps read-only queries available throughout.
+        self._operation_active = False
 
     # -- read-only surface -------------------------------------------------
     def snapshot(self):
@@ -95,9 +99,16 @@ class Coordinator:
                internal=False):
         """Run one serialized mutation.
 
-        ``execute`` is called with this coordinator while the lock is held;
-        it returns ``dict(result fields)`` and may raise ``McpError``.
+        CHK-022 three-phase design: validation and state updates run under
+        the short-held metadata lock; the (potentially long) ``execute``
+        callback runs with the lock RELEASED so read-only queries stay
+        available and concurrent mutations are rejected immediately
+        (``operation_busy``) instead of queueing behind the lock.
+
+        ``execute`` is called with this coordinator; it returns
+        ``dict(result fields)`` and may raise ``McpError``.
         """
+        # Phase 1: validate under the metadata lock (fast, no execution).
         with self._lock:
             # 0. controlled-exit gate (P04 IMP-P04-06): once draining,
             # every new CLIENT mutation is rejected immediately, never
@@ -123,6 +134,15 @@ class Coordinator:
                     errors.CONTROLLER_IDENTITY_MISSING,
                     'mutation requires controller identity')
 
+            # 1. immediate busy rejection (CHK-022): another mutation is
+            # mid-execution; reject now, never queue behind the lock.
+            if self._operation_active and not internal:
+                raise errors.McpError(
+                    errors.OPERATION_BUSY,
+                    'another mutation is currently executing; '
+                    'retry after it completes',
+                    {'kind': kind, 'command_id': command_id})
+
             # 2. replay gate (same controller only).
             cached = self._commands.get(command_id)
             if cached is not None:
@@ -142,18 +162,23 @@ class Coordinator:
                     {'expected': expected_version,
                      'current': self._state_version})
 
+            self._operation_active = True
             self._events.record('command.accepted', command_id=command_id,
                                 controller=controller, kind=kind)
-            try:
-                result = execute(self)
-            except errors.McpError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.exception('command %s crashed', command_id)
-                raise errors.McpError(
-                    errors.INTERNAL_ERROR, 'command execution failed',
-                    {'command_id': command_id, 'reason': repr(exc)[:200]})
 
+        # Phase 2: execute WITHOUT the metadata lock — read-only queries
+        # (snapshot/events) and health transitions stay responsive; any
+        # concurrent mutation hits the busy gate in Phase 1 immediately.
+        try:
+            result = execute(self)
+        except BaseException:
+            with self._lock:
+                self._operation_active = False
+            raise
+
+        # Phase 3: update state under the metadata lock (fast).
+        with self._lock:
+            self._operation_active = False
             self._state_version += 1
             self._run_id = result.get('run_id', self._run_id)
             if 'state' in result:

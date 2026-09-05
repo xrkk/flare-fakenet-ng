@@ -108,12 +108,12 @@ def _deploy_with_server(args, channel, writer, vm_dir, serve_root, package,
         'Get-Process fakenetng-mcp -ErrorAction SilentlyContinue | '
         'Stop-Process -Force; Start-Sleep 2; "STOPPED"', timeout=120)
     with PackageServer(serve_root) as server:
-        remote_zip = 'C:\\FakeNetMCP\\%s.zip' % args.candidate_id
+        remote_zip = 'C:\\Program Files\\FakeNet-NG-MCP\\%s.zip' % args.candidate_id
         url = '%s/%s' % (server.base_url,
                          urllib.request.quote(package.name))
         download = channel.powershell(
             "[Net.ServicePointManager]::SecurityProtocol='Tls12'; "
-            'New-Item -ItemType Directory -Force -Path C:\\FakeNetMCP | '
+            'New-Item -ItemType Directory -Force -Path C:\\Program Files\\FakeNet-NG-MCP | '
             'Out-Null; '
             "Invoke-WebRequest -Uri '%s' -OutFile '%s'; "
             '(Get-FileHash \'%s\' -Algorithm SHA256).Hash.ToLower()' % (
@@ -406,7 +406,7 @@ def run_acc003(args, channel, writer):
         '$fw | Format-Table -AutoSize | Out-String', timeout=60)
     writer.add_evidence('vm-fw-before', fw)
     enabled_round = None
-    if args.run_firewall_round:
+    if True:  # CHK-027: firewall round is now mandatory
         protect = channel.powershell(
             'New-NetFirewallRule -DisplayName "P01-ACC003-TEMP-Win10VM-28787" '
             '-Direction Inbound -Action Allow -Protocol TCP -LocalPort 28787 '
@@ -529,7 +529,7 @@ def main():
                         default='http://192.168.204.149:28787/mcp')
     parser.add_argument('--controller-uuid')
     parser.add_argument('--vm-package-dir',
-                        default='C:\\FakeNetMCP\\candidate')
+                        default='C:\\Program Files\\FakeNet-NG-MCP')
     parser.add_argument('--extra-exclude-port', action='append',
                         default=[], type=int)
     parser.add_argument('--run-firewall-round', action='store_true')

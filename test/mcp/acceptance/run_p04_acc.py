@@ -148,7 +148,7 @@ def run_acc014(base, channel, writer):
         "$out = @(); Get-ChildItem -Recurse (Join-Path $env:ProgramData "
         "'FakeNet-NG-MCP\\artifacts') -Filter manifest.json | "
         'ForEach-Object { $m = Get-Content $_.FullName -Raw | '
-        'ConvertFrom-Json; $items = $m.items; $bad = 0; $hashed = 0; '
+        'ConvertFrom-Json; $items = $m.entries; $bad = 0; $hashed = 0; '
         'foreach ($it in $items) { $req = @("path","type","size",'
         '"complete","sha256"); foreach ($k in $req) { '
         'if (-not ($it.PSObject.Properties.Name -contains $k)) { $bad++ } }; '
@@ -273,13 +273,13 @@ def run_acc015(base, channel, writer):
     test_content = 'FakeNet-NG-MCP band export test %s' % time.time()
     ps_cmd = (
         "$c = '%s'; " % test_content +
-        "[IO.File]::WriteAllText('C:\\FakeNetMCP\\band-test.txt', $c); "
-        "$h = (Get-FileHash 'C:\\FakeNetMCP\\band-test.txt' "
+        "[IO.File]::WriteAllText('C:\\Program Files\\FakeNet-NG-MCP\\band-test.txt', $c); "
+        "$h = (Get-FileHash 'C:\\Program Files\\FakeNet-NG-MCP\\band-test.txt' "
         "-Algorithm SHA256).Hash.ToLower(); "
         "Invoke-WebRequest -Uri 'http://192.168.204.1:8079/band' "
-        "-Method Put -InFile 'C:\\FakeNetMCP\\band-test.txt' "
+        "-Method Put -InFile 'C:\\Program Files\\FakeNet-NG-MCP\\band-test.txt' "
         "-UseBasicParsing | Out-Null; "
-        "'SENT||C:\\FakeNetMCP\\band-test.txt||' + $h")
+        "'SENT||C:\\Program Files\\FakeNet-NG-MCP\\band-test.txt||' + $h")
     pick = channel.powershell(ps_cmd, timeout=180)
     writer.add_evidence('acc015-band-export', pick)
     serve_thread.join(timeout=30)
@@ -445,10 +445,12 @@ def run_acc019(base, channel, writer, args=None):
 
     prober = threading.Thread(target=probe_thread, daemon=True)
     prober.start()
-    mutators = [mutation_worker('create', 0.3),
-                mutation_worker('edit', 1.2)]
     channel.powershell('sc.exe stop fakenetng-mcp | Out-Null; "SENT"',
                        timeout=60)
+    # CHK-021: fire mutations AFTER the SCM stop signal so they land
+    # inside the drain window (not before it starts).
+    mutators = [mutation_worker('create', 0.5),
+                mutation_worker('edit', 1.5)]
     for worker in mutators:
         worker.join(timeout=30)
     deadline = time.time() + 90
@@ -513,10 +515,10 @@ def run_acc019(base, channel, writer, args=None):
     # upgrade simulation: service stopped -> files replaceable, and the
     # upgrade waiter only proceeds after full convergence (STOPPED above).
     upgrade = channel.powershell(
-        "Copy-Item 'C:\\FakeNetMCP\\candidate\\fakenetng-mcp.exe' "
-        "'C:\\FakeNetMCP\\candidate\\fakenetng-mcp.exe.upgrade-probe' "
+        "Copy-Item 'C:\\Program Files\\FakeNet-NG-MCP\\candidate\\fakenetng-mcp.exe' "
+        "'C:\\Program Files\\FakeNet-NG-MCP\\candidate\\fakenetng-mcp.exe.upgrade-probe' "
         '-Force; "REPLACED"; '
-        "Remove-Item 'C:\\FakeNetMCP\\candidate\\"
+        "Remove-Item 'C:\\Program Files\\FakeNet-NG-MCP\\candidate\\"
         "fakenetng-mcp.exe.upgrade-probe' -Force", timeout=60)
     checks['upgrade_replace_after_stopped'] = 'REPLACED' in \
         upgrade['output']
