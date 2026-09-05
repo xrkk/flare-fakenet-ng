@@ -442,7 +442,7 @@ class ReleaseGate:
         failures = {acc: row['status'] for acc, row in acc_index.items()
                     if row['status'] != 'pass'}
         os_version = None
-        os_probe = self.release / 'final-checks.json'
+        os_probe = self.root / 'ACC-017' / 'final-checks.json'
         if os_probe.is_file():
             try:
                 os_version = json.loads(
