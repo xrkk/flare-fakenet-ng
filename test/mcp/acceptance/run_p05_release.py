@@ -151,12 +151,13 @@ class ReleaseGate:
 
     def config_lock_probe(self, index, during_run):
         """CHK-010: the activity lock tracks the run (run_id present =
-        lock held; run_id cleared = lock released)."""
+        lock held; run_id cleared = lock released). Returns (label, raw)
+        so a violated expectation carries its own evidence."""
         snap = call(self.base, 'get_status', controller=None)
         has_run = bool(snap.get('run_id'))
         if during_run:
-            return 'config_in_use' if has_run else 'no_run_active'
-        return 'released' if not has_run else 'still_locked'
+            return ('config_in_use' if has_run else 'no_run_active'), snap
+        return ('released' if not has_run else 'still_locked'), snap
 
     def run_normal_round(self, index, config_name):
         record = {'round': index, 'config': config_name,
@@ -182,10 +183,13 @@ class ReleaseGate:
         record['probe'] = {'all_ok': ok, 'samples': len(timeline)}
         if not ok:
             record['failure'] = 'link probe failed during round'
+            record['probe_timeline'] = timeline
             stop_run(self.base, attempts=2)
             return record
-        record['lock_held_during_run'] = \
-            self.config_lock_probe(index, during_run=True) == 'config_in_use'
+        lock_label, lock_raw = self.config_lock_probe(index, during_run=True)
+        record['lock_held_during_run'] = lock_label == 'config_in_use'
+        if not record['lock_held_during_run']:
+            record['lock_probe_raw'] = lock_raw
         stopped = stop_run(self.base, attempts=4)
         record['stop_state'] = stopped.get('state')
         final = wait_state(self.base,
@@ -199,8 +203,11 @@ class ReleaseGate:
         if record['final_state'] != 'stopped':
             record['failure'] = 'final=%s' % record['final_state']
             return record
-        record['lock_released_after_stop'] = \
-            self.config_lock_probe(index, during_run=False) == 'released'
+        release_label, release_raw = self.config_lock_probe(
+            index, during_run=False)
+        record['lock_released_after_stop'] = release_label == 'released'
+        if not record['lock_released_after_stop']:
+            record['lock_probe_raw'] = release_raw
         if not record.get('lock_held_during_run') or not \
                 record.get('lock_released_after_stop'):
             record['failure'] = 'config lock lifecycle violated: %s/%s' % (
@@ -268,9 +275,11 @@ class ReleaseGate:
                 record['failure'] = 'final=%s reason=%s' % (
                     record['final_state'], record['failure_reason'])
                 return record
-            record['lock_released_after_stop'] = \
-                self.config_lock_probe(index + 9000, during_run=False) == \
-                'released'
+            fault_label, fault_raw = self.config_lock_probe(
+                index + 9000, during_run=False)
+            record['lock_released_after_stop'] = fault_label == 'released'
+            if not record['lock_released_after_stop']:
+                record['lock_probe_raw'] = fault_raw
             if not record.get('lock_released_after_stop'):
                 record['failure'] = 'config lock leaked after fault stop'
             diff = self.audit_diff(before)
