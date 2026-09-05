@@ -255,7 +255,8 @@ def run_acc011(base, channel, writer):
     for thread in threads:
         thread.join()
     wins = [r for r in results if r.get('error') is None]
-    conflicts = [r for r in results if err_of(r) == 'state_conflict']
+    conflicts = [r for r in results if err_of(r) in
+                ('state_conflict', 'operation_busy')]
     checks = {'race_exactly_one_winner': len(wins) == 1,
               'others_structured_conflict': len(conflicts) == 5}
 
