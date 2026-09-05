@@ -200,7 +200,7 @@ def run_acc010(base, writer):
 
     outsider = call(base, 'stop',
                     {'command_id': unique_command('b-stop'),
-                     'expected_state_version': started['state_version']},
+                     'expected_state_version': started.get('state_version', status(base)['state_version'])},
                     controller=CONTROLLER_B, timeout=300)
     checks['outsider_rejected'] = err_of(outsider) == 'controller_conflict'
     checks['outsider_reads_ok'] = status(base).get('state') in (
@@ -487,7 +487,7 @@ def run_acc009_pre(base, channel, writer):
         base, 'create_config',
         {'name': 'during-run.ini', 'content': VALID_INI,
          'command_id': unique_command('ar'),
-         'expected_state_version': started['state_version']},
+         'expected_state_version': started.get('state_version', status(base)['state_version'])},
         controller=CONTROLLER_B)) == 'controller_conflict'
     stopped = call(base, 'stop',
                    {'command_id': unique_command('astop'),
