@@ -417,6 +417,15 @@ class RealSupervisor:
                 differences = self._baseline_store.full_audit_diff(
                     str(run_id))
                 if differences:
+                    try:
+                        import json as _json
+                        logger.error(
+                            'stop audit differences for run %s: %s', run_id,
+                            _json.dumps(differences, ensure_ascii=False,
+                                        default=str)[:2000])
+                    except Exception:  # noqa: BLE001 - logging only
+                        logger.error('stop audit differences (raw): %r',
+                                     differences)
                     self._register_run_artifacts(run_id)
                     self._teardown()
                     return {'state': 'failed', 'changed': True,
@@ -681,6 +690,14 @@ def perform_startup_recovery(snapshot, baseline_store, coordinator):
         return 'failed'
     differences = baseline_store.diff(run_id)
     if differences:
+        try:
+            import json as _json
+            logger.error(
+                'recovery audit differences for run %s: %s', run_id,
+                _json.dumps(differences, ensure_ascii=False,
+                            default=str)[:2000])
+        except Exception:  # noqa: BLE001 - logging only
+            logger.error('recovery audit differences (raw): %r', differences)
         coordinator._failure_reason = (
             'environment differs from pre-start baseline')
         return 'failed'
