@@ -88,7 +88,7 @@ def run_acc014(base, channel, writer):
     from run_p03_acc import arm_fault, disarm_fault
     for klass in ['listener_stop', 'diverter_stop', 'child_hang',
                   'cleanup_error', 'policy_pause']:
-        arm_fault(channel, klass)
+        arm_fault(channel, klass, base)
         load_and_start(base)
         time.sleep(4)
         message = "Traceback (most recent call last): fault-class " + klass
@@ -100,7 +100,7 @@ def run_acc014(base, channel, writer):
         converged, snap = _wait_terminal(base, timeout=wait)
         if not converged:
             stop_run(base)
-        disarm_fault(channel)
+        disarm_fault(channel, base)
         writer.add_evidence('acc014-class-%s' % klass,
                             {'converged': converged,
                              'state': (snap or {}).get('state')})
@@ -357,16 +357,27 @@ def run_acc018(base, channel, writer, args=None):
         # retest results exist on the final candidate and PASS
         row['retest_results'] = {}
         for acc in retests:
-            path = logs_root / (final_candidate or '~none~') / acc / \
-                'result.json'
-            if path.is_file():
-                try:
-                    result = json.loads(path.read_text(encoding='utf-8'))
-                    row['retest_results'][acc] = result.get('status')
-                except ValueError:
-                    row['retest_results'][acc] = 'unreadable'
-            else:
-                row['retest_results'][acc] = 'missing'
+            # ACC-004 runs as six independent scenario invocations on
+            # split candidates; the retest link is satisfied by all six
+            # sub-results passing (legacy single record on pre-split
+            # candidates also satisfies it).
+            labels = ['ACC-004-S%d' % n for n in range(1, 7)] if \
+                acc == 'ACC-004' else [acc]
+            statuses = []
+            for label in labels:
+                path = logs_root / (final_candidate or '~none~') / label / \
+                    'result.json'
+                if path.is_file():
+                    try:
+                        result = json.loads(path.read_text(encoding='utf-8'))
+                        statuses.append(result.get('status'))
+                    except ValueError:
+                        statuses.append('unreadable')
+                else:
+                    statuses.append('missing')
+            row['retest_results'][acc] = 'pass' if all(
+                value == 'pass' for value in statuses) else next(
+                value for value in statuses if value != 'pass')
         link_ok = (row['fix_commit_exists'] and row['repro_evidence_dir']
                    and all(value == 'pass'
                            for value in row['retest_results'].values()))

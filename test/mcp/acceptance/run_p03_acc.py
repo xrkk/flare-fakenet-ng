@@ -75,13 +75,45 @@ def stop_run(base, attempts=3):
 
 
 def restart_service(channel):
+    # Stop must fully converge before the start; a hung service process
+    # (e.g. fault-armed) gets force-killed so SCM can mark it Stopped.
     channel.powershell(
         '$svc = Get-Service fakenetng-mcp; '
         'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; '
-        '$t = 0; while($svc.Status -ne "Stopped" -and $t -lt 60) { '
+        '$t = 0; while($svc.Status -ne "Stopped" -and $t -lt 30) { '
         'Start-Sleep 2; $t += 2; $svc.Refresh() }; '
+        'if ($svc.Status -ne "Stopped") { '
+        'Get-Process fakenetng-mcp -ErrorAction SilentlyContinue | '
+        'Stop-Process -Force; '
+        '$t2 = 0; while($svc.Status -ne "Stopped" -and $t2 -lt 30) { '
+        'Start-Sleep 2; $t2 += 2; $svc.Refresh() } }; '
         'sc.exe start fakenetng-mcp | Out-Null; Start-Sleep 6; '
-        '"RESTARTED"', timeout=180)
+        '"RESTARTED=" + (Get-Service fakenetng-mcp).Status', timeout=240)
+
+
+def normalize_service(base, channel):
+    """Bring the service to a responsive, non-terminal state.
+
+    Handles an active or degenerate run (bounded stop), a dead/hung
+    endpoint and the sticky post-failure state (SCM restart). Returns
+    True when the endpoint answers with any state."""
+    try:
+        snap = status(base)
+    except Exception:  # noqa: BLE001
+        snap = None
+    if snap is not None:
+        if snap.get('run_id') or snap.get('state') not in ('stopped',
+                                                            'failed'):
+            stop_run(base, attempts=3)
+        try:
+            if status(base).get('state') == 'stopped':
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+    restart_service(channel)
+    ok, _ = wait_state(base, lambda s: s.get('state') is not None,
+                       timeout=150)
+    return ok
 
 
 def clear_and_restart(channel):
@@ -254,24 +286,30 @@ def run_acc001(base, channel, writer, args=None):
     return EXIT_PASS if all(checked) else EXIT_FAIL
 
 
-def run_acc004(base, channel, writer):
-    writer.action('acc004', 'control link survives the FakeNet fault domain')
-    checks = {}
+# ---------------------------------------------------------------------------
+# ACC-004 runs as six INDEPENDENT invocations (ACC-004-S1 .. S6): the serial
+# six-scenario form repeatedly timed out on service-restart accumulation.
+# Each scenario normalizes the service before and after, so every sub-test
+# is order-independent and a retry never inherits a wedged endpoint.
 
-    # (1) normal takeover: start real FakeNet, probe throughout.
+
+def acc004_s1_takeover(base, channel, writer):
+    """Normal takeover: start real FakeNet, probe throughout, stop."""
+    checks = {}
     started = load_and_start(base)
     checks['start_ok'] = started.get('error') is None
     ok, timeline = continuous_probe(base, 12)
-    writer.add_evidence('acc004-takeover-probe', timeline)
+    writer.add_evidence('acc004-s1-takeover-probe', timeline)
     checks['link_alive_during_takeover'] = ok
     stop_run(base)
     ok_after, _ = continuous_probe(base, 4)
     checks['link_alive_after_stop'] = ok_after
-    if not all(checks.values()):
-        writer.add_evidence('acc004-checks', checks)
-        return EXIT_FAIL
+    return checks
 
-    # (2) initialization failure: invalid config refused (fail closed).
+
+def acc004_s2_init_failure(base, channel, writer):
+    """Initialization failure: invalid config refused (fail closed)."""
+    checks = {}
     version = status(base)['state_version']
     created = call(base, 'create_config',
                    {'name': 'broken-%s.ini' % unique_command('x')[:8],
@@ -288,9 +326,14 @@ def run_acc004(base, channel, writer):
             'validation_failed', 'invalid_request')
     else:
         checks['invalid_config_rejected'] = True
+    return checks
 
-    # (3) unhandled exception in run log revokes health but link stays.
+
+def acc004_s3_exception(base, channel, writer):
+    """Unhandled exception in run log revokes health but link stays."""
+    checks = {}
     started = load_and_start(base)
+    checks['start_ok'] = started.get('error') is None
     if started.get('error') is None:
         channel.powershell(
             "Add-Content (Join-Path $env:ProgramData "
@@ -302,27 +345,20 @@ def run_acc004(base, channel, writer):
             or s.get('health', {}).get('probe') != 'pass', timeout=15)
         checks['unhandled_exception_revokes_health'] = revoked
         ok, timeline = continuous_probe(base, 4)
-        writer.add_evidence('acc004-exception-probe', timeline)
+        writer.add_evidence('acc004-s3-exception-probe', timeline)
         checks['link_alive_during_exception'] = ok
         stop_run(base)
-        # Clear the failed state from the terminal failure before the
-        # remaining scenarios (the service must be in stopped state).
-        restart_service(channel)
-        import time as _t
-        _t.sleep(3)
     else:
         checks['unhandled_exception_revokes_health'] = False
         checks['link_alive_during_exception'] = False
+    return checks
 
-    # (4) invalid protection params: a real config carrying an invalid
-    # ControlLinkExcludeIp/Port pair must fail closed at start (the values
-    # flow into the diverter dict and the filter clause builder rejects
-    # them); the service itself must keep answering.
+
+def acc004_s4_invalid_protection(base, channel, writer):
+    """Invalid protection params: fail closed at start, service survives."""
+    checks = {}
     builtin = call(base, 'read_config', {'name': 'default.ini'},
                    controller=None)
-    bad_filter_ini = (builtin.get('content') or VALID_INI) + (
-        '\n[DiverterBadGuard]\nControlLinkExcludeIp: 999.999.1.1\n'
-        'ControlLinkExcludePort: 28788\n')
     # The diverter reads these keys from its OWN section, so patch [Diverter].
     bad_filter_ini = (builtin.get('content') or VALID_INI).replace(
         '[Diverter]', '[Diverter]\nControlLinkExcludeIp: not-an-ip\n'
@@ -334,7 +370,7 @@ def run_acc004(base, channel, writer):
                     'command_id': unique_command('a4-bf'),
                     'expected_state_version': version})
     loaded = call(base, 'load_config',
-                  {'name': created.get('name', created.get('name')),
+                  {'name': created.get('name', ''),
                    'command_id': unique_command('a4-bf-l'),
                    'expected_state_version':
                        created.get('state_version', version)}, timeout=120)
@@ -343,7 +379,7 @@ def run_acc004(base, channel, writer):
                         'expected_state_version':
                             loaded.get('state_version', version)},
                        timeout=120)
-    writer.add_evidence('acc004-invalid-filter-start', started_bad)
+    writer.add_evidence('acc004-s4-invalid-filter-start', started_bad)
     checks['invalid_protection_fails_closed'] = (
         started_bad.get('error') is not None or
         started_bad.get('state') == 'failed')
@@ -353,40 +389,78 @@ def run_acc004(base, channel, writer):
     call(base, 'load_config',
          {'name': 'default.ini', 'command_id': unique_command('a4-restore'),
           'expected_state_version': status(base)['state_version']})
+    return checks
 
-    # (5) core-thread hang: child_hang freezes the run thread inside the
-    # bounded stop; the control link must stay alive throughout and the
-    # stop must still converge (bounded), never taking the link down.
-    arm_fault(channel, 'child_hang')
-    load_and_start(base)
+
+def acc004_s5_hang(base, channel, writer):
+    """Core-thread hang: link alive throughout, stop still bounded."""
+    checks = {}
+    arm_fault(channel, 'child_hang', base)
+    started = load_and_start(base)
+    checks['start_ok'] = started.get('error') is None
     ok, timeline = continuous_probe(base, 8)
-    writer.add_evidence('acc004-hang-probe', timeline)
+    writer.add_evidence('acc004-s5-hang-probe', timeline)
     checks['link_alive_during_core_thread_hang'] = ok
     hung_stop = call(base, 'stop',
                      {'command_id': unique_command('a4-hang-stop'),
                       'expected_state_version':
                           status(base)['state_version']}, timeout=120)
-    writer.add_evidence('acc004-hang-stop', hung_stop)
+    writer.add_evidence('acc004-s5-hang-stop', hung_stop)
     checks['hang_stop_bounded'] = hung_stop.get('state') in (
         'failed', 'stopped')
     ok_after, _ = continuous_probe(base, 4)
     checks['link_alive_after_hang'] = ok_after
-    disarm_fault(channel)
+    return checks
 
-    # (6) uncontrolled exit: kill the service mid-run; SCM must bring the
-    # endpoint back (recovery path) so the control link is restored.
-    load_and_start(base)
+
+def acc004_s6_uncontrolled_exit(base, channel, writer):
+    """Uncontrolled exit: SCM brings the endpoint back (recovery path)."""
+    checks = {}
+    started = load_and_start(base)
+    checks['start_ok'] = started.get('error') is None
     channel.powershell(
         'Get-Process fakenetng-mcp | Stop-Process -Force; "KILLED"',
         timeout=60)
     back, snap = wait_state(base, lambda s: s.get('state') is not None,
                             timeout=150)
-    writer.add_evidence('acc004-uncontrolled-restart', snap or {})
+    writer.add_evidence('acc004-s6-uncontrolled-restart', snap or {})
     checks['endpoint_restored_after_uncontrolled_exit'] = back
     ok_after, _ = continuous_probe(base, 4)
     checks['link_alive_after_uncontrolled_exit'] = ok_after
+    return checks
 
-    writer.add_evidence('acc004-checks', checks)
+
+ACC004_SCENARIOS = (
+    ('S1', 'normal takeover', acc004_s1_takeover),
+    ('S2', 'initialization failure', acc004_s2_init_failure),
+    ('S3', 'unhandled exception', acc004_s3_exception),
+    ('S4', 'invalid protection params', acc004_s4_invalid_protection),
+    ('S5', 'core-thread hang', acc004_s5_hang),
+    ('S6', 'uncontrolled exit', acc004_s6_uncontrolled_exit),
+)
+
+
+def run_acc004_scenario(base, channel, writer, tag):
+    for key, title, handler in ACC004_SCENARIOS:
+        if key == tag:
+            break
+    else:
+        writer.blocker = {'reason': 'unknown ACC-004 scenario %r' % tag}
+        return EXIT_BLOCKED
+    writer.action('acc004-%s' % tag.lower(),
+                  'control link survives: %s' % title)
+    if not normalize_service(base, channel):
+        writer.blocker = {'reason': 'service normalization failed'}
+        return EXIT_BLOCKED
+    try:
+        checks = handler(base, channel, writer)
+    finally:
+        if tag == 'S5':
+            # disarm before normalizing: the fault env must not leak into
+            # the restart (a hung child would wedge the next start).
+            disarm_fault(channel, base)
+        normalize_service(base, channel)
+    writer.add_evidence('acc004-%s-checks' % tag.lower(), checks)
     checked = [v for v in checks.values() if v is not None]
     return EXIT_PASS if all(checked) else EXIT_FAIL
 
@@ -427,7 +501,7 @@ def run_acc006(base, channel, writer):
     # (b) active-probe condition broken: the diverter_stop fault closes the
     # main handle, so the probe (diverter handle alive) fails and health
     # must revoke even though the process and listeners are up.
-    arm_fault(channel, 'diverter_stop')
+    arm_fault(channel, 'diverter_stop', base)
     load_and_start(base)
     revoked, snap3 = wait_state(
         base, lambda s: s.get('state') in ('degraded', 'failed', 'starting')
@@ -436,7 +510,7 @@ def run_acc006(base, channel, writer):
     checks['probe_break_revokes_health'] = revoked and \
         (snap3 or {}).get('state') != 'healthy'
     stop_run(base)
-    disarm_fault(channel)
+    disarm_fault(channel, base)
 
     # (c) key-initialization condition broken: a config with every listener
     # disabled produces no init evidence; it must NEVER report healthy
@@ -888,7 +962,9 @@ def run_acc009(base, channel, writer):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--acc', required=True,
-                        choices=['ACC-001', 'ACC-004', 'ACC-006', 'ACC-007',
+                        choices=['ACC-001', 'ACC-004-S1', 'ACC-004-S2',
+                                 'ACC-004-S3', 'ACC-004-S4', 'ACC-004-S5',
+                                 'ACC-004-S6', 'ACC-006', 'ACC-007',
                                  'ACC-008', 'ACC-009'])
     parser.add_argument('--gui-exe',
                         default='',
@@ -934,12 +1010,16 @@ def main():
             writer.blocker = {'reason': 'unexpected VM: %s' % identity}
             exit_code = EXIT_BLOCKED
         else:
-            handler = {
-                'ACC-001': run_acc001, 'ACC-004': run_acc004,
-                'ACC-006': run_acc006, 'ACC-007': run_acc007,
-                'ACC-008': run_acc008, 'ACC-009': run_acc009,
-            }[args.acc]
-            exit_code = handler(base, channel, writer)
+            if args.acc.startswith('ACC-004-'):
+                exit_code = run_acc004_scenario(base, channel, writer,
+                                                args.acc[-2:])
+            else:
+                handler = {
+                    'ACC-001': run_acc001,
+                    'ACC-006': run_acc006, 'ACC-007': run_acc007,
+                    'ACC-008': run_acc008, 'ACC-009': run_acc009,
+                }[args.acc]
+                exit_code = handler(base, channel, writer)
     except StepError as exc:
         writer.blocker = {'reason': str(exc)}
         exit_code = EXIT_BLOCKED

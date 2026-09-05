@@ -405,11 +405,15 @@ class ReleaseGate:
         acc_index = {}
         integrity_failures = {}
         allowed_labels = {
-            'ACC-001', 'ACC-002', 'ACC-003', 'ACC-004', 'ACC-005',
+            'ACC-001', 'ACC-002', 'ACC-003', 'ACC-005',
             'ACC-006', 'ACC-007', 'ACC-008', 'ACC-009', 'ACC-009-PRE',
             'ACC-010', 'ACC-011', 'ACC-012', 'ACC-013', 'ACC-014',
             'ACC-015', 'ACC-016', 'ACC-017', 'ACC-018', 'ACC-019',
             'FAULT-POINTS', 'P01-ENTRY',
+            # ACC-004 runs as six independent scenario invocations (the
+            # serial six-scenario form timed out on restart accumulation).
+            'ACC-004-S1', 'ACC-004-S2', 'ACC-004-S3',
+            'ACC-004-S4', 'ACC-004-S5', 'ACC-004-S6',
             # declared aggregate label (summary mode's own record; not an
             # ACC pass claim and never counted as one).
             'ACC-017-SUMMARY'}
@@ -435,7 +439,9 @@ class ReleaseGate:
                 'status': result.get('status'),
                 'candidate_id': result.get('candidate_id')}
         expected = ['ACC-001', 'ACC-002', 'ACC-003', 'ACC-005',
-                    'ACC-009-PRE', 'ACC-010', 'ACC-011', 'ACC-004',
+                    'ACC-009-PRE', 'ACC-010', 'ACC-011',
+                    'ACC-004-S1', 'ACC-004-S2', 'ACC-004-S3',
+                    'ACC-004-S4', 'ACC-004-S5', 'ACC-004-S6',
                     'ACC-006', 'ACC-007', 'ACC-008', 'ACC-009',
                     'ACC-014', 'ACC-015', 'ACC-018', 'ACC-019',
                     'FAULT-POINTS', 'ACC-012', 'ACC-013', 'ACC-016',
