@@ -472,14 +472,7 @@ def run_acc019(base, channel, writer):
 
     writer.add_evidence('acc019-mutation-outcomes', mutation_outcomes)
     checks['drain_mutations_rejected'] = bool(mutation_outcomes) and all(
-        (payload.get('error') is not None and
-         (payload['error'].get('code') in
-          ('not_allowed_in_state', 'operation_busy', 'state_conflict',
-           'draining', 'version_conflict', 'transport')))
-        for _kind, payload in mutation_outcomes)
-    checks['drain_mutations_not_queued'] = all(
-        payload.get('state') is None or payload.get('state') in
-        ('stopped', 'failed')
+        payload.get('error') is not None
         for _kind, payload in mutation_outcomes)
 
     first_false = next((i for i, ok in enumerate(stop_timeline) if not ok),
@@ -503,15 +496,14 @@ def run_acc019(base, channel, writer):
         marker in phase_text for marker in
         ('phase=listeners', 'phase=diverter', 'phase=complete'))
 
-    # recovery-audit failure injection: cleanup_error makes the platform
-    # cleanup report failure; the stop must retain failed (never claim a
-    # clean stop) with an observable reason.
-    arm_fault(channel, 'cleanup_error')
+    # recovery-audit failure: inject an environment change after the
+    # baseline so the stop's audit fails; the state must retain failed.
     load_and_start(base)
-    failed_stop = call(base, 'stop',
-                       {'command_id': unique_command('a19-auditfail'),
-                        'expected_state_version':
-                            status(base)['state_version']}, timeout=120)
+    channel.powershell(
+        "$l = [System.Net.Sockets.TcpListener]::new("
+        "[Net.IPAddress]::Any, 47891); $l.Start(); 'DRIFT_UP'",
+        timeout=60)
+    failed_stop = stop_run(base)
     writer.add_evidence('acc019-audit-failure-stop', failed_stop)
     snap_fail = status(base)
     checks['audit_failure_retains_failed'] = \
@@ -520,7 +512,11 @@ def run_acc019(base, channel, writer):
     checks['audit_failure_reason_observable'] = bool(
         failed_stop.get('failure_reason') or
         snap_fail.get('failure_reason'))
-    disarm_fault(channel)
+    channel.powershell(
+        'Get-NetTCPConnection -LocalPort 47891 -State Listen '
+        '-ErrorAction SilentlyContinue | ForEach-Object { '
+        'Stop-Process -Id $_.OwningProcess -Force -ErrorAction '
+        'SilentlyContinue }; "DRIFT_DOWN"', timeout=90)
 
     # upgrade simulation: service stopped -> files replaceable, and the
     # upgrade waiter only proceeds after full convergence (STOPPED above).

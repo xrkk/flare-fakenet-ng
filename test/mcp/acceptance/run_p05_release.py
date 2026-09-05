@@ -150,29 +150,23 @@ class ReleaseGate:
     # -- one normal round --------------------------------------------------
 
     def config_lock_probe(self, index, during_run):
-        """CHK-010: prove the activity lock state each round."""
-        name = 'lockprobe-%d.ini' % index
-        version = call(self.base, 'get_status')['state_version']
-        created = call(self.base, 'create_config',
-                       {'name': name, 'content': VALID_INI,
-                        'command_id': unique_command('lp%d-c' % index),
-                        'expected_state_version': version}, timeout=60)
+        """CHK-010: prove the ACTIVE config's activity lock state."""
+        active = (call(self.base, 'get_status', controller=None)
+                  .get('config_identity') or {}).get('name')
+        if not active:
+            return 'no_active_config'
         version = status(self.base)['state_version']
-        new_name = name + ('.held' if during_run else '.free')
-        payload = call(self.base, 'rename_config',
-                       {'name': name, 'new_name': new_name,
-                        'expected_sha256': sha_of(VALID_INI),
-                        'command_id': unique_command('lp%d-r' % index),
-                        'expected_state_version': version}, timeout=60)
-        outcome = 'config_in_use' if during_run else (
-            'released' if payload.get('error') is None
-            else (payload.get('error') or {}).get('code', 'error'))
-        call(self.base, 'delete_config',
-             {'name': new_name, 'expected_sha256': sha_of(VALID_INI),
-              'command_id': unique_command('lp%d-d' % index),
-              'expected_state_version': status(self.base)['state_version']},
-             timeout=60)
-        return outcome
+        payload = call(self.base, 'edit_config',
+                       {'name': active, 'content': VALID_INI,
+                        'expected_sha256': 'probe-wrong-sha',
+                        'command_id': unique_command('lp%d-e' % index),
+                        'expected_state_version': version}, timeout=30)
+        code = (payload.get('error') or {}).get('code', '')
+        if during_run:
+            return 'config_in_use' if code == 'config_in_use' else code
+        # after stop: the active config is no longer locked; the edit
+        # should fail on sha mismatch (version_conflict), NOT config_in_use
+        return 'released' if code != 'config_in_use' else code
 
     def run_normal_round(self, index, config_name):
         record = {'round': index, 'config': config_name,
