@@ -273,13 +273,13 @@ def run_acc015(base, channel, writer):
     test_content = 'FakeNet-NG-MCP band export test %s' % time.time()
     ps_cmd = (
         "$c = '%s'; " % test_content +
-        "[IO.File]::WriteAllText('C:\\Program Files\\FakeNet-NG-MCP\\band-test.txt', $c); "
-        "$h = (Get-FileHash 'C:\\Program Files\\FakeNet-NG-MCP\\band-test.txt' "
+        "[IO.File]::WriteAllText('C:\\Progra~1\\FakeNet-NG-MCP\\band-test.txt', $c); "
+        "$h = (Get-FileHash 'C:\\Progra~1\\FakeNet-NG-MCP\\band-test.txt' "
         "-Algorithm SHA256).Hash.ToLower(); "
         "Invoke-WebRequest -Uri 'http://192.168.204.1:8079/band' "
-        "-Method Put -InFile 'C:\\Program Files\\FakeNet-NG-MCP\\band-test.txt' "
+        "-Method Put -InFile 'C:\\Progra~1\\FakeNet-NG-MCP\\band-test.txt' "
         "-UseBasicParsing | Out-Null; "
-        "'SENT||C:\\Program Files\\FakeNet-NG-MCP\\band-test.txt||' + $h")
+        "'SENT||C:\\Progra~1\\FakeNet-NG-MCP\\band-test.txt||' + $h")
     pick = channel.powershell(ps_cmd, timeout=180)
     writer.add_evidence('acc015-band-export', pick)
     serve_thread.join(timeout=30)
@@ -515,10 +515,10 @@ def run_acc019(base, channel, writer, args=None):
     # upgrade simulation: service stopped -> files replaceable, and the
     # upgrade waiter only proceeds after full convergence (STOPPED above).
     upgrade = channel.powershell(
-        "Copy-Item 'C:\\Program Files\\FakeNet-NG-MCP\\candidate\\fakenetng-mcp.exe' "
-        "'C:\\Program Files\\FakeNet-NG-MCP\\candidate\\fakenetng-mcp.exe.upgrade-probe' "
+        "Copy-Item 'C:\\Progra~1\\FakeNet-NG-MCP\\candidate\\fakenetng-mcp.exe' "
+        "'C:\\Progra~1\\FakeNet-NG-MCP\\candidate\\fakenetng-mcp.exe.upgrade-probe' "
         '-Force; "REPLACED"; '
-        "Remove-Item 'C:\\Program Files\\FakeNet-NG-MCP\\candidate\\"
+        "Remove-Item 'C:\\Progra~1\\FakeNet-NG-MCP\\candidate\\"
         "fakenetng-mcp.exe.upgrade-probe' -Force", timeout=60)
     checks['upgrade_replace_after_stopped'] = 'REPLACED' in \
         upgrade['output']

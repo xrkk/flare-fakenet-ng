@@ -108,13 +108,13 @@ def _deploy_with_server(args, channel, writer, vm_dir, serve_root, package,
         'Get-Process fakenetng-mcp -ErrorAction SilentlyContinue | '
         'Stop-Process -Force; Start-Sleep 2; "STOPPED"', timeout=120)
     with PackageServer(serve_root) as server:
-        remote_zip = ('$d\\%s.zip' % args.candidate_id)
+        remote_zip = 'C:\\Progra~1\\FakeNet-NG-MCP\\%s.zip' % args.candidate_id
         url = '%s/%s' % (server.base_url,
                          urllib.request.quote(package.name))
         download = channel.powershell(
             "[Net.ServicePointManager]::SecurityProtocol='Tls12'; "
-            "$d = 'C:\\Program Files\\FakeNet-NG-MCP'; "
-            'New-Item -ItemType Directory -Force -Path $d | '
+            'New-Item -ItemType Directory -Force -Path '
+            'C:\\Progra~1\\FakeNet-NG-MCP | '
             'Out-Null; '
             "Invoke-WebRequest -Uri '%s' -OutFile '%s'; "
             '(Get-FileHash \'%s\' -Algorithm SHA256).Hash.ToLower()' % (
@@ -530,7 +530,7 @@ def main():
                         default='http://192.168.204.149:28787/mcp')
     parser.add_argument('--controller-uuid')
     parser.add_argument('--vm-package-dir',
-                        default='C:\\Program Files\\FakeNet-NG-MCP')
+                        default='C:\\Progra~1\\FakeNet-NG-MCP')
     parser.add_argument('--extra-exclude-port', action='append',
                         default=[], type=int)
     parser.add_argument('--run-firewall-round', action='store_true')

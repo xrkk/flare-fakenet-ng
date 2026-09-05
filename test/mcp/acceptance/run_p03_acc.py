@@ -147,7 +147,7 @@ def run_acc001(base, channel, writer, args=None):
     # Second service instance attempt: starting the exe manually must exit 3
     second = channel.powershell(
         "$p = Start-Process -FilePath "
-        "'C:\\Program Files\\FakeNet-NG-MCP\\candidate\\fakenetng-mcp.exe' "
+        "'C:\\Progra~1\\FakeNet-NG-MCP\\candidate\\fakenetng-mcp.exe' "
         "-ArgumentList 'debug' -PassThru -WindowStyle Hidden; "
         '$p.WaitForExit(); $p.ExitCode', timeout=120)
     writer.add_evidence('acc001-second-instance', second)
@@ -700,10 +700,10 @@ def run_acc008(base, channel, writer):
 
     # (6) deliverables carry no banned DB/framework engines.
     listing = channel.powershell(
-        "Get-ChildItem -Recurse 'C:\\Program Files\\FakeNet-NG-MCP\\candidate\\_internal' "
+        "Get-ChildItem -Recurse 'C:\\Progra~1\\FakeNet-NG-MCP\\candidate\\_internal' "
         '-Filter *.pyc | Measure-Object | Select-Object -ExpandProperty '
         'Count; Get-ChildItem '
-        "'C:\\Program Files\\FakeNet-NG-MCP\\candidate\\_internal' | "
+        "'C:\\Progra~1\\FakeNet-NG-MCP\\candidate\\_internal' | "
         'Where-Object {$_.Name -match "sqlite|dbm"} | Measure-Object | '
         'Select-Object -ExpandProperty Count', timeout=120)
     writer.add_evidence('acc008-framework-scan', listing)
