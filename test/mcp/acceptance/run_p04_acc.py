@@ -144,20 +144,25 @@ def run_acc014(base, channel, writer):
          'event_log.txt'} <= names)
 
     # (3) full-field + hash verification of every manifest on the guest.
+    # Incident manifests carry the P04 collector schema (item/result/
+    # size/sha256 — record 035, mirrored by test_incident_manifest_schema);
+    # only 'ok' entries have a file to hash, named by the entry's item.
     verify = channel.powershell(
         "$out = @(); Get-ChildItem -Recurse (Join-Path $env:ProgramData "
         "'FakeNet-NG-MCP\\artifacts') -Filter manifest.json | "
         'ForEach-Object { $m = Get-Content $_.FullName -Raw | '
         'ConvertFrom-Json; $items = $m.entries; $bad = 0; $hashed = 0; '
-        'foreach ($it in $items) { $req = @("path","type","size",'
-        '"complete","sha256"); foreach ($k in $req) { '
+        'foreach ($it in $items) { $req = @("item","result","size",'
+        '"sha256"); foreach ($k in $req) { '
         'if (-not ($it.PSObject.Properties.Name -contains $k)) { $bad++ } }; '
-        '$f = Join-Path $_.DirectoryName $it.path; '
-        'if (Test-Path $f) { $hashed++; $h = (Get-FileHash $f '
-        '-Algorithm SHA256).Hash.ToLower(); '
-        'if ($h -ne $it.sha256.ToLower()) { $bad++ } } else { $bad++ } }; '
+        'if ($it.result -eq "ok") { $f = Join-Path $_.DirectoryName '
+        '$it.item; '
+        'if (Test-Path $f) { $hashed++; $h = (Get-FileHash $f -Algorithm '
+        'SHA256).Hash.ToLower(); if ($h -ne $it.sha256.ToLower()) { '
+        '$bad++ }; if ((Get-Item $f).Length -ne [int64]$it.size) { '
+        '$bad++ } } else { $bad++ } } }; '
         "$out += [PSCustomObject]@{manifest=$_.FullName; entries=$items.Count; "
-        "bad=$bad; hashed=$hashed} }; $out | ConvertTo-Json -Compress",
+        'bad=$bad; hashed=$hashed} }; $out | ConvertTo-Json -Compress',
         timeout=180)
     writer.add_evidence('acc014-manifest-verify', verify)
     try:
@@ -169,9 +174,9 @@ def run_acc014(base, channel, writer):
     rows = [r for r in rows if isinstance(r, dict)]
     checks['manifests_full_fields'] = checks['manifest_present'] and \
         checks['basic_layer_coverage']
-    checks['manifest_hashes_match'] = all(
-        int(row.get('bad', 1)) == 0 and int(row.get('hashed', 0)) >=
-        int(row.get('entries', 0)) for row in rows)
+    checks['manifest_hashes_match'] = bool(rows) and all(
+        int(row.get('bad', 1)) == 0 and int(row.get('hashed', 0)) >= 1
+        for row in rows)
 
     # (4) dump escalation: the exception-signature class must carry a dump
     # artifact (comsvcs MiniDump) or the collector's bounded dump attempt
