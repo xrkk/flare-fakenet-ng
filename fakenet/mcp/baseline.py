@@ -52,14 +52,12 @@ def _normalize(section, value):
         keep = []
         for line in text.splitlines():
             parts = line.split()
-            if len(parts) >= 4:
-                state = parts[3].upper()
-                # TCP: only LISTENING sockets are attributable listeners
-                # UDP: has no state column; keep the proto/local pair
-                if state == 'LISTENING':
-                    keep.append(' '.join(parts[:3]))
-                elif parts[0].upper().startswith('UDP'):
-                    keep.append(' '.join(parts[:2]))  # proto/local
+            if len(parts) >= 4 and parts[3].upper() == 'LISTENING':
+                # TCP LISTENING only: FakeNet-NG's attributable listeners.
+                # UDP has no state column and system UDP sockets fluctuate
+                # on snapshots with extra services (r51 evidence: Snapshot
+                # 185's Velociraptor deps caused false-positive diffs).
+                keep.append(' '.join(parts[:3]))
         return '\n'.join(sorted(set(keep)))
     if section == 'services':
         keep = []
