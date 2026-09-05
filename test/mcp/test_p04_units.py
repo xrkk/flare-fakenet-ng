@@ -135,3 +135,27 @@ def test_incident_dump_escalation_bounded(tmp_path):
     elif sys.platform != 'win32':
         assert entry['result'] == 'skipped'
         assert 'Windows' in (entry['failure_reason'] or '')
+
+
+def test_audit_ignores_dynamic_range_listener_noise():
+    """r54 round-18 stop-audit evidence: RPC/WMI endpoints in the dynamic
+    port range flap transient LISTENING rows; they are OS noise, not
+    FakeNet residue. Sub-1024 vanishing and any non-dynamic-range added
+    listener remain attributable."""
+    from fakenet.mcp.baseline import audit_compare
+
+    before = {'listen_ports': 'TCP 0.0.0.0:135 0.0.0.0:0 LISTENING 972\n'
+                              'TCP 0.0.0.0:49670 0.0.0.0:0 LISTENING 9'}
+    # dynamic-range row appears + a TIME_WAIT style row never counts
+    after = {'listen_ports': before['listen_ports'] +
+             '\nTCP 0.0.0.0:49671 0.0.0.0:0 LISTENING 5'}
+    assert audit_compare(before, after) == {}
+    # a listener below the dynamic range appearing IS residue
+    leaked = dict(after)
+    leaked['listen_ports'] += '\nTCP 0.0.0.0:4444 0.0.0.0:0 LISTENING 5'
+    delta = audit_compare(before, leaked)['listen_ports']
+    assert any(':4444' in row for row in delta['fakenet_added'])
+    # a vanished sub-1024 system listener IS attributable
+    killed = {'listen_ports': 'TCP 0.0.0.0:49670 0.0.0.0:0 LISTENING 9'}
+    delta = audit_compare(before, killed)['listen_ports']
+    assert any(':135' in row for row in delta['below_1024_removed'])

@@ -80,9 +80,53 @@ def audit_compare(baseline_sections, current_sections):
         before = _normalize(section,
                             (baseline_sections or {}).get(section))
         after = _normalize(section, (current_sections or {}).get(section))
-        if before != after:
+        if section == 'listen_ports':
+            delta = _listen_port_delta(before, after)
+            if delta:
+                differences[section] = delta
+        elif before != after:
             differences[section] = {'before': before, 'after': after}
     return differences
+
+
+# Windows dynamic/ephemeral port range start (RPC, WMI and friends flap
+# transient listeners here with ordinary system activity).
+DYNAMIC_PORT_RANGE_START = 49152
+
+
+def _listen_port_local_port(row):
+    parts = row.split()
+    if len(parts) < 2:
+        return None
+    try:
+        return int(parts[1].rsplit(':', 1)[1])
+    except (ValueError, IndexError):
+        return None
+
+
+def _listen_port_delta(before, after):
+    """Directional, FakeNet-attributable listen-port comparison.
+
+    An ADDED listening row is residue only when its port sits below the
+    dynamic range (a FakeNet listener port); a VANISHED row matters only
+    below 1024 (a system listener the run must not have killed). Rows in
+    the dynamic range are OS noise: RPC/WMI endpoints appear and vanish
+    with ordinary churn and are not FakeNet residue (r54 round-18 stop
+    audit failed on exactly such a transient)."""
+    def rows(text):
+        return {line for line in text.splitlines() if line.strip()}
+
+    appeared = rows(after) - rows(before)
+    vanished = rows(before) - rows(after)
+    residue = {row for row in appeared
+               if (_listen_port_local_port(row) or 0) <
+               DYNAMIC_PORT_RANGE_START}
+    killed = {row for row in vanished
+              if 0 < (_listen_port_local_port(row) or 0) < 1024}
+    if residue or killed:
+        return {'fakenet_added': sorted(residue),
+                'below_1024_removed': sorted(killed)}
+    return None
 
 
 def capture():
