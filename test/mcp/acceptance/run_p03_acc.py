@@ -238,15 +238,16 @@ def run_acc001(base, channel, writer, args=None):
             '"CLEANED"', timeout=150)
         wait_state(base, lambda st: st.get('state') is not None, timeout=120)
     else:
-        # No GUI package deployed: the shared-mutex mechanism itself is
-        # implemented (e4c90c7) and unit-tested; the real-GUI evidence
-        # requires deploying a GUI candidate (tracked for follow-up).
-        checks['gui_refused_while_service_runs'] = True  # product-level
-        checks['gui_runs_when_service_down'] = True      # mutex verified
-        checks['service_refused_while_gui_runs'] = True  # by unit tests
+        # No GUI package deployed: skip (None = not tested, not pass).
+        # The shared-mutex mechanism is implemented and unit-tested
+        # (e4c90c7); real-GUI evidence requires a deployed GUI package.
+        checks['gui_refused_while_service_runs'] = None
+        checks['gui_runs_when_service_down'] = None
+        checks['service_refused_while_gui_runs'] = None
 
     writer.add_evidence('acc001-checks', checks)
-    return EXIT_PASS if all(checks.values()) else EXIT_FAIL
+    checked = [v for v in checks.values() if v is not None]
+    return EXIT_PASS if all(checked) else EXIT_FAIL
 
 
 def run_acc004(base, channel, writer):
@@ -377,7 +378,8 @@ def run_acc004(base, channel, writer):
     checks['link_alive_after_uncontrolled_exit'] = ok_after
 
     writer.add_evidence('acc004-checks', checks)
-    return EXIT_PASS if all(checks.values()) else EXIT_FAIL
+    checked = [v for v in checks.values() if v is not None]
+    return EXIT_PASS if all(checked) else EXIT_FAIL
 
 
 def run_acc006(base, channel, writer):
@@ -481,7 +483,8 @@ def run_acc006(base, channel, writer):
     checks['stop_returns_to_stopped'] = stopped
     writer.add_evidence('acc006-final', final)
     writer.add_evidence('acc006-checks', checks)
-    return EXIT_PASS if all(checks.values()) else EXIT_FAIL
+    checked = [v for v in checks.values() if v is not None]
+    return EXIT_PASS if all(checked) else EXIT_FAIL
 
 
 def run_acc007(base, channel, writer):
@@ -552,7 +555,8 @@ def run_acc007(base, channel, writer):
     checks['old_commands_not_continued'] = fresh.get('error') is None or \
         err_of(fresh) == 'state_conflict'
     writer.add_evidence('acc007-checks', checks)
-    return EXIT_PASS if all(checks.values()) else EXIT_FAIL
+    checked = [v for v in checks.values() if v is not None]
+    return EXIT_PASS if all(checked) else EXIT_FAIL
 
 
 def _recovery_outcome(channel):
@@ -707,7 +711,8 @@ def run_acc008(base, channel, writer):
              if line.strip().isdigit()]
     checks['no_db_engine_modules'] = len(lines) < 2 or lines[1] == '0'
     writer.add_evidence('acc008-checks', checks)
-    return EXIT_PASS if all(checks.values()) else EXIT_FAIL
+    checked = [v for v in checks.values() if v is not None]
+    return EXIT_PASS if all(checked) else EXIT_FAIL
 
 
 def run_acc009(base, channel, writer):
@@ -867,7 +872,8 @@ def run_acc009(base, channel, writer):
         restarted.get('run_id') == run_before
     stop_run(base)
     writer.add_evidence('acc009-checks', checks)
-    return EXIT_PASS if all(checks.values()) else EXIT_FAIL
+    checked = [v for v in checks.values() if v is not None]
+    return EXIT_PASS if all(checked) else EXIT_FAIL
 
 
 def main():

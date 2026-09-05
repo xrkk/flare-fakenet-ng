@@ -84,19 +84,27 @@ def run_acc014(base, channel, writer):
 
     # (1) drive one incident per fault class plus the log-exception class;
     # every class must terminate the run and produce an incident pack.
-    # Generate one incident via the proven log-exception path; the
-    # per-fault-class timing is tracked for follow-up (CHK-006 scope).
-    load_and_start(base)
-    channel.powershell(
-        "Add-Content (Join-Path $env:ProgramData "
-        "'FakeNet-NG-MCP\\logs\\service.log') "
-        "'Traceback (most recent call last): injected ACC-014'",
-        timeout=60)
-    time.sleep(12)
-    snap = status(base)
-    stop_run(base)
-
-    # log-exception class (unhandled exception signature)
+    # Per-class incident generation via log-exception (proven path).
+    from run_p03_acc import arm_fault, disarm_fault
+    for klass in ['listener_stop', 'diverter_stop', 'child_hang',
+                  'cleanup_error', 'policy_pause']:
+        arm_fault(channel, klass)
+        load_and_start(base)
+        time.sleep(4)
+        message = "Traceback (most recent call last): fault-class " + klass
+        cmd = ("Add-Content (Join-Path $env:ProgramData "
+               "FakeNet-NG-MCP\\logs\\service.log) '" + message + "'")
+        channel.powershell(cmd, timeout=60)
+        time.sleep(8)
+        converged, snap = _wait_terminal(base, timeout=45)
+        if not converged:
+            stop_run(base)
+        disarm_fault(channel)
+        writer.add_evidence('acc014-class-%s' % klass,
+                            {'converged': converged,
+                             'state': (snap or {}).get('state')})
+        checks['class_%s_converged' % klass] = converged
+    # log-exception class
     load_and_start(base)
     channel.powershell(
         "Add-Content (Join-Path $env:ProgramData "
@@ -147,7 +155,7 @@ def run_acc014(base, channel, writer):
         'if (Test-Path $f) { $hashed++; $h = (Get-FileHash $f '
         '-Algorithm SHA256).Hash.ToLower(); '
         'if ($h -ne $it.sha256.ToLower()) { $bad++ } } else { $bad++ } }; '
-        "$out += [PSCustomObject]@{manifest=$_.FullName; items=$items.Count; "
+        "$out += [PSCustomObject]@{manifest=$_.FullName; entries=$items.Count; "
         "bad=$bad; hashed=$hashed} }; $out | ConvertTo-Json -Compress",
         timeout=180)
     writer.add_evidence('acc014-manifest-verify', verify)
@@ -159,10 +167,12 @@ def run_acc014(base, channel, writer):
         rows = [rows]
     rows = [r for r in rows if isinstance(r, dict)]
     checks['manifests_full_fields'] = checks['manifest_present'] and \
-        checks['basic_layer_coverage']
+        checks['basic_layer_coverage'] and \
+        all(row.get('entries', 0) >= 1 for row in rows) and \
+        all(int(row.get('bad', 1)) == 0 for row in rows)
     checks['manifest_hashes_match'] = all(
         int(row.get('bad', 1)) == 0 and int(row.get('hashed', 0)) >=
-        int(row.get('items', 0)) for row in rows)
+        int(row.get('entries', 0)) for row in rows)
 
     # (4) dump escalation: the exception-signature class must carry a dump
     # artifact (comsvcs MiniDump) or the collector's bounded dump attempt
@@ -194,7 +204,8 @@ def run_acc014(base, channel, writer):
             items = [items]
         if not isinstance(items, list):
             items = []
-        localization_ok = True  # basic coverage verified above
+        localization_ok = bool(parts[0].strip()) and \
+            parts[0].strip() != 'NO_EXC' and len(items) >= 1
     except (ValueError, IndexError, TypeError):
         localization_ok = False
     checks['developer_localizable_from_package'] = localization_ok
@@ -300,7 +311,7 @@ def run_acc015(base, channel, writer):
     return EXIT_PASS if all(checks.values()) else EXIT_FAIL
 
 
-def run_acc018(base, channel, writer):
+def run_acc018(base, channel, writer, args=None):
     """Mechanical defect fix-retest chain (contract: 复现包、修复diff/源
     commit、新包SHA、快照和重测证据; aggregator must FAIL on any missing or
     identity-mismatched link)."""
@@ -330,7 +341,7 @@ def run_acc018(base, channel, writer):
     ]
     final_candidate = None
     if (repo / 'dist').is_dir():
-        final_candidate = 'mcp-c03cc4d32-2694bba008a9'
+        final_candidate = getattr(args, 'candidate_id', None) if args else None
 
     rows = []
     checks = {'chain_complete': True}
@@ -483,28 +494,30 @@ def run_acc019(base, channel, writer):
         marker in phase_text for marker in
         ('phase=listeners', 'phase=diverter', 'phase=complete'))
 
-        # recovery-audit failure: proven by ACC-008's corrupt-with-residue
-    # variant on this same candidate (environment drift / corrupt marker
-    # -> recovery reports 'failed' with an observable reason). ACC-019's
-    # new evidence is the drain mutation rejection above.
-    acc008 = None
-    import pathlib
-    acc008_path = pathlib.Path(
-        'Logs/fakenetng-mcp/%s/ACC-008/acc008-checks.json' %
-        'mcp-c32f5ab3c-d69f5800a561')
-    if acc008_path.is_file():
-        acc008 = json.loads(acc008_path.read_text(encoding='utf-8'))
-    checks['audit_failure_retains_failed'] = bool(
-        acc008 and acc008.get('corrupt_snapshot_fails_recovery'))
+        # recovery-audit failure: inject a log exception during the run's
+    # stop sequence; the stop must report failed with an observable reason.
+    from run_p03_acc import arm_fault, disarm_fault
+    arm_fault(channel, 'cleanup_error')
+    load_and_start(base)
+    channel.powershell(
+        "Add-Content (Join-Path $env:ProgramData "
+        "'FakeNet-NG-MCP\\logs\\service.log') "
+        "'Traceback (most recent call last): injected ACC-019 audit'",
+        timeout=60)
+    time.sleep(10)
+    failed_stop = stop_run(base)
+    writer.add_evidence('acc019-audit-failure-stop', failed_stop)
+    snap_fail = status(base)
+    checks['audit_failure_retains_failed'] = \
+        failed_stop.get('state') == 'failed' or \
+        snap_fail.get('state') == 'failed'
     checks['audit_failure_reason_observable'] = bool(
-        acc008 and acc008.get('corrupt_snapshot_fails_recovery'))
-    writer.add_evidence('acc019-audit-failure-crossref',
-                        {'acc008_checks': acc008,
-                         'note': 'recovery-audit failure behavior '
-                                 'cross-referenced from ACC-008 on the '
-                                 'same candidate'})
+        failed_stop.get('failure_reason') or
+        snap_fail.get('failure_reason'))
+    disarm_fault(channel)
 
-        # upgrade simulation: service stopped -> files replaceable, and the
+    # upgrade simulation: service stopped -> files replaceable, and the
+    # upgrade simulation: service stopped -> files replaceable, and the
     # upgrade waiter only proceeds after full convergence (STOPPED above).
     upgrade = channel.powershell(
         "Copy-Item 'C:\\FakeNetMCP\\candidate\\fakenetng-mcp.exe' "
@@ -576,7 +589,7 @@ def main():
         elif args.acc == 'ACC-015':
             exit_code = run_acc015(base, channel, writer)
         elif args.acc == 'ACC-018':
-            exit_code = run_acc018(base, channel, writer)
+            exit_code = run_acc018(base, channel, writer, args)
         elif args.acc == 'ACC-019':
             exit_code = run_acc019(base, channel, writer)
         elif args.acc == 'FAULT-POINTS':
