@@ -530,7 +530,8 @@ def main():
     gate = ReleaseGate(args)
     exit_code = EXIT_TOOL_ERROR
     try:
-        if gate.channel.computer_name() != 'DESKTOP-3FI41GR':
+        probed_identity = gate.channel.computer_name()
+        if probed_identity != 'DESKTOP-3FI41GR':
             writer.blocker = {'reason': 'unexpected VM'}
             exit_code = EXIT_BLOCKED
         elif args.mode == 'normal':
@@ -556,8 +557,8 @@ def main():
         package_sha256=args.package_sha256,
         requirements_blob=args.requirements_blob,
         master_plan_blob=args.master_plan_blob,
-        environment_identity='%s | config=%s' % (args.vm_identity,
-                                                 args.config_identity),
+        environment_identity='%s@%s | config=%s' % (
+            args.vm_identity, probed_identity, args.config_identity),
         status=status_word)
     print('%s: %s' % (args.mode, status_word))
     return exit_code

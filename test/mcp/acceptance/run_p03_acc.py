@@ -310,6 +310,9 @@ def acc004_s1_takeover(base, channel, writer):
 def acc004_s2_init_failure(base, channel, writer):
     """Initialization failure: invalid config refused (fail closed)."""
     checks = {}
+    ok, timeline = continuous_probe(base, 4)
+    writer.add_evidence('acc004-s2-init-probe', timeline)
+    checks['link_alive_during_init_failure'] = ok
     version = status(base)['state_version']
     created = call(base, 'create_config',
                    {'name': 'broken-%s.ini' % unique_command('x')[:8],
@@ -380,6 +383,9 @@ def acc004_s4_invalid_protection(base, channel, writer):
                             loaded.get('state_version', version)},
                        timeout=120)
     writer.add_evidence('acc004-s4-invalid-filter-start', started_bad)
+    ok, timeline = continuous_probe(base, 4)
+    writer.add_evidence('acc004-s4-survival-probe', timeline)
+    checks['link_alive_during_invalid_protection'] = ok
     checks['invalid_protection_fails_closed'] = (
         started_bad.get('error') is not None or
         started_bad.get('state') == 'failed')
@@ -425,7 +431,8 @@ def acc004_s6_uncontrolled_exit(base, channel, writer):
                             timeout=150)
     writer.add_evidence('acc004-s6-uncontrolled-restart', snap or {})
     checks['endpoint_restored_after_uncontrolled_exit'] = back
-    ok_after, _ = continuous_probe(base, 4)
+    ok_after, timeline = continuous_probe(base, 4)
+    writer.add_evidence('acc004-s6-uncontrolled-exit-probe', timeline)
     checks['link_alive_after_uncontrolled_exit'] = ok_after
     return checks
 
@@ -1038,8 +1045,8 @@ def main():
         package_sha256=args.package_sha256,
         requirements_blob=args.requirements_blob,
         master_plan_blob=args.master_plan_blob,
-        environment_identity='%s | config=%s' % (args.vm_identity,
-                                                 args.config_identity),
+        environment_identity='%s@%s | config=%s' % (
+            args.vm_identity, identity, args.config_identity),
         status=status_word)
     print('%s: %s (evidence: %s)' % (args.acc, status_word, out_dir))
     return exit_code

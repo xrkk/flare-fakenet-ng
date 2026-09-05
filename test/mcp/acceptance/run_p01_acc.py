@@ -555,6 +555,7 @@ def main():
     package_sha = args.package_sha256
     try:
         identity = channel.computer_name()
+        guest_identity = identity
         writer.action('vm-identity', '%s @ %s' % (identity, args.vm_identity))
         if 'DESKTOP-3FI41GR' not in identity:
             writer.blocker = {'reason': 'unexpected VM identity: %s' % identity}

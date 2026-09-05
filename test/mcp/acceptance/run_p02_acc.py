@@ -608,8 +608,8 @@ def main():
         package_sha256=args.package_sha256,
         requirements_blob=args.requirements_blob,
         master_plan_blob=args.master_plan_blob,
-        environment_identity='%s | config=%s' % (args.vm_identity,
-                                                 args.config_identity),
+        environment_identity='%s@%s | config=%s' % (
+            args.vm_identity, identity, args.config_identity),
         status=status_word)
     print('%s: %s (evidence: %s)' % (args.acc, status_word, out_dir))
     return exit_code
