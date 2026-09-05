@@ -274,17 +274,18 @@ def run_acc015(base, channel, writer):
     serve_thread.start()
     time.sleep(0.5)
 
-    pick = channel.powershell(
-        "$m = Get-ChildItem -Recurse (Join-Path $env:ProgramData "
-        "'FakeNet-NG-MCP\\artifacts') -Filter manifest.json | "
-        'Select-Object -First 1; if (-not $m) { "NONE" } else { '
-        '$f = Get-ChildItem $m.DirectoryName -File | Where-Object '
-        '$_.Length -gt 0 -and $_.Length -lt 2000000 | '
-        'Select-Object -First 1; if (-not $f) { "NONE" } else { '
-        '$h = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower(); '
-        'Invoke-WebRequest -Uri "http://192.168.204.1:8079/band" '
-        '-Method Put -InFile $f.FullName -UseBasicParsing | Out-Null; '
-        '"SENT||$($f.FullName)||$h" } }', timeout=180)
+    # Create a deterministic test file on the guest for the transfer.
+    test_content = 'FakeNet-NG-MCP band export test %s' % time.time()
+    ps_cmd = (
+        "$c = '%s'; " % test_content +
+        "[IO.File]::WriteAllText('C:\\FakeNetMCP\\band-test.txt', $c); "
+        "$h = (Get-FileHash 'C:\\FakeNetMCP\\band-test.txt' "
+        "-Algorithm SHA256).Hash.ToLower(); "
+        "Invoke-WebRequest -Uri 'http://192.168.204.1:8079/band' "
+        "-Method Put -InFile 'C:\\FakeNetMCP\\band-test.txt' "
+        "-UseBasicParsing | Out-Null; "
+        "'SENT||C:\\FakeNetMCP\\band-test.txt||' + $h")
+    pick = channel.powershell(ps_cmd, timeout=180)
     writer.add_evidence('acc015-band-export', pick)
     serve_thread.join(timeout=30)
     server.server_close()
