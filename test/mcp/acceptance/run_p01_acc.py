@@ -131,8 +131,9 @@ def _deploy_with_server(args, channel, writer, vm_dir, serve_root, package,
         writer.add_evidence('vm-expand', expand)
 
         extra_ports = list(getattr(args, 'extra_exclude_port', []) or [])
-        extra_ps = ''.join(
-            ' -ExtraExcludePort %d' % port for port in extra_ports)
+        extra_ps = (' -ExtraExcludePort %s' %
+                    ','.join(str(port) for port in extra_ports)
+                    if extra_ports else '')
         install = channel.powershell(
             "powershell -ExecutionPolicy Bypass -File '%s\\"
             'install-fakenetng-mcp.ps1\' -ListenIp %s -Port %d '
