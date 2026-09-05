@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import (EXIT_BLOCKED, EXIT_FAIL, EXIT_PASS,  # noqa: E402
                      EXIT_TOOL_ERROR, EvidenceWriter, Win10VmChannel)
-from run_p02_acc import call  # noqa: E402
+from run_p02_acc import VALID_INI, call, sha_of, status  # noqa: E402
 from run_p03_acc import continuous_probe, stop_run, unique_command, wait_state  # noqa: E402
 sys.path.insert(0, str(REPO_ROOT))
 from fakenet.mcp.faultinject import FAULTS  # noqa: E402
@@ -183,6 +183,13 @@ class ReleaseGate:
         if record['final_state'] != 'stopped':
             record['failure'] = 'final=%s' % record['final_state']
             return record
+        record['lock_released_after_stop'] = \
+            self.config_lock_probe(index, during_run=False) == 'released'
+        if not record.get('lock_held_during_run') or not \
+                record.get('lock_released_after_stop'):
+            record['failure'] = 'config lock lifecycle violated: %s/%s' % (
+                record.get('lock_held_during_run'),
+                record.get('lock_released_after_stop'))
         diff = self.audit_diff(before)
         record['audit_diff'] = {k: True for k in diff} if diff else {}
         if diff:
@@ -245,6 +252,11 @@ class ReleaseGate:
                 record['failure'] = 'final=%s reason=%s' % (
                     record['final_state'], record['failure_reason'])
                 return record
+            record['lock_released_after_stop'] = \
+                self.config_lock_probe(index + 9000, during_run=False) == \
+                'released'
+            if not record.get('lock_released_after_stop'):
+                record['failure'] = 'config lock leaked after fault stop'
             diff = self.audit_diff(before)
             record['audit_diff'] = sorted(diff) if diff else []
             if diff:
@@ -340,6 +352,10 @@ class ReleaseGate:
         checks['identity'] = self.channel.computer_name() == \
             'DESKTOP-3FI41GR'
         checks['vm'] = self.vm_continuity()
+        # CHK-010: the final audit compares against the PRE-START baseline
+        # (captured before the run, not after) so any drift the start/stop
+        # cycle itself introduces is actually visible.
+        before = self.capture_sections()
         version = call(self.base, 'get_status')['state_version']
         loaded = call(self.base, 'load_config',
                       {'name': DEFAULT_INI,
@@ -357,9 +373,6 @@ class ReleaseGate:
         checks['healthy'] = healthy
         ok, _ = continuous_probe(self.base, 4)
         checks['link_during_run'] = ok
-        before = None  # health run above used default config; audit from
-        # the stop in run_normal semantics: capture now
-        before = self.capture_sections()
         stopped = stop_run(self.base)
         checks['stopped'] = stopped.get('state') == 'stopped'
         diff = self.audit_diff(before)
@@ -374,12 +387,35 @@ class ReleaseGate:
 
     def mode_summary(self, writer):
         acc_index = {}
+        integrity_failures = {}
+        allowed_labels = {
+            'ACC-001', 'ACC-002', 'ACC-003', 'ACC-004', 'ACC-005',
+            'ACC-006', 'ACC-007', 'ACC-008', 'ACC-009', 'ACC-009-PRE',
+            'ACC-010', 'ACC-011', 'ACC-012', 'ACC-013', 'ACC-014',
+            'ACC-015', 'ACC-016', 'ACC-017', 'ACC-018', 'ACC-019',
+            'FAULT-POINTS', 'P01-ENTRY',
+            # declared aggregate label (summary mode's own record; not an
+            # ACC pass claim and never counted as one).
+            'ACC-017-SUMMARY'}
         for path in sorted(self.root.glob('*/result.json')):
             try:
                 result = json.loads(path.read_text(encoding='utf-8'))
             except ValueError:
                 continue
-            acc_index[result.get('acc_id')] = {
+            label = result.get('acc_id')
+            if label not in allowed_labels:
+                integrity_failures[str(path)] = 'undeclared label %r' % label
+                continue
+            # CHK-011: identity must be COMPLETE per record — a null
+            # package_sha256 or a foreign candidate string must not
+            # aggregate into a green manifest.
+            for field in ('package_sha256', 'source_commit',
+                          'candidate_id'):
+                value = result.get(field)
+                if not value or not isinstance(value, str):
+                    integrity_failures[str(path)] = \
+                        '%s missing/null in %s' % (field, label)
+            acc_index[label] = {
                 'status': result.get('status'),
                 'candidate_id': result.get('candidate_id')}
         expected = ['ACC-001', 'ACC-002', 'ACC-003', 'ACC-005',
@@ -393,11 +429,22 @@ class ReleaseGate:
                           if row['candidate_id'] != self.cid}
         failures = {acc: row['status'] for acc, row in acc_index.items()
                     if row['status'] != 'pass'}
+        os_version = None
+        os_probe = self.release / 'final-checks.json'
+        if os_probe.is_file():
+            try:
+                os_version = json.loads(
+                    os_probe.read_text(encoding='utf-8')).get(
+                        'tested_windows_version')
+            except ValueError:
+                os_version = None
         manifest = {
             'schema': 'fakenet.mcp-release-manifest.v1',
             'candidate_id': self.cid,
             'source_commit': self.args.source_commit,
             'package_sha256': self.args.package_sha256,
+            'os_version': os_version,
+            'record_integrity_failures': integrity_failures,
             'acc_index': acc_index,
             'missing': missing,
             'wrong_candidate': list(wrong_candidate),
@@ -415,7 +462,8 @@ class ReleaseGate:
             'missing': missing, 'failures': list(failures),
             'wrong_candidate': list(wrong_candidate)})
         return EXIT_PASS if not missing and not failures \
-            and not wrong_candidate else EXIT_FAIL
+            and not wrong_candidate and not integrity_failures \
+            else EXIT_FAIL
 
 
 def main():

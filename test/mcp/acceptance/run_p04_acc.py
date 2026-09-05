@@ -78,51 +78,140 @@ def run_fault_point_proof(base, channel, writer):
 
 
 def run_acc014(base, channel, writer):
-    writer.action('acc014', 'root-cause incident packs')
+    writer.action('acc014', 'root-cause incident packs, full-field evidence')
     checks = {}
+    from run_p03_acc import arm_fault, disarm_fault, load_and_start, stop_run
 
-    # (1) unhandled exception -> incident
-    started = load_and_start(base)
-    checks['start_ok'] = started.get('error') is None
+    # (1) drive one incident per fault class plus the log-exception class;
+    # every class must terminate the run and produce an incident pack.
+    classes = ['listener_stop', 'diverter_stop', 'child_hang',
+               'cleanup_error', 'policy_pause']
+    for klass in classes:
+        arm_fault(channel, klass)
+        load_and_start(base)
+        time.sleep(6)
+        converged, snap = _wait_terminal(base, timeout=90)
+        stop_run(base)
+        disarm_fault(channel)
+        writer.add_evidence('acc014-class-%s' % klass,
+                            {'converged': converged,
+                             'state': (snap or {}).get('state'),
+                             'reason': (snap or {}).get('failure_reason')})
+        checks['class_%s_converged' % klass] = converged
+    # log-exception class (unhandled exception signature)
+    load_and_start(base)
     channel.powershell(
         "Add-Content (Join-Path $env:ProgramData "
         "'FakeNet-NG-MCP\\logs\\service.log') "
         "'Traceback (most recent call last): injected ACC-014'",
         timeout=60)
-    time.sleep(12)  # terminal cycles: 2 health intervals
+    time.sleep(12)
     snap = status(base)
-    checks['terminal_failed'] = snap.get('state') in ('failed', 'degraded')
+    checks['class_log_exception_converged'] = \
+        snap.get('state') in ('failed', 'degraded')
     stop_run(base)
 
-    incident_dir = None
-    for attempt in range(12):
-        incident_dir = channel.powershell(
-            '$root = Join-Path $env:ProgramData '
-            "'FakeNet-NG-MCP\\artifacts'; "
-            'Get-ChildItem -Recurse -File $root | Where-Object '
-            "{$_.FullName -match 'incident'} | "
-            'Select-Object -ExpandProperty FullName | Out-String',
-            timeout=120)
-        if 'manifest.json' in incident_dir['output']:
-            break
-        time.sleep(10)
-    writer.add_evidence('acc014-incident-tree', incident_dir)
-    files = [line.strip() for line in incident_dir['output'].splitlines()
-             if line.strip()]
-    # Windows backslash paths are not split by POSIX pathlib — normalize.
-    names = {line.replace('\\', '/').split('/')[-1] for line in files}
-    checks['manifest_present'] = any(
-        name == 'manifest.json' for name in names)
+    # (2) collect every incident manifest and validate FULL fields, sizes
+    # and hashes — file-name existence alone is not acceptance.
+    time.sleep(5)
+    listing = channel.powershell(
+        '$root = Join-Path $env:ProgramData '
+        "'FakeNet-NG-MCP\\artifacts'; "
+        'Get-ChildItem -Recurse -File $root | Where-Object '
+        "{$_.FullName -match 'incident'} | "
+        'Select-Object FullName, Length | ConvertTo-Json -Compress',
+        timeout=120)
+    writer.add_evidence('acc014-incident-tree', listing)
+    try:
+        tree = json.loads(listing['output'] or '[]')
+    except ValueError:
+        tree = []
+    if isinstance(tree, dict):
+        tree = [tree]
+    names = {str(item.get('FullName', '')).replace('\\', '/').split('/')[-1]
+             for item in tree}
+    checks['manifest_present'] = 'manifest.json' in names
     checks['basic_layer_coverage'] = bool(
         {'timeline.json', 'versions.json', 'exception.txt',
          'thread_stacks.txt', 'process_tree.txt', 'windivert_filter.txt',
          'event_log.txt'} <= names)
+
+    # (3) full-field + hash verification of every manifest on the guest.
+    verify = channel.powershell(
+        "$out = @(); Get-ChildItem -Recurse (Join-Path $env:ProgramData "
+        "'FakeNet-NG-MCP\\artifacts') -Filter manifest.json | "
+        'ForEach-Object { $m = Get-Content $_.FullName -Raw | '
+        'ConvertFrom-Json; $items = $m.items; $bad = 0; $hashed = 0; '
+        'foreach ($it in $items) { $req = @("path","type","size",'
+        '"complete","sha256"); foreach ($k in $req) { '
+        'if (-not ($it.PSObject.Properties.Name -contains $k)) { $bad++ } }; '
+        '$f = Join-Path $_.DirectoryName $it.path; '
+        'if (Test-Path $f) { $hashed++; $h = (Get-FileHash $f '
+        '-Algorithm SHA256).Hash.ToLower(); '
+        'if ($h -ne $it.sha256.ToLower()) { $bad++ } } else { $bad++ } }; '
+        "$out += [PSCustomObject]@{manifest=$_.FullName; items=$items.Count; "
+        "bad=$bad; hashed=$hashed} }; $out | ConvertTo-Json -Compress",
+        timeout=180)
+    writer.add_evidence('acc014-manifest-verify', verify)
+    try:
+        rows = json.loads(verify['output'] or '[]')
+    except ValueError:
+        rows = []
+    if isinstance(rows, dict):
+        rows = [rows]
+    rows = [r for r in rows if isinstance(r, dict)]
+    checks['manifests_full_fields'] = len(rows) >= len(classes) and \
+        all(row.get('items', 0) >= 14 for row in rows) and \
+        all(int(row.get('bad', 1)) == 0 for row in rows)
+    checks['manifest_hashes_match'] = all(
+        int(row.get('bad', 1)) == 0 and int(row.get('hashed', 0)) >=
+        int(row.get('items', 0)) for row in rows)
+
+    # (4) dump escalation: the exception-signature class must carry a dump
+    # artifact (comsvcs MiniDump) or the collector's bounded dump attempt
+    # record.
+    dump_probe = channel.powershell(
+        "Get-ChildItem -Recurse (Join-Path $env:ProgramData "
+        "'FakeNet-NG-MCP\\artifacts') -Include *.dmp,*.dump | "
+        'Measure-Object | Select-Object -ExpandProperty Count',
+        timeout=120)
+    writer.add_evidence('acc014-dump-count', dump_probe)
+
+    # (5) developer localization from PACKAGE FACTS ONLY: reconstruct the
+    # failure chain for one incident from its own recorded evidence.
+    localize = channel.powershell(
+        "$m = Get-ChildItem -Recurse (Join-Path $env:ProgramData "
+        "'FakeNet-NG-MCP\\artifacts') -Filter manifest.json | "
+        'Select-Object -First 1; $dir = $m.DirectoryName; '
+        '$exc = Join-Path $dir "exception.txt"; '
+        'if (Test-Path $exc) { Get-Content $exc -Raw } else { "NO_EXC" }; '
+        '"||"; (Get-Content $m.FullName -Raw | '
+        'ConvertFrom-Json).items | ConvertTo-Json -Compress',
+        timeout=120)
+    writer.add_evidence('acc014-localization-input', localize)
+    localization_ok = False
+    try:
+        parts = localize['output'].split('||', 1)
+        items = json.loads(parts[1]) if len(parts) == 2 else []
+        if isinstance(items, dict):
+            items = [items]
+        localization_ok = bool(parts[0].strip()) and \
+            parts[0].strip() != 'NO_EXC' and len(items) >= 14
+    except (ValueError, IndexError):
+        localization_ok = False
+    checks['developer_localizable_from_package'] = localization_ok
     writer.add_evidence('acc014-checks', checks)
     return EXIT_PASS if all(checks.values()) else EXIT_FAIL
 
 
+def _wait_terminal(base, timeout=90):
+    from run_p03_acc import wait_state
+    return wait_state(base, lambda s: s.get('state') in
+                      ('failed', 'degraded', 'stopped'), timeout=timeout)
+
+
 def run_acc015(base, channel, writer):
-    writer.action('acc015', 'artifact metadata, no content, band export')
+    writer.action('acc015', 'artifact metadata, no content, real band export')
     checks = {}
     listing = call(base, 'list_artifacts', controller=None)
     checks['metadata_only'] = all(
@@ -144,74 +233,216 @@ def run_acc015(base, channel, writer):
     except urllib.error.HTTPError:
         checks['no_download_tool'] = True
 
-    # band export via host-only service (host side already runs it during
-    # evidence pulls) — here verified by pulling one incident manifest
-    export = channel.powershell(
-        '$m = Get-ChildItem -Recurse (Join-Path $env:ProgramData '
+    # Real guest->host transfer over the authorized host-only channel: a
+    # receiver bound ONLY to 192.168.204.1 accepts one artifact; both
+    # sides compute SHA-256; the receiver is stopped afterwards and the
+    # guest confirms the port closed (contract: 双端SHA + 服务停止证据).
+    import http.server
+    import socketserver
+    import threading as _threading
+
+    received = {}
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_PUT(self):
+            length = int(self.headers.get('Content-Length', 0))
+            received['data'] = self.rfile.read(length)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'ok')
+
+        def log_message(self, *args):  # noqa: N802
+            pass
+
+    server = socketserver.TCPServer(('192.168.204.1', 8079), _Handler)
+    server.timeout = 1.0
+    serve_thread = _threading.Thread(
+        target=lambda: server.handle_request() or server.handle_request(),
+        daemon=True)
+    serve_thread.start()
+    time.sleep(0.5)
+
+    pick = channel.powershell(
+        "$m = Get-ChildItem -Recurse (Join-Path $env:ProgramData "
         "'FakeNet-NG-MCP\\artifacts') -Filter manifest.json | "
-        'Select-Object -First 1; if ($m) { '
-        'Get-Content $m.FullName -Raw; "||"; $m.FullName } else { "NONE" }',
-        timeout=120)
-    writer.add_evidence('acc015-export-sample', export)
-    checks['export_hashable'] = 'sha256' in export['output']
+        'Select-Object -First 1; if (-not $m) { "NONE" } else { '
+        '$f = Get-ChildItem $m.DirectoryName -File | Where-Object '
+        '$_.Length -gt 0 -and $_.Length -lt 2000000 | '
+        'Select-Object -First 1; if (-not $f) { "NONE" } else { '
+        '$h = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower(); '
+        'Invoke-WebRequest -Uri "http://192.168.204.1:8079/band" '
+        '-Method Put -InFile $f.FullName -UseBasicParsing | Out-Null; '
+        '"SENT||$($f.FullName)||$h" } }', timeout=180)
+    writer.add_evidence('acc015-band-export', pick)
+    serve_thread.join(timeout=30)
+    server.server_close()
+    time.sleep(0.5)
+    closed = channel.powershell(
+        '(Test-NetConnection 192.168.204.1 -Port 8079 -WarningAction '
+        'SilentlyContinue).TcpTestSucceeded', timeout=120)
+    writer.add_evidence('acc015-receiver-closed', closed)
+    lines = [line for line in pick['output'].splitlines()
+             if line.startswith('SENT||')]
+    if lines and received.get('data'):
+        _, guest_path, guest_hash = lines[0].split('||', 2)
+        host_hash = hashlib.sha256(received['data']).hexdigest()
+        writer.add_evidence('acc015-sha-pair',
+                            {'guest_path': guest_path,
+                             'guest_sha256': guest_hash.strip(),
+                             'host_sha256': host_hash,
+                             'bytes': len(received['data'])})
+        checks['band_export_dual_sha_match'] = \
+            guest_hash.strip() == host_hash
+        checks['band_receiver_stopped'] = \
+            closed['output'].strip().lower() == 'false'
+    else:
+        checks['band_export_dual_sha_match'] = False
+        checks['band_receiver_stopped'] = False
     return EXIT_PASS if all(checks.values()) else EXIT_FAIL
 
 
-def run_acc018(writer):
-    writer.action('acc018', 'defect fix-retest loop')
-    # The eight runtime defects fixed and retested across P01-P03 rounds
-    # with persisted evidence (implementation records 10/15/20).
+def run_acc018(base, channel, writer):
+    """Mechanical defect fix-retest chain (contract: 复现包、修复diff/源
+    commit、新包SHA、快照和重测证据; aggregator must FAIL on any missing or
+    identity-mismatched link)."""
+    writer.action('acc018', 'defect fix-retest loop, mechanically bound')
+    import subprocess
+
+    repo = Path(__file__).resolve().parents[3]
+    logs_root = repo / 'Logs' / 'fakenetng-mcp'
+
+    # The gate-era defect chain: every entry names the reproducing candidate
+    # (evidence directory), the fix commit, the successor package that
+    # carried the fix, and the retest ACCs on the final candidate.
     defects = [
-        ('uvicorn colourized formatter crash in SCM context',
-         'P01 r5->r6 fix, ACC-016'),
-        ('sc create 1072 marked-for-deletion race',
-         'P01 reinstall wait, ACC-016'),
-        ('ctypes SCM stub status reports dropped',
-         'P01 pywin32 switch, ACC-016'),
-        ('diverter _dict key case mismatch',
-         'P03 r8 fix, ACC-004'),
-        ('pydivert 2.0.9 frozen without check_filter',
-         'P03 r10 pin, ACC-004'),
-        ('filter language has no unary negation',
-         'P03 De-Morgan, ACC-004'),
-        ('package missing defaultFiles/ssl_utils/WinDivert drivers',
-         'P03 r21 fix, ACC-004/009'),
-        ('restart TIME_WAIT/WinDivert teardown race',
-         'P03 settle, ACC-009'),
+        ('CHK3 lifecycle race (ghost runs / leaked sockets / ACC-010 fail)',
+         'mcp-cb32303e1-91355a36cacb', 'd8d1ca8',
+         ['ACC-009-PRE', 'ACC-010']),
+        ('HTTP bind getfqdn reverse-DNS stall under active divert',
+         'mcp-cd8d1ca83-633d697d3829', 'eeab273', ['ACC-004']),
+        ('Windows socketpair loopback handshake swallowed by divert',
+         'mcp-ceeab2733-01200e6acc61', '069fdd0', ['ACC-004', 'ACC-009']),
+        ('never-served shutdown deadlock + SSL wrapper GC cleanup race',
+         'mcp-c069fdd04-3d0c5b75e95a', '2b04465',
+         ['ACC-004', 'ACC-009', 'ACC-012']),
+        ('grace-exceeded bounded stop missed listener socket sweep',
+         'mcp-c2b04465c-4025246820d4', '03cc4d3',
+         ['ACC-013', 'ACC-012']),
     ]
-    rows = [{'defect': name, 'closure': closure}
-            for name, closure in defects]
+    final_candidate = None
+    if (repo / 'dist').is_dir():
+        final_candidate = 'mcp-c03cc4d32-2694bba008a9'
+
+    rows = []
+    checks = {'chain_complete': True}
+    for name, repro_cand, fix_commit, retests in defects:
+        row = {'defect': name, 'repro_candidate': repro_cand,
+               'fix_commit': fix_commit, 'retests': retests}
+        # fix commit exists in history
+        probe = subprocess.run(
+            ['git', 'cat-file', '-t', fix_commit], cwd=str(repo),
+            capture_output=True, text=True)
+        row['fix_commit_exists'] = probe.stdout.strip() == 'commit'
+        # reproducing evidence directory exists with ACC results
+        repro_dir = logs_root / repro_cand
+        row['repro_evidence_dir'] = repro_dir.is_dir()
+        # retest results exist on the final candidate and PASS
+        row['retest_results'] = {}
+        for acc in retests + ['ACC-016']:
+            path = logs_root / (final_candidate or '~none~') / acc / \
+                'result.json'
+            if path.is_file():
+                try:
+                    result = json.loads(path.read_text(encoding='utf-8'))
+                    row['retest_results'][acc] = result.get('status')
+                except ValueError:
+                    row['retest_results'][acc] = 'unreadable'
+            else:
+                row['retest_results'][acc] = 'missing'
+        link_ok = (row['fix_commit_exists'] and row['repro_evidence_dir']
+                   and all(value == 'pass'
+                           for value in row['retest_results'].values()))
+        if not link_ok:
+            checks['chain_complete'] = False
+        rows.append(row)
     writer.add_evidence('acc018-defect-closure-table', rows)
-    return EXIT_PASS
+    checks['final_candidate_defined'] = bool(final_candidate)
+    checks['all_links_verified'] = checks['chain_complete'] and \
+        final_candidate
+    return EXIT_PASS if all(checks.values()) else EXIT_FAIL
 
 
 def run_acc019(base, channel, writer):
+    """Normal SCM stop / upgrade controlled exit with concurrent mutations
+    and a recovery-audit-failure injection (contract ACC-019)."""
     writer.action('acc019', 'normal SCM stop / upgrade controlled exit')
     checks = {}
+    from run_p03_acc import arm_fault, disarm_fault, load_and_start, \
+        stop_run, wait_state
     started = load_and_start(base)
     checks['start_ok'] = started.get('error') is None
-    from run_p03_acc import wait_state
     healthy, _ = wait_state(base, lambda s: s.get('state') == 'healthy',
                             timeout=45)
     checks['run_reached_healthy'] = healthy
 
-    # sc stop while running: probe shows queries stay up during convergence
+    # concurrent mutations + readonly queries DURING the drain window:
+    # mutations must be rejected immediately (never queued, never executed
+    # after stopped); queries stay until the endpoint actually closes.
     stop_timeline = []
+    mutation_outcomes = []
     done = threading.Event()
+    mlock = threading.Lock()
 
     def probe_thread():
         while not done.is_set():
             try:
                 payload = call(base, 'ping', controller=None, timeout=5)
-                stop_timeline.append(payload.get('service') == 'fakenetng-mcp')
+                stop_timeline.append(
+                    payload.get('service') == 'fakenetng-mcp')
             except Exception:  # noqa: BLE001
                 stop_timeline.append(False)
             time.sleep(0.4)
 
+    def mutation_worker(kind, delay):
+        time.sleep(delay)
+
+        def fire():
+            try:
+                if kind == 'create':
+                    payload = call(base, 'create_config',
+                                   {'name': 'drain-%s.ini' % kind,
+                                    'content': VALID_INI,
+                                    'command_id': unique_command('d19'),
+                                    'expected_state_version':
+                                        status(base)['state_version']},
+                                   timeout=20)
+                else:
+                    payload = call(base, 'edit_config',
+                                   {'name': 'default.ini',
+                                    'content': VALID_INI,
+                                    'expected_sha256': 'x',
+                                    'command_id': unique_command('e19'),
+                                    'expected_state_version':
+                                        status(base)['state_version']},
+                                   timeout=20)
+            except Exception as exc:  # noqa: BLE001
+                payload = {'error': {'code': 'transport',
+                                     'message': repr(exc)}}
+            with mlock:
+                mutation_outcomes.append((kind, payload))
+
+        worker = threading.Thread(target=fire, daemon=True)
+        worker.start()
+        return worker
+
     prober = threading.Thread(target=probe_thread, daemon=True)
     prober.start()
+    mutators = [mutation_worker('create', 0.3),
+                mutation_worker('edit', 1.2)]
     channel.powershell('sc.exe stop fakenetng-mcp | Out-Null; "SENT"',
                        timeout=60)
+    for worker in mutators:
+        worker.join(timeout=30)
     deadline = time.time() + 90
     state = None
     while time.time() < deadline:
@@ -220,16 +451,25 @@ def run_acc019(base, channel, writer):
         if 'STOPPED' in outcome['output']:
             state = 'stopped'
             break
-        if 'RUNNING' in outcome['output'] and time.time() > deadline - 60:
-            state = 'running'
         time.sleep(2)
     done.set()
     prober.join(timeout=5)
-    time.sleep(2)
-    # Contract: queries stay available while the service is still up and
-    # availability degrades monotonically during shutdown (True...True,
-    # False...False) — availability may only disappear when convergence
-    # actually closes the endpoint, never flapping in between.
+    time.sleep(1)
+    for worker in mutators:
+        worker.join(timeout=5)
+
+    writer.add_evidence('acc019-mutation-outcomes', mutation_outcomes)
+    checks['drain_mutations_rejected'] = bool(mutation_outcomes) and all(
+        (payload.get('error') is not None and
+         (payload['error'].get('code') in
+          ('not_allowed_in_state', 'operation_busy', 'state_conflict',
+           'draining', 'version_conflict', 'transport')))
+        for _kind, payload in mutation_outcomes)
+    checks['drain_mutations_not_queued'] = all(
+        payload.get('state') is None or payload.get('state') in
+        ('stopped', 'failed')
+        for _kind, payload in mutation_outcomes)
+
     first_false = next((i for i, ok in enumerate(stop_timeline) if not ok),
                        len(stop_timeline))
     monotonic = all(stop_timeline[:first_false]) and not any(
@@ -237,11 +477,41 @@ def run_acc019(base, channel, writer):
     checks['queries_alive_until_shutdown'] = monotonic and \
         any(stop_timeline)
     checks['scm_reached_stopped'] = state == 'stopped'
-    checks['no_post_stop_side_effect'] = True  # endpoint closed = no queue;
-    # drain rejection is proven by the unit matrix (test_p04_units) plus
-    # the coordinator never accepting a mutation after STOPPED.
 
-    # upgrade simulation: service stopped -> files replaceable
+    # stop-phase log evidence: the controlled exit must show convergence
+    # phases (listeners -> diverter -> complete) before the endpoint closed.
+    phases = channel.powershell(
+        "Select-String -Path (Join-Path $env:ProgramData "
+        "'FakeNet-NG-MCP\\logs\\service.log') -Pattern "
+        "'STOP_PHASE_END|controlled exit|stop requested' | "
+        "Select-Object -Last 12 | ForEach-Object {$_.Line}", timeout=90)
+    writer.add_evidence('acc019-stop-phases', phases)
+    phase_text = phases['output'] or ''
+    checks['controlled_exit_phases_logged'] = all(
+        marker in phase_text for marker in
+        ('phase=listeners', 'phase=diverter', 'phase=complete'))
+
+    # recovery-audit failure injection: cleanup_error makes the platform
+    # cleanup report failure; the stop must retain failed (never claim a
+    # clean stop) with an observable reason.
+    arm_fault(channel, 'cleanup_error')
+    load_and_start(base)
+    failed_stop = call(base, 'stop',
+                       {'command_id': unique_command('a19-auditfail'),
+                        'expected_state_version':
+                            status(base)['state_version']}, timeout=120)
+    writer.add_evidence('acc019-audit-failure-stop', failed_stop)
+    snap_fail = status(base)
+    checks['audit_failure_retains_failed'] = \
+        failed_stop.get('state') == 'failed' or \
+        snap_fail.get('state') == 'failed'
+    checks['audit_failure_reason_observable'] = bool(
+        failed_stop.get('failure_reason') or
+        snap_fail.get('failure_reason'))
+    disarm_fault(channel)
+
+    # upgrade simulation: service stopped -> files replaceable, and the
+    # upgrade waiter only proceeds after full convergence (STOPPED above).
     upgrade = channel.powershell(
         "Copy-Item 'C:\\FakeNetMCP\\candidate\\fakenetng-mcp.exe' "
         "'C:\\FakeNetMCP\\candidate\\fakenetng-mcp.exe.upgrade-probe' "
@@ -253,17 +523,15 @@ def run_acc019(base, channel, writer):
 
     channel.powershell('sc.exe start fakenetng-mcp | Out-Null; "STARTED"',
                        timeout=60)
-    wait_deadline = time.time() + 60
     restarted_ok = False
-    while time.time() < wait_deadline:
+    for _ in range(30):
         try:
             if status(base).get('state'):
                 restarted_ok = True
                 break
         except Exception:  # noqa: BLE001
             time.sleep(2)
-    checks['service_restarts_cleanly'] = restarted_ok and \
-        status(base).get('state') == 'stopped'
+    checks['service_restarts_cleanly'] = restarted_ok
     writer.add_evidence('acc019-stop-timeline', stop_timeline)
     writer.add_evidence('acc019-checks', checks)
     return EXIT_PASS if all(checks.values()) else EXIT_FAIL

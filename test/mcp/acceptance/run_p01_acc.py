@@ -93,8 +93,8 @@ def deploy_package(args, channel, writer, vm_dir):
     serve_root = Path(tempfile.mkdtemp(prefix='mcp-acc-transfer-'))
     shutil.copy2(package, serve_root / package.name)
     try:
-        _deploy_with_server(args, channel, writer, vm_dir, serve_root,
-                            package, package_sha)
+        return _deploy_with_server(args, channel, writer, vm_dir, serve_root,
+                                   package, package_sha)
     finally:
         shutil.rmtree(serve_root, ignore_errors=True)
 

@@ -110,6 +110,23 @@ def _wait_healthy(base, timeout=90):
     return False, last
 
 
+
+def stop_run(base, attempts=3):
+    result = None
+    for attempt in range(attempts):
+        try:
+            version = status(base)['state_version']
+        except Exception:  # noqa: BLE001
+            return result
+        result = call(base, 'stop',
+                      {'command_id': unique_command('p02-stop'),
+                       'expected_state_version': version}, timeout=90)
+        code = (result.get('error') or {}).get('code')
+        if code is None or result.get('state') == 'stopped':
+            return result
+        time.sleep(1.0)
+    return result
+
 def run_acc005(base, writer):
     writer.action('acc005', 'read-only zero side effects + negative matrix')
     before = status(base)
@@ -294,6 +311,82 @@ def run_acc011(base, channel, writer):
         post_restart.get('replayed') is not True and
         post_restart.get('error') is None)
 
+    # CHK-004: lifecycle + config MIXED concurrency — concurrent start,
+    # stop, edit and load against the same state must serialize without
+    # queueing, overwriting or duplicated execution (contract: "并发/重复/
+    # 过期生命周期和配置请求").
+    version = status(base)['state_version']
+    probe_name = 'mix-%s.ini' % run_token
+    call(base, 'create_config',
+         {'name': probe_name, 'content': VALID_INI,
+          'command_id': unique_command('mix-c'),
+          'expected_state_version': version})
+    mixed = []
+    mlock = threading.Lock()
+
+    def lifecycle_worker(kind):
+        try:
+            if kind == 'load':
+                payload = call(base, 'load_config',
+                               {'name': probe_name,
+                                'command_id': unique_command('mix-l'),
+                                'expected_state_version':
+                                    status(base)['state_version']},
+                               timeout=90)
+            elif kind == 'start':
+                payload = call(base, 'start',
+                               {'command_id': unique_command('mix-s'),
+                                'expected_state_version':
+                                    status(base)['state_version']},
+                               timeout=120)
+            elif kind == 'edit':
+                payload = call(base, 'edit_config',
+                               {'name': probe_name, 'content': OTHER_INI,
+                                'expected_sha256': sha_of(VALID_INI),
+                                'command_id': unique_command('mix-e'),
+                                'expected_state_version':
+                                    status(base)['state_version']})
+            else:  # stop
+                payload = call(base, 'stop',
+                               {'command_id': unique_command('mix-p'),
+                                'expected_state_version':
+                                    status(base)['state_version']},
+                               timeout=120)
+        except Exception as exc:  # noqa: BLE001
+            payload = {'error': {'code': 'transport', 'message': repr(exc)}}
+        with mlock:
+            mixed.append((kind, payload))
+
+    workers = [threading.Thread(target=lifecycle_worker, args=(k,))
+               for k in ('load', 'start', 'edit', 'stop')]
+    for thread in workers:
+        thread.start()
+    for thread in workers:
+        thread.join()
+    writer.add_evidence('acc011-mixed-concurrency',
+                        {k: p for k, p in mixed})
+    codes = {kind: (payload.get('error') or {}).get('code')
+             for kind, payload in mixed}
+    # every request resolves to a definite terminal outcome: success or a
+    # STRUCTURED state/lock conflict — never a transport error, a hang or
+    # an indeterminate mutation.
+    checks['mixed_no_transport_errors'] = all(
+        code != 'transport' for code in codes.values())
+    checks['mixed_structured_outcomes'] = all(
+        code is None or code in ('state_conflict', 'config_in_use',
+                                 'not_allowed_in_state', 'operation_busy',
+                                 'version_conflict')
+        for code in codes.values())
+    # cleanup: whatever combination won, drive the service back to a
+    # stopped state with a runnable config for later ACCs.
+    stop_run(base)
+    snap = status(base)
+    call(base, 'load_config',
+         {'name': 'default.ini', 'command_id': unique_command('mix-rs'),
+          'expected_state_version': snap['state_version']})
+    checks['service_consistent_after_mixed'] = \
+        status(base).get('state') in ('stopped', 'failed')
+
     writer.add_evidence('acc011-checks', checks)
     writer.observe(json.dumps(checks, ensure_ascii=False))
     return EXIT_PASS if all(checks.values()) else EXIT_FAIL
@@ -304,13 +397,17 @@ def run_acc009_pre(base, channel, writer):
     version = status(base)['state_version']
     checks = {}
 
-    # builtin read-only
+    # builtin read-only: with the CORRECT current sha and version the only
+    # acceptable refusal reason is the builtin protection itself (a
+    # version_conflict/config_not_found here would mask the protection).
+    builtin = call(base, 'read_config', {'name': 'default.ini'},
+                   controller=None)
     checks['builtin_edit_denied'] = err_of(call(
         base, 'edit_config',
         {'name': 'default.ini', 'content': OTHER_INI,
-         'expected_sha256': 'x', 'command_id': unique_command('bi'),
-         'expected_state_version': version})) in (
-            'builtin_readonly', 'version_conflict', 'config_not_found')
+         'expected_sha256': builtin.get('sha256', 'x'),
+         'command_id': unique_command('bi'),
+         'expected_state_version': version})) == 'builtin_readonly'
     # custom full management
     created = call(base, 'create_config',
                    {'name': 'mgmt.ini', 'content': VALID_INI,
