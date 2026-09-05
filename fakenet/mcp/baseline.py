@@ -37,9 +37,24 @@ def _normalize(section, value):
         return ''
     text = str(value)
     if section == 'routes':
-        lines = [line.strip() for line in text.splitlines()
-                 if line.strip() and not line.startswith('=')]
-        return '\n'.join(sorted(set(lines)))
+        keep = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or line.startswith('='):
+                continue
+            parts = stripped.split()
+            if len(parts) == 5:
+                # Route row: drop the auto-tuned interface METRIC column.
+                # Windows re-evaluates metrics around adapter
+                # reconfiguration (FakeNet's per-run DNS set/restore
+                # cycles the adapter), so the metric flaps between the
+                # pre-start baseline and the stop audit without any
+                # actual routing change (r54 round-18 / r56 round-2
+                # stop audits failed on exactly this).
+                keep.append(' '.join(parts[:4]))
+            else:
+                keep.append(stripped)
+        return '\n'.join(sorted(set(keep)))
     if section == 'dns_servers':
         return '\n'.join(sorted(set(
             line.strip() for line in text.splitlines() if line.strip())))

@@ -159,3 +159,24 @@ def test_audit_ignores_dynamic_range_listener_noise():
     killed = {'listen_ports': 'TCP 0.0.0.0:49670 0.0.0.0:0 LISTENING 9'}
     delta = audit_compare(before, killed)['listen_ports']
     assert any(':135' in row for row in delta['below_1024_removed'])
+
+
+def test_audit_routes_ignore_metric_flap():
+    """Windows auto-tunes interface metrics around adapter
+    reconfiguration; a metric-only change between baseline and audit is
+    not a routing change (r54 round-18 / r56 round-2 evidence). A real
+    route addition still flags."""
+    from fakenet.mcp.baseline import audit_compare
+
+    before = {'routes': '0.0.0.0 0.0.0.0 192.168.204.1 '
+                        '192.168.204.149 281\n'
+                        '192.168.204.0 255.255.255.0 On-link '
+                        '192.168.204.149 281'}
+    after = {'routes': '0.0.0.0 0.0.0.0 192.168.204.1 '
+                       '192.168.204.149 286\n'
+                       '192.168.204.0 255.255.255.0 On-link '
+                       '192.168.204.149 281'}
+    assert audit_compare(before, after) == {}
+    hijack = {'routes': after['routes'] +
+              '\n8.8.8.8 255.255.255.255 On-link 192.168.204.149 281'}
+    assert 'routes' in audit_compare(after, hijack)
