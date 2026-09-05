@@ -212,32 +212,69 @@ class IncidentCollector:
             self._record('userdump.dmp', 'skipped',
                          failure_reason='no escalation condition')
             return
+        if os.name != 'nt':
+            self._record('userdump.dmp', 'skipped',
+                         failure_reason='in-process dump requires Windows')
+            return
         if self._timed_out() or self._quota_exceeded():
             self._record('userdump.dmp', 'failed',
                          failure_reason='budget/quota exhausted')
             return
         self.root.mkdir(parents=True, exist_ok=True)
         target = self.root / 'userdump.dmp'
-        # Windows Error Reporting LocalDumps-style user dump without new
-        # dependencies: comsvcs.dll MiniDump via rundll32.
-        pid = context.get('dump_target_pid') or os.getpid()
-        command = ['rundll32', 'C:\\Windows\\System32\\comsvcs.dll,',
-                   'MiniDump', str(pid), str(target),
-                   '0']  # MiniDumpNormal
+        # In-process MiniDumpWriteDump (dbghelp) without new dependencies.
+        # The former cross-process route (rundll32 comsvcs MiniDump) wraps
+        # the API in its own thread-suspension layer; racing concurrent
+        # thread churn it can leave target threads suspended forever,
+        # wedging the control link while the SCM still shows Running
+        # (r52 ACC-004-S3 repro: three threads stuck in Suspended). The
+        # in-process call keeps the suspension bracket entirely inside
+        # MiniDumpWriteDump — the pattern used by standard crash handlers.
         try:
-            completed = subprocess.run(
-                command, capture_output=True, text=True,
-                timeout=ITEM_TIMEOUT_SECONDS)
-            if target.exists() and target.stat().st_size > 0:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            dbghelp = ctypes.WinDLL('dbghelp', use_last_error=True)
+            kernel32.CreateFileW.restype = wintypes.HANDLE
+            kernel32.CreateFileW.argtypes = [
+                wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                wintypes.HANDLE]
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            dbghelp.MiniDumpWriteDump.restype = wintypes.BOOL
+            dbghelp.MiniDumpWriteDump.argtypes = [
+                wintypes.HANDLE, wintypes.DWORD, wintypes.HANDLE,
+                wintypes.DWORD, wintypes.LPVOID, wintypes.LPVOID,
+                wintypes.LPVOID]
+            generic_write = 0x40000000
+            create_always = 2
+            file_attribute_normal = 0x80
+            invalid = wintypes.HANDLE(-1).value
+            handle = kernel32.CreateFileW(
+                str(target), generic_write, 0, None, create_always,
+                file_attribute_normal, None)
+            if not handle or handle == invalid:
+                self._record('userdump.dmp', 'failed', failure_reason=(
+                    'CreateFileW error=%s' % ctypes.get_last_error()))
+                return
+            try:
+                wrote = dbghelp.MiniDumpWriteDump(
+                    kernel32.GetCurrentProcess(), os.getpid(), handle,
+                    0,  # MiniDumpNormal
+                    None, None, None)
+            finally:
+                kernel32.CloseHandle(handle)
+            size = target.stat().st_size if target.exists() else -1
+            if wrote and size > 0:
                 self._record('userdump.dmp', 'ok', dump_path=target)
             else:
                 self._record('userdump.dmp', 'failed', failure_reason=(
-                    'dump not produced rc=%s out=%r' % (
-                        completed.returncode,
-                        (completed.stdout or '')[:120])))
-        except (OSError, subprocess.TimeoutExpired) as exc:
+                    'MiniDumpWriteDump wrote=%s error=%s size=%s' % (
+                        bool(wrote), ctypes.get_last_error(), size)))
+        except Exception as exc:  # noqa: BLE001 - evidence only
             self._record('userdump.dmp', 'failed', failure_reason=repr(exc)
-
                          [:160])
 
     def _write_manifest(self, started):

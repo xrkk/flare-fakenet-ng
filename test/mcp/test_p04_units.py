@@ -111,3 +111,27 @@ def test_draining_rejects_new_mutations():
                      controller_valid=True, kind='k', describe={},
                      execute=lambda c: {})
     assert excinfo.value.code == errors.NOT_ALLOWED_IN_STATE
+
+
+def test_incident_dump_escalation_bounded(tmp_path):
+    """The escalation dump must terminate with an explicit manifest record
+    on every platform (in-process MiniDumpWriteDump; never a cross-process
+    suspension that can wedge the service)."""
+    import sys
+
+    collector = IncidentCollector(tmp_path, 'run-dump')
+    context = {'timeline': [], 'versions': {}, 'config_path': None,
+               'stdout_stderr': '', 'run_log': '', 'exception_text': 'x',
+               'final_filter': None, 'baseline_diff': {},
+               'artifact_metadata': [], 'dump_reason': 'unexplained'}
+    collector.collect(context)
+    manifest = json.loads(
+        (tmp_path / 'run-dump' / 'incident' / 'manifest.json').read_text())
+    entry = next(item for item in manifest['entries']
+                 if item['item'] == 'userdump.dmp')
+    assert entry['result'] in ('ok', 'failed', 'skipped')
+    if sys.platform == 'win32' and entry['result'] == 'ok':
+        assert entry['size'] > 0
+    elif sys.platform != 'win32':
+        assert entry['result'] == 'skipped'
+        assert 'Windows' in (entry['failure_reason'] or '')
