@@ -47,6 +47,67 @@ def test_apply_exclusion_unknown_shape_fails_closed():
             'something else entirely', '192.168.204.1', '28788')
 
 
+def test_loopback_exclusion_known_shapes():
+    from fakenet.mcp.controlfilter import apply_loopback_exclusion
+    l4 = ('(ip.DstAddr < 127.0.0.0 or ip.DstAddr > 127.255.255.255)')
+    l6 = 'ipv6.DstAddr != ::1'
+    # bare bases
+    assert apply_loopback_exclusion('outbound and ip') == \
+        'outbound and ip and %s' % l4
+    assert apply_loopback_exclusion('outbound and (ip or ipv6)') == \
+        '(outbound and ip and %s) or (outbound and ipv6 and %s)' % (l4, l6)
+    # wrapped dual + process-redirect tail keeps the inbound arm untouched
+    rebuilt = ('(outbound and (ip or ipv6)) or (inbound and ip and '
+               'ip.SrcAddr == 1.2.3.4 and ip.DstAddr == 5.6.7.8 and '
+               'ip.Protocol == 6)')
+    out = apply_loopback_exclusion(rebuilt)
+    assert out.startswith(
+        '(outbound and ip and %s) or (outbound and ipv6 and %s) or (inbound'
+        % (l4, l6))
+    # composition with a control-link-excluded filter (dual + tail)
+    composed = ('(outbound and ip and (ip.DstAddr != 192.168.204.1 or '
+                '(tcp.SrcPort != 28788 and tcp.SrcPort != 28787))) or '
+                '(outbound and ipv6) or (inbound and ip and '
+                'ip.Protocol == 6)')
+    out = apply_loopback_exclusion(composed)
+    assert out == ('(outbound and ip and (ip.DstAddr != 192.168.204.1 or '
+                   '(tcp.SrcPort != 28788 and tcp.SrcPort != 28787)) and '
+                   '%s) or (outbound and ipv6 and %s) or (inbound and ip '
+                   'and ip.Protocol == 6)' % (l4, l6))
+    # legacy family without an ipv6 arm (incl. control-link output)
+    assert apply_loopback_exclusion(
+        'outbound and ip and (ip.DstAddr != 192.168.204.1 or '
+        '(tcp.SrcPort != 28788))') == (
+        'outbound and ip and (ip.DstAddr != 192.168.204.1 or '
+        '(tcp.SrcPort != 28788)) and %s' % l4)
+    # idempotent
+    once = apply_loopback_exclusion('outbound and (ip or ipv6)')
+    assert apply_loopback_exclusion(once) == once
+
+
+def test_loopback_exclusion_unknown_shape_fails_closed():
+    from fakenet.mcp.controlfilter import apply_loopback_exclusion
+    with pytest.raises(ControlFilterError):
+        apply_loopback_exclusion('inbound and icmp')
+
+
+def test_loopback_exclusion_filter_text_is_windivert_valid():
+    from fakenet.mcp.controlfilter import apply_loopback_exclusion
+    pytest.importorskip('pydivert')
+    try:
+        from pydivert import WinDivert
+    except Exception:  # noqa: BLE001 - DLL may be absent on this host
+        pytest.skip('pydivert WinDivert DLL unavailable')
+    for shape in ('outbound and ip', 'outbound and (ip or ipv6)',
+                  '(outbound and ip and (ip.DstAddr != 192.168.204.1 or '
+                  '(tcp.SrcPort != 28788 and tcp.SrcPort != 28790))) or '
+                  '(outbound and ipv6) or (inbound and ip and '
+                  'ip.Protocol == 6)'):
+        valid, position, message = WinDivert.check_filter(
+            apply_loopback_exclusion(shape))
+        assert valid, (position, message)
+
+
 def test_clause_none_when_unset():
     assert build_control_link_exclusion_clause('', '') is None
     assert build_control_link_exclusion_clause(None, None) is None

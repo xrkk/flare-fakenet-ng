@@ -19,6 +19,11 @@ class ControlFilterError(ValueError):
 LEGACY_BASE = 'outbound and ip'
 DUAL_BASE = 'outbound and (ip or ipv6)'
 
+# DEC-008: loopback exemption clauses for the main takeover filter.
+LOOPBACK_V4_CLAUSE = ('(ip.DstAddr < 127.0.0.0 or ip.DstAddr > '
+                      '127.255.255.255)')
+LOOPBACK_V6_CLAUSE = 'ipv6.DstAddr != ::1'
+
 
 def apply_control_link_exclusion(filter_string, exclude_ip, exclude_port):
     """Append the control-link exclusion to a known main-filter shape.
@@ -56,6 +61,57 @@ def apply_control_link_exclusion(filter_string, exclude_ip, exclude_port):
             return head + filter_string[len(prefix):]
     raise ControlFilterError(
         'unrecognized main filter shape for control-link exclusion: %r'
+        % filter_string[:120])
+
+
+def apply_loopback_exclusion(filter_string):
+    """Fold the DEC-008 loopback exemption into a known main-filter shape.
+
+    Loopback traffic (IPv4 127.0.0.0/8, IPv6 ::1) never leaves the machine;
+    diverting it hijacks local IPC to FakeNet's fake services (r39
+    socketpair handshake deadlock, r40 `Diverter python.exe requested TCP
+    127.0.0.1:...` redirection logs). The exemption applies to the main
+    takeover filter only — the record-only inbound capture handle keeps
+    recording loopback packets for analysis.
+
+    WinDivert's language has no unary negation and no masked ``!=``, so the
+    IPv4 clause is the range form ``ip.DstAddr < 127.0.0.0 or
+    ip.DstAddr > 127.255.255.255`` (parenthesized; it is an OR expression)
+    and IPv6 is the plain ``ipv6.DstAddr != ::1``.
+
+    Recognized shapes are the bases the diverter produces plus every form
+    :func:`apply_control_link_exclusion` can emit (including the
+    process-redirect rebuild tails). Unknown shapes raise
+    ControlFilterError => fail closed.
+    """
+    if filter_string is None:
+        return filter_string
+    if LOOPBACK_V4_CLAUSE in filter_string:
+        return filter_string  # idempotent
+    dual = '(outbound and ip and %s) or (outbound and ipv6 and %s)' % (
+        LOOPBACK_V4_CLAUSE, LOOPBACK_V6_CLAUSE)
+    if filter_string == DUAL_BASE:
+        return dual
+    wrapped_dual = '(%s)' % DUAL_BASE
+    if filter_string.startswith(wrapped_dual):
+        return dual + filter_string[len(wrapped_dual):]
+    separator = ' or (outbound and ipv6'
+    index = filter_string.find(separator)
+    if index >= 0:
+        head = filter_string[:index]
+        rest = filter_string[index + len(' or '):]
+        if head.startswith('(') and head.endswith(')'):
+            head = '%s and %s)' % (head[:-1], LOOPBACK_V4_CLAUSE)
+        else:
+            head = '%s and %s' % (head, LOOPBACK_V4_CLAUSE)
+        marker = '(outbound and ipv6'
+        rest = (rest[:len(marker)] + ' and %s' % LOOPBACK_V6_CLAUSE +
+                rest[len(marker):])
+        return '%s or %s' % (head, rest)
+    if filter_string.startswith(LEGACY_BASE):
+        return '%s and %s' % (filter_string, LOOPBACK_V4_CLAUSE)
+    raise ControlFilterError(
+        'unrecognized main filter shape for loopback exemption: %r'
         % filter_string[:120])
 
 

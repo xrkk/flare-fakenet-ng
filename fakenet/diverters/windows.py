@@ -129,7 +129,8 @@ _REVIEWED_ROUTE_QUERY_TIMEOUT_SECONDS = 2
 _PROCESS_REDIRECT_ROUTE_QUERY_TIMEOUT_SECONDS = 10
 
 from fakenet.mcp.controlfilter import (
-    ControlFilterError, apply_control_link_exclusion)
+    ControlFilterError, apply_control_link_exclusion,
+    apply_loopback_exclusion)
 from .egresspolicy import (EgressPolicy, PolicyConfigError,
                            ReviewedPacketTuple, Verdict)
 from .processredirect import (
@@ -952,15 +953,22 @@ class Diverter(DiverterBase, WinUtilMixin):
             return process.returncode, stdout, stderr
 
     def _apply_control_link_exclusion(self):
-        """P03: apply the MCP control-link exclusion to the FINAL main
-        filter right before the handle opens, so both filter construction
-        paths (base assignment and the egress-control rebuild) are covered;
-        exclusion params present but unverifiable => fail closed."""
+        """P03/DEC-008: apply the MCP control-link exclusion and the loopback
+        exemption to the FINAL main filter right before the handle opens, so
+        both filter construction paths (base assignment and the
+        egress-control rebuild) are covered; exclusion params present but
+        unverifiable => fail closed."""
         try:
             self.filter = apply_control_link_exclusion(
                 self.filter,
                 self._dict.get('controllinkexcludeip'),
                 self._dict.get('controllinkexcludeport'))
+            # DEC-008: loopback never leaves the machine; diverting it
+            # hijacks local IPC to fake services. Applied after the
+            # control-link fold (which recognizes the base shapes) and
+            # validated by the same fail-closed check_filter below. The
+            # record-only inbound capture handle keeps recording loopback.
+            self.filter = apply_loopback_exclusion(self.filter)
         except ControlFilterError as exc:
             raise PolicyConfigError(str(exc)) from exc
         if self.filter is None:
