@@ -69,15 +69,26 @@ class Coordinator:
     # -- read-only surface -------------------------------------------------
     def snapshot(self):
         with self._lock:
-            return {
-                'state': self._state,
+            state = self._state
+            payload = {
+                'state': state,
                 'state_version': self._state_version,
                 'run_id': self._run_id,
                 'controller': self._controller,
                 'failure_reason': self._failure_reason,
                 'config_identity': self._config_identity,
-                'health': self._runner.health_detail(self._state),
             }
+        # Sample health OUTSIDE the metadata lock: health_detail takes the
+        # supervisor lock, and supervisor.stop() calls this snapshot while
+        # already holding the supervisor lock. Nesting coordinator-lock ->
+        # supervisor-lock (as the in-lock call did) inverts against that
+        # path and deadlocks the control link: the stop thread holds the
+        # supervisor lock waiting for the metadata lock while a concurrent
+        # snapshot holds the metadata lock waiting for the supervisor lock
+        # (r53 ACC-004-S3 py-spy evidence). The supervisor lock is an
+        # RLock, so the stop thread's own re-entry stays safe.
+        payload['health'] = self._runner.health_detail(state)
+        return payload
 
     def events(self, limit=None):
         with self._lock:

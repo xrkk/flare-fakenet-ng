@@ -151,3 +151,51 @@ def test_no_timers_ownership_persists():
                      controller_valid=True, kind='stop', describe={},
                      execute=lambda c: {})
     assert excinfo.value.code == errors.CONTROLLER_CONFLICT
+
+
+def test_snapshot_no_lock_inversion_deadlock():
+    """Regression (r53 ACC-004-S3 py-spy evidence): coordinator.snapshot
+    must not call runner.health_detail under the metadata lock. The stop
+    path holds the supervisor (runner) lock across its snapshot call, so
+    the old in-lock nesting produced a classic ABBA deadlock - stop held
+    the supervisor lock waiting for the metadata lock while a concurrent
+    snapshot held the metadata lock waiting for the supervisor lock, and
+    every get_status hung forever."""
+    import threading
+
+    import fakenet.mcp.coordination as coordination_mod
+
+    entered = threading.Event()  # reader reached health_detail
+    release = threading.Event()  # stop path may proceed to its snapshot
+
+    class SupervisedRunner:
+
+        def __init__(self):
+            self.lock = threading.RLock()
+
+        def health_detail(self, state):
+            entered.set()  # about to take the runner lock
+            with self.lock:  # mirrors Supervisor.health_detail
+                return {'process_alive': True}
+
+    runner = SupervisedRunner()
+    coord = coordination_mod.Coordinator(runner)
+
+    def stop_path():  # supervisor.stop: runner lock held across snapshot
+        with runner.lock:
+            release.wait(5)
+            coord.snapshot()
+
+    def reader_path():  # concurrent read (terminal-failure path)
+        coord.snapshot()
+
+    stop_thread = threading.Thread(target=stop_path, daemon=True)
+    reader_thread = threading.Thread(target=reader_path, daemon=True)
+    stop_thread.start()
+    reader_thread.start()
+    assert entered.wait(5), 'reader never reached health_detail'
+    release.set()
+    stop_thread.join(5)
+    reader_thread.join(5)
+    assert not stop_thread.is_alive() and not reader_thread.is_alive(), \
+        'coordinator.snapshot deadlocks against the runner lock'
