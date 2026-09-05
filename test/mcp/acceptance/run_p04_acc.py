@@ -325,17 +325,17 @@ def run_acc018(base, channel, writer, args=None):
     defects = [
         ('CHK3 lifecycle race (ghost runs / leaked sockets / ACC-010 fail)',
          'mcp-cb32303e1-91355a36cacb', 'd8d1ca8',
-         ['ACC-009-PRE', 'ACC-010']),
+         ['ACC-009-PRE', 'ACC-010', 'ACC-016']),
         ('HTTP bind getfqdn reverse-DNS stall under active divert',
-         'mcp-cd8d1ca83-633d697d3829', 'eeab273', ['ACC-004']),
+         'mcp-cd8d1ca83-633d697d3829', 'eeab273', ['ACC-004', 'ACC-016']),
         ('Windows socketpair loopback handshake swallowed by divert',
-         'mcp-ceeab2733-01200e6acc61', '069fdd0', ['ACC-004', 'ACC-009']),
+         'mcp-ceeab2733-01200e6acc61', '069fdd0', ['ACC-004', 'ACC-009', 'ACC-016']),
         ('never-served shutdown deadlock + SSL wrapper GC cleanup race',
          'mcp-c069fdd04-3d0c5b75e95a', '2b04465',
-         ['ACC-004', 'ACC-009', 'ACC-012']),
+         ['ACC-004', 'ACC-009', 'ACC-016']),
         ('grace-exceeded bounded stop missed listener socket sweep',
          'mcp-c2b04465c-4025246820d4', '03cc4d3',
-         ['ACC-013', 'ACC-012']),
+         ['ACC-016']),
     ]
     final_candidate = None
     if (repo / 'dist').is_dir():
@@ -356,7 +356,7 @@ def run_acc018(base, channel, writer, args=None):
         row['repro_evidence_dir'] = repro_dir.is_dir()
         # retest results exist on the final candidate and PASS
         row['retest_results'] = {}
-        for acc in retests + ['ACC-016']:
+        for acc in retests:
             path = logs_root / (final_candidate or '~none~') / acc / \
                 'result.json'
             if path.is_file():
