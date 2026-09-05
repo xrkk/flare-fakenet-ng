@@ -93,29 +93,28 @@ def capture():
     Each value is ``text`` on success or ``'__COLLECTION_FAILED__'`` when
     the collection command itself failed — the auditor treats a failed
     section as UNKNOWN (never silently equal, CHK-018)."""
-    _FAIL = '__COLLECTION_FAILED__'
-    routes, ok_r = _run(['route', 'print', '-4'])
-    dns, ok_d = _run(['powershell', '-NoProfile', '-Command',
-                      'Get-DnsClientServerAddress -AddressFamily IPv4 | '
-                      'Select-Object InterfaceAlias,ServerAddresses | '
-                      'ConvertTo-Json -Compress'])
-    processes, ok_p = _run(['powershell', '-NoProfile', '-Command',
-                            '(tasklist /m WinDivert*.sys 2>$null) + '
-                            '(Get-Process fakenetng-mcp,fakenet '
-                            '-ErrorAction SilentlyContinue | '
-                            'Select-Object -ExpandProperty ProcessName) | '
-                            'Out-String'])
-    ports, ok_n = _run(['netstat', '-ano'])
-    services, ok_s = _run(['powershell', '-NoProfile', '-Command',
-                           'Get-Service dnscache,mpssvc | '
-                           'Select-Object Name,Status | '
-                           'ConvertTo-Json -Compress'])
+    routes = _run(['route', 'print', '-4'])
+    dns = _run(['powershell', '-NoProfile', '-Command',
+                'Get-DnsClientServerAddress -AddressFamily IPv4 | '
+                'Select-Object InterfaceAlias,ServerAddresses | '
+                'ConvertTo-Json -Compress'])
+    processes = _run(['powershell', '-NoProfile', '-Command',
+                      '(tasklist /m WinDivert*.sys 2>$null) + '
+                      '(Get-Process fakenetng-mcp,fakenet '
+                      '-ErrorAction SilentlyContinue | '
+                      'Select-Object -ExpandProperty ProcessName) | '
+                      'Out-String'])
+    ports = _run(['netstat', '-ano'])
+    services = _run(['powershell', '-NoProfile', '-Command',
+                     'Get-Service dnscache,mpssvc | '
+                     'Select-Object Name,Status | '
+                     'ConvertTo-Json -Compress'])
     return {
-        'routes': routes.strip() if ok_r else _FAIL,
-        'dns_servers': dns.strip() if ok_d else _FAIL,
-        'windivert_processes': processes.strip() if ok_p else _FAIL,
-        'listen_ports': ports.strip() if ok_n else _FAIL,
-        'services': services.strip() if ok_s else _FAIL,
+        'routes': routes.strip(),
+        'dns_servers': dns.strip(),
+        'windivert_processes': processes.strip(),
+        'listen_ports': ports.strip(),
+        'services': services.strip(),
     }
 
 
