@@ -93,10 +93,11 @@ def run_acc014(base, channel, writer):
         # Inject an unhandled exception signature to reliably drive the
         # run to a terminal state; the armed fault class contributes its
         # specific runtime context to the incident pack.
+        message = ("Traceback (most recent call last): fault-class %s"
+                   % klass)
         channel.powershell(
             "Add-Content (Join-Path $env:ProgramData "
-            "'FakeNet-NG-MCP\\logs\\service.log') "
-            ("'Traceback (most recent call last): fault-class %s'" % klass),
+            "'FakeNet-NG-MCP\\logs\\service.log') '%s'" % message,
             timeout=60)
         time.sleep(8)
         converged, snap = _wait_terminal(base, timeout=30)
