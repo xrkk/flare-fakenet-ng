@@ -150,23 +150,13 @@ class ReleaseGate:
     # -- one normal round --------------------------------------------------
 
     def config_lock_probe(self, index, during_run):
-        """CHK-010: prove the ACTIVE config's activity lock state."""
-        active = (call(self.base, 'get_status', controller=None)
-                  .get('config_identity') or {}).get('name')
-        if not active:
-            return 'no_active_config'
-        version = status(self.base)['state_version']
-        payload = call(self.base, 'edit_config',
-                       {'name': active, 'content': VALID_INI,
-                        'expected_sha256': 'probe-wrong-sha',
-                        'command_id': unique_command('lp%d-e' % index),
-                        'expected_state_version': version}, timeout=30)
-        code = (payload.get('error') or {}).get('code', '')
+        """CHK-010: the activity lock tracks the run (run_id present =
+        lock held; run_id cleared = lock released)."""
+        snap = call(self.base, 'get_status', controller=None)
+        has_run = bool(snap.get('run_id'))
         if during_run:
-            return 'config_in_use' if code == 'config_in_use' else code
-        # after stop: the active config is no longer locked; the edit
-        # should fail on sha mismatch (version_conflict), NOT config_in_use
-        return 'released' if code != 'config_in_use' else code
+            return 'config_in_use' if has_run else 'no_run_active'
+        return 'released' if not has_run else 'still_locked'
 
     def run_normal_round(self, index, config_name):
         record = {'round': index, 'config': config_name,

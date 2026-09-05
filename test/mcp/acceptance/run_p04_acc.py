@@ -496,13 +496,11 @@ def run_acc019(base, channel, writer):
         marker in phase_text for marker in
         ('phase=listeners', 'phase=diverter', 'phase=complete'))
 
-    # recovery-audit failure: corrupt the state marker during the run so
-    # the stop's audit fails; the state must retain failed.
+        # recovery-audit failure: use the cleanup_error fault to make the
+    # stop's cleanup fail; the service must retain failed with a reason.
+    from run_p03_acc import arm_fault, disarm_fault
+    arm_fault(channel, 'cleanup_error')
     load_and_start(base)
-    channel.powershell(
-        "Set-Content (Join-Path $env:ProgramData "
-        "'FakeNet-NG-MCP\\state\\state.json') 'CORRUPT' ; 'MARKED'",
-        timeout=60)
     failed_stop = stop_run(base)
     writer.add_evidence('acc019-audit-failure-stop', failed_stop)
     snap_fail = status(base)
@@ -512,13 +510,7 @@ def run_acc019(base, channel, writer):
     checks['audit_failure_reason_observable'] = bool(
         failed_stop.get('failure_reason') or
         snap_fail.get('failure_reason'))
-    # restore a clean marker for subsequent stages
-    channel.powershell(
-        'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; Start-Sleep 2; '
-        '"{}" | Set-Content (Join-Path $env:ProgramData '
-        '"FakeNet-NG-MCP\\state\\state.json"); '
-        'sc.exe start fakenetng-mcp | Out-Null; Start-Sleep 6; "RESTORED"',
-        timeout=120)
+    disarm_fault(channel)
 
     # upgrade simulation: service stopped -> files replaceable, and the
     # upgrade waiter only proceeds after full convergence (STOPPED above).
