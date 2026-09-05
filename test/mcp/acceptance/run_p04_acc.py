@@ -380,7 +380,7 @@ def run_acc018(base, channel, writer, args=None):
     return EXIT_PASS if all(checks.values()) else EXIT_FAIL
 
 
-def run_acc019(base, channel, writer):
+def run_acc019(base, channel, writer, args=None):
     """Normal SCM stop / upgrade controlled exit with concurrent mutations
     and a recovery-audit-failure injection (contract ACC-019)."""
     writer.action('acc019', 'normal SCM stop / upgrade controlled exit')
@@ -497,7 +497,7 @@ def run_acc019(base, channel, writer):
     import pathlib
     acc008_path = pathlib.Path(
         'Logs/fakenetng-mcp/%s/ACC-008/acc008-checks.json' %
-        getattr(args, 'candidate_id', 'mcp-cd5670f2d-3d23f37f78b7'))
+        (getattr(args, 'candidate_id', None) or 'mcp-cd5670f2d-3d23f37f78b7'))
     acc008 = json.loads(acc008_path.read_text(encoding='utf-8')) if \
         acc008_path.is_file() else {}
     checks['audit_failure_retains_failed'] = bool(
@@ -584,7 +584,7 @@ def main():
         elif args.acc == 'ACC-018':
             exit_code = run_acc018(base, channel, writer, args)
         elif args.acc == 'ACC-019':
-            exit_code = run_acc019(base, channel, writer)
+            exit_code = run_acc019(base, channel, writer, args)
         elif args.acc == 'FAULT-POINTS':
             exit_code = run_fault_point_proof(base, channel, writer)
     except StepError as exc:
