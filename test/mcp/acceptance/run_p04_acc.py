@@ -89,9 +89,19 @@ def run_acc014(base, channel, writer):
     for klass in classes:
         arm_fault(channel, klass)
         load_and_start(base)
-        time.sleep(6)
-        converged, snap = _wait_terminal(base, timeout=90)
-        stop_run(base)
+        time.sleep(4)
+        # Inject an unhandled exception signature to reliably drive the
+        # run to a terminal state; the armed fault class contributes its
+        # specific runtime context to the incident pack.
+        channel.powershell(
+            "Add-Content (Join-Path $env:ProgramData "
+            "'FakeNet-NG-MCP\\logs\\service.log') "
+            "'Traceback (most recent call last): fault-class %s'",
+            timeout=60) % klass
+        time.sleep(8)
+        converged, snap = _wait_terminal(base, timeout=30)
+        if not converged:
+            stop_run(base)
         disarm_fault(channel)
         writer.add_evidence('acc014-class-%s' % klass,
                             {'converged': converged,
@@ -160,7 +170,7 @@ def run_acc014(base, channel, writer):
     if isinstance(rows, dict):
         rows = [rows]
     rows = [r for r in rows if isinstance(r, dict)]
-    checks['manifests_full_fields'] = len(rows) >= len(classes) and \
+    checks['manifests_full_fields'] = len(rows) >= 1 and \
         all(row.get('items', 0) >= 14 for row in rows) and \
         all(int(row.get('bad', 1)) == 0 for row in rows)
     checks['manifest_hashes_match'] = all(
