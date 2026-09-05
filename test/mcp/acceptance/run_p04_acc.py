@@ -496,12 +496,12 @@ def run_acc019(base, channel, writer):
         marker in phase_text for marker in
         ('phase=listeners', 'phase=diverter', 'phase=complete'))
 
-    # recovery-audit failure: inject an environment change after the
-    # baseline so the stop's audit fails; the state must retain failed.
+    # recovery-audit failure: corrupt the state marker during the run so
+    # the stop's audit fails; the state must retain failed.
     load_and_start(base)
     channel.powershell(
-        "$l = [System.Net.Sockets.TcpListener]::new("
-        "[Net.IPAddress]::Any, 47891); $l.Start(); 'DRIFT_UP'",
+        "Set-Content (Join-Path $env:ProgramData "
+        "'FakeNet-NG-MCP\\state\\state.json') 'CORRUPT' ; 'MARKED'",
         timeout=60)
     failed_stop = stop_run(base)
     writer.add_evidence('acc019-audit-failure-stop', failed_stop)
@@ -512,11 +512,13 @@ def run_acc019(base, channel, writer):
     checks['audit_failure_reason_observable'] = bool(
         failed_stop.get('failure_reason') or
         snap_fail.get('failure_reason'))
+    # restore a clean marker for subsequent stages
     channel.powershell(
-        'Get-NetTCPConnection -LocalPort 47891 -State Listen '
-        '-ErrorAction SilentlyContinue | ForEach-Object { '
-        'Stop-Process -Id $_.OwningProcess -Force -ErrorAction '
-        'SilentlyContinue }; "DRIFT_DOWN"', timeout=90)
+        'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; Start-Sleep 2; '
+        '"{}" | Set-Content (Join-Path $env:ProgramData '
+        '"FakeNet-NG-MCP\\state\\state.json"); '
+        'sc.exe start fakenetng-mcp | Out-Null; Start-Sleep 6; "RESTORED"',
+        timeout=120)
 
     # upgrade simulation: service stopped -> files replaceable, and the
     # upgrade waiter only proceeds after full convergence (STOPPED above).
