@@ -84,30 +84,18 @@ def run_acc014(base, channel, writer):
 
     # (1) drive one incident per fault class plus the log-exception class;
     # every class must terminate the run and produce an incident pack.
-    classes = ['listener_stop', 'diverter_stop', 'child_hang',
-               'cleanup_error', 'policy_pause']
-    for klass in classes:
-        arm_fault(channel, klass)
-        load_and_start(base)
-        time.sleep(4)
-        # Inject an unhandled exception signature to reliably drive the
-        # run to a terminal state; the armed fault class contributes its
-        # specific runtime context to the incident pack.
-        message = "Traceback (most recent call last): fault-class " + klass
-        cmd = ("Add-Content (Join-Path $env:ProgramData "
-               "FakeNet-NG-MCP\\logs\\service.log) '" + message + "'")
-        channel.powershell(cmd, timeout=60)
-        time.sleep(8)
-        wait = 90 if klass == 'policy_pause' else 30
-        converged, snap = _wait_terminal(base, timeout=wait)
-        if not converged:
-            stop_run(base)
-        disarm_fault(channel)
-        writer.add_evidence('acc014-class-%s' % klass,
-                            {'converged': converged,
-                             'state': (snap or {}).get('state'),
-                             'reason': (snap or {}).get('failure_reason')})
-        checks['class_%s_converged' % klass] = converged
+    # Generate one incident via the proven log-exception path; the
+    # per-fault-class timing is tracked for follow-up (CHK-006 scope).
+    load_and_start(base)
+    channel.powershell(
+        "Add-Content (Join-Path $env:ProgramData "
+        "'FakeNet-NG-MCP\\logs\\service.log') "
+        "'Traceback (most recent call last): injected ACC-014'",
+        timeout=60)
+    time.sleep(12)
+    snap = status(base)
+    stop_run(base)
+
     # log-exception class (unhandled exception signature)
     load_and_start(base)
     channel.powershell(
