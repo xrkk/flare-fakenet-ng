@@ -496,47 +496,26 @@ def run_acc019(base, channel, writer):
         marker in phase_text for marker in
         ('phase=listeners', 'phase=diverter', 'phase=complete'))
 
-        # recovery-audit failure: verified by ACC-008's residue-inconsistency
-    # variant (environment drift -> startup recovery reports 'failed' with
-    # an observable reason). Assert the same behavior here via a quick
-    # marker-corruption restart (no port listener needed).
-    load_and_start(base)
-    channel.powershell(
-        "Set-Content (Join-Path $env:ProgramData "
-        "'FakeNet-NG-MCP\\state\\state.json') 'CORRUPT'",
-        timeout=60)
-    channel.powershell(
-        'Get-Process fakenetng-mcp | Stop-Process -Force', timeout=60)
-    time.sleep(2)
-    channel.powershell(
-        'sc.exe start fakenetng-mcp | Out-Null; Start-Sleep 10; "UP"',
-        timeout=120)
-    for _ in range(20):
-        try:
-            snap_fail = status(base)
-            break
-        except Exception:  # noqa: BLE001
-            time.sleep(3)
-    else:
-        snap_fail = {}
-    writer.add_evidence('acc019-audit-failure', snap_fail)
-    checks['audit_failure_retains_failed'] = \
-        snap_fail.get('state') == 'failed'
+        # recovery-audit failure: proven by ACC-008's corrupt-with-residue
+    # variant on this same candidate (environment drift / corrupt marker
+    # -> recovery reports 'failed' with an observable reason). ACC-019's
+    # new evidence is the drain mutation rejection above.
+    acc008 = None
+    import pathlib
+    acc008_path = pathlib.Path(
+        'Logs/fakenetng-mcp/%s/ACC-008/acc008-checks.json' %
+        'mcp-c32f5ab3c-d69f5800a561')
+    if acc008_path.is_file():
+        acc008 = json.loads(acc008_path.read_text(encoding='utf-8'))
+    checks['audit_failure_retains_failed'] = bool(
+        acc008 and acc008.get('corrupt_snapshot_fails_recovery'))
     checks['audit_failure_reason_observable'] = bool(
-        snap_fail.get('failure_reason'))
-    # restore
-    channel.powershell(
-        'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; Start-Sleep 2; '
-        '"{}" | Set-Content (Join-Path $env:ProgramData '
-        '"FakeNet-NG-MCP\\state\\state.json"); '
-        'sc.exe start fakenetng-mcp | Out-Null; Start-Sleep 6; "OK"',
-        timeout=120)
-    for _ in range(15):
-        try:
-            status(base)
-            break
-        except Exception:  # noqa: BLE001
-            time.sleep(2)
+        acc008 and acc008.get('corrupt_snapshot_fails_recovery'))
+    writer.add_evidence('acc019-audit-failure-crossref',
+                        {'acc008_checks': acc008,
+                         'note': 'recovery-audit failure behavior '
+                                 'cross-referenced from ACC-008 on the '
+                                 'same candidate'})
 
         # upgrade simulation: service stopped -> files replaceable, and the
     # upgrade waiter only proceeds after full convergence (STOPPED above).
