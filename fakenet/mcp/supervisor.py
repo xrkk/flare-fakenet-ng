@@ -128,6 +128,8 @@ class RealSupervisor:
             if target is None:
                 continue
             fileno = getattr(target, 'fileno', None)
+            if not callable(fileno):
+                continue  # no fd signal on this attribute
             try:
                 fd = fileno()
             except (OSError, ValueError):
