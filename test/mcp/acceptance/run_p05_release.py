@@ -236,6 +236,14 @@ class ReleaseGate:
                 return record
             ok, timeline = continuous_probe(self.base, 4)
             record['probe'] = {'all_ok': ok, 'samples': len(timeline)}
+            if not ok:
+                # CHK-043: the control link must survive every fault
+                # round — a dead probe fails the round regardless of
+                # how the stop converges (OUT-004 domain).
+                record['probe_timeline'] = timeline
+                record['failure'] = 'link probe failed during fault round'
+                stop_run(self.base, attempts=2)
+                return record
             stopped = stop_run(self.base, attempts=4)
             record['stop_state'] = stopped.get('state')
             record['stop_error'] = (stopped.get('error') or {})

@@ -340,7 +340,24 @@ def run_acc018(base, channel, writer, args=None):
          ['ACC-004', 'ACC-009', 'ACC-016']),
         ('grace-exceeded bounded stop missed listener socket sweep',
          'mcp-c2b04465c-4025246820d4', '03cc4d3',
-         ['ACC-016']),
+         ['ACC-013', 'ACC-016']),
+        # CHK-049: the r52 -> r58 gate-era chain, mechanically bound.
+        ('rundll32 comsvcs self-dump left service threads suspended',
+         'mcp-cc9cdea21-034f71f9916d', '97f8346',
+         ['ACC-004-S3', 'ACC-014']),
+        ('coordinator/supervisor ABBA lock inversion deadlocked the '
+         'control link against the stop path',
+         'mcp-c97f83468-176c37190d65', '038bf76',
+         ['ACC-004-S3', 'ACC-006', 'ACC-011']),
+        ('dynamic-port transient LISTENING rows failed stop audits',
+         'mcp-c038bf76b-b8c4e6413382', '628cdee',
+         ['ACC-012', 'ACC-013']),
+        ('route metric auto-tuning flapped audits (adapter cycles)',
+         'mcp-c628cdee7-8f13f2d6d6e8', 'cdb377b',
+         ['ACC-012', 'ACC-013']),
+        ('run-artifact registration re-copied every accumulated output',
+         'mcp-c177fee91-aa8eab44f1d9', '177fee9',
+         ['ACC-012', 'ACC-015', 'ACC-016']),
     ]
     final_candidate = None
     if (repo / 'dist').is_dir():
@@ -485,9 +502,25 @@ def run_acc019(base, channel, writer, args=None):
         worker.join(timeout=5)
 
     writer.add_evidence('acc019-mutation-outcomes', mutation_outcomes)
-    checks['drain_mutations_rejected'] = bool(mutation_outcomes) and any(
-        payload.get('error') is not None
-        for _kind, payload in mutation_outcomes)
+    # CHK-045: only STRUCTURED rejections prove the drain gate; a
+    # transport-level connection refusal after the endpoint closed is
+    # expected shutdown behavior, not a rejection verdict. At least one
+    # mutation must have reached the service and been refused with an
+    # MCP error envelope.
+    def _outcome_code(payload):
+        return (payload.get('error') or {}).get('code')
+
+    structured_rejections = [
+        (kind, payload) for kind, payload in mutation_outcomes
+        if payload.get('error') is not None
+        and _outcome_code(payload) not in (None, 'transport')]
+    transport_refused = [
+        (kind, payload) for kind, payload in mutation_outcomes
+        if _outcome_code(payload) == 'transport']
+    writer.add_evidence('acc019-drain-classification', {
+        'structured_rejections': [k for k, _ in structured_rejections],
+        'transport_refused': [k for k, _ in transport_refused]})
+    checks['drain_mutations_rejected'] = bool(structured_rejections)
 
     first_false = next((i for i, ok in enumerate(stop_timeline) if not ok),
                        len(stop_timeline))

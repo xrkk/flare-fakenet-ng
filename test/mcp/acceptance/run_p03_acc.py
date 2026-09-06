@@ -44,6 +44,35 @@ def continuous_probe(base, seconds, controller=None):
     return all(item['ok'] for item in timeline), timeline
 
 
+def probe_during(action, base, seconds=4.0):
+    """CHK-038: run the continuous probe CONCURRENTLY with a scenario
+    action. Returns (timeline, action_result)."""
+    import threading
+
+    box = {}
+
+    def run_action():
+        box['result'] = action()
+
+    worker = threading.Thread(target=run_action, daemon=True)
+    worker.start()
+    timeline = []
+    deadline = time.time() + seconds
+    while time.time() < deadline or worker.is_alive():
+        ok = False
+        try:
+            payload = call(base, 'ping', controller=None, timeout=8)
+            ok = payload.get('service') == 'fakenetng-mcp'
+        except Exception:  # noqa: BLE001
+            ok = False
+        timeline.append({'t': round(time.time(), 1), 'ok': ok})
+        if not worker.is_alive() and time.time() >= deadline:
+            break
+        time.sleep(0.5)
+    worker.join(30)
+    return timeline, box.get('result')
+
+
 def load_and_start(base, name='default.ini', builtin=True):
     def attempt():
         version = status(base)['state_version']
@@ -59,7 +88,9 @@ def load_and_start(base, name='default.ini', builtin=True):
                     timeout=90)
 
     result = attempt()
+    load_and_start.first_failed_start = None
     if result.get('state') == 'failed' and not result.get('error'):
+        load_and_start.first_failed_start = dict(result)
         # Right after an uncontrolled exit + SCM restart the adapter can
         # still be reconfiguring; the diverter then fails closed with
         # "No active ethernet interfaces detected" (r58c ACC-008 round-1
@@ -323,12 +354,41 @@ def acc004_s1_takeover(base, channel, writer):
 
 
 def acc004_s2_init_failure(base, channel, writer):
-    """Initialization failure: invalid config refused (fail closed)."""
+    """Initialization failure: invalid config refused (fail closed), with
+    the control link probed CONCURRENTLY with the failing attempts
+    (CHK-038: the probe must overlap the injected failure, not precede
+    it)."""
     checks = {}
-    ok, timeline = continuous_probe(base, 4)
+
+    def attempts():
+        version0 = status(base)['state_version']
+        created0 = call(base, 'create_config',
+                        {'name': 'broken-%s.ini' % unique_command('x')[:8],
+                         'content': 'no-section-header garbage = broken\n',
+                         'command_id': unique_command('a4-bad'),
+                         'expected_state_version': version0})
+        if created0.get('error'):
+            return {'create_rejected': True, 'payload': created0}
+        loaded0 = call(base, 'load_config',
+                       {'name': created0.get('name', ''),
+                        'command_id': unique_command('a4-bad-load'),
+                        'expected_state_version':
+                            created0['state_version']})
+        return {'create_rejected': False, 'payload': loaded0}
+
+    timeline, attempt = probe_during(attempts, base)
     writer.add_evidence('acc004-s2-init-probe', timeline)
-    checks['link_alive_during_init_failure'] = ok
-    version = status(base)['state_version']
+    writer.add_evidence('acc004-s2-attempt', attempt or {})
+    checks['link_alive_during_init_failure'] = all(
+        item['ok'] for item in timeline) and bool(timeline)
+    if attempt and attempt.get('create_rejected'):
+        checks['invalid_config_rejected'] = True
+    elif attempt:
+        checks['invalid_config_rejected'] = err_of(
+            attempt.get('payload') or {}) in ('validation_failed',
+                                              'invalid_request')
+    else:
+        checks['invalid_config_rejected'] = False
     created = call(base, 'create_config',
                    {'name': 'broken-%s.ini' % unique_command('x')[:8],
                     'content': 'no-section-header garbage = broken\n',
@@ -373,7 +433,9 @@ def acc004_s3_exception(base, channel, writer):
 
 
 def acc004_s4_invalid_protection(base, channel, writer):
-    """Invalid protection params: fail closed at start, service survives."""
+    """Invalid protection params: the config LOADS (store syntax is fine),
+    the START is refused at the filter-parameter layer (FB-002), the
+    service survives and the link stays alive throughout (CHK-038)."""
     checks = {}
     builtin = call(base, 'read_config', {'name': 'default.ini'},
                    controller=None)
@@ -381,29 +443,54 @@ def acc004_s4_invalid_protection(base, channel, writer):
     bad_filter_ini = (builtin.get('content') or VALID_INI).replace(
         '[Diverter]', '[Diverter]\nControlLinkExcludeIp: not-an-ip\n'
         'ControlLinkExcludePort: 28788', 1)
-    version = status(base)['state_version']
-    created = call(base, 'create_config',
-                   {'name': 'badfilter-%s.ini' % unique_command('bf')[:6],
-                    'content': bad_filter_ini,
-                    'command_id': unique_command('a4-bf'),
-                    'expected_state_version': version})
-    loaded = call(base, 'load_config',
-                  {'name': created.get('name', ''),
-                   'command_id': unique_command('a4-bf-l'),
-                   'expected_state_version':
-                       created.get('state_version', version)}, timeout=120)
-    started_bad = call(base, 'start',
-                       {'command_id': unique_command('a4-bf-s'),
-                        'expected_state_version':
-                            loaded.get('state_version', version)},
-                       timeout=120)
-    writer.add_evidence('acc004-s4-invalid-filter-start', started_bad)
-    ok, timeline = continuous_probe(base, 4)
+    created = loaded = None
+    for _ in range(3):
+        version = status(base)['state_version']
+        created = call(base, 'create_config',
+                       {'name': 'badfilter-%s.ini' %
+                        unique_command('bf')[:6],
+                        'content': bad_filter_ini,
+                        'command_id': unique_command('a4-bf'),
+                        'expected_state_version': version})
+        if created.get('error'):
+            checks['config_loads_for_filter_layer'] = False
+            writer.add_evidence('acc004-s4-create-rejected', created)
+            break
+        loaded = call(base, 'load_config',
+                      {'name': created.get('name', ''),
+                       'command_id': unique_command('a4-bf-l'),
+                       'expected_state_version':
+                           created.get('state_version')}, timeout=120)
+        if not loaded.get('error'):
+            checks['config_loads_for_filter_layer'] = True
+            break
+        time.sleep(1.0)
+    else:
+        checks['config_loads_for_filter_layer'] = \
+            bool(loaded and not loaded.get('error'))
+
+    def start_attempt():
+        return call(base, 'start',
+                    {'command_id': unique_command('a4-bf-s'),
+                     'expected_state_version':
+                         (loaded or {}).get(
+                             'state_version',
+                             status(base)['state_version'])},
+                    timeout=120)
+
+    timeline, started_bad = probe_during(start_attempt, base, seconds=6)
+    writer.add_evidence('acc004-s4-invalid-filter-start', started_bad or {})
     writer.add_evidence('acc004-s4-survival-probe', timeline)
-    checks['link_alive_during_invalid_protection'] = ok
+    checks['link_alive_during_invalid_protection'] = all(
+        item['ok'] for item in timeline) and bool(timeline)
+    message = str(((started_bad or {}).get('error') or {}).get('message')
+                  or '')
     checks['invalid_protection_fails_closed'] = (
-        started_bad.get('error') is not None or
-        started_bad.get('state') == 'failed')
+        (started_bad or {}).get('error') is not None or
+        (started_bad or {}).get('state') == 'failed')
+    checks['rejection_names_protection_params'] = (
+        'protection' in message.lower() or
+        'controllinkexclude' in message.lower())
     checks['service_survives_invalid_filter'] = \
         status(base).get('state') is not None
     # restore the default config for subsequent scenarios
@@ -767,8 +854,13 @@ def run_acc008(base, channel, writer):
     restart_service(channel)
     wait_state(base, lambda s: s.get('state') is not None, timeout=90)
 
-    # (4) write-failure: deny the service write on the state directory;
-    # a start must be refused (no marker => no run).
+    # (4) write-failure: with a config ALREADY LOADED (CHK-040: the
+    # refusal must come from the state-write layer, not from a missing
+    # configuration), deny the service write on the state directory; a
+    # start must be refused (no marker => no run).
+    call(base, 'load_config',
+         {'name': 'default.ini', 'command_id': unique_command('a8-wf-l'),
+          'expected_state_version': status(base)['state_version']})
     channel.powershell(
         'icacls (Join-Path $env:ProgramData "FakeNet-NG-MCP\\state") '
         '/deny "NT AUTHORITY\\SYSTEM:(OI)(CI)W" | Out-Null; "DENIED"',
@@ -1044,6 +1136,13 @@ def main():
                     'ACC-008': run_acc008, 'ACC-009': run_acc009,
                 }[args.acc]
                 exit_code = handler(base, channel, writer)
+            # CHK-043: a bounded start retry is only honest when the
+            # first failed attempt is preserved as evidence.
+            first_failed = getattr(load_and_start, 'first_failed_start',
+                                   None)
+            if first_failed is not None:
+                writer.add_evidence('%s-start-retry-first-result'
+                                    % args.acc.lower(), first_failed)
     except StepError as exc:
         writer.blocker = {'reason': str(exc)}
         exit_code = EXIT_BLOCKED

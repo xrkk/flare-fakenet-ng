@@ -422,10 +422,12 @@ def run_acc003(args, channel, writer):
         time.sleep(2)
         try:
             allowed = helpers_probe(args.target_base_url)
-            negative_probe = probe_from_non_allowed_source(
+            negative_probe, negative_detail = \
+                probe_from_non_allowed_source(
                 args.target_base_url)
             enabled_round = {'allowed_host_ping': allowed,
-                             'non_allowed_probe': negative_probe}
+                             'non_allowed_probe': negative_probe,
+                             'non_allowed_detail': negative_detail}
         finally:
             restore = channel.powershell(
                 'Set-NetFirewallProfile -All -Enabled False; '
@@ -448,22 +450,30 @@ def run_acc003(args, channel, writer):
         checks['allowed_host_reachable_with_fw_on'] = \
             enabled_round['allowed_host_ping']
         if enabled_round.get('non_allowed_probe') is not None:
-            checks['non_allowed_source_blocked'] = \
-                not enabled_round['non_allowed_probe']
+            # CHK-051: the block verdict requires the same facility to
+            # have reached the endpoint from the allowed source; an
+            # unattributed failure blocks the leg instead of passing.
+            if not enabled_round.get('allowed_host_ping'):
+                checks['non_allowed_source_blocked'] = None
+            else:
+                checks['non_allowed_source_blocked'] = \
+                    not enabled_round['non_allowed_probe']
     writer.observe(json.dumps(checks, ensure_ascii=False))
     return EXIT_PASS if all(checks.values()) else EXIT_FAIL
 
 
 def probe_from_non_allowed_source(base_url, source_ip='192.168.255.1',
                                   timeout=8):
-    """True when the MCP endpoint answers with the socket bound to a local
-    address that is NOT in the firewall rule's RemoteIP list (negative
-    source probe; no privileges needed because the address exists on
-    another host interface)."""
+    """(reachable, detail) for a probe from a local address that is NOT in
+    the firewall rule's RemoteIP list. CHK-051: the outcome carries the
+    failure attribution — a refused/timed-out connection is a BLOCK only
+    when the same facility reaches the endpoint from the allowed source;
+    an unrelated bind/route failure must not masquerade as a block."""
     import http.client
     from urllib.parse import urlsplit
 
     parts = urlsplit(base_url)
+    detail = {'source_ip': source_ip, 'phase': 'connect'}
     try:
         connection = http.client.HTTPConnection(
             parts.hostname, parts.port or 80, timeout=timeout,
@@ -474,12 +484,15 @@ def probe_from_non_allowed_source(base_url, source_ip='192.168.255.1',
                                     'Accept': 'application/json, '
                                               'text/event-stream',
                                     **PING_HEADERS})
+        detail['phase'] = 'response'
         response = connection.getresponse()
         body = response.read().decode('utf-8', 'replace')
         connection.close()
-        return response.status == 200 and '"fakenetng-mcp"' in body
-    except OSError:
-        return False
+        detail['status'] = response.status
+        return response.status == 200 and '"fakenetng-mcp"' in body, detail
+    except OSError as exc:
+        detail['error'] = '%s: %s' % (type(exc).__name__, exc)
+        return False, detail
 
 
 def helpers_probe(base_url):

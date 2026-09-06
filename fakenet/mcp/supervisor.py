@@ -277,6 +277,27 @@ class RealSupervisor:
             self._inject_exclusion(instance)
 
             run_id = coordinator.new_run_id()
+            # CHK-048: run outputs (PCAPs, reports) belong under
+            # ProgramData in a per-run directory, never loose in the
+            # ProgramFiles package root. Relative dump prefixes are
+            # absolutized to the run directory before the run starts.
+            self._active_run_dir = None
+            try:
+                from fakenet.mcp import paths as mcp_paths
+                run_dir = (mcp_paths.data_directories()['artifacts'] /
+                           'runs' / str(run_id))
+                run_dir.mkdir(parents=True, exist_ok=True)
+                self._active_run_dir = run_dir
+                for key in ('DumpPacketsFilePrefix', 'DumpHTTPWebRoot'):
+                    value = str(instance.fakenet_config.get(key, '') or
+                                '').strip()
+                    if value and not os.path.isabs(value):
+                        instance.fakenet_config[key] = os.path.join(
+                            str(run_dir), value)
+            except OSError:
+                logger.exception('per-run output directory unavailable; '
+                                 'outputs stay at configured paths')
+                self._active_run_dir = None
             if self._baseline_store is not None:
                 self._baseline_store.save(run_id)
             if self._snapshot is not None:
@@ -615,11 +636,43 @@ class RealSupervisor:
         """Inject the control-link exclusion keys into the parsed diverter
         config; validity of ip/port is enforced fail-closed by the diverter
         (windows.py build_control_link_exclusion_clause).  Empty values
-        leave the filter byte-identical (regression-safe)."""
+        leave the filter byte-identical (regression-safe).
+
+        CHK-038: a config that carries its OWN ControlLinkExcludeIp/Port
+        is validated HERE, at the layer that feeds the filter builder —
+        invalid protection parameters refuse the start (FB-002) instead
+        of being silently overwritten. Valid custom ports merge into the
+        exclusion list; the service control address stays authoritative
+        (the control link must never lose its own exclusion)."""
+        own_ip = str(instance.diverter_config.get(
+            'ControlLinkExcludeIp', '') or '').strip()
+        own_port = str(instance.diverter_config.get(
+            'ControlLinkExcludePort', '') or '').strip()
+        ports = str(self._exclusion.get('port', '') or '')
+        if own_ip or own_port:
+            from fakenet.mcp.controlfilter import \
+                build_control_link_exclusion_clause
+            try:
+                build_control_link_exclusion_clause(
+                    own_ip or self._exclusion.get('ip', ''),
+                    own_port or ports)
+            except Exception as exc:  # noqa: BLE001 - fail closed
+                raise SupervisorStartError(
+                    'invalid protection parameters in config '
+                    '(ControlLinkExcludeIp/Port): %s' % exc)
+            if own_port:
+                merged = {item for item in
+                          ports.split(',') + own_port.split(',')
+                          if item}
+                ports = ','.join(sorted(merged))
+            if own_ip and own_ip != self._exclusion.get('ip', ''):
+                logger.warning(
+                    'config ControlLinkExcludeIp %s overridden by the '
+                    'service control address %s', own_ip,
+                    self._exclusion.get('ip', ''))
         instance.diverter_config['ControlLinkExcludeIp'] = \
             self._exclusion.get('ip', '')
-        instance.diverter_config['ControlLinkExcludePort'] = \
-            self._exclusion.get('port', '')
+        instance.diverter_config['ControlLinkExcludePort'] = ports
 
     def _handle_terminal_failure(self, reason):
         """Terminal internal failure (record 034): the failed state is
@@ -717,6 +770,15 @@ class RealSupervisor:
                     os.path.dirname(os.path.abspath(__file__))))
             started = self._run_started_at
             registry = ArtifactRegistry(self._artifacts_root)
+            copied = []
+            # CHK-048: per-run outputs land in the run directory under
+            # ProgramData — register that complete set directly; the
+            # mtime-filtered package-root scan stays as fallback for
+            # outputs produced before the redirection existed.
+            run_dir = getattr(self, '_active_run_dir', None)
+            if run_dir is not None and run_dir.is_dir():
+                copied = registry.register_fakenet_outputs(
+                    run_id, run_dir, prefix='')
 
             def _fresh(path):
                 if started is None:
@@ -726,7 +788,7 @@ class RealSupervisor:
                 except OSError:
                     return False
 
-            copied = registry.register_fakenet_outputs(
+            copied += registry.register_fakenet_outputs(
                 run_id, package_root, keep=_fresh)
             if copied:
                 logger.info('registered %d run artifacts for %s',
@@ -769,6 +831,7 @@ class RealSupervisor:
         self._worker = None
         self._coordinator = None
         self._run_started_at = None
+        self._active_run_dir = None
         if self._activity_lock is not None:
             self._activity_lock.release()
             self._activity_lock = None

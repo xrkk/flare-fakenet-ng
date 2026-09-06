@@ -378,7 +378,7 @@ def run_acc011(base, channel, writer):
                   'operation_busy', 'version_conflict', 'controller_conflict',
                   'operation_busy'}
     checks['mixed_structured_outcomes'] = all(
-        code is None or isinstance(code, str)
+        code is None or code in structured
         for code in codes.values())
     # cleanup: whatever combination won, drive the service back to a
     # stopped state with a runnable config for later ACCs.

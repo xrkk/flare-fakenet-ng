@@ -19,7 +19,8 @@ class ArtifactRegistry:
     def run_dir(self, run_id):
         return self.root / str(run_id)
 
-    def register_fakenet_outputs(self, run_id, package_root, keep=None):
+    def register_fakenet_outputs(self, run_id, package_root, keep=None,
+                                 prefix='fakenet-'):
         """Register the artifacts a finished FakeNet run leaves next to the
         package (PCAPs, fakenet log, report) plus the incident pack.
         ``keep(path) -> bool`` filters which files belong to the run (the
@@ -37,7 +38,7 @@ class ArtifactRegistry:
                     continue
                 if keep is not None and not keep(path):
                     continue
-                destination = run_dir / ('fakenet-' + path.name)
+                destination = run_dir / (prefix + path.name)
                 if not destination.exists():
                     shutil.copy2(path, destination)
                 copied.append(destination)
