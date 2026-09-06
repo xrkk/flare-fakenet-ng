@@ -86,38 +86,12 @@ class ReleaseGate:
     def audit_diff(self, before):
         from fakenet.mcp.baseline import audit_compare
 
-        after = self.capture_sections()
-        diff = audit_compare(before, after)
-        if 'listen_ports' in diff:
-            # Narrow the port check to FakeNet-attributable residue: ports
-            # present in the after side that also existed while FakeNet ran
-            # (captured in the before side taken *before* start? no — the
-            # before side is pre-start). We keep only diffs where an
-            # after-LISTEN row was absent pre-start AND the port is a
-            # FakeNet listener port (from the run's config), or a
-            # pre-start row disappeared below 1024.
-            import re as _re
-
-            before_lines = set(
-                diff['listen_ports'].get('before', '').splitlines())
-            after_lines = set(
-                diff['listen_ports'].get('after', '').splitlines())
-            added = after_lines - before_lines
-            removed = before_lines - after_lines
-            fakenet_added = []
-            for line in added:
-                match = _re.search(
-                    r':(80|443|53|8080|8443|21|23|25|110|143|993|995)\s*$',
-                    line.split()[1] if len(line.split()) > 1 else '')
-                if match:
-                    fakenet_added.append(line)
-            if not fakenet_added:
-                diff.pop('listen_ports')
-            else:
-                diff['listen_ports'] = {
-                    'fakenet_added': sorted(fakenet_added),
-                    'removed': sorted(removed)}
-        return diff
+        # CHK-042: consume the shared directional schema straight from
+        # audit_compare (fakenet_added / below_1024_removed). The former
+        # re-narrowing here read the retired before/after keys, computed
+        # an empty delta and silently POPPED real residue from the gate.
+        # One schema, shared with the product's stop audit.
+        return audit_compare(before, self.capture_sections())
 
     def vm_continuity(self):
         result = self.channel.powershell(

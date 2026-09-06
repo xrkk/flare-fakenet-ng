@@ -20,14 +20,22 @@ BASELINE_FIELDS = ('routes', 'dns_servers', 'windivert_processes',
 RECOVERY_COMPARE_FIELDS = BASELINE_FIELDS
 
 
+COLLECTION_FAILED = '__COLLECTION_FAILED__'
+
+
 def _run(command, timeout=60):
+    """Section capture primitive: text on success, the UNKNOWN sentinel
+    when the command itself failed — the auditor must treat a failed
+    section as unverifiable (never silently equal; CHK-018/CHK-042)."""
     try:
         completed = subprocess.run(
             command, capture_output=True, text=True, timeout=timeout,
             encoding='utf-8', errors='replace')
-        return completed.stdout or ''
     except (OSError, subprocess.TimeoutExpired):
-        return ''
+        return COLLECTION_FAILED
+    if completed.returncode != 0 and not (completed.stdout or '').strip():
+        return COLLECTION_FAILED
+    return completed.stdout or ''
 
 
 def _normalize(section, value):
@@ -43,14 +51,16 @@ def _normalize(section, value):
             if not stripped or line.startswith('='):
                 continue
             parts = stripped.split()
-            if len(parts) == 5:
+            if len(parts) == 5 and _is_ipv4(parts[0]) and _is_ipv4(parts[1]):
                 # Route row: drop the auto-tuned interface METRIC column.
                 # Windows re-evaluates metrics around adapter
                 # reconfiguration (FakeNet's per-run DNS set/restore
                 # cycles the adapter), so the metric flaps between the
                 # pre-start baseline and the stop audit without any
                 # actual routing change (r54 round-18 / r56 round-2
-                # stop audits failed on exactly this).
+                # stop audits failed on exactly this). Only genuine
+                # dest/mask rows are rewritten; other five-column
+                # lines keep their full text.
                 keep.append(' '.join(parts[:4]))
             else:
                 keep.append(stripped)
@@ -86,15 +96,37 @@ def _normalize(section, value):
     return text.strip()
 
 
+def _is_ipv4(token):
+    parts = token.split('.')
+    if len(parts) != 4:
+        return False
+    try:
+        return all(0 <= int(part) <= 255 for part in parts)
+    except ValueError:
+        return False
+
+
 def audit_compare(baseline_sections, current_sections):
     """Full five-section audit diff with per-section normalization; used by
     the P04 recovery auditor (the P03 startup path keeps its stable-section
-    recovery equality)."""
+    recovery equality). A section whose capture failed (UNKNOWN sentinel
+    on either side) is unverifiable and always counts as a difference —
+    never silently equal."""
     differences = {}
     for section in BASELINE_FIELDS:
-        before = _normalize(section,
-                            (baseline_sections or {}).get(section))
-        after = _normalize(section, (current_sections or {}).get(section))
+        raw_before = (baseline_sections or {}).get(section) or ''
+        raw_after = (current_sections or {}).get(section) or ''
+        if raw_before == COLLECTION_FAILED or raw_after == COLLECTION_FAILED:
+            differences[section] = {
+                'collection_failed': True,
+                'before': 'UNKNOWN' if raw_before == COLLECTION_FAILED
+                else _normalize(section, raw_before)[:200],
+                'after': 'UNKNOWN' if raw_after == COLLECTION_FAILED
+                else _normalize(section, raw_after)[:200],
+            }
+            continue
+        before = _normalize(section, raw_before)
+        after = _normalize(section, raw_after)
         if section == 'listen_ports':
             delta = _listen_port_delta(before, after)
             if delta:

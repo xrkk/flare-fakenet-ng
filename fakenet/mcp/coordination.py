@@ -65,6 +65,7 @@ class Coordinator:
         # metadata lock; this flag immediately rejects concurrent
         # mutations and keeps read-only queries available throughout.
         self._operation_active = False
+        self._active_names = None
 
     # -- read-only surface -------------------------------------------------
     def snapshot(self):
@@ -105,9 +106,19 @@ class Coordinator:
             return self._controller
 
     # -- mutation surface --------------------------------------------------
+    def _active_conflicts(self, conflict_names):
+        """CHK-046: an in-flight operation conflicts when either side is
+        global (lifecycle) or the name scopes intersect."""
+        if not self._operation_active:
+            return False
+        active = self._active_names
+        if active is None or conflict_names is None:
+            return True
+        return bool(set(active) & set(conflict_names))
+
     def submit(self, *, command_id, expected_version, controller,
                controller_valid, kind, describe, execute,
-               internal=False):
+               internal=False, conflict_names=None):
         """Run one serialized mutation.
 
         CHK-022 three-phase design: validation and state updates run under
@@ -147,7 +158,7 @@ class Coordinator:
 
             # 1. immediate busy rejection (CHK-022): another mutation is
             # mid-execution; reject now, never queue behind the lock.
-            if self._operation_active and not internal:
+            if self._active_conflicts(conflict_names) and not internal:
                 raise errors.McpError(
                     errors.OPERATION_BUSY,
                     'another mutation is currently executing; '
@@ -174,6 +185,7 @@ class Coordinator:
                      'current': self._state_version})
 
             self._operation_active = True
+            self._active_names = conflict_names
             self._events.record('command.accepted', command_id=command_id,
                                 controller=controller, kind=kind)
 
@@ -185,11 +197,13 @@ class Coordinator:
         except BaseException:
             with self._lock:
                 self._operation_active = False
+                self._active_names = None
             raise
 
         # Phase 3: update state under the metadata lock (fast).
         with self._lock:
             self._operation_active = False
+            self._active_names = None
             self._state_version += 1
             self._run_id = result.get('run_id', self._run_id)
             if 'state' in result:
@@ -226,13 +240,15 @@ class Coordinator:
             return dict(response)
 
     def record_terminal_failure(self, reason):
-        """P04: protective-stop bookkeeping — the coordinator released the
-        run (run_id/controller cleared) but lands in failed with
-        last_run_outcome=failed and the reason kept observable."""
+        """P04/CHK-041: terminal-failure bookkeeping. When the protective
+        stop CONVERGED (real stopped), the contract keeps that terminal
+        state with last_run_outcome=failed and the reason observable —
+        only a non-converged outcome lands in failed."""
         with self._lock:
             self._run_id = None
             self._controller = None
-            self._state = 'failed'
+            if self._state != 'stopped':
+                self._state = 'failed'
             self._failure_reason = reason
             self._last_run_outcome = 'failed'
             self._events.record('terminal_failure', reason=reason)

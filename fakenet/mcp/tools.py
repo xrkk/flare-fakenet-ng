@@ -308,12 +308,27 @@ def register_tools(server, ctx):
             return ctx.error_response(exc)
 
     # -- configuration mutations ------------------------------------------
-    def config_mutation(kind, describe, mutate):
+    def config_mutation(kind, describe, mutate, conflict_names=None):
         def invoke(command_id, expected_state_version):
             controller, classification = ctx.controller_identity()
 
             def execute(coord):
                 return mutate(controller)
+
+            def audit_rejected(exc):
+                # CHK-047: every real attempt — including rejections —
+                # lands in the ordinary audit with full identity/kind/
+                # target/result so failures stay attributable.
+                try:
+                    ctx.store.audit(
+                        controller=controller,
+                        command_id=command_id,
+                        target=str(describe.get('name', '')),
+                        operation=kind,
+                        before_sha256=None, after_sha256=None,
+                        result='rejected: %s' % exc.code)
+                except errors.McpError:
+                    pass  # audit store unavailable; the error stands
 
             try:
                 return ctx.coordinator.submit(
@@ -322,8 +337,13 @@ def register_tools(server, ctx):
                     controller=controller,
                     controller_valid=classification == 'valid_uuid',
                     kind=kind, describe=describe,
-                    execute=execute)
+                    execute=execute,
+                    # CHK-046: config mutations scope conflicts to the
+                    # touched names — disjoint configs run in parallel
+                    # (contract 033); lifecycle stays global.
+                    conflict_names=conflict_names)
             except errors.McpError as exc:
+                audit_rejected(exc)
                 return ctx.error_response(exc)
         return invoke
 
@@ -333,12 +353,21 @@ def register_tools(server, ctx):
         try:
             ctx.store.validate_content(content)
         except errors.McpError as exc:
+            try:
+                ctx.store.audit(
+                    controller=ctx.controller_identity()[0],
+                    command_id=command_id, target=name,
+                    operation='validate', before_sha256=None,
+                    after_sha256=None,
+                    result='rejected: %s' % exc.code)
+            except errors.McpError:
+                pass
             return ctx.error_response(exc)
         return config_mutation(
             'create_config', {'name': name},
             lambda controller: ctx.store.create(
                 controller=controller, command_id=command_id, name=name,
-                content=content))(
+                content=content), conflict_names=frozenset((name,)))(
             command_id, expected_state_version)
 
     @server.tool()
@@ -347,12 +376,21 @@ def register_tools(server, ctx):
         try:
             ctx.store.validate_content(content)
         except errors.McpError as exc:
+            try:
+                ctx.store.audit(
+                    controller=ctx.controller_identity()[0],
+                    command_id=command_id, target=name,
+                    operation='validate', before_sha256=None,
+                    after_sha256=None,
+                    result='rejected: %s' % exc.code)
+            except errors.McpError:
+                pass
             return ctx.error_response(exc)
         return config_mutation(
             'import_config', {'name': name},
             lambda controller: ctx.store.create(
                 controller=controller, command_id=command_id, name=name,
-                content=content))(
+                content=content), conflict_names=frozenset((name,)))(
             command_id, expected_state_version)
 
     @server.tool()
@@ -361,12 +399,21 @@ def register_tools(server, ctx):
         try:
             ctx.store.validate_content(content)
         except errors.McpError as exc:
+            try:
+                ctx.store.audit(
+                    controller=ctx.controller_identity()[0],
+                    command_id=command_id, target=name,
+                    operation='validate', before_sha256=None,
+                    after_sha256=None,
+                    result='rejected: %s' % exc.code)
+            except errors.McpError:
+                pass
             return ctx.error_response(exc)
         return config_mutation(
             'edit_config', {'name': name},
             lambda controller: ctx.store.edit(
                 controller=controller, command_id=command_id, name=name,
-                content=content, expected_sha256=expected_sha256))(
+                content=content, expected_sha256=expected_sha256), conflict_names=frozenset((name,)))(
             command_id, expected_state_version)
 
     @server.tool()
@@ -376,7 +423,8 @@ def register_tools(server, ctx):
             'rename_config', {'name': name, 'new_name': new_name},
             lambda controller: ctx.store.rename(
                 controller=controller, command_id=command_id, name=name,
-                new_name=new_name, expected_sha256=expected_sha256))(
+                new_name=new_name, expected_sha256=expected_sha256),
+            conflict_names=frozenset((name, new_name)))(
             command_id, expected_state_version)
 
     @server.tool()
@@ -386,7 +434,7 @@ def register_tools(server, ctx):
             'delete_config', {'name': name},
             lambda controller: ctx.store.delete(
                 controller=controller, command_id=command_id, name=name,
-                expected_sha256=expected_sha256))(
+                expected_sha256=expected_sha256), conflict_names=frozenset((name,)))(
             command_id, expected_state_version)
 
     return server

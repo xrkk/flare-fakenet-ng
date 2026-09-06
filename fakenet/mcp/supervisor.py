@@ -93,6 +93,7 @@ class RealSupervisor:
         self._terminal_evidence = None
         self._last_run_outcome = None
         self._log_exception_seen_count = 0
+        self._health_cache = None
         # Wall-clock stamp of the current run's start; artifact
         # registration only picks up files this run produced.
         self._run_started_at = None
@@ -105,11 +106,35 @@ class RealSupervisor:
         if fakenet is None:
             return False
         diverter = getattr(fakenet, 'diverter', None)
-        handle_ok = diverter is not None and \
-            getattr(diverter, 'handle', None) is not None
-        listeners_ok = bool(getattr(fakenet, 'running_listener_providers',
-                                    None))
+        handle = getattr(diverter, 'handle', None) if diverter else None
+        # CHK-039: a referenced object is not liveness. pydivert's
+        # close() nulls the underlying WinDivert handle, so is_open
+        # (never a blocking recv) is the true validity signal — a
+        # closed/released diverter revokes health immediately.
+        handle_ok = bool(handle) and bool(getattr(handle, 'is_open', True))
+        providers = getattr(fakenet, 'running_listener_providers',
+                            None) or []
+        listeners_ok = bool(providers) and all(
+            self._provider_socket_alive(provider) for provider in providers)
         return bool(handle_ok and listeners_ok)
+
+    @staticmethod
+    def _provider_socket_alive(provider):
+        """CHK-039: sample the provider's actual listening socket, not
+        the object's existence. A closed/invalid socket revokes health
+        even while the provider object stays referenced."""
+        for attr in ('server', 'sock', 'socket'):
+            target = getattr(provider, attr, None)
+            if target is None:
+                continue
+            fileno = getattr(target, 'fileno', None)
+            try:
+                fd = fileno()
+            except (OSError, ValueError):
+                return False
+            if fd is None or int(fd) < 0:
+                return False
+        return True
 
     def _init_evidence(self):
         fakenet = self._fakenet
@@ -126,13 +151,34 @@ class RealSupervisor:
             return False
         return bool(UNHANDLED_EXCEPTION_PATTERN.search(content or ''))
 
-    def health_detail(self, state):
-        with self._lock:
+    def health_detail(self, state, max_wait=0.05):
+        """CHK-046: reads are bounded. The supervisor lock is held for a
+        whole start/stop, so a blocking detail would stall every
+        get_status behind long operations. Try briefly; when busy serve
+        the last sampled detail (the health loop refreshes it every
+        interval under the lock)."""
+        if not self._lock.acquire(timeout=max_wait):
+            cached = getattr(self, '_health_cache', None)
+            if cached is not None:
+                return dict(cached)
             return {
                 'process_alive': self._fakenet is not None,
-                'init_evidence': self._init_evidence(),
-                'probe': self._probe(),
+                'init_evidence': False, 'probe': False,
+                'degraded': 'supervisor busy',
             }
+        try:
+            detail = self._health_detail_locked()
+            self._health_cache = dict(detail)
+            return detail
+        finally:
+            self._lock.release()
+
+    def _health_detail_locked(self):
+        return {
+            'process_alive': self._fakenet is not None,
+            'init_evidence': self._init_evidence(),
+            'probe': self._probe(),
+        }
 
     def evaluate_health(self):
         """Return (healthy, reason)."""
@@ -150,6 +196,7 @@ class RealSupervisor:
     def _health_loop(self):
         while not self._stop_event.wait(self._health_interval):
             healthy, reason = self.evaluate_health()
+            self._health_cache = self._health_detail_locked()
             if self._fakenet is None:
                 continue
             if healthy:
@@ -185,19 +232,31 @@ class RealSupervisor:
                 raise errors.McpError(
                     errors.NOT_ALLOWED_IN_STATE,
                     'a managed FakeNet-NG run is already active')
+            # FB-007/CHK-041: a live recovery marker forbids new runs.
+            # The previous run did not converge; recovery must complete
+            # (a converging stop or the service-startup audit) before
+            # any new start — never overwrite an unverified failure.
+            if self._snapshot is not None:
+                marker, corrupt = self._snapshot.read()
+                if corrupt or (marker and marker.get('needs_recovery')):
+                    raise errors.McpError(
+                        errors.NOT_ALLOWED_IN_STATE,
+                        'recovery marker is live; the previous run did '
+                        'not converge — resolve recovery before starting')
             from fakenet.fakenet import Fakenet
 
             config_path = self._resolve_config_path(
                 config_identity['name'], config_identity.get('builtin'))
-            self._verify_config_sha(config_path, config_identity['sha256'])
             self._run_started_at = time.time()
 
-            # IMP-P03-05 frozen order: lock BEFORE reading/parsing — the
-            # active config is locked whether builtin or custom.
+            # IMP-P03-05/CHK-047 frozen order: lock FIRST, then verify
+            # the SHA and parse — the content that runs is exactly the
+            # content that was locked, with no read-SHA-then-lock window.
             from fakenet.mcp.configlock import ActivityLock
 
             self._active_config_path = config_path
             self._activity_lock = ActivityLock(config_path).acquire()
+            self._verify_config_sha(config_path, config_identity['sha256'])
 
             # Fakenet resolves packaged resources (defaultFiles/, report
             # templates) relative to the process CWD; the service runs from
@@ -336,9 +395,74 @@ class RealSupervisor:
                     'controller': controller,
                     'config_identity': config_identity}
 
+    def _audit_retained_recovery(self, coordinator, run_id, marker):
+        """CHK-041: complete the recovery audit for a grace-exceeded run
+        whose instance references were dropped but whose marker is live.
+        Clean result clears the marker and reports stopped; anything
+        unverifiable or differing reports failed and retains it."""
+        if self._baseline_store is None:
+            coordinator._failure_reason = (
+                'baseline store unavailable; cannot verify recovery')
+            return {'state': 'failed', 'changed': True,
+                    'failure_reason': coordinator._failure_reason,
+                    'run_id': None, 'release_controller': True}
+        differences = self._baseline_store.full_audit_diff(run_id)
+        if differences is None:
+            coordinator._failure_reason = (
+                'baseline for run %s unreadable; cannot verify recovery'
+                % run_id)
+            logger.error('retained recovery audit cannot read baseline '
+                         'for run %s', run_id)
+            return {'state': 'failed', 'changed': True,
+                    'failure_reason': coordinator._failure_reason,
+                    'run_id': None, 'release_controller': True}
+        if differences:
+            try:
+                import json as _json
+                logger.error(
+                    'retained recovery audit differences for run %s: %s',
+                    run_id,
+                    _json.dumps(differences, ensure_ascii=False,
+                                default=str)[:2000])
+            except Exception:  # noqa: BLE001 - logging only
+                pass
+            coordinator._failure_reason = (
+                'environment differs from pre-start baseline')
+            return {'state': 'failed', 'changed': True,
+                    'failure_reason': coordinator._failure_reason,
+                    'run_id': None, 'release_controller': True}
+        try:
+            self._snapshot.clear_recovery(
+                run_id=marker.get('run_id'), controller_id=None,
+                state_version=marker.get('state_version'),
+                command_id=marker.get('command_id'),
+                config_sha256=marker.get('config_sha256'),
+                baseline_path=marker.get('baseline_path'))
+        except Exception:  # noqa: BLE001 - snapshot is a note
+            logger.exception('clearing recovery marker failed')
+        if self._activity_lock is not None:
+            self._activity_lock.release()
+            self._activity_lock = None
+        return {'state': 'stopped', 'changed': True,
+                'failure_reason': None, 'run_id': None,
+                'release_controller': True}
+
     def stop(self, coordinator, baseline_audit=True):
         with self._lock:
             if self._fakenet is None:
+                # CHK-041: no live instance is not automatically clean —
+                # a grace-exceeded stop retains the recovery marker and
+                # the coordinator's run_id. A stop in that state must
+                # complete the recovery audit before claiming stopped,
+                # never short-circuit past it.
+                retained = coordinator.snapshot().get('run_id')
+                marker = None
+                if self._snapshot is not None:
+                    marker, _corrupt = self._snapshot.read()
+                if retained and marker and marker.get('needs_recovery'):
+                    return self._audit_retained_recovery(coordinator,
+                                                         str(retained),
+                                                         marker)
                 return {'state': 'stopped', 'changed': False}
             if self.stop_blocker is not None:
                 self.stop_blocker()
@@ -356,13 +480,17 @@ class RealSupervisor:
             stop_outcome = {}
 
             def guarded_stop():
-                if self._faults is not None:
-                    # Fault hooks live INSIDE the guarded stop so a hung
-                    # fault (policy_pause) is bounded by the stop grace.
-                    self._faults.before_listener_phase()
-                    self._faults.on_stop_error()
+                # CHK-041: ALL fault hooks live inside the guarded stop
+                # so a hung fault (policy_pause, cleanup_error) is
+                # bounded by the stop grace.
                 try:
+                    if self._faults is not None:
+                        self._faults.before_listener_phase()
                     self._fakenet.stop()
+                    if self._faults is not None:
+                        # cleanup_error fires at the END of the guarded
+                        # stop, inside the grace bracket (CHK-041).
+                        self._faults.on_stop_error()
                 except PayloadReportError as exc:
                     # Platform cleanup and capture close already succeeded
                     # when the report layer raises; the report artifact is a
@@ -384,17 +512,14 @@ class RealSupervisor:
                 # policy_pause round 1 flagged listen_ports drift).
                 logger.error('stop grace (%ss) exceeded', self._stop_grace)
                 self._force_close_listener_sockets(self._fakenet)
-                # CHK-017: retain the recovery marker and run_id — the
-                # hung stop has NOT completed its recovery audit; the
-                # next service start must verify, not guess 'stopped'.
-                # Only the supervisor references are dropped; the
-                # coordinator keeps run_id for the startup recovery.
+                # CHK-017/CHK-041: the hung stop has NOT completed its
+                # recovery audit — the marker, the coordinator's run_id
+                # AND the activity lock all stay held. The next service
+                # start must verify, not guess 'stopped'; only supervisor
+                # references are dropped so the next stop is not
+                # short-circuited by a dead instance.
                 self._fakenet = None
                 self._worker = None
-                self._coordinator = None
-                if self._activity_lock is not None:
-                    self._activity_lock.release()
-                    self._activity_lock = None
                 return {'state': 'failed', 'changed': True,
                         'failure_reason': 'stop grace exceeded',
                         'run_id': None, 'release_controller': False}
@@ -497,18 +622,22 @@ class RealSupervisor:
             self._exclusion.get('port', '')
 
     def _handle_terminal_failure(self, reason):
-        """Terminal internal failure (record 034): bounded incident first,
-        then the unified stop sequence; never waits for the controller."""
+        """Terminal internal failure (record 034): the failed state is
+        published FIRST (CHK-039 — a high-confidence terminal condition
+        never waits for evidence collection), then the bounded incident
+        pack, then the unified stop sequence; never waits for the
+        controller."""
         logger.error('terminal internal failure: %s', reason)
         self._terminal_evidence = reason
+        coord = self._coordinator
+        if coord is not None:
+            coord.update_health_state('failed', reason)
         try:
             self._collect_incident(reason)
         except Exception:  # noqa: BLE001 - evidence must not block cleanup
             logger.exception('incident collection failed')
-        coord = self._coordinator
         if coord is None:
             return
-        coord.update_health_state('failed', reason)
         import uuid as _uuid
 
         try:
@@ -688,7 +817,18 @@ def perform_startup_recovery(snapshot, baseline_store, coordinator):
         coordinator._failure_reason = (
             'baseline file for run %s not found; cannot verify' % run_id)
         return 'failed'
-    differences = baseline_store.diff(run_id)
+    # CHK-040: an unreadable/corrupt baseline is an UNVERIFIABLE
+    # recovery — fail closed, never treat it as a clean match. The
+    # comparison uses the same normalized, attributable audit as the
+    # stop path (one schema across P03/P04/P05; CHK-042).
+    differences = baseline_store.full_audit_diff(run_id)
+    if differences is None:
+        coordinator._failure_reason = (
+            'baseline for run %s unreadable; cannot verify recovery'
+            % run_id)
+        logger.error('recovery audit cannot read baseline for run %s',
+                     run_id)
+        return 'failed'
     if differences:
         try:
             import json as _json
