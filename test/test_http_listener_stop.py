@@ -1,9 +1,15 @@
 import logging
+import io
 import socket
 import ssl
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from fakenet.mcp.supervisor import RealSupervisor
 
 from fakenet.listeners.HTTPListener import (
     HTTPListener,
@@ -52,6 +58,34 @@ class RecordingHandler(logging.Handler):
 
     def emit(self, record):
         self.records.append(record)
+
+
+@pytest.mark.parametrize('request_error,healthy', [
+    (ssl.SSLEOFError(8, 'EOF occurred in violation of protocol'), True),
+    (ssl.SSLZeroReturnError(6, 'TLS connection closed'), True),
+    (ConnectionResetError('peer reset'), True),
+    (BrokenPipeError('peer closed'), True),
+    (RuntimeError('internal handler failure'), False),
+    (OSError('unexpected I/O failure'), False),
+])
+def test_request_error_health_classification(request_error, healthy):
+    class RequestErrorHandler(MatrixHandler):
+        def do_POST(self):
+            raise request_error
+
+    listener, server, thread = _start_server(RequestErrorHandler)
+    log = io.StringIO()
+    server.logger.addHandler(logging.StreamHandler(log))
+    supervisor = RealSupervisor(log_reader=lambda offset: log.getvalue(),
+                                probe_impl=lambda instance: thread.is_alive())
+    supervisor._fakenet = SimpleNamespace(running_listener_providers=[server])
+    try:
+        _request(server, b'POST / HTTP/1.0\r\nContent-Length: 0\r\n\r\n')
+        assert thread.is_alive()
+        assert supervisor.evaluate_health()[0] is healthy, log.getvalue()
+        assert b'200 OK' in _request(server, b'GET / HTTP/1.0\r\n\r\n')
+    finally:
+        _stop_with_deadline(listener, thread)
 
 
 def _start_server(handler=MatrixHandler, tls=False, timeout=2):

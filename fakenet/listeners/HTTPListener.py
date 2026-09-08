@@ -503,6 +503,15 @@ class ThreadedHTTPServer(http.server.HTTPServer):
             self.logger.debug('HTTP request interrupted during stop: %s',
                               value)
             return
+        # A peer closing one request does not kill the listening server.
+        # Keep these expected transport failures out of the supervisor's
+        # unhandled-exception scan; unexpected I/O and handler faults below
+        # must still retain their traceback and revoke health.
+        if isinstance(value, (ssl.SSLEOFError, ssl.SSLZeroReturnError,
+                              ConnectionResetError, BrokenPipeError)):
+            self.logger.warning('HTTP peer disconnected (%s)',
+                                type(value).__name__)
+            return
         self.logger.error('Error: %s', value, exc_info=sys.exc_info())
 
 class ThreadedHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
