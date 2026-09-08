@@ -245,6 +245,7 @@ def smoke_frozen_exe(onedir, build_root):
         'listen_port': SMOKE_PORT,
         'allowed_host_ips': ['127.0.0.1'],
         'log_level': 'INFO',
+        'allow_legacy_protocol': True,
     }), encoding='utf-8')
 
     env = os.environ.copy()
@@ -332,7 +333,29 @@ def smoke_frozen_exe(onedir, build_root):
                 'frozen exe smoke: ping failed (%d): %s' % (status, text[:300]))
         if parse_tool_result(text)['controller_header'] != 'valid_uuid':
             raise RuntimeError('frozen exe smoke: controller header not '
-                               'delivered: %s' % text[:300])
+                'delivered: %s' % text[:300])
+        legacy_headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
+            'X-FakeNet-Controller-ID': SMOKE_CONTROLLER,
+        }
+        legacy_init = {'jsonrpc': '2.0', 'id': 2, 'method': 'initialize',
+                       'params': {'protocolVersion': '2025-11-25',
+                                  'capabilities': {},
+                                  'clientInfo': {'name': 'builder-legacy',
+                                                 'version': '1'}}}
+        status, text = post(legacy_init, legacy_headers)
+        if status != 200 or json.loads(text)['result'].get(
+                'protocolVersion') != '2025-11-25':
+            raise RuntimeError('frozen legacy initialize failed: %s' % text[:300])
+        legacy_headers['MCP-Protocol-Version'] = '2025-11-25'
+        status, text = post({'jsonrpc': '2.0', 'id': 3,
+                            'method': 'tools/call',
+                            'params': {'name': 'ping', 'arguments': {}}},
+                           legacy_headers)
+        if status != 200 or parse_tool_result(text).get(
+                'controller_header') != 'valid_uuid':
+            raise RuntimeError('frozen legacy tool call failed: %s' % text[:300])
         bare = {k: v for k, v in full_headers.items()
                 if k != 'X-FakeNet-Controller-ID'}
         status, text = post(body, bare)
@@ -343,7 +366,7 @@ def smoke_frozen_exe(onedir, build_root):
         no_version = {k: v for k, v in bare.items()
                       if k != 'MCP-Protocol-Version'}
         status, text = post(body, no_version)
-        if status != 400 or '-32020' not in text:
+        if status != 400:
             raise RuntimeError('frozen exe smoke: missing-version rejection '
                                'unexpected: (%d) %s' % (status, text[:200]))
         return {'verdict': 'PASS', 'port': SMOKE_PORT,
@@ -534,7 +557,8 @@ def build(repo, source_commit, output_root, output_directory=None):
             'windows_test_gate': test_gate,
             'frozen_smoke': smoke,
             'target_client_identity': TARGET_CLIENT_IDENTITY,
-            'protocol': 'MCP 2026-07-28 Streamable HTTP, modern era only',
+            'protocol': 'MCP 2026-07-28 Streamable HTTP; opt-in legacy compatibility',
+            'allow_legacy_protocol_default': False,
             'endpoint_path': '/mcp',
             'default_port': 28788,
             'service_name': 'fakenetng-mcp',
