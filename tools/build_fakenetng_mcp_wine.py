@@ -472,8 +472,11 @@ README_SECURITY = """# fakenetng-mcp candidate — security deviation note
 
 %s
 
-Endpoint: /mcp (single MCP endpoint, POST only, MCP protocol 2026-07-28,
-modern era only). Service name: fakenetng-mcp (LocalSystem, auto start).
+Endpoint: /mcp (single MCP endpoint, POST only, MCP protocol 2026-07-28).
+Optional legacy HTTP compatibility: set allow_legacy_protocol=true in
+ProgramData/FakeNet-NG-MCP/configs/service.json, then restart the service.
+Default: false. No separate SSE endpoint or persistent sessions are added.
+Service name: fakenetng-mcp (LocalSystem, auto start).
 """ % SECURITY_DEVIATION
 
 

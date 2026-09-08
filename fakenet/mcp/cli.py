@@ -265,12 +265,9 @@ def service_main(controller):
         try:
             import fakenet.mcp.server as srv
 
-            app = srv.TransportGuardMiddleware(
-                srv.build_mcp_server(cfg, context=context)
-                .streamable_http_app(
-                    streamable_http_path='/mcp', json_response=True,
-                    stateless_http=True, host=cfg.listen_ip),
-                endpoint_path='/mcp', logger=None)
+            # One assembly path for SCM, debug and protocol tests: deployment
+            # options (including compatibility) must reach the same guard.
+            app = srv.build_app(cfg, context=context)
             import uvicorn
 
             config_uvicorn = uvicorn.Config(
