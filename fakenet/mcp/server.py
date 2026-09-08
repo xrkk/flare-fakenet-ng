@@ -58,7 +58,8 @@ def build_app(config: ServiceConfig, logger=None, context=None):
         host=config.listen_ip,
     )
     return TransportGuardMiddleware(
-        starlette_app, endpoint_path=MCP_ENDPOINT_PATH, logger=logger)
+        starlette_app, endpoint_path=MCP_ENDPOINT_PATH, logger=logger,
+        allow_legacy_protocol=config.allow_legacy_protocol)
 
 
 _active_server = None

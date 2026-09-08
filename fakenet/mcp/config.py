@@ -22,7 +22,8 @@ class ServiceConfig:
 
     def __init__(self, listen_ip, listen_port, allowed_host_ips,
                  log_level='INFO', extra_control_ports=None,
-                 stop_grace_seconds=60, source=None):
+                 stop_grace_seconds=60, source=None,
+                 allow_legacy_protocol=False):
         if not isinstance(listen_ip, str) or not listen_ip.strip():
             raise ConfigError('listen_ip must be a non-empty string')
         listen_ip = listen_ip.strip()
@@ -58,6 +59,9 @@ class ServiceConfig:
         if not (5 <= grace <= 600):
             raise ConfigError('stop_grace_seconds must be in 5..600')
         self.stop_grace_seconds = grace
+        if not isinstance(allow_legacy_protocol, bool):
+            raise ConfigError('allow_legacy_protocol must be a boolean')
+        self.allow_legacy_protocol = allow_legacy_protocol
         self.source = str(source) if source else None
 
     def to_dict(self):
@@ -68,6 +72,7 @@ class ServiceConfig:
             'log_level': self.log_level,
             'extra_control_ports': list(self.extra_control_ports),
             'stop_grace_seconds': self.stop_grace_seconds,
+            'allow_legacy_protocol': self.allow_legacy_protocol,
         }
 
     @classmethod
@@ -83,6 +88,7 @@ class ServiceConfig:
             extra_control_ports=data.get('extra_control_ports', []),
             stop_grace_seconds=data.get('stop_grace_seconds', 60),
             source=source,
+            allow_legacy_protocol=data.get('allow_legacy_protocol', False),
         )
 
     @classmethod

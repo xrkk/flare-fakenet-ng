@@ -14,6 +14,7 @@
 | `log_level` | 否 | DEBUG/INFO/WARNING/ERROR | INFO | 服务日志级别 |
 | `extra_control_ports` | 否 | 端口数组 | [] | 除 `listen_port` 外同样受主 WinDivert filter 排除保护的端口（如并存的 Win10VM 管理通道 28787/28790）。不得等于 `listen_port`，重复自动去重 |
 | `stop_grace_seconds` | 否 | 5–600 | 60 | 停止宽限：FakeNet 停止超过该时长按"宽限超限"收敛（保留恢复标记，下次启动先审计） |
+| `allow_legacy_protocol` | 否 | JSON 布尔值 | false | 显式启用旧式 initialize 客户端兼容；支持 2024-11-05、2025-03-26、2025-06-18、2025-11-25。现代协议仍严格校验。修改后重启服务。 |
 
 示例：
 
@@ -31,6 +32,13 @@
 安装时的对应参数：`install-fakenetng-mcp.ps1 -ListenIp <ip> -Port <port> -AllowedHost <ip> [-ExtraExcludePort @(28787,28790)]`。
 
 ## 2. 受管 FakeNet INI
+
+2026-09-08 兼容决定：需要旧式握手的客户端可将 service.json 中的
+`allow_legacy_protocol` 设为 `true`。仍使用同一个 `/mcp` HTTP 端点，
+不启用旧式独立 SSE 端点或持久会话。无版本头仅允许受支持版本的 initialize；
+后续请求必须携带已协商的版本头。控制器 UUID、状态版本、命令幂等、
+host-only 绑定、防火墙和恢复门禁不变。默认 false 保持原现代协议契约。
+该决定是对原 P01“仅现代纪元”限制的显式、可选扩展，不代表默认降级。
 
 - 内置：`configs\default.ini`（只读，`delete_config`/`edit_config` 均拒绝）。
 - 自定义：`configs\custom\*.ini`，经 MCP 工具管理（`create_config`/`import_config`/`edit_config`/`rename_config`/`delete_config`），每次变更（含被拒尝试）写审计日志 `configs\audit.jsonl`。路径穿越/符号链接逃逸被阻断。

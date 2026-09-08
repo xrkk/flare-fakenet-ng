@@ -1,5 +1,10 @@
 # Copyright 2026 Google LLC
-"""ASGI transport guard freezing the modern (2026-07-28 only) MCP contract.
+"""ASGI guard: strict modern protocol, optional SDK-backed legacy support.
+
+The 2026-09-08 compatibility decision adds allow_legacy_protocol (default
+False). When enabled, supported legacy requests are delegated to the SDK's
+stateless HTTP implementation. No extra SSE endpoint or persistent session
+is introduced. Modern requests retain all checks below in either mode.
 
 The official SDK server is dual-era by default (it answers legacy
 ``initialize``).  The P01 contract freezes this service to the modern era
@@ -34,6 +39,7 @@ from fakenet.mcp import CONTROLLER_HEADER, MCP_PROTOCOL_VERSION
 JSONRPC_HEADER_MISMATCH = -32020
 JSONRPC_UNSUPPORTED_VERSION = -32022  # spec-allocated error code
 SUPPORTED_VERSIONS = [MCP_PROTOCOL_VERSION]
+LEGACY_VERSIONS = ('2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25')
 
 controller_header_state = contextvars.ContextVar(
     'fakenetng_mcp_controller_header', default=None)
@@ -65,10 +71,12 @@ def _error_body(request_id, code, message, data=None):
 
 class TransportGuardMiddleware:
 
-    def __init__(self, app, endpoint_path='/mcp', logger=None):
+    def __init__(self, app, endpoint_path='/mcp', logger=None,
+                 allow_legacy_protocol=False):
         self.app = app
         self.endpoint_path = endpoint_path
         self.logger = logger
+        self.allow_legacy_protocol = allow_legacy_protocol
 
     def _log(self, message):
         if self.logger:
@@ -93,9 +101,38 @@ class TransportGuardMiddleware:
             return
 
         controller_value = headers.get(CONTROLLER_HEADER.lower())
-        controller_header_state.set(controller_value)
-
         version_header = headers.get('mcp-protocol-version')
+        if self.allow_legacy_protocol and version_header != MCP_PROTOCOL_VERSION:
+            body = await self._read_body(receive)
+            message = self._parse_json(body)
+            params = message.get('params', {}) if isinstance(message, dict) else {}
+            request_method = message.get('method') if isinstance(message, dict) else None
+            request_id = message.get('id') if isinstance(message, dict) else None
+            if not isinstance(params, dict) or not isinstance(request_method, str):
+                await self._jsonrpc(send, 400, _error_body(
+                    request_id, -32600, 'Invalid JSON-RPC request'))
+                return
+            initial = request_method == 'initialize'
+            requested = params.get('protocolVersion') if initial else version_header
+            allowed = requested in LEGACY_VERSIONS and (
+                version_header == requested or (initial and version_header is None))
+            if not allowed:
+                await self._jsonrpc(send, 400, _error_body(
+                    request_id, JSONRPC_UNSUPPORTED_VERSION,
+                    'Unsupported or missing legacy protocol version',
+                    {'supported': SUPPORTED_VERSIONS + list(LEGACY_VERSIONS)}))
+                return
+            # Optional modern-style headers must not contradict the body.
+            meta = params.get('_meta') or {}
+            if (not isinstance(meta, dict) or
+                    headers.get('mcp-method', request_method) != request_method or
+                    ('mcp-name' in headers and headers['mcp-name'] != params.get('name')) or
+                    meta.get('io.modelcontextprotocol/protocolVersion', requested) != requested):
+                await self._jsonrpc(send, 400, _error_body(
+                    request_id, JSONRPC_HEADER_MISMATCH, 'Header/body mismatch'))
+                return
+            await self._forward(scope, receive, send, body, controller_value)
+            return
         if not version_header:
             await self._jsonrpc(send, 400, _error_body(
                 None, JSONRPC_HEADER_MISMATCH,
@@ -164,13 +201,24 @@ class TransportGuardMiddleware:
             self._log('rejected: version header vs _meta mismatch')
             return
 
-        # Replay the body downstream (we consumed it above).
-        body_bytes = body if isinstance(body, bytes) else body.encode('utf-8')
+        await self._forward(scope, receive, send, body, controller_value)
+
+    async def _forward(self, scope, receive, send, body, controller_value):
+        # Set and reset identity per request, including concurrent clients.
+        token = controller_header_state.set(controller_value)
+        consumed = False
 
         async def replay_receive():
-            return {'type': 'http.request', 'body': body_bytes, 'more_body': False}
+            nonlocal consumed
+            if not consumed:
+                consumed = True
+                return {'type': 'http.request', 'body': body, 'more_body': False}
+            return await receive()
 
-        await self.app(scope, replay_receive, send)
+        try:
+            await self.app(scope, replay_receive, send)
+        finally:
+            controller_header_state.reset(token)
 
     async def _read_body(self, receive):
         chunks = []
