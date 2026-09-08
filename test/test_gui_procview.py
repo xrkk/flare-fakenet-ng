@@ -9,6 +9,7 @@ regex-mismatch defect this round fixes.
 """
 
 import tkinter as tk
+from tkinter import ttk
 
 from fakenet.gui import procview
 
@@ -143,6 +144,18 @@ def test_window_filters_by_name_pid_and_disposition():
         view.disp_var.set('全部')
         view._clear()
         assert _flows_of(view) == []
+
+
+def test_window_keeps_file_controls_on_visible_second_toolbar_row():
+    with WindowFixture() as view:
+        toolbar = view.window.winfo_children()[0]
+        buttons = {
+            child.cget('text'): child
+            for child in toolbar.winfo_children()
+            if isinstance(child, ttk.Button)
+        }
+        assert int(buttons['清空'].grid_info()['row']) == 1
+        assert int(buttons['打开日志文件…'].grid_info()['row']) == 1
 
 
 def test_window_name_filter_matches_spaces_as_underscores():

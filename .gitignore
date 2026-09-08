@@ -113,3 +113,4 @@ build_gui_work/
 
 build_fn_work
 **/.codex
+/.venv-mcp-runners

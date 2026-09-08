@@ -448,8 +448,6 @@ class EgressPolicy(object):
             int(item) for item in _split_csv(
                 config.get("externalallowedtcpports", ""))
         )
-        if not self.allowed_domains and not self.allowed_wildcards:
-            raise PolicyConfigError("ExternalAllowedDomains is required")
         if self.allowed_tcp_ports != frozenset([443]):
             raise PolicyConfigError("reviewed Windows mode only permits ExternalAllowedTCPPorts=443")
         if str(config.get("externalverifytlssni", "yes")).lower() not in (

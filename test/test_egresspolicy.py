@@ -108,6 +108,14 @@ class EgressPolicyTests(unittest.TestCase):
         self.assertIsNone(policy.match_relay_forward(
             'TCP', '10.0.0.5', 50002, '203.0.113.9', 443))
 
+    def test_real_domain_access_can_be_disabled(self):
+        candidate = config()
+        candidate.pop('externalalloweddomains')
+        policy = EgressPolicy(candidate, ['10.0.0.5'], [], '10.0.0.1')
+        self.assertEqual(frozenset(), policy.allowed_domains)
+        self.assertEqual(frozenset(), policy.allowed_wildcards)
+        self.assertIsNone(policy.resolve_dns_rule('api.deepseek.com'))
+
     def test_wildcard_domain_matching_semantics(self):
         candidate = config()
         candidate['externalalloweddomains'] = '*.example.com'

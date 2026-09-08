@@ -648,6 +648,8 @@ class Diverter(DiverterBase, WinUtilMixin):
             raise PolicyConfigError(
                 'ExternalDnsServer=Auto found no usable non-local IPv4 '
                 'resolver')
+        if configured.lower() != 'auto':
+            return valid[0]
         # Probe candidates so a dead resolver (common on multi-NIC hosts)
         # is not selected just because it is first (v1.25 §12.28).
         for candidate in valid[:3]:
@@ -658,10 +660,9 @@ class Diverter(DiverterBase, WinUtilMixin):
                         'answer; selected %s after probe',
                         valid[0], candidate)
                 return candidate
-        self.logger.warning(
-            'Auto upstream DNS: no candidate answered a probe (%s); '
-            'falling back to %s', ', '.join(valid[:3]), valid[0])
-        return valid[0]
+        raise PolicyConfigError(
+            'ExternalDnsServer=Auto: no configured resolver answered a '
+            'probe (%s)' % ', '.join(valid[:3]))
 
     def _validate_policy_listeners(self):
         relay_port = self.egress_policy.relay_port

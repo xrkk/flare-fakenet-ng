@@ -196,6 +196,13 @@ def test_bad_domain_name():
     assert by_key(errors(model), 'ExternalAllowedDomains')
 
 
+def test_policy_allows_real_domain_access_to_be_disabled():
+    model = build()
+    enable_policy(model)
+    model.diverter().delete('ExternalAllowedDomains')
+    assert not by_key(errors(model), 'ExternalAllowedDomains')
+
+
 # -- Rule 5: takeover ---------------------------------------------------------
 
 def enable_takeover(model, sink='192.168.204.1', domains=None):

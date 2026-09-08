@@ -92,11 +92,14 @@ class ProcessFlowWindow(object):
         self.follow_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(toolbar, text='自动滚动', variable=self.follow_var)\
             .grid(row=0, column=7, padx=(0, 6))
+        # Keep file controls reachable under Windows display scaling.  With
+        # every control on one row, the default 980px window clips both
+        # buttons on the acceptance VM even though the filters remain visible.
         ttk.Button(toolbar, text='清空', command=self._clear)\
-            .grid(row=0, column=8, padx=(0, 6))
+            .grid(row=1, column=0, pady=(4, 0), sticky='w')
         ttk.Button(toolbar, text='打开日志文件…',
                    command=self._open_log_dialog)\
-            .grid(row=0, column=9)
+            .grid(row=1, column=1, pady=(4, 0), sticky='w')
 
         columns = ('target', 'proto', 'disposition', 'domain', 'time')
         headers = ('目标', '协议', '处置', '域名', '时间')
@@ -240,6 +243,16 @@ class ProcessFlowWindow(object):
             parent=self.window, filetypes=[('日志', '*.log'), ('所有', '*.*')])
         if not path:
             return
+        self.follow_file(path)
+
+    def follow_file(self, path):
+        """Backfill one log file, then continue following it."""
+        if self._file_job is not None:
+            try:
+                self.window.after_cancel(self._file_job)
+            except (tk.TclError, ValueError):
+                pass
+            self._file_job = None
         self._file_path = path
         self._file_offset = 0
         self._clear()

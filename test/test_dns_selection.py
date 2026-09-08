@@ -7,6 +7,8 @@ import socket
 import sys
 import threading
 
+import pytest
+
 sys.path.insert(
     0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -84,9 +86,14 @@ def test_selection_skips_dead_first_resolver(monkeypatch):
     assert diverter._select_external_dns_server() == '192.168.204.2'
 
 
-def test_selection_falls_back_to_first_when_none_answer(monkeypatch):
+def test_selection_fails_when_none_answer(monkeypatch):
+    from fakenet.diverters.egresspolicy import PolicyConfigError
+
     diverter = _minimal_diverter(monkeypatch, {})
-    assert diverter._select_external_dns_server() == '192.168.243.1'
+    with pytest.raises(
+            PolicyConfigError,
+            match='no configured resolver answered a probe'):
+        diverter._select_external_dns_server()
 
 
 def test_selection_prefers_first_when_it_answers(monkeypatch):

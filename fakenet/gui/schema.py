@@ -88,6 +88,8 @@ DIVERTER_SECTION = 'Diverter'
 RESPONSEA_TOKENS = ('GetFirstNonLoopback', 'GetHostByName')
 EGRESS_POLICY_DISABLED = 'Disabled'
 EGRESS_POLICY_ENABLED = 'EgressControl'
+DEFAULT_REAL_DOMAIN = 'api.deepseek.com'
+DEFAULT_VM_UPSTREAM_DNS = '192.168.204.2'
 # Configs written by delivered packages up to v29 use the legacy value; it
 # stays readable (treated as enabled) but the GUI always writes the new one.
 EGRESS_POLICY_LEGACY_ALIASES = ('domainallowlist',)
@@ -213,9 +215,10 @@ DIVERTER_FIELDS = (
           hint='勾选后启用域名放行、私网接管、公网 IPv4 放行和进程重定向'
                '的统一出站策略,并自动补齐必需监听器'),
     Field('ExternalAllowedDomains', '真实联网域名', T_STRINGLIST,
-          default='api.deepseek.com', group='基础策略',
-          hint='英文逗号分隔;支持精确主机名与 *.example.com 通配'
-               '(匹配其任意层级子域名,不含裸域本身);私网接管下同样支持多域名'),
+          default='', group='基础策略',
+          hint='需先手动勾选“启用真实域名联网”;英文逗号分隔;支持精确主机名'
+               '与 *.example.com 通配(匹配其任意层级子域名,不含裸域本身);'
+               '私网接管下同样支持多域名'),
     Field('ExternalAllowedTCPPorts', '放行 TCP 端口', T_PORTLIST,
           default='443', group='基础策略', lock=LOCK_TCP_PORTS_443,
           hint='代码强制仅 443'),

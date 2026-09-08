@@ -321,10 +321,6 @@ def _check_policy_core(model, issues):
     domains = [d.strip() for d in
                (diverter.get('ExternalAllowedDomains') or '').split(',')
                if d.strip()]
-    if not domains:
-        issues.append(Issue(
-            ERROR, 'Diverter', 'ExternalAllowedDomains',
-            '出站策略启用时必填'))
     for domain in domains:
         candidate = domain[2:] if domain.startswith('*.') else domain
         if not _valid_hostname(candidate) or (

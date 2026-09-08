@@ -68,6 +68,60 @@ def test_five_tabs_are_named_and_built_lazily():
         root.destroy()
 
 
+def test_log_tab_exposes_grid_view_entry():
+    root, application = _construct_app()
+    try:
+        application._ensure_tab(4)
+        assert application.log_grid_button.cget('text') == '网格化查看'
+        application.log_grid_button.invoke()
+        assert application._logview is not None
+        assert application._logview.window.winfo_exists()
+        assert {str(value) for value in
+                application._logview.tree.cget('show')} == {'headings'}
+
+        assert application.procview_button.cget('text') == '进程网络'
+        application.procview_button.invoke()
+        assert application._procview is not None
+        assert application._procview.window.winfo_exists()
+        assert {str(value) for value in
+                application._procview.tree.cget('show')} == {
+                    'tree', 'headings'}
+    finally:
+        if application._logview is not None:
+            application._logview.window.destroy()
+        if application._procview is not None:
+            application._procview.window.destroy()
+        root.destroy()
+
+
+def test_log_toolbar_actions_remain_visible_with_long_runtime_path():
+    root, application = _construct_app()
+    try:
+        application._ensure_tab(4)
+        application.notebook.select(application._tab_frames[4])
+        application.log_path_var.set(
+            r'C:\Users\xxx\Desktop\FakeNet-v35-r11-ui-test\package\Windows-'
+            r'GUI配置工具-VM验收-v35\Logs\fakenet-20260901-204637-792481-'
+            r'gui-p220.log')
+        # The acceptance VM's Windows scaling gives Tk substantially less
+        # logical width than the physical desktop screenshot suggests.
+        root.minsize(1, 1)
+        root.geometry('1000x700')
+        root.deiconify()
+        root.update()
+        window_left = root.winfo_rootx()
+        window_right = window_left + root.winfo_width()
+        for button in (application.log_grid_button,
+                       application.procview_button,
+                       application.open_log_dir_button,
+                       application.log_pause_button):
+            assert button.winfo_ismapped()
+            assert button.winfo_rootx() >= window_left
+            assert button.winfo_rootx() + button.winfo_width() <= window_right
+    finally:
+        root.destroy()
+
+
 def test_lazy_tab_applies_existing_inline_errors_when_first_opened():
     from fakenet.gui import schema
 
@@ -124,6 +178,7 @@ def test_persistent_actions_and_file_status():
         assert application.restore_button.winfo_manager() == 'pack'
         assert application.save_button.winfo_manager() == 'pack'
         assert application.launch_button.winfo_manager() == 'pack'
+        assert 'disabled' in application.save_button.state()
         assert application.import_button.cget('text') == '导入配置'
         assert application.restore_button.cget('text') == '恢复默认配置'
         assert '写回该文件' in application.import_button._hover_help.text
@@ -133,9 +188,11 @@ def test_persistent_actions_and_file_status():
         application.model.diverter().set('DebugLevel', 'Debug')
         application._mark_dirty()
         assert application.file_status_var.get().startswith('● 有未保存修改')
+        assert 'disabled' not in application.save_button.state()
         application.model.diverter().set('DebugLevel', 'Off')
         application._mark_dirty()
         assert application.file_status_var.get() == '✓ 已保存'
+        assert 'disabled' in application.save_button.state()
     finally:
         root.destroy()
 
@@ -570,6 +627,7 @@ def test_takeover_toggle_preserves_domain_list_and_locks(monkeypatch):
     try:
         application._render_static_tabs()
         application._egress_widgets['ExternalAccessPolicy'].input.invoke()
+        application.real_domain_check.invoke()
         application.domain_list_widget.set(
             'example.com,*.cdn.example.net', notify=True)
         application._egress_widgets['ExternalNonAllowedAction'].set(
@@ -638,12 +696,46 @@ def test_master_switch_off_disables_every_egress_control():
             '🔒 出站策略未启用')
 
         switch.input.invoke()
-        assert not _widget_disabled(application.domain_list_widget.input)
+        assert not _widget_disabled(application.real_domain_check)
+        assert _widget_disabled(application.domain_list_widget.input)
         assert not _widget_disabled(application.takeover_check)
         assert not _widget_disabled(
             application._egress_widgets['ExternalNonAllowedAction'].input)
-        assert not application.domain_list_widget.tooltip.text.endswith(
-            '🔒 出站策略未启用')
+        assert application.domain_list_widget.tooltip.text.endswith(
+            '🔒 未启用真实域名联网')
+        application.real_domain_check.invoke()
+        assert not _widget_disabled(application.domain_list_widget.input)
+    finally:
+        root.destroy()
+
+
+def test_real_domain_access_requires_explicit_enable():
+    root, application = _construct_app()
+    try:
+        application._render_static_tabs()
+        diverter = application.model.diverter()
+        switch = application._egress_widgets['ExternalAccessPolicy']
+
+        assert 'ExternalAllowedDomains' not in diverter
+        assert not application.real_domain_enabled_var.get()
+        assert _widget_disabled(application.real_domain_check)
+        assert _widget_disabled(application.domain_list_widget.input)
+
+        switch.input.invoke()
+        assert not application.real_domain_enabled_var.get()
+        assert not _widget_disabled(application.real_domain_check)
+        assert _widget_disabled(application.domain_list_widget.input)
+        assert 'ExternalAllowedDomains' not in diverter
+
+        application.real_domain_check.invoke()
+        assert application.real_domain_enabled_var.get()
+        assert diverter.get('ExternalAllowedDomains') == 'api.deepseek.com'
+        assert not _widget_disabled(application.domain_list_widget.input)
+
+        application.real_domain_check.invoke()
+        assert not application.real_domain_enabled_var.get()
+        assert 'ExternalAllowedDomains' not in diverter
+        assert _widget_disabled(application.domain_list_widget.input)
     finally:
         root.destroy()
 
@@ -973,10 +1065,15 @@ def test_takeover_toggle_refreshes_in_place_without_tab_rebuild():
         assert application.public_rules_widget is sentinel_public
         diverter = application.model.diverter()
         assert diverter.get('ExternalTakeoverIPv4') == '192.168.204.1'
-        assert diverter.get('ExternalAllowedDomains') == 'api.deepseek.com'
-        assert 'disabled' not in application.domain_list_widget.input.state()
+        assert diverter.get('ExternalAllowedDomains') is None
+        assert 'disabled' in application.domain_list_widget.input.state()
         takeover_ip = application._egress_widgets['ExternalTakeoverIPv4']
         assert takeover_ip.get() == '192.168.204.1'
+
+        application.real_domain_check.invoke()
+        assert diverter.get('ExternalAllowedDomains') == 'api.deepseek.com'
+        assert diverter.get('ExternalDnsServer') == '192.168.204.2'
+        assert 'disabled' not in application.domain_list_widget.input.state()
 
         application.takeover_check.invoke()
         assert application.takeover_check is sentinel_takeover
@@ -1049,12 +1146,12 @@ def test_domain_list_and_public_ipv4_table_edit_and_round_trip(
     try:
         application._ensure_tab(1)
         application._egress_widgets['ExternalAccessPolicy'].input.invoke()
-        application.domain_list_widget.set('', notify=True)
+        application.real_domain_check.invoke()
+        application.domain_list_widget.set('one.example', notify=True)
 
-        domains = iter(('one.example', 'two.example'))
+        domains = iter(('two.example',))
         monkeypatch.setattr(application.domain_list_widget, '_prompt',
                             lambda *_args: next(domains))
-        application.domain_list_widget._buttons[0].invoke()
         application.domain_list_widget._buttons[0].invoke()
         assert application.model.diverter().get(
             'ExternalAllowedDomains') == 'one.example, two.example'
@@ -1236,8 +1333,10 @@ def test_process_exit_finishes_log_and_unlocks_configuration(tmp_path):
         assert '退出码 0' in application.log_state_var.get()
         assert application.log_text.get('1.0', 'end-1c') == \
             log_path.read_bytes().decode('utf-8')
+        assert 'disabled' in application.save_button.state()
         assert all('disabled' not in button.state()
-                   for button in application._action_buttons)
+                   for button in (application.import_button,
+                                  application.restore_button))
     finally:
         root.destroy()
 
@@ -1340,8 +1439,9 @@ def test_unknown_listener_extra_key_has_preservation_tooltip():
 def test_save_button_gated_on_dirty_and_binding(tmp_path):
     root, application = _construct_app()
     try:
-        # fresh configuration: nothing bound yet, saving must stay possible
-        assert 'disabled' not in application.save_button.state()
+        # Fresh startup is bound to the immutable default and unchanged.
+        assert application.model.path
+        assert 'disabled' in application.save_button.state()
 
         path = tmp_path.joinpath('gated.ini')
         application.model.save(str(path))

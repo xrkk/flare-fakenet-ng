@@ -24,7 +24,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
 
-from fakenet.gui import (configmodel, launcher, procview, schema,
+from fakenet.gui import (configmodel, launcher, logview, procview, schema,
                          startup_logging, validator, widgets)
 
 APP_TITLE = 'FakeNet-NG 配置工具'
@@ -184,6 +184,7 @@ class FakenetConfigApp(object):
         self._log_offset = 0
         self._log_job = None
         self._procview = None
+        self._logview = None
         self._hash_generation = 0
         self._hash_pending = False
         self._hash_issue = None
@@ -528,23 +529,40 @@ class FakenetConfigApp(object):
         tab = self._tab_frames[4]
         toolbar = ttk.Frame(tab, padding=(8, 7, 8, 5))
         toolbar.pack(fill='x')
-        ttk.Label(toolbar, text='当前日志:', style='SectionTitle.TLabel')\
+        path_row = ttk.Frame(toolbar)
+        path_row.pack(fill='x')
+        ttk.Label(path_row, text='当前日志:', style='SectionTitle.TLabel')\
             .pack(side='left')
         self.log_path_var = tk.StringVar(value='尚未启动 FakeNet-NG')
-        ttk.Label(toolbar, textvariable=self.log_path_var,
-                  style='Muted.TLabel').pack(side='left', fill='x',
-                                             expand=True, padx=(8, 8))
+        self.log_path_label = ttk.Label(
+            path_row, textvariable=self.log_path_var,
+            style='Muted.TLabel')
+        self.log_path_label.pack(side='left', fill='x', expand=True,
+                                 padx=(8, 8))
+        actions = ttk.Frame(toolbar)
+        actions.pack(fill='x', pady=(5, 0))
         self.log_pause_var = tk.BooleanVar(value=False)
         self.log_pause_button = ttk.Checkbutton(
-            toolbar, text='暂停自动滚动', variable=self.log_pause_var)
+            actions, text='暂停自动滚动', variable=self.log_pause_var)
         self.log_pause_button.pack(side='right')
         self.open_log_dir_button = ttk.Button(
-            toolbar, text='打开日志目录', command=self._open_log_directory)
+            actions, text='打开日志目录', command=self._open_log_directory)
         self.open_log_dir_button.pack(side='right', padx=(0, 8))
         self.open_log_dir_button.state(['disabled'])
         self.procview_button = ttk.Button(
-            toolbar, text='进程网络视图', command=self._open_procview)
+            actions, text='进程网络', command=self._open_procview)
         self.procview_button.pack(side='right', padx=(0, 8))
+        widgets.attach_tooltip(
+            self.procview_button,
+            '进程网络\n按业务进程名、业务 PID 和处置结果过滤 PROCESS_FLOW。',
+            self._hint, '按业务进程过滤网络流')
+        self.log_grid_button = ttk.Button(
+            actions, text='网格化查看', command=self._open_logview)
+        self.log_grid_button.pack(side='right', padx=(0, 8))
+        widgets.attach_tooltip(
+            self.log_grid_button,
+            '网格化查看\n查看全部结构化日志；PID 指每行日志头中的日志 PID。',
+            self._hint, '按日志 PID、级别和文本过滤全部日志')
         text_frame = ttk.Frame(tab, padding=(8, 0, 8, 8))
         text_frame.pack(fill='both', expand=True)
         self.log_text = tk.Text(
@@ -957,9 +975,16 @@ class FakenetConfigApp(object):
                             not self._stop_pending)
             stop_button.state(
                 ['!disabled'] if stop_enabled else ['disabled'])
-        state = ['disabled'] if self._running else ['!disabled']
         for button in self._action_buttons:
-            button.state(state)
+            if self._running:
+                button.state(['disabled'])
+            elif button is self.save_button:
+                unbound = self.model is None or not self.model.path
+                button.state(
+                    ['!disabled'] if self.dirty or unbound
+                    else ['disabled'])
+            else:
+                button.state(['!disabled'])
         for index in range(4):
             try:
                 self.file_menu.entryconfigure(
@@ -974,6 +999,7 @@ class FakenetConfigApp(object):
                         index, state='disabled' if self._running else 'normal')
                 except tk.TclError:
                     pass
+        state = ['disabled'] if self._running else ['!disabled']
         for button in getattr(self, 'custom_action_buttons', ()):
             button.state(state)
         if hasattr(self, 'custom_empty_add_button'):
@@ -987,6 +1013,8 @@ class FakenetConfigApp(object):
         policy = schema.egress_policy_enabled(
             diverter.get('ExternalAccessPolicy') or
             schema.EGRESS_POLICY_DISABLED)
+        real_domain_enabled = bool((
+            diverter.get('ExternalAllowedDomains') or '').strip())
         takeover = 'ExternalTakeoverIPv4' in diverter
         process_enabled = (diverter.get(
             'ExternalProcessRedirectEnabled') or 'No').strip().lower() == 'yes'
@@ -997,6 +1025,13 @@ class FakenetConfigApp(object):
                 continue
             if field.key == 'ExternalAccessPolicy':
                 widget.set_locked(False)
+            elif field.key == 'ExternalAllowedDomains':
+                if not policy:
+                    widget.set_locked(True, reason='出站策略未启用')
+                elif not real_domain_enabled:
+                    widget.set_locked(True, reason='未启用真实域名联网')
+                else:
+                    widget.set_locked(False)
             elif field.key == 'ExternalProcessRedirectImageSHA256':
                 widget.set_locked(True, reason='自动计算')
             elif field.lock:
@@ -1023,6 +1058,10 @@ class FakenetConfigApp(object):
                 widget.set_locked(locked, reason=reason)
         if hasattr(self, 'takeover_check'):
             self.takeover_check.state(
+                ['disabled'] if (not policy or self._running)
+                else ['!disabled'])
+        if hasattr(self, 'real_domain_check'):
+            self.real_domain_check.state(
                 ['disabled'] if (not policy or self._running)
                 else ['!disabled'])
         if hasattr(self, 'public_ipv4_check'):
@@ -1172,6 +1211,9 @@ class FakenetConfigApp(object):
         if not self.model:
             return
         diverter = self.model.diverter()
+        if hasattr(self, 'real_domain_enabled_var'):
+            self.real_domain_enabled_var.set(bool((
+                diverter.get('ExternalAllowedDomains') or '').strip()))
         for key, widget in self._egress_widgets.items():
             value = diverter.get(key)
             if value is None:
@@ -1194,6 +1236,12 @@ class FakenetConfigApp(object):
             values.update({
                 'ExternalNonAllowedAction': 'Divert',
             })
+        domains = (diverter.get('ExternalAllowedDomains') or '').strip()
+        takeover = (diverter.get('ExternalTakeoverIPv4') or '').strip()
+        dns_server = (diverter.get('ExternalDnsServer') or 'Auto').strip()
+        if domains and takeover == '192.168.204.1' and \
+                dns_server.lower() == 'auto':
+            values['ExternalDnsServer'] = schema.DEFAULT_VM_UPSTREAM_DNS
         for key, value in values.items():
             if diverter.get(key) != value:
                 diverter.set(key, value)
@@ -1222,6 +1270,9 @@ class FakenetConfigApp(object):
         if old == value:
             return
         holder.set(key, value)
+        if key == 'ExternalAllowedDomains' and hasattr(
+                self, 'real_domain_enabled_var'):
+            self.real_domain_enabled_var.set(bool(value.strip()))
         field = schema.diverter_field(key) if section == 'Diverter' else None
         if key == 'ExternalProcessRedirectImagePath':
             self._start_process_hash(value, update_model=True)
@@ -1413,12 +1464,28 @@ class FakenetConfigApp(object):
             base, '连接参数', base_fields, getter, changed, self._hint,
             self._registry, 'Diverter', columns=2, label_width=14)
         base_values.grid(row=0, column=0, sticky='nsew', padx=4, pady=3)
+        domain_box = ttk.LabelFrame(base, text='真实域名联网')
+        domain_box.grid(row=0, column=1, sticky='nsew', padx=6, pady=6)
+        self.real_domain_enabled_var = tk.BooleanVar(value=bool((
+            self.model.diverter().get('ExternalAllowedDomains') or
+            '').strip()))
+        self.real_domain_check = ttk.Checkbutton(
+            domain_box, text='启用真实域名联网',
+            variable=self.real_domain_enabled_var,
+            command=self._toggle_real_domain_access)
+        self.real_domain_check.pack(anchor='w', padx=7, pady=(4, 1))
+        widgets.attach_tooltip(
+            self.real_domain_check,
+            '真实域名联网默认关闭。启用后，只有下方列出的域名可通过真实上游 DNS '
+            '和 TLS 中继联网。', self._hint,
+            '手动启用或停用真实域名联网')
         domain_field = field_by_key['ExternalAllowedDomains']
         self.domain_list_widget = widgets.CsvListFieldWidget(
-            base, domain_field, getter(domain_field.key), changed, self._hint,
+            domain_box, domain_field, getter(domain_field.key), changed,
+            self._hint,
             height=2)
-        self.domain_list_widget.grid(row=0, column=1, sticky='nsew',
-                                     padx=6, pady=6)
+        self.domain_list_widget.pack(fill='both', expand=True,
+                                     padx=7, pady=(1, 6))
         self._registry[('Diverter', domain_field.key.lower())] = \
             self.domain_list_widget
 
@@ -1557,6 +1624,24 @@ class FakenetConfigApp(object):
         # In-place refresh: no full tab rebuild, so the page does not
         # flicker/relayout when takeover is toggled (v1.19 §12.23).
         self._sync_egress_widgets_from_model()
+        self._refresh_locks()
+        if changes and 2 in self._tabs_built:
+            self._refresh_listener_list()
+        self._schedule_validate()
+
+    def _toggle_real_domain_access(self):
+        if self._building or self._running:
+            return
+        diverter = self.model.diverter()
+        if self.real_domain_enabled_var.get():
+            if not (diverter.get('ExternalAllowedDomains') or '').strip():
+                diverter.set(
+                    'ExternalAllowedDomains', schema.DEFAULT_REAL_DOMAIN)
+        else:
+            diverter.delete('ExternalAllowedDomains')
+        changes = self._sync_active_egress_policy()
+        self._sync_egress_widgets_from_model()
+        self._mark_dirty()
         self._refresh_locks()
         if changes and 2 in self._tabs_built:
             self._refresh_listener_list()
@@ -2465,6 +2550,11 @@ class FakenetConfigApp(object):
         self.log_path_var.set(self._fakenet_log_path)
         self.log_state_var.set('FakeNet-NG 正在启动,等待日志内容…')
         self.open_log_dir_button.state(['!disabled'])
+        if self._logview is not None:
+            try:
+                self._logview.follow_file(self._fakenet_log_path)
+            except tk.TclError:
+                self._logview = None
         self.log_text.configure(state='normal')
         self.log_text.delete('1.0', 'end')
         self.log_text.configure(state='disabled')
@@ -2607,7 +2697,7 @@ class FakenetConfigApp(object):
         if not self.log_pause_var.get():
             self.log_text.see('end')
         window = getattr(self, '_procview', None)
-        if window is not None:
+        if window is not None and not window._file_path:
             try:
                 window.feed(text)
             except Exception:
@@ -2622,9 +2712,29 @@ class FakenetConfigApp(object):
                 self._procview = None
         self._ensure_tab(4)
         self._procview = procview.ProcessFlowWindow(self.root, self)
+        path = self._fakenet_log_path
+        if path and os.path.isfile(path):
+            self._procview.follow_file(path)
 
     def _procview_closed(self):
         self._procview = None
+
+    def _open_logview(self):
+        if getattr(self, '_logview', None) is not None:
+            try:
+                self._logview.window.lift()
+                return
+            except tk.TclError:
+                self._logview = None
+        self._ensure_tab(4)
+        path = self._fakenet_log_path
+        if not path or not os.path.isfile(path):
+            path = None
+        self._logview = logview.LogGridWindow(
+            self.root, self, file_path=path)
+
+    def _logview_closed(self):
+        self._logview = None
 
     def _poll_log(self, schedule=True, final=False):
         self._log_job = None
