@@ -24,7 +24,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import (EXIT_BLOCKED, EXIT_FAIL, EXIT_PASS, EXIT_TOOL_ERROR,  # noqa: E402
-                     EvidenceWriter, PackageServer, StepError, Win10VmChannel)
+                     EvidenceWriter, PackageServer, StepError, Win10VmChannel,
+                     controlled_service_stop)
 
 P01_ENTRY_LABEL_DECLARATION = (
     'P01-ENTRY is a P01-owned precondition-evidence label, NOT a master-plan '
@@ -101,12 +102,7 @@ def deploy_package(args, channel, writer, vm_dir):
 
 def _deploy_with_server(args, channel, writer, vm_dir, serve_root, package,
                         package_sha):
-    # Stop the running service BEFORE touching files: a live exe locks the
-    # onedir payload and Expand-Archive would silently keep the old binary.
-    channel.powershell(
-        'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; '
-        'Get-Process fakenetng-mcp -ErrorAction SilentlyContinue | '
-        'Stop-Process -Force; Start-Sleep 2; "STOPPED"', timeout=120)
+    writer.add_evidence('vm-controlled-prestop', controlled_service_stop(channel))
     with PackageServer(serve_root) as server:
         remote_zip = 'C:\\Progra~1\\FakeNet-NG-MCP\\%s.zip' % args.candidate_id
         url = '%s/%s' % (server.base_url,

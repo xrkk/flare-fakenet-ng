@@ -120,6 +120,24 @@ class Win10VmChannel:
         return record['output'].strip()
 
 
+def controlled_service_stop(channel):
+    """Use the installed two-phase CLI, then wait for its old host to exit."""
+    return channel.powershell(
+        "$ErrorActionPreference='Stop'; "
+        "$exe='C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe'; "
+        "$svc=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\"; "
+        "if($svc){if(!(Test-Path $exe)){throw 'installed service binary missing'}; "
+        "$old=if($svc.ProcessId){Get-Process -Id $svc.ProcessId -ErrorAction SilentlyContinue}else{$null}; "
+        "& $exe stop; if($LASTEXITCODE -ne 0){throw 'controlled pre-stop failed; preserve installed files'}; "
+        "if((Get-Service fakenetng-mcp).Status -ne 'Stopped'){throw 'SCM not stopped'}; "
+        "if($old -and !$old.WaitForExit(30000)){throw 'old service process has not exited'}; "
+        "'controlled service stop completed'}else{"
+        "$state='C:\\ProgramData\\FakeNet-NG-MCP\\state\\state.json'; "
+        "if((Test-Path $state) -and (Get-Content $state -Raw | ConvertFrom-Json).needs_recovery)"
+        "{throw 'service absent with unresolved recovery responsibility'}; 'service absent'}",
+        timeout=1110)
+
+
 class EvidenceWriter:
 
     def __init__(self, out_dir, started_at):

@@ -19,7 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import (EXIT_BLOCKED, EXIT_FAIL, EXIT_PASS,  # noqa: E402
-                     EXIT_TOOL_ERROR, EvidenceWriter, StepError, Win10VmChannel)
+                     EXIT_TOOL_ERROR, EvidenceWriter, StepError, Win10VmChannel,
+                     controlled_service_stop)
 from run_p02_acc import (CONTROLLER_A, CONTROLLER_B, VALID_INI, call,  # noqa: E402
                          envelope, err_of, sha_of, status, unique_command)
 
@@ -91,75 +92,41 @@ def load_and_start(base, name='default.ini', builtin=True):
     load_and_start.first_failed_start = None
     if result.get('state') == 'failed' and not result.get('error'):
         load_and_start.first_failed_start = dict(result)
-        # Right after an uncontrolled exit + SCM restart the adapter can
-        # still be reconfiguring; the diverter then fails closed with
-        # "No active ethernet interfaces detected" (r58c ACC-008 round-1
-        # start; the service stayed responsive). Every caller of this
-        # helper expects a successful start, so one bounded settle +
-        # retry is safe: transient adapter races recover, persistent
-        # failures still fail.
-        time.sleep(10)
-        result = attempt()
     return result
 
 
-def stop_run(base, attempts=3):
-    result = None
-    for attempt in range(attempts):
-        try:
-            version = status(base)['state_version']
-        except Exception:  # noqa: BLE001
-            return result
-        result = call(base, 'stop',
-                      {'command_id': unique_command('p03-stop'),
-                       'expected_state_version': version}, timeout=90)
-        code = (result.get('error') or {}).get('code')
-        if code is None or result.get('state') == 'stopped':
-            return result
-        time.sleep(1.0)
-    return result
+def stop_run(base, attempts=1):
+    # Kept as a call-shape argument for old scenarios; never retries an
+    # accepted or rejected mutation to make an acceptance case pass.
+    version = status(base)['state_version']
+    return call(base, 'stop',
+                {'command_id': unique_command('p03-stop'),
+                 'expected_state_version': version}, timeout=1020)
 
 
 def restart_service(channel):
-    # Stop must fully converge before the start; a hung service process
-    # (e.g. fault-armed) gets force-killed so SCM can mark it Stopped.
-    channel.powershell(
-        '$svc = Get-Service fakenetng-mcp; '
-        'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; '
-        '$t = 0; while($svc.Status -ne "Stopped" -and $t -lt 30) { '
-        'Start-Sleep 2; $t += 2; $svc.Refresh() }; '
-        'if ($svc.Status -ne "Stopped") { '
-        'Get-Process fakenetng-mcp -ErrorAction SilentlyContinue | '
-        'Stop-Process -Force; '
-        '$t2 = 0; while($svc.Status -ne "Stopped" -and $t2 -lt 30) { '
-        'Start-Sleep 2; $t2 += 2; $svc.Refresh() } }; '
-        'sc.exe start fakenetng-mcp | Out-Null; Start-Sleep 6; '
-        '"RESTARTED=" + (Get-Service fakenetng-mcp).Status', timeout=240)
+    stopped = controlled_service_stop(channel)
+    started = channel.powershell(
+        "$ErrorActionPreference='Stop'; Start-Service fakenetng-mcp; "
+        "Get-Service fakenetng-mcp | Select-Object Name,Status | ConvertTo-Json -Compress",
+        timeout=60)
+    return {'stop': stopped, 'start': started}
 
 
 def normalize_service(base, channel):
-    """Bring the service to a responsive, non-terminal state.
-
-    Handles an active or degenerate run (bounded stop), a dead/hung
-    endpoint and the sticky post-failure state (SCM restart). Returns
-    True when the endpoint answers with any state."""
+    """Require a clean endpoint; never erase failure via a forced restart."""
     try:
         snap = status(base)
-    except Exception:  # noqa: BLE001
-        snap = None
-    if snap is not None:
-        if snap.get('run_id') or snap.get('state') not in ('stopped',
-                                                            'failed'):
-            stop_run(base, attempts=3)
-        try:
-            if status(base).get('state') == 'stopped':
-                return True
-        except Exception:  # noqa: BLE001
-            pass
-    restart_service(channel)
-    ok, _ = wait_state(base, lambda s: s.get('state') is not None,
-                       timeout=150)
-    return ok
+    except Exception:
+        return False
+    if snap.get('state') == 'failed':
+        return False
+    if snap.get('state') != 'stopped' or snap.get('run_id'):
+        result = stop_run(base)
+        if not result or result.get('error') or result.get('state') != 'stopped':
+            return False
+    snap = status(base)
+    return snap.get('state') == 'stopped' and not snap.get('run_id')
 
 
 def clear_and_restart(channel):

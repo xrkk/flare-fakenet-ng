@@ -14,16 +14,37 @@ from contextlib import contextmanager
 @contextmanager
 def capture_stop_stacks(run_dir):
     """Capture live Python stacks even while stop blocks the IPC loop."""
-    import faulthandler
+    import traceback
+    stopped = threading.Event()
     with (Path(run_dir) / 'stop-thread-stacks.txt').open('ab', buffering=0) as stream:
         stream.write(('STOP ATTEMPT pid=%d timestamp=%.6f\n' %
                       (os.getpid(), time.time())).encode('ascii'))
-        faulthandler.dump_traceback_later(1, repeat=True, file=stream)
+        def capture():
+            # Walk owned frame references under the GIL. The native faulthandler
+            # watchdog walks concurrently executing frames without it; our
+            # pinned Windows interpreter crashed during that walk in acceptance.
+            frames = sys._current_frames()
+            try:
+                chunks = ['LIVE STOP STACKS timestamp=%.6f\n' % time.time()]
+                for ident, frame in frames.items():
+                    chunks.append('Thread 0x%x:\n' % ident)
+                    chunks.extend(traceback.format_stack(frame))
+                stream.write(''.join(chunks).encode('utf-8', errors='replace'))
+            finally:
+                frames.clear()
+
+        def watch():
+            while not stopped.wait(1):
+                capture()
+
+        watchdog = threading.Thread(target=watch, name='stop-stack-capture', daemon=True)
+        watchdog.start()
         try:
             yield
         finally:
-            faulthandler.cancel_dump_traceback_later()
-            faulthandler.dump_traceback(file=stream, all_threads=True)
+            stopped.set()
+            watchdog.join()
+            capture()
 
 
 class ManagedProcess:

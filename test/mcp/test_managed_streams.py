@@ -55,9 +55,23 @@ root = Path(sys.argv[1])
 with capture_stop_stacks(root):
     time.sleep(1.2)
     during = (root / 'stop-thread-stacks.txt').read_text()
-    assert 'Timeout' in during and 'File "' in during
+    assert 'LIVE STOP STACKS' in during and 'File "' in during
     assert 'STOP ATTEMPT pid=' in during
 '''
     result = subprocess.run([sys.executable, '-c', code, str(tmp_path)],
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+def test_stop_stack_capture_releases_watchdog_after_exception(tmp_path):
+    import threading
+    from fakenet.mcp.managed import capture_stop_stacks
+    before = set(threading.enumerate())
+    with pytest.raises(RuntimeError, match='stop failed'):
+        with capture_stop_stacks(tmp_path):
+            raise RuntimeError('stop failed')
+    assert not [t for t in set(threading.enumerate()) - before
+                if t.name == 'stop-stack-capture']
+    evidence = (tmp_path / 'stop-thread-stacks.txt').read_text()
+    assert 'test_stop_stack_capture_releases_watchdog_after_exception' in evidence
+    assert 'LIVE STOP STACKS' in evidence
