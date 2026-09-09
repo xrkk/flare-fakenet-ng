@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "5a2c81f8a75f3df5b6d6ba8731f7c8372d935e42",
+  "current_head": "ac60aadbdcd4b0c4157aec6a7cd7801dc7632101",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -369,8 +369,8 @@
   "checkpoint": "INTENT-078创建窗口实现与双平台回归完成，准备固定提交构建候选。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-093",
-    "action": "固定捕获异常入口及完整证据收集，构建新候选执行Windows门禁与后续原生捕获线程测试；旧S2全现场已保存，不修改旧记录。"
+    "id": "INTENT-095",
+    "action": "观察现有capture_exception session18122及中途只读session36117；已healthy并发送刺激，不修改冻结源码、不中断或重启测试，按实际检查继续整改。"
   },
   "events": [
     {
@@ -1037,15 +1037,27 @@
     {
       "intent": "INTENT-092",
       "actual": "两个S2场景70文件完整导出校验完成；真实inbound捕获线程固定故障与ACC006入口落地，Linux212/3，Windows/原生待构建。"
+    },
+    {
+      "intent": "INTENT-093",
+      "actual": "ac60aad提交后固定候选构建已启动session2177；保持旧VM现场，等待同一构建结果。"
+    },
+    {
+      "intent": "INTENT-094",
+      "actual": "授权快照唯一及70文件SHA复核通过，严格一次revert/标记/一次vmware-x/MCP三身份完成；ac60aad构建PASS，主Windows779/8、HTTP17通过，部署session43401正在执行。"
+    },
+    {
+      "intent": "INTENT-095",
+      "actual": "当前捕获异常run f3611c77-d1a8-486e-86aa-bd5091e7a88a实际触发mono191.421/thread1880，主管2996在192.703发布failed（1.282秒）；三incident实际导出全部complete，第三包只剩UDP差异。session18122仍等待恢复，未重启。"
     }
   ],
   "active_build": {
-    "source_head": "1029376f62382644f1a1985318415dbefb64cab4",
+    "source_head": "ac60aadbdcd4b0c4157aec6a7cd7801dc7632101",
     "status": "COMPLETED",
-    "output_directory": "dist/mcp-remediation-20260910-1029376",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-1029376.txt",
-    "exec_session_id": 19445,
-    "sha256": "d7dc3b674944fbb58d43d7abdd2bd218ca9f32178be61c1c80e43995bcb9ab96"
+    "output_directory": "dist/mcp-remediation-20260910-ac60aad",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-ac60aad.txt",
+    "exec_session_id": 2177,
+    "sha256": "de4b392770398a56b86d4c6eb3b11091744b42eaddbad15f3ca43bf49ae5ef9d"
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/native-1029376-s2-full-runtime.zip",
@@ -1064,15 +1076,15 @@
     "sha256": "724ed41e0c7b67179ce3dda8daf6d7dca907b61ca3d8cb3f07c0d20bb3fec286"
   },
   "active_native_validation": {
-    "session_id": 88007,
-    "status": "COMPLETED",
-    "source_head": "1029376f62382644f1a1985318415dbefb64cab4",
-    "runner_source": "197292f29ba5cb6730a54197aa019bac89c13007",
-    "runner_snapshot": "Logs/fakenetng-mcp/remediation-20260910/native-source-197292f",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/native-197292f-s2-console.txt",
+    "session_id": 18122,
+    "status": "RUNNING",
+    "source_head": "ac60aadbdcd4b0c4157aec6a7cd7801dc7632101",
+    "runner_source": "ac60aadbdcd4b0c4157aec6a7cd7801dc7632101",
+    "runner_snapshot": "Logs/fakenetng-mcp/remediation-20260910/native-source-ac60aad",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/native-ac60aad-capture-console.txt",
     "formal_acc_pass": false,
-    "mode": "完整S2诊断，冻结栈调用帧修正",
-    "result": "S2七项true，94HTTP0错误，两incident完整；恢复因UDP60248消失failed，原场景保留，未通过。"
+    "mode": "真实capture_exception同源诊断",
+    "run_id": "f3611c77-d1a8-486e-86aa-bd5091e7a88a"
   },
   "environment_question": {
     "status": "AWAITING_INFORMATION",
