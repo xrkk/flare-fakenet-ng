@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "9e024045b42c4f3fe8a04a363a633c632dccc824",
+  "current_head": "68b77d5c6bbdcc6682279347f761b0ffb0e63c02",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -194,7 +194,7 @@
     "PLAN/FaknetNG.md": "2c0d09e03162dfeb3a05517f9d3755af0d5e52ce",
     "initial_record_immutable": true,
     "existing_artifacts": "不得覆盖旧候选/失败证据",
-    "vm": "DESKTOP-3FI41GR；本阶段只读、无快照/部署操作"
+    "vm": "DESKTOP-3FI41GR；用户已明确恢复整改及测试使用，遵守AGENTS指定快照/导出/host-only边界；当前failed场景不得无证据覆盖。"
   },
   "scope": "当前需求v1+总纲v3+P01—P05；无AUD处理，无分支切换/push",
   "chk": {
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "用户明确恢复VM使用已执行只读身份门，当前d0包stopped；本组Linux170/Windows167通过，准备固定源码。全部CHK仍OPEN，有效核验1/5。",
+  "checkpoint": "68b77d5已实机部署；真实监听异常诊断不通过，failed现场已导出33文件。P03场景进一步整改Linux173通过待提交；CHK全OPEN，有效核验1/5。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-060",
-    "action": "将本组既定契约内故障/证据整改提交固定源码；核对保护文件不变，随后新目录构建，导出当前VM全部运行证据后再部署新候选验证。"
+    "id": "INTENT-063",
+    "action": "提交当前P03场景入口与实机失败记录；继续完成尚缺IPC矩阵、SCM/Job及全量验收，保持当前failed现场，不因虚拟机授权重复询问，不把局部通过计为核验通过。"
   },
   "events": [
     {
@@ -900,19 +900,32 @@
       "at": "2026-09-10T03:21:55.001912+08:00",
       "intent": "INTENT-059",
       "actual": "真实故障模式/nonce与incident逐项导出检查完成；d0 listener_stop局部实机记录保留，合法skipped dump验证器误报已独立另存纠正。P03移除伪traceback，真实HTTP线程异常+堆栈日志用例Linux170/Windows167通过；新钩子待新包原生验证，CHK全OPEN。"
+    },
+    {
+      "intent": "INTENT-060",
+      "actual": "本组提交68b77d5，保护文件blob仍2c0d09e03162dfeb3a05517f9d3755af0d5e52ce；新目录固定源码构建已启动。部署前导出现有d0全部guest证据。"
+    },
+    {
+      "intent": "INTENT-061",
+      "actual": "Snapshot183唯一；仅一次revert成功，checkpoint Snapshot99匹配，仅一次vmware -x成功；Win10 MCP姓名/MAC/UUID三项通过。68b77d5固定源构建退出0，准备部署。"
+    },
+    {
+      "at": "2026-09-10T03:35:27.286179+08:00",
+      "intent": "INTENT-062",
+      "actual": "68b77d5真实线程异常约2.571秒撤销健康，incident基础14项完整，但全恢复审计UDP差异后期限采集失败，原420秒等待结束不通过。33文件导出校验；S6精确子进程/S5实际stop暂停/全程探活改动Linux173通过，Win10仅解析语法通过。"
     }
   ],
   "active_build": {
-    "source_head": "d0a27bc7ae2bb33d640ef1aab0c914ae14c39889",
+    "source_head": "68b77d5c6bbdcc6682279347f761b0ffb0e63c02",
     "status": "COMPLETED",
-    "output_directory": "dist/mcp-remediation-20260910-d0a27bc",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-d0a27bc.txt",
-    "exec_session_id": 62536
+    "output_directory": "dist/mcp-remediation-20260910-68b77d5",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-68b77d5.txt",
+    "exec_session_id": 10257
   },
   "latest_guest_export": {
-    "path": "Logs/fakenetng-mcp/remediation-20260910/native-d0a27bc-policy-runtime.zip",
-    "sha256": "ffbd409a75dbd9afa8e275668e25682a845f1e0fadf8b95d59cbdae5acffc18b",
-    "verified_files": 38
+    "path": "Logs/fakenetng-mcp/remediation-20260910/native-68b77d5-listener-exception-runtime.zip",
+    "sha256": "a2f9446f43a79e00cd1ba0ef9c228b2df7f33bbd2d456e2cf59d372ee8a80980",
+    "verified_files": 33
   },
   "active_host_capture": {
     "session_id": 41715,

@@ -371,7 +371,10 @@ def exercise_listener_exception(base, channel, writer, tag):
         began = time.time()
         armed = arm_fault_file(channel, 'listener_exception')
         revoked, snap = wait_state(base, lambda x: x.get('state') != 'healthy', timeout=15)
-        return dict(armed=armed, began=began, ended=time.time(), revoked=revoked, status=snap)
+        ended = time.time()
+        settled, final = wait_state(base, lambda x: x.get('state') == 'stopped' and not x.get('run_id'), timeout=420)
+        return dict(armed=armed, began=began, ended=ended, revoked=revoked, status=snap,
+                    settled=settled, final=final)
     timeline, outcome = probe_during(trigger, base)
     writer.add_evidence(tag + '-probe', timeline)
     writer.add_evidence(tag + '-trigger', outcome or {})
@@ -399,7 +402,7 @@ def exercise_listener_exception(base, channel, writer, tag):
             outcome['ended'] - outcome['began'] <= 2 * HEALTH_INTERVAL_S + 2.0,
         'link_alive_during_exception': bool(timeline) and all(x['ok'] for x in timeline),
     }
-    settled, final = wait_state(base, lambda x: x.get('state') == 'stopped' and not x.get('run_id'), timeout=420)
+    settled, final = outcome['settled'], outcome['final']
     writer.add_evidence(tag + '-final', final or {})
     checks['protective_stop_completed'] = settled and final.get('last_run_outcome') == 'failed'
     if not settled:
@@ -481,18 +484,22 @@ def acc004_s4_invalid_protection(base, channel, writer):
 
 
 def acc004_s5_hang(base, channel, writer):
-    """Core-thread hang: link alive throughout, stop still bounded."""
+    """Pause the real managed stop phase; keep probing through cleanup."""
     checks = {}
-    arm_fault(channel, 'child_hang', base)
+    writer.add_evidence('acc004-s5-fault-arm', arm_fault(channel, 'policy_pause', base))
     started = load_and_start(base)
     checks['start_ok'] = started.get('error') is None
     ok, timeline = continuous_probe(base, 8)
     writer.add_evidence('acc004-s5-hang-probe', timeline)
     checks['link_alive_during_core_thread_hang'] = ok
-    hung_stop = call(base, 'stop',
+    stop_timeline, hung_stop = probe_during(lambda: call(base, 'stop',
                      {'command_id': unique_command('a4-hang-stop'),
                       'expected_state_version':
-                          status(base)['state_version']}, timeout=120)
+                          status(base)['state_version']}, timeout=1020), base)
+    writer.add_evidence('acc004-s5-whole-stop-probe', stop_timeline)
+    checks['link_alive_through_bounded_stop'] = bool(stop_timeline) and all(x['ok'] for x in stop_timeline)
+    if hung_stop is None:
+        raise StepError('stop fault action missing result; preserve scene')
     writer.add_evidence('acc004-s5-hang-stop', hung_stop)
     checks['hang_stop_bounded'] = hung_stop.get('state') in (
         'failed', 'stopped')
@@ -501,22 +508,61 @@ def acc004_s5_hang(base, channel, writer):
     return checks
 
 
+def terminate_current_managed_child(channel, snapshot):
+    """Terminate only the handle-pinned child of this SCM service/run."""
+    import uuid
+    run_id = str(uuid.UUID(snapshot['run_id']))
+    identity = snapshot['health']['identity']
+    child_pid = int(identity['pid'])
+    created = str(identity['creation_time'])
+    if child_pid <= 0 or not created.isdecimal():
+        raise StepError('invalid managed child identity')
+    command = (
+        "$ErrorActionPreference='Stop'; $service=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\"; "
+        "$p=Get-Process -Id CHILD_PID; [void]$p.Handle; try { "
+        "if($p.StartTime.ToFileTimeUtc().ToString() -ne 'CREATED'){throw 'child PID reused'}; "
+        "$c=Get-CimInstance Win32_Process -Filter 'ProcessId=CHILD_PID'; "
+        "if($service.State -ne 'Running' -or $service.ProcessId -eq CHILD_PID -or "
+        "$c.ParentProcessId -ne $service.ProcessId -or "
+        "$c.ExecutablePath -ne 'C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe' -or "
+        "$c.CommandLine -notmatch 'managed-child[ ]+RUN_ID(?:[ ]|$)'){throw 'child scope mismatch'}; "
+        "$before=@{pid=$p.Id;creation_time=$p.StartTime.ToFileTimeUtc().ToString(); "
+        "parent_pid=$c.ParentProcessId;command_line=$c.CommandLine;image=$c.ExecutablePath;run_id='RUN_ID'}; "
+        "$p.Kill(); if(-not $p.WaitForExit(10000)){throw 'child did not exit'}; "
+        "$after=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\"; "
+        "@{child=$before;exit_code=$p.ExitCode;service_pid_before=$service.ProcessId; "
+        "service_pid_after=$after.ProcessId;service_state_after=$after.State} | ConvertTo-Json -Depth 5 -Compress "
+        "} finally {$p.Dispose()}"
+    ).replace('CHILD_PID', str(child_pid)).replace('CREATED', created).replace('RUN_ID', run_id)
+    return channel.powershell(command, timeout=30)
+
+
 def acc004_s6_uncontrolled_exit(base, channel, writer):
-    """Uncontrolled exit: SCM brings the endpoint back (recovery path)."""
-    checks = {}
+    """The managed child exits; the same supervisor remains reachable."""
     started = load_and_start(base)
-    checks['start_ok'] = started.get('error') is None
-    channel.powershell(
-        'Get-Process fakenetng-mcp | Stop-Process -Force; "KILLED"',
-        timeout=60)
-    back, snap = wait_state(base, lambda s: s.get('state') is not None,
-                            timeout=150)
-    writer.add_evidence('acc004-s6-uncontrolled-restart', snap or {})
-    checks['endpoint_restored_after_uncontrolled_exit'] = back
-    ok_after, timeline = continuous_probe(base, 4)
-    writer.add_evidence('acc004-s6-uncontrolled-exit-probe', timeline)
-    checks['link_alive_after_uncontrolled_exit'] = ok_after
-    return checks
+    writer.add_evidence('acc004-s6-start', started)
+    healthy, initial = wait_state(base, lambda x: x.get('state') == 'healthy', timeout=30)
+    if not healthy:
+        raise StepError('child-exit precondition not healthy; preserve scene')
+    def terminate_and_recover():
+        raw = terminate_current_managed_child(channel, initial)
+        settled, final = wait_state(base, lambda x: x.get('state') == 'stopped' and not x.get('run_id'), timeout=420)
+        return dict(termination=raw, settled=settled, final=final)
+    timeline, result = probe_during(terminate_and_recover, base)
+    writer.add_evidence('acc004-s6-whole-window-probe', timeline)
+    writer.add_evidence('acc004-s6-child-exit', result or {})
+    if not result:
+        raise StepError('child-exit action missing evidence')
+    actual = json.loads(result['termination']['output'])
+    return {
+        'exact_managed_child_terminated': actual['child']['pid'] == initial['health']['identity']['pid'] and
+            actual['child']['creation_time'] == initial['health']['identity']['creation_time'] and
+            actual['child']['run_id'] == initial['run_id'],
+        'same_supervisor_survives': actual['service_pid_before'] == actual['service_pid_after'] and
+            actual['service_state_after'] == 'Running',
+        'control_link_survives_entire_recovery': bool(timeline) and all(x['ok'] for x in timeline),
+        'protective_recovery_completed': result['settled'] and result['final'].get('last_run_outcome') == 'failed',
+    }
 
 
 ACC004_SCENARIOS = (

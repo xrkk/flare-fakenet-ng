@@ -95,3 +95,16 @@ def test_incident_export_verifies_members_instead_of_trusting_manifest(helpers, 
         else:
             result = helpers.export_incident_bundle(channel, run_id, path)
             assert result['complete'] and len(result['verified_members']) == len(BASIC_ITEMS)
+
+
+@pytest.mark.parametrize('snapshot', [
+    {'run_id': 'not-a-uuid', 'health': {}},
+    {'run_id': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'health': {'identity': {'pid': 0, 'creation_time': '1'}}},
+    {'run_id': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'health': {'identity': {'pid': 1234, 'creation_time': '1; Stop-Process'}}},
+])
+def test_child_termination_rejects_unpinned_identity_before_vm_call(helpers, snapshot):
+    from run_p03_acc import terminate_current_managed_child
+    calls = []
+    with pytest.raises((ValueError, helpers.StepError)):
+        terminate_current_managed_child(SimpleNamespace(powershell=lambda *a, **k: calls.append(a)), snapshot)
+    assert calls == []
