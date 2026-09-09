@@ -16,6 +16,7 @@ import tempfile
 import csv
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 BASELINE_FIELDS = ('routes', 'dns_servers', 'windivert_processes',
@@ -225,12 +226,36 @@ class BaselineStore:
             return None
         return audit_compare(baseline.get('sections'), capture())
 
-    def full_audit_diff(self, run_id, deadline=None):
+    def full_audit_diff(self, run_id, deadline=None, settle_seconds=0):
         """P04 full recovery audit: all five normalized sections must match
         the pre-start baseline."""
         baseline = self.load(run_id)
         if baseline is None:
             return {'__missing_baseline__': True}
+        if settle_seconds:
+            # Never discard an endpoint or adjust the baseline. Retain every
+            # complete observation; only two consecutive exact full-scope
+            # comparisons can pass the bounded settling window.
+            audit_deadline = min(deadline or float('inf'), time.monotonic() + settle_seconds)
+            log_root = self.root.parent / 'logs'
+            log_root.mkdir(parents=True, exist_ok=True)
+            log = log_root / ('recovery-audit-%s-%s.jsonl' % (run_id, uuid.uuid4()))
+            clean = 0
+            differences = {'__audit_deadline__': True}
+            with log.open('x', encoding='utf-8') as stream:
+                while time.monotonic() < audit_deadline:
+                    current = capture(audit_deadline)
+                    differences = audit_compare(baseline.get('sections'), current)
+                    stream.write(json.dumps({'time': time.time(), 'run_id': run_id,
+                                             'current': current, 'differences': differences},
+                                            ensure_ascii=False) + '\n')
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                    clean = clean + 1 if not differences else 0
+                    if clean == 2:
+                        return {}
+                    time.sleep(min(0.5, max(0, audit_deadline - time.monotonic())))
+            return differences or {'__audit_stability_unverified__': True}
         return audit_compare(baseline.get('sections'), capture() if deadline is None else capture(deadline))
 
     def compensate(self, run_id, deadline):
@@ -300,7 +325,9 @@ class BaselineStore:
             "ConvertFrom-Csv -Header Image,Pid,Modules | Where-Object {[int]$_.Pid -ne $b.supervisor}); "
             "if($users.Count){throw 'other WinDivert module users prevent driver removal'}; "
             "& sc.exe stop $d.Name | Out-Null; if($LASTEXITCODE -notin @(0,1062)){throw 'owned driver stop failed'}; "
-            "& sc.exe delete $d.Name | Out-Null; if($LASTEXITCODE -ne 0){throw 'owned driver deletion failed'} }; "
+            "& sc.exe delete $d.Name | Out-Null; if($LASTEXITCODE -notin @(0,1060)){throw 'owned driver deletion failed'}; "
+            "if(@(Get-CimInstance Win32_SystemDriver | Where-Object {$_.Name -eq $d.Name}).Count)"
+            "{throw 'owned driver still registered'} }; "
             "Write-Output 'owned driver compensation complete'")
         remaining = min(60, deadline - time.monotonic())
         if remaining <= 0 or _run(['powershell', '-NoProfile', '-Command', script],

@@ -112,6 +112,34 @@ def test_full_audit_normalize_ignores_pids_and_order():
     assert set(diff) == {'listen_ports'}
 
 
+def test_bounded_audit_preserves_transient_observation_and_requires_exact_return(tmp_path, monkeypatch):
+    from fakenet.mcp import baseline
+    sections = {field: 'baseline' for field in BASELINE_FIELDS}
+    sections['listen_ports'] = 'UDP 0.0.0.0:50000 *:* 123'
+    store = baseline.BaselineStore(tmp_path / 'baselines')
+    store.save('run', sections)
+    dirty = dict(sections, listen_ports=sections['listen_ports'] + '\nUDP 0.0.0.0:51000 *:* 456')
+    observations = iter([dirty, sections, sections])
+    monkeypatch.setattr(baseline, 'capture', lambda deadline: next(observations))
+    monkeypatch.setattr(baseline.time, 'sleep', lambda seconds: None)
+    assert store.full_audit_diff('run', settle_seconds=1) == {}
+    rows = [json.loads(line) for line in next((tmp_path / 'logs').glob('*.jsonl')).read_text().splitlines()]
+    assert len(rows) == 3 and rows[0]['current'] == dirty
+    assert rows[0]['differences']['listen_ports']
+    assert rows[1]['differences'] == rows[2]['differences'] == {}
+
+
+def test_bounded_audit_never_waives_persistent_udp_residue(tmp_path, monkeypatch):
+    from fakenet.mcp import baseline
+    sections = {field: 'baseline' for field in BASELINE_FIELDS}
+    sections['listen_ports'] = 'UDP 0.0.0.0:50000 *:* 123'
+    store = baseline.BaselineStore(tmp_path / 'baselines')
+    store.save('run', sections)
+    dirty = dict(sections, listen_ports=sections['listen_ports'] + '\nUDP 0.0.0.0:51000 *:* 456')
+    monkeypatch.setattr(baseline, 'capture', lambda deadline: dirty)
+    assert 'listen_ports' in store.full_audit_diff('run', settle_seconds=0.01)
+
+
 def test_draining_rejects_new_mutations():
     coord = Coordinator(LifecycleDouble())
     coord.begin_draining()

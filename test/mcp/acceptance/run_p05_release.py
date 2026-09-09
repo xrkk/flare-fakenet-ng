@@ -20,6 +20,7 @@ import hashlib
 import json
 import sys
 import time
+import threading
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -31,6 +32,7 @@ from run_p02_acc import VALID_INI, call, sha_of, status  # noqa: E402
 from run_p03_acc import continuous_probe, stop_run, unique_command, wait_state  # noqa: E402
 sys.path.insert(0, str(REPO_ROOT))
 from fakenet.mcp.faultinject import FAULTS  # noqa: E402
+from evidence_integrity import IDENTITY_FIELDS, validate_result, validate_round
 
 DEFAULT_INI = 'default.ini'
 CUSTOM_INI = 'release-custom.ini'
@@ -63,21 +65,27 @@ class ReleaseGate:
 
     # -- environment capture (host-driven, P04 normalization) -------------
     def capture_sections(self):
-        # Native tasklist may return non-zero for an empty process set.
-        # DNS must instead contain a validated observation: a success
-        # marker cannot stand in for the pre/post-run server addresses.
-        out = {}
-        out['routes'] = self.channel.powershell(
-            'route print -4 | Out-String; "S"', timeout=60)['output']
-        out['dns_servers'] = self.capture_dns_servers()
-        out['windivert_processes'] = self.channel.powershell(
-            'tasklist /m WinDivert*.sys 2>$null | Out-String; "S"',
-            timeout=60)['output']
-        out['listen_ports'] = self.channel.powershell(
-            'netstat -ano | Out-String; "S"', timeout=60)['output']
-        out['services'] = self.channel.powershell(
-            'Get-Service dnscache,mpssvc | Select-Object Name,Status | '
-            'ConvertTo-Json -Compress; "S"', timeout=60)['output']
+        commands = {
+            'routes': '& route.exe print -4; if($LASTEXITCODE -ne 0){throw "route capture failed"}',
+            'listen_ports': '& netstat.exe -ano; if($LASTEXITCODE -ne 0){throw "endpoint capture failed"}',
+            'windivert_processes': (
+                '$modules=@(& tasklist.exe /m WinDivert* /fo csv /nh); '
+                'if($LASTEXITCODE -ne 0){throw "module capture failed"}; '
+                '$managed=@(Get-Process fakenetng-mcp,fakenet -ErrorAction SilentlyContinue | '
+                'Select-Object ProcessName,Id,StartTime); '
+                '$drivers=@(Get-CimInstance Win32_SystemDriver | Where-Object {'
+                '$_.Name -like "WinDivert*" -or $_.PathName -like "*WinDivert*"} | '
+                'Select-Object Name,State,Started,PathName); '
+                '@{modules=$modules;managed=$managed;drivers=$drivers} | ConvertTo-Json -Depth 5 -Compress'),
+            'services': 'Get-Service dnscache,mpssvc | Select-Object Name,Status | ConvertTo-Json -Compress',
+        }
+        out = {'dns_servers': self.capture_dns_servers()}
+        for section, command in commands.items():
+            raw = self.channel.powershell("$ErrorActionPreference='Stop'; " + command,
+                                          timeout=60)['output'].strip()
+            if not raw:
+                raise RuntimeError('empty capture: ' + section)
+            out[section] = raw
         return out
 
     def capture_dns_servers(self):
@@ -113,10 +121,56 @@ class ReleaseGate:
 
     def vm_continuity(self):
         result = self.channel.powershell(
-            '$os = Get-CimInstance Win32_OperatingSystem; '
-            '"boot={0} now={1}" -f $os.LastBootUpTime.ToString("s"), '
-            '(Get-Date).ToString("s")', timeout=60)
-        return result['output'].strip()
+            '$ErrorActionPreference="Stop"; $os=Get-CimInstance Win32_OperatingSystem; '
+            '$s=Get-CimInstance Win32_Service -Filter "Name=\'fakenetng-mcp\'"; '
+            '$p=Get-Process -Id $s.ProcessId; '
+            '@{computer=$env:COMPUTERNAME;boot=$os.LastBootUpTime.ToString("o");'
+            'pid=$s.ProcessId;created=$p.StartTime.ToString("o");state=$s.State} | ConvertTo-Json -Compress', timeout=60)
+        stamp = json.loads(result['output'])
+        if stamp['computer'] != 'DESKTOP-3FI41GR' or stamp['state'] != 'Running':
+            raise RuntimeError('VM/service identity not ready')
+        return stamp
+
+    def observe_round(self, action):
+        """Cover the entire action, including baseline capture and cleanup."""
+        identity = {field: getattr(self.args, field) for field in IDENTITY_FIELDS}
+        before = self.vm_continuity()
+        stop = threading.Event()
+        timeline = []
+        def sample():
+            began = time.time()
+            try:
+                result = call(self.base, 'get_status', controller=None, timeout=1.5)
+                ok = result.get('service') == 'fakenetng-mcp' and not result.get('error')
+                detail = {'status': result}
+            except Exception as exc:
+                ok, detail = False, {'error': repr(exc)}
+            timeline.append(dict(t=began, completed=time.time(), ok=ok, **detail))
+        sample()
+        start = time.time()
+        def monitor():
+            while not stop.wait(0.25):
+                sample()
+        thread = threading.Thread(target=monitor, daemon=True)
+        thread.start()
+        try:
+            record = action()
+        except Exception as exc:
+            record = {'failure': repr(exc)}
+        finally:
+            end = time.time()
+            stop.set()
+            thread.join(3)
+            if thread.is_alive():
+                raise RuntimeError('probe worker did not terminate')
+            sample()
+        record.update(identity, vm_before=before, vm_after=self.vm_continuity(),
+                      probe_window_start=start, probe_window_end=end,
+                      probe_timeline=timeline)
+        issues = validate_round(record, identity)
+        if issues:
+            record['failure'] = '; '.join(issues) + ': ' + str(record.get('failure', ''))
+        return record
 
     def ensure_custom_config(self):
         builtin = call(self.base, 'read_config', {'name': DEFAULT_INI},
@@ -152,6 +206,9 @@ class ReleaseGate:
         return ('released' if not has_run else 'still_locked'), snap
 
     def run_normal_round(self, index, config_name):
+        return self.observe_round(lambda: self._normal_round(index, config_name))
+
+    def _normal_round(self, index, config_name):
         record = {'round': index, 'config': config_name,
                   'started_at': now_iso(), 'vm': self.vm_continuity()}
         before = self.capture_sections()
@@ -169,20 +226,20 @@ class ReleaseGate:
                        timeout=90)
         if started.get('error'):
             record['failure'] = 'start: %s' % started['error']
-            stop_run(self.base)
+            self.stop_once()
             return record
         ok, timeline = continuous_probe(self.base, 4)
         record['probe'] = {'all_ok': ok, 'samples': len(timeline)}
         if not ok:
             record['failure'] = 'link probe failed during round'
             record['probe_timeline'] = timeline
-            stop_run(self.base, attempts=2)
+            self.stop_once()
             return record
         lock_label, lock_raw = self.config_lock_probe(index, during_run=True)
         record['lock_held_during_run'] = lock_label == 'config_in_use'
         if not record['lock_held_during_run']:
             record['lock_probe_raw'] = lock_raw
-        stopped = stop_run(self.base, attempts=4)
+        stopped = self.stop_once()
         record['stop_state'] = stopped.get('state')
         final = wait_state(self.base,
                            lambda s: s.get('state') in ('stopped', 'failed'),
@@ -216,90 +273,112 @@ class ReleaseGate:
         return record
 
     # -- one fault round ----------------------------------------------------
+    def configure_fault_mode(self, enabled):
+        value = "@('FAKENETNG_MCP_FAULT_INJECTION=1')" if enabled else '@()'
+        grace = 5 if enabled else 60
+        result = self.channel.powershell(
+            "$ErrorActionPreference='Stop'; $exe='C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe'; "
+            "& $exe stop; if($LASTEXITCODE -ne 0){throw 'pre-stop failed; configuration unchanged'}; "
+            "$key='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\fakenetng-mcp'; "
+            "New-ItemProperty -Path $key -Name Environment -PropertyType MultiString -Value " + value + " -Force | Out-Null; "
+            "$path='C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json'; "
+            "$cfg=Get-Content $path -Raw | ConvertFrom-Json; $cfg | Add-Member -NotePropertyName stop_grace_seconds "
+            "-NotePropertyValue " + str(grace) + " -Force; "
+            "[IO.File]::WriteAllText($path,($cfg | ConvertTo-Json),[Text.UTF8Encoding]::new($false)); "
+            "Start-Service fakenetng-mcp; 'configured'", timeout=600)
+        ready, state = wait_state(self.base, lambda x: x.get('state') == 'stopped', timeout=60)
+        if not ready:
+            raise RuntimeError('fault mode service not ready: %r' % state)
+        return result
+
     def run_fault_round(self, klass, index):
-        record = {'class': klass, 'round': index,
-                  'started_at': now_iso(), 'vm': self.vm_continuity()}
+        import uuid
+        nonce = str(uuid.uuid4())
+        encoded = json.dumps({'fault': klass, 'nonce': nonce})
         self.channel.powershell(
-            "[Environment]::SetEnvironmentVariable("
-            "'FAKENETNG_MCP_FAULT_INJECTION', '1', 'Machine'); "
-            "[Environment]::SetEnvironmentVariable("
-            "'FAKENETNG_MCP_ARMED_FAULT', '%s', 'Machine')" % klass,
-            timeout=60)
-        try:
-            self.channel.powershell(
-                'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; Start-Sleep 3; '
-                'sc.exe start fakenetng-mcp | Out-Null; "RESTARTED"',
-                timeout=180)
-            deadline = time.time() + 60
-            while time.time() < deadline:
-                try:
-                    if call(self.base, 'get_status',
-                            controller=None).get('state'):
-                        break
-                except Exception:  # noqa: BLE001
-                    time.sleep(2)
-            before = self.capture_sections()
-            version = call(self.base, 'get_status')['state_version']
-            loaded = call(self.base, 'load_config',
-                          {'name': DEFAULT_INI,
-                           'command_id': unique_command('f%d-l' % index),
-                           'expected_state_version': version}, timeout=60)
-            started = call(self.base, 'start',
-                          {'command_id': unique_command('f%d-s' % index),
-                           'expected_state_version':
-                               loaded.get('state_version', version)},
-                           timeout=90)
-            if started.get('error'):
-                record['failure'] = 'start: %s' % started['error']
-                return record
-            ok, timeline = continuous_probe(self.base, 4)
-            record['probe'] = {'all_ok': ok, 'samples': len(timeline)}
-            if not ok:
-                # CHK-043: the control link must survive every fault
-                # round — a dead probe fails the round regardless of
-                # how the stop converges (OUT-004 domain).
-                record['probe_timeline'] = timeline
-                record['failure'] = 'link probe failed during fault round'
-                stop_run(self.base, attempts=2)
-                return record
-            stopped = stop_run(self.base, attempts=4)
-            record['stop_state'] = stopped.get('state')
-            record['stop_error'] = (stopped.get('error') or {})
-            final = wait_state(self.base,
-                               lambda s: s.get('state') in
-                               ('stopped', 'failed'), timeout=120)
-            snap = final[1] or {}
-            record['final_state'] = snap.get('state')
-            record['failure_reason'] = snap.get('failure_reason')
-            converged = record['final_state'] == 'stopped' or (
-                record['final_state'] == 'failed' and
-                record['failure_reason'] == 'stop grace exceeded')
-            if not converged:
-                record['failure'] = 'final=%s reason=%s' % (
-                    record['final_state'], record['failure_reason'])
-                return record
-            fault_label, fault_raw = self.config_lock_probe(
-                index + 9000, during_run=False)
-            record['lock_released_after_stop'] = fault_label == 'released'
-            if not record['lock_released_after_stop']:
-                record['lock_probe_raw'] = fault_raw
-            if not record.get('lock_released_after_stop'):
-                record['failure'] = 'config lock leaked after fault stop'
-            diff = self.audit_diff(before)
-            record['audit_diff'] = sorted(diff) if diff else []
-            if diff:
-                record['failure'] = 'environment drift: %s' % sorted(diff)
-            record['ended_at'] = now_iso()
-            return record
-        finally:
-            self.channel.powershell(
-                "[Environment]::SetEnvironmentVariable("
-                "'FAKENETNG_MCP_ARMED_FAULT', $null, 'Machine')",
-                timeout=60)
+            "$ErrorActionPreference='Stop'; $path='C:\\ProgramData\\FakeNet-NG-MCP\\logs\\fault-injection.json'; "
+            "if(Test-Path $path){throw 'unconsumed fault file'}; "
+            "[IO.File]::WriteAllText($path,'" + encoded + "',[Text.UTF8Encoding]::new($false))", timeout=30)
+        return self.observe_round(lambda: self._fault_round(klass, index, nonce))
+
+    def _fault_round(self, klass, index, nonce):
+        record = {'class': klass, 'round': index, 'nonce': nonce, 'started_at': now_iso()}
+        before = self.capture_sections()
+        version = call(self.base, 'get_status')['state_version']
+        loaded = call(self.base, 'load_config',
+                      {'name': DEFAULT_INI, 'command_id': unique_command('fault-load'),
+                       'expected_state_version': version}, timeout=60)
+        if loaded.get('error'):
+            return dict(record, failure='load rejected', loaded=loaded)
+        started = call(self.base, 'start',
+                       {'command_id': unique_command('fault-start'),
+                        'expected_state_version': loaded['state_version']}, timeout=480)
+        record['start_response'] = started
+        if started.get('error'):
+            return dict(record, failure='start rejected')
+        if started.get('state') == 'healthy':
+            stopped = self.stop_once()
+            record['stop_response'] = stopped
+        _, snap = wait_state(self.base, lambda s: s.get('state') in ('stopped', 'failed'), timeout=480)
+        snap = snap or {}
+        record['final_state'] = snap.get('state')
+        record['last_run_outcome'] = snap.get('last_run_outcome')
+        record['final_status'] = snap
+        if record['final_state'] != 'stopped' or record['last_run_outcome'] != 'failed':
+            record['failure'] = 'fault did not finish as real stopped/last_run_outcome failed'
+        record['lock_released_after_stop'] = not snap.get('run_id') and not snap.get('controller')
+        # A triggering receipt and real incident manifest must belong to the
+        # exact fault nonce. Never substitute a hand-written converged label.
+        detail = self.channel.powershell(
+            "$ErrorActionPreference='Stop'; $root='C:\\ProgramData\\FakeNet-NG-MCP\\artifacts'; "
+            "$receipts=@(Get-ChildItem $root -Recurse -Filter fault-triggered.json | ForEach-Object { "
+            "$r=Get-Content $_.FullName -Raw | ConvertFrom-Json; "
+            "if($r.nonce -eq '" + nonce + "'){@{path=$_.FullName;receipt=$r;run_id=$_.Directory.Name}}}); "
+            "if($receipts.Count -ne 1){throw 'fault receipt is not unique'}; "
+            "$run=$receipts[0].run_id; $manifests=@(Get-ChildItem (Join-Path $root $run) -Recurse -Filter manifest.json | "
+            "ForEach-Object {@{path=$_.FullName;manifest=(Get-Content $_.FullName -Raw | ConvertFrom-Json)}}); "
+            "@{receipt=$receipts[0];incidents=$manifests} | ConvertTo-Json -Depth 12 -Compress", timeout=60)
+        record['fault_evidence'] = json.loads(detail['output'])
+        incidents = record['fault_evidence']['incidents']
+        if (record['fault_evidence']['receipt']['receipt'] != {'fault': klass, 'nonce': nonce}
+                or not incidents or any(not item['manifest'].get('complete') for item in incidents)):
+            record['failure'] = 'fault receipt/incident incomplete'
+        diff = self.audit_diff(before)
+        record['audit_diff'] = diff
+        if diff:
+            record['failure'] = 'environment drift'
+        record['ended_at'] = now_iso()
+        return record
 
     # -- checkpoints ----------------------------------------------------------
     def round_path(self, prefix, index):
         return self.release / ('%s-%03d.json' % (prefix, index))
+
+    def stop_once(self):
+        snapshot = call(self.base, 'get_status')
+        if snapshot.get('state') == 'stopped':
+            return snapshot
+        return call(self.base, 'stop', {'command_id': unique_command('release-stop'),
+                    'expected_state_version': snapshot['state_version']}, timeout=1020)
+
+    def record_round(self, path, record, writer):
+        raw = (json.dumps(record, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
+        with path.open('xb') as stream:
+            stream.write(raw)
+        writer.evidence.append({'name': path.stem, 'path': str(path),
+                                'sha256': hashlib.sha256(raw).hexdigest(), 'size': len(raw)})
+
+    def prior_round(self, path, writer):
+        if not path.exists():
+            return False
+        record = json.loads(path.read_text(encoding='utf-8'))
+        issues = validate_round(record, {field: getattr(self.args, field) for field in IDENTITY_FIELDS})
+        if issues or record['vm_after'] != self.vm_continuity():
+            raise RuntimeError('prior round failed/incomplete or VM drift; preserve it and restart full counting in a new evidence directory')
+        raw = path.read_bytes()
+        writer.evidence.append({'name': path.stem, 'path': str(path),
+                                'sha256': hashlib.sha256(raw).hexdigest(), 'size': len(raw)})
+        return True
 
     def done_rounds(self, prefix, total):
         done = []
@@ -308,7 +387,7 @@ class ReleaseGate:
             if path.is_file():
                 try:
                     record = json.loads(path.read_text(encoding='utf-8'))
-                    if not record.get('failure'):
+                    if not validate_round(record, {field: getattr(self.args, field) for field in IDENTITY_FIELDS}):
                         done.append(index)
                 except ValueError:
                     pass
@@ -324,12 +403,10 @@ class ReleaseGate:
             prefix = 'normal-%s' % group
             for index in range(1, NORMAL_ROUNDS_PER_CONFIG + 1):
                 path = self.round_path(prefix, index)
-                if path.is_file() and not json.loads(
-                        path.read_text(encoding='utf-8')).get('failure'):
+                if self.prior_round(path, writer):
                     continue
                 record = self.run_normal_round(index, config)
-                path.write_text(json.dumps(record, ensure_ascii=False,
-                                          indent=1), encoding='utf-8')
+                self.record_round(path, record, writer)
                 if record.get('failure'):
                     failures.append({'group': group, 'round': index,
                                      'failure': record['failure']})
@@ -347,18 +424,16 @@ class ReleaseGate:
             and summary['custom'] == NORMAL_ROUNDS_PER_CONFIG else EXIT_FAIL
 
     def mode_fault(self, writer):
+        writer.add_evidence('fault-mode-enabled', self.configure_fault_mode(True))
         failures = []
         for klass in FAULT_CLASSES:
             prefix = 'fault-%s' % klass
             for index in range(1, FAULT_ROUNDS_PER_CLASS + 1):
                 path = self.round_path(prefix, index)
-                if path.is_file():
-                    record = json.loads(path.read_text(encoding='utf-8'))
-                    if not record.get('failure'):
-                        continue
+                if self.prior_round(path, writer):
+                    continue
                 record = self.run_fault_round(klass, index)
-                path.write_text(json.dumps(record, ensure_ascii=False,
-                                          indent=1), encoding='utf-8')
+                self.record_round(path, record, writer)
                 if record.get('failure'):
                     failures.append({'class': klass, 'round': index,
                                     'failure': record['failure']})
@@ -371,6 +446,7 @@ class ReleaseGate:
             json.dumps(summary, ensure_ascii=False, indent=1),
             encoding='utf-8')
         writer.add_evidence('fault-summary', summary)
+        writer.add_evidence('fault-mode-disabled', self.configure_fault_mode(False))
         return EXIT_PASS if all(
             v == FAULT_ROUNDS_PER_CLASS for v in summary.values()) \
             else EXIT_FAIL
@@ -401,7 +477,7 @@ class ReleaseGate:
         checks['healthy'] = healthy
         ok, _ = continuous_probe(self.base, 4)
         checks['link_during_run'] = ok
-        stopped = stop_run(self.base)
+        stopped = self.stop_once()
         checks['stopped'] = stopped.get('state') == 'stopped'
         diff = self.audit_diff(before)
         checks['audit_clean'] = not diff
@@ -435,18 +511,17 @@ class ReleaseGate:
             except ValueError:
                 continue
             label = result.get('acc_id')
+            if label == 'ACC-017-SUMMARY':
+                continue
             if label not in allowed_labels:
                 integrity_failures[str(path)] = 'undeclared label %r' % label
                 continue
-            # CHK-011: identity must be COMPLETE per record — a null
-            # package_sha256 or a foreign candidate string must not
-            # aggregate into a green manifest.
-            for field in ('package_sha256', 'source_commit',
-                          'candidate_id'):
-                value = result.get(field)
-                if not value or not isinstance(value, str):
-                    integrity_failures[str(path)] = \
-                        '%s missing/null in %s' % (field, label)
+            issues = validate_result(result, {
+                field: getattr(self.args, field) for field in IDENTITY_FIELDS}, self.root)
+            if label in acc_index:
+                issues.append('duplicate ACC label')
+            if issues:
+                integrity_failures[str(path)] = issues
             acc_index[label] = {
                 'status': result.get('status'),
                 'candidate_id': result.get('candidate_id')}
@@ -459,6 +534,18 @@ class ReleaseGate:
                     'FAULT-POINTS', 'ACC-012', 'ACC-013', 'ACC-016',
                     'ACC-017', 'P01-ENTRY']
         missing = [acc for acc in expected if acc not in acc_index]
+        identity = {field: getattr(self.args, field) for field in IDENTITY_FIELDS}
+        groups = [('normal-builtin', 50), ('normal-custom', 50)] + [
+            ('fault-' + klass, 10) for klass in FAULT_CLASSES]
+        for prefix, count in groups:
+            for index in range(1, count + 1):
+                path = self.round_path(prefix, index)
+                try:
+                    issues = validate_round(json.loads(path.read_text(encoding='utf-8')), identity)
+                except (OSError, ValueError, TypeError) as exc:
+                    issues = [repr(exc)]
+                if issues:
+                    integrity_failures[str(path)] = issues
         wrong_candidate = {acc: row for acc, row in acc_index.items()
                           if row['candidate_id'] != self.cid}
         failures = {acc: row['status'] for acc, row in acc_index.items()

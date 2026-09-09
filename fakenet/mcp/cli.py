@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 from fakenet.mcp import MCP_PACKAGE_NAME, MCP_PACKAGE_VERSION
 from fakenet.mcp import config as config_module
@@ -357,6 +358,8 @@ def main(argv=None):
         from fakenet.mcp.faultinject import enabled
         if not enabled():
             return 2
+        from fakenet.mcp.incident import IncidentCollector
+        Path('fault-child-stacks.txt').write_text(IncidentCollector._thread_stacks(), encoding='utf-8')
         time.sleep(3600)
         return 0
     if argv and argv[0] == 'incident-dump':

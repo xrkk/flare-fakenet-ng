@@ -35,6 +35,24 @@ def build_service_class(service_main, orchestrator=None):
 
         def report_running(self):
             self.service.report(scm.SERVICE_RUNNING)
+            if self.service.prestop is not None and self.service.prestop.ready:
+                manager = handle = None
+                try:
+                    manager = scm.OpenSCManager(None, None, scm.SC_MANAGER_CONNECT)
+                    handle = scm.OpenService(manager, SERVICE_NAME, scm.SERVICE_QUERY_STATUS)
+                    status = scm.QueryServiceStatusEx(handle)
+                    if (status['CurrentState'] != scm.SERVICE_RUNNING or
+                            not status['ControlsAccepted'] & scm.SERVICE_ACCEPT_STOP):
+                        raise RuntimeError('SCM STOP acceptance is not observable')
+                except BaseException:
+                    self.service.prestop.ready = False
+                    self.service.report(scm.SERVICE_RUNNING)
+                    raise
+                finally:
+                    if handle is not None:
+                        scm.CloseServiceHandle(handle)
+                    if manager is not None:
+                        scm.CloseServiceHandle(manager)
 
         def report_stop_pending(self):
             self.service.report(scm.SERVICE_STOP_PENDING)

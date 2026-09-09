@@ -56,6 +56,7 @@ class RealSupervisor:
         self._run_dir = None
         self._log_reader = log_reader
         self._last_run_outcome = None
+        self._last_managed_stacks = None
 
     def health_detail(self, state, max_wait=0.05):
         # Observations are updated by a bounded IPC poll, never queried under
@@ -70,6 +71,9 @@ class RealSupervisor:
     def _result(self, state, reason=None):
         result = {'state': state, 'changed': True, 'failure_reason': reason,
                   'release_controller': state == 'stopped'}
+        if state == 'failed':
+            self._last_run_outcome = 'failed'
+            result['last_run_outcome'] = 'failed'
         if state == 'stopped':
             result['run_id'] = None
         elif self._marker:
@@ -104,6 +108,7 @@ class RealSupervisor:
                 parsed.parse_config(config_path)
                 self._inject_exclusion(parsed)
                 run_id = coordinator.new_run_id()
+                self._last_run_outcome = None
                 self._run_dir = Path(self._artifacts_root) / 'runs' / run_id
                 self._run_dir.mkdir(parents=True, exist_ok=False)
                 for key in ('dumppacketsfileprefix', 'dumphttpwebroot'):
@@ -234,9 +239,15 @@ class RealSupervisor:
             self._coordinator = coordinator
             reason = None
             if self._fakenet is not None:
+                grace_deadline = min(deadline, time.monotonic() + self._stop_grace)
                 try:
-                    self._fakenet.request('stop', timeout=max(0, min(
-                        self._stop_grace, deadline - time.monotonic())))
+                    self._last_managed_stacks = self._fakenet.request('stacks', timeout=min(
+                        1, max(0, grace_deadline - time.monotonic())))['stacks']
+                    self._fakenet.request('stop', timeout=max(0, grace_deadline - time.monotonic()))
+                    while self._fakenet.job.members() and time.monotonic() < grace_deadline:
+                        time.sleep(0.05)
+                    if self._fakenet.job.members():
+                        raise TimeoutError('managed descendants did not exit within stop grace')
                 except BaseException as exc:
                     reason = str(exc)
                     coordinator.update_health_state('failed', reason)
@@ -251,7 +262,8 @@ class RealSupervisor:
                     return self._result('failed', 'Job termination failed: ' + repr(exc))
             self._health_cache = {'process_alive': False, 'init_evidence': False, 'probe': False}
             self._baseline_store.compensate(marker['run_id'], deadline)
-            differences = self._baseline_store.full_audit_diff(marker['run_id'], deadline=deadline)
+            differences = self._baseline_store.full_audit_diff(marker['run_id'], deadline=deadline,
+                                                              settle_seconds=30)
             if differences:
                 logger.error('full restoration audit failed: %r', differences)
                 return self._result('failed', 'environment restoration audit failed')
@@ -266,7 +278,7 @@ class RealSupervisor:
             self._marker = dict(marker, needs_recovery=False)
             if reason:
                 self._last_run_outcome = 'failed'
-            return dict(self._result('stopped'), last_run_outcome='failed' if reason else 'ok')
+            return dict(self._result('stopped'), last_run_outcome=self._last_run_outcome or 'ok')
         except BaseException as exc:
             logger.exception('stop/recovery failed')
             return self._result('failed', str(exc))
@@ -348,11 +360,22 @@ class RealSupervisor:
                     metadata.append({'path': str(path), 'size': len(raw),
                                      'sha256': hashlib.sha256(raw).hexdigest()})
         target_creation = None
+        target_pid = None
         if child:
             try:
-                target_creation = process_identity(child.pid)['creation_time']
+                members = child.job.members()
+                target_pid = child.pid if child.alive() else (members[0] if members else None)
+                target_creation = process_identity(target_pid)['creation_time'] if target_pid else None
             except OSError:
                 pass
+        versions['managed_process'] = {'identity': child.identity if child else None,
+                                       'exit_code': child.job.poll() if child else None,
+                                       'job_members': child.job.members() if child else []}
+        if not stacks and child and not child.alive() and self._last_managed_stacks:
+            stacks = 'LAST OBSERVATION BEFORE STOP; ROOT HAS EXITED\n' + self._last_managed_stacks
+            extra = read_file('fault-child-stacks.txt')
+            if extra:
+                stacks += '\nMANAGED FAULT CHILD\n' + extra.decode('utf-8')
         context = {'timeline': self._coordinator.events(500),
                    'versions': versions,
                    'config_path': self._active_config_path,
@@ -363,9 +386,11 @@ class RealSupervisor:
                    'baseline_diff': {'before': baseline, 'after': current,
                        'differences': audit_compare((baseline or {}).get('sections'), current)},
                    'firewall_baseline': (baseline or {}).get('firewall'),
-                   'artifact_metadata': metadata, 'dump_target_pid': child.pid if child else None,
+                   'artifact_metadata': metadata, 'dump_target_pid': target_pid,
                    'dump_target_creation': target_creation,
-                   'dump_reason': None if stacks else 'managed stacks unavailable'}
+                   'dump_reason': ('managed hang/timeout' if 'timeout' in reason.lower() or
+                                   'did not exit' in reason.lower() else
+                                   None if stacks else 'managed stacks unavailable')}
         collector = IncidentCollector(self._artifacts_root, self._marker['run_id'])
         if deadline:
             collector.deadline = min(collector.deadline, time.time() + max(0, deadline-time.monotonic()))

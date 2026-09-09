@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "08e509a8206f26097c127130e88f33e7d2d588af",
+  "current_head": "9ee5289a9f96d870875c8937809d88edbaff9c06",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "08e509a原生失败现场已导出，VM服务RUNNING/failed且恢复责任保留，无受管FakeNet；当前纯实现整改中。",
+  "checkpoint": "恢复完成，准备固定源码诊断构建；全部CHK开放，有效1/5。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-037",
-    "action": "修复FTP嵌套socket健康、子进程cwd/产物路径和仅本轮新增自有驱动服务补偿；保留未知UDP差异失败，不放宽审计；回归后提交重建"
+    "id": "INTENT-042",
+    "action": "提交已回归组合工作树作为中间源快照并生成新诊断候选；仍需原生停止/故障矩阵和全部P05正式门禁，不关闭CHK"
   },
   "events": [
     {
@@ -577,6 +577,21 @@
       "at": "2026-09-09T17:16:54.808213+08:00",
       "intent": "INTENT-036",
       "actual": "08e509a SHA验证部署/启动完成，IPC污染消除但真实FTPServer无fileno使健康误判；停止全审计发现本轮新增WinDivert1.3服务及Dnscache PID2128旧UDP57135/65214消失，正确保持failed/责任。已导出完整现场(含错误落在ProgramFiles的PCAP/HTML)，ZIP SHA f69e3fb73b4585fecab37c8d948f595b5919fb06cc11e8d824622962e812c0c5；临时传输已停。"
+    },
+    {
+      "at": "2026-09-09T17:21:08.531698+08:00",
+      "intent": "INTENT-037",
+      "actual": "纯实现整改提交9ee5289a9f96d870875c8937809d88edbaff9c06，Linux166通过2跳过；固定源构建已开始。旧原生失败保留，没有通过声明。"
+    },
+    {
+      "at": "2026-09-09T17:38:54.098896+08:00",
+      "intent": "INTENT-038",
+      "actual": "Snapshot183恢复完成且Win10VM身份匹配，9ee5289构建部署SHA 35f18b294fe20417a1f3d6de3e270b6a491ec03d9e74798245582f7e559db125；原生healthy成功；停止因驱动自动删除后1060误判失败，重试时捕获短暂UDP51170，保留failed恢复责任。完整ZIP 99f6a312e011a44555067b9a244ae29c83014bb65aebc2d52820b02749eca2cb已导出，暂停前12个可哈希客体文件逐项一致，service.log4216字节亦已归档。"
+    },
+    {
+      "at": "2026-09-09T17:41:17.878347+08:00",
+      "intent": "INTENT-039",
+      "actual": "客体证据已逐项核对；唯一Snapshot183恢复完成，Snapshot99标记及Win10VM身份完成门匹配，服务/进程0且任务数据目录不存在。代码工作树、二进制diff和未跟踪文件归档已保存；无本轮构建/传输/核验后台任务。"
     }
   ],
   "response_record": {
@@ -790,10 +805,24 @@
     }
   ],
   "candidate": {
-    "source_head": "08e509a8206f26097c127130e88f33e7d2d588af",
-    "path": "dist/mcp-remediation-20260909-08e509a/fakenetng-mcp-candidate.zip",
-    "candidate_id": "mcp-c08e509a8-fe12f52bf4a4",
-    "sha256": "fe12f52bf4a48a83cb580cc32d2501742271e1e89d40b1911cd123d3591c7666",
+    "source_head": "9ee5289a9f96d870875c8937809d88edbaff9c06",
+    "path": "dist/mcp-remediation-20260909-9ee5289/fakenetng-mcp-candidate.zip",
+    "candidate_id": "mcp-c9ee5289a-35f18b294fe2",
+    "sha256": "35f18b294fe20417a1f3d6de3e270b6a491ec03d9e74798245582f7e559db125",
     "formal_acc_pass": false
-  }
+  },
+  "pause_handoff": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-08-暂停交接-FakeNet-NG-MCP.md",
+    "blob": "bbd02b5dc5a9c97c926a13bf950a397bf925206e",
+    "sha256": "57a56fd41c9402f151aacad676cd64fe262b0f017724d83ea4136bb530813ff7"
+  },
+  "resume_requires": null,
+  "resume_started_at": "2026-09-10T00:50:47.277736+08:00",
+  "resume_checkpoints": [
+    {
+      "at": "2026-09-10T00:54:17.332112+08:00",
+      "intent": "INTENT-040/041",
+      "actual": "暂停清单与HEAD、8个工作树文件、6个规范SHA逐项一致；Linux170通过2跳过，Wine149通过6跳过。指定VM单次恢复183，Snapshot99内存标记及Win10VM DESKTOP-3FI41GR完成门通过；helpers在NO_PROXY host-only直连可用。"
+    }
+  ]
 }
