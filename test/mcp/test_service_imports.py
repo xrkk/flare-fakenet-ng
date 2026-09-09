@@ -8,6 +8,8 @@ platform so the Wine gate catches missing attributes early.
 
 import importlib
 
+import pytest
+
 
 def test_cli_imports_winservice_modules():
     module = importlib.import_module('fakenet.mcp.cli')
@@ -26,3 +28,18 @@ def test_transportguard_constants():
 
 def transportsupport_versions(transportguard):
     return transportguard.SUPPORTED_VERSIONS
+
+
+@pytest.mark.parametrize('grace', [5, 60, 600])
+def test_application_passes_deployed_stop_grace_to_real_supervisor(
+        tmp_path, monkeypatch, grace):
+    from fakenet.mcp.config import ServiceConfig
+    from fakenet.mcp.tools import AppContext
+
+    monkeypatch.setenv('FAKENETNG_MCP_PROGRAMDATA', str(tmp_path))
+    monkeypatch.delenv('FAKENETNG_MCP_TESTDOUBLE', raising=False)
+    context = AppContext(ServiceConfig(
+        '127.0.0.1', 28788, ['127.0.0.1'], stop_grace_seconds=grace))
+
+    assert context.runner.name == 'real'
+    assert context.runner._stop_grace == grace

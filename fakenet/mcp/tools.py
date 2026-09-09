@@ -86,6 +86,7 @@ class AppContext:
                 supervisor = RealSupervisor(
                     snapshot=_make_snapshot(dirs),
                     baseline_store=_make_baseline_store(dirs),
+                    stop_grace_seconds=config.stop_grace_seconds,
                     config_path_resolver=self._default_config_resolver,
                     artifacts_root=dirs['artifacts'],
                     exclusion={

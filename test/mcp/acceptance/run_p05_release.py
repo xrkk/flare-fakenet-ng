@@ -63,16 +63,13 @@ class ReleaseGate:
 
     # -- environment capture (host-driven, P04 normalization) -------------
     def capture_sections(self):
-        # Every capture ends with a success marker so a native tool's
-        # non-zero exit (e.g. tasklist /m with no matching module) cannot
-        # fail the whole probe.
+        # Native tasklist may return non-zero for an empty process set.
+        # DNS must instead contain a validated observation: a success
+        # marker cannot stand in for the pre/post-run server addresses.
         out = {}
         out['routes'] = self.channel.powershell(
             'route print -4 | Out-String; "S"', timeout=60)['output']
-        out['dns_servers'] = self.channel.powershell(
-            'Get-DnsClientServerAddress -AddressFamily IPv4 | Select-Object '
-            'InterfaceAlias,ServerAddresses | ConvertTo-Json -Compass 2>$null'
-            '; "S"', timeout=60)['output'].replace(' -Compass ', ' -Compress ')
+        out['dns_servers'] = self.capture_dns_servers()
         out['windivert_processes'] = self.channel.powershell(
             'tasklist /m WinDivert*.sys 2>$null | Out-String; "S"',
             timeout=60)['output']
@@ -82,6 +79,27 @@ class ReleaseGate:
             'Get-Service dnscache,mpssvc | Select-Object Name,Status | '
             'ConvertTo-Json -Compress; "S"', timeout=60)['output']
         return out
+
+    def capture_dns_servers(self):
+        raw = self.channel.powershell(
+            "$ErrorActionPreference = 'Stop'; "
+            'Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop | '
+            'Select-Object InterfaceAlias,ServerAddresses | '
+            'ConvertTo-Json -Compress', timeout=60)['output'].strip()
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError('DNS capture did not return JSON') from exc
+        rows = data if isinstance(data, list) else [data]
+        if not rows or not all(
+                isinstance(row, dict) and
+                isinstance(row.get('InterfaceAlias'), str) and
+                isinstance(row.get('ServerAddresses'), list) and
+                all(isinstance(address, str)
+                    for address in row['ServerAddresses'])
+                for row in rows):
+            raise RuntimeError('DNS capture has no valid interface observations')
+        return raw
 
     def audit_diff(self, before):
         from fakenet.mcp.baseline import audit_compare
