@@ -29,8 +29,8 @@ def run_creation_matrix(base, channel, writer):
     writer.add_evidence('creation-test-mode', configure_fault_service(channel, True, 5))
     checks = {}
     for stage in CREATION_STAGES:
-        initial = status(base)
-        if initial.get('state') != 'stopped' or initial.get('run_id'):
+        ready, initial = wait_state(base, lambda x: x.get('state') in ('stopped', 'failed'), timeout=60)
+        if not ready or initial.get('state') != 'stopped' or initial.get('run_id'):
             raise StepError('creation window requires stopped entry; preserve scene')
         loaded = call(base, 'load_config', {'name': 'default.ini',
             'command_id': unique_command('creation-load'), 'expected_state_version': initial['state_version']})
