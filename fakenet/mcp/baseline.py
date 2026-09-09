@@ -15,6 +15,7 @@ import base64
 import tempfile
 import csv
 import subprocess
+import sys
 from pathlib import Path
 
 BASELINE_FIELDS = ('routes', 'dns_servers', 'windivert_processes',
@@ -33,9 +34,17 @@ def _run(command, timeout=60):
     when the command itself failed — the auditor must treat a failed
     section as unverifiable (never silently equal; CHK-018/CHK-042)."""
     try:
+        encoding = 'utf-8'
+        if os.name == 'nt':
+            import ctypes
+            encoding = 'cp%d' % ctypes.windll.kernel32.GetOEMCP()
+            if str(command[0]).lower() in ('powershell', 'powershell.exe'):
+                command = list(command)
+                command[-1] = "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); " + command[-1]
+                encoding = 'utf-8'
         completed = subprocess.run(
             command, capture_output=True, text=True, timeout=timeout,
-            encoding='utf-8', errors='replace')
+            encoding=encoding, errors='strict')
     except (OSError, subprocess.TimeoutExpired):
         return COLLECTION_FAILED
     if completed.returncode != 0 or not (completed.stdout or '').strip():
@@ -179,7 +188,8 @@ class BaselineStore:
             if firewall == COLLECTION_FAILED:
                 raise RuntimeError('pre-start firewall evidence unavailable')
         payload = json.dumps({'run_id': run_id, 'sections': sections,
-                              'firewall': firewall},
+                              'firewall': firewall,
+                              'managed_driver_root': str(Path(sys.executable).parent)},
                              ensure_ascii=False, indent=2) + '\n'
         path = self.root / ('%s.json' % run_id)
         fd, temporary = tempfile.mkstemp(dir=self.root, prefix='.baseline-')
@@ -259,3 +269,40 @@ class BaselineStore:
         if remaining <= 0 or _run(['powershell', '-NoProfile', '-Command', script],
                                   timeout=remaining) == COLLECTION_FAILED:
             raise RuntimeError('baseline compensation failed or exceeded deadline')
+        self._restore_owned_drivers(baseline, deadline)
+
+    def _restore_owned_drivers(self, baseline, deadline):
+        """Undo only a driver service introduced by this installed package.
+
+        Pre-existing driver services and foreign image paths are untouched;
+        the full audit retains their differences. Other module users block
+        removal rather than risking another process's WinDivert handles.
+        """
+        observed = json.loads(baseline['sections']['windivert_processes'])
+        if not isinstance(observed, dict) or 'drivers' not in observed:
+            raise RuntimeError('driver baseline identity unavailable')
+        payload = base64.b64encode(json.dumps({
+            'drivers': observed['drivers'],
+            'root': baseline['managed_driver_root'],
+            'supervisor': os.getpid()}).encode()).decode()
+        script = (
+            "$ErrorActionPreference='Stop'; $b=[Text.Encoding]::UTF8.GetString("
+            "[Convert]::FromBase64String('" + payload + "')) | ConvertFrom-Json; "
+            "$root=[IO.Path]::GetFullPath($b.root).TrimEnd('\\')+'\\'; "
+            "$drivers=@(Get-CimInstance Win32_SystemDriver | Where-Object {$_.Name -like 'WinDivert*'}); "
+            "foreach($d in $drivers){ "
+            "if(@($b.drivers | Where-Object {$_.Name -eq $d.Name}).Count){continue}; "
+            r"$path=$d.PathName -replace '^\\\?\?\\',''; "
+            "if(-not [IO.Path]::GetFullPath($path).StartsWith($root,[StringComparison]::OrdinalIgnoreCase)){continue}; "
+            "$rows=@(& tasklist.exe /m WinDivert* /fo csv /nh); "
+            "if($LASTEXITCODE -ne 0){throw 'module user observation failed'}; "
+            "$users=@($rows | Where-Object {$_.StartsWith([string][char]34)} | "
+            "ConvertFrom-Csv -Header Image,Pid,Modules | Where-Object {[int]$_.Pid -ne $b.supervisor}); "
+            "if($users.Count){throw 'other WinDivert module users prevent driver removal'}; "
+            "& sc.exe stop $d.Name | Out-Null; if($LASTEXITCODE -notin @(0,1062)){throw 'owned driver stop failed'}; "
+            "& sc.exe delete $d.Name | Out-Null; if($LASTEXITCODE -ne 0){throw 'owned driver deletion failed'} }; "
+            "Write-Output 'owned driver compensation complete'")
+        remaining = min(60, deadline - time.monotonic())
+        if remaining <= 0 or _run(['powershell', '-NoProfile', '-Command', script],
+                                  timeout=remaining) == COLLECTION_FAILED:
+            raise RuntimeError('owned driver compensation failed')

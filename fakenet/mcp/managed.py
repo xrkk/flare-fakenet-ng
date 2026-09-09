@@ -37,7 +37,7 @@ class ManagedProcess:
         try:
             for handle in handles:
                 os.set_handle_inheritable(handle, True)
-            self.pid = self.job.spawn(command, package_root, handles)
+            self.pid = self.job.spawn(command, self.run_dir, handles)
             self.identity = process_identity(self.pid)
         except BaseException:
             self.job.close()
@@ -132,15 +132,24 @@ def probe_instance(instance):
     handle = getattr(diverter, 'handle', None)
     providers = getattr(instance, 'running_listener_providers', None) or []
     listeners = bool(providers)
+    observations = []
     for provider in providers:
         sockets = [getattr(provider, attr, None) for attr in ('server', 'sock', 'socket')]
+        sockets.append(getattr(getattr(provider, 'server', None), 'socket', None))
         descriptors = [sock for sock in sockets if callable(getattr(sock, 'fileno', None))]
-        if not descriptors or any(sock.fileno() < 0 for sock in descriptors):
+        live = bool(descriptors) and all(sock.fileno() >= 0 for sock in descriptors)
+        thread = getattr(provider, 'server_thread', None)
+        if thread is not None:
+            live = live and thread.is_alive()
+        observations.append({'provider': type(provider).__name__,
+                             'name': getattr(provider, 'name', None),
+                             'handles': [sock.fileno() for sock in descriptors], 'alive': live})
+        if not live:
             listeners = False
     return {'init_evidence': bool(providers),
             'probe': bool(handle and getattr(handle, 'is_open', False) and listeners),
             'final_filter': str(getattr(diverter, 'filter', '')),
-            'listeners': [type(p).__name__ for p in providers]}
+            'listeners': observations}
 
 
 def redirect_child_streams(run_dir):

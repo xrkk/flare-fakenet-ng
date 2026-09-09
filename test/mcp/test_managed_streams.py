@@ -7,6 +7,23 @@ import sys
 import pytest
 
 
+def test_real_ftp_server_nested_socket_health():
+    from types import SimpleNamespace
+    from pyftpdlib.servers import FTPServer
+    from pyftpdlib.handlers import FTPHandler
+    from fakenet.mcp.managed import probe_instance
+    server = FTPServer(('127.0.0.1', 0), FTPHandler)
+    instance = SimpleNamespace(diverter=SimpleNamespace(handle=SimpleNamespace(is_open=True)),
+                               running_listener_providers=[SimpleNamespace(server=server)])
+    try:
+        assert not hasattr(server, 'fileno')
+        assert probe_instance(instance)['probe']
+        server.close_all()
+        assert not probe_instance(instance)['probe']
+    finally:
+        server.close_all()
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows standard handle inheritance')
 def test_external_non_utf8_output_isolated_from_protocol(tmp_path):
     script = r'''

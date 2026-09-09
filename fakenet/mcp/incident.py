@@ -44,9 +44,17 @@ def _sha256_bytes(raw):
 
 
 def _run(command, timeout=30):
+    encoding = 'utf-8'
+    if os.name == 'nt':
+        import ctypes
+        encoding = 'cp%d' % ctypes.windll.kernel32.GetOEMCP()
+        if str(command[0]).lower() in ('powershell', 'powershell.exe'):
+            command = list(command)
+            command[-1] = "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); " + command[-1]
+            encoding = 'utf-8'
     completed = subprocess.run(
         command, capture_output=True, text=True, timeout=timeout,
-        encoding='utf-8', errors='replace')
+        encoding=encoding, errors='strict')
     if completed.returncode != 0:
         raise RuntimeError('collector exited %s: %s' % (
             completed.returncode, (completed.stderr or completed.stdout)[:1000]))

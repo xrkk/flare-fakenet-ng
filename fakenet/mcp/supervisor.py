@@ -106,10 +106,10 @@ class RealSupervisor:
                 run_id = coordinator.new_run_id()
                 self._run_dir = Path(self._artifacts_root) / 'runs' / run_id
                 self._run_dir.mkdir(parents=True, exist_ok=False)
-                for key in ('DumpPacketsFilePrefix', 'DumpHTTPWebRoot'):
-                    value = str(parsed.fakenet_config.get(key, '') or '').strip()
+                for key in ('dumppacketsfileprefix', 'dumphttpwebroot'):
+                    value = str(parsed.diverter_config.get(key, '') or '').strip()
                     if value and not os.path.isabs(value):
-                        parsed.fakenet_config[key] = str(self._run_dir / value)
+                        parsed.diverter_config[key] = str(self._run_dir / value)
                 saved = self._baseline_store.save(run_id)
                 self._marker = dict(run_id=run_id, controller_id=controller,
                                     state_version=coordinator.snapshot()['state_version'],

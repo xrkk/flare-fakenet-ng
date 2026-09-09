@@ -67,9 +67,10 @@ def test_fault_injector_requires_arm():
         is False
 
 
-def test_fault_injector_diverter_stop_closes_handle():
+def test_fault_injector_diverter_stop_closes_handle(tmp_path, monkeypatch):
     import os
-
+    monkeypatch.setenv('PROGRAMDATA', str(tmp_path))
+    monkeypatch.chdir(tmp_path)
     os.environ['FAKENETNG_MCP_FAULT_INJECTION'] = '1'
     try:
         injector = FaultInjector()
