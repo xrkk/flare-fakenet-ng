@@ -52,3 +52,17 @@ def test_guard_holds_both_locks(tmp_path):
     guard = singleinstance.acquire(tmp_path)
     assert len(guard.handles) == 2
     del guard
+
+
+def test_clean_service_handoff_releases_guard_before_process_exit(tmp_path):
+    first = singleinstance.acquire(tmp_path)
+    with pytest.raises(singleinstance.SingleInstanceError):
+        singleinstance.acquire(tmp_path)
+    first.close()
+    first.close()  # repeated cleanup cannot close a reused OS handle
+    second = singleinstance.acquire(tmp_path)
+    try:
+        with pytest.raises(singleinstance.SingleInstanceError):
+            singleinstance.acquire(tmp_path)
+    finally:
+        second.close()

@@ -42,3 +42,22 @@ sink.flush()
     raw = (tmp_path / 'stdout_stderr.log').read_bytes()
     assert bytes([0xca, 0xdc, 0xd0, 0xc5]) in raw
     assert b'external-error' in raw
+
+
+def test_stop_watchdog_captures_blocked_ipc_thread(tmp_path):
+    import subprocess
+    import sys
+    code = '''
+import sys, time
+from fakenet.mcp.managed import capture_stop_stacks
+from pathlib import Path
+root = Path(sys.argv[1])
+with capture_stop_stacks(root):
+    time.sleep(1.2)
+    during = (root / 'stop-thread-stacks.txt').read_text()
+    assert 'Timeout' in during and 'File "' in during
+    assert 'STOP ATTEMPT pid=' in during
+'''
+    result = subprocess.run([sys.executable, '-c', code, str(tmp_path)],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr

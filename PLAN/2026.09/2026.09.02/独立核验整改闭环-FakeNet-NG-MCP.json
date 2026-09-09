@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "9ee5289a9f96d870875c8937809d88edbaff9c06",
+  "current_head": "865df0f53b233e10cda0f42a6dab2a6d9c908379",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,12 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "恢复完成，准备固定源码诊断构建；全部CHK开放，有效1/5。",
+  "checkpoint": "中间源码865df0f已提交；当前候选构建进行中，恢复时先轮询session91674/日志/容器，不因观察超时重建。VM已恢复183且Win10VM身份门通过；无FakeNet部署操作。CHK全OPEN，有效1/5。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-042",
-    "action": "提交已回归组合工作树作为中间源快照并生成新诊断候选；仍需原生停止/故障矩阵和全部P05正式门禁，不关闭CHK"
+    "id": "INTENT-046",
+    "at": "2026-09-10T01:20:52.266353+08:00",
+    "action": "提交CHK-057/060/066范围内停服互斥交接、真实停顿栈和发布探针修复，构建新候选后原生复测"
   },
   "events": [
     {
@@ -805,16 +806,16 @@
     }
   ],
   "candidate": {
-    "source_head": "9ee5289a9f96d870875c8937809d88edbaff9c06",
-    "path": "dist/mcp-remediation-20260909-9ee5289/fakenetng-mcp-candidate.zip",
-    "candidate_id": "mcp-c9ee5289a-35f18b294fe2",
-    "sha256": "35f18b294fe20417a1f3d6de3e270b6a491ec03d9e74798245582f7e559db125",
+    "source_head": "865df0f53b233e10cda0f42a6dab2a6d9c908379",
+    "path": "dist/mcp-remediation-20260910-865df0f/fakenetng-mcp-candidate.zip",
+    "candidate_id": "mcp-c865df0f5-e2689f6403f4",
+    "sha256": "e2689f6403f4a2d25dbf651d42723c54275dd5090502a436b1e8d546e36d7171",
     "formal_acc_pass": false
   },
   "pause_handoff": {
-    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-08-暂停交接-FakeNet-NG-MCP.md",
-    "blob": "bbd02b5dc5a9c97c926a13bf950a397bf925206e",
-    "sha256": "57a56fd41c9402f151aacad676cd64fe262b0f017724d83ea4136bb530813ff7"
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.10-01-暂停交接-FakeNet-NG-MCP.md",
+    "blob": "3cea051bf3e59c7aed45caa585f0d349f9392559",
+    "sha256": "165b5ea7e48cf0b894ca804c51f6305b4dc3f03fcc997e1129429c27f9775441"
   },
   "resume_requires": null,
   "resume_started_at": "2026-09-10T00:50:47.277736+08:00",
@@ -823,6 +824,32 @@
       "at": "2026-09-10T00:54:17.332112+08:00",
       "intent": "INTENT-040/041",
       "actual": "暂停清单与HEAD、8个工作树文件、6个规范SHA逐项一致；Linux170通过2跳过，Wine149通过6跳过。指定VM单次恢复183，Snapshot99内存标记及Win10VM DESKTOP-3FI41GR完成门通过；helpers在NO_PROXY host-only直连可用。"
+    },
+    {
+      "at": "2026-09-10T00:57:28.954244+08:00",
+      "intent": "INTENT-042",
+      "actual": "865df0f固定源候选构建完成，源/ZIP/manifest校验通过；session91674已退出0，不重复构建。"
+    },
+    {
+      "intent": "INTENT-043",
+      "actual": "原生启停诊断已结束：healthy后stopped/last_run_outcome=ok；73状态样本、0探测错误。仅诊断，非总体ACC通过。"
+    },
+    {
+      "at": "2026-09-10T01:04:52.363100+08:00",
+      "intent": "INTENT-044",
+      "actual": "CLI停服成功；19文件归档逐项校验通过；单次恢复183、内存恢复及Win10VM身份/服务0/进程0/数据目录不存在验证通过；已停止后续工作"
+    },
+    {
+      "intent": "INTENT-045",
+      "actual": "明确恢复授权；规范/交接/未提交代码SHA一致。865新部署启停成功；立即SCM停启出现互斥交接竞态，policy_pause真实收敛但incident缺线程栈。旧现场83文件归档SHA逐项通过；实现修复后Linux158+HTTP17通过，Windows154通过6跳过。"
     }
-  ]
+  ],
+  "active_build": {
+    "source_head": "865df0f53b233e10cda0f42a6dab2a6d9c908379",
+    "exec_session_id": 91674,
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-865df0f.txt",
+    "output_directory": "dist/mcp-remediation-20260910-865df0f",
+    "status": "COMPLETED",
+    "started_at": "2026-09-10T00:54:51.860802+08:00"
+  }
 }

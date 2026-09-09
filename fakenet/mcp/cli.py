@@ -193,7 +193,8 @@ def service_main(controller):
     except singleinstance.SingleInstanceError as exc:
         logger.error('single-instance guard rejected: %s', exc)
         return 1
-    _ = guard  # keep the handle alive for the process lifetime
+    # Failed exits keep the guard until process death. A clean SCM handoff
+    # releases it after HTTP termination, before SvcRun reports STOPPED.
 
     if os.name == 'nt':
         try:
@@ -302,6 +303,11 @@ def service_main(controller):
     if not server_stop.wait(timeout=30.0):
         logger.error('HTTP endpoint shutdown exceeded its budget')
         return 1
+    thread.join(timeout=1.0)
+    if thread.is_alive():
+        logger.error('HTTP worker still alive after shutdown notification')
+        return 1
+    guard.close()
     logger.info('fakenetng-mcp stopped')
     return failure['code']
 

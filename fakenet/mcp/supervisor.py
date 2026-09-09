@@ -334,6 +334,10 @@ class RealSupervisor:
         def read_file(name):
             path = self._run_dir / name if self._run_dir else None
             return path.read_bytes() if path and path.exists() else None
+        if not stacks:
+            stop_stacks = read_file('stop-thread-stacks.txt')
+            if stop_stacks and b'File "' in stop_stacks:
+                stacks = 'MANAGED STOP WATCHDOG; LIVE CHILD CAPTURE\n' + stop_stacks.decode('utf-8', 'replace')
         import json
         import platform
         import importlib.metadata

@@ -110,7 +110,7 @@ class Win10VmChannel:
             output = output[len('Response:'):]
         record['output'] = output.strip()
         record['exit_code'] = exit_code
-        if record['is_error'] or (exit_code or 0) != 0:
+        if record['is_error'] or exit_code is None or exit_code != 0:
             raise StepError('PowerShell failed (exit=%s): %s' %
                             (exit_code, raw[:500]))
         return record
@@ -125,6 +125,8 @@ class EvidenceWriter:
     def __init__(self, out_dir, started_at):
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
+        if (self.out_dir / 'result.json').exists():
+            raise FileExistsError('acceptance result already exists; use a new evidence directory')
         self.started_at = started_at
         self.actions = []
         self.expected = []
@@ -150,7 +152,8 @@ class EvidenceWriter:
                 'utf-8')
             digest = hashlib.sha256(raw).hexdigest()
             path = self.out_dir / (name + '.json')
-            path.write_bytes(raw)
+            with path.open('xb') as stream:
+                stream.write(raw)
         else:
             import hashlib
 
@@ -159,7 +162,8 @@ class EvidenceWriter:
             path = self.out_dir / name
             suffix = Path(name).suffix or '.txt'
             path = self.out_dir / (Path(name).stem + suffix)
-            path.write_bytes(raw)
+            with path.open('xb') as stream:
+                stream.write(raw)
         self.evidence.append({
             'name': name, 'path': str(path), 'sha256': digest,
             'size': len(raw)})
@@ -189,9 +193,8 @@ class EvidenceWriter:
             'evidence': self.evidence,
             'blocker': self.blocker,
         }
-        (self.out_dir / 'result.json').write_text(
-            json.dumps(result, ensure_ascii=False, indent=2) + '\n',
-            encoding='utf-8')
+        with (self.out_dir / 'result.json').open('x', encoding='utf-8') as stream:
+            stream.write(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
         return result
 
 

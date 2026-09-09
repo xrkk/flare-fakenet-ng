@@ -8,6 +8,22 @@ import sys
 import threading
 import time
 from pathlib import Path
+from contextlib import contextmanager
+
+
+@contextmanager
+def capture_stop_stacks(run_dir):
+    """Capture live Python stacks even while stop blocks the IPC loop."""
+    import faulthandler
+    with (Path(run_dir) / 'stop-thread-stacks.txt').open('ab', buffering=0) as stream:
+        stream.write(('STOP ATTEMPT pid=%d timestamp=%.6f\n' %
+                      (os.getpid(), time.time())).encode('ascii'))
+        faulthandler.dump_traceback_later(1, repeat=True, file=stream)
+        try:
+            yield
+        finally:
+            faulthandler.cancel_dump_traceback_later()
+            faulthandler.dump_traceback(file=stream, all_threads=True)
 
 
 class ManagedProcess:
@@ -225,9 +241,10 @@ def child_main(run_id, run_dir):
             elif kind == 'stacks':
                 response['result'] = {'stacks': IncidentCollector._thread_stacks()}
             elif kind == 'stop' and instance is not None:
-                fault.before_listener_phase()
-                instance.stop()
-                fault.on_stop_error()
+                with capture_stop_stacks(directory):
+                    fault.before_listener_phase()
+                    instance.stop()
+                    fault.on_stop_error()
                 response['result'] = {'stopped': True}
                 exiting = True
             else:

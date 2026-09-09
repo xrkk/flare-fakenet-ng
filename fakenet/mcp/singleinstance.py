@@ -41,10 +41,25 @@ class _PosixLock:
 
 
 class _Guard:
-    """Owns every lock handle for the process lifetime."""
+    """Owns the locks until clean service shutdown or process exit."""
 
     def __init__(self, *handles):
         self.handles = handles
+
+    def close(self):
+        while self.handles:
+            handle = self.handles[0]
+            if os.name == 'nt':
+                import ctypes
+                import ctypes.wintypes as wt
+                kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+                kernel32.CloseHandle.argtypes = [wt.HANDLE]
+                kernel32.CloseHandle.restype = wt.BOOL
+                if not kernel32.CloseHandle(handle):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            else:
+                handle._handle.close()
+            self.handles = self.handles[1:]
 
 
 def _create_mutex(kernel32, wt, name):

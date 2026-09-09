@@ -196,14 +196,33 @@ class ReleaseGate:
     # -- one normal round --------------------------------------------------
 
     def config_lock_probe(self, index, during_run):
-        """CHK-010: the activity lock tracks the run (run_id present =
-        lock held; run_id cleared = lock released). Returns (label, raw)
-        so a violated expectation carries its own evidence."""
+        """Try opening the exact active file for write without changing bytes."""
         snap = call(self.base, 'get_status', controller=None)
-        has_run = bool(snap.get('run_id'))
-        if during_run:
-            return ('config_in_use' if has_run else 'no_run_active'), snap
-        return ('released' if not has_run else 'still_locked'), snap
+        identity = snap.get('config_identity') or {}
+        name = identity.get('name', '')
+        import re
+        if not re.fullmatch(r'[A-Za-z0-9._-]+\.ini', name):
+            raise RuntimeError('active configuration identity unavailable')
+        root = (r'C:\Program Files\FakeNet-NG-MCP\configs' if identity.get('builtin')
+                else r'C:\ProgramData\FakeNet-NG-MCP\configs\custom')
+        path = root + '\\' + name
+        raw = self.channel.powershell(
+            "$ErrorActionPreference='Stop'; $path='" + path + "'; "
+            "$before=(Get-FileHash $path -Algorithm SHA256).Hash.ToLower(); "
+            "$opened=$false; $errorCode=0; $stream=$null; try { "
+            "$stream=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite); "
+            "$opened=$true } catch [IO.IOException] { $errorCode=$_.Exception.HResult -band 65535 } "
+            "finally { if($stream){$stream.Dispose()} }; "
+            "$after=(Get-FileHash $path -Algorithm SHA256).Hash.ToLower(); "
+            "@{path=$path;opened=$opened;error_code=$errorCode;before=$before;after=$after} | ConvertTo-Json -Compress",
+            timeout=30)
+        observed = json.loads(raw['output'])
+        if observed['before'] != identity.get('sha256') or observed['after'] != observed['before']:
+            raise RuntimeError('configuration hash changed during lock probe')
+        held = not observed['opened'] and observed['error_code'] == 32
+        label = ('config_in_use' if held else 'lock_not_proven') if during_run else (
+            'released' if observed['opened'] else 'still_locked')
+        return label, dict(status=snap, file_probe=observed, raw=raw)
 
     def run_normal_round(self, index, config_name):
         return self.observe_round(lambda: self._normal_round(index, config_name))
@@ -237,8 +256,7 @@ class ReleaseGate:
             return record
         lock_label, lock_raw = self.config_lock_probe(index, during_run=True)
         record['lock_held_during_run'] = lock_label == 'config_in_use'
-        if not record['lock_held_during_run']:
-            record['lock_probe_raw'] = lock_raw
+        record['lock_held_evidence'] = lock_raw
         stopped = self.stop_once()
         record['stop_state'] = stopped.get('state')
         final = wait_state(self.base,
@@ -255,8 +273,7 @@ class ReleaseGate:
         release_label, release_raw = self.config_lock_probe(
             index, during_run=False)
         record['lock_released_after_stop'] = release_label == 'released'
-        if not record['lock_released_after_stop']:
-            record['lock_probe_raw'] = release_raw
+        record['lock_released_evidence'] = release_raw
         if not record.get('lock_held_during_run') or not \
                 record.get('lock_released_after_stop'):
             record['failure'] = 'config lock lifecycle violated: %s/%s' % (
@@ -276,11 +293,27 @@ class ReleaseGate:
     def configure_fault_mode(self, enabled):
         value = "@('FAKENETNG_MCP_FAULT_INJECTION=1')" if enabled else '@()'
         grace = 5 if enabled else 60
+        # Resuming matching evidence must not restart the service instance.
+        current = self.channel.powershell(
+            "$ErrorActionPreference='Stop'; "
+            "$key='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\fakenetng-mcp'; "
+            "$envs=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue).Environment); "
+            "$cfg=Get-Content 'C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json' -Raw | ConvertFrom-Json; "
+            "@{enabled=($envs -contains 'FAKENETNG_MCP_FAULT_INJECTION=1');grace=$cfg.stop_grace_seconds} | ConvertTo-Json -Compress",
+            timeout=30)
+        observed = json.loads(current['output'])
+        if observed == {'enabled': enabled, 'grace': grace}:
+            self.vm_continuity()
+            return dict(current, reused_service_instance=True)
+        if enabled and any(self.release.glob('fault-*.json')):
+            raise RuntimeError('fault mode changed since recorded rounds; preserve evidence and restart in a new directory')
         result = self.channel.powershell(
             "$ErrorActionPreference='Stop'; $exe='C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe'; "
             "& $exe stop; if($LASTEXITCODE -ne 0){throw 'pre-stop failed; configuration unchanged'}; "
             "$key='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\fakenetng-mcp'; "
-            "New-ItemProperty -Path $key -Name Environment -PropertyType MultiString -Value " + value + " -Force | Out-Null; "
+            "$preserved=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue).Environment | "
+            "Where-Object {$_ -and $_ -notlike 'FAKENETNG_MCP_FAULT_INJECTION=*'}); "
+            "New-ItemProperty -Path $key -Name Environment -PropertyType MultiString -Value ($preserved + " + value + ") -Force | Out-Null; "
             "$path='C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json'; "
             "$cfg=Get-Content $path -Raw | ConvertFrom-Json; $cfg | Add-Member -NotePropertyName stop_grace_seconds "
             "-NotePropertyValue " + str(grace) + " -Force; "
@@ -331,7 +364,7 @@ class ReleaseGate:
         # exact fault nonce. Never substitute a hand-written converged label.
         detail = self.channel.powershell(
             "$ErrorActionPreference='Stop'; $root='C:\\ProgramData\\FakeNet-NG-MCP\\artifacts'; "
-            "$receipts=@(Get-ChildItem $root -Recurse -Filter fault-triggered.json | ForEach-Object { "
+            "$receipts=@(Get-ChildItem (Join-Path $root 'runs') -Recurse -Filter fault-triggered.json | ForEach-Object { "
             "$r=Get-Content $_.FullName -Raw | ConvertFrom-Json; "
             "if($r.nonce -eq '" + nonce + "'){@{path=$_.FullName;receipt=$r;run_id=$_.Directory.Name}}}); "
             "if($receipts.Count -ne 1){throw 'fault receipt is not unique'}; "
