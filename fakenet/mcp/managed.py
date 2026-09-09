@@ -204,6 +204,14 @@ def probe_instance(instance):
     """Observe real WinDivert/listener handles; used only inside the child."""
     diverter = getattr(instance, 'diverter', None)
     handle = getattr(diverter, 'handle', None)
+    main_thread = getattr(diverter, 'diverter_thread', None)
+    inbound_thread = getattr(diverter, 'inbound_capture_thread', None)
+    capture_error = getattr(diverter, 'capture_failure', None)
+    capture_alive = bool(main_thread and main_thread.is_alive())
+    if inbound_thread is not None:
+        capture_alive = capture_alive and inbound_thread.is_alive()
+    if getattr(diverter, '_inbound_capture_handle', None) is not None and inbound_thread is None:
+        capture_alive = False
     providers = getattr(instance, 'running_listener_providers', None) or []
     listeners = bool(providers)
     observations = []
@@ -221,7 +229,10 @@ def probe_instance(instance):
         if not live:
             listeners = False
     return {'init_evidence': bool(providers),
-            'probe': bool(handle and getattr(handle, 'is_open', False) and listeners),
+            'probe': bool(handle and getattr(handle, 'is_open', False) and listeners
+                          and capture_alive and capture_error is None),
+            'capture_threads_alive': capture_alive,
+            'capture_error': str(capture_error) if capture_error is not None else None,
             'final_filter': str(getattr(diverter, 'filter', '')),
             'listeners': observations}
 

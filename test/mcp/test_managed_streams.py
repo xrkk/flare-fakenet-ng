@@ -13,7 +13,8 @@ def test_real_ftp_server_nested_socket_health():
     from pyftpdlib.handlers import FTPHandler
     from fakenet.mcp.managed import probe_instance
     server = FTPServer(('127.0.0.1', 0), FTPHandler)
-    instance = SimpleNamespace(diverter=SimpleNamespace(handle=SimpleNamespace(is_open=True)),
+    instance = SimpleNamespace(diverter=SimpleNamespace(handle=SimpleNamespace(is_open=True),
+                               diverter_thread=SimpleNamespace(is_alive=lambda: True)),
                                running_listener_providers=[SimpleNamespace(server=server)])
     try:
         assert not hasattr(server, 'fileno')
