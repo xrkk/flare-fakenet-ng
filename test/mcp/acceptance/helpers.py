@@ -187,17 +187,21 @@ def arm_fault_file(channel, fault):
     return dict(payload, raw=raw)
 
 
-def export_incident_bundle(channel, run_id, destination):
+def export_incident_bundle(channel, run_id, destination, incident_name='incident'):
     """Export the exact run's package, then verify its bytes on the host."""
     import base64
     import hashlib
     import uuid
     import zipfile
+    import re
     from fakenet.mcp.incident import BASIC_ITEMS
     run_id = str(uuid.UUID(run_id))
+    match = re.fullmatch(r'incident(?:-(\d{2,}))?', incident_name)
+    if not match or (match.group(1) and int(match.group(1)) < 2):
+        raise ValueError('invalid incident directory')
     token = uuid.uuid4().hex
     guest_zip = 'C:\\Windows\\Temp\\FakeNet-incident-' + token + '.zip'
-    root = 'C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\' + run_id + '\\incident'
+    root = 'C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\' + run_id + '\\' + incident_name
     captured = channel.powershell(
         "$ErrorActionPreference='Stop'; $dir='" + root + "'; $zip='" + guest_zip + "'; "
         "$manifest=Join-Path $dir 'manifest.json'; $m=Get-Content $manifest -Raw | ConvertFrom-Json; "
@@ -256,9 +260,25 @@ def export_incident_bundle(channel, run_id, destination):
         missing = set(name for name, _ in BASIC_ITEMS) - set(verified)
         failures.extend('missing basic item: ' + name for name in sorted(missing))
     return {'path': str(destination), 'sha256': digest.hexdigest(), 'size': metadata['size'],
-            'run_id': run_id, 'manifest': manifest, 'verified_members': verified,
+            'run_id': run_id, 'incident_name': incident_name, 'manifest': manifest, 'verified_members': verified,
             'complete': bool(manifest.get('complete')) and not failures,
             'failures': failures, 'transfer_metadata': captured}
+
+
+def export_run_incidents(channel, run_id, destination):
+    """Export every retained collection attempt of this exact run."""
+    import uuid
+    run_id = str(uuid.UUID(run_id))
+    raw = channel.powershell(
+        "$ErrorActionPreference='Stop';$root='C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\" + run_id + "'; "
+        "$names=@(Get-ChildItem -LiteralPath $root -Directory | Where-Object {$_.Name -match '^incident(?:-[0-9]{2,})?$'} | "
+        "Select-Object -ExpandProperty Name);ConvertTo-Json -InputObject $names -Compress", timeout=30)
+    names = json.loads(raw['output'])
+    if not isinstance(names, list) or not names or len(names) != len(set(names)):
+        raise StepError('incident collection list missing or invalid')
+    return [export_incident_bundle(channel, run_id,
+            Path(destination) / (name + '-' + run_id + '.zip'), incident_name=name)
+            for name in names]
 
 
 class EvidenceWriter:

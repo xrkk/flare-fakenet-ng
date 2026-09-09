@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "1134521b3156482c06122a8ce9eb44f8baed78b9",
+  "current_head": "c087649bed102fd4e6e351a56190ba89d4060a4e",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -369,8 +369,8 @@
   "checkpoint": "1134521原生单次IPC健康恢复通过，stop因UDP差异失败；15项现场导出。漏incident整改Linux184/Windows181通过待提交。核验仍1/5，CHK全OPEN。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-068",
-    "action": "提交失败审计incident整改与1134521实机记录；继续处理全部未闭合CHK/剩余矩阵，当前VMfailed现场已导出，不宣称READY或核查通过。"
+    "id": "INTENT-070",
+    "action": "提交上述证据整改并固定源码构建；在新的冻结runner上验证永久IPC超时和审计失败多incident，保留当前已导出现场。"
   },
   "events": [
     {
@@ -937,6 +937,14 @@
     {
       "intent": "INTENT-067",
       "actual": "原生IPC矩阵首项终止不通过，完整15项证据导出校验；普通stop审计失败漏incident已按CHK060修复，Linux184/Windows181通过。无DNS端口豁免或配置更改。"
+    },
+    {
+      "intent": "INTENT-068",
+      "actual": "失败审计incident补齐已提交c087649bed102fd4e6e351a56190ba89d4060a4e；实际VM仍1134521 failed，现场15项已导出。全部CHK仍OPEN。"
+    },
+    {
+      "intent": "INTENT-069",
+      "actual": "所有incident目录实际导出/完整覆盖/成员字节复验、P04多包定位和总纲控制环回汇总门已补齐；最终Linux186通过。保留退出后最终filter事实，普通stop明确失败不再等待自愈。DNS基线probe10054已记录，无配置变更。"
     }
   ],
   "active_build": {
@@ -971,5 +979,11 @@
     "run_id": "58ced420-d87a-4313-a7d9-7d999ea8736b",
     "observation": "单次超时原始IPC检查通过；普通stop全审计失败，原runner等待420秒截止中，未重试。",
     "result": "IPC局部检查通过；920 HTTP零错误，但stop恢复审计失败。只完成首个诊断，不计正式ACC。"
+  },
+  "environment_question": {
+    "status": "AWAITING_INFORMATION",
+    "question": "固定快照DNS192.168.204.1应由哪个服务提供？",
+    "evidence": "Logs/fakenetng-mcp/remediation-20260910/baseline-dns-hostonly-probe.json",
+    "blocks_all_work": false
   }
 }

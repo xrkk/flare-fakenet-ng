@@ -3,7 +3,7 @@ import json
 import time
 import uuid
 
-from helpers import StepError, arm_fault_file, configure_fault_service, export_incident_bundle
+from helpers import StepError, arm_fault_file, configure_fault_service, export_run_incidents
 from ipc_evidence import check_ipc_case
 
 IPC_CASES = ('ipc_once_timeout', 'ipc_permanent_timeout', 'ipc_eof',
@@ -11,7 +11,7 @@ IPC_CASES = ('ipc_once_timeout', 'ipc_permanent_timeout', 'ipc_eof',
 
 
 def run_ipc_matrix(base, channel, writer):
-    from run_p03_acc import load_and_start, wait_state, stop_run, probe_during, disarm_fault
+    from run_p03_acc import load_and_start, wait_state, stop_run, probe_during, disarm_fault, status
     checks = {}
     writer.add_evidence('ipc-test-mode', configure_fault_service(channel, True, 5))
     ready, initial = wait_state(base, lambda x: x.get('state') == 'stopped' and not x.get('run_id'), timeout=60)
@@ -34,6 +34,9 @@ def run_ipc_matrix(base, channel, writer):
                 if recovered:
                     stop = stop_run(base)
                     writer.add_evidence(fault + '-normal-stop', stop)
+                    if stop.get('error') or stop.get('state') != 'stopped':
+                        return dict(armed=armed, revoked=revoked, revoked_status=snap,
+                                    recovered=recovered, settled=False, final=status(base))
             settled, final = wait_state(base, lambda x: x.get('state') == 'stopped' and not x.get('run_id'), timeout=420)
             return dict(armed=armed, revoked=revoked, revoked_status=snap,
                         recovered=recovered, settled=settled, final=final)
@@ -63,13 +66,13 @@ def run_ipc_matrix(base, channel, writer):
         if fault == 'ipc_once_timeout':
             if not result['recovered']:
                 failures.append('single timeout did not recover same run')
-        else:
-            bundle = export_incident_bundle(channel, run_id, writer.out_dir / ('incident-' + run_id + '.zip'))
-            writer.add_evidence(fault + '-incident', bundle)
-            writer.evidence.append({k: bundle[k] for k in ('path', 'size', 'sha256')})
-            if not bundle['complete']:
+        if fault != 'ipc_once_timeout' or not result['settled']:
+            bundles = export_run_incidents(channel, run_id, writer.out_dir)
+            writer.add_evidence(fault + '-incidents', bundles)
+            writer.evidence.extend({k: bundle[k] for k in ('path', 'size', 'sha256')} for bundle in bundles)
+            if any(not bundle['complete'] for bundle in bundles):
                 failures.append('incident package incomplete')
-            if fault == 'ipc_permanent_timeout' and 'userdump.dmp' not in bundle['verified_members']:
+            if fault == 'ipc_permanent_timeout' and not any('userdump.dmp' in bundle['verified_members'] for bundle in bundles):
                 failures.append('required timeout dump missing')
             if result['final'].get('last_run_outcome') != 'failed':
                 failures.append('failed outcome lost')

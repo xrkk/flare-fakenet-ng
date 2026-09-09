@@ -42,6 +42,12 @@ FAULT_CLASSES = ('policy_pause', 'listener_stop', 'diverter_stop',
                 'child_hang', 'cleanup_error')
 NORMAL_ROUNDS_PER_CONFIG = 50
 FAULT_ROUNDS_PER_CLASS = 10
+CONTROL_CASE_LABELS = (
+    'ACC-004-CONTROL-DEFAULT',
+    'ACC-004-CONTROL-EXTRA-28787', 'ACC-004-CONTROL-EXTRA-28790',
+    'ACC-004-CONTROL-EXTRA-29095', 'ACC-004-CONTROL-EXTRA-29094',
+    'ACC-004-CONTROL-INVALID', 'ACC-004-LOOPBACK-V4', 'ACC-004-LOOPBACK-V6',
+)
 
 
 def now_iso():
@@ -367,13 +373,22 @@ class ReleaseGate:
                 or not incidents or any(not item['manifest'].get('complete') for item in incidents)):
             record['failure'] = 'fault receipt/incident incomplete'
         from helpers import export_incident_bundle
+        import ntpath
         run_id = record['fault_evidence']['receipt']['run_id']
-        exported = export_incident_bundle(self.channel, run_id,
-                                          self.release / ('incident-' + run_id + '.zip'))
-        record['incident_export'] = exported
-        if (not exported['complete'] or
+        exports = []
+        names = set()
+        for item in incidents:
+            name = ntpath.basename(ntpath.dirname(item['path']))
+            if name in names:
+                raise RuntimeError('duplicate incident directory')
+            names.add(name)
+            exported = export_incident_bundle(self.channel, run_id,
+                      self.release / (name + '-' + run_id + '.zip'), incident_name=name)
+            exports.append(exported)
+        record['incident_exports'] = exports
+        if (not exports or any(not item['complete'] for item in exports) or
                 (klass in ('policy_pause', 'child_hang') and
-                 'userdump.dmp' not in exported['verified_members'])):
+                 not any('userdump.dmp' in item['verified_members'] for item in exports))):
             record['failure'] = 'verified incident content/dump incomplete'
         diff = self.audit_diff(before)
         record['audit_diff'] = diff
@@ -400,9 +415,8 @@ class ReleaseGate:
         writer.evidence.append({'name': path.stem, 'path': str(path),
                                 'sha256': hashlib.sha256(raw).hexdigest(), 'size': len(raw)})
         writer.evidence.extend(record.get('capture_evidence', []))
-        if record.get('incident_export'):
-            writer.evidence.append({key: record['incident_export'][key]
-                                    for key in ('path', 'size', 'sha256')})
+        for exported in record.get('incident_exports', []):
+            writer.evidence.append({key: exported[key] for key in ('path', 'size', 'sha256')})
 
     def prior_round(self, path, writer):
         if not path.exists():
@@ -415,9 +429,8 @@ class ReleaseGate:
         writer.evidence.append({'name': path.stem, 'path': str(path),
                                 'sha256': hashlib.sha256(raw).hexdigest(), 'size': len(raw)})
         writer.evidence.extend(record.get('capture_evidence', []))
-        if record.get('incident_export'):
-            writer.evidence.append({key: record['incident_export'][key]
-                                    for key in ('path', 'size', 'sha256')})
+        for exported in record.get('incident_exports', []):
+            writer.evidence.append({key: exported[key] for key in ('path', 'size', 'sha256')})
         return True
 
     def done_rounds(self, prefix, total):
@@ -545,6 +558,7 @@ class ReleaseGate:
             # declared aggregate label (summary mode's own record; not an
             # ACC pass claim and never counted as one).
             'ACC-017-SUMMARY'}
+        allowed_labels.update(CONTROL_CASE_LABELS)
         for path in sorted(self.root.glob('*/result.json')):
             try:
                 result = json.loads(path.read_text(encoding='utf-8'))
@@ -573,6 +587,7 @@ class ReleaseGate:
                     'ACC-014', 'ACC-015', 'ACC-018', 'ACC-019',
                     'FAULT-POINTS', 'ACC-012', 'ACC-013', 'ACC-016',
                     'ACC-017', 'P01-ENTRY']
+        expected.extend(CONTROL_CASE_LABELS)
         missing = [acc for acc in expected if acc not in acc_index]
         identity = {field: getattr(self.args, field) for field in IDENTITY_FIELDS}
         groups = [('normal-builtin', 50), ('normal-custom', 50)] + [

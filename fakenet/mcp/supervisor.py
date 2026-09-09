@@ -59,6 +59,7 @@ class RealSupervisor:
         self._last_run_outcome = None
         self._last_managed_stacks = None
         self._last_managed_process = None
+        self._last_final_filter = None
 
     def health_detail(self, state, max_wait=0.05):
         # Observations are updated by a bounded IPC poll, never queried under
@@ -113,6 +114,7 @@ class RealSupervisor:
                 self._last_run_outcome = None
                 self._last_managed_stacks = None
                 self._last_managed_process = None
+                self._last_final_filter = None
                 self._run_dir = Path(self._artifacts_root) / 'runs' / run_id
                 self._run_dir.mkdir(parents=True, exist_ok=False)
                 for key in ('dumppacketsfileprefix', 'dumphttpwebroot'):
@@ -136,6 +138,7 @@ class RealSupervisor:
                     'diverter_config': parsed.diverter_config}, timeout=30)
                 self._health_cache = dict(detail, process_alive=self._fakenet.alive(),
                                           identity=self._fakenet.identity)
+                self._last_final_filter = detail.get('final_filter')
                 if not all(self._health_cache.get(k) for k in
                            ('process_alive', 'init_evidence', 'probe')):
                     raise SupervisorStartError('managed initialization/active probe failed')
@@ -168,6 +171,8 @@ class RealSupervisor:
             if self._health_stop.is_set() or self._fakenet is not child:
                 return False
             self._health_cache = dict(evidence)
+            if evidence.get('final_filter'):
+                self._last_final_filter = evidence['final_filter']
             self._coordinator.update_health_state(state, reason)
             from fakenet.mcp.managed import record_ipc
             record_ipc(self._run_dir, 'parent', 'health_state',
@@ -292,6 +297,8 @@ class RealSupervisor:
                     self._fakenet = None
                 except BaseException as exc:
                     return self._result('failed', 'Job termination failed: ' + repr(exc))
+            if self._health_cache.get('final_filter'):
+                self._last_final_filter = self._health_cache['final_filter']
             self._health_cache = {'process_alive': False, 'init_evidence': False, 'probe': False}
             self._baseline_store.compensate(marker['run_id'], deadline)
             differences = self._baseline_store.full_audit_diff(marker['run_id'], deadline=deadline,
@@ -422,7 +429,7 @@ class RealSupervisor:
                    'stdout_stderr': read_file('stdout_stderr.log'),
                    'run_log_window': read_file('run.log'),
                    'exception_text': reason, 'managed_thread_stacks': stacks,
-                   'final_filter': self._health_cache.get('final_filter'),
+                   'final_filter': self._last_final_filter,
                    'baseline_diff': {'before': baseline, 'after': current,
                        'differences': audit_compare((baseline or {}).get('sections'), current)},
                    'firewall_baseline': (baseline or {}).get('firewall'),

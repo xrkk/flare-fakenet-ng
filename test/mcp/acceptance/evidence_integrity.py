@@ -45,13 +45,17 @@ def validate_round(record, expected):
         failures.append('configuration lock not released')
     if record.get('class'):
         try:
-            exported = record['incident_export']
-            raw = Path(exported['path']).read_bytes()
-            if (not exported.get('complete') or len(raw) != exported['size'] or
-                    hashlib.sha256(raw).hexdigest() != exported['sha256']):
-                raise ValueError('incident export incomplete or changed')
-            if exported['run_id'] != record['fault_evidence']['receipt']['run_id']:
-                raise ValueError('incident export run identity mismatch')
+            import ntpath
+            run_id = record['fault_evidence']['receipt']['run_id']
+            expected_names = [ntpath.basename(ntpath.dirname(item['path']))
+                              for item in record['fault_evidence']['incidents']]
+            exports = record['incident_exports']
+            names = [item['incident_name'] for item in exports]
+            if (not expected_names or len(set(expected_names)) != len(expected_names) or
+                    len(set(names)) != len(names) or set(names) != set(expected_names)):
+                raise ValueError('incident export coverage mismatch')
+            for exported in exports:
+                failures.extend(validate_incident_export(exported, run_id))
         except (KeyError, TypeError, OSError, ValueError) as exc:
             failures.append('verified incident export unavailable: ' + str(exc))
     captures = record.get('capture_evidence')
@@ -98,4 +102,43 @@ def validate_round(record, expected):
     before, after = record.get('vm_before'), record.get('vm_after')
     if not before or before != after:
         failures.append('VM/service identity drift')
+    return failures
+
+
+def validate_incident_export(exported, run_id):
+    """Re-read actual members; a cached complete flag is insufficient."""
+    import zipfile
+    from fakenet.mcp.incident import BASIC_ITEMS
+    failures = []
+    try:
+        raw = Path(exported['path']).read_bytes()
+        if (not exported.get('complete') or len(raw) != exported['size'] or
+                hashlib.sha256(raw).hexdigest() != exported['sha256'] or
+                exported['run_id'] != run_id):
+            raise ValueError('incident archive identity/hash/integrity mismatch')
+        with zipfile.ZipFile(exported['path']) as archive:
+            if len(archive.namelist()) != len(set(archive.namelist())):
+                raise ValueError('duplicate archive member')
+            manifest = json.loads(archive.read('manifest.json'))
+            if manifest.get('run_id') != run_id or not manifest.get('complete'):
+                raise ValueError('actual manifest not complete for this run')
+            names = set()
+            verified = set()
+            for item in manifest.get('entries', []):
+                name = item['item']
+                if name in names or '/' in name or '\\' in name or name in ('', '.', '..'):
+                    raise ValueError('invalid or duplicate incident member')
+                names.add(name)
+                if item['result'] == 'skipped' and name == 'userdump.dmp' and item.get('failure_reason') == 'no escalation condition' and item.get('size') == 0 and item.get('sha256') is None:
+                    continue
+                if item['result'] != 'ok':
+                    raise ValueError('failed incident member: ' + name)
+                data = archive.read(name)
+                if len(data) != item['size'] or hashlib.sha256(data).hexdigest() != item['sha256']:
+                    raise ValueError('incident member changed: ' + name)
+                verified.add(name)
+            if set(name for name, _ in BASIC_ITEMS) - verified:
+                raise ValueError('basic incident members missing')
+    except (KeyError, TypeError, OSError, ValueError, zipfile.BadZipFile) as exc:
+        failures.append('incident export invalid: ' + str(exc))
     return failures

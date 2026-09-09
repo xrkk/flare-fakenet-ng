@@ -21,11 +21,13 @@ def test_stop_does_not_report_healthy_during_full_restoration(tmp_path):
     runner = RealSupervisor(snapshot=snapshot, baseline_store=baseline)
     coord = Coordinator(runner)
     coord.restore_responsibility(marker, 'healthy')
-    runner._health_cache = dict(process_alive=True, init_evidence=True, probe=True)
+    runner._health_cache = dict(process_alive=True, init_evidence=True, probe=True,
+                               final_filter='outbound and ip')
     result = runner.stop(coord)
     assert result['state'] == 'stopped'
     assert observations
     assert all(x['state'] == 'recovering' and not x['health']['probe'] for x in observations)
+    assert runner._last_final_filter == 'outbound and ip'
 
 
 def test_late_health_result_cannot_reopen_a_stopping_run():

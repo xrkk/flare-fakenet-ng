@@ -44,9 +44,8 @@ def run_fault_point_proof(base, channel, writer, args):
         writer.fault_records.append(record)
         writer.add_evidence('fault-' + klass, record)
         writer.evidence.extend(record.get('capture_evidence', []))
-        if record.get('incident_export'):
-            writer.evidence.append({key: record['incident_export'][key]
-                                    for key in ('path', 'size', 'sha256')})
+        for exported in record.get('incident_exports', []):
+            writer.evidence.append({key: exported[key] for key in ('path', 'size', 'sha256')})
         if validate_round(record, settings):
             return EXIT_FAIL
     writer.add_evidence('fault-mode-restored', gate.configure_fault_mode(False))
@@ -75,15 +74,20 @@ def run_acc014(base, channel, writer, args):
             writer.add_evidence('rejected-fault-record', record)
             return EXIT_FAIL
         run_id = record['fault_evidence']['receipt']['run_id']
-        bundle = export_incident_bundle(channel, run_id, writer.out_dir / ('incident-' + run_id + '.zip'))
-        writer.add_evidence('incident-verified-' + run_id, bundle)
-        writer.evidence.append({key: bundle[key] for key in ('path', 'sha256', 'size')})
-        if not bundle['complete']:
-            return EXIT_FAIL
+        run_bundles = {}
+        for exported in record['incident_exports']:
+            name = exported['incident_name']
+            bundle = export_incident_bundle(channel, run_id,
+                     writer.out_dir / (name + '-' + run_id + '.zip'), incident_name=name)
+            writer.add_evidence(name + '-verified-' + run_id, bundle)
+            writer.evidence.append({key: bundle[key] for key in ('path', 'sha256', 'size')})
+            if not bundle['complete']:
+                return EXIT_FAIL
+            run_bundles[name] = bundle
         if record['class'] in ('policy_pause', 'child_hang', 'ipc_permanent_timeout',
-                               'stacks_unavailable', 'native_crash', 'unknown_cause') and 'userdump.dmp' not in bundle['verified_members']:
+                               'stacks_unavailable', 'native_crash', 'unknown_cause') and not any('userdump.dmp' in bundle['verified_members'] for bundle in run_bundles.values()):
             return EXIT_FAIL
-        bundles[run_id] = bundle
+        bundles[run_id] = run_bundles
     # A developer must actually inspect these packages. Presence of a stack
     # or a fabricated log line is never a localization conclusion.
     if not args.localization_record:
@@ -99,8 +103,13 @@ def run_acc014(base, channel, writer, args):
         run_id = item.get('run_id')
         if run_id not in bundles or not item.get('component') or not item.get('failure_chain') or not item.get('references'):
             return EXIT_FAIL
-        with zipfile.ZipFile(bundles[run_id]['path']) as archive:
-            for reference in item['references']:
+        for reference in item['references']:
+            name = reference.get('incident_name')
+            if name is None and len(bundles[run_id]) == 1:
+                name = next(iter(bundles[run_id]))
+            if name not in bundles[run_id]:
+                return EXIT_FAIL
+            with zipfile.ZipFile(bundles[run_id][name]['path']) as archive:
                 quote = reference.get('quote')
                 if not quote or quote not in archive.read(reference['member']).decode('utf-8', 'replace'):
                     return EXIT_FAIL
