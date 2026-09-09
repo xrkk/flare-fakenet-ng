@@ -168,6 +168,10 @@ def test_full_lifecycle_with_config(endpoint):
                    'command_id': 'cmd-edit-active',
                    'expected_state_version': version})
     assert err_code(locked) == 'config_in_use'
+    # The command was accepted then rejected by the configuration guard.
+    # Use the returned current version; acceptance advances it even on error.
+    assert locked['state_version'] == version + 1
+    version = locked['state_version']
 
     # Non-owner cannot mutate while a run is active.
     outsider = call(endpoint, 'create_config',

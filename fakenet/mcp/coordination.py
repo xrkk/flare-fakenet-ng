@@ -65,7 +65,7 @@ class Coordinator:
         # metadata lock; this flag immediately rejects concurrent
         # mutations and keeps read-only queries available throughout.
         self._operation_active = False
-        self._active_names = None
+        self._active_operations = {}
 
     # -- read-only surface -------------------------------------------------
     def snapshot(self):
@@ -107,14 +107,24 @@ class Coordinator:
 
     # -- mutation surface --------------------------------------------------
     def _active_conflicts(self, conflict_names):
-        """CHK-046: an in-flight operation conflicts when either side is
-        global (lifecycle) or the name scopes intersect."""
-        if not self._operation_active:
+        # Record 033 permits disjoint configuration work only while cleanly
+        # stopped. Each accepted operation owns its scope until it finishes.
+        if not self._active_operations:
             return False
-        active = self._active_names
-        if active is None or conflict_names is None:
+        if self._state != 'stopped' or self._controller is not None:
             return True
-        return bool(set(active) & set(conflict_names))
+        return any(names is None or conflict_names is None or
+                   bool(set(names) & set(conflict_names))
+                   for names in self._active_operations.values())
+
+    def _finish_operation(self, command_id):
+        self._active_operations.pop(command_id, None)
+        self._operation_active = bool(self._active_operations)
+        # Never evict an in-flight command; a retry must find its original.
+        completed = [key for key in self._commands
+                     if key not in self._active_operations]
+        for key in completed[:-COMMAND_CACHE_LIMIT]:
+            del self._commands[key]
 
     def submit(self, *, command_id, expected_version, controller,
                controller_valid, kind, describe, execute,
@@ -156,25 +166,24 @@ class Coordinator:
                     errors.CONTROLLER_IDENTITY_MISSING,
                     'mutation requires controller identity')
 
-            # 1. immediate busy rejection (CHK-022): another mutation is
-            # mid-execution; reject now, never queue behind the lock.
-            if self._active_conflicts(conflict_names) and not internal:
-                raise errors.McpError(
-                    errors.OPERATION_BUSY,
-                    'another mutation is currently executing; '
-                    'retry after it completes',
-                    {'kind': kind, 'command_id': command_id})
-
-            # 2. replay gate (same controller only).
+            # Identity precedes replay, but replay precedes busy/version:
+            # an in-flight retry identifies the original operation immediately.
             cached = self._commands.get(command_id)
             if cached is not None:
                 if cached.get('controller') != controller:
                     raise errors.McpError(
                         errors.CONTROLLER_CONFLICT,
                         'command_id belongs to another controller')
+                if 'exception' in cached:
+                    raise cached['exception']
                 replay = dict(cached['response'])
                 replay['replayed'] = True
                 return replay
+
+            if self._active_conflicts(conflict_names):
+                raise errors.McpError(
+                    errors.OPERATION_BUSY, 'another mutation is executing',
+                    {'kind': kind, 'command_id': command_id})
 
             # 3. version gate.
             if expected_version != self._state_version:
@@ -184,8 +193,17 @@ class Coordinator:
                     {'expected': expected_version,
                      'current': self._state_version})
 
+            self._state_version += 1
+            self._active_operations[command_id] = conflict_names
             self._operation_active = True
-            self._active_names = conflict_names
+            self._commands[command_id] = {
+                'controller': controller, 'describe': describe,
+                'response': {'state': self._state,
+                             'state_version': self._state_version,
+                             'run_id': self._run_id, 'changed': False,
+                             'error': None, 'command_id': command_id,
+                             'in_progress': True},
+            }
             self._events.record('command.accepted', command_id=command_id,
                                 controller=controller, kind=kind)
 
@@ -194,17 +212,18 @@ class Coordinator:
         # concurrent mutation hits the busy gate in Phase 1 immediately.
         try:
             result = execute(self)
-        except BaseException:
+        except BaseException as exc:
             with self._lock:
-                self._operation_active = False
-                self._active_names = None
+                self._commands[command_id]['exception'] = exc
+                self._events.record('command.failed', command_id=command_id,
+                                    kind=kind, reason=str(exc),
+                                    state_version=self._state_version)
+                self._finish_operation(command_id)
             raise
 
         # Phase 3: update state under the metadata lock (fast).
         with self._lock:
-            self._operation_active = False
-            self._active_names = None
-            self._state_version += 1
+            self._finish_operation(command_id)
             self._run_id = result.get('run_id', self._run_id)
             if 'state' in result:
                 self._state = result['state']
@@ -235,8 +254,7 @@ class Coordinator:
                 'controller': controller, 'response': response,
                 'describe': describe,
             }
-            if len(self._commands) > COMMAND_CACHE_LIMIT:
-                self._commands.popitem(last=False)
+            self._finish_operation(command_id)
             return dict(response)
 
     def record_terminal_failure(self, reason):

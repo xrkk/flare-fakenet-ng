@@ -57,10 +57,11 @@ class RealSupervisor:
                  baseline_store=None, config_path_resolver=None,
                  stop_grace_seconds=60.0, health_interval=None,
                  log_reader=None, probe_impl=None, exclusion=None,
-                 artifacts_root=None, fault_injector=None):
+                 artifacts_root=None, fault_injector=None, start_guard=None):
         from fakenet.mcp.snapshot import StateSnapshot
         from fakenet.mcp.baseline import BaselineStore
 
+        self._start_guard = start_guard
         self._lock = threading.RLock()
         self._fakenet = None
         self._worker = None
@@ -230,6 +231,8 @@ class RealSupervisor:
     # -- lifecycle operations (Coordinator execute callbacks) --------------
     def start(self, coordinator, controller, config_identity):
         with self._lock:
+            if self._start_guard is not None:
+                self._start_guard()
             if self._fakenet is not None:
                 raise errors.McpError(
                     errors.NOT_ALLOWED_IN_STATE,

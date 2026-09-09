@@ -8,6 +8,8 @@ the rule (delete-then-add, so repeated installs never duplicate or drift);
 Command construction is pure so tests can assert on strings without netsh.
 """
 
+import json
+import ipaddress
 import shutil
 import subprocess
 
@@ -63,23 +65,56 @@ def remove_rule():
     return completed.returncode, completed.stdout
 
 
-def verify_rule(listen_port, allowed_host_ips):
-    """Return (ok, detail).
+def build_verify_command():
+    # ActiveStore observes effective policy; enum strings avoid localized
+    # netsh labels. Keep cardinality and address/port sets, not substrings.
+    script = (
+        "$ErrorActionPreference='Stop'; "
+        "$rules=@(Get-NetFirewallRule -PolicyStore ActiveStore "
+        "-DisplayName 'FakeNet-NG MCP' -ErrorAction Stop); "
+        "@($rules | ForEach-Object { $r=$_; "
+        "$p=$r | Get-NetFirewallPortFilter -ErrorAction Stop; "
+        "$a=$r | Get-NetFirewallAddressFilter -ErrorAction Stop; "
+        "[pscustomobject]@{Enabled=[string]$r.Enabled; "
+        "Direction=[string]$r.Direction; Action=[string]$r.Action; "
+        "Profile=[string]$r.Profile; Protocol=[string]$p.Protocol; "
+        "LocalPort=@($p.LocalPort); RemotePort=@($p.RemotePort); "
+        "RemoteAddress=@($a.RemoteAddress)}}) | "
+        "ConvertTo-Json -Depth 5 -Compress")
+    return ['powershell', '-NoProfile', '-Command', script]
 
-    ``netsh show rule name=...`` exits non-zero when no rule matches (the
-    message text is locale-dependent, the exit code is not).  Scope values
-    (port number, IP literals) are locale-independent substrings of the
-    already name-filtered output.
-    """
-    completed = _run(build_show_command())
+
+def verify_rule(listen_port, allowed_host_ips):
+    """Return (ok, raw evidence/reason) for the exact effective rule."""
+    completed = _run(build_verify_command())
     if completed.returncode != 0:
-        return False, 'rule absent (netsh exit %d)' % completed.returncode
-    text = completed.stdout or ''
-    if not text.strip():
-        return False, 'rule output empty'
-    if str(int(listen_port)) not in text:
-        return False, 'listen port %d missing from rule' % listen_port
-    missing = [str(ip) for ip in allowed_host_ips if str(ip) not in text]
-    if missing:
-        return False, 'allowed host ips missing from rule: %s' % ', '.join(missing)
-    return True, text
+        return False, 'effective firewall query failed: %s' % completed.stderr
+    try:
+        rules = json.loads(completed.stdout)
+        if isinstance(rules, dict):
+            rules = [rules]
+        if not isinstance(rules, list) or len(rules) != 1:
+            return False, 'expected exactly one effective rule'
+        rule = rules[0]
+        expected = {'Enabled': 'True', 'Direction': 'Inbound',
+                    'Action': 'Allow', 'Profile': 'Any', 'Protocol': 'TCP'}
+        if any(rule.get(key) != value for key, value in expected.items()):
+            return False, 'effective rule flags or protocol differ'
+        if rule.get('LocalPort') != [str(int(listen_port))] or \
+                rule.get('RemotePort') != ['Any']:
+            return False, 'effective port scope differs'
+        addresses = rule.get('RemoteAddress')
+        if not isinstance(addresses, list) or not addresses:
+            return False, 'remote address scope unavailable'
+        def host(value):
+            # Windows may print a host as /32 or /128. Networks and Any
+            # are never accepted as equivalent to a single host address.
+            network = ipaddress.ip_network(value, strict=False)
+            if network.num_addresses != 1:
+                raise ValueError('address is wider than one host')
+            return str(network.network_address)
+        if {host(v) for v in addresses} != {host(v) for v in allowed_host_ips}:
+            return False, 'effective remote host set differs'
+    except (ValueError, TypeError, AttributeError):
+        return False, 'effective rule evidence malformed or scope too wide'
+    return True, completed.stdout

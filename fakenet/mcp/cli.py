@@ -199,8 +199,15 @@ def service_main(controller):
                 logger.warning('firewall rule check failed (%s); recreating',
                                detail)
                 firewall.ensure_rule(cfg.listen_port, cfg.allowed_host_ips)
+                ok, detail = firewall.verify_rule(cfg.listen_port,
+                                                  cfg.allowed_host_ips)
+                if not ok:
+                    raise RuntimeError(detail)
         except RuntimeError as exc:
-            logger.error('firewall verification error: %s', exc)
+            # Keep diagnostics available; every managed start independently
+            # revalidates the effective rule and fails closed before work.
+            logger.error('firewall protection unavailable; managed start '
+                         'will be refused: %s', exc)
 
     from fakenet.mcp import paths as mcp_paths
     from fakenet.mcp import server as server_module

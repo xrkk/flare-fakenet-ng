@@ -83,7 +83,21 @@ class AppContext:
                     return log_path.stat().st_size if \
                         log_path.is_file() else 0
 
+                def verify_start_boundary():
+                    from fakenet.mcp import firewall
+                    try:
+                        ok, detail = firewall.verify_rule(
+                            config.listen_port, config.allowed_host_ips)
+                    except (RuntimeError, OSError) as exc:
+                        ok, detail = False, str(exc)
+                    if not ok:
+                        raise errors.McpError(
+                            errors.VALIDATION_FAILED,
+                            'firewall protection unverifiable; start refused',
+                            {'reason': detail})
+
                 supervisor = RealSupervisor(
+                    start_guard=verify_start_boundary,
                     snapshot=_make_snapshot(dirs),
                     baseline_store=_make_baseline_store(dirs),
                     stop_grace_seconds=config.stop_grace_seconds,

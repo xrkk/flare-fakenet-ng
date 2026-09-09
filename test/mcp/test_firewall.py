@@ -30,3 +30,23 @@ def test_delete_and_show_command_shape():
     assert show[:6] == ['netsh', 'advfirewall', 'firewall', 'show',
                         'rule', 'name=FakeNet-NG MCP']
     assert 'verbose' in show
+
+
+def test_verify_rule_rejects_wider_disabled_or_wrong_direction(monkeypatch):
+    import json
+    from types import SimpleNamespace
+    good = dict(Enabled='True', Direction='Inbound', Action='Allow',
+                Profile='Any', Protocol='TCP', LocalPort=['28788'],
+                RemotePort=['Any'], RemoteAddress=['192.168.204.1'])
+    def check(row):
+        monkeypatch.setattr(firewall, '_run', lambda _: SimpleNamespace(
+            returncode=0, stdout=json.dumps(row), stderr=''))
+        return firewall.verify_rule(28788, ['192.168.204.1'])[0]
+    assert check(good)
+    for field, value in [('Enabled', 'False'), ('Direction', 'Outbound'),
+                         ('Action', 'Block'), ('Protocol', 'UDP'),
+                         ('Profile', 'Private'),
+                         ('LocalPort', ['28788', '80']),
+                         ('RemoteAddress', ['192.168.204.1', 'Any'])]:
+        assert not check(dict(good, **{field: value})), field
+    assert not check([good, good])

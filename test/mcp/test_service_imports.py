@@ -43,3 +43,18 @@ def test_application_passes_deployed_stop_grace_to_real_supervisor(
 
     assert context.runner.name == 'real'
     assert context.runner._stop_grace == grace
+
+
+def test_invalid_firewall_prevents_any_managed_start(tmp_path, monkeypatch):
+    from fakenet.mcp import errors, firewall
+    from fakenet.mcp.config import ServiceConfig
+    from fakenet.mcp.tools import AppContext
+    monkeypatch.setenv('FAKENETNG_MCP_PROGRAMDATA', str(tmp_path))
+    monkeypatch.delenv('FAKENETNG_MCP_TESTDOUBLE', raising=False)
+    monkeypatch.setattr(firewall, 'verify_rule', lambda *args: (False, 'wide'))
+    context = AppContext(ServiceConfig('127.0.0.1', 28788, ['127.0.0.1']))
+    with pytest.raises(errors.McpError, match='firewall protection'):
+        context.runner.start(context.coordinator, 'A', {'name': 'missing.ini'})
+    assert context.coordinator.snapshot()['state'] == 'stopped'
+    assert not (tmp_path / 'state' / 'state.json').exists()
+    assert context.runner._fakenet is None
