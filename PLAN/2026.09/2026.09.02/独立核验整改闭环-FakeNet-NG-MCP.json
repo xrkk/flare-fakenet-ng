@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "d7daa216887235cd6ed65e8d4e31c021b7f41e35",
+  "current_head": "63042dbcaef724095fbdbda97a64f5e218ae6c35",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "1134521原生单次IPC健康恢复通过，stop因UDP差异失败；15项现场导出。漏incident整改Linux184/Windows181通过待提交。核验仍1/5，CHK全OPEN。",
+  "checkpoint": "INTENT-076实际诊断及完整现场保存已验证；可继续授权内整改，未恢复总体验收资格。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-076",
-    "action": "提交合法未知工具信封修正；导出当前50b8752完整应用运行证据（明确文件列表，排除临时TLS材料）后继续剩余授权内整改，CHK仍全部OPEN。"
+    "id": "INTENT-077",
+    "action": "核对并整改P03 ACC007按进程名批量终止与旁路进程清理的测试副作用；固定SCM及受管树真实身份，保留失败现场，不改变现行契约。"
   },
   "events": [
     {
@@ -977,6 +977,10 @@
     {
       "intent": "INTENT-075",
       "actual": "d7daa21实际PCAP91527字节双端SHA一致、宿主线程/socket/内核无监听证据通过；整体因未知工具探针缺_meta仍失败。复用P02合法信封后单独实机明确Unknown tool通过，旧失败未改。"
+    },
+    {
+      "intent": "INTENT-076",
+      "actual": "63042db完整ACC015诊断exit0，四项检查均true；同run实际两incident和91527字节PCAP导出通过。当前50b8752运行现场48文件完整导出逐文件校验通过，临时TLS三文件排除。未计正式ACC，所有CHK保持OPEN。"
     }
   ],
   "active_build": {
@@ -987,10 +991,10 @@
     "exec_session_id": 90613
   },
   "latest_guest_export": {
-    "path": "Logs/fakenetng-mcp/remediation-20260910/native-1134521-once-runtime.zip",
-    "sha256": "e5b67d733bddebf1d881f1cf5cd350699df607a674f521d1b0e35a1520c55964",
-    "verified_files": 15,
-    "excluded": "temp_certs temporary TLS material; explicit path allowlist"
+    "path": "Logs/fakenetng-mcp/remediation-20260910/native-50b8752-permanent-runtime.zip",
+    "sha256": "8c68c9aaa4d230b25023777fa0aeaa60dd2a0c883287fc9fa217cc87382e63fb",
+    "verified_files": 48,
+    "excluded": "three configs/temp_certs TLS files; fresh inventory and explicit path allowlist"
   },
   "active_host_capture": {
     "session_id": 41715,
