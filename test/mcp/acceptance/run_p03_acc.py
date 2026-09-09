@@ -130,41 +130,33 @@ def normalize_service(base, channel):
 
 
 def clear_and_restart(channel):
-    channel.powershell(
-        "[Environment]::SetEnvironmentVariable("
-        "'FAKENETNG_MCP_ARMED_FAULT', $null, 'Machine'); "
-        "[Environment]::SetEnvironmentVariable("
-        "'FAKENETNG_MCP_FAULT_INJECTION', $null, 'Machine')", timeout=60)
-    restart_service(channel)
+    from helpers import configure_fault_service
+    return configure_fault_service(channel, False, 60)
 
 
 def arm_fault(channel, fault, base=None):
-    """Arm one in-process fault class and restart the service (P04 hooks)."""
-    channel.powershell(
-        "[Environment]::SetEnvironmentVariable("
-        "'FAKENETNG_MCP_FAULT_INJECTION', '1', 'Machine'); "
-        "[Environment]::SetEnvironmentVariable("
-        "'FAKENETNG_MCP_ARMED_FAULT', '%s', 'Machine')" % fault,
-        timeout=60)
-    restart_service(channel)
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        try:
-            if status(base or _DEFAULT_BASE).get('state'):
-                break
-        except Exception:  # noqa: BLE001
-            time.sleep(2)
+    """Arm the actual fixed-file hook with a unique triggering nonce."""
+    from helpers import configure_fault_service, arm_fault_file
+    mode = configure_fault_service(channel, True, 5)
+    ready, snap = wait_state(base or _DEFAULT_BASE,
+                            lambda x: x.get('state') == 'stopped' and not x.get('run_id'),
+                            timeout=60)
+    if not ready:
+        raise StepError('fault entry not cleanly stopped: %r' % snap)
+    return dict(arm_fault_file(channel, fault), mode=mode)
 
 
 def disarm_fault(channel, base=None):
-    clear_and_restart(channel)
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        try:
-            if status(base).get('state'):
-                break
-        except Exception:  # noqa: BLE001
-            time.sleep(2)
+    snap = status(base or _DEFAULT_BASE)
+    if snap.get('state') != 'stopped' or snap.get('run_id'):
+        raise StepError('fault did not recover; preserve failed scene')
+    result = clear_and_restart(channel)
+    ready, snap = wait_state(base or _DEFAULT_BASE,
+                            lambda x: x.get('state') == 'stopped' and not x.get('run_id'),
+                            timeout=60)
+    if not ready:
+        raise StepError('normal mode not ready: %r' % snap)
+    return result
 
 
 def wait_state(base, predicate, timeout=60):
@@ -356,47 +348,68 @@ def acc004_s2_init_failure(base, channel, writer):
                                               'invalid_request')
     else:
         checks['invalid_config_rejected'] = False
-    created = call(base, 'create_config',
-                   {'name': 'broken-%s.ini' % unique_command('x')[:8],
-                    'content': 'no-section-header garbage = broken\n',
-                    'command_id': unique_command('a4-bad'),
-                    'expected_state_version': version})
-    if created.get('error') is None:
-        loaded = call(base, 'load_config',
-                      {'name': created.get('name', ''),
-                       'command_id': unique_command('a4-bad-load'),
-                       'expected_state_version':
-                           created['state_version']})
-        checks['invalid_config_rejected'] = err_of(loaded) in (
-            'validation_failed', 'invalid_request')
-    else:
-        checks['invalid_config_rejected'] = True
+    return checks
+
+
+def exercise_listener_exception(base, channel, writer, tag):
+    """Arm after healthy; require a real listener-thread stack and nonce."""
+    from helpers import configure_fault_service, arm_fault_file
+    mode = configure_fault_service(channel, True, 5)
+    writer.add_evidence(tag + '-fault-mode', mode)
+    ready, initial = wait_state(base, lambda x: x.get('state') == 'stopped' and not x.get('run_id'), timeout=60)
+    if not ready:
+        raise StepError('fault mode entry not stopped; preserve scene')
+    started = load_and_start(base)
+    writer.add_evidence(tag + '-start', started)
+    healthy, initial = wait_state(base, lambda x: x.get('state') == 'healthy', timeout=30)
+    if not healthy or not initial.get('run_id'):
+        raise StepError('exception precondition not healthy; preserve scene')
+    run_id = initial['run_id']
+    import uuid
+    uuid.UUID(run_id)
+    def trigger():
+        began = time.time()
+        armed = arm_fault_file(channel, 'listener_exception')
+        revoked, snap = wait_state(base, lambda x: x.get('state') != 'healthy', timeout=15)
+        return dict(armed=armed, began=began, ended=time.time(), revoked=revoked, status=snap)
+    timeline, outcome = probe_during(trigger, base)
+    writer.add_evidence(tag + '-probe', timeline)
+    writer.add_evidence(tag + '-trigger', outcome or {})
+    if not outcome:
+        raise StepError('actual exception trigger did not return evidence')
+    raw = channel.powershell(
+        "$ErrorActionPreference='Stop'; $p=Join-Path $env:ProgramData "
+        "'FakeNet-NG-MCP\\artifacts\\runs\\%s'; "
+        "@{receipt=(Get-Content (Join-Path $p 'fault-triggered.json') -Raw | ConvertFrom-Json); "
+        "log=(Get-Content (Join-Path $p 'run.log') -Raw); "
+        "stderr=(Get-Content (Join-Path $p 'stdout_stderr.log') -Raw)} | ConvertTo-Json -Depth 5 -Compress" % run_id,
+        timeout=60)
+    writer.add_evidence(tag + '-actual-thread-evidence', raw)
+    evidence = json.loads(raw['output'])
+    receipt = evidence.get('receipt', {})
+    log = evidence.get('log', '')
+    checks = {
+        'healthy_before_trigger': healthy,
+        'matching_consumed_fault': receipt == {'fault': 'listener_exception',
+                                              'nonce': outcome['armed']['nonce']},
+        'actual_thread_exception_stack': all(value in log for value in
+            ('Traceback (most recent call last)', 'service_actions',
+             'RuntimeError: injected listener thread exception')),
+        'exception_revokes_within_two_cycles': outcome['revoked'] and
+            outcome['ended'] - outcome['began'] <= 2 * HEALTH_INTERVAL_S + 2.0,
+        'link_alive_during_exception': bool(timeline) and all(x['ok'] for x in timeline),
+    }
+    settled, final = wait_state(base, lambda x: x.get('state') == 'stopped' and not x.get('run_id'), timeout=420)
+    writer.add_evidence(tag + '-final', final or {})
+    checks['protective_stop_completed'] = settled and final.get('last_run_outcome') == 'failed'
+    if not settled:
+        raise StepError('exception did not converge; preserve failed scene')
+    disarm_fault(channel, base)
     return checks
 
 
 def acc004_s3_exception(base, channel, writer):
-    """Unhandled exception in run log revokes health but link stays."""
-    checks = {}
-    started = load_and_start(base)
-    checks['start_ok'] = started.get('error') is None
-    if started.get('error') is None:
-        channel.powershell(
-            "Add-Content (Join-Path $env:ProgramData "
-            "'FakeNet-NG-MCP\\logs\\service.log') "
-            "'Traceback (most recent call last): injected ACC-004'",
-            timeout=60)
-        revoked, snap = wait_state(
-            base, lambda s: s.get('state') in ('degraded', 'failed')
-            or s.get('health', {}).get('probe') != 'pass', timeout=15)
-        checks['unhandled_exception_revokes_health'] = revoked
-        ok, timeline = continuous_probe(base, 4)
-        writer.add_evidence('acc004-s3-exception-probe', timeline)
-        checks['link_alive_during_exception'] = ok
-        stop_run(base)
-    else:
-        checks['unhandled_exception_revokes_health'] = False
-        checks['link_alive_during_exception'] = False
-    return checks
+    return exercise_listener_exception(base, channel, writer, 'acc004-s3')
 
 
 def acc004_s4_invalid_protection(base, channel, writer):
@@ -554,25 +567,9 @@ def run_acc006(base, channel, writer):
         key in (snap or {}).get('health', {})
         for key in ('process_alive', 'init_evidence', 'probe'))
 
-    # (a) log-anomaly condition broken: anomaly revokes within <= 2 health
-    # intervals (+ slack); reason observable; link stays.
-    channel.powershell(
-        "Add-Content (Join-Path $env:ProgramData "
-        "'FakeNet-NG-MCP\\logs\\service.log') "
-        "'Traceback (most recent call last): injected ACC-006'",
-        timeout=60)
-    t0 = time.time()
-    revoked, snap2 = wait_state(
-        base, lambda s: s.get('state') in ('degraded', 'failed')
-        or (s.get('health', {}).get('probe') != 'pass'), timeout=15)
-    elapsed = time.time() - t0
-    checks['anomaly_revokes_within_two_cycles'] = revoked and \
-        elapsed <= 2 * HEALTH_INTERVAL_S + 2.0
-    checks['reason_observable'] = bool(
-        (snap2 or {}).get('failure_reason')) or \
-        (snap2 or {}).get('health', {}).get('probe') != 'pass'
-    stop_result = stop_run(base)
-    writer.add_evidence('acc006-stop-anomaly', stop_result or {})
+    # End the healthy control run before changing the service test mode.
+    writer.add_evidence('acc006-stop-control', stop_run(base))
+    checks.update(exercise_listener_exception(base, channel, writer, 'acc006-anomaly'))
 
     # (b) active-probe condition broken: the diverter_stop fault closes the
     # main handle, so the probe (diverter handle alive) fails and health

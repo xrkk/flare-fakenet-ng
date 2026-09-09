@@ -23,7 +23,7 @@ import json
 from pathlib import Path
 
 FAULTS = ('policy_pause', 'listener_stop', 'diverter_stop', 'child_hang',
-          'cleanup_error')
+          'cleanup_error', 'listener_exception')
 
 
 def enabled():
@@ -87,6 +87,28 @@ class FaultInjector:
             raise RuntimeError('injected cleanup error')
 
     # -- run-path hooks -----------------------------------------------------
+    def install_listener_exception_hook(self, listeners):
+        """Raise in the real HTTP serve_forever thread, when locally armed.
+
+        The extra P03 anomaly case does not change the five release fault
+        classes. Merely installing this test-only hook consumes no receipt.
+        """
+        if not enabled():
+            return False
+        for listener in listeners or []:
+            server = getattr(listener, 'server', None)
+            original = getattr(server, 'service_actions', None)
+            worker = getattr(listener, 'server_thread', None)
+            if callable(original) and worker is not None and worker.is_alive():
+                def service_actions(original=original):
+                    if enabled() and armed_fault() == 'listener_exception':
+                        clear()
+                        raise RuntimeError('injected listener thread exception')
+                    return original()
+                server.service_actions = service_actions
+                return True
+        return False
+
     def inject_listener_stop(self, listeners):
         """Close the first bound listener socket (representative class)."""
         if not (enabled() and armed_fault() == 'listener_stop'):

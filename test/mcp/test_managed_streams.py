@@ -75,3 +75,47 @@ def test_stop_stack_capture_releases_watchdog_after_exception(tmp_path):
     evidence = (tmp_path / 'stop-thread-stacks.txt').read_text()
     assert 'test_stop_stack_capture_releases_watchdog_after_exception' in evidence
     assert 'LIVE STOP STACKS' in evidence
+
+
+def test_listener_fault_is_real_thread_exception_with_consumed_nonce(tmp_path):
+    code = r'''
+import json, logging, os, socketserver, threading, time
+from pathlib import Path
+from types import SimpleNamespace
+from fakenet.mcp.faultinject import FaultInjector, _fault_file
+from fakenet.mcp.managed import install_thread_exception_logging
+root = Path.cwd()
+os.environ['PROGRAMDATA'] = str(root)
+os.environ['FAKENETNG_MCP_FAULT_INJECTION'] = '1'
+logging.basicConfig(filename='run.log', level=logging.INFO)
+install_thread_exception_logging()
+class Handler(socketserver.BaseRequestHandler):
+    def handle(self):
+        pass
+server = socketserver.TCPServer(('127.0.0.1', 0), Handler)
+worker = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), name='real-listener')
+worker.start()
+fault = FaultInjector()
+assert fault.install_listener_exception_hook([SimpleNamespace(server=server, server_thread=worker)])
+assert worker.is_alive() and not (root / 'fault-triggered.json').exists()
+fault.arm('listener_exception')
+armed = json.loads(_fault_file().read_text())
+worker.join(3)
+assert not worker.is_alive()
+assert not _fault_file().exists()
+assert json.loads((root / 'fault-triggered.json').read_text()) == armed
+logging.shutdown()
+raw = (root / 'run.log').read_text()
+assert 'Unhandled exception in managed thread real-listener' in raw
+assert 'Traceback (most recent call last)' in raw
+assert 'service_actions' in raw
+assert 'RuntimeError: injected listener thread exception' in raw
+server.server_close()
+'''
+    env = dict(os.environ)
+    env['PYTHONPATH'] = os.pathsep.join([str(__import__('pathlib').Path(__file__).resolve().parents[2]),
+                                       env.get('PYTHONPATH', '')])
+    result = subprocess.run([sys.executable, '-c', code], cwd=tmp_path, env=env,
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert 'Exception in thread real-listener' in result.stderr

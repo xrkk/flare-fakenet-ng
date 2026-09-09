@@ -26,194 +26,97 @@ from pathlib import PureWindowsPath  # noqa: E402
 from run_p03_acc import continuous_probe, load_and_start, stop_run, unique_command  # noqa: E402
 
 
-def run_fault_point_proof(base, channel, writer):
-    """One stable trigger per RACC-013 class via the in-process fault hooks
-    (armed through machine env + service restart; never an MCP tool)."""
-    writer.action('fault-points', 'five fault classes, one trigger each')
-    checks = {}
-    classes = ('policy_pause', 'listener_stop', 'diverter_stop',
-               'child_hang', 'cleanup_error')
-    for fault in classes:
-        channel.powershell(
-            "[Environment]::SetEnvironmentVariable("
-            "'FAKENETNG_MCP_FAULT_INJECTION', '1', 'Machine'); "
-            "[Environment]::SetEnvironmentVariable("
-            "'FAKENETNG_MCP_ARMED_FAULT', '%s', 'Machine')" % fault,
-            timeout=60)
-        channel.powershell(
-            'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; Start-Sleep 3; '
-            'sc.exe start fakenetng-mcp | Out-Null; "RESTARTED"',
-            timeout=180)
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            try:
-                if status(base).get('state'):
-                    break
-            except Exception:  # noqa: BLE001
-                time.sleep(2)
-        started = load_and_start(base)
-        time.sleep(10)
-        snap = status(base)
-        result = stop_run(base)
-        final = status(base)
-        checks[fault] = {
-            'armed': True,
-            'start_state': snap.get('state'),
-            'health_after_fault': snap.get('health'),
-            'stop_state': result.get('state'),
-            'final_state': final.get('state'),
-            'converged': result.get('state') in ('stopped', 'failed')
-                         or final.get('state') in ('stopped', 'failed'),
-        }
-        channel.powershell(
-            "[Environment]::SetEnvironmentVariable("
-            "'FAKENETNG_MCP_ARMED_FAULT', $null, 'Machine')", timeout=60)
-    channel.powershell(
-        "[Environment]::SetEnvironmentVariable("
-        "'FAKENETNG_MCP_FAULT_INJECTION', $null, 'Machine')", timeout=60)
-    writer.add_evidence('fault-points', checks)
-    ok = all(isinstance(v, dict) and v.get('converged')
-             for v in checks.values())
-    return EXIT_PASS if ok else EXIT_FAIL
+def run_fault_point_proof(base, channel, writer, args):
+    """Exercise the five actual hooks with attributed receipts and raw audits."""
+    from types import SimpleNamespace
+    from run_p05_release import ReleaseGate, FAULT_CLASSES
+    from evidence_integrity import IDENTITY_FIELDS, validate_round
+    settings = {field: getattr(args, field) for field in IDENTITY_FIELDS}
+    gate = ReleaseGate(SimpleNamespace(**settings, target_base_url=base,
+                       win10vm_mcp=args.win10vm_mcp,
+                       output_root=str(writer.out_dir / 'fault-rounds')))
+    gate.channel = channel
+    writer.action('fault-points', 'five actual fixed-file fault hooks; no log fabrication')
+    writer.add_evidence('fault-mode', gate.configure_fault_mode(True))
+    writer.fault_records = []
+    for klass in FAULT_CLASSES:
+        record = gate.run_fault_round(klass, 1)
+        writer.fault_records.append(record)
+        writer.add_evidence('fault-' + klass, record)
+        writer.evidence.extend(record.get('capture_evidence', []))
+        if record.get('incident_export'):
+            writer.evidence.append({key: record['incident_export'][key]
+                                    for key in ('path', 'size', 'sha256')})
+        if validate_round(record, settings):
+            return EXIT_FAIL
+    writer.add_evidence('fault-mode-restored', gate.configure_fault_mode(False))
+    return EXIT_PASS
 
 
-def run_acc014(base, channel, writer):
-    writer.action('acc014', 'root-cause incident packs, full-field evidence')
-    checks = {}
-    from run_p03_acc import arm_fault, disarm_fault, load_and_start, stop_run
-
-    # (1) drive one incident per fault class plus the log-exception class;
-    # every class must terminate the run and produce an incident pack.
-    # Per-class incident generation via log-exception (proven path).
-    from run_p03_acc import arm_fault, disarm_fault
-    for klass in ['listener_stop', 'diverter_stop', 'child_hang',
-                  'cleanup_error', 'policy_pause']:
-        arm_fault(channel, klass, base)
-        load_and_start(base)
-        time.sleep(4)
-        message = "Traceback (most recent call last): fault-class " + klass
-        cmd = ("Add-Content (Join-Path $env:ProgramData "
-               "FakeNet-NG-MCP\\logs\\service.log) '" + message + "'")
-        channel.powershell(cmd, timeout=60)
-        time.sleep(8)
-        wait = 150 if klass == 'policy_pause' else 45
-        converged, snap = _wait_terminal(base, timeout=wait)
-        if not converged:
-            stop_run(base)
-        disarm_fault(channel, base)
-        writer.add_evidence('acc014-class-%s' % klass,
-                            {'converged': converged,
-                             'state': (snap or {}).get('state')})
-        checks['class_%s_converged' % klass] = converged
-    # log-exception class
-    load_and_start(base)
-    channel.powershell(
-        "Add-Content (Join-Path $env:ProgramData "
-        "'FakeNet-NG-MCP\\logs\\service.log') "
-        "'Traceback (most recent call last): injected ACC-014'",
-        timeout=60)
-    time.sleep(12)
-    snap = status(base)
-    checks['class_log_exception_converged'] = \
-        snap.get('state') in ('failed', 'degraded')
-    stop_run(base)
-
-    # (2) collect every incident manifest and validate FULL fields, sizes
-    # and hashes — file-name existence alone is not acceptance.
-    time.sleep(5)
-    listing = channel.powershell(
-        '$root = Join-Path $env:ProgramData '
-        "'FakeNet-NG-MCP\\artifacts'; "
-        'Get-ChildItem -Recurse -File $root | Where-Object '
-        "{$_.FullName -match 'incident'} | "
-        'Select-Object FullName, Length | ConvertTo-Json -Compress',
-        timeout=120)
-    writer.add_evidence('acc014-incident-tree', listing)
-    try:
-        tree = json.loads(listing['output'] or '[]')
-    except ValueError:
-        tree = []
-    if isinstance(tree, dict):
-        tree = [tree]
-    names = {str(item.get('FullName', '')).replace('\\', '/').split('/')[-1]
-             for item in tree}
-    checks['manifest_present'] = 'manifest.json' in names
-    checks['basic_layer_coverage'] = bool(
-        {'timeline.json', 'versions.json', 'exception.txt',
-         'thread_stacks.txt', 'process_tree.txt', 'windivert_filter.txt',
-         'event_log.txt'} <= names)
-
-    # (3) full-field + hash verification of every manifest on the guest.
-    # Incident manifests carry the P04 collector schema (item/result/
-    # size/sha256 — record 035, mirrored by test_incident_manifest_schema);
-    # only 'ok' entries have a file to hash, named by the entry's item.
-    verify = channel.powershell(
-        "$out = @(); Get-ChildItem -Recurse (Join-Path $env:ProgramData "
-        "'FakeNet-NG-MCP\\artifacts') -Filter manifest.json | "
-        'ForEach-Object { $m = Get-Content $_.FullName -Raw | '
-        'ConvertFrom-Json; $items = $m.entries; $bad = 0; $hashed = 0; '
-        'foreach ($it in $items) { $req = @("item","result","size",'
-        '"sha256"); foreach ($k in $req) { '
-        'if (-not ($it.PSObject.Properties.Name -contains $k)) { $bad++ } }; '
-        'if ($it.result -eq "ok") { $f = Join-Path $_.DirectoryName '
-        '$it.item; '
-        'if (Test-Path $f) { $hashed++; $h = (Get-FileHash $f -Algorithm '
-        'SHA256).Hash.ToLower(); if ($h -ne $it.sha256.ToLower()) { '
-        '$bad++ }; if ((Get-Item $f).Length -ne [int64]$it.size) { '
-        '$bad++ } } else { $bad++ } } }; '
-        "$out += [PSCustomObject]@{manifest=$_.FullName; entries=$items.Count; "
-        'bad=$bad; hashed=$hashed} }; $out | ConvertTo-Json -Compress',
-        timeout=180)
-    writer.add_evidence('acc014-manifest-verify', verify)
-    try:
-        rows = json.loads(verify['output'] or '[]')
-    except ValueError:
-        rows = []
-    if isinstance(rows, dict):
-        rows = [rows]
-    rows = [r for r in rows if isinstance(r, dict)]
-    checks['manifests_full_fields'] = checks['manifest_present'] and \
-        checks['basic_layer_coverage']
-    checks['manifest_hashes_match'] = bool(rows) and all(
-        int(row.get('bad', 1)) == 0 and int(row.get('hashed', 0)) >= 1
-        for row in rows)
-
-    # (4) dump escalation: the exception-signature class must carry a dump
-    # artifact (comsvcs MiniDump) or the collector's bounded dump attempt
-    # record.
-    dump_probe = channel.powershell(
-        "Get-ChildItem -Recurse (Join-Path $env:ProgramData "
-        "'FakeNet-NG-MCP\\artifacts') -Include *.dmp,*.dump | "
-        'Measure-Object | Select-Object -ExpandProperty Count',
-        timeout=120)
-    writer.add_evidence('acc014-dump-count', dump_probe)
-
-    # (5) developer localization from PACKAGE FACTS ONLY: reconstruct the
-    # failure chain for one incident from its own recorded evidence.
-    localize = channel.powershell(
-        "$m = Get-ChildItem -Recurse (Join-Path $env:ProgramData "
-        "'FakeNet-NG-MCP\\artifacts') -Filter manifest.json | "
-        'Select-Object -First 1; $dir = $m.DirectoryName; '
-        '$exc = Join-Path $dir "exception.txt"; '
-        'if (Test-Path $exc) { Get-Content $exc -Raw } else { "NO_EXC" }; '
-        '"||"; (Get-Content $m.FullName -Raw | '
-        'ConvertFrom-Json).entries | ConvertTo-Json -Compress',
-        timeout=120)
-    writer.add_evidence('acc014-localization-input', localize)
-    localization_ok = False
-    try:
-        parts = localize['output'].split('||', 1)
-        items = json.loads(parts[1]) if len(parts) == 2 else []
-        if isinstance(items, dict):
-            items = [items]
-        if not isinstance(items, list):
-            items = []
-        localization_ok = True  # basic file coverage verified above
-    except (ValueError, IndexError, TypeError):
-        localization_ok = False
-    checks['developer_localizable_from_package'] = localization_ok
-    writer.add_evidence('acc014-checks', checks)
-    return EXIT_PASS if all(checks.values()) else EXIT_FAIL
+def run_acc014(base, channel, writer, args):
+    """Validate actual fault packages and explicit package-only localization."""
+    from helpers import export_incident_bundle
+    from evidence_integrity import IDENTITY_FIELDS, validate_round
+    from run_p05_release import FAULT_CLASSES
+    identity = {field: getattr(args, field) for field in IDENTITY_FIELDS}
+    if args.fault_record:
+        records = [json.loads(Path(path).read_text(encoding='utf-8')) for path in args.fault_record]
+    else:
+        result = run_fault_point_proof(base, channel, writer, args)
+        if result != EXIT_PASS:
+            return result
+        records = writer.fault_records
+    if set(FAULT_CLASSES) - {record.get('class') for record in records}:
+        writer.blocker = {'reason': 'actual five-class incident coverage missing'}
+        return EXIT_BLOCKED
+    bundles = {}
+    for record in records:
+        if validate_round(record, identity):
+            writer.add_evidence('rejected-fault-record', record)
+            return EXIT_FAIL
+        run_id = record['fault_evidence']['receipt']['run_id']
+        bundle = export_incident_bundle(channel, run_id, writer.out_dir / ('incident-' + run_id + '.zip'))
+        writer.add_evidence('incident-verified-' + run_id, bundle)
+        writer.evidence.append({key: bundle[key] for key in ('path', 'sha256', 'size')})
+        if not bundle['complete']:
+            return EXIT_FAIL
+        if record['class'] in ('policy_pause', 'child_hang', 'ipc_permanent_timeout',
+                               'stacks_unavailable', 'native_crash', 'unknown_cause') and 'userdump.dmp' not in bundle['verified_members']:
+            return EXIT_FAIL
+        bundles[run_id] = bundle
+    # A developer must actually inspect these packages. Presence of a stack
+    # or a fabricated log line is never a localization conclusion.
+    if not args.localization_record:
+        writer.blocker = {'reason': 'package-only developer localization record required',
+                          'run_ids': sorted(bundles)}
+        return EXIT_BLOCKED
+    localization = json.loads(Path(args.localization_record).read_text(encoding='utf-8'))
+    if any(localization.get(field) != identity[field] for field in IDENTITY_FIELDS):
+        return EXIT_FAIL
+    import zipfile
+    localized = set()
+    for item in localization.get('incidents', []):
+        run_id = item.get('run_id')
+        if run_id not in bundles or not item.get('component') or not item.get('failure_chain') or not item.get('references'):
+            return EXIT_FAIL
+        with zipfile.ZipFile(bundles[run_id]['path']) as archive:
+            for reference in item['references']:
+                quote = reference.get('quote')
+                if not quote or quote not in archive.read(reference['member']).decode('utf-8', 'replace'):
+                    return EXIT_FAIL
+        localized.add(run_id)
+    writer.add_evidence('package-only-localization', localization)
+    # The required terminal IPC/native/no-stack matrix is not supplied by
+    # the five-class stability proof alone. Preserve an explicit coverage
+    # block until those real records accompany the packages.
+    required = set(FAULT_CLASSES) | {'ipc_permanent_timeout', 'ipc_eof', 'ipc_wrong_run',
+                                   'ipc_repeat', 'ipc_reverse', 'stacks_unavailable',
+                                   'native_crash', 'unknown_cause'}
+    missing = required - {record.get('class') for record in records}
+    if missing:
+        writer.blocker = {'reason': 'terminal failure/dump matrix incomplete', 'missing_cases': sorted(missing)}
+        return EXIT_BLOCKED
+    return EXIT_PASS if localized == set(bundles) else EXIT_FAIL
 
 
 def _wait_terminal(base, timeout=90):
@@ -593,6 +496,8 @@ def main():
     parser.add_argument('--acc', required=True,
                         choices=['ACC-014', 'ACC-015', 'ACC-018', 'ACC-019',
                                  'FAULT-POINTS'])
+    parser.add_argument('--fault-record', action='append', default=[])
+    parser.add_argument('--localization-record', default='')
     parser.add_argument('--source-commit', required=True)
     parser.add_argument('--package', required=True)
     parser.add_argument('--package-sha256', required=True)
@@ -641,7 +546,7 @@ def main():
             writer.blocker = {'reason': 'unexpected VM: %s' % identity}
             exit_code = EXIT_BLOCKED
         elif args.acc == 'ACC-014':
-            exit_code = run_acc014(base, channel, writer)
+            exit_code = run_acc014(base, channel, writer, args)
         elif args.acc == 'ACC-015':
             exit_code = run_acc015(base, channel, writer)
         elif args.acc == 'ACC-018':
@@ -649,7 +554,7 @@ def main():
         elif args.acc == 'ACC-019':
             exit_code = run_acc019(base, channel, writer, args)
         elif args.acc == 'FAULT-POINTS':
-            exit_code = run_fault_point_proof(base, channel, writer)
+            exit_code = run_fault_point_proof(base, channel, writer, args)
     except StepError as exc:
         writer.blocker = {'reason': str(exc)}
         exit_code = EXIT_BLOCKED

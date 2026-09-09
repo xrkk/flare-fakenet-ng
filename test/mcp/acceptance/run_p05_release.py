@@ -308,48 +308,21 @@ class ReleaseGate:
 
     # -- one fault round ----------------------------------------------------
     def configure_fault_mode(self, enabled):
-        value = "@('FAKENETNG_MCP_FAULT_INJECTION=1')" if enabled else '@()'
-        grace = 5 if enabled else 60
-        # Resuming matching evidence must not restart the service instance.
-        current = self.channel.powershell(
-            "$ErrorActionPreference='Stop'; "
-            "$key='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\fakenetng-mcp'; "
-            "$envs=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue).Environment); "
-            "$cfg=Get-Content 'C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json' -Raw | ConvertFrom-Json; "
-            "@{enabled=($envs -contains 'FAKENETNG_MCP_FAULT_INJECTION=1');grace=$cfg.stop_grace_seconds} | ConvertTo-Json -Compress",
-            timeout=30)
-        observed = json.loads(current['output'])
-        if observed == {'enabled': enabled, 'grace': grace}:
-            self.vm_continuity()
-            return dict(current, reused_service_instance=True)
-        if enabled and any(self.release.glob('fault-*.json')):
-            raise RuntimeError('fault mode changed since recorded rounds; preserve evidence and restart in a new directory')
-        result = self.channel.powershell(
-            "$ErrorActionPreference='Stop'; $exe='C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe'; "
-            "& $exe stop; if($LASTEXITCODE -ne 0){throw 'pre-stop failed; configuration unchanged'}; "
-            "$key='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\fakenetng-mcp'; "
-            "$preserved=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue).Environment | "
-            "Where-Object {$_ -and $_ -notlike 'FAKENETNG_MCP_FAULT_INJECTION=*'}); "
-            "New-ItemProperty -Path $key -Name Environment -PropertyType MultiString -Value ($preserved + " + value + ") -Force | Out-Null; "
-            "$path='C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json'; "
-            "$cfg=Get-Content $path -Raw | ConvertFrom-Json; $cfg | Add-Member -NotePropertyName stop_grace_seconds "
-            "-NotePropertyValue " + str(grace) + " -Force; "
-            "[IO.File]::WriteAllText($path,($cfg | ConvertTo-Json),[Text.UTF8Encoding]::new($false)); "
-            "Start-Service fakenetng-mcp; 'configured'", timeout=600)
+        from helpers import configure_fault_service
+        result = configure_fault_service(self.channel, enabled, 5 if enabled else 60,
+                                         allow_change=not (enabled and any(self.release.glob('fault-*.json'))))
         ready, state = wait_state(self.base, lambda x: x.get('state') == 'stopped', timeout=60)
         if not ready:
             raise RuntimeError('fault mode service not ready: %r' % state)
+        self.vm_continuity()
         return result
 
     def run_fault_round(self, klass, index):
-        import uuid
-        nonce = str(uuid.uuid4())
-        encoded = json.dumps({'fault': klass, 'nonce': nonce})
-        self.channel.powershell(
-            "$ErrorActionPreference='Stop'; $path='C:\\ProgramData\\FakeNet-NG-MCP\\logs\\fault-injection.json'; "
-            "if(Test-Path $path){throw 'unconsumed fault file'}; "
-            "[IO.File]::WriteAllText($path,'" + encoded + "',[Text.UTF8Encoding]::new($false))", timeout=30)
-        return self.observe_round(lambda: self._fault_round(klass, index, nonce))
+        from helpers import arm_fault_file
+        armed = arm_fault_file(self.channel, klass)
+        result = self.observe_round(lambda: self._fault_round(klass, index, armed['nonce']))
+        result['fault_arm'] = armed
+        return result
 
     def _fault_round(self, klass, index, nonce):
         record = {'class': klass, 'round': index, 'nonce': nonce, 'started_at': now_iso()}
@@ -393,6 +366,15 @@ class ReleaseGate:
         if (record['fault_evidence']['receipt']['receipt'] != {'fault': klass, 'nonce': nonce}
                 or not incidents or any(not item['manifest'].get('complete') for item in incidents)):
             record['failure'] = 'fault receipt/incident incomplete'
+        from helpers import export_incident_bundle
+        run_id = record['fault_evidence']['receipt']['run_id']
+        exported = export_incident_bundle(self.channel, run_id,
+                                          self.release / ('incident-' + run_id + '.zip'))
+        record['incident_export'] = exported
+        if (not exported['complete'] or
+                (klass in ('policy_pause', 'child_hang') and
+                 'userdump.dmp' not in exported['verified_members'])):
+            record['failure'] = 'verified incident content/dump incomplete'
         diff = self.audit_diff(before)
         record['audit_diff'] = diff
         if diff:
@@ -417,6 +399,10 @@ class ReleaseGate:
             stream.write(raw)
         writer.evidence.append({'name': path.stem, 'path': str(path),
                                 'sha256': hashlib.sha256(raw).hexdigest(), 'size': len(raw)})
+        writer.evidence.extend(record.get('capture_evidence', []))
+        if record.get('incident_export'):
+            writer.evidence.append({key: record['incident_export'][key]
+                                    for key in ('path', 'size', 'sha256')})
 
     def prior_round(self, path, writer):
         if not path.exists():
@@ -428,6 +414,10 @@ class ReleaseGate:
         raw = path.read_bytes()
         writer.evidence.append({'name': path.stem, 'path': str(path),
                                 'sha256': hashlib.sha256(raw).hexdigest(), 'size': len(raw)})
+        writer.evidence.extend(record.get('capture_evidence', []))
+        if record.get('incident_export'):
+            writer.evidence.append({key: record['incident_export'][key]
+                                    for key in ('path', 'size', 'sha256')})
         return True
 
     def done_rounds(self, prefix, total):

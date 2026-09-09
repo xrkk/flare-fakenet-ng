@@ -30,9 +30,12 @@ def test_file_lock_requires_sharing_violation_and_unchanged_bytes(release, monke
         gate.config_lock_probe(1, False)
 
 
-def test_matching_fault_mode_resume_does_not_restart_service(release):
+def test_matching_fault_mode_resume_does_not_restart_service(release, tmp_path, monkeypatch):
     commands = []
     gate = object.__new__(release.ReleaseGate)
+    gate.release = tmp_path
+    gate.base = 'unused'
+    monkeypatch.setattr(release, 'wait_state', lambda *a, **k: (True, {'state': 'stopped'}))
     def powershell(command, **kwargs):
         commands.append(command)
         return {'output': json.dumps({'enabled': True, 'grace': 5})}

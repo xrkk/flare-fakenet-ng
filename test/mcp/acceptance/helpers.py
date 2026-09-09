@@ -3,10 +3,13 @@
 
 import json
 import subprocess
+import sys
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import anyio
 
@@ -136,6 +139,126 @@ def controlled_service_stop(channel):
         "if((Test-Path $state) -and (Get-Content $state -Raw | ConvertFrom-Json).needs_recovery)"
         "{throw 'service absent with unresolved recovery responsibility'}; 'service absent'}",
         timeout=1110)
+
+
+def configure_fault_service(channel, enabled, grace, allow_change=True):
+    """Configure only this service, using its controlled stop protocol."""
+    current = channel.powershell(
+        "$ErrorActionPreference='Stop'; "
+        "$key='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\fakenetng-mcp'; "
+        "$envs=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue).Environment); "
+        "$cfg=Get-Content 'C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json' -Raw | ConvertFrom-Json; "
+        "@{enabled=($envs -contains 'FAKENETNG_MCP_FAULT_INJECTION=1');grace=$cfg.stop_grace_seconds} | ConvertTo-Json -Compress",
+        timeout=30)
+    if json.loads(current['output']) == {'enabled': enabled, 'grace': grace}:
+        return dict(current, reused_service_instance=True)
+    if not allow_change:
+        raise StepError('fault mode drift after recorded rounds; preserve evidence')
+    channel.powershell(
+        "if(Test-Path 'C:\\ProgramData\\FakeNet-NG-MCP\\logs\\fault-injection.json')"
+        "{throw 'unconsumed fault; preserve scene'}; 'no unconsumed fault'", timeout=30)
+    stopped = controlled_service_stop(channel)
+    value = "@('FAKENETNG_MCP_FAULT_INJECTION=1')" if enabled else '@()'
+    changed = channel.powershell(
+        "$ErrorActionPreference='Stop'; $key='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\fakenetng-mcp'; "
+        "$preserved=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue).Environment | "
+        "Where-Object {$_ -and $_ -notlike 'FAKENETNG_MCP_FAULT_INJECTION=*'}); "
+        "New-ItemProperty $key -Name Environment -PropertyType MultiString -Value ($preserved + " + value + ") -Force | Out-Null; "
+        "$path='C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json'; $cfg=Get-Content $path -Raw | ConvertFrom-Json; "
+        "$cfg | Add-Member -NotePropertyName stop_grace_seconds -NotePropertyValue " + str(int(grace)) + " -Force; "
+        "[IO.File]::WriteAllText($path,($cfg | ConvertTo-Json),[Text.UTF8Encoding]::new($false)); "
+        "Start-Service fakenetng-mcp; 'configured'", timeout=60)
+    return {'before': current, 'stop': stopped, 'change': changed}
+
+
+def arm_fault_file(channel, fault):
+    import uuid
+    from fakenet.mcp.faultinject import FAULTS
+    if fault not in FAULTS:
+        raise ValueError('unsupported fault class: ' + str(fault))
+    payload = {'fault': fault, 'nonce': str(uuid.uuid4())}
+    raw = channel.powershell(
+        "$ErrorActionPreference='Stop'; $path='C:\\ProgramData\\FakeNet-NG-MCP\\logs\\fault-injection.json'; "
+        "if(Test-Path $path){throw 'unconsumed fault file'}; "
+        "[IO.File]::WriteAllText($path,'" + json.dumps(payload) + "',[Text.UTF8Encoding]::new($false)); "
+        "Get-Content $path -Raw", timeout=30)
+    if json.loads(raw['output']) != payload:
+        raise StepError('fault file readback mismatch')
+    return dict(payload, raw=raw)
+
+
+def export_incident_bundle(channel, run_id, destination):
+    """Export the exact run's package, then verify its bytes on the host."""
+    import base64
+    import hashlib
+    import uuid
+    import zipfile
+    from fakenet.mcp.incident import BASIC_ITEMS
+    run_id = str(uuid.UUID(run_id))
+    token = uuid.uuid4().hex
+    guest_zip = 'C:\\Windows\\Temp\\FakeNet-incident-' + token + '.zip'
+    root = 'C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\' + run_id + '\\incident'
+    captured = channel.powershell(
+        "$ErrorActionPreference='Stop'; $dir='" + root + "'; $zip='" + guest_zip + "'; "
+        "$manifest=Join-Path $dir 'manifest.json'; $m=Get-Content $manifest -Raw | ConvertFrom-Json; "
+        "if($m.run_id -ne '" + run_id + "'){throw 'incident run identity mismatch'}; "
+        "Compress-Archive -Path (Join-Path $dir '*') -DestinationPath $zip; "
+        "@{size=(Get-Item $zip).Length;sha256=(Get-FileHash $zip -Algorithm SHA256).Hash.ToLower(); "
+        "manifest_sha256=(Get-FileHash $manifest -Algorithm SHA256).Hash.ToLower()} | ConvertTo-Json -Compress",
+        timeout=120)
+    metadata = json.loads(captured['output'])
+    if not 0 < metadata['size'] <= 512 * 1024 * 1024:
+        raise StepError('incident export size outside bound')
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    with destination.open('xb') as stream:
+        for offset in range(0, metadata['size'], 262144):
+            count = min(262144, metadata['size'] - offset)
+            result = channel.powershell(
+                "$ErrorActionPreference='Stop'; $s=[IO.File]::OpenRead('" + guest_zip + "'); "
+                "try{[void]$s.Seek(" + str(offset) + ",[IO.SeekOrigin]::Begin); "
+                "$b=New-Object byte[] " + str(count) + "; $n=$s.Read($b,0,$b.Length); "
+                "if($n -ne $b.Length){throw 'short archive read'}; [Convert]::ToBase64String($b)}finally{$s.Dispose()}",
+                timeout=30)
+            block = base64.b64decode(result['output'], validate=True)
+            if len(block) != count:
+                raise StepError('incident transfer chunk length mismatch')
+            stream.write(block)
+            digest.update(block)
+    if digest.hexdigest() != metadata['sha256']:
+        raise StepError('incident archive transfer hash mismatch')
+    with zipfile.ZipFile(destination) as archive:
+        if len(set(archive.namelist())) != len(archive.namelist()):
+            raise StepError('duplicate incident archive member')
+        manifest_raw = archive.read('manifest.json')
+        if hashlib.sha256(manifest_raw).hexdigest() != metadata['manifest_sha256']:
+            raise StepError('incident manifest transfer hash mismatch')
+        manifest = json.loads(manifest_raw)
+        if manifest.get('run_id') != run_id:
+            raise StepError('exported incident belongs to another run')
+        verified, failures = [], []
+        for entry in manifest.get('entries', []):
+            name = entry.get('item', '')
+            if not name or '/' in name or '\\' in name or name in ('.', '..'):
+                raise StepError('invalid incident member name')
+            if entry.get('result') != 'ok':
+                if (name == 'userdump.dmp' and entry.get('result') == 'skipped' and
+                        entry.get('failure_reason') == 'no escalation condition' and
+                        entry.get('size') == 0 and entry.get('sha256') is None):
+                    continue
+                failures.append(name + ': ' + str(entry.get('failure_reason')))
+                continue
+            data = archive.read(name)
+            if len(data) != entry.get('size') or hashlib.sha256(data).hexdigest() != entry.get('sha256'):
+                raise StepError('incident member hash/size mismatch: ' + name)
+            verified.append(name)
+        missing = set(name for name, _ in BASIC_ITEMS) - set(verified)
+        failures.extend('missing basic item: ' + name for name in sorted(missing))
+    return {'path': str(destination), 'sha256': digest.hexdigest(), 'size': metadata['size'],
+            'run_id': run_id, 'manifest': manifest, 'verified_members': verified,
+            'complete': bool(manifest.get('complete')) and not failures,
+            'failures': failures, 'transfer_metadata': captured}
 
 
 class EvidenceWriter:

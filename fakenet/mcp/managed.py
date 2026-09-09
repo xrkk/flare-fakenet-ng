@@ -11,6 +11,18 @@ from pathlib import Path
 from contextlib import contextmanager
 
 
+def install_thread_exception_logging():
+    """Keep actual uncaught child-thread stacks in the current run log."""
+    import logging
+    previous = threading.excepthook
+    def record(args):
+        logging.getLogger('managed.thread').error(
+            'Unhandled exception in managed thread %s', args.thread.name,
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+        previous(args)
+    threading.excepthook = record
+
+
 @contextmanager
 def capture_stop_stacks(run_dir):
     """Capture live Python stacks even while stop blocks the IPC loop."""
@@ -231,6 +243,7 @@ def child_main(run_id, run_dir):
                         format='%(asctime)s %(levelname)s %(name)s %(message)s',
                         handlers=[logging.FileHandler(directory / 'run.log', encoding='utf-8'),
                                   logging.StreamHandler(output)], force=True)
+    install_thread_exception_logging()
     from fakenet.fakenet import Fakenet
     from fakenet.mcp.faultinject import FaultInjector
     from fakenet.mcp.incident import IncidentCollector
@@ -253,6 +266,7 @@ def child_main(run_id, run_dir):
                 instance.fakenet_config.update(payload['fakenet_config'])
                 instance.diverter_config.update(payload['diverter_config'])
                 instance.start()
+                fault.install_listener_exception_hook(instance.running_listener_providers)
                 fault.inject_listener_stop(instance.running_listener_providers)
                 fault.inject_diverter_stop(instance.diverter)
                 fault.inject_child_hang()

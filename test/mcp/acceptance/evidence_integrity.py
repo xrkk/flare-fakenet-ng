@@ -43,6 +43,17 @@ def validate_round(record, expected):
         failures.append('audit absent or dirty')
     if not record.get('lock_released_after_stop'):
         failures.append('configuration lock not released')
+    if record.get('class'):
+        try:
+            exported = record['incident_export']
+            raw = Path(exported['path']).read_bytes()
+            if (not exported.get('complete') or len(raw) != exported['size'] or
+                    hashlib.sha256(raw).hexdigest() != exported['sha256']):
+                raise ValueError('incident export incomplete or changed')
+            if exported['run_id'] != record['fault_evidence']['receipt']['run_id']:
+                raise ValueError('incident export run identity mismatch')
+        except (KeyError, TypeError, OSError, ValueError) as exc:
+            failures.append('verified incident export unavailable: ' + str(exc))
     captures = record.get('capture_evidence')
     if not isinstance(captures, list) or len(captures) < 2:
         failures.append('raw before/after environment captures missing')

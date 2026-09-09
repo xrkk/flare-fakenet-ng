@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "cddc780f2badcd0ec7b522bbaa358d82b09820ff",
+  "current_head": "9e024045b42c4f3fe8a04a363a633c632dccc824",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,12 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "中间源码865df0f已提交；当前候选构建进行中，恢复时先轮询session91674/日志/容器，不因观察超时重建。VM已恢复183且Win10VM身份门通过；无FakeNet部署操作。CHK全OPEN，有效1/5。",
+  "checkpoint": "用户明确恢复VM使用已执行只读身份门，当前d0包stopped；本组Linux170/Windows167通过，准备固定源码。全部CHK仍OPEN，有效核验1/5。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-049",
-    "at": "2026-09-10T01:45:15.964616+08:00",
-    "action": "继续定位原生查询超时；control-latency诊断当前session43076，比较28787/28788 TCP与HTTP，同一failed run仅诊断。工作树已修复CLI角色分类、恢复状态和迟到探测，Linux161通过2跳过/Windows157通过6跳过，尚未提交打包。"
+    "id": "INTENT-060",
+    "action": "将本组既定契约内故障/证据整改提交固定源码；核对保护文件不变，随后新目录构建，导出当前VM全部运行证据后再部署新候选验证。"
   },
   "events": [
     {
@@ -593,6 +592,10 @@
       "at": "2026-09-09T17:41:17.878347+08:00",
       "intent": "INTENT-039",
       "actual": "客体证据已逐项核对；唯一Snapshot183恢复完成，Snapshot99标记及Win10VM身份完成门匹配，服务/进程0且任务数据目录不存在。代码工作树、二进制diff和未跟踪文件归档已保存；无本轮构建/传输/核验后台任务。"
+    },
+    {
+      "at": "2026-09-10T03:17:41.779652+08:00",
+      "action": "用户明确纠正：虚拟机他人使用已结束，继续FakeNet-NG整改；对账HEAD9e02404及INTENT-059，延续作者/执行方，不重新询问虚拟机授权。"
     }
   ],
   "response_record": {
@@ -806,10 +809,10 @@
     }
   ],
   "candidate": {
-    "source_head": "cddc780f2badcd0ec7b522bbaa358d82b09820ff",
-    "path": "dist/mcp-remediation-20260910-cddc780/fakenetng-mcp-candidate.zip",
-    "candidate_id": "mcp-ccddc780f-e16bb06560c8",
-    "sha256": "e16bb06560c8d49ec0fd211243b7818f177a5d5de24b22f041eec42cd48f1458",
+    "source_commit": "d0a27bc7ae2bb33d640ef1aab0c914ae14c39889",
+    "candidate_id": "mcp-cd0a27bc7-3d869e928be8",
+    "package_path": "dist/mcp-remediation-20260910-d0a27bc/fakenetng-mcp-candidate.zip",
+    "package_sha256": "3d869e928be8d6db0479e4c8e0a63f197c66081f8976cc15440599bbc7fc3c00",
     "formal_acc_pass": false
   },
   "pause_handoff": {
@@ -850,13 +853,75 @@
     {
       "intent": "INTENT-048",
       "actual": "cddc780首次失败现场16文件共享只读导出校验，SHA3ff196b0e3aec6f0ff0d6ccb97348ed9044e8cd412bd7f18c873754e35586262。Snapshot183无FakeNet对照19样本18发生UDP变化。重新安装cddc780后连续三次立即SCM停启PASS；policy_pause实际incident完整，但全审计仍失败且6个HTTP探测超时。"
+    },
+    {
+      "intent": "INTENT-049",
+      "actual": "停止路径分层诊断结束：同一failed run的127次HTTP与两条管理TCP均无失败，不能替代原6次超时。工作树修复经Linux161/Windows157验证后提交9ecda9f；用户受保护文件blob2c0d09e03162dfeb3a05517f9d3755af0d5e52ce未变。"
+    },
+    {
+      "at": "2026-09-10T02:07:10.835376+08:00",
+      "intent": "INTENT-051",
+      "actual": "9ecda9f 原生 policy_pause 不通过：子进程 PID2636 在 python311.dll 访问冲突退出；管理双端口同时出现 TCP 超时，全审计 UDP 差异仍存在。30 文件共享只读导出并逐项 SHA 校验；Linux runner safety 163 passed/2 skipped。未关闭 CHK。"
+    },
+    {
+      "at": "2026-09-10T02:10:52.525621+08:00",
+      "intent": "INTENT-052",
+      "actual": "取栈与验收辅助整改提交2b4961586cf27a729dfa96d82e11e6818a9babb1；Linux164/Windows160通过，WER原始报告16800字节SHA校验通过，用户保护文件blob未变。"
+    },
+    {
+      "at": "2026-09-10T02:17:03.859717+08:00",
+      "intent": "INTENT-053",
+      "actual": "2b49615 固定源构建PASS；指定VM恢复/身份门PASS；policy_pause真实诊断incident全部15项完整、用户转储819732字节，237 HTTP样本及两管理TCP零错误。全量审计listen_ports仍差异，final failed，CHK未关闭。35文件现场已导出逐项校验。"
+    },
+    {
+      "at": "2026-09-10T02:21:47.199543+08:00",
+      "intent": "INTENT-054",
+      "actual": "UDP归属核对DNS/DHCP系统服务；IPv4补偿范围及重复修改已在既有边界修正，Win10隔离脚本前版失败/新版通过；失败stop活动配置保护红绿验证通过；Linux165/Windows161通过，待提交构建原生验证。"
+    },
+    {
+      "at": "2026-09-10T02:29:20.626018+08:00",
+      "intent": "INTENT-055",
+      "actual": "08d3d62构建及包验证PASS；真实policy_pause incident完整，但221 HTTP样本6失败、双管理TCP12失败，全量UDP审计仍失败。只限定IPv4/避免重复补偿未解决链路问题，不算通过。43文件已逐项导出校验。"
+    },
+    {
+      "at": "2026-09-10T02:40:14.282294+08:00",
+      "intent": "INTENT-056",
+      "actual": "双栈环回观察分支及实际方向修复通过固定DLL与Windows回归；回归发现真实停服结果替换竞态，Win10验证ReplaceFileW后修复，Windows178/6跳过。DNS通知未改值对照返回0、71HTTP/双TCP零失败，非完整原生通过。"
+    },
+    {
+      "intent": "INTENT-057",
+      "actual": "d0a27bc构建PASS；双栈真实本地监听与原始PCAP请求/响应标记已验证。policy_pause真实stopped/last failed、incident完整、188HTTP/双TCP零错误，但外部UDP63411新增，仍不算整轮通过。38文件导出逐项验证；host-only采集240秒自动正常结束8953包。DNS改动无引擎对照返回0/恢复成功/零错误。"
+    },
+    {
+      "intent": "INTENT-058",
+      "actual": "P05原始五节环境采样、时间/身份/哈希/回合绑定实现提交9e02404；Linux165/3skip、Windows162/6skip通过。未将旧诊断摘要升级为通过。diff检查仅发现新测试文件末尾额外空行，留待下一组整理，不影响上述运行结果。"
+    },
+    {
+      "at": "2026-09-10T03:21:55.001912+08:00",
+      "intent": "INTENT-059",
+      "actual": "真实故障模式/nonce与incident逐项导出检查完成；d0 listener_stop局部实机记录保留，合法skipped dump验证器误报已独立另存纠正。P03移除伪traceback，真实HTTP线程异常+堆栈日志用例Linux170/Windows167通过；新钩子待新包原生验证，CHK全OPEN。"
     }
   ],
   "active_build": {
-    "source_head": "cddc780f2badcd0ec7b522bbaa358d82b09820ff",
+    "source_head": "d0a27bc7ae2bb33d640ef1aab0c914ae14c39889",
     "status": "COMPLETED",
-    "output_directory": "dist/mcp-remediation-20260910-cddc780",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-cddc780.txt",
-    "exec_session_id": 69371
+    "output_directory": "dist/mcp-remediation-20260910-d0a27bc",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-d0a27bc.txt",
+    "exec_session_id": 62536
+  },
+  "latest_guest_export": {
+    "path": "Logs/fakenetng-mcp/remediation-20260910/native-d0a27bc-policy-runtime.zip",
+    "sha256": "ffbd409a75dbd9afa8e275668e25682a845f1e0fadf8b95d59cbdae5acffc18b",
+    "verified_files": 38
+  },
+  "active_host_capture": {
+    "session_id": 41715,
+    "duration_seconds": 240,
+    "interface": "vmnet8",
+    "scope": "target VM management TCP ports28787/28788 and target ARP headers only",
+    "path": "Logs/fakenetng-mcp/remediation-20260910/d0a27bc-host-control.pcap",
+    "status": "COMPLETED",
+    "packets": 8953,
+    "sha256": "724ed41e0c7b67179ce3dda8daf6d7dca907b61ca3d8cb3f07c0d20bb3fec286"
   }
 }

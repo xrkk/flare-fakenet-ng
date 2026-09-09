@@ -56,4 +56,3 @@ def test_round_rejects_summary_without_window_and_service_restart(identity, tmp_
     round['vm_after'] = round['vm_before']
     round['probe_timeline'][1]['ok'] = False
     assert integrity.validate_round(round, identity)
-
