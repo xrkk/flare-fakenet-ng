@@ -1,87 +1,159 @@
 # Copyright 2026 Google LLC
-"""kill-on-close Job Object self-assignment (P03 IMP-P03-06, record 025).
+"""Atomic Windows Job membership for a separately managed FakeNet process.
 
-The service process assigns ITSELF to an UNNAMED job with
-JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE at startup.  The in-process FakeNet-NG
-and any children inherit job membership; when the MCP process dies for
-any reason the kernel terminates the whole managed tree.  The job handle
-is non-inheritable (children inherit membership, not the handle).
+The supervisor owns the only non-inheritable Job handle and is never a member.
+There is no CreateProcess-then-Assign or uncontained fallback.
 """
 
-import logging
-
-logger = logging.getLogger('fakenetng-mcp.job')
-
-JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
-JobObjectExtendedLimitInformation = 9
+import os
+import subprocess
+import time
 
 
-def setup_kill_on_close_job():
-    """Assign the current process to a kill-on-close job.  Returns an
-    opaque handle holder (Windows only; no-op elsewhere for dev runs)."""
-    import os
+class ManagedJob:
+    def __init__(self):
+        if os.name != 'nt':
+            raise RuntimeError('managed FakeNet requires native Windows Job support')
+        import ctypes as c
+        from ctypes import wintypes as w
+        self.c, self.w = c, w
+        self.kernel = c.WinDLL('kernel32', use_last_error=True)
+        self.handle = None
+        self.process = None
+        self.pid = None
 
-    if os.name != 'nt':
-        logger.info('job object self-assignment skipped (non-Windows)')
-        return None
-    import ctypes
-    import ctypes.wintypes as wt
+        class IO(c.Structure):
+            _fields_ = [(name, c.c_ulonglong) for name in (
+                'ReadOperationCount', 'WriteOperationCount', 'OtherOperationCount',
+                'ReadTransferCount', 'WriteTransferCount', 'OtherTransferCount')]
+        class BASIC(c.Structure):
+            _fields_ = [('PerProcessUserTimeLimit', c.c_longlong),
+                        ('PerJobUserTimeLimit', c.c_longlong), ('LimitFlags', w.DWORD),
+                        ('MinimumWorkingSetSize', c.c_size_t),
+                        ('MaximumWorkingSetSize', c.c_size_t),
+                        ('ActiveProcessLimit', w.DWORD), ('Affinity', c.c_size_t),
+                        ('PriorityClass', w.DWORD), ('SchedulingClass', w.DWORD)]
+        class EXTENDED(c.Structure):
+            _fields_ = [('BasicLimitInformation', BASIC), ('IoInfo', IO)] + [
+                (name, c.c_size_t) for name in ('ProcessMemoryLimit', 'JobMemoryLimit',
+                                               'PeakProcessMemoryUsed', 'PeakJobMemoryUsed')]
+        self._bind('CreateJobObjectW', [w.LPVOID, w.LPCWSTR], w.HANDLE)
+        self._bind('CloseHandle', [w.HANDLE], w.BOOL)
+        self._bind('SetInformationJobObject', [w.HANDLE, c.c_int, w.LPVOID, w.DWORD], w.BOOL)
+        self._bind('QueryInformationJobObject', [w.HANDLE, c.c_int, w.LPVOID, w.DWORD,
+                                                c.POINTER(w.DWORD)], w.BOOL)
+        self._bind('TerminateJobObject', [w.HANDLE, w.UINT], w.BOOL)
+        self._bind('GetExitCodeProcess', [w.HANDLE, c.POINTER(w.DWORD)], w.BOOL)
+        self.handle = self.kernel.CreateJobObjectW(None, None)
+        if not self.handle:
+            self._error()
+        settings = EXTENDED()
+        settings.BasicLimitInformation.LimitFlags = 0x2000
+        if not self.kernel.SetInformationJobObject(self.handle, 9, c.byref(settings),
+                                                   c.sizeof(settings)):
+            error = c.get_last_error()
+            self.close()
+            raise c.WinError(error)
 
-    class IO_COUNTERS(ctypes.Structure):
-        _fields_ = [(name, ctypes.c_ulonglong) for name in
-                    ('ReadOperationCount', 'WriteOperationCount',
-                     'OtherOperationCount', 'ReadTransferCount',
-                     'WriteTransferCount', 'OtherTransferCount')]
+    def _bind(self, name, args, result):
+        function = getattr(self.kernel, name)
+        function.argtypes, function.restype = args, result
+        return function
 
-    class BASIC(ctypes.Structure):
-        _fields_ = [
-            ('PerProcessUserTimeLimit', ctypes.c_longlong),
-            ('PerJobUserTimeLimit', ctypes.c_longlong),
-            ('LimitFlags', wt.DWORD),
-            ('MinimumWorkingSetSize', ctypes.c_size_t),
-            ('MaximumWorkingSetSize', ctypes.c_size_t),
-            ('ActiveProcessLimit', wt.DWORD),
-            ('Affinity', ctypes.POINTER(wt.ULONG)),
-            ('PriorityClass', wt.DWORD),
-            ('SchedulingClass', wt.DWORD),
-        ]
+    def _error(self):
+        raise self.c.WinError(self.c.get_last_error())
 
-    class EXTENDED(ctypes.Structure):
-        _fields_ = [
-            ('BasicLimitInformation', BASIC),
-            ('IoInfo', IO_COUNTERS),
-            ('ProcessMemoryLimit', ctypes.c_size_t),
-            ('JobMemoryLimit', ctypes.c_size_t),
-            ('PeakProcessMemoryUsed', ctypes.c_size_t),
-            ('PeakJobMemoryUsed', ctypes.c_size_t),
-        ]
+    def spawn(self, command, cwd, handles):
+        """CreateProcess receives both JOB_LIST and explicit HANDLE_LIST."""
+        c, w = self.c, self.w
+        class STARTUPINFO(c.Structure):
+            _fields_ = [('cb', w.DWORD), ('lpReserved', w.LPWSTR),
+                        ('lpDesktop', w.LPWSTR), ('lpTitle', w.LPWSTR)] + [
+                (n, w.DWORD) for n in ('dwX', 'dwY', 'dwXSize', 'dwYSize',
+                                      'dwXCountChars', 'dwYCountChars',
+                                      'dwFillAttribute', 'dwFlags')] + [
+                ('wShowWindow', w.WORD), ('cbReserved2', w.WORD),
+                ('lpReserved2', c.POINTER(c.c_byte)), ('hStdInput', w.HANDLE),
+                ('hStdOutput', w.HANDLE), ('hStdError', w.HANDLE)]
+        class EXTENDED(c.Structure):
+            _fields_ = [('StartupInfo', STARTUPINFO), ('lpAttributeList', w.LPVOID)]
+        class PROCESS(c.Structure):
+            _fields_ = [('hProcess', w.HANDLE), ('hThread', w.HANDLE),
+                        ('dwProcessId', w.DWORD), ('dwThreadId', w.DWORD)]
+        initialize = self._bind('InitializeProcThreadAttributeList',
+                                [w.LPVOID, w.DWORD, w.DWORD, c.POINTER(c.c_size_t)], w.BOOL)
+        update = self._bind('UpdateProcThreadAttribute',
+                            [w.LPVOID, w.DWORD, c.c_size_t, w.LPVOID, c.c_size_t,
+                             w.LPVOID, c.POINTER(c.c_size_t)], w.BOOL)
+        delete = self._bind('DeleteProcThreadAttributeList', [w.LPVOID], None)
+        create = self._bind('CreateProcessW', [w.LPCWSTR, w.LPWSTR, w.LPVOID,
+                            w.LPVOID, w.BOOL, w.DWORD, w.LPVOID, w.LPCWSTR,
+                            c.POINTER(EXTENDED), c.POINTER(PROCESS)], w.BOOL)
+        size = c.c_size_t()
+        initialize(None, 2, 0, c.byref(size))
+        if not size.value or size.value > 1024 * 1024:
+            self._error()
+        attributes = c.create_string_buffer(size.value)
+        if not initialize(attributes, 2, 0, c.byref(size)):
+            self._error()
+        pi = PROCESS()
+        try:
+            jobs = (w.HANDLE * 1)(self.handle)
+            inherited = (w.HANDLE * len(handles))(*handles)
+            if not update(attributes, 0, 0x2000D, jobs, c.sizeof(jobs), None, None):
+                self._error()
+            if not update(attributes, 0, 0x20002, inherited, c.sizeof(inherited), None, None):
+                self._error()
+            si = EXTENDED()
+            si.StartupInfo.cb = c.sizeof(si)
+            si.StartupInfo.dwFlags = 0x100  # STARTF_USESTDHANDLES
+            si.StartupInfo.hStdInput, si.StartupInfo.hStdOutput, si.StartupInfo.hStdError = handles
+            si.lpAttributeList = c.cast(attributes, w.LPVOID)
+            text = c.create_unicode_buffer(subprocess.list2cmdline(command))
+            if not create(None, text, None, None, True, 0x80000 | 0x8000000,
+                          None, str(cwd), c.byref(si), c.byref(pi)):
+                self._error()
+            self.process, self.pid = pi.hProcess, pi.dwProcessId
+        finally:
+            if pi.hThread:
+                self.kernel.CloseHandle(pi.hThread)
+            delete(attributes)
+        return self.pid
 
-    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    kernel32.CreateJobObjectW.restype = wt.HANDLE
-    kernel32.CreateJobObjectW.argtypes = [wt.LPVOID, wt.LPCWSTR]
-    kernel32.GetCurrentProcess.restype = wt.HANDLE
-    kernel32.GetCurrentProcess.argtypes = []
-    kernel32.AssignProcessToJobObject.restype = wt.BOOL
-    kernel32.AssignProcessToJobObject.argtypes = [
-        wt.HANDLE, wt.HANDLE]
-    kernel32.SetInformationJobObject.restype = wt.BOOL
-    kernel32.SetInformationJobObject.argtypes = [
-        wt.HANDLE, ctypes.c_int, wt.LPVOID, wt.DWORD]
-    job = kernel32.CreateJobObjectW(None, None)  # unnamed on purpose
-    if not job:
-        raise RuntimeError('CreateJobObjectW failed: %d' %
-                           ctypes.get_last_error())
-    info = EXTENDED()
-    info.BasicLimitInformation.LimitFlags = \
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    if not kernel32.SetInformationJobObject(
-            job, JobObjectExtendedLimitInformation,
-            ctypes.byref(info), ctypes.sizeof(info)):
-        raise RuntimeError('SetInformationJobObject failed: %d' %
-                           ctypes.get_last_error())
-    if not kernel32.AssignProcessToJobObject(
-            job, kernel32.GetCurrentProcess()):
-        raise RuntimeError('AssignProcessToJobObject failed: %d' %
-                           ctypes.get_last_error())
-    logger.info('process assigned to unnamed kill-on-close job')
-    return job
+    def poll(self):
+        if not self.process:
+            return None
+        code = self.w.DWORD()
+        if not self.kernel.GetExitCodeProcess(self.process, self.c.byref(code)):
+            self._error()
+        return None if code.value == 259 else code.value
+
+    def members(self):
+        c, w = self.c, self.w
+        for count in (64, 1024, 16384):
+            class LIST(c.Structure):
+                _fields_ = [('assigned', w.DWORD), ('count', w.DWORD),
+                            ('pids', c.c_size_t * count)]
+            result = LIST()
+            if self.kernel.QueryInformationJobObject(self.handle, 3, c.byref(result),
+                                                      c.sizeof(result), None):
+                return list(result.pids[:result.count])
+            if c.get_last_error() != 234:
+                self._error()
+        raise RuntimeError('Job process list exceeded bound')
+
+    def terminate(self, deadline):
+        if not self.kernel.TerminateJobObject(self.handle, 1):
+            self._error()
+        while self.members():
+            if time.monotonic() >= deadline:
+                raise TimeoutError('managed Job did not become empty')
+            time.sleep(0.02)
+
+    def close(self):
+        if self.handle:
+            self.kernel.CloseHandle(self.handle)
+            self.handle = None
+        if self.process:
+            self.kernel.CloseHandle(self.process)
+            self.process = None

@@ -66,6 +66,10 @@ class Coordinator:
         # mutations and keeps read-only queries available throughout.
         self._operation_active = False
         self._active_operations = {}
+        self._idle = threading.Condition(self._lock)
+        self._exit_fenced = set()
+        self._exit_failure = None
+        self._operation_context = threading.local()
 
     # -- read-only surface -------------------------------------------------
     def snapshot(self):
@@ -120,6 +124,7 @@ class Coordinator:
     def _finish_operation(self, command_id):
         self._active_operations.pop(command_id, None)
         self._operation_active = bool(self._active_operations)
+        self._idle.notify_all()
         # Never evict an in-flight command; a retry must find its original.
         completed = [key for key in self._commands
                      if key not in self._active_operations]
@@ -146,7 +151,7 @@ class Coordinator:
             # every new CLIENT mutation is rejected immediately, never
             # queued; the service's own protective/controlled stop is an
             # internal transition and may proceed.
-            if self._draining and not internal:
+            if (self._draining or self._state == 'recovering') and not internal:
                 raise errors.McpError(
                     errors.NOT_ALLOWED_IN_STATE,
                     'service is in controlled shutdown; new mutations '
@@ -161,7 +166,7 @@ class Coordinator:
                     errors.CONTROLLER_CONFLICT,
                     'another controller owns the active run',
                     {'active_controller': self._controller})
-            if controller is None:
+            if controller is None and not internal:
                 raise errors.McpError(
                     errors.CONTROLLER_IDENTITY_MISSING,
                     'mutation requires controller identity')
@@ -211,6 +216,7 @@ class Coordinator:
         # (snapshot/events) and health transitions stay responsive; any
         # concurrent mutation hits the busy gate in Phase 1 immediately.
         try:
+            self._operation_context.command_id = command_id
             result = execute(self)
         except BaseException as exc:
             with self._lock:
@@ -223,7 +229,15 @@ class Coordinator:
 
         # Phase 3: update state under the metadata lock (fast).
         with self._lock:
+            fenced = command_id in self._exit_fenced
+            self._exit_fenced.discard(command_id)
             self._finish_operation(command_id)
+            if fenced:
+                result = dict(result)
+                result.update(state='failed', failure_reason=self._exit_failure,
+                              release_controller=False)
+                if result.get('run_id') is None:
+                    result.pop('run_id', None)
             self._run_id = result.get('run_id', self._run_id)
             if 'state' in result:
                 self._state = result['state']
@@ -238,7 +252,9 @@ class Coordinator:
                 'command.completed', command_id=command_id, kind=kind,
                 state=self._state, state_version=self._state_version)
 
-            if result.get('release_controller') and \
+            if 'last_run_outcome' in result:
+                self._last_run_outcome = result['last_run_outcome']
+            elif result.get('release_controller') and \
                     result.get('state') == 'stopped':
                 self._last_run_outcome = 'ok'
             response = {
@@ -263,8 +279,9 @@ class Coordinator:
         state with last_run_outcome=failed and the reason observable —
         only a non-converged outcome lands in failed."""
         with self._lock:
-            self._run_id = None
-            self._controller = None
+            if self._state == 'stopped':
+                self._run_id = None
+                self._controller = None
             if self._state != 'stopped':
                 self._state = 'failed'
             self._failure_reason = reason
@@ -282,6 +299,41 @@ class Coordinator:
             self._events.record('draining.begin')
 
     @property
+    def current_command_id(self):
+        return getattr(self._operation_context, 'command_id', None)
+
+    @property
+    def operation_fenced(self):
+        with self._lock:
+            return self.current_command_id in self._exit_fenced
+
+    def restore_responsibility(self, marker, state, reason=None):
+        with self._lock:
+            self._state = state
+            self._failure_reason = reason
+            if marker and marker.get('needs_recovery'):
+                self._run_id = marker.get('run_id')
+                self._controller = marker.get('controller_id')
+            if state == 'stopped':
+                self._run_id = None
+                self._controller = None
+            self._events.record('recovery', state=state, reason=reason)
+
+    def wait_for_idle(self, timeout):
+        with self._idle:
+            return self._idle.wait_for(lambda: not self._active_operations,
+                                       timeout=max(0, timeout))
+
+    def fail_controlled_exit(self, reason):
+        with self._lock:
+            self._draining = True
+            self._exit_failure = reason
+            self._exit_fenced.update(self._active_operations)
+            self._state = 'failed'
+            self._failure_reason = reason
+            self._events.record('draining.failed', reason=reason)
+
+    @property
     def draining(self):
         with self._lock:
             return self._draining
@@ -290,6 +342,8 @@ class Coordinator:
         """Autonomous health transition (observation, not a mutation):
         records state/failure_reason without touching state_version."""
         with self._lock:
+            if self._exit_failure and state in ('healthy', 'starting', 'degraded'):
+                state, failure_reason = 'failed', self._exit_failure
             self._state = state
             self._failure_reason = failure_reason
             self._events.record('health', state=state,

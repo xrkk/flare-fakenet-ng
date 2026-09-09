@@ -1,0 +1,734 @@
+{
+  "schema": "fakenetng-mcp.chk-remediation.v1",
+  "workflow_id": "fakenetng-mcp-20260902-6ada6479",
+  "role": "作者/执行方",
+  "role_transition": {
+    "from": "独立核验方",
+    "to": "作者/执行方",
+    "authorized_by": "用户本轮粘贴闭环指令",
+    "gate": "PASS",
+    "at": "2026-09-09T14:26:46.931484+08:00"
+  },
+  "status": "IMPLEMENTING",
+  "branch": "process-redirect-v23",
+  "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
+  "current_head": "a34394313a3a2662898adc8725c71a9cfd41836d",
+  "round_limit": 5,
+  "completed_rounds": 1,
+  "next_round": 2,
+  "reviewer": {
+    "platform": "Codex",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "high",
+    "availability": "当前spawn_agent接口明确支持该模型及high",
+    "instance": null,
+    "creation_gate": "READY_TO_REVERIFY后以fork_turns=none首次创建，后续复用"
+  },
+  "objects_initial": [
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-01-需求提炼-FakeNet-NG-MCP.md",
+      "blob": "420e0288a027cc990c0d0b353aa3702ea64b67b9"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-02-总纲-FakeNet-NG-MCP.md",
+      "blob": "b7da9968da72a435b0fa53b680c137b37d754daa"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-04-审核-总纲-FakeNet-NG-MCP.md",
+      "blob": "f4dc1a13832e1be259ff6f045f91416e3d8c14ad"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-05-审核处理-FakeNet-NG-MCP.md",
+      "blob": "e0463092a3421801e71b8d35644b7a00d4a58906"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-06-实施子方案-P01-可部署的MCP服务入口.md",
+      "blob": "96207d392c3db346cd12f148394bf530505aa2f0"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-08-审核-P01-可部署的MCP服务入口.md",
+      "blob": "75abc557df14e8861acc1e810863590eec2d54d7"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-09-审核处理-P01-可部署的MCP服务入口.md",
+      "blob": "bd049eb71477f742dcb9c3b09af36452fc9ac7a9"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-10-实施记录-P01-可部署的MCP服务入口.md",
+      "blob": "d348f566e8bc75b34e01cf368777871aaff3171c"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-11-实施子方案-P02-控制接口身份与配置管理.md",
+      "blob": "042d33835b171c38b1e035084955abd7c38d3048"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-13-审核-P02-控制接口身份与配置管理.md",
+      "blob": "58003fa0671c3b78d3b70c01091d3dcae6ba245d"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-14-审核处理-P02-控制接口身份与配置管理.md",
+      "blob": "bfe41ed01093368ff96d2a19b0281e4d1658c0a8"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-15-实施记录-P02-控制接口身份与配置管理.md",
+      "blob": "a5da415a46c50c7eae7abf0425f2c87737fced70"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-16-实施子方案-P03-FakeNetNG网络生命周期与真实健康.md",
+      "blob": "5da0cc8cf627e1c3936ae1e8904b7a14ad12bb89"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-18-审核-P03-FakeNetNG网络生命周期与真实健康.md",
+      "blob": "0afcc0bf81aca1794492b3ff9d60ab363c8bda16"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-19-审核处理-P03-FakeNetNG网络生命周期与真实健康.md",
+      "blob": "1315bb4d1084474e09f67476665f8d0b12c0c94a"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-20-实施记录-P03-FakeNetNG网络生命周期与真实健康.md",
+      "blob": "309014db68b656685e25d4ec6a6a1f81c70be753"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-21-实施子方案-P04-失败收敛环境恢复与根因证据.md",
+      "blob": "9887a503c7421e2346d82fe228146c6a52cee74d"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-23-审核-P04-失败收敛环境恢复与根因证据.md",
+      "blob": "9cd47d0eef638691b67d1930235db9e07624c59f"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-24-审核处理-P04-失败收敛环境恢复与根因证据.md",
+      "blob": "37930fd8c04707878f4b3e41f96547d810eb6d90"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-25-实施记录-P04-失败收敛环境恢复与根因证据.md",
+      "blob": "e8fc82b83cdbde48b5b7dccaece7a39530387573"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-26-实施子方案-P05-真实Win10发布门禁与交付证据.md",
+      "blob": "4c0703281ba7b0b0d74e94da847802fb48f17234"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-28-审核-P05-真实Win10发布门禁与交付证据.md",
+      "blob": "f8c0c8d30a7086fdf3be4d3cace773a04758f6da"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-29-审核处理-P05-真实Win10发布门禁与交付证据.md",
+      "blob": "b148e4f58d982eef34252c9ba7495726b82ccba8"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-30-实施记录-P05-真实Win10发布门禁与交付证据.md",
+      "blob": "57b621a08aac6a7723a22a5e4fe40ce0c4999e40"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-31-总体验收-FakeNet-NG-MCP.md",
+      "blob": "ec4f025a5926be82aa1728eff10dfef39d8a827a"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.04-01-独立核验-总纲-FakeNet-NG-MCP.md",
+      "blob": "50ebdc6a905d444bad2503929fe339e8244a9fa4"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.04-02-独立核验-总纲-FakeNet-NG-MCP.md",
+      "blob": "d3bfab5e3af0f866f6ec8bfb910964fa61f7cf22"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.05-04-总体验收-FakeNet-NG-MCP.md",
+      "blob": "4bda9b618906ba0616168fe20f10629f77edb38a"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.05-05-独立核验-总纲-FakeNet-NG-MCP.md",
+      "blob": "a9deec61f086ec8bdf6e4675b8ce5f1a47a2653b"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.06-01-总体验收-FakeNet-NG-MCP.md",
+      "blob": "752c3e8e8eb04bacf6bc0a1c66d1d8bdcbdd9891"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.06-02-独立核验-总纲-FakeNet-NG-MCP.md",
+      "blob": "8c1f22d9d2887f8a13108734ad41cb03c7449b4c"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.06-03-独立核验-总纲-FakeNet-NG-MCP.md",
+      "blob": "d8987f5be98269ee8465f3696f9a02bf39088106"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.06-04-独立核验-总纲-FakeNet-NG-MCP.md",
+      "blob": "570768a4fe583d6b8d0cd9f3cfb7133699c4f5a4"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.06-05-独立核验-总纲-FakeNet-NG-MCP.md",
+      "blob": "4400f131c54df1338fed5a3390b27695e2ababec"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.06-06-独立核验-总纲-FakeNet-NG-MCP.md",
+      "blob": "fad2c42a8d02385213a27367a9f8b6352f7818c3"
+    }
+  ],
+  "initial_record": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-01-独立核验-总纲-FakeNet-NG-MCP.md",
+    "blob": "860bc25a25851b77c1ac988d4015ee3fea7f3c9c",
+    "conclusion": "核查不通过"
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "mode": "全面核查",
+      "head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
+      "record_path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-01-独立核验-总纲-FakeNet-NG-MCP.md",
+      "record_blob": "860bc25a25851b77c1ac988d4015ee3fea7f3c9c",
+      "verifier": "当前主会话转换前",
+      "conclusion": "核查不通过",
+      "fidelity": [
+        40,
+        17,
+        0,
+        21,
+        2,
+        1
+      ]
+    }
+  ],
+  "protected": {
+    "PLAN/FaknetNG.md": "2c0d09e03162dfeb3a05517f9d3755af0d5e52ce",
+    "initial_record_immutable": true,
+    "existing_artifacts": "不得覆盖旧候选/失败证据",
+    "vm": "DESKTOP-3FI41GR；本阶段只读、无快照/部署操作"
+  },
+  "scope": "当前需求v1+总纲v3+P01—P05；无AUD处理，无分支切换/push",
+  "chk": {
+    "CHK-053": {
+      "status": "OPEN",
+      "response": "接受",
+      "owner": "P05",
+      "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md"
+    },
+    "CHK-054": {
+      "status": "OPEN",
+      "response": "契约冲突",
+      "owner": "总纲",
+      "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md"
+    },
+    "CHK-055": {
+      "status": "OPEN",
+      "response": "契约冲突",
+      "owner": "总纲",
+      "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md"
+    },
+    "CHK-056": {
+      "status": "OPEN",
+      "response": "接受",
+      "owner": "P02",
+      "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
+      "author_stage": "LOCAL_TESTS_PASSED"
+    },
+    "CHK-057": {
+      "status": "OPEN",
+      "response": "接受",
+      "owner": "P04",
+      "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md"
+    },
+    "CHK-058": {
+      "status": "OPEN",
+      "response": "接受",
+      "owner": "P03",
+      "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md"
+    },
+    "CHK-059": {
+      "status": "OPEN",
+      "response": "接受",
+      "owner": "P04",
+      "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
+      "author_stage": "READY_TO_REVERIFY",
+      "evidence": "Logs/fakenetng-mcp/remediation-20260909"
+    },
+    "CHK-060": {
+      "status": "OPEN",
+      "response": "接受",
+      "owner": "P04",
+      "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md"
+    },
+    "CHK-061": {
+      "status": "OPEN",
+      "response": "接受",
+      "owner": "P05",
+      "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
+      "author_stage": "READY_TO_REVERIFY",
+      "evidence": "Logs/fakenetng-mcp/remediation-20260909"
+    },
+    "CHK-062": {
+      "status": "OPEN",
+      "response": "接受",
+      "owner": "P05",
+      "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md"
+    },
+    "CHK-063": {
+      "status": "OPEN",
+      "response": "契约冲突",
+      "owner": "P01",
+      "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md"
+    },
+    "CHK-064": {
+      "status": "OPEN",
+      "response": "契约冲突",
+      "owner": "P03",
+      "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md"
+    },
+    "CHK-065": {
+      "status": "OPEN",
+      "response": "接受",
+      "owner": "P01",
+      "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
+      "author_stage": "LOCAL_TESTS_PASSED"
+    },
+    "CHK-066": {
+      "status": "OPEN",
+      "response": "接受",
+      "owner": "P05",
+      "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md"
+    }
+  },
+  "history_chk": "CHK-001—052作历史；待复核方评价关联项，不由作者关闭",
+  "commits": [
+    {
+      "head": "259d4ef8e6279009a4a321f0ed6ba54796bc9c92",
+      "parent": "95695d2fb24dc998b506582392eef0f23ba4d05b",
+      "scope": [
+        "CHK-059",
+        "CHK-061"
+      ],
+      "verified": "4个预期文件且仅此4个文件"
+    },
+    {
+      "head": "28256ddd428c14aeac8a39bce818eb05243ddc15",
+      "parent": "259d4ef8e6279009a4a321f0ed6ba54796bc9c92",
+      "scope": [
+        "CHK-056",
+        "CHK-065"
+      ],
+      "verified": "九个预期代码/测试文件；Linux128/Wine123通过"
+    },
+    {
+      "head": "a34394313a3a2662898adc8725c71a9cfd41836d",
+      "parent": "28256ddd428c14aeac8a39bce818eb05243ddc15",
+      "scope": [
+        "CHK-060采集结果分类，仅局部"
+      ],
+      "verified": "3个预期文件；Linux133passed/1skip，Wine128passed/6skip"
+    }
+  ],
+  "plan_changes": [
+    {
+      "id": "PLAN-CHANGE-001",
+      "status": "ACCEPTED / REFLOW_IN_PROGRESS",
+      "record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
+      "stage": "IMPLEMENTATION_AUTHORIZED"
+    },
+    {
+      "id": "PLAN-CHANGE-002",
+      "status": "ACCEPTED / REFLOW_IN_PROGRESS",
+      "record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
+      "stage": "IMPLEMENTATION_AUTHORIZED"
+    },
+    {
+      "id": "PLAN-CHANGE-003",
+      "status": "ACCEPTED / REFLOW_IN_PROGRESS",
+      "record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
+      "stage": "IMPLEMENTATION_AUTHORIZED"
+    },
+    {
+      "id": "PLAN-CHANGE-004",
+      "status": "ACCEPTED / REFLOW_IN_PROGRESS",
+      "record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
+      "stage": "IMPLEMENTATION_AUTHORIZED"
+    },
+    {
+      "id": "PLAN-CHANGE-005",
+      "status": "ACCEPTED",
+      "record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
+      "affected_edges": [
+        "需求024/026→总纲§5.5/ACC-019",
+        "P03→P04",
+        "P04→P05",
+        "P01→P05"
+      ],
+      "stage": "IMPLEMENTATION_AUTHORIZED",
+      "decision": "用户采纳推荐A两阶段停服",
+      "accepted_at": "2026-09-09T15:49:50.852997+08:00"
+    }
+  ],
+  "checkpoint": "必要方案通过，独立进程/两阶段停服中间代码回归完成，准备中间提交与原生诊断包；CHK全OPEN、1/5轮。",
+  "stop_reason": null,
+  "pending_intent": {
+    "id": "INTENT-027",
+    "action": "提交经本地回归的中间源码和已审核规范快照；随后构建独立候选用于原生诊断，不宣称最终ACC"
+  },
+  "events": [
+    {
+      "at": "2026-09-09T14:26:46.931484+08:00",
+      "intent": "ROLE_TRANSITION",
+      "actual": "门禁对象/HEAD/blob精确一致；角色已单向转换"
+    },
+    {
+      "at": "2026-09-09T14:26:47.063988+08:00",
+      "intent": "INTENT-001",
+      "actual": "总体验收只追加，原完成声明完整保留",
+      "after_blob": "73edc4d34ad09e62e0377ac10c70997f53ce2f32"
+    },
+    {
+      "at": "2026-09-09T14:28:51.983073+08:00",
+      "intent": "INTENT-002",
+      "actual": "14项回应、4项稳定候选已验证存在；相关实施暂停"
+    },
+    {
+      "at": "2026-09-09T14:30:23.865037+08:00",
+      "intent": "INTENT-003",
+      "actual": "test_service_imports + test_release_dns_capture: 11 failed, 4 passed；原失败已复现",
+      "evidence": "Logs/fakenetng-mcp/remediation-20260909/red-059-061.txt"
+    },
+    {
+      "at": "2026-09-09T14:32:28.145636+08:00",
+      "intent": "INTENT-004",
+      "actual": "定向15 passed；Linux122 passed/1 skipped；Wine117 passed/6 skipped；原生DNS返回两接口JSON；修改范围diff检查通过",
+      "evidence": "Logs/fakenetng-mcp/remediation-20260909"
+    },
+    {
+      "at": "2026-09-09T14:33:38.904409+08:00",
+      "intent": "INTENT-005",
+      "actual": "中间源码提交已完成且范围吻合",
+      "commit": "259d4ef8e6279009a4a321f0ed6ba54796bc9c92"
+    },
+    {
+      "at": "2026-09-09T14:33:39.052269+08:00",
+      "intent": "INTENT-006",
+      "actual": "回应追加已验证；规范及原核查未变、用户修改保留；整体WAITING_USER_INPUT"
+    },
+    {
+      "at": "2026-09-09T15:00:14.124825+08:00",
+      "intent": "INTENT-007",
+      "actual": "HEAD/原核查/受保护现场一致；四项裁决及四端口已追加确认"
+    },
+    {
+      "at": "2026-09-09T15:03:23.344537+08:00",
+      "intent": "INTENT-008",
+      "actual": "六份规范回流草案完成；进入保真/自评；架构变更命中必要第三方审核，不继承旧通过"
+    },
+    {
+      "at": "2026-09-09T15:07:21.500630+08:00",
+      "intent": "INTENT-009",
+      "actual": "规范自评记录完成；计划保真40/40/0/0/0/0，实际核查计数不变；命中必要架构审核",
+      "record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-03-规范回流自评-FakeNet-NG-MCP.md"
+    },
+    {
+      "at": "2026-09-09T15:09:17.465363+08:00",
+      "intent": "PLAN_REVIEW_DISPATCH",
+      "actual": "工具确认/root/plan_reflow_review已创建，CHK reviewer仍未创建/未计轮"
+    },
+    {
+      "at": "2026-09-09T15:18:22.678439+08:00",
+      "intent": "INTENT-010",
+      "actual": "4反例整改前失败，整改后通过；全Linux MCP126pass/1skip；未提交，CHK-056仍OPEN",
+      "evidence": "Logs/fakenetng-mcp/remediation-20260909/linux-056.txt"
+    },
+    {
+      "at": "2026-09-09T15:27:54.352654+08:00",
+      "intent": "INTENT-011",
+      "actual": "防火墙精确集合/状态验证及每次start失败关闭通过；Linux128pass/1skip，固定离线依赖Wine123pass/6skip；首次解压混轮79pass/19skip不作有效门禁",
+      "evidence": "Logs/fakenetng-mcp/remediation-20260909"
+    },
+    {
+      "at": "2026-09-09T15:29:54.103610+08:00",
+      "intent": "INTENT-012",
+      "actual": "中间提交28256ddd428c14aeac8a39bce818eb05243ddc15；规范草案与用户文件未入提交"
+    },
+    {
+      "at": "2026-09-09T15:29:54.112415+08:00",
+      "intent": "INTENT-013",
+      "actual": "4项AUD-PC全部接受并在负责规范引入；未自行关闭，提交同实例复审",
+      "plan_fidelity_author": [
+        40,
+        40,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "at": "2026-09-09T15:31:58.779549+08:00",
+      "intent": "INTENT-014",
+      "actual": "CHK-060命令错误/空观测不再记ok；5个红测通过，P04定向14通过。转储/完整性其余部分尚未整改，CHK仍OPEN"
+    },
+    {
+      "at": "2026-09-09T15:35:35.668894+08:00",
+      "intent": "INTENT-015",
+      "actual": "微软规范反证已独立确认；A/B具体方案已登记，旧非法迁移不得恢复资格"
+    },
+    {
+      "at": "2026-09-09T15:37:46.764488+08:00",
+      "intent": "INTENT-016",
+      "actual": "中间源码提交a34394313a3a2662898adc8725c71a9cfd41836d；CHK-060完整性与转储仍OPEN"
+    },
+    {
+      "at": "2026-09-09T15:41:28.717630+08:00",
+      "intent": "INTENT-017",
+      "actual": "总体验收/作者回应只追加，源码提交和新证据SHA已对账，继续WAITING_USER_INPUT"
+    },
+    {
+      "at": "2026-09-09T15:45:41.384782+08:00",
+      "intent": "INTENT-018",
+      "actual": "05号必要方案复审已封存且对象逐一核对；保真40/38/0/2/0/0，AUD-PC-003开放；PLAN-CHANGE-005待用户裁决。源码a343943，Linux133/Wine128；CHK全OPEN、1/5轮。"
+    },
+    {
+      "at": "2026-09-09T15:49:50.873153+08:00",
+      "intent": "INTENT-019",
+      "actual": "PLAN-CHANGE-005用户已采纳；六份规范已回流两阶段停服，待作者保真自评及同实例必要复审；CHK仍1/5全OPEN"
+    },
+    {
+      "at": "2026-09-09T15:50:42.595497+08:00",
+      "intent": "INTENT-020",
+      "actual": "新建PLAN/2026.09/2026.09.09/2026.09.09-06-规范回流自评-PLAN-CHANGE-005.md；对象diff检查通过，待同实例必要复审"
+    },
+    {
+      "at": "2026-09-09T15:56:45.458602+08:00",
+      "intent": "INTENT-021",
+      "actual": "P04两处触发已替换；需求/总纲同步冻结→SCM可观察接受→原子成功→CLI核对顺序；提交同实例复审"
+    },
+    {
+      "at": "2026-09-09T15:57:44.716431+08:00",
+      "intent": "INTENT-022",
+      "actual": "已直接消除P03/P04旧触发与全程checkpoint，固定总纲当前需求blob；同实例继续审核"
+    },
+    {
+      "at": "2026-09-09T15:59:57.376536+08:00",
+      "intent": "INTENT-023",
+      "actual": "60秒在途超限立即失败，迟到结果保留failed/draining和责任、终止前不得新重试；ACC-019新增对应注入断言，无范围扩展"
+    },
+    {
+      "at": "2026-09-09T16:06:04.754284+08:00",
+      "intent": "INTENT-024",
+      "actual": "07必要方案复审通过，六对象身份无漂移；PLAN-CHANGE-001—005实施资格恢复；CHK全OPEN、1/5轮。"
+    },
+    {
+      "at": "2026-09-09T16:09:39.885677+08:00",
+      "intent": "INTENT-025",
+      "actual": "完整审计去除UDP/高TCP/metric豁免，39通过1跳过；已开始创建两阶段停服模块与迟到结果栅栏，尚未接线/验收，不关闭CHK"
+    },
+    {
+      "at": "2026-09-09T16:30:27.902051+08:00",
+      "intent": "INTENT-026",
+      "actual": "已实现独立Job进程/固定IPC、两阶段SCM/CLI、恢复态接线/责任栅栏及全审计；Linux145通过1跳过+SCM新增2通过，Wine全套142通过6跳过；原生Job最小探针通过。完整incident/补偿故障矩阵/ACC仍待完成，不关闭CHK。"
+    }
+  ],
+  "response_record": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
+    "blob": "0028b044ec0a8dc6584319d5b54b60ba70fe78fd"
+  },
+  "evidence": [
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260909/green-059-061.txt",
+      "sha256": "a4876bbfbe6f088ec1a37e33302839e65799694e4352764fc0a739c1084f5a6f"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260909/linux-mcp.txt",
+      "sha256": "5e85b22db882dae8a450d116d6c6966ab105a1d1a600d05b469e89f46e4f8579"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260909/native-dns.json",
+      "sha256": "7f4528582cb1e2e8547cf65159230c8de5dbcf349ec42f3c1a03dc74fcde4711"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260909/red-059-061.txt",
+      "sha256": "3940f11070f175a5b0a0e59e6aad8e3fc048eed885a9bdecb772b7abc7c8ac7b"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260909/wine-mcp.txt",
+      "sha256": "1ae85a17133bc6cf0780f933c8bd6d83975f3bcb1d8acf25ad4050a6955ff344"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260909/red-056.txt",
+      "sha256": "bfb320ce6c000d64c1de30e5a33c1a650a8bb1716ed4b2e69f143413d4cfc7e1"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260909/linux-056-065.txt",
+      "sha256": "48d2f841ddc6887cb8035b33ec36d2a89eb37352453dd4d4cd5c8d0e9b3ac125"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260909/wine-056-065-pinned.txt",
+      "sha256": "14d3fef8a875fae3bdb52996a70bce78a62c1ed46ad37ec77169b55db0431021"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260909/red-065.txt",
+      "sha256": "2bf0f2b0e09e3600dc2197d465a8ec942274107a3641c49e8452276fb0305bf5"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260909/green-065.txt",
+      "sha256": "1253f6ca793d46eb9c48b6f1606064815d0bb62be75a701be4c49494044e47ce"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260909/red-060.txt",
+      "sha256": "03aae3b9f0a6489e6840b848d578cbf9322230e2798f7731b8b14b28b2c0cc50"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260909/green-060-v2.txt",
+      "sha256": "19991ff1b5d6004c54edc99ee9d90444b45855bbc590e2fd911191426511f7fb"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260909/linux-060.txt",
+      "sha256": "f3d330991872460d81fcfc274c7a5e335e05d8c7cc6319ceffd8b025bd78a0ce"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260909/wine-060.txt",
+      "sha256": "eca1c28f1af10b056de109f202ba35a41abfda5a5299b56696728c629dcc8886"
+    },
+    {
+      "path": "Logs/fakenetng-mcp/remediation-20260909/green-055.txt",
+      "sha256": "f40f3274b253749c102f438d9d171370373df3937fb29b225899b6430e9ae8a8"
+    },
+    {
+      "path": "Logs/fakenetng-mcp/remediation-20260909/linux-005-001.txt",
+      "sha256": "850d21ce413d5940323b212a4f9c4a6141c0342d737e1e0eff9069f357059f90"
+    },
+    {
+      "path": "Logs/fakenetng-mcp/remediation-20260909/wine-005-001.txt",
+      "sha256": "cf4281d8516353d2bf69ec452d18ecbab2a4b077f23b03ffb90fdb745c5c4972"
+    },
+    {
+      "path": "Logs/fakenetng-mcp/remediation-20260909/native-job-list-probe.json",
+      "sha256": "974572e669c2f2659903e8fd37afe8e0066d020dc2dd803e45cb232acc5da4bd"
+    }
+  ],
+  "resume_checks": [
+    "核对当前branch/head/工作区diff与259d4ef，保留用户变动",
+    "原核查blob必须仍为860bc25a25851b77c1ac988d4015ee3fea7f3c9c",
+    "核对四项PLAN-CHANGE是否已有明确裁决及规范回流",
+    "复核资格恢复后新建指定Codex模型实例并保存ID，后续复用",
+    "阻断不计轮；只有有效独立核验结论才增加轮次"
+  ],
+  "user_decisions": {
+    "at": "2026-09-09T15:00:14.124825+08:00",
+    "text": "4项都采纳. 第4项额外增加端口 29095/29094. 开始吧",
+    "extra_control_ports": [
+      28787,
+      28790,
+      29095,
+      29094
+    ]
+  },
+  "objects_current": [
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-01-需求提炼-FakeNet-NG-MCP.md",
+      "blob": "c38568168fdc792280aa82d57ec7fb589e267965",
+      "sha256": "1665c3ba08ce112ec054cb674342dd47d1c3470d91ba63005a21e9e9310aab31"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-02-总纲-FakeNet-NG-MCP.md",
+      "blob": "308db9f2e87488c1c7bbcb2d5d0e54bb14fdcbaa",
+      "sha256": "ca871e68b4f8386d3265ad32804a1ad0ccf4eb6ae11291dd6d526ee2fc5a6c5a"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-06-实施子方案-P01-可部署的MCP服务入口.md",
+      "blob": "e5fca05b39748fb1e163ee41a87106a6c458f939",
+      "sha256": "bbff9f845b1685d85ed8bf5862d7d052351f7886c55ce62240ad7e8b0d9075ee"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-16-实施子方案-P03-FakeNetNG网络生命周期与真实健康.md",
+      "blob": "b987f1070cb705015f8f24dd2947459bfa8a915b",
+      "sha256": "aaab84a4da8ad9e072e66618080b087813ab58e30047c94b6c7839333035c076"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-21-实施子方案-P04-失败收敛环境恢复与根因证据.md",
+      "blob": "5ed348867d505efe81c80f03cea434ed1ec0e858",
+      "sha256": "82ffedf9f9c799d96de70e9e351c94007ed6bdf075926a75765608859b653650"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-26-实施子方案-P05-真实Win10发布门禁与交付证据.md",
+      "blob": "029a46ce1fa852b712f61ef1812a3339229fda95",
+      "sha256": "fcb89129f3da2d22bd2e56592a23ae93b7f993c35c6ff62eda290163a28a7d54"
+    }
+  ],
+  "plan_self_review": {
+    "path": "PLAN/2026.09/2026.09.09/2026.09.09-06-规范回流自评-PLAN-CHANGE-005.md",
+    "blob": "6bb91757c9e77bbcb41bfab535e8d78ae54da153",
+    "fidelity": [
+      40,
+      40,
+      0,
+      0,
+      0,
+      0
+    ],
+    "affected_fidelity": [
+      2,
+      2,
+      0,
+      0,
+      0,
+      0
+    ],
+    "result": "提交必要复审，非实现通过"
+  },
+  "plan_reviewer": {
+    "instance": "/root/plan_reflow_review",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "high",
+    "mode": "PLAN-CHANGE必要方案审核；非CHK第2轮"
+  },
+  "plan_review_records": [
+    {
+      "path": "PLAN/2026.09/2026.09.09/2026.09.09-04-必要方案审核-PLAN-CHANGE-001-004.md",
+      "blob": "5f019ee35239ccd07865ec2d9499314b9c36a63c",
+      "result": "未通过",
+      "fidelity": [
+        40,
+        34,
+        0,
+        6,
+        0,
+        0
+      ]
+    },
+    {
+      "path": "PLAN/2026.09/2026.09.09/2026.09.09-05-必要方案定向复审-PLAN-CHANGE-001-004.md",
+      "blob": "cadc3fb0ff50e5db8b2df9b05aaa7bf383cc2859",
+      "sha256": "455d83cedc5c7335be4bccce8ebd88656a5d28051d57cb8ddcc061934de1c994",
+      "result": "未通过；受影响实施资格未恢复",
+      "fidelity": [
+        40,
+        38,
+        0,
+        2,
+        0,
+        0
+      ],
+      "exception_ids": [
+        "记录024",
+        "记录026"
+      ],
+      "closed_in_this_plan_batch": [
+        "AUD-PC-001",
+        "AUD-PC-002",
+        "AUD-PC-004"
+      ],
+      "open": [
+        "AUD-PC-003"
+      ]
+    },
+    {
+      "path": "PLAN/2026.09/2026.09.09/2026.09.09-07-必要方案定向复审-PLAN-CHANGE-005.md",
+      "blob": "be52161aaf7bc34877ebb0f4da690432fa8465f9",
+      "sha256": "e35c60d26665e83c33a939d2c668ffd52548fa41502a0ae76e6b588926967845",
+      "result": "通过；受影响实施资格恢复",
+      "fidelity": [
+        40,
+        40,
+        0,
+        0,
+        0,
+        0
+      ],
+      "open": []
+    }
+  ]
+}

@@ -144,46 +144,34 @@ def test_incident_dump_escalation_bounded(tmp_path):
         assert 'Windows' in (entry['failure_reason'] or '')
 
 
-def test_audit_ignores_dynamic_range_listener_noise():
-    """r54 round-18 stop-audit evidence: RPC/WMI endpoints in the dynamic
-    port range flap transient LISTENING rows; they are OS noise, not
-    FakeNet residue. Sub-1024 vanishing and any non-dynamic-range added
-    listener remain attributable."""
-    from fakenet.mcp.baseline import audit_compare
-
-    before = {'listen_ports': 'TCP 0.0.0.0:135 0.0.0.0:0 LISTENING 972\n'
-                              'TCP 0.0.0.0:49670 0.0.0.0:0 LISTENING 9'}
-    # dynamic-range row appears + a TIME_WAIT style row never counts
-    after = {'listen_ports': before['listen_ports'] +
-             '\nTCP 0.0.0.0:49671 0.0.0.0:0 LISTENING 5'}
-    assert audit_compare(before, after) == {}
-    # a listener below the dynamic range appearing IS residue
-    leaked = dict(after)
-    leaked['listen_ports'] += '\nTCP 0.0.0.0:4444 0.0.0.0:0 LISTENING 5'
-    delta = audit_compare(before, leaked)['listen_ports']
-    assert any(':4444' in row for row in delta['fakenet_added'])
-    # a vanished sub-1024 system listener IS attributable
-    killed = {'listen_ports': 'TCP 0.0.0.0:49670 0.0.0.0:0 LISTENING 9'}
-    delta = audit_compare(before, killed)['listen_ports']
-    assert any(':135' in row for row in delta['below_1024_removed'])
+@pytest.mark.parametrize('change', [
+    {'listen_ports': 'UDP 0.0.0.0:55555 *:* 222'},
+    {'listen_ports': 'TCP 0.0.0.0:55555 0.0.0.0:0 LISTENING 222'},
+    {'listen_ports': ''},
+    {'routes': '0.0.0.0 0.0.0.0 10.0.0.1 10.0.0.2 35'},
+    {'services': '[{"Name":"Dnscache","Status":1}]'},
+])
+def test_complete_audit_retains_previously_exempted_changes(change):
+    before = {field: 'same' for field in BASELINE_FIELDS}
+    before.update(listen_ports='TCP 0.0.0.0:29094 0.0.0.0:0 LISTENING 111',
+                  routes='0.0.0.0 0.0.0.0 10.0.0.1 10.0.0.2 25',
+                  services='[{"Name":"Dnscache","Status":4}]')
+    after = dict(before, **change)
+    assert set(audit_compare(before, after)) == set(change)
 
 
-def test_audit_routes_ignore_metric_flap():
-    """Windows auto-tunes interface metrics around adapter
-    reconfiguration; a metric-only change between baseline and audit is
-    not a routing change (r54 round-18 / r56 round-2 evidence). A real
-    route addition still flags."""
-    from fakenet.mcp.baseline import audit_compare
+@pytest.mark.parametrize('missing', BASELINE_FIELDS)
+def test_missing_baseline_section_never_passes(missing):
+    complete = {field: '' for field in BASELINE_FIELDS}
+    absent = dict(complete)
+    del absent[missing]
+    assert audit_compare(absent, complete)[missing]['collection_failed']
+    assert audit_compare(complete, absent)[missing]['collection_failed']
 
-    before = {'routes': '0.0.0.0 0.0.0.0 192.168.204.1 '
-                        '192.168.204.149 281\n'
-                        '192.168.204.0 255.255.255.0 On-link '
-                        '192.168.204.149 281'}
-    after = {'routes': '0.0.0.0 0.0.0.0 192.168.204.1 '
-                       '192.168.204.149 286\n'
-                       '192.168.204.0 255.255.255.0 On-link '
-                       '192.168.204.149 281'}
-    assert audit_compare(before, after) == {}
-    hijack = {'routes': after['routes'] +
-              '\n8.8.8.8 255.255.255.255 On-link 192.168.204.149 281'}
-    assert 'routes' in audit_compare(after, hijack)
+
+def test_capture_nonzero_with_partial_stdout_is_failure(monkeypatch):
+    import subprocess
+    from fakenet.mcp import baseline
+    monkeypatch.setattr(baseline.subprocess, 'run', lambda *a, **kw:
+                        subprocess.CompletedProcess([], 1, 'partial', 'error'))
+    assert baseline._run(['collector']) == baseline.COLLECTION_FAILED

@@ -77,7 +77,12 @@ class ActivityLock:
         if os.name == 'nt':
             import ctypes
 
-            ctypes.windll.kernel32.CloseHandle(self._handle)
+            from ctypes import wintypes
+            close = ctypes.windll.kernel32.CloseHandle
+            close.argtypes = [wintypes.HANDLE]
+            close.restype = wintypes.BOOL
+            if not close(self._handle):
+                raise OSError('activity lock close failed')
         else:
             try:
                 self._handle.close()

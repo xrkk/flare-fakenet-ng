@@ -45,37 +45,24 @@ def _sc(*args):
     command = ['sc.exe'] + list(args)
     completed = subprocess.run(
         command, capture_output=True, text=True, encoding='utf-8',
-        errors='replace')
+        errors='replace', timeout=20)
     return completed
 
 
 def _terminate_existing_service():
-    """Stop the old service and wait until the SCM fully releases it.
-
-    ``sc create`` fails with 1072 (marked for deletion) when the previous
-    instance still has open handles; poll until ``sc query`` reports 1060.
-    """
-    import time
-
-    _sc('stop', SERVICE_NAME)
-    queryex = _sc('queryex', SERVICE_NAME)
-    for line in (queryex.stdout or '').splitlines():
-        line = line.strip()
-        if line.startswith('PID'):
-            parts = line.split()
-            if len(parts) >= 3 and parts[-1].isdigit() and parts[-1] != '0':
-                subprocess.run(['taskkill', '/F', '/PID', parts[-1]],
-                               capture_output=True, text=True)
-            break
-    _sc('delete', SERVICE_NAME)
-    deadline = time.time() + 20.0
-    while time.time() < deadline:
-        probe = _sc('query', SERVICE_NAME)
-        text = (probe.stdout or '') + (probe.stderr or '')
-        # sc.exe returns 0 even on failure; the 1060 text is the signal.
-        if '1060' in text:
+    """Delete only after the current instance completes its two-phase stop."""
+    if cmd_stop(None):
+        raise RuntimeError('existing service did not stop cleanly')
+    deleted = _sc('delete', SERVICE_NAME)
+    if deleted.returncode not in (0, 1060):
+        raise RuntimeError('service deletion failed: ' + deleted.stdout + deleted.stderr)
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        query = _sc('query', SERVICE_NAME)
+        if query.returncode == 1060:
             return
-        time.sleep(0.5)
+        time.sleep(0.1)
+    raise TimeoutError('service deletion did not complete')
 
 
 def _exe_path():
@@ -93,9 +80,13 @@ def cmd_install(args):
         extra_control_ports=getattr(args, 'extra_exclude_port', []) or [],
         source='install-cli')
     paths.ensure_data_directories()
-    cfg.save()
     bin_path = '"%s" run' % _exe_path()
-    _terminate_existing_service()
+    try:
+        _terminate_existing_service()
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    cfg.save()
     created = None
     for attempt in range(3):
         created = _sc('create', SERVICE_NAME, 'binPath=', bin_path,
@@ -109,6 +100,12 @@ def cmd_install(args):
     if created.returncode != 0:
         print('sc create failed: %s%s' % (created.stdout, created.stderr),
               file=sys.stderr)
+        return 1
+    secured = _sc('sdset', SERVICE_NAME,
+                  'D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)'
+                  '(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)')
+    if secured.returncode:
+        print('service control ACL setup failed', file=sys.stderr)
         return 1
     _sc('description', SERVICE_NAME,
         'FakeNet-NG MCP supervisor service (headless, LocalSystem)')
@@ -131,7 +128,8 @@ def cmd_uninstall(args):
     if os.name != 'nt':
         print('uninstall requires Windows (sc.exe)', file=sys.stderr)
         return 2
-    _sc('stop', SERVICE_NAME)
+    if cmd_stop(None):
+        return 1
     deleted = _sc('delete', SERVICE_NAME)
     try:
         firewall.remove_rule()
@@ -157,24 +155,29 @@ def cmd_start(args):
 def cmd_stop(args):
     if os.name != 'nt':
         return 2
-    stopped = _sc('stop', SERVICE_NAME)
-    print(stopped.stdout or stopped.stderr)
-    return 0 if stopped.returncode == 0 else 1
+    from fakenet.mcp.service_stop import stop_installed_service
+    try:
+        cfg = config_module.ServiceConfig.load()
+    except config_module.ConfigError:
+        # Fresh installation has neither a service nor recovery state.
+        # The wrapper checks SCM and the marker before allowing deletion.
+        from types import SimpleNamespace
+        cfg = SimpleNamespace(stop_grace_seconds=60)
+    dirs = paths.data_directories()
+    try:
+        stop_installed_service(cfg, dirs['logs'] / 'service-stop-result.json',
+                               dirs['state'] / 'state.json')
+        return 0
+    except Exception as exc:
+        logger.error('controlled service stop failed: %s', exc)
+        print(str(exc), file=sys.stderr)
+        return 1
 
 
 def service_main(controller):
     """Long-running service body (SCM or debug)."""
     stop_event = (controller.stop_event if controller is not None
                   else threading.Event())
-
-    if controller is not None:
-        # kill-on-close job belongs to the SCM-hosted service process; the
-        # foreground debug path deliberately runs without self-assignment
-        # (record 025 covers the service, not interactive debug runs).
-        from fakenet.mcp import jobobject
-
-        job_handle = jobobject.setup_kill_on_close_job()
-        _ = job_handle  # keep alive for the process lifetime
 
     try:
         cfg = config_module.ServiceConfig.load()
@@ -216,58 +219,11 @@ def service_main(controller):
     from fakenet.mcp.supervisor import perform_startup_recovery
 
     dirs = mcp_paths.ensure_data_directories()
-    context = None  # build_mcp_server constructs the AppContext; the live
-    # instance is retrieved via server_module._active_context (it is never
-    # assigned to this name).
-
-    if os.environ.get('FAKENETNG_MCP_TESTDOUBLE') != '1':
-        outcome = perform_startup_recovery(
-            mcp_snapshot.StateSnapshot(dirs['state'] / 'state.json'),
-            BaselineStore(dirs['baselines']),
-            _RecoveryCoordinatorView())
-        logger.info('startup recovery outcome: %s', outcome)
+    context = None
 
     ready = threading.Event()
     failure = {'code': 0}
     server_stop = threading.Event()
-    controlled_exit = threading.Event()
-
-    def begin_controlled_exit():
-        """P04 IMP-P04-06: invoked by SvcStop — reject new mutations,
-        keep queries alive, run the full stop+recovery audit, then allow
-        the endpoint to close and report the real outcome to the SCM."""
-        try:
-            # The AppContext is built inside server.build_mcp_server; the
-            # outer `context` name stays None (r37 evidence: every SvcStop
-            # crashed here with AttributeError and fell back to a degraded,
-            # non-converging stop). Resolve the live context instead.
-            ctx = getattr(server_module, '_active_context', None)
-            if ctx is None:
-                logger.warning('controlled exit: server context not built '
-                               'yet; skipping convergence')
-            else:
-                ctx.coordinator.begin_draining()
-                if ctx.coordinator.running:
-                    version = ctx.coordinator.snapshot()['state_version']
-                    import uuid as _uuid
-
-                    ctx.coordinator.submit(
-                        command_id='controlled-exit-%s' % _uuid.uuid4(),
-                        expected_version=version,
-                        controller=ctx.coordinator.controller,
-                        controller_valid=True,
-                        kind='service_controlled_stop',
-                        describe={},
-                        execute=lambda coord: ctx.runner.stop(coord),
-                        internal=True)
-                logger.info('controlled exit convergence complete')
-        except Exception:  # noqa: BLE001
-            logger.exception('controlled exit convergence failed; '
-                             'service reports failed, not a clean stop')
-        finally:
-            controlled_exit.set()
-            server_module.request_shutdown()
-
     def serve():
         try:
             import fakenet.mcp.server as srv
@@ -306,21 +262,6 @@ def service_main(controller):
             ready.set()
             server_stop.set()
 
-    def serve_old():
-        try:
-            server_module.run_server(cfg, ready_event=ready)
-        except SystemExit:
-            failure['code'] = 1
-        except Exception:
-            logger.exception('server loop failed')
-            failure['code'] = 1
-        finally:
-            ready.set()
-            server_stop.set()
-
-    import fakenet.mcp.winservice as winservice_module
-
-    winservice_module.controlled_exit_hook = begin_controlled_exit
     thread = threading.Thread(target=serve, name='mcp-server', daemon=True)
     thread.start()
     if not ready.wait(timeout=_SERVICE_READY_TIMEOUT_S):
@@ -330,12 +271,26 @@ def service_main(controller):
     if failure['code']:
         return failure['code']
 
+    ctx = getattr(server_module, '_active_context', None)
+    if ctx is None:
+        logger.error('server ready without an application context')
+        server_module.request_shutdown()
+        return 1
+    if controller is not None:
+        controller.configure_prestop(ctx, cfg, dirs['logs'] / 'service-stop-result.json')
+    if os.environ.get('FAKENETNG_MCP_TESTDOUBLE') != '1':
+        # The real context is observable before recovery. Startup state is
+        # recovering, so clients cannot start work during this bounded phase.
+        ctx.runner.recover(ctx.coordinator)
     if controller is not None:
         controller.report_running()
     logger.info('fakenetng-mcp serving on %s:%d', cfg.listen_ip,
                 cfg.listen_port)
 
-    stop_event.wait()
+    while not stop_event.wait(0.1):
+        if server_stop.is_set():
+            logger.error('HTTP endpoint exited unexpectedly')
+            return 1
 
     logger.info('stop requested; shutting down endpoint')
     if controller is not None:
@@ -343,7 +298,9 @@ def service_main(controller):
     # Ask uvicorn to exit: the serve thread's server instance owns the loop.
     from fakenet.mcp import server as server_module_again
     server_module_again.request_shutdown()
-    server_stop.wait(timeout=30.0)
+    if not server_stop.wait(timeout=30.0):
+        logger.error('HTTP endpoint shutdown exceeded its budget')
+        return 1
     logger.info('fakenetng-mcp stopped')
     return failure['code']
 
@@ -383,7 +340,7 @@ def build_parser():
     start = sub.add_parser('start', help='sc start')
     start.set_defaults(func=cmd_start)
 
-    stop = sub.add_parser('stop', help='sc stop')
+    stop = sub.add_parser('stop', help='two-phase controlled service stop')
     stop.set_defaults(func=cmd_stop)
 
     run = sub.add_parser('run', help='run as SCM service entry')
@@ -395,20 +352,15 @@ def build_parser():
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == 'managed-child':
+        if len(argv) != 3:
+            return 2
+        from fakenet.mcp.managed import child_main
+        return child_main(argv[1], argv[2])
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, 'command', None):
         parser.print_help()
         return 2
     return args.func(args)
-
-
-class _RecoveryCoordinatorView:
-    """Minimal failure-reason carrier for the startup recovery path."""
-
-    def __init__(self):
-        self._failure_reason = None
-
-    @property
-    def failure_reason(self):
-        return self._failure_reason

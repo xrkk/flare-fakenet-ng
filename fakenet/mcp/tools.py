@@ -117,6 +117,9 @@ class AppContext:
                 supervisor._log_size_probe = log_size
                 self.runner = supervisor
         self.coordinator = coordinator or Coordinator(self.runner)
+        if (runner is None and real_supervisor is None and
+                os.environ.get('FAKENETNG_MCP_TESTDOUBLE') != '1'):
+            self.coordinator.update_health_state('recovering')
         self.artifacts_root = dirs['artifacts']
 
     def _default_config_resolver(self, name, builtin):

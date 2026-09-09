@@ -129,7 +129,7 @@ def test_clause_fails_closed(ip, port):
 def test_snapshot_roundtrip_and_atomic_replace(tmp_path):
     snapshot = StateSnapshot(tmp_path / 'state' / 'state.json')
     snapshot.write(run_id='r1', controller_id='c', state_version=3,
-                   command_id=None, config_sha256='deadbeef',
+                   command_id='command-1', config_sha256='a' * 64,
                    baseline_path='/b.json', needs_recovery=True)
     data, corrupt = snapshot.read()
     assert corrupt is False
@@ -147,7 +147,7 @@ def test_snapshot_requires_all_fields(tmp_path):
 def test_snapshot_detects_corrupt(tmp_path):
     snapshot = StateSnapshot(tmp_path / 'state.json')
     snapshot.write(run_id='r1', controller_id=None, state_version=1,
-                   command_id=None, config_sha256='x', baseline_path='',
+                   command_id='command-1', config_sha256='a' * 64, baseline_path='',
                    needs_recovery=False)
     (tmp_path / 'state.json').write_text('{broken', encoding='utf-8')
     data, corrupt = snapshot.read()
@@ -169,7 +169,7 @@ def test_baseline_schema_covers_frozen_fields(tmp_path):
 def test_recovery_stopped_when_no_marker(tmp_path):
     snapshot = StateSnapshot(tmp_path / 'state.json')
     snapshot.write(run_id='r1', controller_id=None, state_version=1,
-                   command_id=None, config_sha256='x', baseline_path='',
+                   command_id='command-1', config_sha256='a' * 64, baseline_path='',
                    needs_recovery=False)
     view = _View()
     assert perform_startup_recovery(snapshot, None, view) == 'stopped'
@@ -182,8 +182,8 @@ def test_recovery_clean_when_baseline_matches(tmp_path):
     store.save('r1', sections={field: '' for field in BASELINE_FIELDS})
     snapshot = StateSnapshot(tmp_path / 'state.json')
     snapshot.write(run_id='r1', controller_id='c', state_version=2,
-                   command_id=None, config_sha256='x',
-                   baseline_path=str(tmp_path / 'baselines'),
+                   command_id='command-1', config_sha256='a' * 64,
+                   baseline_path=str(tmp_path / 'baselines' / 'r1.json'),
                    needs_recovery=True)
     view = _View()
     # monkeypatch capture to the same empty sections
@@ -207,8 +207,8 @@ def test_recovery_failed_when_environment_differs(tmp_path):
     store.save('r1', sections={field: '' for field in BASELINE_FIELDS})
     snapshot = StateSnapshot(tmp_path / 'state.json')
     snapshot.write(run_id='r1', controller_id='c', state_version=2,
-                   command_id=None, config_sha256='x',
-                   baseline_path=str(tmp_path / 'baselines'),
+                   command_id='command-1', config_sha256='a' * 64,
+                   baseline_path=str(tmp_path / 'baselines' / 'r1.json'),
                    needs_recovery=True)
     import fakenet.mcp.baseline as baseline_module
 

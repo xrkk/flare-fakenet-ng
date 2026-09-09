@@ -53,8 +53,9 @@ def test_invalid_firewall_prevents_any_managed_start(tmp_path, monkeypatch):
     monkeypatch.delenv('FAKENETNG_MCP_TESTDOUBLE', raising=False)
     monkeypatch.setattr(firewall, 'verify_rule', lambda *args: (False, 'wide'))
     context = AppContext(ServiceConfig('127.0.0.1', 28788, ['127.0.0.1']))
+    initial_state = context.coordinator.snapshot()['state']
     with pytest.raises(errors.McpError, match='firewall protection'):
         context.runner.start(context.coordinator, 'A', {'name': 'missing.ini'})
-    assert context.coordinator.snapshot()['state'] == 'stopped'
+    assert context.coordinator.snapshot()['state'] == initial_state
     assert not (tmp_path / 'state' / 'state.json').exists()
     assert context.runner._fakenet is None
