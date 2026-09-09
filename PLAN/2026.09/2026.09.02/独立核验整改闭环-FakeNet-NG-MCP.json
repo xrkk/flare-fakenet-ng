@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "7ba8381cae662546f6f22e77ebb7826acf1a5821",
+  "current_head": "1307587fb4a2caa2965c59046cc530f8bd16b829",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -369,8 +369,8 @@
   "checkpoint": "INTENT-078创建窗口实现与双平台回归完成，准备固定提交构建候选。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-083",
-    "action": "固定before_job与旧命令观察及事件类型修正，构建新候选；保存当前五窗口现场后再开始新版本实测，旧五窗口不得顶替完整六窗口或ACC。"
+    "id": "INTENT-084",
+    "action": "等待既有构建session3361结束，核对新包后按固定VM恢复部署并执行完整六窗口及旧命令观察；旧现场31文件已完整导出，不重复构建或覆盖旧证据。"
   },
   "events": [
     {
@@ -1009,21 +1009,24 @@
     {
       "intent": "INTENT-082",
       "actual": "session16528完成0，五项diagnostic检查全部true。当前已补规范明确要求的before_job真实点，并修复command事件kind被操作覆盖；旧命令观察接入并通过三种反例。Linux198/3，加新观察反例后定向13通过。"
+    },
+    {
+      "intent": "INTENT-083",
+      "actual": "1307587固定提交后新构建session3361正在编译；独立纯查询session91832完成，最后before_start旧命令观察true；当前五窗口31文件ZIP完整导出SHA39c2a187...校验通过。"
     }
   ],
   "active_build": {
-    "source_head": "1baf72fd5d6b3123daa34c5d5fee216737ea0ac6",
-    "status": "COMPLETED",
-    "output_directory": "dist/mcp-remediation-20260910-1baf72f",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-1baf72f.txt",
-    "exec_session_id": 88203,
-    "sha256": "655768e5b90a9969ca74f8bb4385487f6f8d99c133795525d20ca4afbf625155"
+    "source_head": "1307587fb4a2caa2965c59046cc530f8bd16b829",
+    "status": "RUNNING",
+    "output_directory": "dist/mcp-remediation-20260910-1307587",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-1307587.txt",
+    "exec_session_id": 3361
   },
   "latest_guest_export": {
-    "path": "Logs/fakenetng-mcp/remediation-20260910/native-50b8752-permanent-runtime.zip",
-    "sha256": "8c68c9aaa4d230b25023777fa0aeaa60dd2a0c883287fc9fa217cc87382e63fb",
-    "verified_files": 48,
-    "excluded": "three configs/temp_certs TLS files; fresh inventory and explicit path allowlist"
+    "path": "Logs/fakenetng-mcp/remediation-20260910/native-1baf72f-five-window-runtime.zip",
+    "sha256": "39c2a187d18b78d255e65681483d25c4fe94ce7b375e2a957d92d4a0b120430f",
+    "verified_files": 31,
+    "excluded": "none; fresh application inventory contains no TLS material"
   },
   "active_host_capture": {
     "session_id": 41715,
@@ -1057,5 +1060,13 @@
     "question": "固定快照DNS192.168.204.1应由哪个服务提供？",
     "evidence": "Logs/fakenetng-mcp/remediation-20260910/baseline-dns-hostonly-probe.json",
     "blocks_all_work": false
+  },
+  "active_readonly_validation": {
+    "session_id": 91832,
+    "status": "COMPLETED",
+    "runner_source": "1307587fb4a2caa2965c59046cc530f8bd16b829",
+    "installed_source": "1baf72fd5d6b3123daa34c5d5fee216737ea0ac6",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/native-1307587-replay-console.txt",
+    "result": "最后before_start实际run的10秒纯查询观察通过，无重放，原责任needs_recovery=false。非正式ACC。"
   }
 }
