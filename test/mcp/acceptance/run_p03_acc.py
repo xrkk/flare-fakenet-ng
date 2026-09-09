@@ -318,8 +318,10 @@ def acc004_s2_init_failure(base, channel, writer):
     return run_initialization_failure(base, channel, writer)
 
 
-def exercise_listener_exception(base, channel, writer, tag):
-    """Arm after healthy; require a real listener-thread stack and nonce."""
+def exercise_listener_exception(base, channel, writer, tag, fault="listener_exception"):
+    """Arm after healthy; require actual worker stack, nonce and recovery."""
+    if fault not in ("listener_exception", "capture_exception"):
+        raise StepError("unsupported worker exception")
     from helpers import configure_fault_service, arm_fault_file
     mode = configure_fault_service(channel, True, 5)
     writer.add_evidence(tag + '-fault-mode', mode)
@@ -336,7 +338,14 @@ def exercise_listener_exception(base, channel, writer, tag):
     uuid.UUID(run_id)
     def trigger():
         began = time.time()
-        armed = arm_fault_file(channel, 'listener_exception')
+        armed = arm_fault_file(channel, fault)
+        if fault == 'capture_exception':
+            stimulus = channel.powershell(
+                "$c=[Net.Sockets.UdpClient]::new();try{"
+                "$b=[Text.Encoding]::ASCII.GetBytes('fakenet-capture-" + armed['nonce'] + "');"
+                "@{sent=$c.Send($b,$b.Length,'127.0.0.1',39999);destination='127.0.0.1:39999'}|ConvertTo-Json -Compress"
+                "}finally{$c.Dispose()}", timeout=15)
+            writer.add_evidence(tag + '-loopback-stimulus', stimulus)
         revoked, snap = wait_state(base, lambda x: x.get('state') != 'healthy', timeout=15)
         ended = time.time()
         settled, final = wait_state(base, lambda x: x.get('state') == 'stopped' and not x.get('run_id'), timeout=420)
@@ -360,18 +369,39 @@ def exercise_listener_exception(base, channel, writer, tag):
     log = evidence.get('log', '')
     checks = {
         'healthy_before_trigger': healthy,
-        'matching_consumed_fault': receipt == {'fault': 'listener_exception',
+        'matching_consumed_fault': receipt == {'fault': fault,
                                               'nonce': outcome['armed']['nonce']},
         'actual_thread_exception_stack': all(value in log for value in
-            ('Traceback (most recent call last)', 'service_actions',
-             'RuntimeError: injected listener thread exception')),
+            (('Traceback (most recent call last)', 'service_actions',
+              'RuntimeError: injected listener thread exception') if fault == 'listener_exception' else
+             ('Traceback (most recent call last)', '_inbound_capture_loop', 'capture_checkpoint',
+              'RuntimeError: injected capture thread exception'))),
         'exception_revokes_within_two_cycles': outcome['revoked'] and
             outcome['ended'] - outcome['began'] <= 2 * HEALTH_INTERVAL_S + 2.0,
         'link_alive_during_exception': bool(timeline) and all(x['ok'] for x in timeline),
     }
+    if fault == 'capture_exception':
+        raw_timing = channel.powershell(
+            "$d='C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs\\" + run_id + "';"
+            "@{trigger=(Get-Content (Join-Path $d 'capture-exception-time.json') -Raw|ConvertFrom-Json);"
+            "parent=(Get-Content (Join-Path $d 'ipc-parent.jsonl') -Raw)}|ConvertTo-Json -Depth 6 -Compress", timeout=30)
+        writer.add_evidence(tag + '-actual-capture-timing', raw_timing)
+        timing = json.loads(raw_timing['output'])
+        rows = [json.loads(line) for line in timing['parent'].splitlines()]
+        transitions = [row for row in rows if row['event'] == 'health_state' and
+                       (row.get('frame') or {}).get('state') == 'failed' and
+                       row['monotonic'] >= timing['trigger']['monotonic']]
+        checks['actual_capture_revocation_within_four_seconds'] = bool(transitions) and (
+            transitions[0]['monotonic'] - timing['trigger']['monotonic'] <= 4)
+    from helpers import export_run_incidents
+    bundles = export_run_incidents(channel, run_id, writer.out_dir)
+    writer.add_evidence(tag + '-actual-incidents', bundles)
+    writer.evidence.extend({key: bundle[key] for key in ('path', 'size', 'sha256')} for bundle in bundles)
+    checks['incident_bytes_complete'] = bool(bundles) and all(bundle['complete'] for bundle in bundles)
     settled, final = outcome['settled'], outcome['final']
     writer.add_evidence(tag + '-final', final or {})
     checks['protective_stop_completed'] = settled and final.get('last_run_outcome') == 'failed'
+    writer.add_evidence(tag + '-checks', checks)
     if not settled:
         raise StepError('exception did not converge; preserve failed scene')
     disarm_fault(channel, base)
@@ -587,6 +617,8 @@ def run_acc006(base, channel, writer):
     # End the healthy control run before changing the service test mode.
     writer.add_evidence('acc006-stop-control', stop_run(base))
     checks.update(exercise_listener_exception(base, channel, writer, 'acc006-anomaly'))
+    capture_checks = exercise_listener_exception(base, channel, writer, 'acc006-capture', 'capture_exception')
+    checks.update({'capture_' + key: value for key, value in capture_checks.items()})
 
     # (b) active-probe condition broken: the diverter_stop fault closes the
     # main handle, so the probe (diverter handle alive) fails and health

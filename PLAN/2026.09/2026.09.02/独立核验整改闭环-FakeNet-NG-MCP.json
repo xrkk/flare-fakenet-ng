@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "197292f29ba5cb6730a54197aa019bac89c13007",
+  "current_head": "5a2c81f8a75f3df5b6d6ba8731f7c8372d935e42",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -369,8 +369,8 @@
   "checkpoint": "INTENT-078创建窗口实现与双平台回归完成，准备固定提交构建候选。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-092",
-    "action": "固定捕获线程健康实现修正，完整保存两个S2现场；继续补原生捕获线程故障及剩余契约验证，不放宽恢复审计，不把七项局部true当ACC通过。"
+    "id": "INTENT-093",
+    "action": "固定捕获异常入口及完整证据收集，构建新候选执行Windows门禁与后续原生捕获线程测试；旧S2全现场已保存，不修改旧记录。"
   },
   "events": [
     {
@@ -1033,6 +1033,10 @@
     {
       "intent": "INTENT-091",
       "actual": "完整S2重跑session88007完成，冻结调用帧验证通过、实际两incident完整；恢复UDP差异仍失败。捕获线程健康修正Linux210/3、Windows207/6通过，未原生验证。"
+    },
+    {
+      "intent": "INTENT-092",
+      "actual": "两个S2场景70文件完整导出校验完成；真实inbound捕获线程固定故障与ACC006入口落地，Linux212/3，Windows/原生待构建。"
     }
   ],
   "active_build": {
@@ -1044,10 +1048,10 @@
     "sha256": "d7dc3b674944fbb58d43d7abdd2bd218ca9f32178be61c1c80e43995bcb9ab96"
   },
   "latest_guest_export": {
-    "path": "Logs/fakenetng-mcp/remediation-20260910/native-1307587-before-job-runtime.zip",
-    "sha256": "98d0f31e114c32de329f42c7c63e8ca21b8af27b039c2d2ad0c4e5abcd7e8979",
-    "verified_files": 19,
-    "excluded": "none; explicit fresh 19-file inventory"
+    "path": "Logs/fakenetng-mcp/remediation-20260910/native-1029376-s2-full-runtime.zip",
+    "sha256": "e2314c90db12fa05f72a791119ed4fbec1234f50788002f5645b25b0162ccdce",
+    "verified_files": 70,
+    "excluded": "none; explicit fresh application file list without TLS material"
   },
   "active_host_capture": {
     "session_id": 41715,

@@ -23,7 +23,8 @@ import json
 from pathlib import Path
 
 FAULTS = ('policy_pause', 'listener_stop', 'diverter_stop', 'child_hang',
-          'cleanup_error', 'listener_exception', 'initialization_failure', 'ipc_once_timeout',
+          'cleanup_error', 'listener_exception', 'capture_exception',
+          'initialization_failure', 'ipc_once_timeout',
           'ipc_permanent_timeout', 'ipc_eof', 'ipc_wrong_run',
           'ipc_repeat', 'ipc_reverse', 'create_before_job', 'create_job_ready',
           'create_attributes_ready', 'create_before_api',
@@ -153,6 +154,25 @@ class FaultInjector:
                 server.service_actions = service_actions
                 return True
         return False
+
+    def install_capture_exception_hook(self, diverter):
+        """Raise at an actual inbound receiver checkpoint after it is armed."""
+        if not enabled():
+            return False
+        original = getattr(diverter, '_check_recv_cycle_gap', None)
+        worker = getattr(diverter, 'inbound_capture_thread', None)
+        if not callable(original) or worker is None or not worker.is_alive():
+            return False
+        def capture_checkpoint(role, previous_return, now=None):
+            if role == 'inbound' and enabled() and armed_fault() == 'capture_exception':
+                clear()
+                with (Path.cwd() / 'capture-exception-time.json').open('x', encoding='utf-8') as stream:
+                    json.dump({'time': time.time(), 'monotonic': time.monotonic(),
+                               'thread_id': threading.get_ident()}, stream)
+                raise RuntimeError('injected capture thread exception')
+            return original(role, previous_return, now)
+        diverter._check_recv_cycle_gap = capture_checkpoint
+        return True
 
     def inject_listener_stop(self, listeners):
         """Close the first bound listener socket (representative class)."""
