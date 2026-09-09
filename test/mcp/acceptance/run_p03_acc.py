@@ -738,6 +738,9 @@ def run_acc007(base, channel, writer):
         "'startup recovery outcome' | ForEach-Object {$_.Line}")
     recovery_before = channel.powershell(recovery_log_query, timeout=30)
     writer.add_evidence('acc007-recovery-log-before', recovery_before)
+    marker_before = channel.powershell(
+        "Get-Content 'C:\\ProgramData\\FakeNet-NG-MCP\\state\\state.json' -Raw", timeout=30)
+    writer.add_evidence('acc007-recovery-marker-before', marker_before)
     raw = crash_current_service(channel, initial)
     writer.add_evidence('acc007-exact-crash-and-tree', raw)
     observed = json.loads(raw['output'])
@@ -770,13 +773,11 @@ def run_acc007(base, channel, writer):
         'startup recovery outcome' in line and line.rstrip().endswith('stopped')
         for line in new_lines)
 
-    # A new command succeeding says nothing about an old command's replay.
-    # Keep the full contract visibly incomplete until native cases exist.
-    checks['old_command_not_resumed_evidence'] = False
+    from replay_observation import observe_no_replay
+    checks['old_command_not_resumed_evidence'] = (
+        checks['recovery_completed_stopped'] and observe_no_replay(
+            base, channel, writer, 'acc007', json.loads(marker_before['output'])))
     checks['atomic_creation_window_matrix'] = all(creation.values())
-    writer.add_evidence('acc007-uncovered-obligations', {
-        'old_command_not_resumed': 'requires original command identity and post-crash observation',
-        'run_id': run_id})
     writer.add_evidence('acc007-checks', checks)
     checked = [v for v in checks.values() if v is not None]
     return EXIT_PASS if all(checked) else EXIT_FAIL

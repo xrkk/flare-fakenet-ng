@@ -16,6 +16,25 @@ def submit(c, cid, action, names=None, kind='edit', owner='A', version=None):
         execute=action, conflict_names=names)
 
 
+def test_command_timeline_preserves_event_type_and_operation():
+    c = Coordinator(LifecycleDouble())
+    submit(c, 'observable', lambda _: {}, kind='start')
+    rows = [event for event in c.events() if event.get('command_id') == 'observable']
+    assert [row['kind'] for row in rows] == ['command.accepted', 'command.completed']
+    assert all(row['operation'] == 'start' for row in rows)
+
+
+def test_failed_command_timeline_preserves_failure_event():
+    c = Coordinator(LifecycleDouble())
+    def failed(_):
+        raise RuntimeError('test failure')
+    with pytest.raises(RuntimeError):
+        submit(c, 'observable-failure', failed, kind='start')
+    rows = [event for event in c.events() if event.get('command_id') == 'observable-failure']
+    assert [row['kind'] for row in rows] == ['command.accepted', 'command.failed']
+    assert rows[-1]['operation'] == 'start'
+
+
 def test_other_config_completion_does_not_release_first_operation():
     c = Coordinator(LifecycleDouble())
     entered, release = threading.Event(), threading.Event()

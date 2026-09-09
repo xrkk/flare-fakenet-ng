@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "2defd7f977012fcb6e64392788ea07b370475341",
+  "current_head": "7ba8381cae662546f6f22e77ebb7826acf1a5821",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -369,8 +369,8 @@
   "checkpoint": "INTENT-078创建窗口实现与双平台回归完成，准备固定提交构建候选。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-082",
-    "action": "2defd7f增加有界只读HTTP入口等待；冻结新runner沿用当前VM继续五窗口诊断，不重置、不覆盖旧失败。"
+    "id": "INTENT-083",
+    "action": "固定before_job与旧命令观察及事件类型修正，构建新候选；保存当前五窗口现场后再开始新版本实测，旧五窗口不得顶替完整六窗口或ACC。"
   },
   "events": [
     {
@@ -1005,6 +1005,10 @@
     {
       "intent": "INTENT-082",
       "actual": "session16528仍运行。job_ready run16d54d66-f46c-4692-8e21-845f4402e382主管8156精确退出、canary存活、恢复检查failures[]。attributes_ready run3e30c533-1e08-4f9d-9637-8808839b9ebe主管3992精确退出，无剩余/逃逸、canary存活，正在恢复观察。未替代全矩阵或ACC。"
+    },
+    {
+      "intent": "INTENT-082",
+      "actual": "session16528完成0，五项diagnostic检查全部true。当前已补规范明确要求的before_job真实点，并修复command事件kind被操作覆盖；旧命令观察接入并通过三种反例。Linux198/3，加新观察反例后定向13通过。"
     }
   ],
   "active_build": {
@@ -1033,7 +1037,7 @@
   },
   "active_native_validation": {
     "session_id": 16528,
-    "status": "RUNNING",
+    "status": "COMPLETED",
     "source_head": "1baf72fd5d6b3123daa34c5d5fee216737ea0ac6",
     "runner_source": "2defd7f977012fcb6e64392788ea07b370475341",
     "runner_snapshot": "Logs/fakenetng-mcp/remediation-20260910/native-source-2defd7f",
@@ -1045,7 +1049,8 @@
       "before_api",
       "after_api",
       "before_start"
-    ]
+    ],
+    "result": "五窗口诊断全部true，实际after_api子8912及before_start子3572/404全部退出，所有canary存活且恢复stopped。formal_acc_pass=false；缺before_job及独立旧命令观察，不当完整ACC。"
   },
   "environment_question": {
     "status": "AWAITING_INFORMATION",

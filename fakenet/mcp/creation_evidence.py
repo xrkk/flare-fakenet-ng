@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fakenet.mcp import faultinject
 
-CREATION_STAGES = ('job_ready', 'attributes_ready', 'before_api',
+CREATION_STAGES = ('before_job', 'job_ready', 'attributes_ready', 'before_api',
                    'after_api', 'before_start')
 
 
@@ -19,8 +19,8 @@ def observe_creation(run_id, run_dir, job, stage):
     event = {'stage': stage, 'run_id': run_id, 'time': time.time(),
              'monotonic': time.monotonic(),
              'supervisor': process_identity(os.getpid()),
-             'child': process_identity(job.pid) if job.pid else None,
-             'job_members': job.members()}
+             'child': process_identity(job.pid) if job is not None and job.pid else None,
+             'job_members': job.members() if job is not None else []}
     directory = Path(run_dir)
     with (directory / 'creation.jsonl').open('a', encoding='utf-8') as stream:
         stream.write(json.dumps(event) + '\n')

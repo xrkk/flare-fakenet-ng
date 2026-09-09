@@ -77,6 +77,8 @@ class ManagedProcess:
         from fakenet.mcp.service_stop import process_identity
         self.run_id = run_id
         self.run_dir = Path(run_dir)
+        from fakenet.mcp.creation_evidence import observe_creation
+        observe_creation(run_id, self.run_dir, None, 'before_job')
         self.job = ManagedJob()
         self._sequence = 0
         self._lock = threading.Lock()

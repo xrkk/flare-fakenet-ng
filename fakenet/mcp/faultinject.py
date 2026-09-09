@@ -25,7 +25,7 @@ from pathlib import Path
 FAULTS = ('policy_pause', 'listener_stop', 'diverter_stop', 'child_hang',
           'cleanup_error', 'listener_exception', 'ipc_once_timeout',
           'ipc_permanent_timeout', 'ipc_eof', 'ipc_wrong_run',
-          'ipc_repeat', 'ipc_reverse', 'create_job_ready',
+          'ipc_repeat', 'ipc_reverse', 'create_before_job', 'create_job_ready',
           'create_attributes_ready', 'create_before_api',
           'create_after_api', 'create_before_start')
 IPC_FAULTS = frozenset(fault for fault in FAULTS if fault.startswith('ipc_'))

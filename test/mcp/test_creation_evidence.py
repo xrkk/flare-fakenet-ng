@@ -55,3 +55,12 @@ def test_other_creation_stage_is_not_consumed(scene, monkeypatch):
                         lambda _: pytest.fail('wrong window must not pause'))
     creation_evidence.observe_creation('run', directory, job, 'after_api')
     assert faultinject._fault_file().is_file()
+
+
+def test_before_job_has_no_fabricated_child_or_members(scene, monkeypatch):
+    directory, _ = scene
+    monkeypatch.delenv('FAKENETNG_MCP_FAULT_INJECTION', raising=False)
+    creation_evidence.observe_creation('run', directory, None, 'before_job')
+    event = json.loads((directory / 'creation.jsonl').read_text())
+    assert event['child'] is None
+    assert event['job_members'] == []

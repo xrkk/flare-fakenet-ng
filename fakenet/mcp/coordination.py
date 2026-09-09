@@ -211,7 +211,7 @@ class Coordinator:
                              'in_progress': True},
             }
             self._events.record('command.accepted', command_id=command_id,
-                                controller=controller, kind=kind)
+                                controller=controller, operation=kind)
 
         # Phase 2: execute WITHOUT the metadata lock — read-only queries
         # (snapshot/events) and health transitions stay responsive; any
@@ -223,7 +223,7 @@ class Coordinator:
             with self._lock:
                 self._commands[command_id]['exception'] = exc
                 self._events.record('command.failed', command_id=command_id,
-                                    kind=kind, reason=str(exc),
+                                    operation=kind, reason=str(exc),
                                     state_version=self._state_version)
                 self._finish_operation(command_id)
             raise
@@ -250,7 +250,7 @@ class Coordinator:
             if 'config_identity' in result:
                 self._config_identity = result['config_identity']
             self._events.record(
-                'command.completed', command_id=command_id, kind=kind,
+                'command.completed', command_id=command_id, operation=kind,
                 state=self._state, state_version=self._state_version)
 
             if 'last_run_outcome' in result:

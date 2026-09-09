@@ -99,6 +99,9 @@ def run_creation_matrix(base, channel, writer):
             failures.append('recovery did not finish stopped')
         if facts['service']['State'] != 'Running' or facts['service']['ProcessId'] == actual['supervisor']['pid']:
             failures.append('new SCM instance missing')
+        from replay_observation import observe_no_replay
+        if not failures and not observe_no_replay(base, channel, writer, stage, actual['marker']):
+            failures.append('old command replay observation failed')
         writer.add_evidence(stage + '-checks', {'failures': failures})
         checks[stage] = not failures
         if failures:
