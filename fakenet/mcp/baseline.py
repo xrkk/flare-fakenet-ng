@@ -316,14 +316,19 @@ class BaselineStore:
             "$ErrorActionPreference='Stop'; $b=[Text.Encoding]::UTF8.GetString("
             "[Convert]::FromBase64String('" + payload + "')) | ConvertFrom-Json; "
             "foreach($d in $b.dns){ $a=@($d.ServerAddresses); "
-            "if($a.Count){Set-DnsClientServerAddress -InterfaceAlias $d.InterfaceAlias "
+            "$current=@(Get-DnsClientServerAddress -InterfaceAlias $d.InterfaceAlias -AddressFamily IPv4); "
+            "if($current.Count -ne 1){throw 'DNS interface identity unavailable'}; "
+            "if(($a -join ',') -cne (@($current[0].ServerAddresses) -join ',')){"
+            "if($a.Count){Set-DnsClientServerAddress -InputObject $current[0] "
             "-ServerAddresses $a}else{Set-DnsClientServerAddress "
-            "-InterfaceAlias $d.InterfaceAlias -ResetServerAddresses}}; "
+            "-InputObject $current[0] -ResetServerAddresses}}}; "
             "foreach($s in $b.services){if($s.Name -notin @('Dnscache','MpsSvc'))"
             "{throw 'unexpected service in baseline'}; "
+            "if([int]$s.Status -notin @(1,4)){throw 'baseline service was transitional'}; "
+            "$currentService=Get-Service -Name $s.Name; "
+            "if([int]$currentService.Status -ne [int]$s.Status){"
             "if([int]$s.Status -eq 4){Start-Service -Name $s.Name}"
-            "elseif([int]$s.Status -eq 1){Stop-Service -Name $s.Name}"
-            "else{throw 'baseline service was transitional'}}; Write-Output 'restored'")
+            "else{Stop-Service -Name $s.Name}}}; Write-Output 'restored'")
         remaining = min(60, deadline - time.monotonic())
         if remaining <= 0 or _run(['powershell', '-NoProfile', '-Command', script],
                                   timeout=remaining) == COLLECTION_FAILED:

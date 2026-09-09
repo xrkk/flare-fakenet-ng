@@ -284,7 +284,8 @@ def register_tools(server, ctx):
             if not coord.running:
                 return {'state': 'stopped', 'changed': False}
             result = ctx.runner.stop(coord)
-            ctx.store.set_active(None)
+            if result.get('state') == 'stopped' and not result.get('run_id'):
+                ctx.store.set_active(None)
             return result
 
         try:
