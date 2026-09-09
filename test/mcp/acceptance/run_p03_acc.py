@@ -711,6 +711,11 @@ def crash_current_service(channel, snapshot):
 def run_acc007(base, channel, writer):
     writer.action('acc007', 'kill MCP => job collapses tree, SCM restarts, '
                             'recovery without FakeNet continuation')
+    from run_creation_cases import run_creation_matrix, CREATION_STAGES
+    creation = run_creation_matrix(base, channel, writer)
+    writer.add_evidence('acc007-creation-matrix', creation)
+    if set(creation) != set(CREATION_STAGES) or not all(creation.values()):
+        return EXIT_FAIL
     checks = {}
     started = load_and_start(base)
     checks['start_ok'] = started.get('error') is None
@@ -768,10 +773,9 @@ def run_acc007(base, channel, writer):
     # A new command succeeding says nothing about an old command's replay.
     # Keep the full contract visibly incomplete until native cases exist.
     checks['old_command_not_resumed_evidence'] = False
-    checks['atomic_creation_window_matrix'] = False
+    checks['atomic_creation_window_matrix'] = all(creation.values())
     writer.add_evidence('acc007-uncovered-obligations', {
         'old_command_not_resumed': 'requires original command identity and post-crash observation',
-        'atomic_creation_windows': 'requires each native CreateProcess/Job critical window',
         'run_id': run_id})
     writer.add_evidence('acc007-checks', checks)
     checked = [v for v in checks.values() if v is not None]
