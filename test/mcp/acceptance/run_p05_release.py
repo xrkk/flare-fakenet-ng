@@ -65,6 +65,28 @@ class ReleaseGate:
 
     # -- environment capture (host-driven, P04 normalization) -------------
     def capture_sections(self):
+        import uuid
+        captured = {'started_at': time.time(), 'sections': {}}
+        try:
+            self._capture_sections(captured['sections'])
+            captured['complete'] = True
+            return captured['sections']
+        except Exception as exc:
+            captured.update(complete=False, error=repr(exc))
+            raise
+        finally:
+            captured['ended_at'] = time.time()
+            captured.update({field: getattr(self.args, field) for field in IDENTITY_FIELDS})
+            raw = (json.dumps(captured, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
+            path = self.release / ('environment-capture-' + uuid.uuid4().hex + '.json')
+            with path.open('xb') as stream:
+                stream.write(raw)
+            if not hasattr(self, '_capture_evidence'):
+                self._capture_evidence = []
+            self._capture_evidence.append(dict(path=str(path), size=len(raw),
+                                               sha256=hashlib.sha256(raw).hexdigest()))
+
+    def _capture_sections(self, out):
         from fakenet.mcp.baseline import process_capture_script
         commands = {
             'routes': '& route.exe print -4; if($LASTEXITCODE -ne 0){throw "route capture failed"}',
@@ -72,7 +94,7 @@ class ReleaseGate:
             'windivert_processes': process_capture_script(),
             'services': 'Get-Service dnscache,mpssvc | Select-Object Name,Status | ConvertTo-Json -Compress',
         }
-        out = {'dns_servers': self.capture_dns_servers()}
+        out['dns_servers'] = self.capture_dns_servers()
         for section, command in commands.items():
             raw = self.channel.powershell("$ErrorActionPreference='Stop'; " + command,
                                           timeout=60)['output'].strip()
@@ -127,6 +149,7 @@ class ReleaseGate:
     def observe_round(self, action):
         """Cover the entire action, including baseline capture and cleanup."""
         identity = {field: getattr(self.args, field) for field in IDENTITY_FIELDS}
+        self._capture_evidence = []
         before = self.vm_continuity()
         stop = threading.Event()
         timeline = []
@@ -159,7 +182,8 @@ class ReleaseGate:
             sample()
         record.update(identity, vm_before=before, vm_after=self.vm_continuity(),
                       probe_window_start=start, probe_window_end=end,
-                      probe_timeline=timeline)
+                      probe_timeline=timeline,
+                      capture_evidence=self._capture_evidence)
         issues = validate_round(record, identity)
         if issues:
             record['failure'] = '; '.join(issues) + ': ' + str(record.get('failure', ''))

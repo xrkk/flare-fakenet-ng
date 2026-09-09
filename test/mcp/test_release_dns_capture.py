@@ -3,6 +3,7 @@
 import importlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,29 +29,31 @@ class Channel:
         return {'output': 'S', 'exit_code': 0}
 
 
-def gate_for(module, dns):
+def gate_for(module, dns, root):
     gate = module.ReleaseGate.__new__(module.ReleaseGate)
     gate.channel = Channel(dns)
+    gate.release = root
+    gate.args = SimpleNamespace(**{field: field for field in module.IDENTITY_FIELDS})
     return gate
 
 
 @pytest.mark.parametrize('addresses', [['192.168.204.1'], ['8.8.8.8'], []])
-def test_dns_capture_preserves_actual_server_addresses(release_module, addresses):
+def test_dns_capture_preserves_actual_server_addresses(release_module, addresses, tmp_path):
     observed = {'InterfaceAlias': 'Ethernet0', 'ServerAddresses': addresses}
-    sections = gate_for(release_module, json.dumps(observed)).capture_sections()
+    sections = gate_for(release_module, json.dumps(observed), tmp_path).capture_sections()
     assert json.loads(sections['dns_servers']) == observed
 
 
 @pytest.mark.parametrize('invalid', ['S', '', 'null', '{}', '[]',
                                     '{"InterfaceAlias":"Ethernet0"}'])
 def test_missing_dns_observation_cannot_be_an_audit_baseline(
-        release_module, invalid):
+        release_module, invalid, tmp_path):
     with pytest.raises(RuntimeError, match='DNS'):
-        gate_for(release_module, invalid).capture_sections()
+        gate_for(release_module, invalid, tmp_path).capture_sections()
 
 
-def test_dns_command_failure_propagates(release_module):
-    gate = gate_for(release_module, '{}')
+def test_dns_command_failure_propagates(release_module, tmp_path):
+    gate = gate_for(release_module, '{}', tmp_path)
 
     class FailingChannel(Channel):
         def powershell(self, command, timeout):

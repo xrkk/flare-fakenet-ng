@@ -1,5 +1,6 @@
 """Reject mixed identities, missing raw evidence and incomplete round windows."""
 import hashlib
+import json
 from pathlib import Path
 
 
@@ -42,6 +43,35 @@ def validate_round(record, expected):
         failures.append('audit absent or dirty')
     if not record.get('lock_released_after_stop'):
         failures.append('configuration lock not released')
+    captures = record.get('capture_evidence')
+    if not isinstance(captures, list) or len(captures) < 2:
+        failures.append('raw before/after environment captures missing')
+    else:
+        seen = set()
+        for item in captures:
+            try:
+                path = Path(item['path']).resolve()
+                if path in seen:
+                    raise ValueError('environment capture reused')
+                seen.add(path)
+                raw = path.read_bytes()
+                if len(raw) != item['size'] or hashlib.sha256(raw).hexdigest() != item['sha256']:
+                    raise ValueError('environment capture hash/size mismatch')
+                capture = json.loads(raw)
+                if any(capture.get(field) != expected[field] for field in IDENTITY_FIELDS):
+                    raise ValueError('environment capture identity mismatch')
+                sections = capture.get('sections', {})
+                required = ('routes', 'dns_servers', 'windivert_processes', 'listen_ports', 'services')
+                if not capture.get('complete') or any(not sections.get(key) for key in required):
+                    raise ValueError('environment capture incomplete')
+                began, ended = capture.get('started_at'), capture.get('ended_at')
+                window_start, window_end = record.get('probe_window_start'), record.get('probe_window_end')
+                if (not all(isinstance(t, (int, float)) for t in
+                            (began, ended, window_start, window_end)) or
+                        not window_start <= began <= ended <= window_end):
+                    raise ValueError('environment capture outside current round')
+            except (KeyError, TypeError, OSError, ValueError) as exc:
+                failures.append(str(exc))
     start, end = record.get('probe_window_start'), record.get('probe_window_end')
     timeline = record.get('probe_timeline')
     if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or not timeline:
