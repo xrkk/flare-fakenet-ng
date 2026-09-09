@@ -44,13 +44,15 @@ def _sha256_bytes(raw):
 
 
 def _run(command, timeout=30):
-    try:
-        completed = subprocess.run(
-            command, capture_output=True, text=True, timeout=timeout,
-            encoding='utf-8', errors='replace')
-        return (completed.stdout or '') + (completed.stderr or '')
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return 'COLLECTION_FAILED: %r' % exc
+    completed = subprocess.run(
+        command, capture_output=True, text=True, timeout=timeout,
+        encoding='utf-8', errors='replace')
+    if completed.returncode != 0:
+        raise RuntimeError('collector exited %s: %s' % (
+            completed.returncode, (completed.stderr or completed.stdout)[:1000]))
+    if not (completed.stdout or '').strip():
+        raise RuntimeError('collector returned no observations')
+    return completed.stdout + (completed.stderr or '')
 
 
 class IncidentCollector:
@@ -123,7 +125,7 @@ class IncidentCollector:
                 payload = None
                 self._record(name, 'failed', failure_reason=repr(exc)[:160])
                 continue
-            if payload is None:
+            if payload is None or payload == '' or payload == b'':
                 self._record(name, 'failed',
                              failure_reason='unavailable')
                 continue

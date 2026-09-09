@@ -25,7 +25,11 @@ def test_stop_grace_config_bounds():
                           stop_grace_seconds=bad)
 
 
-def test_incident_manifest_schema(tmp_path):
+def test_incident_manifest_schema(tmp_path, monkeypatch):
+    from fakenet.mcp import incident
+    def unavailable(*args, **kwargs):
+        raise RuntimeError('external collector unavailable in schema test')
+    monkeypatch.setattr(incident, '_run', unavailable)
     collector = IncidentCollector(tmp_path, 'run-x')
     context = {'timeline': [{'kind': 'x'}], 'versions': {'python': '3'},
                'config_path': None, 'stdout_stderr': 'out',
@@ -43,7 +47,10 @@ def test_incident_manifest_schema(tmp_path):
             set(entry)
     ok_entries = [entry for entry in manifest['entries']
                   if entry['result'] == 'ok']
-    assert len(ok_entries) >= 8
+    assert {entry['item'] for entry in ok_entries} == {
+        'timeline.json', 'versions.json', 'stdout_stderr.log',
+        'exception.txt', 'thread_stacks.txt', 'baseline_diff.json',
+        'artifact_metadata.json'}
     for entry in ok_entries:
         assert entry['sha256'] and entry['size'] >= 0
     # config_snapshot and dump are explicitly recorded as unavailable/skip
