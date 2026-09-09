@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "2145387539148e2a7b7c2c28d22a03af49d95035",
+  "current_head": "2defd7f977012fcb6e64392788ea07b370475341",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -369,8 +369,8 @@
   "checkpoint": "INTENT-078创建窗口实现与双平台回归完成，准备固定提交构建候选。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-079",
-    "action": "提交并构建包含实际创建窗口的新候选，继续补齐逐窗口原生验收runner；当前50b8752现场已完整导出，尚未重置VM。"
+    "id": "INTENT-082",
+    "action": "2defd7f增加有界只读HTTP入口等待；冻结新runner沿用当前VM继续五窗口诊断，不重置、不覆盖旧失败。"
   },
   "events": [
     {
@@ -989,14 +989,31 @@
     {
       "intent": "INTENT-078",
       "actual": "实际Job/CreateProcess/start前五观测点和受门控有界故障窗口已实现；Linux195/3、Windows192/6，未执行原生逐窗口，不计ACC。"
+    },
+    {
+      "intent": "INTENT-079",
+      "actual": "1baf72f已提交；新候选构建启动，exec_session_id=88203，独立输出目录。"
+    },
+    {
+      "intent": "INTENT-080",
+      "actual": "唯一快照revert一次、Snapshot99标记、vmware -x一次与MCP三身份门禁通过；1baf72f包SHA655768e5...通过并部署完成，额外四端口保留。e8419f5冻结驱动的五窗口诊断启动session75392。"
+    },
+    {
+      "intent": "INTENT-082",
+      "actual": "2defd7f冻结新runner已运行session16528，当前已保存job_ready arm和实际start请求；无重新部署或重置。"
+    },
+    {
+      "intent": "INTENT-082",
+      "actual": "session16528仍运行。job_ready run16d54d66-f46c-4692-8e21-845f4402e382主管8156精确退出、canary存活、恢复检查failures[]。attributes_ready run3e30c533-1e08-4f9d-9637-8808839b9ebe主管3992精确退出，无剩余/逃逸、canary存活，正在恢复观察。未替代全矩阵或ACC。"
     }
   ],
   "active_build": {
-    "source_head": "50b8752839053143fd369ece073e1ce70a18a96b",
+    "source_head": "1baf72fd5d6b3123daa34c5d5fee216737ea0ac6",
     "status": "COMPLETED",
-    "output_directory": "dist/mcp-remediation-20260910-50b8752",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-50b8752.txt",
-    "exec_session_id": 90613
+    "output_directory": "dist/mcp-remediation-20260910-1baf72f",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-1baf72f.txt",
+    "exec_session_id": 88203,
+    "sha256": "655768e5b90a9969ca74f8bb4385487f6f8d99c133795525d20ca4afbf625155"
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/native-50b8752-permanent-runtime.zip",
@@ -1015,18 +1032,20 @@
     "sha256": "724ed41e0c7b67179ce3dda8daf6d7dca907b61ca3d8cb3f07c0d20bb3fec286"
   },
   "active_native_validation": {
-    "session_id": 41889,
-    "status": "COMPLETED",
-    "source_head": "50b8752839053143fd369ece073e1ce70a18a96b",
-    "runner_snapshot": "Logs/fakenetng-mcp/remediation-20260910/native-source-50b8752",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/native-50b8752-ipc-permanent-console.txt",
-    "diagnostic_cases": [
-      "ipc_permanent_timeout"
-    ],
+    "session_id": 16528,
+    "status": "RUNNING",
+    "source_head": "1baf72fd5d6b3123daa34c5d5fee216737ea0ac6",
+    "runner_source": "2defd7f977012fcb6e64392788ea07b370475341",
+    "runner_snapshot": "Logs/fakenetng-mcp/remediation-20260910/native-source-2defd7f",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/native-2defd7f-creation-console.txt",
     "formal_acc_pass": false,
-    "run_id": "2c22f8e8-19d4-4dce-b109-fdbafb6d0e2d",
-    "observation": "永久IPC两次超时在同PID8080的278.828/280.843秒对应degraded/failed，检查通过；两次incident manifest完整，首包含dump，第二包无升级条件跳过dump。当前failed，原runner尚在等待。",
-    "result": "永久IPC时序通过、843HTTP零错误、实际两包15/14项字节通过；全恢复失败，不计ACC。"
+    "diagnostic_cases": [
+      "job_ready",
+      "attributes_ready",
+      "before_api",
+      "after_api",
+      "before_start"
+    ]
   },
   "environment_question": {
     "status": "AWAITING_INFORMATION",
