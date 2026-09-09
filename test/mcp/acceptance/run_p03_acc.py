@@ -313,42 +313,9 @@ def acc004_s1_takeover(base, channel, writer):
 
 
 def acc004_s2_init_failure(base, channel, writer):
-    """Initialization failure: invalid config refused (fail closed), with
-    the control link probed CONCURRENTLY with the failing attempts
-    (CHK-038: the probe must overlap the injected failure, not precede
-    it)."""
-    checks = {}
-
-    def attempts():
-        version0 = status(base)['state_version']
-        created0 = call(base, 'create_config',
-                        {'name': 'broken-%s.ini' % unique_command('x')[:8],
-                         'content': 'no-section-header garbage = broken\n',
-                         'command_id': unique_command('a4-bad'),
-                         'expected_state_version': version0})
-        if created0.get('error'):
-            return {'create_rejected': True, 'payload': created0}
-        loaded0 = call(base, 'load_config',
-                       {'name': created0.get('name', ''),
-                        'command_id': unique_command('a4-bad-load'),
-                        'expected_state_version':
-                            created0['state_version']})
-        return {'create_rejected': False, 'payload': loaded0}
-
-    timeline, attempt = probe_during(attempts, base)
-    writer.add_evidence('acc004-s2-init-probe', timeline)
-    writer.add_evidence('acc004-s2-attempt', attempt or {})
-    checks['link_alive_during_init_failure'] = all(
-        item['ok'] for item in timeline) and bool(timeline)
-    if attempt and attempt.get('create_rejected'):
-        checks['invalid_config_rejected'] = True
-    elif attempt:
-        checks['invalid_config_rejected'] = err_of(
-            attempt.get('payload') or {}) in ('validation_failed',
-                                              'invalid_request')
-    else:
-        checks['invalid_config_rejected'] = False
-    return checks
+    """Fail inside actual managed Fakenet.start, with a valid configuration."""
+    from run_initialization_case import run_initialization_failure
+    return run_initialization_failure(base, channel, writer)
 
 
 def exercise_listener_exception(base, channel, writer, tag):

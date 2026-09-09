@@ -369,8 +369,8 @@
   "checkpoint": "INTENT-078创建窗口实现与双平台回归完成，准备固定提交构建候选。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-084",
-    "action": "等待既有构建session3361结束，核对新包后按固定VM恢复部署并执行完整六窗口及旧命令观察；旧现场31文件已完整导出，不重复构建或覆盖旧证据。"
+    "id": "INTENT-087",
+    "action": "保存before_job失败归因与incident缺项，继续实际初始化点整改验证；不放宽端口审计，不复用旧窗口作为当前通过。"
   },
   "events": [
     {
@@ -1013,14 +1013,23 @@
     {
       "intent": "INTENT-083",
       "actual": "1307587固定提交后新构建session3361正在编译；独立纯查询session91832完成，最后before_start旧命令观察true；当前五窗口31文件ZIP完整导出SHA39c2a187...校验通过。"
+    },
+    {
+      "intent": "INTENT-085",
+      "actual": "严格快照序列和三身份门禁通过，1307587部署完成；同源完整ACC007入口session76341已实际触发before_job并强杀主管，观察中。"
+    },
+    {
+      "intent": "INTENT-087",
+      "actual": "before_job失败incident实际导出并定位三UDP行消失；Job/子进程尚未创建，不放宽审计。S2真实初始化点及有效配置验收改造Linux203/3、Windows200/6通过，尚未原生执行。"
     }
   ],
   "active_build": {
     "source_head": "1307587fb4a2caa2965c59046cc530f8bd16b829",
-    "status": "RUNNING",
+    "status": "COMPLETED",
     "output_directory": "dist/mcp-remediation-20260910-1307587",
     "log": "Logs/fakenetng-mcp/remediation-20260910/build-1307587.txt",
-    "exec_session_id": 3361
+    "exec_session_id": 3361,
+    "sha256": "b840995788c4f79407c1745ea4ec7fb30bd0fdae766d1c4f43ad90d6ebfc1646"
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/native-1baf72f-five-window-runtime.zip",
@@ -1039,21 +1048,15 @@
     "sha256": "724ed41e0c7b67179ce3dda8daf6d7dca907b61ca3d8cb3f07c0d20bb3fec286"
   },
   "active_native_validation": {
-    "session_id": 16528,
+    "session_id": 76341,
     "status": "COMPLETED",
-    "source_head": "1baf72fd5d6b3123daa34c5d5fee216737ea0ac6",
-    "runner_source": "2defd7f977012fcb6e64392788ea07b370475341",
-    "runner_snapshot": "Logs/fakenetng-mcp/remediation-20260910/native-source-2defd7f",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/native-2defd7f-creation-console.txt",
+    "source_head": "1307587fb4a2caa2965c59046cc530f8bd16b829",
+    "runner_source": "1307587fb4a2caa2965c59046cc530f8bd16b829",
+    "runner_snapshot": "Logs/fakenetng-mcp/remediation-20260910/native-source-1307587",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/native-1307587-acc007-console.txt",
     "formal_acc_pass": false,
-    "diagnostic_cases": [
-      "job_ready",
-      "attributes_ready",
-      "before_api",
-      "after_api",
-      "before_start"
-    ],
-    "result": "五窗口诊断全部true，实际after_api子8912及before_start子3572/404全部退出，所有canary存活且恢复stopped。formal_acc_pass=false；缺before_job及独立旧命令观察，不当完整ACC。"
+    "mode": "完整ACC007入口诊断：六窗口+正常运行主管崩溃",
+    "result": "exit_code1：before_job精确强杀通过，但恢复审计failed，UDP64740双栈及DHCPv6端点546消失。未创建Job/子进程，未进入接管；后续窗口未跑。incident已导出但5项不完整。"
   },
   "environment_question": {
     "status": "AWAITING_INFORMATION",

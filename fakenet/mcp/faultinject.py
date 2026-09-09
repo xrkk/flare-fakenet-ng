@@ -23,7 +23,7 @@ import json
 from pathlib import Path
 
 FAULTS = ('policy_pause', 'listener_stop', 'diverter_stop', 'child_hang',
-          'cleanup_error', 'listener_exception', 'ipc_once_timeout',
+          'cleanup_error', 'listener_exception', 'initialization_failure', 'ipc_once_timeout',
           'ipc_permanent_timeout', 'ipc_eof', 'ipc_wrong_run',
           'ipc_repeat', 'ipc_reverse', 'create_before_job', 'create_job_ready',
           'create_attributes_ready', 'create_before_api',
@@ -121,6 +121,17 @@ class FaultInjector:
             raise RuntimeError('injected cleanup error')
 
     # -- run-path hooks -----------------------------------------------------
+    def install_initialization_hook(self, instance):
+        """Called only in the managed child; fail inside actual Fakenet.start."""
+        if not enabled():
+            return False
+        def initialize():
+            if enabled() and armed_fault() == 'initialization_failure':
+                clear()
+                raise RuntimeError('injected managed initialization failure')
+        instance._managed_initialization_hook = initialize
+        return True
+
     def install_listener_exception_hook(self, listeners):
         """Raise in the real HTTP serve_forever thread, when locally armed.
 

@@ -235,6 +235,12 @@ class Fakenet(object):
             raise RuntimeError(
                 'EgressControl requires DivertTraffic=Yes')
 
+        # Only a locally test-enabled managed child installs this hook.
+        # It runs inside initialization, before any interception starts.
+        initialization_hook = getattr(self, '_managed_initialization_hook', None)
+        if initialization_hook is not None:
+            initialization_hook()
+
         fn_addr = '0.0.0.0'
         if self.fakenet_config.get('diverttraffic') and self.fakenet_config['diverttraffic'].lower() == 'yes':
 

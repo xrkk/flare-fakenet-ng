@@ -291,6 +291,7 @@ def child_main(run_id, run_dir):
                 instance.parse_config(payload['config_path'])
                 instance.fakenet_config.update(payload['fakenet_config'])
                 instance.diverter_config.update(payload['diverter_config'])
+                fault.install_initialization_hook(instance)
                 instance.start()
                 fault.install_listener_exception_hook(instance.running_listener_providers)
                 fault.inject_listener_stop(instance.running_listener_providers)
