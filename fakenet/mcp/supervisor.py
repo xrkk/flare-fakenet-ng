@@ -58,6 +58,7 @@ class RealSupervisor:
         self._log_reader = log_reader
         self._last_run_outcome = None
         self._last_managed_stacks = None
+        self._last_managed_process = None
 
     def health_detail(self, state, max_wait=0.05):
         # Observations are updated by a bounded IPC poll, never queried under
@@ -111,6 +112,7 @@ class RealSupervisor:
                 run_id = coordinator.new_run_id()
                 self._last_run_outcome = None
                 self._last_managed_stacks = None
+                self._last_managed_process = None
                 self._run_dir = Path(self._artifacts_root) / 'runs' / run_id
                 self._run_dir.mkdir(parents=True, exist_ok=False)
                 for key in ('dumppacketsfileprefix', 'dumphttpwebroot'):
@@ -282,6 +284,10 @@ class RealSupervisor:
                     # Even a successful root stop may leave descendants. The
                     # Job is the sole scope and emptiness is independently read.
                     self._fakenet.terminate(min(deadline, time.monotonic() + 30))
+                    self._last_managed_process = {
+                        'identity': self._fakenet.identity,
+                        'exit_code': self._fakenet.job.poll(),
+                        'job_members': self._fakenet.job.members()}
                     self._fakenet.close()
                     self._fakenet = None
                 except BaseException as exc:
@@ -292,6 +298,7 @@ class RealSupervisor:
                                                               settle_seconds=30)
             if differences:
                 logger.error('full restoration audit failed: %r', differences)
+                self._collect_incident('environment restoration audit failed', deadline=deadline)
                 return self._result('failed', 'environment restoration audit failed')
             if coordinator.operation_fenced:
                 return self._result('failed', 'late operation cannot clear recovery responsibility')
@@ -307,6 +314,7 @@ class RealSupervisor:
             return dict(self._result('stopped'), last_run_outcome=self._last_run_outcome or 'ok')
         except BaseException as exc:
             logger.exception('stop/recovery failed')
+            self._collect_incident('stop/recovery failed: ' + repr(exc), deadline=deadline)
             return self._result('failed', str(exc))
         finally:
             self._lock.release()
@@ -401,6 +409,8 @@ class RealSupervisor:
         versions['managed_process'] = {'identity': child.identity if child else None,
                                        'exit_code': child.job.poll() if child else None,
                                        'job_members': child.job.members() if child else []}
+        if child is None and self._last_managed_process:
+            versions['managed_process'] = dict(self._last_managed_process)
         if not stacks and child and not child.alive() and self._last_managed_stacks:
             stacks = 'LAST OBSERVATION BEFORE STOP; ROOT HAS EXITED\n' + self._last_managed_stacks
             extra = read_file('fault-child-stacks.txt')

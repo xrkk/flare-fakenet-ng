@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "41f7cc4aea70e5723276660fb5b46be802881c25",
+  "current_head": "1134521b3156482c06122a8ce9eb44f8baed78b9",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "68b77d5已实机部署；真实监听异常诊断不通过，failed现场已导出33文件。P03场景进一步整改Linux173通过待提交；CHK全OPEN，有效核验1/5。",
+  "checkpoint": "1134521原生单次IPC健康恢复通过，stop因UDP差异失败；15项现场导出。漏incident整改Linux184/Windows181通过待提交。核验仍1/5，CHK全OPEN。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-065",
-    "action": "提交IPC整改为固定源码，在独立目录构建，固定runner快照后再进行原生IPC诊断；仍需完整恢复审计及其余矩阵，不关闭CHK。"
+    "id": "INTENT-068",
+    "action": "提交失败审计incident整改与1134521实机记录；继续处理全部未闭合CHK/剩余矩阵，当前VMfailed现场已导出，不宣称READY或核查通过。"
   },
   "events": [
     {
@@ -921,19 +921,36 @@
     {
       "intent": "INTENT-064",
       "actual": "固定6项IPC钩子/双端时序/健康2秒起点周期实现；ACC006接入真实矩阵。Linux182/Windows179通过，新增旧seq/错run证据反例定向通过。未执行任何VM变更，待提交构建新包。"
+    },
+    {
+      "intent": "INTENT-065",
+      "actual": "提交1134521；新包构建启动，原生runner已从该git树单独导出冻结，避免运行期工作树修改导致源码行漂移。"
+    },
+    {
+      "intent": "INTENT-066",
+      "actual": "1134521固定源码构建/包校验PASS，ZIP65569887b4758360218fb7c8dc4614f610d05b08fb43a91263502fbf1684c536。Snapshot183恢复/内存checkpoint/Win10VM身份门均通过，冻结runner就绪。"
+    },
+    {
+      "intent": "INTENT-066",
+      "actual": "原生once超时seq2在monotonic243.906失败并degraded；244.906同PID8860恢复healthy，原始证据检查通过。随后全审计连续7次仅UDP59413双栈消失，最终期限采集不全；整体仍不通过，原runner等待中。"
+    },
+    {
+      "intent": "INTENT-067",
+      "actual": "原生IPC矩阵首项终止不通过，完整15项证据导出校验；普通stop审计失败漏incident已按CHK060修复，Linux184/Windows181通过。无DNS端口豁免或配置更改。"
     }
   ],
   "active_build": {
-    "source_head": "68b77d5c6bbdcc6682279347f761b0ffb0e63c02",
+    "source_head": "1134521b3156482c06122a8ce9eb44f8baed78b9",
     "status": "COMPLETED",
-    "output_directory": "dist/mcp-remediation-20260910-68b77d5",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-68b77d5.txt",
-    "exec_session_id": 10257
+    "output_directory": "dist/mcp-remediation-20260910-1134521",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-1134521.txt",
+    "exec_session_id": 52438
   },
   "latest_guest_export": {
-    "path": "Logs/fakenetng-mcp/remediation-20260910/native-68b77d5-listener-exception-runtime.zip",
-    "sha256": "a2f9446f43a79e00cd1ba0ef9c228b2df7f33bbd2d456e2cf59d372ee8a80980",
-    "verified_files": 33
+    "path": "Logs/fakenetng-mcp/remediation-20260910/native-1134521-once-runtime.zip",
+    "sha256": "e5b67d733bddebf1d881f1cf5cd350699df607a674f521d1b0e35a1520c55964",
+    "verified_files": 15,
+    "excluded": "temp_certs temporary TLS material; explicit path allowlist"
   },
   "active_host_capture": {
     "session_id": 41715,
@@ -944,5 +961,15 @@
     "status": "COMPLETED",
     "packets": 8953,
     "sha256": "724ed41e0c7b67179ce3dda8daf6d7dca907b61ca3d8cb3f07c0d20bb3fec286"
+  },
+  "active_native_validation": {
+    "session_id": 5662,
+    "status": "COMPLETED",
+    "source_head": "1134521b3156482c06122a8ce9eb44f8baed78b9",
+    "runner_snapshot": "Logs/fakenetng-mcp/remediation-20260910/native-source-1134521",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/native-1134521-ipc-console.txt",
+    "run_id": "58ced420-d87a-4313-a7d9-7d999ea8736b",
+    "observation": "单次超时原始IPC检查通过；普通stop全审计失败，原runner等待420秒截止中，未重试。",
+    "result": "IPC局部检查通过；920 HTTP零错误，但stop恢复审计失败。只完成首个诊断，不计正式ACC。"
   }
 }
