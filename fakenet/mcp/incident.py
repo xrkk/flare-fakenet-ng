@@ -60,7 +60,16 @@ class IncidentCollector:
     """Collect one bounded incident pack for a failed run."""
 
     def __init__(self, artifacts_root, run_id, clock=None):
-        self.root = Path(artifacts_root) / str(run_id) / 'incident'
+        parent = Path(artifacts_root) / str(run_id)
+        parent.mkdir(parents=True, exist_ok=True)
+        number = 1
+        while True:
+            self.root = parent / ('incident' if number == 1 else 'incident-%02d' % number)
+            try:
+                self.root.mkdir()
+                break
+            except FileExistsError:
+                number += 1
         self.run_id = run_id
         self.deadline = time.time() + TOTAL_BUDGET_SECONDS
         self.manifest = []
@@ -89,6 +98,11 @@ class IncidentCollector:
     def _write_item(self, name, payload):
         self.root.mkdir(parents=True, exist_ok=True)
         path = self.root / name
+        raw_size = len(payload if isinstance(payload, bytes) else str(payload).encode('utf-8', 'replace'))
+        used = sum(p.stat().st_size for p in self.root.rglob('*') if p.is_file())
+        if used + raw_size > DISK_QUOTA_BYTES:
+            self._record(name, 'failed', failure_reason='disk quota exceeded')
+            return None
         try:
             path.write_bytes(payload if isinstance(payload, bytes) else str(
                 payload).encode('utf-8', 'replace'))
@@ -120,6 +134,7 @@ class IncidentCollector:
                              failure_reason='total budget exhausted')
                 continue
             try:
+                self._item_deadline = min(self.deadline, time.time() + ITEM_TIMEOUT_SECONDS)
                 payload = self._collect_item(kind, context)
             except Exception as exc:  # noqa: BLE001 - evidence only
                 payload = None
@@ -139,6 +154,11 @@ class IncidentCollector:
 
     # ------------------------------------------------------------------
     def _collect_item(self, kind, context):
+        def run(command):
+            remaining = min(self.deadline, self._item_deadline) - time.time()
+            if remaining <= 0:
+                raise TimeoutError('incident item/total deadline exceeded')
+            return _run(command, timeout=remaining)
         if kind == 'timeline':
             return json.dumps(context.get('timeline', []),
                               ensure_ascii=False, indent=2)
@@ -157,31 +177,39 @@ class IncidentCollector:
         if kind == 'exception':
             return context.get('exception_text', '')
         if kind == 'thread_stacks':
-            return self._thread_stacks()
+            managed = context.get('managed_thread_stacks')
+            if not managed:
+                return None
+            return 'SUPERVISOR\n' + self._thread_stacks() + '\nMANAGED\n' + managed
         if kind == 'process_tree':
-            return _run(['powershell', '-NoProfile', '-Command',
+            return run(['powershell', '-NoProfile', '-Command',
                          'Get-CimInstance Win32_Process | Select-Object '
                          'ProcessId,ParentProcessId,Name,CommandLine,'
                          'CreationDate | ConvertTo-Json -Compress'])
         if kind == 'handle_summary':
-            return _run(['powershell', '-NoProfile', '-Command',
+            return run(['powershell', '-NoProfile', '-Command',
                          'Get-Process | Select-Object Id,ProcessName,'
                          'HandleCount,StartTime | ConvertTo-Json -Compress'])
         if kind == 'windivert_filter':
             return json.dumps({
                 'final_filter': context.get('final_filter'),
-                'tasklist_m': _run(['tasklist', '/m', 'WinDivert*.sys']),
+                'tasklist_m': run(['tasklist', '/m', 'WinDivert*']),
             }, ensure_ascii=False, indent=2)
         if kind == 'baseline_diff':
             return json.dumps(context.get('baseline_diff', {}),
                               ensure_ascii=False, indent=2)
         if kind == 'firewall_diff':
-            return _run(['netsh', 'advfirewall', 'firewall', 'show', 'rule',
+            before = context.get('firewall_baseline')
+            if before is None:
+                return None
+            after = run(['netsh', 'advfirewall', 'firewall', 'show', 'rule',
                          'name=FakeNet-NG MCP', 'verbose'])
+            return json.dumps({'before': before, 'after': after, 'changed': before != after},
+                              ensure_ascii=False, indent=2)
         if kind == 'event_log':
-            return (_run(['wevtutil', 'qe', 'System', '/c:200', '/f:text',
+            return (run(['wevtutil', 'qe', 'System', '/c:200', '/f:text',
                           '/rd:true']) + '\n----APPLICATION----\n' +
-                    _run(['wevtutil', 'qe', 'Application', '/c:200',
+                    run(['wevtutil', 'qe', 'Application', '/c:200',
                           '/f:text', '/rd:true']))
         if kind == 'artifact_metadata':
             return json.dumps(context.get('artifact_metadata', []),
@@ -216,7 +244,7 @@ class IncidentCollector:
             return
         if os.name != 'nt':
             self._record('userdump.dmp', 'skipped',
-                         failure_reason='in-process dump requires Windows')
+                         failure_reason='managed dump requires Windows')
             return
         if self._timed_out() or self._quota_exceeded():
             self._record('userdump.dmp', 'failed',
@@ -224,60 +252,17 @@ class IncidentCollector:
             return
         self.root.mkdir(parents=True, exist_ok=True)
         target = self.root / 'userdump.dmp'
-        # In-process MiniDumpWriteDump (dbghelp) without new dependencies.
-        # The former cross-process route (rundll32 comsvcs MiniDump) wraps
-        # the API in its own thread-suspension layer; racing concurrent
-        # thread churn it can leave target threads suspended forever,
-        # wedging the control link while the SCM still shows Running
-        # (r52 ACC-004-S3 repro: three threads stuck in Suspended). The
-        # in-process call keeps the suspension bracket entirely inside
-        # MiniDumpWriteDump — the pattern used by standard crash handlers.
         try:
-            import ctypes
-            from ctypes import wintypes
-
-            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-            dbghelp = ctypes.WinDLL('dbghelp', use_last_error=True)
-            kernel32.CreateFileW.restype = wintypes.HANDLE
-            kernel32.CreateFileW.argtypes = [
-                wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-                wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
-                wintypes.HANDLE]
-            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-            dbghelp.MiniDumpWriteDump.restype = wintypes.BOOL
-            dbghelp.MiniDumpWriteDump.argtypes = [
-                wintypes.HANDLE, wintypes.DWORD, wintypes.HANDLE,
-                wintypes.DWORD, wintypes.LPVOID, wintypes.LPVOID,
-                wintypes.LPVOID]
-            generic_write = 0x40000000
-            create_always = 2
-            file_attribute_normal = 0x80
-            invalid = wintypes.HANDLE(-1).value
-            handle = kernel32.CreateFileW(
-                str(target), generic_write, 0, None, create_always,
-                file_attribute_normal, None)
-            if not handle or handle == invalid:
-                self._record('userdump.dmp', 'failed', failure_reason=(
-                    'CreateFileW error=%s' % ctypes.get_last_error()))
-                return
-            try:
-                wrote = dbghelp.MiniDumpWriteDump(
-                    kernel32.GetCurrentProcess(), os.getpid(), handle,
-                    0,  # MiniDumpNormal
-                    None, None, None)
-            finally:
-                kernel32.CloseHandle(handle)
-            size = target.stat().st_size if target.exists() else -1
-            if wrote and size > 0:
-                self._record('userdump.dmp', 'ok', dump_path=target)
-            else:
-                self._record('userdump.dmp', 'failed', failure_reason=(
-                    'MiniDumpWriteDump wrote=%s error=%s size=%s' % (
-                        bool(wrote), ctypes.get_last_error(), size)))
-        except Exception as exc:  # noqa: BLE001 - evidence only
-            self._record('userdump.dmp', 'failed', failure_reason=repr(exc)
-                         [:160])
+            from fakenet.mcp.dumpworker import collect_dump
+            pid = context.get('dump_target_pid')
+            creation = context.get('dump_target_creation')
+            if not pid or not creation:
+                raise RuntimeError('managed dump target identity unavailable')
+            remaining = min(ITEM_TIMEOUT_SECONDS, self.deadline - time.time())
+            collect_dump(pid, creation, target, time.monotonic() + max(0, remaining))
+            self._record('userdump.dmp', 'ok', dump_path=target)
+        except Exception as exc:
+            self._record('userdump.dmp', 'failed', failure_reason=repr(exc)[:160])
 
     def _write_manifest(self, started):
         manifest = {
@@ -287,6 +272,7 @@ class IncidentCollector:
             'budget_seconds': TOTAL_BUDGET_SECONDS,
             'disk_quota_bytes': DISK_QUOTA_BYTES,
             'entries': self.manifest,
+            'complete': all(e['result'] != 'failed' for e in self.manifest),
         }
         self.root.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(manifest, ensure_ascii=False, indent=2) + '\n'

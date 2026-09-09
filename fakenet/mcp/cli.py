@@ -353,6 +353,17 @@ def build_parser():
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv == ['managed-fault-hang']:
+        from fakenet.mcp.faultinject import enabled
+        if not enabled():
+            return 2
+        time.sleep(3600)
+        return 0
+    if argv and argv[0] == 'incident-dump':
+        if len(argv) != 4:
+            return 2
+        from fakenet.mcp.dumpworker import dump_main
+        return dump_main(int(argv[1]), argv[2], argv[3])
     if argv and argv[0] == 'managed-child':
         if len(argv) != 3:
             return 2

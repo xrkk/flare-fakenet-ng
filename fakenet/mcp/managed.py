@@ -143,6 +143,31 @@ def probe_instance(instance):
             'listeners': [type(p).__name__ for p in providers]}
 
 
+def redirect_child_streams(run_dir):
+    import ctypes as c
+    from ctypes import wintypes as w
+    kernel = c.WinDLL("kernel32", use_last_error=True)
+    # Keep private, non-inheritable IPC duplicates, then redirect the OS
+    # standard handles as well as Python's streams. certutil and other
+    # subprocesses write through the OS handles, bypassing sys.stdout.
+    protocol_in = os.fdopen(os.dup(sys.stdin.fileno()), 'rb', buffering=0)
+    protocol_out = os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0)
+    directory = Path(run_dir)
+    output = (directory / 'stdout_stderr.log').open('a', encoding='utf-8', buffering=1)
+    import msvcrt
+    kernel.SetStdHandle.argtypes = [w.DWORD, w.HANDLE]
+    kernel.SetStdHandle.restype = w.BOOL
+    with open(os.devnull, 'rb') as null_input:
+        os.dup2(null_input.fileno(), 0)
+    os.dup2(output.fileno(), 1)
+    os.dup2(output.fileno(), 2)
+    for standard, fd in ((-10, 0), (-11, 1), (-12, 2)):
+        if not kernel.SetStdHandle(standard & 0xffffffff, msvcrt.get_osfhandle(fd)):
+            raise c.WinError(c.get_last_error())
+    sys.stdout = sys.stderr = output
+    return protocol_in, protocol_out, output
+
+
 def child_main(run_id, run_dir):
     """Internal entry; fixed commands, no arbitrary code or file RPC."""
     import ctypes as c
@@ -153,10 +178,8 @@ def child_main(run_id, run_dir):
     contained = w.BOOL()
     if not kernel.IsProcessInJob(kernel.GetCurrentProcess(), None, c.byref(contained)) or not contained:
         raise RuntimeError('managed entry requires existing Job membership')
-    protocol_in, protocol_out = sys.stdin.buffer, sys.stdout.buffer
+    protocol_in, protocol_out, output = redirect_child_streams(run_dir)
     directory = Path(run_dir)
-    output = (directory / 'stdout_stderr.log').open('a', encoding='utf-8', buffering=1)
-    sys.stdout = sys.stderr = output
     import logging
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s %(levelname)s %(name)s %(message)s',

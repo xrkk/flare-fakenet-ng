@@ -228,7 +228,7 @@ class RealSupervisor:
                 if self._activity_lock:
                     self._activity_lock.release()
                     self._activity_lock = None
-                return self._result('stopped')
+                return dict(self._result('stopped'), changed=False)
             if not marker or not marker['run_id']:
                 return self._result('failed', 'managed run has no recovery identity')
             self._coordinator = coordinator
@@ -302,6 +302,12 @@ class RealSupervisor:
                 run_id, self._run_dir, prefix='')
 
     def _collect_incident(self, reason, deadline=None):
+        try:
+            return self._collect_incident_impl(reason, deadline)
+        except BaseException:
+            logger.exception('incident preparation failed; continuing cleanup')
+
+    def _collect_incident_impl(self, reason, deadline=None):
         if not self._artifacts_root or not self._marker:
             return
         from fakenet.mcp.incident import IncidentCollector
@@ -315,21 +321,56 @@ class RealSupervisor:
                 pass
         def read_file(name):
             path = self._run_dir / name if self._run_dir else None
-            return path.read_text(encoding='utf-8', errors='replace') if path and path.exists() else None
+            return path.read_bytes() if path and path.exists() else None
+        import json
+        import platform
+        import importlib.metadata
+        from fakenet.mcp.baseline import capture, audit_compare
+        from fakenet.mcp.service_stop import process_identity
+        baseline = self._baseline_store.load(self._marker['run_id'])
+        current = capture(deadline)
+        versions = {'python': sys.version, 'os': platform.platform(),
+                    'executable': sys.executable,
+                    'config_sha256': self._marker['config_sha256'], 'dependencies': {}}
+        for package in ('mcp', 'pydivert', 'pywin32', 'psutil'):
+            try:
+                versions['dependencies'][package] = importlib.metadata.version(package)
+            except importlib.metadata.PackageNotFoundError:
+                versions['dependencies'][package] = 'metadata unavailable'
+        manifest = Path(sys.executable).parent / 'mcp-candidate-manifest.json'
+        if manifest.is_file():
+            versions['candidate_manifest'] = json.loads(manifest.read_text(encoding='utf-8'))
+        metadata = []
+        if self._run_dir:
+            for path in self._run_dir.iterdir():
+                if path.is_file():
+                    raw = path.read_bytes()
+                    metadata.append({'path': str(path), 'size': len(raw),
+                                     'sha256': hashlib.sha256(raw).hexdigest()})
+        target_creation = None
+        if child:
+            try:
+                target_creation = process_identity(child.pid)['creation_time']
+            except OSError:
+                pass
         context = {'timeline': self._coordinator.events(500),
-                   'versions': {'python': sys.version, 'platform': sys.platform},
+                   'versions': versions,
                    'config_path': self._active_config_path,
                    'stdout_stderr': read_file('stdout_stderr.log'),
                    'run_log_window': read_file('run.log'),
                    'exception_text': reason, 'managed_thread_stacks': stacks,
                    'final_filter': self._health_cache.get('final_filter'),
-                   'baseline_diff': self._baseline_store.full_audit_diff(self._marker['run_id'], deadline=deadline),
-                   'artifact_metadata': [], 'dump_target_pid': child.pid if child else None,
+                   'baseline_diff': {'before': baseline, 'after': current,
+                       'differences': audit_compare((baseline or {}).get('sections'), current)},
+                   'firewall_baseline': (baseline or {}).get('firewall'),
+                   'artifact_metadata': metadata, 'dump_target_pid': child.pid if child else None,
+                   'dump_target_creation': target_creation,
                    'dump_reason': None if stacks else 'managed stacks unavailable'}
         collector = IncidentCollector(self._artifacts_root, self._marker['run_id'])
         if deadline:
             collector.deadline = min(collector.deadline, time.time() + max(0, deadline-time.monotonic()))
         collector.collect(context)
+        self._health_cache['incident_path'] = str(collector.root)
 
     def _inject_exclusion(self, instance):
         """Inject the control-link exclusion keys into the parsed diverter

@@ -13,6 +13,7 @@ import os
 import time
 import base64
 import tempfile
+import csv
 import subprocess
 from pathlib import Path
 
@@ -52,6 +53,23 @@ def _normalize(section, value):
     if value is None:
         return ''
     text = str(value)
+    if section == 'windivert_processes':
+        try:
+            observed = json.loads(text)
+            if isinstance(observed, dict) and set(observed) == {'modules', 'managed', 'drivers'}:
+                modules = []
+                for line in observed['modules']:
+                    row = next(csv.reader([line]))
+                    modules.append([row[0], row[2]] if len(row) == 3 else row)
+                # Raw PID and creation time remain in the baseline. Comparing
+                # identities across SCM restart permits PID replacement only,
+                # never losing a process, module, driver or multiplicity.
+                observed = {'modules': sorted(modules),
+                            'managed': sorted(p['ProcessName'] for p in observed['managed']),
+                            'drivers': sorted(observed['drivers'], key=lambda p: p['Name'])}
+                return json.dumps(observed, sort_keys=True, ensure_ascii=False)
+        except (ValueError, TypeError, KeyError):
+            pass
     if section in ('services', 'dns_servers'):
         try:
             data = json.loads(text)
@@ -120,11 +138,14 @@ def capture(deadline=None):
                 'Select-Object InterfaceAlias,ServerAddresses | '
                 'ConvertTo-Json -Compress'])
     processes = collect(['powershell', '-NoProfile', '-Command',
-                      '(tasklist /m WinDivert*.sys 2>$null) + '
-                      '(Get-Process fakenetng-mcp,fakenet '
-                      '-ErrorAction SilentlyContinue | '
-                      'Select-Object -ExpandProperty ProcessName) | '
-                      'Out-String'])
+        "$ErrorActionPreference='Stop'; $modules=@(& tasklist.exe /m WinDivert* /fo csv /nh); "
+        "if($LASTEXITCODE -ne 0){throw 'tasklist module observation failed'}; "
+        "$managed=@(Get-Process fakenetng-mcp,fakenet -ErrorAction SilentlyContinue | "
+        "Select-Object ProcessName,Id,StartTime); "
+        "$drivers=@(Get-CimInstance Win32_SystemDriver | Where-Object {"
+        "$_.Name -like 'WinDivert*' -or $_.PathName -like '*WinDivert*'} | "
+        "Select-Object Name,State,Started,PathName); "
+        "@{modules=$modules;managed=$managed;drivers=$drivers} | ConvertTo-Json -Depth 5 -Compress"])
     ports = collect(['netstat', '-ano'])
     services = collect(['powershell', '-NoProfile', '-Command',
                      'Get-Service dnscache,mpssvc | '
@@ -146,11 +167,19 @@ class BaselineStore:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def save(self, run_id, sections=None):
+        runtime_capture = sections is None
         sections = sections or capture()
         if any(field not in sections or sections[field] in (None, COLLECTION_FAILED)
                for field in BASELINE_FIELDS):
             raise RuntimeError('pre-start baseline collection incomplete')
-        payload = json.dumps({'run_id': run_id, 'sections': sections},
+        firewall = None
+        if runtime_capture:
+            firewall = _run(['netsh', 'advfirewall', 'firewall', 'show',
+                             'rule', 'name=FakeNet-NG MCP', 'verbose'])
+            if firewall == COLLECTION_FAILED:
+                raise RuntimeError('pre-start firewall evidence unavailable')
+        payload = json.dumps({'run_id': run_id, 'sections': sections,
+                              'firewall': firewall},
                              ensure_ascii=False, indent=2) + '\n'
         path = self.root / ('%s.json' % run_id)
         fd, temporary = tempfile.mkstemp(dir=self.root, prefix='.baseline-')

@@ -101,9 +101,10 @@ class FaultInjector:
         import subprocess
         import sys
 
+        prefix = ([sys.executable] if getattr(sys, 'frozen', False) else
+                  [sys.executable, '-m', 'fakenet.mcp'])
         self._child = subprocess.Popen(
-            [sys.executable, '-c',
-             'import time; time.sleep(3600)'],
+            prefix + ['managed-fault-hang'],
             creationflags=getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))
         return True
 

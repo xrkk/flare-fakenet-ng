@@ -107,8 +107,21 @@ class ServiceStop:
 
     def _run(self):
         deadline = time.monotonic() + self.budget
+        expired = threading.Event()
+        complete = threading.Event()
+        def timeout():
+            with self._lock:
+                if complete.is_set():
+                    return
+                expired.set()
+                self._fail('prestop total budget exhausted')
+        watchdog = threading.Timer(self.budget, timeout)
+        watchdog.daemon = True
+        watchdog.start()
         if not self.coordinator.wait_for_idle(min(self.inflight_limit, self.budget)):
             self._fail('inflight_timeout')
+            complete.set()
+            watchdog.cancel()
             return
         try:
             result = self.converge(deadline)
@@ -121,16 +134,22 @@ class ServiceStop:
                     state['controller'] is not None):
                 raise RuntimeError('recovery responsibility remains')
             with self._lock:
+                if expired.is_set() or time.monotonic() >= deadline:
+                    raise TimeoutError('prestop total budget exhausted')
                 # SCM acceptance is published before the success file.
                 self.ready = True
                 try:
                     self.publish_ready()
                     self._write('succeeded')
+                    complete.set()
                 except BaseException:
                     self.ready = False
                     raise
         except BaseException as exc:
             self._fail(str(exc))
+        finally:
+            complete.set()
+            watchdog.cancel()
 
 
 def stop_installed_service(config, result_path, snapshot_path):

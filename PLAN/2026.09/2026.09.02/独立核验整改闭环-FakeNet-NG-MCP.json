@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "2586b8845b3f745a798cc2e0572195755b748ebb",
+  "current_head": "f4c5f2cac96326a1faf8b381c961b9ced2d985a5",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -320,6 +320,10 @@
     {
       "head": "2586b8845b3f745a798cc2e0572195755b748ebb",
       "purpose": "PLAN-CHANGE-001—005已审规范及中间代码；非最终验收"
+    },
+    {
+      "head": "f4c5f2cac96326a1faf8b381c961b9ced2d985a5",
+      "purpose": "修复HTTP健康回归；构建证据保留Logs"
     }
   ],
   "plan_changes": [
@@ -362,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "必要方案通过，独立进程/两阶段停服中间代码回归完成，准备中间提交与原生诊断包；CHK全OPEN、1/5轮。",
+  "checkpoint": "原生失败已归因并导出；服务STOPPED；当前修复未提交，CHK全OPEN，1/5轮。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-029",
-    "action": "提交健康回归修正及构建证据永久写Logs；新提交新目录重建候选"
+    "id": "INTENT-034",
+    "action": "提交本次原生反例整改中间源码，再按固定HEAD构建唯一诊断候选"
   },
   "events": [
     {
@@ -533,6 +537,31 @@
       "at": "2026-09-09T16:35:22.668567+08:00",
       "intent": "INTENT-028",
       "actual": "2586b88打包前扩展HTTP回归6失败，归因本次移除evaluate_health旧接口；未生成ZIP，失败日志保留。已把健康判据抽为生产/HTTP回归共享函数并恢复瞬时异常降级；Linux164通过1跳过。"
+    },
+    {
+      "at": "2026-09-09T16:35:57.303451+08:00",
+      "intent": "INTENT-029",
+      "actual": "已验证提交f4c5f2cac96326a1faf8b381c961b9ced2d985a5；从此固定源码构建mcp-remediation-20260909-f4c5f2c"
+    },
+    {
+      "at": "2026-09-09T16:38:56.101404+08:00",
+      "intent": "INTENT-030",
+      "actual": "构建及Windows测试/frozen smoke/ZIP校验通过；输出参数实际相对/workspace生成仓库根新目录，已迁入dist同名新目录且ZIP SHA未变；包仅为原生诊断候选"
+    },
+    {
+      "at": "2026-09-09T16:40:54.114894+08:00",
+      "intent": "INTENT-031",
+      "actual": "唯一Snapshot183单次revert完成；Snapshot99内存标记匹配；仅vmware -x一次；Win10VM只读返回DESKTOP-3FI41GR完成门通过"
+    },
+    {
+      "at": "2026-09-09T17:00:49.971404+08:00",
+      "intent": "INTENT-032",
+      "actual": "f4c5f2c SHA验证部署完成；原生空闲直接STOP拒绝、CLI两阶段STOP成功。首次FakeNet启动因certutil CP936污染IPC失败，253状态探测无中断；已完成收敛并停服，证据ZIP SHA c78b74930df0dc28f2def2e1a690fe09002f055007b63386d4be4e030ca39496 已导出。两处临时传输服务均停止。"
+    },
+    {
+      "at": "2026-09-09T17:04:59.211887+08:00",
+      "intent": "INTENT-033",
+      "actual": "已修复OS标准句柄污染、失败结果保留、WinDivert观察命令、独立incident目录/子进程堆栈/受限转储worker/防火墙前后差异、停服总超时watchdog；Linux164通过2跳过，新增停服与incident定向22通过；Wine144通过6跳过，包含外部CP936输出隔离。未做原生ACC通过声明。"
     }
   ],
   "response_record": {
@@ -744,5 +773,12 @@
       ],
       "open": []
     }
-  ]
+  ],
+  "candidate": {
+    "source_head": "f4c5f2cac96326a1faf8b381c961b9ced2d985a5",
+    "path": "dist/mcp-remediation-20260909-f4c5f2c/fakenetng-mcp-candidate.zip",
+    "sha256": "30f1710a75954a90763e4de00aa88d347e2e0394f3a08f264a6b6eedb8b1552b",
+    "candidate_id": "mcp-cf4c5f2ca-30f1710a7595",
+    "formal_acc_pass": false
+  }
 }

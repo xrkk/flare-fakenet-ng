@@ -34,6 +34,7 @@ def test_incident_manifest_schema(tmp_path, monkeypatch):
     context = {'timeline': [{'kind': 'x'}], 'versions': {'python': '3'},
                'config_path': None, 'stdout_stderr': 'out',
                'run_log': '', 'exception_text': 'Traceback',
+               'managed_thread_stacks': 'Thread 123: managed_loop',
                'final_filter': 'f', 'baseline_diff': {},
                'artifact_metadata': [], 'dump_reason': None}
     collector.collect(context)

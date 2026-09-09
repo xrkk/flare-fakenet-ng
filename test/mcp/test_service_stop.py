@@ -90,3 +90,35 @@ def test_repeated_prestop_shares_active_attempt(tmp_path):
     assert stop.request()['attempt'] == 1
     release.set()
     assert wait_done(stop)['attempt'] == 1
+
+
+def test_total_deadline_reports_failure_while_worker_remains_fenced(tmp_path):
+    coord = Coordinator(LifecycleDouble())
+    entered, release = threading.Event(), threading.Event()
+    published = []
+    def converge(deadline):
+        def execute(c):
+            entered.set()
+            release.wait(2)
+            return {'state': 'stopped', 'release_controller': True}
+        return coord.submit(command_id='converge', expected_version=1,
+                            controller=None, controller_valid=True,
+                            kind='service_stop', describe={}, internal=True,
+                            execute=execute)
+    stop = ServiceStop(coord, converge, lambda: published.append(True),
+                       tmp_path / 'stop.json', identity={'pid': 1})
+    stop.budget = 0.05
+    stop.request()
+    assert entered.wait(1)
+    try:
+        limit = time.monotonic() + 1
+        while read_result(stop.path)['phase'] != 'failed' and time.monotonic() < limit:
+            time.sleep(0.01)
+        assert read_result(stop.path)['phase'] == 'failed'
+        assert stop._worker.is_alive()
+        assert stop.request()['attempt'] == 1
+    finally:
+        release.set()
+    assert wait_done(stop)['phase'] == 'failed'
+    assert coord.snapshot()['state'] == 'failed'
+    assert not stop.ready and published == []

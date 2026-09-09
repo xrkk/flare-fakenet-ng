@@ -82,6 +82,7 @@ class Coordinator:
                 'controller': self._controller,
                 'failure_reason': self._failure_reason,
                 'config_identity': self._config_identity,
+                'last_run_outcome': self._last_run_outcome,
             }
         # Sample health OUTSIDE the metadata lock: health_detail takes the
         # supervisor lock, and supervisor.stop() calls this snapshot while
@@ -254,7 +255,7 @@ class Coordinator:
 
             if 'last_run_outcome' in result:
                 self._last_run_outcome = result['last_run_outcome']
-            elif result.get('release_controller') and \
+            elif result.get('release_controller') and result.get('changed', True) and \
                     result.get('state') == 'stopped':
                 self._last_run_outcome = 'ok'
             response = {
