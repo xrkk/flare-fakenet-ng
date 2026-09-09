@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import (EXIT_BLOCKED, EXIT_FAIL, EXIT_PASS,  # noqa: E402
                      EXIT_TOOL_ERROR, EvidenceWriter, StepError, Win10VmChannel)
-from run_p02_acc import CONTROLLER_A, VALID_INI, call, sha_of, status  # noqa: E402
+from run_p02_acc import CONTROLLER_A, VALID_INI, call, sha_of, status, envelope  # noqa: E402
 from pathlib import PureWindowsPath  # noqa: E402
 from run_p03_acc import continuous_probe, load_and_start, stop_run, unique_command  # noqa: E402
 
@@ -176,9 +176,10 @@ def run_acc015(base, channel, writer):
     # This negative check must receive an explicit unknown-tool response;
     # an unrelated HTTP error or unreachable service is not proof.
     body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                       'params': {'name': 'download_artifact', 'arguments': {'path': artifact['path']}}}).encode()
+                       'params': {'name': 'download_artifact', 'arguments': {'path': artifact['path']},
+                                  '_meta': envelope()}}).encode()
     request = urllib.request.Request(base + '/mcp', data=body, method='POST', headers={
-        'Content-Type': 'application/json', 'Accept': 'application/json',
+        'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream',
         'MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call', 'Mcp-Name': 'download_artifact'})
     try:
         with urllib.request.urlopen(request, timeout=10) as response:

@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "74e657ef789e72cf944aef98cfb7b2173782ffa4",
+  "current_head": "d7daa216887235cd6ed65e8d4e31c021b7f41e35",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -369,8 +369,8 @@
   "checkpoint": "1134521原生单次IPC健康恢复通过，stop因UDP差异失败；15项现场导出。漏incident整改Linux184/Windows181通过待提交。核验仍1/5，CHK全OPEN。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-075",
-    "action": "提交接收器真实关闭证据改进，对同一50b8752场景使用新冻结runner/新输出目录复验实际带外传输，不改原失败记录或算作完整ACC。"
+    "id": "INTENT-076",
+    "action": "提交合法未知工具信封修正；导出当前50b8752完整应用运行证据（明确文件列表，排除临时TLS材料）后继续剩余授权内整改，CHK仍全部OPEN。"
   },
   "events": [
     {
@@ -969,6 +969,14 @@
     {
       "intent": "INTENT-074",
       "actual": "74e657e实机PCAP传输完成但guest关闭确认TIMEOUT，保留失败。新核对要求线程停止、socket=-1、宿主无LISTEN且guest不连接，6项范围/内核状态反例通过，待固定源码实机复验。"
+    },
+    {
+      "intent": "INTENT-075",
+      "actual": "接收器真实关闭证据提交d7daa21；Linux192通过，冻结同树runner准备实机重验，旧74e657e失败输出未改。"
+    },
+    {
+      "intent": "INTENT-075",
+      "actual": "d7daa21实际PCAP91527字节双端SHA一致、宿主线程/socket/内核无监听证据通过；整体因未知工具探针缺_meta仍失败。复用P02合法信封后单独实机明确Unknown tool通过，旧失败未改。"
     }
   ],
   "active_build": {
