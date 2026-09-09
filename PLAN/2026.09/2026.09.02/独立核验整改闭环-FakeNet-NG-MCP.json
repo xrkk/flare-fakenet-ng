@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "c087649bed102fd4e6e351a56190ba89d4060a4e",
+  "current_head": "50b8752839053143fd369ece073e1ce70a18a96b",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -369,8 +369,8 @@
   "checkpoint": "1134521原生单次IPC健康恢复通过，stop因UDP差异失败；15项现场导出。漏incident整改Linux184/Windows181通过待提交。核验仍1/5，CHK全OPEN。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-070",
-    "action": "提交上述证据整改并固定源码构建；在新的冻结runner上验证永久IPC超时和审计失败多incident，保留当前已导出现场。"
+    "id": "INTENT-073",
+    "action": "提交ACC015真实传输入口；对当前50b8752失败场景用固定新runner执行单独带外导出诊断，记录不同runner/已安装包来源，不计完整ACC或发布通过。"
   },
   "events": [
     {
@@ -945,14 +945,26 @@
     {
       "intent": "INTENT-069",
       "actual": "所有incident目录实际导出/完整覆盖/成员字节复验、P04多包定位和总纲控制环回汇总门已补齐；最终Linux186通过。保留退出后最终filter事实，普通stop明确失败不再等待自愈。DNS基线probe10054已记录，无配置变更。"
+    },
+    {
+      "intent": "INTENT-070",
+      "actual": "提交50b8752，冻结相同git树runner，新目录构建启动。当前VM仍1134521 failed，15项必需现场已导出。"
+    },
+    {
+      "intent": "INTENT-071",
+      "actual": "50b8752构建/包校验PASS；原生身份门三项匹配。ZIPec7bfad279712adfafc846c5b6f047da3638977de5d4a1d18012ccf9a76e071d，待部署永久IPC诊断。"
+    },
+    {
+      "intent": "INTENT-072",
+      "actual": "50b8752永久IPC诊断结束，两包实际导出哈希与内容完整；ACC015真实incident/PCAP+接收器关闭入口已改，Linux191/Windows188通过。"
     }
   ],
   "active_build": {
-    "source_head": "1134521b3156482c06122a8ce9eb44f8baed78b9",
+    "source_head": "50b8752839053143fd369ece073e1ce70a18a96b",
     "status": "COMPLETED",
-    "output_directory": "dist/mcp-remediation-20260910-1134521",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-1134521.txt",
-    "exec_session_id": 52438
+    "output_directory": "dist/mcp-remediation-20260910-50b8752",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-50b8752.txt",
+    "exec_session_id": 90613
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/native-1134521-once-runtime.zip",
@@ -971,14 +983,18 @@
     "sha256": "724ed41e0c7b67179ce3dda8daf6d7dca907b61ca3d8cb3f07c0d20bb3fec286"
   },
   "active_native_validation": {
-    "session_id": 5662,
+    "session_id": 41889,
     "status": "COMPLETED",
-    "source_head": "1134521b3156482c06122a8ce9eb44f8baed78b9",
-    "runner_snapshot": "Logs/fakenetng-mcp/remediation-20260910/native-source-1134521",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/native-1134521-ipc-console.txt",
-    "run_id": "58ced420-d87a-4313-a7d9-7d999ea8736b",
-    "observation": "单次超时原始IPC检查通过；普通stop全审计失败，原runner等待420秒截止中，未重试。",
-    "result": "IPC局部检查通过；920 HTTP零错误，但stop恢复审计失败。只完成首个诊断，不计正式ACC。"
+    "source_head": "50b8752839053143fd369ece073e1ce70a18a96b",
+    "runner_snapshot": "Logs/fakenetng-mcp/remediation-20260910/native-source-50b8752",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/native-50b8752-ipc-permanent-console.txt",
+    "diagnostic_cases": [
+      "ipc_permanent_timeout"
+    ],
+    "formal_acc_pass": false,
+    "run_id": "2c22f8e8-19d4-4dce-b109-fdbafb6d0e2d",
+    "observation": "永久IPC两次超时在同PID8080的278.828/280.843秒对应degraded/failed，检查通过；两次incident manifest完整，首包含dump，第二包无升级条件跳过dump。当前failed，原runner尚在等待。",
+    "result": "永久IPC时序通过、843HTTP零错误、实际两包15/14项字节通过；全恢复失败，不计ACC。"
   },
   "environment_question": {
     "status": "AWAITING_INFORMATION",

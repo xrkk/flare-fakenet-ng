@@ -135,94 +135,64 @@ def _wait_terminal(base, timeout=90):
 
 
 def run_acc015(base, channel, writer):
-    writer.action('acc015', 'artifact metadata, no content, real band export')
-    checks = {}
+    """Export actual incidents and a PCAP belonging to the same run."""
+    from pathlib import PureWindowsPath
+    import uuid
+    from helpers import export_run_incidents
+    from artifact_transfer import receive_artifact
+    writer.action('acc015', 'metadata-only product API; actual incident and PCAP export')
     listing = call(base, 'list_artifacts', controller=None)
-    checks['metadata_only'] = all(
-        set(item) == {'path', 'type', 'size', 'complete', 'sha256'}
-        for item in listing.get('artifacts', []))
+    writer.add_evidence('acc015-artifact-listing', listing)
+    items = listing.get('artifacts') or []
+    if not items or listing.get('error') or any(set(item) != {'path', 'type', 'size', 'complete', 'sha256'} for item in items):
+        writer.blocker = {'reason': 'actual metadata-only artifact listing missing or invalid'}
+        return EXIT_BLOCKED
+    root = PureWindowsPath('C:/ProgramData/FakeNet-NG-MCP/artifacts')
+    incident_runs, pcaps = set(), []
+    for item in items:
+        path = PureWindowsPath(item['path'])
+        if not path.is_relative_to(root) or '..' in path.parts:
+            return EXIT_FAIL
+        parts = path.relative_to(root).parts
+        try:
+            run_id = str(uuid.UUID(parts[1] if parts[0] == 'runs' else parts[0]))
+        except (ValueError, IndexError):
+            continue
+        if len(parts) == 3 and parts[0] == run_id and parts[1].startswith('incident') and parts[-1] == 'manifest.json':
+            incident_runs.add(run_id)
+        if path.suffix.lower() == '.pcap' and item['complete'] and item['size'] > 24:
+            pcaps.append((run_id, item))
+    eligible = [(run_id, item) for run_id, item in pcaps if run_id in incident_runs]
+    if not eligible:
+        writer.blocker = {'reason': 'same-run actual incident and completed PCAP required'}
+        return EXIT_BLOCKED
+    run_id, artifact = sorted(eligible, key=lambda pair: pair[1]['path'])[0]
+    bundles = export_run_incidents(channel, run_id, writer.out_dir)
+    writer.add_evidence('acc015-actual-incidents', bundles)
+    writer.evidence.extend({k: bundle[k] for k in ('path', 'size', 'sha256')} for bundle in bundles)
+    exported = receive_artifact(channel, artifact, writer.out_dir / ('runtime-' + run_id + '.pcap'))
+    writer.add_evidence('acc015-real-band-transfer', exported)
+    writer.evidence.append({k: exported[k] for k in ('path', 'size', 'sha256')})
+    # This negative check must receive an explicit unknown-tool response;
+    # an unrelated HTTP error or unreachable service is not proof.
     body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                       'params': {'name': 'download_artifact',
-                                  'arguments': {'path': 'x'},
-                                  '_meta': {}}}).encode()
-    request = urllib.request.Request(
-        base + '/mcp', data=body, method='POST', headers={
-            'Content-Type': 'application/json', 'Accept': 'application/json',
-            'MCP-Protocol-Version': '2026-07-28',
-            'Mcp-Method': 'tools/call', 'Mcp-Name': 'download_artifact'})
+                       'params': {'name': 'download_artifact', 'arguments': {'path': artifact['path']}}}).encode()
+    request = urllib.request.Request(base + '/mcp', data=body, method='POST', headers={
+        'Content-Type': 'application/json', 'Accept': 'application/json',
+        'MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call', 'Mcp-Name': 'download_artifact'})
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             raw = response.read().decode('utf-8', 'replace')
-        checks['no_download_tool'] = 'Unknown tool' in raw
-    except urllib.error.HTTPError:
-        checks['no_download_tool'] = True
-
-    # Real guest->host transfer over the authorized host-only channel: a
-    # receiver bound ONLY to 192.168.204.1 accepts one artifact; both
-    # sides compute SHA-256; the receiver is stopped afterwards and the
-    # guest confirms the port closed (contract: 双端SHA + 服务停止证据).
-    import http.server
-    import socketserver
-    import threading as _threading
-
-    received = {}
-
-    class _Handler(http.server.BaseHTTPRequestHandler):
-        def do_PUT(self):
-            length = int(self.headers.get('Content-Length', 0))
-            received['data'] = self.rfile.read(length)
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b'ok')
-
-        def log_message(self, *args):  # noqa: N802
-            pass
-
-    server = socketserver.TCPServer(('192.168.204.1', 8079), _Handler)
-    server.timeout = 1.0
-    serve_thread = _threading.Thread(
-        target=lambda: server.handle_request() or server.handle_request(),
-        daemon=True)
-    serve_thread.start()
-    time.sleep(0.5)
-
-    # Create a deterministic test file on the guest for the transfer.
-    test_content = 'FakeNet-NG-MCP band export test %s' % time.time()
-    ps_cmd = (
-        "$c = '%s'; " % test_content +
-        "[IO.File]::WriteAllText('C:\\Progra~1\\FakeNet-NG-MCP\\band-test.txt', $c); "
-        "$h = (Get-FileHash 'C:\\Progra~1\\FakeNet-NG-MCP\\band-test.txt' "
-        "-Algorithm SHA256).Hash.ToLower(); "
-        "Invoke-WebRequest -Uri 'http://192.168.204.1:8079/band' "
-        "-Method Put -InFile 'C:\\Progra~1\\FakeNet-NG-MCP\\band-test.txt' "
-        "-UseBasicParsing | Out-Null; "
-        "'SENT||C:\\Progra~1\\FakeNet-NG-MCP\\band-test.txt||' + $h")
-    pick = channel.powershell(ps_cmd, timeout=180)
-    writer.add_evidence('acc015-band-export', pick)
-    serve_thread.join(timeout=30)
-    server.server_close()
-    time.sleep(0.5)
-    closed = channel.powershell(
-        '(Test-NetConnection 192.168.204.1 -Port 8079 -WarningAction '
-        'SilentlyContinue).TcpTestSucceeded', timeout=120)
-    writer.add_evidence('acc015-receiver-closed', closed)
-    lines = [line for line in pick['output'].splitlines()
-             if line.startswith('SENT||')]
-    if lines and received.get('data'):
-        _, guest_path, guest_hash = lines[0].split('||', 2)
-        host_hash = hashlib.sha256(received['data']).hexdigest()
-        writer.add_evidence('acc015-sha-pair',
-                            {'guest_path': guest_path,
-                             'guest_sha256': guest_hash.strip(),
-                             'host_sha256': host_hash,
-                             'bytes': len(received['data'])})
-        checks['band_export_dual_sha_match'] = \
-            guest_hash.strip() == host_hash
-        checks['band_receiver_stopped'] = \
-            closed['output'].strip().lower() == 'false'
-    else:
-        checks['band_export_dual_sha_match'] = False
-        checks['band_receiver_stopped'] = False
+            code = response.status
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode('utf-8', 'replace')
+        code = exc.code
+    writer.add_evidence('acc015-no-content-tool-response', {'http_status': code, 'body': raw})
+    checks = {'actual_same_run_exported': bool(bundles),
+              'pcap_dual_sha_match': exported['sha256'].lower() == artifact['sha256'].lower(),
+              'receiver_closed': exported['closure']['output'].strip() == 'CLOSED',
+              'no_download_tool': 'unknown tool' in raw.lower()}
+    writer.add_evidence('acc015-checks', checks)
     return EXIT_PASS if all(checks.values()) else EXIT_FAIL
 
 
