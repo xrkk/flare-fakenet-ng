@@ -1,8 +1,24 @@
 """S2: actual initialization failure, not configuration syntax rejection."""
 import json
+import re
 import uuid
 
 from helpers import StepError, arm_fault_file, configure_fault_service, export_run_incidents
+
+
+def initialization_traceback(log):
+    # Frozen Python retains file/function frames but omits source-line text.
+    frames = re.findall(r'File "([^"]+)", line \d+, in (\w+)', log.replace('\\', '/'))
+    expected = [('fakenet/mcp/managed.py', 'child_main'),
+                ('fakenet/fakenet.py', 'start'),
+                ('fakenet/mcp/faultinject.py', 'initialize')]
+    for offset in range(max(0, len(frames) - len(expected) + 1)):
+        if all(path.endswith(wanted_path) and function == wanted_function
+               for (path, function), (wanted_path, wanted_function) in
+               zip(frames[offset:offset + len(expected)], expected)):
+            return ('Traceback (most recent call last)' in log and
+                    'RuntimeError: injected managed initialization failure' in log)
+    return False
 
 
 def run_initialization_failure(base, channel, writer):
@@ -50,9 +66,7 @@ def run_initialization_failure(base, channel, writer):
     return {
         'valid_config_loaded': loaded.get('error') is None,
         'actual_fault_nonce': facts['receipt'] == {'fault': 'initialization_failure', 'nonce': nonce},
-        'traceback_inside_fakenet_start': all(word in facts['log'] for word in
-            ('Traceback (most recent call last)', 'in start', 'initialization_hook',
-             'RuntimeError: injected managed initialization failure')),
+        'traceback_inside_fakenet_start': initialization_traceback(facts['log']),
         'actual_child_error_response': any(row.get('event') == 'send' and
             'injected managed initialization failure' in str((row.get('frame') or {}).get('error', '')) for row in child),
         'never_published_healthy': not any(row.get('event') == 'health_state' and
