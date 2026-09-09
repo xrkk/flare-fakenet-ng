@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "a34394313a3a2662898adc8725c71a9cfd41836d",
+  "current_head": "2586b8845b3f745a798cc2e0572195755b748ebb",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -316,6 +316,10 @@
         "CHK-060采集结果分类，仅局部"
       ],
       "verified": "3个预期文件；Linux133passed/1skip，Wine128passed/6skip"
+    },
+    {
+      "head": "2586b8845b3f745a798cc2e0572195755b748ebb",
+      "purpose": "PLAN-CHANGE-001—005已审规范及中间代码；非最终验收"
     }
   ],
   "plan_changes": [
@@ -361,8 +365,8 @@
   "checkpoint": "必要方案通过，独立进程/两阶段停服中间代码回归完成，准备中间提交与原生诊断包；CHK全OPEN、1/5轮。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-027",
-    "action": "提交经本地回归的中间源码和已审核规范快照；随后构建独立候选用于原生诊断，不宣称最终ACC"
+    "id": "INTENT-029",
+    "action": "提交健康回归修正及构建证据永久写Logs；新提交新目录重建候选"
   },
   "events": [
     {
@@ -519,6 +523,16 @@
       "at": "2026-09-09T16:30:27.902051+08:00",
       "intent": "INTENT-026",
       "actual": "已实现独立Job进程/固定IPC、两阶段SCM/CLI、恢复态接线/责任栅栏及全审计；Linux145通过1跳过+SCM新增2通过，Wine全套142通过6跳过；原生Job最小探针通过。完整incident/补偿故障矩阵/ACC仍待完成，不关闭CHK。"
+    },
+    {
+      "at": "2026-09-09T16:31:29.477394+08:00",
+      "intent": "INTENT-027",
+      "actual": "已验证中间提交2586b8845b3f745a798cc2e0572195755b748ebb，保护文件未暂存/变更"
+    },
+    {
+      "at": "2026-09-09T16:35:22.668567+08:00",
+      "intent": "INTENT-028",
+      "actual": "2586b88打包前扩展HTTP回归6失败，归因本次移除evaluate_health旧接口；未生成ZIP，失败日志保留。已把健康判据抽为生产/HTTP回归共享函数并恢复瞬时异常降级；Linux164通过1跳过。"
     }
   ],
   "response_record": {

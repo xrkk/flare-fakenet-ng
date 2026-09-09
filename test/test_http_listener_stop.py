@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from fakenet.mcp.supervisor import RealSupervisor
+from fakenet.mcp.supervisor import evaluate_health_evidence
 
 from fakenet.listeners.HTTPListener import (
     HTTPListener,
@@ -76,13 +76,12 @@ def test_request_error_health_classification(request_error, healthy):
     listener, server, thread = _start_server(RequestErrorHandler)
     log = io.StringIO()
     server.logger.addHandler(logging.StreamHandler(log))
-    supervisor = RealSupervisor(log_reader=lambda offset: log.getvalue(),
-                                probe_impl=lambda instance: thread.is_alive())
-    supervisor._fakenet = SimpleNamespace(running_listener_providers=[server])
     try:
         _request(server, b'POST / HTTP/1.0\r\nContent-Length: 0\r\n\r\n')
         assert thread.is_alive()
-        assert supervisor.evaluate_health()[0] is healthy, log.getvalue()
+        assert evaluate_health_evidence(
+            {'process_alive': thread.is_alive(), 'init_evidence': True,
+             'probe': thread.is_alive()}, log.getvalue())[0] is healthy, log.getvalue()
         assert b'200 OK' in _request(server, b'GET / HTTP/1.0\r\n\r\n')
     finally:
         _stop_with_deadline(listener, thread)

@@ -16,6 +16,15 @@ HEALTH_INTERVAL_SECONDS = 2.0
 RESTART_SETTLE_SECONDS = 5.0
 
 
+def evaluate_health_evidence(detail, run_log):
+    """The same three-input predicate is used by IPC and listener regression."""
+    if not all(detail.get(k) for k in ('process_alive', 'init_evidence', 'probe')):
+        return False, 'managed initialization/handle probe failed'
+    if 'Traceback (most recent call last)' in run_log or 'Unhandled exception' in run_log:
+        return False, 'unhandled exception in current run log'
+    return True, None
+
+
 class SupervisorStartError(RuntimeError):
     pass
 
@@ -151,14 +160,20 @@ class RealSupervisor:
             try:
                 detail = child.request('health', timeout=1)
                 self._health_cache = dict(detail, process_alive=child.alive(), identity=child.identity)
-                if not all(self._health_cache.get(k) for k in ('process_alive', 'init_evidence', 'probe')):
-                    raise RuntimeError('managed initialization/handle probe failed')
                 run_log = self._run_dir / 'run.log'
+                log_text = ''
                 if run_log.exists():
                     with run_log.open('rb') as stream:
                         stream.seek(max(0, run_log.stat().st_size - 65536))
-                        if b'Traceback (most recent call last)' in stream.read():
-                            raise RuntimeError('unhandled exception in current run log')
+                        log_text = stream.read().decode('utf-8', 'replace')
+                healthy, reason = evaluate_health_evidence(self._health_cache, log_text)
+                if not healthy:
+                    if 'unhandled exception' in reason:
+                        failures += 1
+                        if failures < 2:
+                            self._coordinator.update_health_state('degraded', reason)
+                            continue
+                    raise RuntimeError(reason)
                 failures = 0
                 self._coordinator.update_health_state('healthy')
                 continue

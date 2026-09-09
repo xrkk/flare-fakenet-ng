@@ -19,6 +19,7 @@ It never touches the formal v35 GUI packaging contract.
 """
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
@@ -491,7 +492,11 @@ def build(repo, source_commit, output_root, output_directory=None):
                            destination_dir)
     destination = destination_dir / 'fakenetng-mcp-candidate.zip'
 
-    with tempfile.TemporaryDirectory(prefix='fakenetng-mcp-') as tmp:
+    diagnostics_root = repo / 'Logs' / 'fakenetng-mcp' / 'builds'
+    diagnostics_root.mkdir(parents=True, exist_ok=True)
+    # Preserve failed and successful compilation/test evidence for attribution.
+    with contextlib.nullcontext(tempfile.mkdtemp(
+            prefix=resolved[:8] + '-', dir=diagnostics_root)) as tmp:
         build_root = Path(tmp)
         source_zip = build_root / 'source.zip'
         stage = build_root / STAGE_DIRECTORY
