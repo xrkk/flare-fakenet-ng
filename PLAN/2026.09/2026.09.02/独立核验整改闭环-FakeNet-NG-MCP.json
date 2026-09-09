@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "63042dbcaef724095fbdbda97a64f5e218ae6c35",
+  "current_head": "027c93d3d6642fb9d7eb3ed9f07f55e63d52d992",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "INTENT-076实际诊断及完整现场保存已验证；可继续授权内整改，未恢复总体验收资格。",
+  "checkpoint": "INTENT-077实现与负向证据已验证，待提交固定源码继续原生创建窗口和旧命令覆盖。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-077",
-    "action": "核对并整改P03 ACC007按进程名批量终止与旁路进程清理的测试副作用；固定SCM及受管树真实身份，保留失败现场，不改变现行契约。"
+    "id": "INTENT-078",
+    "action": "提交ACC007精确终止整改，继续补齐原子创建窗口/旧命令不续接的真实验收；固定新版候选前不计算正式ACC。"
   },
   "events": [
     {
@@ -981,6 +981,10 @@
     {
       "intent": "INTENT-076",
       "actual": "63042db完整ACC015诊断exit0，四项检查均true；同run实际两incident和91527字节PCAP导出通过。当前50b8752运行现场48文件完整导出逐文件校验通过，临时TLS三文件排除。未计正式ACC，所有CHK保持OPEN。"
+    },
+    {
+      "intent": "INTENT-077",
+      "actual": "ACC007精确主管句柄终止和本次canary清理已落地；Linux192/3、Windows解析0错误、实际旧PID8080被拒绝且SCM未变。正向与创建窗口尚未执行，旧命令/创建矩阵明确未覆盖，禁止ACC误通过。"
     }
   ],
   "active_build": {

@@ -693,13 +693,32 @@ def run_acc006(base, channel, writer):
     return EXIT_PASS if all(checked) else EXIT_FAIL
 
 
+def crash_current_service(channel, snapshot):
+    """Pin SCM supervisor and current child; never terminate by process name."""
+    import uuid
+    run_id = str(uuid.UUID(snapshot['run_id']))
+    identity = snapshot['health']['identity']
+    child_pid = int(identity['pid'])
+    created = str(identity['creation_time'])
+    if child_pid <= 0 or not created.isdecimal():
+        raise StepError('invalid managed child identity')
+    script = Path(__file__).with_name('crash_current_service.ps1').read_text()
+    script = script.replace('__CHILD_PID__', str(child_pid)).replace(
+        '__CREATION__', created).replace('__RUN_ID__', run_id)
+    return channel.powershell(script, timeout=60)
+
+
 def run_acc007(base, channel, writer):
     writer.action('acc007', 'kill MCP => job collapses tree, SCM restarts, '
                             'recovery without FakeNet continuation')
     checks = {}
     started = load_and_start(base)
     checks['start_ok'] = started.get('error') is None
-    run_id = status(base).get('run_id')
+    writer.add_evidence('acc007-start', started)
+    healthy, initial = wait_state(base, lambda x: x.get('state') == 'healthy', timeout=45)
+    if not healthy:
+        raise StepError('ACC007 requires a healthy current run; preserve scene')
+    run_id = initial['run_id']
 
     # SCM recovery configuration is part of the contract's restart path.
     qfailure = channel.powershell('sc.exe qfailure fakenetng-mcp',
@@ -708,58 +727,52 @@ def run_acc007(base, channel, writer):
     checks['scm_recovery_configured'] = 'RESTART' in (qfailure['output'] or
                                                       '').upper()
 
-    # An unrelated user process must survive the kill (complete and ONLY
-    # the managed tree terminates; no collateral kills).
-    channel.powershell('Start-Process notepad; Start-Sleep 2; "NOTEPAD_UP"',
-                       timeout=60)
-    channel.powershell(
-        'Get-Process fakenetng-mcp | Stop-Process -Force; "KILLED"',
-        timeout=60)
-    time.sleep(2)
-    survivor = channel.powershell(
-        '(Get-Process notepad -ErrorAction SilentlyContinue | '
-        'Measure-Object).Count', timeout=60)
-    writer.add_evidence('acc007-survivor', survivor)
-    checks['unrelated_process_survives'] = \
-        survivor['output'].strip() != '0'
-    residue = channel.powershell(
-        '(Get-Process fakenet,fakenetng-mcp -ErrorAction SilentlyContinue | '
-        'Measure-Object).Count', timeout=60)
-    writer.add_evidence('acc007-residue', residue)
-    checks['tree_collapsed_no_orphans'] = residue['output'].strip() in (
-        '0', '1')  # the SCM-restarted MCP itself may already be back
-    channel.powershell(
-        'Get-Process notepad -ErrorAction SilentlyContinue | '
-        'Stop-Process; "NOTEPAD_CLEANED"', timeout=60)
+    recovery_log_query = (
+        "Select-String -Path (Join-Path $env:ProgramData "
+        "'FakeNet-NG-MCP\\logs\\service.log') -Pattern "
+        "'startup recovery outcome' | ForEach-Object {$_.Line}")
+    recovery_before = channel.powershell(recovery_log_query, timeout=30)
+    writer.add_evidence('acc007-recovery-log-before', recovery_before)
+    raw = crash_current_service(channel, initial)
+    writer.add_evidence('acc007-exact-crash-and-tree', raw)
+    observed = json.loads(raw['output'])
+    checks['only_pinned_supervisor_killed'] = observed['supervisor_exited']
+    checks['unrelated_process_survives'] = observed['canary_survived']
+    checks['observed_tree_collapsed'] = bool(observed['observed_tree']) and not observed['remaining_pids']
 
     recovered, snap = wait_state(
-        base, lambda s: s.get('state') in ('stopped', 'failed',
-                                           'recovering'), timeout=120)
+        base, lambda s: s.get('state') in ('stopped', 'failed'), timeout=420)
     writer.add_evidence('acc007-post-restart-status', snap or {})
-    checks['scm_restarted_mcp'] = recovered
+    service_after = channel.powershell(
+        'Get-CimInstance Win32_Service -Filter "Name=\'fakenetng-mcp\'" | '
+        'Select-Object ProcessId,State | ConvertTo-Json -Compress', timeout=30)
+    writer.add_evidence('acc007-new-scm-instance', service_after)
+    new_service = json.loads(service_after['output'])
+    checks['scm_restarted_mcp'] = (recovered and new_service['State'] == 'Running' and
+        new_service['ProcessId'] > 0 and new_service['ProcessId'] != observed['supervisor']['pid'])
+    checks['recovery_completed_stopped'] = (snap or {}).get('state') == 'stopped'
     checks['no_fakenet_continuation'] = (snap or {}).get('run_id') is None
     checks['not_auto_started'] = (snap or {}).get('state') != 'healthy'
 
     # Recovery audit actually ran: the service log must carry the startup
     # recovery outcome for this incarnation.
-    relog = channel.powershell(
-        "Select-String -Path (Join-Path $env:ProgramData "
-        "'FakeNet-NG-MCP\\logs\\service.log') -Pattern "
-        "'startup recovery outcome' | "
-        "Select-Object -Last 2 | ForEach-Object {$_.Line}", timeout=90)
+    relog = channel.powershell(recovery_log_query, timeout=90)
     writer.add_evidence('acc007-recovery-log', relog)
-    checks['recovery_audit_evidenced'] = \
-        'startup recovery outcome' in (relog['output'] or '')
+    from collections import Counter
+    new_lines = Counter(relog['output'].splitlines()) - Counter(
+        recovery_before['output'].splitlines())
+    checks['recovery_audit_evidenced'] = any(
+        'startup recovery outcome' in line and line.rstrip().endswith('stopped')
+        for line in new_lines)
 
-    # old command_id is not continued after the crash (record 038)
-    version = (snap or {}).get('state_version', 1)
-    fresh = call(base, 'create_config',
-                 {'name': 'post-crash-%s.ini' % unique_command('c')[:6],
-                  'content': VALID_INI,
-                  'command_id': unique_command('post-crash'),
-                  'expected_state_version': version})
-    checks['old_commands_not_continued'] = fresh.get('error') is None or \
-        err_of(fresh) == 'state_conflict'
+    # A new command succeeding says nothing about an old command's replay.
+    # Keep the full contract visibly incomplete until native cases exist.
+    checks['old_command_not_resumed_evidence'] = False
+    checks['atomic_creation_window_matrix'] = False
+    writer.add_evidence('acc007-uncovered-obligations', {
+        'old_command_not_resumed': 'requires original command identity and post-crash observation',
+        'atomic_creation_windows': 'requires each native CreateProcess/Job critical window',
+        'run_id': run_id})
     writer.add_evidence('acc007-checks', checks)
     checked = [v for v in checks.values() if v is not None]
     return EXIT_PASS if all(checked) else EXIT_FAIL
