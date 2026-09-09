@@ -132,6 +132,7 @@ class RealSupervisor:
                 root = (Path(sys.executable).parent if getattr(sys, 'frozen', False)
                         else Path(__file__).resolve().parents[2])
                 self._fakenet = ManagedProcess(run_id, self._run_dir, root)
+                self._fakenet.observe_creation('before_start')
                 detail = self._fakenet.request('start', {
                     'config_path': str(config_path),
                     'fakenet_config': parsed.fakenet_config,

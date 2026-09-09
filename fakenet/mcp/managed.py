@@ -95,9 +95,11 @@ class ManagedProcess:
                    [sys.executable, '-m', 'fakenet.mcp'])
         command += ['managed-child', run_id, str(self.run_dir)]
         try:
+            self.observe_creation('job_ready')
             for handle in handles:
                 os.set_handle_inheritable(handle, True)
-            self.pid = self.job.spawn(command, self.run_dir, handles)
+            self.pid = self.job.spawn(command, self.run_dir, handles,
+                                      observe=self.observe_creation)
             self.identity = process_identity(self.pid)
         except BaseException:
             self.job.close()
@@ -112,6 +114,10 @@ class ManagedProcess:
             error_log.close()
         self._reader = threading.Thread(target=self._read, name='managed-ipc', daemon=True)
         self._reader.start()
+
+    def observe_creation(self, stage):
+        from fakenet.mcp.creation_evidence import observe_creation
+        observe_creation(self.run_id, self.run_dir, self.job, stage)
 
     def _read(self):
         try:

@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "027c93d3d6642fb9d7eb3ed9f07f55e63d52d992",
+  "current_head": "2145387539148e2a7b7c2c28d22a03af49d95035",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "INTENT-077实现与负向证据已验证，待提交固定源码继续原生创建窗口和旧命令覆盖。",
+  "checkpoint": "INTENT-078创建窗口实现与双平台回归完成，准备固定提交构建候选。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-078",
-    "action": "提交ACC007精确终止整改，继续补齐原子创建窗口/旧命令不续接的真实验收；固定新版候选前不计算正式ACC。"
+    "id": "INTENT-079",
+    "action": "提交并构建包含实际创建窗口的新候选，继续补齐逐窗口原生验收runner；当前50b8752现场已完整导出，尚未重置VM。"
   },
   "events": [
     {
@@ -985,6 +985,10 @@
     {
       "intent": "INTENT-077",
       "actual": "ACC007精确主管句柄终止和本次canary清理已落地；Linux192/3、Windows解析0错误、实际旧PID8080被拒绝且SCM未变。正向与创建窗口尚未执行，旧命令/创建矩阵明确未覆盖，禁止ACC误通过。"
+    },
+    {
+      "intent": "INTENT-078",
+      "actual": "实际Job/CreateProcess/start前五观测点和受门控有界故障窗口已实现；Linux195/3、Windows192/6，未执行原生逐窗口，不计ACC。"
     }
   ],
   "active_build": {

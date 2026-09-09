@@ -63,7 +63,7 @@ class ManagedJob:
     def _error(self):
         raise self.c.WinError(self.c.get_last_error())
 
-    def spawn(self, command, cwd, handles):
+    def spawn(self, command, cwd, handles, observe=None):
         """CreateProcess receives both JOB_LIST and explicit HANDLE_LIST."""
         c, w = self.c, self.w
         class STARTUPINFO(c.Structure):
@@ -104,16 +104,22 @@ class ManagedJob:
                 self._error()
             if not update(attributes, 0, 0x20002, inherited, c.sizeof(inherited), None, None):
                 self._error()
+            if observe:
+                observe('attributes_ready')
             si = EXTENDED()
             si.StartupInfo.cb = c.sizeof(si)
             si.StartupInfo.dwFlags = 0x100  # STARTF_USESTDHANDLES
             si.StartupInfo.hStdInput, si.StartupInfo.hStdOutput, si.StartupInfo.hStdError = handles
             si.lpAttributeList = c.cast(attributes, w.LPVOID)
             text = c.create_unicode_buffer(subprocess.list2cmdline(command))
+            if observe:
+                observe('before_api')
             if not create(None, text, None, None, True, 0x80000 | 0x8000000,
                           None, str(cwd), c.byref(si), c.byref(pi)):
                 self._error()
             self.process, self.pid = pi.hProcess, pi.dwProcessId
+            if observe:
+                observe('after_api')
         finally:
             if pi.hThread:
                 self.kernel.CloseHandle(pi.hThread)
