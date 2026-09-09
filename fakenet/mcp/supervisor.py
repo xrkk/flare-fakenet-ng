@@ -117,6 +117,8 @@ class RealSupervisor:
                 self._last_final_filter = None
                 self._run_dir = Path(self._artifacts_root) / 'runs' / run_id
                 self._run_dir.mkdir(parents=True, exist_ok=False)
+                from fakenet.mcp.run_evidence import prepare_run_evidence
+                prepare_run_evidence(self._run_dir, config_path, digest)
                 for key in ('dumppacketsfileprefix', 'dumphttpwebroot'):
                     value = str(parsed.diverter_config.get(key, '') or '').strip()
                     if value and not os.path.isabs(value):
@@ -331,6 +333,12 @@ class RealSupervisor:
         self._coordinator = coordinator
         marker, corrupt = self._snapshot.read()
         self._marker = marker
+        # Recover diagnostic file locations only. The current state marker
+        # remains the sole authority for recovery; artifacts never replay work.
+        if marker and not corrupt:
+            from fakenet.mcp.run_evidence import locate_run_evidence
+            self._run_dir, self._active_config_path = locate_run_evidence(
+                self._artifacts_root, marker)
         coordinator.restore_responsibility(marker, 'recovering')
         if corrupt:
             coordinator.restore_responsibility(marker, 'failed', 'corrupt recovery snapshot')
