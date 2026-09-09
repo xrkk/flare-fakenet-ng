@@ -1,0 +1,384 @@
+{
+  "source_sha256": "46eb7a8d7fa1eaeb10cd46a6cd22df2995bd4e432424489da9797ccdb6d7d673",
+  "source": "Logs/fakenetng-mcp/remediation-20260910/dns-afd-controlled-query.json",
+  "events": [
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:33:58.1989891Z'/><EventRecordID>1</EventRecordID><Correlation ActivityID='{60587630-b904-ffff-0000-000000000000}'/><Execution ProcessID='4080' ThreadID='4444'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>1006</Data><Data Name='Process'>0xffffb9045f70e080</Data><Data Name='Endpoint'>0xffffb90460587630</Data><Data Name='AddressFamily'>23</Data><Data Name='SocketType'>2</Data><Data Name='Protocol'>17</Data><Data Name='ProcessId'>0xff0</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 4080,
+      "time": "2026-09-09T22:33:58.1989891Z",
+      "id": 1000,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:33:58.1990554Z'/><EventRecordID>2</EventRecordID><Correlation ActivityID='{60587630-b904-ffff-0000-000000000000}'/><Execution ProcessID='4080' ThreadID='4444'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>1013</Data><Data Name='Process'>0xffffb9045f70e080</Data><Data Name='Endpoint'>0xffffb90460587630</Data><Data Name='AddressFamily'>0</Data><Data Name='SocketType'>0</Data><Data Name='Protocol'>0</Data><Data Name='ProcessId'>0xff0</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 4080,
+      "time": "2026-09-09T22:33:58.1990554Z",
+      "id": 1000,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:33:58.1991134Z'/><EventRecordID>5</EventRecordID><Correlation ActivityID='{60587630-b904-ffff-0000-000000000000}'/><Execution ProcessID='4080' ThreadID='4444'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>2000</Data><Data Name='Process'>0xffffb9045f70e080</Data><Data Name='Endpoint'>0xffffb90460587630</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 4080,
+      "time": "2026-09-09T22:33:58.1991134Z",
+      "id": 1001,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:33:58.1991138Z'/><EventRecordID>6</EventRecordID><Correlation ActivityID='{60587630-b904-ffff-0000-000000000000}'/><Execution ProcessID='4080' ThreadID='4444'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>2001</Data><Data Name='Process'>0xffffb9045f70e080</Data><Data Name='Endpoint'>0xffffb90460587630</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 4080,
+      "time": "2026-09-09T22:33:58.1991138Z",
+      "id": 1001,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000006</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5111056Z'/><EventRecordID>7</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>1006</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='AddressFamily'>23</Data><Data Name='SocketType'>1</Data><Data Name='Protocol'>6</Data><Data Name='ProcessId'>0x1bb4</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5111056Z",
+      "id": 1000,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000006</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5111877Z'/><EventRecordID>8</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>1013</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='AddressFamily'>0</Data><Data Name='SocketType'>0</Data><Data Name='Protocol'>0</Data><Data Name='ProcessId'>0x1bb4</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5111877Z",
+      "id": 1000,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000006</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5112932Z'/><EventRecordID>11</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>2000</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5112932Z",
+      "id": 1001,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000006</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5112937Z'/><EventRecordID>12</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>2001</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5112937Z",
+      "id": 1001,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000006</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5115764Z'/><EventRecordID>13</EventRecordID><Correlation ActivityID='{6006f800-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>1006</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006f800</Data><Data Name='AddressFamily'>2</Data><Data Name='SocketType'>1</Data><Data Name='Protocol'>6</Data><Data Name='ProcessId'>0x1bb4</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5115764Z",
+      "id": 1000,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000006</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5116115Z'/><EventRecordID>14</EventRecordID><Correlation ActivityID='{6006f800-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>1013</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006f800</Data><Data Name='AddressFamily'>0</Data><Data Name='SocketType'>0</Data><Data Name='Protocol'>0</Data><Data Name='ProcessId'>0x1bb4</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5116115Z",
+      "id": 1000,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000006</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5116302Z'/><EventRecordID>17</EventRecordID><Correlation ActivityID='{6006f800-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>2000</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006f800</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5116302Z",
+      "id": 1001,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000006</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5116306Z'/><EventRecordID>18</EventRecordID><Correlation ActivityID='{6006f800-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>2001</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006f800</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5116306Z",
+      "id": 1001,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000006</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5125094Z'/><EventRecordID>19</EventRecordID><Correlation ActivityID='{6006f800-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>1006</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006f800</Data><Data Name='AddressFamily'>1</Data><Data Name='SocketType'>1</Data><Data Name='Protocol'>0</Data><Data Name='ProcessId'>0x1bb4</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5125094Z",
+      "id": 1000,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000006</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5125283Z'/><EventRecordID>20</EventRecordID><Correlation ActivityID='{6006f800-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>1013</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006f800</Data><Data Name='AddressFamily'>0</Data><Data Name='SocketType'>0</Data><Data Name='Protocol'>0</Data><Data Name='ProcessId'>0x1bb4</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5125283Z",
+      "id": 1000,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000006</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5125645Z'/><EventRecordID>23</EventRecordID><Correlation ActivityID='{6006f800-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>2000</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006f800</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5125645Z",
+      "id": 1001,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000006</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5125649Z'/><EventRecordID>24</EventRecordID><Correlation ActivityID='{6006f800-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>2001</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006f800</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5125649Z",
+      "id": 1001,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5259349Z'/><EventRecordID>25</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>1006</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='AddressFamily'>23</Data><Data Name='SocketType'>2</Data><Data Name='Protocol'>17</Data><Data Name='ProcessId'>0x1bb4</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5259349Z",
+      "id": 1000,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5259727Z'/><EventRecordID>26</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>1013</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='AddressFamily'>0</Data><Data Name='SocketType'>0</Data><Data Name='Protocol'>0</Data><Data Name='ProcessId'>0x1bb4</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5259727Z",
+      "id": 1000,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5260034Z'/><EventRecordID>27</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5260034Z",
+      "id": 1030,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5260277Z'/><EventRecordID>28</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700D61B000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5260277Z",
+      "id": 1030,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5260504Z'/><EventRecordID>29</EventRecordID><Correlation ActivityID='{5f0499f0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045f049bf8</Data><Data Name='BufferLength'>70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5260504Z",
+      "id": 1013,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1007</EventID><Version>0</Version><Level>4</Level><Task>1007</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5264091Z'/><EventRecordID>30</EventRecordID><Correlation ActivityID='{5f0499f0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3202</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045f049bf8</Data><Data Name='BufferLength'>70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5264091Z",
+      "id": 1007,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5265111Z'/><EventRecordID>33</EventRecordID><Correlation ActivityID='{5f0499f0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045f049bf8</Data><Data Name='BufferLength'>70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5265111Z",
+      "id": 1013,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1007</EventID><Version>0</Version><Level>4</Level><Task>1007</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5265868Z'/><EventRecordID>34</EventRecordID><Correlation ActivityID='{5f0499f0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3202</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045f049bf8</Data><Data Name='BufferLength'>70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5265868Z",
+      "id": 1007,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5266176Z'/><EventRecordID>37</EventRecordID><Correlation ActivityID='{5f0499f0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045f049bf8</Data><Data Name='BufferLength'>70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5266176Z",
+      "id": 1013,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1007</EventID><Version>0</Version><Level>4</Level><Task>1007</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5266746Z'/><EventRecordID>38</EventRecordID><Correlation ActivityID='{5f0499f0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3202</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045f049bf8</Data><Data Name='BufferLength'>70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5266746Z",
+      "id": 1007,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5267142Z'/><EventRecordID>43</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>2000</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5267142Z",
+      "id": 1001,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:03.5267145Z'/><EventRecordID>44</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>2001</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:03.5267145Z",
+      "id": 1001,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.1399347Z'/><EventRecordID>45</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>1006</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='AddressFamily'>23</Data><Data Name='SocketType'>2</Data><Data Name='Protocol'>17</Data><Data Name='ProcessId'>0x1bb4</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:10.1399347Z",
+      "id": 1000,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.1400134Z'/><EventRecordID>46</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>1013</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='AddressFamily'>0</Data><Data Name='SocketType'>0</Data><Data Name='Protocol'>0</Data><Data Name='ProcessId'>0x1bb4</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:10.1400134Z",
+      "id": 1000,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.1400582Z'/><EventRecordID>47</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:10.1400582Z",
+      "id": 1030,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.1401300Z'/><EventRecordID>48</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700F7D3000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:10.1401300Z",
+      "id": 1030,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.1401682Z'/><EventRecordID>49</EventRecordID><Correlation ActivityID='{5f0499f0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='2928'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045f049bf8</Data><Data Name='BufferLength'>70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:10.1401682Z",
+      "id": 1013,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1007</EventID><Version>0</Version><Level>4</Level><Task>1007</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.1408007Z'/><EventRecordID>52</EventRecordID><Correlation ActivityID='{5f0499f0-b904-ffff-0000-000000000000}'/><Execution ProcessID='0' ThreadID='0'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3049</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045f049bf8</Data><Data Name='BufferLength'>70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+      "pid": 0,
+      "time": "2026-09-09T22:34:10.1408007Z",
+      "id": 1007,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.1410007Z'/><EventRecordID>53</EventRecordID><Correlation ActivityID='{5f0499f0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='4204'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045f049bf8</Data><Data Name='BufferLength'>70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:10.1410007Z",
+      "id": 1013,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1007</EventID><Version>0</Version><Level>4</Level><Task>1007</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.1413876Z'/><EventRecordID>56</EventRecordID><Correlation ActivityID='{5f0499f0-b904-ffff-0000-000000000000}'/><Execution ProcessID='0' ThreadID='0'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3049</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045f049bf8</Data><Data Name='BufferLength'>70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+      "pid": 0,
+      "time": "2026-09-09T22:34:10.1413876Z",
+      "id": 1007,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.1414062Z'/><EventRecordID>57</EventRecordID><Correlation ActivityID='{5f0499f0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='4204'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045f049bf8</Data><Data Name='BufferLength'>70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:10.1414062Z",
+      "id": 1013,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1007</EventID><Version>0</Version><Level>4</Level><Task>1007</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.1416567Z'/><EventRecordID>60</EventRecordID><Correlation ActivityID='{5f0499f0-b904-ffff-0000-000000000000}'/><Execution ProcessID='0' ThreadID='0'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3049</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045f049bf8</Data><Data Name='BufferLength'>70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+      "pid": 0,
+      "time": "2026-09-09T22:34:10.1416567Z",
+      "id": 1007,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.1416996Z'/><EventRecordID>63</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='4204'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>2000</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:10.1416996Z",
+      "id": 1001,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.1417001Z'/><EventRecordID>64</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7092' ThreadID='4204'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>2001</Data><Data Name='Process'>0xffffb9045dfe1080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7092,
+      "time": "2026-09-09T22:34:10.1417001Z",
+      "id": 1001,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.9925526Z'/><EventRecordID>65</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7316' ThreadID='7544'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>1006</Data><Data Name='Process'>0xffffb90460599080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='AddressFamily'>2</Data><Data Name='SocketType'>2</Data><Data Name='Protocol'>17</Data><Data Name='ProcessId'>0x1c94</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7316,
+      "time": "2026-09-09T22:34:10.9925526Z",
+      "id": 1000,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.9926002Z'/><EventRecordID>66</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7316' ThreadID='7544'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>1013</Data><Data Name='Process'>0xffffb90460599080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='AddressFamily'>0</Data><Data Name='SocketType'>0</Data><Data Name='Protocol'>0</Data><Data Name='ProcessId'>0x1c94</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7316,
+      "time": "2026-09-09T22:34:10.9926002Z",
+      "id": 1000,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.9926771Z'/><EventRecordID>67</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7316' ThreadID='7544'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb90460599080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>16</Data><Data Name='Address'>02000000C0A8CC950000000000000000</Data></EventData></Event>",
+      "pid": 7316,
+      "time": "2026-09-09T22:34:10.9926771Z",
+      "id": 1030,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.9926995Z'/><EventRecordID>68</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7316' ThreadID='7544'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb90460599080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>16</Data><Data Name='Address'>0200F7D4C0A8CC950000000000000000</Data></EventData></Event>",
+      "pid": 7316,
+      "time": "2026-09-09T22:34:10.9926995Z",
+      "id": 1030,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1007</EventID><Version>0</Version><Level>4</Level><Task>1007</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.9927471Z'/><EventRecordID>70</EventRecordID><Correlation ActivityID='{601db7e0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7316' ThreadID='7544'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb90460599080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb904601db1b8</Data><Data Name='BufferLength'>175</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>16</Data><Data Name='Address'>0200076CEFFFFFFA0000000000000000</Data></EventData></Event>",
+      "pid": 7316,
+      "time": "2026-09-09T22:34:10.9927471Z",
+      "id": 1007,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1007</EventID><Version>0</Version><Level>4</Level><Task>1007</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:10.9929932Z'/><EventRecordID>71</EventRecordID><Correlation ActivityID='{601db7e0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7316' ThreadID='7544'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3202</Data><Data Name='Process'>0xffffb90460599080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb904601db1b8</Data><Data Name='BufferLength'>175</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>16</Data><Data Name='Address'>0200076CEFFFFFFA0000000000000000</Data></EventData></Event>",
+      "pid": 7316,
+      "time": "2026-09-09T22:34:10.9929932Z",
+      "id": 1007,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1007</EventID><Version>0</Version><Level>4</Level><Task>1007</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:12.0073707Z'/><EventRecordID>72</EventRecordID><Correlation ActivityID='{601db7e0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7316' ThreadID='7544'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb90460599080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb904601db1b8</Data><Data Name='BufferLength'>175</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>16</Data><Data Name='Address'>0200076CEFFFFFFA0000000000000000</Data></EventData></Event>",
+      "pid": 7316,
+      "time": "2026-09-09T22:34:12.0073707Z",
+      "id": 1007,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1007</EventID><Version>0</Version><Level>4</Level><Task>1007</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:12.0075796Z'/><EventRecordID>73</EventRecordID><Correlation ActivityID='{601db7e0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7316' ThreadID='7544'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3202</Data><Data Name='Process'>0xffffb90460599080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb904601db1b8</Data><Data Name='BufferLength'>175</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>16</Data><Data Name='Address'>0200076CEFFFFFFA0000000000000000</Data></EventData></Event>",
+      "pid": 7316,
+      "time": "2026-09-09T22:34:12.0075796Z",
+      "id": 1007,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1007</EventID><Version>0</Version><Level>4</Level><Task>1007</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:13.0106529Z'/><EventRecordID>82</EventRecordID><Correlation ActivityID='{601db7e0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7316' ThreadID='7544'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb90460599080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb904601db1b8</Data><Data Name='BufferLength'>175</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>16</Data><Data Name='Address'>0200076CEFFFFFFA0000000000000000</Data></EventData></Event>",
+      "pid": 7316,
+      "time": "2026-09-09T22:34:13.0106529Z",
+      "id": 1007,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1007</EventID><Version>0</Version><Level>4</Level><Task>1007</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:13.0110340Z'/><EventRecordID>83</EventRecordID><Correlation ActivityID='{601db7e0-b904-ffff-0000-000000000000}'/><Execution ProcessID='0' ThreadID='0'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3049</Data><Data Name='Process'>0xffffb90460599080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb904601db1b8</Data><Data Name='BufferLength'>175</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>16</Data><Data Name='Address'>0200076CEFFFFFFA0000000000000000</Data></EventData></Event>",
+      "pid": 0,
+      "time": "2026-09-09T22:34:13.0110340Z",
+      "id": 1007,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1007</EventID><Version>0</Version><Level>4</Level><Task>1007</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:14.0171344Z'/><EventRecordID>84</EventRecordID><Correlation ActivityID='{601db7e0-b904-ffff-0000-000000000000}'/><Execution ProcessID='7316' ThreadID='7544'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb90460599080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb904601db1b8</Data><Data Name='BufferLength'>175</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>16</Data><Data Name='Address'>0200076CEFFFFFFA0000000000000000</Data></EventData></Event>",
+      "pid": 7316,
+      "time": "2026-09-09T22:34:14.0171344Z",
+      "id": 1007,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1007</EventID><Version>0</Version><Level>4</Level><Task>1007</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-09T22:34:14.0174188Z'/><EventRecordID>85</EventRecordID><Correlation ActivityID='{601db7e0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2840' ThreadID='2340'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3049</Data><Data Name='Process'>0xffffb90460599080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb904601db1b8</Data><Data Name='BufferLength'>175</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>16</Data><Data Name='Address'>0200076CEFFFFFFA0000000000000000</Data></EventData></Event>",
+      "pid": 2840,
+      "time": "2026-09-09T22:34:14.0174188Z",
+      "id": 1007,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:16.0028521Z'/><EventRecordID>89</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7316' ThreadID='7544'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>2000</Data><Data Name='Process'>0xffffb90460599080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7316,
+      "time": "2026-09-09T22:34:16.0028521Z",
+      "id": 1001,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    },
+    {
+      "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-09T22:34:16.0028526Z'/><EventRecordID>90</EventRecordID><Correlation ActivityID='{6006fd70-b904-ffff-0000-000000000000}'/><Execution ProcessID='7316' ThreadID='7544'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>2001</Data><Data Name='Process'>0xffffb90460599080</Data><Data Name='Endpoint'>0xffffb9046006fd70</Data><Data Name='Status'>0</Data></EventData></Event>",
+      "pid": 7316,
+      "time": "2026-09-09T22:34:16.0028526Z",
+      "id": 1001,
+      "provider": "Microsoft-Windows-Winsock-AFD"
+    }
+  ]
+}

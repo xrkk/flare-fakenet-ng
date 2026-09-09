@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "8303ea2abdf25610c1ce582fe0bdd545eb881eb6",
+  "current_head": "2991b5834bedc439ad3dc269f4027581bcd0df83",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "INTENT-101完成：活动探测原生失败证据及47文件现场已保存，严格证据检查通过；恢复端点归因仍未闭合。",
+  "checkpoint": "INTENT-106完成：环境DNS请求与UDP端点生命周期直接证据及7份ETL已保存；解析器双平台8通过，尚未接入恢复审计。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-102",
-    "action": "提交已验证的验收条件收紧与作者记录；继续接管前端点生命周期诊断，不豁免恢复差异、不重写旧核查。"
+    "id": "INTENT-107",
+    "action": "提交真实生命周期解析与诊断记录，继续实现覆盖接管前/运行/恢复的有界证据采集；缺口、未知差异仍失败关闭，不回写旧失败为通过。"
   },
   "events": [
     {
@@ -1069,6 +1069,22 @@
     {
       "intent": "INTENT-101",
       "actual": "实际监听器、同run/seq/子进程及失败时序条件收紧；11定向测试通过，已保存原生IPC严格复算两条件true；不计ACC通过。"
+    },
+    {
+      "intent": "INTENT-102",
+      "actual": "提交2991b5834bedc439ad3dc269f4027581bcd0df83已验证仅含验收代码/测试/作者记录/状态4文件；受保护PLAN/FaknetNG.md未纳入。"
+    },
+    {
+      "intent": "INTENT-104",
+      "actual": "32次无引擎端点观测及两次flush成功；IPv6UDP62859在第二次flush后仍存活约4秒，未证明flush立即关闭端点。"
+    },
+    {
+      "intent": "INTENT-105",
+      "actual": "唯一ETW会话已正常stop=0，11条DNS事件已保存；向192.168.204.1查询返回10054后UDP59117消失，但尚无直接端口关联。ETL仍在VM temp，须导出后才可reset。"
+    },
+    {
+      "intent": "INTENT-106",
+      "actual": "AFD原生事件可按创建代际绑定准确UDP端点；两次系统解析确认Dnscache60063/57759发往宿主DNS后10054并关闭。7份ETL全部导出SHA核验。解析代码及原生复用指针负例Linux/Windows各8通过，尚未接入审计。"
     }
   ],
   "active_build": {
@@ -1120,10 +1136,24 @@
     "blocks_all_work": false
   },
   "active_readonly_validation": {
-    "session_id": 95691,
     "status": "COMPLETED",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/ac60aad-idle-dns-dhcp-observation.json",
-    "scope": "15 samples of DNS/DHCP endpoint identities and no-engine process/driver evidence",
-    "result": "15次采样均仅MCP主管、无WinDivert驱动，DNS/DHCP身份不变；Dnscache2128短暂出现60336/64356后消失，不能直接豁免历史差异。"
-  }
+    "session_id": 73966,
+    "mode": "唯一有界DNS/AFD会话与系统解析器诊断，非正式ACC",
+    "evidence": "Logs/fakenetng-mcp/remediation-20260910/dns-afd-system-resolver-query.json",
+    "formal_acc_pass": false,
+    "trace_stop_codes": [
+      0,
+      0
+    ]
+  },
+  "diagnostic_guest_exports": [
+    {
+      "verification": "Logs/fakenetng-mcp/remediation-20260910/dns-endpoint-etl/verification.json",
+      "verified_files": 5
+    },
+    {
+      "verification": "Logs/fakenetng-mcp/remediation-20260910/dns-endpoint-etl-04/verification.json",
+      "verified_files": 2
+    }
+  ]
 }
