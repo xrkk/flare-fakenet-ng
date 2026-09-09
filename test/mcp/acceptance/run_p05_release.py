@@ -65,18 +65,11 @@ class ReleaseGate:
 
     # -- environment capture (host-driven, P04 normalization) -------------
     def capture_sections(self):
+        from fakenet.mcp.baseline import process_capture_script
         commands = {
             'routes': '& route.exe print -4; if($LASTEXITCODE -ne 0){throw "route capture failed"}',
             'listen_ports': '& netstat.exe -ano; if($LASTEXITCODE -ne 0){throw "endpoint capture failed"}',
-            'windivert_processes': (
-                '$modules=@(& tasklist.exe /m WinDivert* /fo csv /nh); '
-                'if($LASTEXITCODE -ne 0){throw "module capture failed"}; '
-                '$managed=@(Get-Process fakenetng-mcp,fakenet -ErrorAction SilentlyContinue | '
-                'Select-Object ProcessName,Id,StartTime); '
-                '$drivers=@(Get-CimInstance Win32_SystemDriver | Where-Object {'
-                '$_.Name -like "WinDivert*" -or $_.PathName -like "*WinDivert*"} | '
-                'Select-Object Name,State,Started,PathName); '
-                '@{modules=$modules;managed=$managed;drivers=$drivers} | ConvertTo-Json -Depth 5 -Compress'),
+            'windivert_processes': process_capture_script(),
             'services': 'Get-Service dnscache,mpssvc | Select-Object Name,Status | ConvertTo-Json -Compress',
         }
         out = {'dns_servers': self.capture_dns_servers()}

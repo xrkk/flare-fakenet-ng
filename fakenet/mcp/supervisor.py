@@ -48,6 +48,7 @@ class RealSupervisor:
         self._activity_lock = None
         self._lock = threading.RLock()
         self._health_stop = threading.Event()
+        self._health_publication_lock = threading.Lock()
         self._health_thread = None
         self._health_cache = {'process_alive': False, 'init_evidence': False, 'probe': False}
         self._coordinator = None
@@ -109,6 +110,7 @@ class RealSupervisor:
                 self._inject_exclusion(parsed)
                 run_id = coordinator.new_run_id()
                 self._last_run_outcome = None
+                self._last_managed_stacks = None
                 self._run_dir = Path(self._artifacts_root) / 'runs' / run_id
                 self._run_dir.mkdir(parents=True, exist_ok=False)
                 for key in ('dumppacketsfileprefix', 'dumphttpwebroot'):
@@ -156,6 +158,17 @@ class RealSupervisor:
                     self._activity_lock = None
                 raise
 
+    def _publish_health(self, child, state, evidence, reason=None):
+        # Publication is short and never performs IPC or file I/O. Stop takes
+        # the same lock after revoking observations, so an in-flight probe
+        # cannot restore healthy while the engine is being torn down.
+        with self._health_publication_lock:
+            if self._health_stop.is_set() or self._fakenet is not child:
+                return False
+            self._health_cache = dict(evidence)
+            self._coordinator.update_health_state(state, reason)
+            return True
+
     def _health_loop(self):
         failures = 0
         while not self._health_stop.wait(HEALTH_INTERVAL_SECONDS):
@@ -164,35 +177,37 @@ class RealSupervisor:
                 return
             try:
                 detail = child.request('health', timeout=1)
-                self._health_cache = dict(detail, process_alive=child.alive(), identity=child.identity)
+                evidence = dict(detail, process_alive=child.alive(), identity=child.identity)
                 run_log = self._run_dir / 'run.log'
                 log_text = ''
                 if run_log.exists():
                     with run_log.open('rb') as stream:
                         stream.seek(max(0, run_log.stat().st_size - 65536))
                         log_text = stream.read().decode('utf-8', 'replace')
-                healthy, reason = evaluate_health_evidence(self._health_cache, log_text)
+                healthy, reason = evaluate_health_evidence(evidence, log_text)
                 if not healthy:
                     if 'unhandled exception' in reason:
                         failures += 1
                         if failures < 2:
-                            self._coordinator.update_health_state('degraded', reason)
+                            if not self._publish_health(child, 'degraded', evidence, reason):
+                                return
                             continue
                     raise RuntimeError(reason)
                 failures = 0
-                self._coordinator.update_health_state('healthy')
+                if not self._publish_health(child, 'healthy', evidence):
+                    return
                 continue
             except TimeoutError as exc:
                 failures += 1
                 reason = str(exc)
-                self._health_cache.update(probe=False)
                 if failures < 2:
-                    self._coordinator.update_health_state('degraded', reason)
+                    if not self._publish_health(child, 'degraded', dict(self._health_cache, probe=False), reason):
+                        return
                     continue
             except BaseException as exc:
                 reason = str(exc)
-            self._coordinator.update_health_state('failed', reason)
-            self._health_cache.update(probe=False)
+            if not self._publish_health(child, 'failed', dict(self._health_cache, probe=False), reason):
+                return
             self._collect_incident(reason)
             # Never race an already accepted operation or fall back to a raw
             # uncoordinated stop. Its existing bounded operation finishes first.
@@ -237,6 +252,9 @@ class RealSupervisor:
             if not marker or not marker['run_id']:
                 return self._result('failed', 'managed run has no recovery identity')
             self._coordinator = coordinator
+            with self._health_publication_lock:
+                if coordinator.snapshot()['state'] != 'failed':
+                    coordinator.update_health_state('recovering')
             reason = None
             if self._fakenet is not None:
                 grace_deadline = min(deadline, time.monotonic() + self._stop_grace)

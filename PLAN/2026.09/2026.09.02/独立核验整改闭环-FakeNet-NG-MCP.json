@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "865df0f53b233e10cda0f42a6dab2a6d9c908379",
+  "current_head": "cddc780f2badcd0ec7b522bbaa358d82b09820ff",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -369,9 +369,9 @@
   "checkpoint": "中间源码865df0f已提交；当前候选构建进行中，恢复时先轮询session91674/日志/容器，不因观察超时重建。VM已恢复183且Win10VM身份门通过；无FakeNet部署操作。CHK全OPEN，有效1/5。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-046",
-    "at": "2026-09-10T01:20:52.266353+08:00",
-    "action": "提交CHK-057/060/066范围内停服互斥交接、真实停顿栈和发布探针修复，构建新候选后原生复测"
+    "id": "INTENT-049",
+    "at": "2026-09-10T01:45:15.964616+08:00",
+    "action": "继续定位原生查询超时；control-latency诊断当前session43076，比较28787/28788 TCP与HTTP，同一failed run仅诊断。工作树已修复CLI角色分类、恢复状态和迟到探测，Linux161通过2跳过/Windows157通过6跳过，尚未提交打包。"
   },
   "events": [
     {
@@ -806,10 +806,10 @@
     }
   ],
   "candidate": {
-    "source_head": "865df0f53b233e10cda0f42a6dab2a6d9c908379",
-    "path": "dist/mcp-remediation-20260910-865df0f/fakenetng-mcp-candidate.zip",
-    "candidate_id": "mcp-c865df0f5-e2689f6403f4",
-    "sha256": "e2689f6403f4a2d25dbf651d42723c54275dd5090502a436b1e8d546e36d7171",
+    "source_head": "cddc780f2badcd0ec7b522bbaa358d82b09820ff",
+    "path": "dist/mcp-remediation-20260910-cddc780/fakenetng-mcp-candidate.zip",
+    "candidate_id": "mcp-ccddc780f-e16bb06560c8",
+    "sha256": "e16bb06560c8d49ec0fd211243b7818f177a5d5de24b22f041eec42cd48f1458",
     "formal_acc_pass": false
   },
   "pause_handoff": {
@@ -842,14 +842,21 @@
     {
       "intent": "INTENT-045",
       "actual": "明确恢复授权；规范/交接/未提交代码SHA一致。865新部署启停成功；立即SCM停启出现互斥交接竞态，policy_pause真实收敛但incident缺线程栈。旧现场83文件归档SHA逐项通过；实现修复后Linux158+HTTP17通过，Windows154通过6跳过。"
+    },
+    {
+      "intent": "INTENT-047",
+      "actual": "cddc780部署成功/启动healthy；首次正常stop全审计失败，UDP59577/64015消失及多组动态UDP新增，连续完整样本已保留。随后CLI预停失败并保持SCM在线，未启动后续三次停启/故障组。不得算原生通过。"
+    },
+    {
+      "intent": "INTENT-048",
+      "actual": "cddc780首次失败现场16文件共享只读导出校验，SHA3ff196b0e3aec6f0ff0d6ccb97348ed9044e8cd412bd7f18c873754e35586262。Snapshot183无FakeNet对照19样本18发生UDP变化。重新安装cddc780后连续三次立即SCM停启PASS；policy_pause实际incident完整，但全审计仍失败且6个HTTP探测超时。"
     }
   ],
   "active_build": {
-    "source_head": "865df0f53b233e10cda0f42a6dab2a6d9c908379",
-    "exec_session_id": 91674,
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-865df0f.txt",
-    "output_directory": "dist/mcp-remediation-20260910-865df0f",
+    "source_head": "cddc780f2badcd0ec7b522bbaa358d82b09820ff",
     "status": "COMPLETED",
-    "started_at": "2026-09-10T00:54:51.860802+08:00"
+    "output_directory": "dist/mcp-remediation-20260910-cddc780",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-cddc780.txt",
+    "exec_session_id": 69371
   }
 }

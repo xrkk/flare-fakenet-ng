@@ -17,6 +17,8 @@ import csv
 import subprocess
 import sys
 import uuid
+import re
+import ntpath
 from pathlib import Path
 
 BASELINE_FIELDS = ('routes', 'dns_servers', 'windivert_processes',
@@ -28,6 +30,43 @@ RECOVERY_COMPARE_FIELDS = BASELINE_FIELDS
 
 
 COLLECTION_FAILED = '__COLLECTION_FAILED__'
+
+
+def is_control_client(process, service_command):
+    """Recognize only this installed binary's local administrative client.
+
+    Keep raw rows, including PID/creation/command/image, in every capture.
+    A same-named foreign executable, engine entry, or unidentified process
+    remains a managed-process difference. WinDivert module rows are separate
+    and are never exempted by this classification.
+    """
+    pattern = r'\s*(?:"([^"]+)"|(\S+))\s+(\S+)(?:\s|$)'
+    service = re.match(pattern, service_command or '')
+    command = re.match(pattern, process.get('CommandLine') or '')
+    if not service or not command or service.group(3) != 'run':
+        return False
+    if command.group(3) not in ('stop', 'uninstall', 'install'):
+        return False
+    image = ntpath.normcase(service.group(1) or service.group(2))
+    return (ntpath.normcase(command.group(1) or command.group(2)) == image and
+            ntpath.normcase(process.get('ExecutablePath') or '') == image)
+
+
+def process_capture_script():
+    return (
+        "$ErrorActionPreference='Stop'; $modules=@(& tasklist.exe /m WinDivert* /fo csv /nh); "
+        "if($LASTEXITCODE -ne 0){throw 'tasklist module observation failed'}; "
+        "$service=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\"; "
+        "$managed=@(Get-CimInstance Win32_Process | Where-Object {"
+        "$_.Name -in @('fakenetng-mcp.exe','fakenet.exe')} | Select-Object "
+        "@{Name='ProcessName';Expression={$_.Name -replace '\\.exe$',''}},"
+        "@{Name='Id';Expression={$_.ProcessId}},"
+        "@{Name='StartTime';Expression={$_.CreationDate}},ExecutablePath,CommandLine); "
+        "$drivers=@(Get-CimInstance Win32_SystemDriver | Where-Object {"
+        "$_.Name -like 'WinDivert*' -or $_.PathName -like '*WinDivert*'} | "
+        "Select-Object Name,State,Started,PathName); "
+        "@{modules=$modules;managed=$managed;drivers=$drivers;"
+        "service_command=$service.PathName} | ConvertTo-Json -Depth 5 -Compress")
 
 
 def _run(command, timeout=60):
@@ -66,7 +105,9 @@ def _normalize(section, value):
     if section == 'windivert_processes':
         try:
             observed = json.loads(text)
-            if isinstance(observed, dict) and set(observed) == {'modules', 'managed', 'drivers'}:
+            if isinstance(observed, dict) and set(observed) in (
+                    {'modules', 'managed', 'drivers'},
+                    {'modules', 'managed', 'drivers', 'service_command'}):
                 modules = []
                 for line in observed['modules']:
                     row = next(csv.reader([line]))
@@ -75,7 +116,8 @@ def _normalize(section, value):
                 # identities across SCM restart permits PID replacement only,
                 # never losing a process, module, driver or multiplicity.
                 observed = {'modules': sorted(modules),
-                            'managed': sorted(p['ProcessName'] for p in observed['managed']),
+                            'managed': sorted(p['ProcessName'] for p in observed['managed']
+                                              if not is_control_client(p, observed.get('service_command'))),
                             'drivers': sorted(observed['drivers'], key=lambda p: p['Name'])}
                 return json.dumps(observed, sort_keys=True, ensure_ascii=False)
         except (ValueError, TypeError, KeyError):
@@ -147,15 +189,7 @@ def capture(deadline=None):
                 'Get-DnsClientServerAddress -AddressFamily IPv4 | '
                 'Select-Object InterfaceAlias,ServerAddresses | '
                 'ConvertTo-Json -Compress'])
-    processes = collect(['powershell', '-NoProfile', '-Command',
-        "$ErrorActionPreference='Stop'; $modules=@(& tasklist.exe /m WinDivert* /fo csv /nh); "
-        "if($LASTEXITCODE -ne 0){throw 'tasklist module observation failed'}; "
-        "$managed=@(Get-Process fakenetng-mcp,fakenet -ErrorAction SilentlyContinue | "
-        "Select-Object ProcessName,Id,StartTime); "
-        "$drivers=@(Get-CimInstance Win32_SystemDriver | Where-Object {"
-        "$_.Name -like 'WinDivert*' -or $_.PathName -like '*WinDivert*'} | "
-        "Select-Object Name,State,Started,PathName); "
-        "@{modules=$modules;managed=$managed;drivers=$drivers} | ConvertTo-Json -Depth 5 -Compress"])
+    processes = collect(['powershell', '-NoProfile', '-Command', process_capture_script()])
     ports = collect(['netstat', '-ano'])
     services = collect(['powershell', '-NoProfile', '-Command',
                      'Get-Service dnscache,mpssvc | '
