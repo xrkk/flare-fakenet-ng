@@ -12,6 +12,22 @@ from pathlib import Path
 PRESTOP_CONTROL = 128
 
 
+def replace_result(source, destination):
+    """Publish a complete result while Windows diagnostic readers are open."""
+    if os.name != 'nt' or not Path(destination).exists():
+        os.replace(source, destination)
+        return
+    import ctypes
+    from ctypes import wintypes as w
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    replace = kernel.ReplaceFileW
+    replace.argtypes = [w.LPCWSTR, w.LPCWSTR, w.LPCWSTR,
+                        w.DWORD, w.LPVOID, w.LPVOID]
+    replace.restype = w.BOOL
+    if not replace(str(destination), str(source), None, 0, None, None):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
 def process_identity(pid=None):
     """Pin a Windows PID to its creation FILETIME (not a reused PID)."""
     import ctypes
@@ -36,10 +52,32 @@ def process_identity(pid=None):
 
 
 def read_result(path):
+    read_errors = (OSError, ValueError)
+    if os.name == 'nt':
+        import pywintypes
+        read_errors += (pywintypes.error,)
     try:
-        data = json.loads(Path(path).read_text(encoding='utf-8'))
+        if os.name == 'nt':
+            import win32file
+            import win32con
+            # Readers must permit the writer's atomic replacement. The CRT
+            # open used by Path.read_text denies delete sharing on Windows.
+            handle = win32file.CreateFile(
+                str(path), win32con.GENERIC_READ,
+                win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE |
+                win32con.FILE_SHARE_DELETE, None, win32con.OPEN_EXISTING, 0, None)
+            try:
+                size = win32file.GetFileSize(handle)
+                if size > 1024 * 1024:
+                    raise ValueError('prestop result exceeds size limit')
+                text = win32file.ReadFile(handle, size)[1].decode('utf-8')
+            finally:
+                handle.Close()
+        else:
+            text = Path(path).read_text(encoding='utf-8')
+        data = json.loads(text)
         return data if isinstance(data, dict) else None
-    except (OSError, ValueError):
+    except read_errors:
         return None
 
 
@@ -79,7 +117,7 @@ class ServiceStop:
                 json.dump(data, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
+            replace_result(temporary, self.path)
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)

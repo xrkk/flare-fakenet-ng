@@ -1,12 +1,38 @@
 # Copyright 2026 Google LLC
 import threading
 import time
+import os
 
 import pytest
 
 from fakenet.mcp.coordination import Coordinator
-from fakenet.mcp.service_stop import ServiceStop, read_result
+from fakenet.mcp.service_stop import ServiceStop, read_result, replace_result
 from fakenet.mcp.testdouble import LifecycleDouble
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows delete sharing')
+def test_result_reader_allows_atomic_replacement_while_handle_open(tmp_path, monkeypatch):
+    import win32file
+    path = tmp_path / 'result.json'
+    replacement = tmp_path / 'next.json'
+    path.write_text('{"phase":"draining"}', encoding='utf-8')
+    replacement.write_text('{"phase":"failed"}', encoding='utf-8')
+    original = win32file.ReadFile
+    observed = []
+    def read_while_replacing(handle, size):
+        try:
+            replace_result(replacement, path)
+        except OSError as exc:
+            observed.append(repr(exc))
+            raise
+        observed.append(True)
+        return original(handle, size)
+    with monkeypatch.context() as patch:
+        patch.setattr(win32file, 'ReadFile', read_while_replacing)
+        assert read_result(path) == {'phase': 'draining'}, observed
+    assert observed == [True]
+    assert read_result(path) == {'phase': 'failed'}
+    assert read_result(tmp_path / 'missing.json') is None
 
 
 def wait_done(stop):

@@ -1106,8 +1106,18 @@ class Diverter(DiverterBase, WinUtilMixin):
         self.handle = None
 
     def _inbound_capture_filter(self):
-        return ('inbound and (ip or ipv6)'
-                if self.egress_control_mode else 'inbound and ip')
+        capture_filter = ('inbound and (ip or ipv6)'
+                          if self.egress_control_mode else 'inbound and ip')
+        if getattr(self, '_dict', {}).get('controllinkexcludeip'):
+            # WinDivert reports loopback as outbound only. Observe the
+            # addresses excluded from MCP takeover on this existing SNIFF
+            # handle; neither widen the main filter nor intercept delivery.
+            capture_filter = (
+                '(%s) or (outbound and '
+                '((ip and ip.DstAddr >= 127.0.0.0 and '
+                'ip.DstAddr <= 127.255.255.255) or '
+                '(ipv6 and ipv6.DstAddr == ::1)))' % capture_filter)
+        return capture_filter
 
     def _open_inbound_capture(self):
         """Open the record-only inbound WinDivert handle (plan I7).
@@ -1190,7 +1200,9 @@ class Diverter(DiverterBase, WinUtilMixin):
                 try:
                     if self.record_raw_capture(bytes(raw),
                                                observation_role='inbound',
-                                               direction='inbound') is False:
+                                               direction=('outbound' if getattr(
+                                                   wdpkt, 'is_outbound', False)
+                                                   else 'inbound')) is False:
                         self._record_capture_failure(PcapWriteError(
                             'inbound capture writer rejected packet'))
                         return

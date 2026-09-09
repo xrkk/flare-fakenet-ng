@@ -272,6 +272,31 @@ class InboundCaptureTests(unittest.TestCase):
         self.assertEqual(diverter._inbound_capture_filter(),
                          'inbound and ip')
 
+    def test_mcp_observes_exempt_loopback_on_outbound_path(self):
+        diverter = make_diverter()
+        diverter._dict = {'controllinkexcludeip': '192.168.204.1'}
+        capture_filter = diverter._inbound_capture_filter()
+        self.assertIn('outbound and', capture_filter)
+        self.assertIn('ip.DstAddr >= 127.0.0.0', capture_filter)
+        self.assertIn('ip.DstAddr <= 127.255.255.255', capture_filter)
+        self.assertIn('ipv6.DstAddr == ::1', capture_filter)
+        valid, position, message = windows.WinDivert.check_filter(capture_filter)
+        self.assertTrue(valid, (position, message))
+
+        packet = _FakePacket()
+        packet.is_outbound = True
+        handle = mock.Mock()
+        handle.recv.return_value = packet
+        diverter._inbound_capture_handle = handle
+        def record(raw, **metadata):
+            self.assertEqual(metadata['direction'], 'outbound')
+            diverter._stopping.set()
+            return True
+        diverter.record_raw_capture = mock.Mock(side_effect=record)
+        diverter._inbound_capture_loop()
+        diverter.record_raw_capture.assert_called_once()
+        handle.send.assert_not_called()
+
     def test_stop_closes_capture_then_joins_before_main_handle(self):
         diverter = make_diverter()
         diverter._stopping = threading.Event()
