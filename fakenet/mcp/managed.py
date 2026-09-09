@@ -237,6 +237,12 @@ def probe_instance(instance):
             'listeners': observations}
 
 
+def probe_with_faults(instance, fault):
+    """Apply locally armed active-run failure at the actual health request."""
+    fault.inject_diverter_stop(instance.diverter)
+    return probe_instance(instance)
+
+
 def redirect_child_streams(run_dir):
     import ctypes as c
     from ctypes import wintypes as w
@@ -311,7 +317,7 @@ def child_main(run_id, run_dir):
                 fault.inject_child_hang()
                 response['result'] = probe_instance(instance)
             elif kind == 'health' and instance is not None:
-                response['result'] = probe_instance(instance)
+                response['result'] = probe_with_faults(instance, fault)
             elif kind == 'stacks':
                 response['result'] = {'stacks': IncidentCollector._thread_stacks()}
             elif kind == 'stop' and instance is not None:

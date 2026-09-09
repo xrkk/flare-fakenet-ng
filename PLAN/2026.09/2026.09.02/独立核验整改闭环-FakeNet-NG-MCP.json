@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "ac60aadbdcd4b0c4157aec6a7cd7801dc7632101",
+  "current_head": "4b1acbe432f6706bb2e6eb7acf495cae8a6a9847",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -369,8 +369,8 @@
   "checkpoint": "INTENT-078创建窗口实现与双平台回归完成，准备固定提交构建候选。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-095",
-    "action": "观察现有capture_exception session18122及中途只读session36117；已healthy并发送刺激，不修改冻结源码、不中断或重启测试，按实际检查继续整改。"
+    "id": "INTENT-096",
+    "action": "固定健康后活动探测丢失整改并继续剩余P03/P04故障矩阵与实机验证；62文件现场已完整保存，不改变恢复审计或关闭CHK。"
   },
   "events": [
     {
@@ -1049,6 +1049,10 @@
     {
       "intent": "INTENT-095",
       "actual": "当前捕获异常run f3611c77-d1a8-486e-86aa-bd5091e7a88a实际触发mono191.421/thread1880，主管2996在192.703发布failed（1.282秒）；三incident实际导出全部complete，第三包只剩UDP差异。session18122仍等待恢复，未重启。"
+    },
+    {
+      "intent": "INTENT-095",
+      "actual": "捕获异常完整诊断终结，839HTTP无失败、三incident完整但恢复失败；62文件全现场已校验导出。健康后活动探测故障实现/验收改造Linux213/3、Windows210/6通过，尚未原生。"
     }
   ],
   "active_build": {
@@ -1060,10 +1064,10 @@
     "sha256": "de4b392770398a56b86d4c6eb3b11091744b42eaddbad15f3ca43bf49ae5ef9d"
   },
   "latest_guest_export": {
-    "path": "Logs/fakenetng-mcp/remediation-20260910/native-1029376-s2-full-runtime.zip",
-    "sha256": "e2314c90db12fa05f72a791119ed4fbec1234f50788002f5645b25b0162ccdce",
-    "verified_files": 70,
-    "excluded": "none; explicit fresh application file list without TLS material"
+    "path": "Logs/fakenetng-mcp/remediation-20260910/native-ac60aad-capture-full-runtime.zip",
+    "sha256": "ee75df3c15d462c5419a5ea9c80a5b23c612541bfb350a697a2b505c63c96232",
+    "verified_files": 62,
+    "excluded": "three configs/temp_certs TLS files; explicit fresh allowlist"
   },
   "active_host_capture": {
     "session_id": 41715,
@@ -1077,14 +1081,15 @@
   },
   "active_native_validation": {
     "session_id": 18122,
-    "status": "RUNNING",
+    "status": "COMPLETED",
     "source_head": "ac60aadbdcd4b0c4157aec6a7cd7801dc7632101",
     "runner_source": "ac60aadbdcd4b0c4157aec6a7cd7801dc7632101",
     "runner_snapshot": "Logs/fakenetng-mcp/remediation-20260910/native-source-ac60aad",
     "log": "Logs/fakenetng-mcp/remediation-20260910/native-ac60aad-capture-console.txt",
     "formal_acc_pass": false,
     "mode": "真实capture_exception同源诊断",
-    "run_id": "f3611c77-d1a8-486e-86aa-bd5091e7a88a"
+    "run_id": "f3611c77-d1a8-486e-86aa-bd5091e7a88a",
+    "result": "session18122完成：捕获异常七项true、839HTTP0错误、实际三incident完整，但protective_stop_completed=false，整体未通过并保留failed。"
   },
   "environment_question": {
     "status": "AWAITING_INFORMATION",

@@ -620,19 +620,12 @@ def run_acc006(base, channel, writer):
     capture_checks = exercise_listener_exception(base, channel, writer, 'acc006-capture', 'capture_exception')
     checks.update({'capture_' + key: value for key, value in capture_checks.items()})
 
-    # (b) active-probe condition broken: the diverter_stop fault closes the
-    # main handle, so the probe (diverter handle alive) fails and health
-    # must revoke even though the process and listeners are up.
-    arm_fault(channel, 'diverter_stop', base)
-    load_and_start(base)
-    revoked, snap3 = wait_state(
-        base, lambda s: s.get('state') in ('degraded', 'failed', 'starting')
-        or (s.get('health', {}).get('probe') != 'pass'), timeout=30)
-    writer.add_evidence('acc006-probe-break', snap3 or {})
-    checks['probe_break_revokes_health'] = revoked and \
-        (snap3 or {}).get('state') != 'healthy'
-    stop_run(base)
-    disarm_fault(channel, base)
+    from run_active_probe import run_active_probe_loss
+    active_checks = run_active_probe_loss(base, channel, writer)
+    checks.update({'active_' + key: value for key, value in active_checks.items()})
+    if not all(active_checks.values()):
+        writer.add_evidence('acc006-checks', checks)
+        return EXIT_FAIL
 
     # (c) key-initialization condition broken: a config with every listener
     # disabled produces no init evidence; it must NEVER report healthy
