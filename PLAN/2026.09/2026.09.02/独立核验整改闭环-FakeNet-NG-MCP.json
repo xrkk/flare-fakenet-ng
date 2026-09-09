@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "50b8752839053143fd369ece073e1ce70a18a96b",
+  "current_head": "74e657ef789e72cf944aef98cfb7b2173782ffa4",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -369,8 +369,8 @@
   "checkpoint": "1134521原生单次IPC健康恢复通过，stop因UDP差异失败；15项现场导出。漏incident整改Linux184/Windows181通过待提交。核验仍1/5，CHK全OPEN。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-073",
-    "action": "提交ACC015真实传输入口；对当前50b8752失败场景用固定新runner执行单独带外导出诊断，记录不同runner/已安装包来源，不计完整ACC或发布通过。"
+    "id": "INTENT-075",
+    "action": "提交接收器真实关闭证据改进，对同一50b8752场景使用新冻结runner/新输出目录复验实际带外传输，不改原失败记录或算作完整ACC。"
   },
   "events": [
     {
@@ -957,6 +957,18 @@
     {
       "intent": "INTENT-072",
       "actual": "50b8752永久IPC诊断结束，两包实际导出哈希与内容完整；ACC015真实incident/PCAP+接收器关闭入口已改，Linux191/Windows188通过。"
+    },
+    {
+      "intent": "INTENT-073",
+      "actual": "ACC015真实传输入口提交74e657e，原生runner由该git树冻结；已安装包仍50b8752，后续仅作单独诊断。"
+    },
+    {
+      "intent": "INTENT-073",
+      "actual": "74e657e实机已导出两包incident并收到真实PCAP，但guest关闭探针返回TIMEOUT，诊断明确失败，未计ACC通过。"
+    },
+    {
+      "intent": "INTENT-074",
+      "actual": "74e657e实机PCAP传输完成但guest关闭确认TIMEOUT，保留失败。新核对要求线程停止、socket=-1、宿主无LISTEN且guest不连接，6项范围/内核状态反例通过，待固定源码实机复验。"
     }
   ],
   "active_build": {

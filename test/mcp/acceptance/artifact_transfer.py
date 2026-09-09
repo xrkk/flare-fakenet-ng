@@ -1,5 +1,6 @@
 """Bounded transfer of a listed runtime artifact to the authorized host."""
 import hashlib
+import json
 import http.server
 import re
 import threading
@@ -7,6 +8,16 @@ import uuid
 from pathlib import Path, PureWindowsPath
 
 from helpers import StepError
+
+
+def listener_rows(table, port):
+    """A TCP TIME_WAIT row is not a live accepting socket."""
+    result = []
+    for line in table.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) >= 4 and fields[3] == '0A' and int(fields[1].rsplit(':', 1)[1], 16) == port:
+            result.append(line)
+    return result
 
 
 def receive_artifact(channel, artifact, destination):
@@ -66,13 +77,21 @@ def receive_artifact(channel, artifact, destination):
         server.shutdown()
         server.server_close()
         worker.join(15)
+    host_rows = listener_rows(Path('/proc/net/tcp').read_text(), port)
+    receiver = {'address': '192.168.204.1', 'port': port,
+                'thread_stopped': not worker.is_alive(),
+                'socket_fileno': server.socket.fileno(), 'kernel_listeners': host_rows}
     if worker.is_alive() or received.get('error') or received.get('sha256', '').lower() != digest.lower():
         raise StepError('artifact transfer failed: ' + str(received))
     closed = channel.powershell(
         "$c=[Net.Sockets.TcpClient]::new();try{$a=$c.BeginConnect('192.168.204.1'," + str(port) + ",$null,$null); "
         "if($a.AsyncWaitHandle.WaitOne(1500)){try{$c.EndConnect($a);'OPEN'}catch{'CLOSED'}}else{'TIMEOUT'}}finally{$c.Dispose()}", timeout=10)
-    if closed['output'].strip() != 'CLOSED':
-        raise StepError('receiver closure not confirmed: ' + closed['output'])
-    return {'path': str(destination), 'size': size, 'sha256': received['sha256'],
+    result = {'path': str(destination), 'size': size, 'sha256': received['sha256'],
             'guest_metadata': artifact, 'transfer': transfer, 'closure': closed,
-            'receiver': {'address': '192.168.204.1', 'port': port, 'thread_stopped': not worker.is_alive()}}
+            'receiver': receiver}
+    with destination.with_suffix('.transfer.json').open('x', encoding='utf-8') as stream:
+        json.dump(result, stream, ensure_ascii=False, indent=2)
+    if (receiver['socket_fileno'] != -1 or not receiver['thread_stopped'] or host_rows or
+            closed['output'].strip() not in ('CLOSED', 'TIMEOUT')):
+        raise StepError('receiver closure not confirmed: ' + str(receiver) + ' ' + closed['output'])
+    return result

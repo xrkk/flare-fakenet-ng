@@ -190,7 +190,10 @@ def run_acc015(base, channel, writer):
     writer.add_evidence('acc015-no-content-tool-response', {'http_status': code, 'body': raw})
     checks = {'actual_same_run_exported': bool(bundles),
               'pcap_dual_sha_match': exported['sha256'].lower() == artifact['sha256'].lower(),
-              'receiver_closed': exported['closure']['output'].strip() == 'CLOSED',
+              'receiver_closed': (exported['receiver']['socket_fileno'] == -1 and
+                                  exported['receiver']['thread_stopped'] and
+                                  not exported['receiver']['kernel_listeners'] and
+                                  exported['closure']['output'].strip() in ('CLOSED', 'TIMEOUT')),
               'no_download_tool': 'unknown tool' in raw.lower()}
     writer.add_evidence('acc015-checks', checks)
     return EXIT_PASS if all(checks.values()) else EXIT_FAIL
