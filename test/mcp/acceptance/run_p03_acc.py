@@ -602,7 +602,11 @@ def run_acc004_scenario(base, channel, writer, tag):
 
 def run_acc006(base, channel, writer):
     writer.action('acc006', 'real health: three conditions, no fake healthy')
-    checks = {}
+    from run_ipc_cases import run_ipc_matrix, IPC_CASES
+    checks = run_ipc_matrix(base, channel, writer)
+    if set(checks) != set(IPC_CASES) or not all(checks.values()):
+        writer.add_evidence('acc006-ipc-matrix-incomplete', checks)
+        return EXIT_FAIL
     started = load_and_start(base)
     writer.add_evidence('acc006-start-payload', started)
     checks['start_ok'] = started.get('error') is None

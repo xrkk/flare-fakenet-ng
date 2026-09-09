@@ -23,7 +23,10 @@ import json
 from pathlib import Path
 
 FAULTS = ('policy_pause', 'listener_stop', 'diverter_stop', 'child_hang',
-          'cleanup_error', 'listener_exception')
+          'cleanup_error', 'listener_exception', 'ipc_once_timeout',
+          'ipc_permanent_timeout', 'ipc_eof', 'ipc_wrong_run',
+          'ipc_repeat', 'ipc_reverse')
+IPC_FAULTS = frozenset(fault for fault in FAULTS if fault.startswith('ipc_'))
 
 
 def enabled():
@@ -64,6 +67,35 @@ class FaultInjector:
     def __init__(self):
         self._held_sockets = []
         self._child = None
+        self._ipc_fault = None
+
+    def ipc_response(self, request, response):
+        """Alter only actual health responses on the private child pipe.
+
+        A one-shot timeout drops one response entirely; it never queues a
+        stale frame or changes the receiver's strict sequence validation.
+        """
+        if not enabled() or request.get('kind') != 'health':
+            return 'send', response
+        armed = armed_fault()
+        if armed in IPC_FAULTS:
+            clear()
+            self._ipc_fault = armed
+        fault = self._ipc_fault
+        if fault == 'ipc_permanent_timeout':
+            return 'drop', None
+        self._ipc_fault = None
+        if fault == 'ipc_once_timeout':
+            return 'drop', None
+        if fault == 'ipc_eof':
+            return 'eof', None
+        if fault in ('ipc_wrong_run', 'ipc_repeat', 'ipc_reverse'):
+            response = dict(response)
+            if fault == 'ipc_wrong_run':
+                response['run_id'] = '00000000-0000-0000-0000-000000000000'
+            else:
+                response['seq'] -= 1 if fault == 'ipc_repeat' else 2
+        return 'send', response
 
     def arm(self, fault):
         if fault not in FAULTS:

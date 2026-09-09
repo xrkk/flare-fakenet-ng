@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "68b77d5c6bbdcc6682279347f761b0ffb0e63c02",
+  "current_head": "41f7cc4aea70e5723276660fb5b46be802881c25",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -369,8 +369,8 @@
   "checkpoint": "68b77d5已实机部署；真实监听异常诊断不通过，failed现场已导出33文件。P03场景进一步整改Linux173通过待提交；CHK全OPEN，有效核验1/5。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-063",
-    "action": "提交当前P03场景入口与实机失败记录；继续完成尚缺IPC矩阵、SCM/Job及全量验收，保持当前failed现场，不因虚拟机授权重复询问，不把局部通过计为核验通过。"
+    "id": "INTENT-065",
+    "action": "提交IPC整改为固定源码，在独立目录构建，固定runner快照后再进行原生IPC诊断；仍需完整恢复审计及其余矩阵，不关闭CHK。"
   },
   "events": [
     {
@@ -913,6 +913,14 @@
       "at": "2026-09-10T03:35:27.286179+08:00",
       "intent": "INTENT-062",
       "actual": "68b77d5真实线程异常约2.571秒撤销健康，incident基础14项完整，但全恢复审计UDP差异后期限采集失败，原420秒等待结束不通过。33文件导出校验；S6精确子进程/S5实际stop暂停/全程探活改动Linux173通过，Win10仅解析语法通过。"
+    },
+    {
+      "intent": "INTENT-063",
+      "actual": "P03精确子进程终止与全程探活提交41f7cc4aea70e5723276660fb5b46be802881c25；实际VM包仍68b77d5，failed现场导出完成；用户保护文件未变。"
+    },
+    {
+      "intent": "INTENT-064",
+      "actual": "固定6项IPC钩子/双端时序/健康2秒起点周期实现；ACC006接入真实矩阵。Linux182/Windows179通过，新增旧seq/错run证据反例定向通过。未执行任何VM变更，待提交构建新包。"
     }
   ],
   "active_build": {

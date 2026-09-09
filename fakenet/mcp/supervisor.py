@@ -167,11 +167,19 @@ class RealSupervisor:
                 return False
             self._health_cache = dict(evidence)
             self._coordinator.update_health_state(state, reason)
+            from fakenet.mcp.managed import record_ipc
+            record_ipc(self._run_dir, 'parent', 'health_state',
+                       {'run_id': child.run_id, 'state': state,
+                        'identity': child.identity, 'reason': reason})
             return True
 
     def _health_loop(self):
         failures = 0
-        while not self._health_stop.wait(HEALTH_INTERVAL_SECONDS):
+        next_probe = time.monotonic() + HEALTH_INTERVAL_SECONDS
+        while not self._health_stop.wait(max(0, next_probe - time.monotonic())):
+            # The period is between request starts, not an extra sleep after
+            # a one-second timeout (which would stretch it to three seconds).
+            next_probe = time.monotonic() + HEALTH_INTERVAL_SECONDS
             child = self._fakenet
             if child is None:
                 return

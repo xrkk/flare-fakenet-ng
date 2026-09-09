@@ -11,6 +11,17 @@ from pathlib import Path
 from contextlib import contextmanager
 
 
+def record_ipc(run_dir, side, event, frame=None, error=None):
+    """Raw test evidence only; not a replay log or recovery state source."""
+    if os.environ.get('FAKENETNG_MCP_FAULT_INJECTION') != '1':
+        return
+    entry = {'time': time.time(), 'monotonic': time.monotonic(),
+             'pid': os.getpid(), 'side': side, 'event': event,
+             'frame': frame, 'error': error}
+    with (Path(run_dir) / ('ipc-' + side + '.jsonl')).open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+
 def install_thread_exception_logging():
     """Keep actual uncaught child-thread stacks in the current run log."""
     import logging
@@ -131,6 +142,7 @@ class ManagedProcess:
             seq = self._sequence
             message = {'run_id': self.run_id, 'seq': seq, 'kind': kind,
                        'payload': payload or {}}
+            record_ipc(self.run_dir, 'parent', 'request', message)
             if not self.alive():
                 raise EOFError('managed process exited')
             if self._write_failed:
@@ -156,11 +168,16 @@ class ManagedProcess:
                 raise TimeoutError('managed IPC response timeout') from exc
             if isinstance(response, BaseException):
                 raise response
+            record_ipc(self.run_dir, 'parent', 'response', response)
             if response.get('run_id') != self.run_id or response.get('seq') != seq:
                 raise RuntimeError('managed IPC run/sequence mismatch')
             if response.get('error'):
                 raise RuntimeError(response['error'])
             return response['result']
+        except BaseException as exc:
+            record_ipc(self.run_dir, 'parent', 'failure',
+                       {'run_id': self.run_id, 'seq': self._sequence, 'kind': kind}, repr(exc))
+            raise
         finally:
             self._lock.release()
 
@@ -252,6 +269,7 @@ def child_main(run_id, run_dir):
     seq = 0
     for raw in protocol_in:
         request = json.loads(raw)
+        record_ipc(directory, 'child', 'request', request)
         if request.get('run_id') != run_id or request.get('seq') != seq + 1:
             raise RuntimeError('invalid managed request identity/sequence')
         seq = request['seq']
@@ -289,6 +307,14 @@ def child_main(run_id, run_dir):
             detail = traceback.format_exc()
             logging.getLogger('managed').error(detail)
             response['error'] = detail
+        action, response = fault.ipc_response(request, response)
+        record_ipc(directory, 'child', action,
+                   response if action == 'send' else request)
+        if action == 'drop':
+            continue
+        if action == 'eof':
+            protocol_out.close()
+            return 1
         protocol_out.write(json.dumps(response).encode('utf-8') + b'\n')
         protocol_out.flush()
         if exiting:
