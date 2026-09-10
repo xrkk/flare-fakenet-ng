@@ -349,7 +349,7 @@ def child_main(run_id, run_dir):
             detail = traceback.format_exc()
             logging.getLogger('managed').error(detail)
             response['error'] = detail
-        if request.get('kind') in ('health', 'stacks') and instance is not None:
+        if request.get('kind') in ('start', 'health', 'stacks') and instance is not None:
             try:
                 save_stacks(directory, run_id, identity, IncidentCollector._thread_stacks())
             except OSError as exc:

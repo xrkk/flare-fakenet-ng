@@ -9,10 +9,10 @@
     "gate": "PASS",
     "at": "2026-09-09T14:26:46.931484+08:00"
   },
-  "status": "IMPLEMENTING",
+  "status": "WAITING_USER_INPUT",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "5888d7a65f9f7db711f1109d30ad50ce8144f9a1",
+  "current_head": "9dc436136e75328cd63f14a882a522f2abc1f44b",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -364,13 +364,27 @@
       "stage": "IMPLEMENTATION_AUTHORIZED",
       "decision": "用户采纳推荐A两阶段停服",
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
+    },
+    {
+      "id": "PLAN-CHANGE-006",
+      "status": "WAITING_USER_INPUT",
+      "stage": "NOT_AUTHORIZED",
+      "record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
+      "affected_edges": [
+        "需求034/035→OUT-014/ACC-014",
+        "P01→P03",
+        "P03→P04",
+        "P04→P05"
+      ],
+      "trigger": "9dc4361 S6 run72539451-2c3d-4f7f-9f5f-e8b015bc1ccc的已退出受管对象不能事后转储；既有失败包保存。",
+      "recommendation": "A：保留证据门槛，先限定目标的退出时采集原型及方案回流；不得自动转储终止发起者。"
     }
   ],
-  "checkpoint": "5888d7a前四IPC通过，重复序号因Dnscache基线UDP62664缺当次生命周期证据失败；协议两包完整，恢复审计第三包缺栈/转储。原始15文件已导出核对。",
-  "stop_reason": null,
+  "checkpoint": "S6精确受管终止/同主管存活/全程HTTP通过，环境恢复与取证完整性失败；首次ready栈窗口已修正291/3。PLAN-CHANGE-006登记待裁决，规范未修改。",
+  "stop_reason": "PLAN-CHANGE-006待裁决：新增退出时采集及机器级登记职责超出当前冻结Pxx安装/取证契约；已授权首个ready栈修正将先提交构建。",
   "pending_intent": {
-    "id": "INTENT-134",
-    "action": "保全全部ProgramData证据并逐文件源/副本/宿主SHA核验；提交恢复审计取证修正、固定源重建；成功保全后按AGENTS唯一183门禁恢复VM，用新候选继续默认正常和S6验证。DNS服务归属待用户补充，不修改环境DNS或放宽审计。"
+    "id": "INTENT-135",
+    "action": "保留S6立即外部退出的缺栈/转储证据；红测复现首次start ready响应前没有栈观测，仅修正首次响应之前保存真实栈；不降低转储门槛、不把主管dump替代受管dump。"
   },
   "events": [
     {
@@ -809,10 +823,10 @@
     }
   ],
   "candidate": {
-    "source_commit": "5888d7a65f9f7db711f1109d30ad50ce8144f9a1",
-    "candidate_id": "mcp-c5888d7a6-cd7191824ec3",
-    "package": "dist/mcp-remediation-20260910-5888d7a/fakenetng-mcp-candidate.zip",
-    "sha256": "cd7191824ec3667799617b11d8e6fa4383f2ac6a4763a96e1017a358bb8c6cfb",
+    "source_commit": "9dc436136e75328cd63f14a882a522f2abc1f44b",
+    "candidate_id": "mcp-c9dc43613-8cd2b1818c37",
+    "package": "dist/mcp-remediation-20260910-9dc4361/fakenetng-mcp-candidate.zip",
+    "sha256": "8cd2b1818c3788a21c6a7fe603879bc5c921423808a11119fe5b553c22a4e4c4",
     "status": "NATIVE_DIAGNOSTICS_RUNNING",
     "formal_acc_pass": false
   },
@@ -1155,14 +1169,34 @@
   ],
   "active_build": {
     "status": "PASS",
-    "source_commit": "5888d7a65f9f7db711f1109d30ad50ce8144f9a1",
-    "output": "dist/mcp-remediation-20260910-5888d7a",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-5888d7a.txt",
-    "session_id": 85672,
-    "windows_main_passed": 855,
-    "windows_main_skipped": 8,
-    "windows_http_passed": 17,
-    "zip_sha256": "cd7191824ec3667799617b11d8e6fa4383f2ac6a4763a96e1017a358bb8c6cfb"
+    "source_commit": "9dc436136e75328cd63f14a882a522f2abc1f44b",
+    "output": "dist/mcp-remediation-20260910-9dc4361",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-9dc4361.txt",
+    "session_id": 2275,
+    "zip_sha256": "8cd2b1818c3788a21c6a7fe603879bc5c921423808a11119fe5b553c22a4e4c4",
+    "windows_test_gate": {
+      "verdict": "PASS",
+      "expected_skip_modules": [
+        "test_configstore_links",
+        "test_gui_configmodel",
+        "test_gui_vm_acceptance",
+        "test_singleinstance"
+      ],
+      "groups": {
+        "main": {
+          "tests": 865,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 8
+        },
+        "http": {
+          "tests": 17,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      }
+    }
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/native-8303ea2-active-probe-full-runtime.zip",
@@ -1182,17 +1216,20 @@
   },
   "active_native_validation": {
     "status": "COMPLETED_WITH_FAILURE",
-    "source_head": "5888d7a65f9f7db711f1109d30ad50ce8144f9a1",
+    "source_head": "9dc436136e75328cd63f14a882a522f2abc1f44b",
     "formal_acc_pass": false,
-    "evidence": "Logs/fakenetng-mcp/remediation-20260910/5888d7a-ipc-matrix",
-    "session_id": 8862,
-    "upgrade_evidence": "Logs/fakenetng-mcp/remediation-20260910/native-5888d7a-upgrade-and-run.json",
+    "mode": "fresh snapshot default normal then exact S6; IPC remains incomplete",
+    "session_id": 81676,
+    "evidence": "Logs/fakenetng-mcp/remediation-20260910/9dc4361-s6",
+    "deployment_evidence": "Logs/fakenetng-mcp/remediation-20260910/native-9dc4361-entry-only.json",
+    "normal_evidence": "Logs/fakenetng-mcp/remediation-20260910/native-9dc4361-normal.json",
+    "normal_export_sha256": "def449fd82360e6c9455d8bf72198195af044443d80e05c88aa5db47fbcebf13",
     "checks": {
-      "ipc_once_timeout": true,
-      "ipc_permanent_timeout": true,
-      "ipc_eof": true,
-      "ipc_wrong_run": true,
-      "ipc_repeat": false
+      "exact_managed_child_terminated": true,
+      "same_supervisor_survives": true,
+      "control_link_survives_entire_recovery": true,
+      "protective_recovery_completed": false,
+      "all_incidents_complete": false
     }
   },
   "environment_question": {
@@ -1231,12 +1268,13 @@
     "snapshot": "Snapshot 183-FakenetNG测试专用",
     "revert_count_planned": 1,
     "resume_count_planned": 1,
-    "evidence": "Logs/fakenetng-mcp/remediation-20260910/before-reset-9cd9bf4-02/verification.json",
+    "evidence": "Logs/fakenetng-mcp/remediation-20260910/before-reset-post-job-audit/verification.json",
+    "verified_files": 945,
+    "sha256": "ed1faa28f393fee81a5cfeae32e1f9cef2d83c30261eeb06bf40ecf1feb20d34",
     "revert_exit": 0,
     "resume_exit": 0,
     "checkpoint_marker": "Snapshot99.vmsn",
-    "actual_display": ":0",
     "identity_gate": "DESKTOP-3FI41GR",
-    "identity_evidence": "Logs/fakenetng-mcp/remediation-20260910/9cd9bf4-post-reset-identity.json"
+    "identity_evidence": "Logs/fakenetng-mcp/remediation-20260910/9dc4361-post-reset-identity.json"
   }
 }

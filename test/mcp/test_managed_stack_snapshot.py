@@ -97,3 +97,46 @@ def test_post_job_audit_retains_managed_observation_and_dumps_actual_auditor(
     else:
         assert context['dump_target_pid'] is None
         assert context['dump_reason'] == 'live managed IPC stacks unavailable'
+
+
+def test_start_response_already_has_identified_stack_observation(tmp_path, monkeypatch):
+    import ctypes
+    import io
+    import logging
+    import sys
+    from types import SimpleNamespace
+    from fakenet.mcp import managed, service_stop
+    identity = {'pid': 42, 'creation_time': '123'}
+    class NativeCall:
+        def __init__(self, fn): self.fn = fn
+        def __call__(self, *args): return self.fn(*args)
+    def in_job(process, job, result):
+        ctypes.cast(result, ctypes.POINTER(ctypes.wintypes.BOOL)).contents.value = True
+        return True
+    kernel = SimpleNamespace(GetCurrentProcess=NativeCall(lambda: 1),
+                             IsProcessInJob=NativeCall(in_job))
+    monkeypatch.setattr(ctypes, 'WinDLL', lambda *a, **kw: kernel, raising=False)
+    monkeypatch.delenv('FAKENETNG_MCP_FAULT_INJECTION', raising=False)
+    monkeypatch.setenv('PROGRAMDATA', str(tmp_path))
+    monkeypatch.setattr(logging, 'basicConfig', lambda **kw: None)
+    monkeypatch.setattr(logging, 'FileHandler', lambda *a, **kw: None)
+    monkeypatch.setattr(logging, 'StreamHandler', lambda *a, **kw: None)
+    monkeypatch.setattr(managed, 'install_thread_exception_logging', lambda: None)
+    monkeypatch.setattr(service_stop, 'process_identity', lambda pid: identity)
+    fake = SimpleNamespace(fakenet_config={}, diverter_config={},
+        running_listener_providers=[], diverter=None, parse_config=lambda path: None,
+        start=lambda: None)
+    monkeypatch.setitem(sys.modules, 'fakenet.fakenet', SimpleNamespace(Fakenet=lambda: fake))
+    monkeypatch.setattr(managed, 'probe_instance', lambda instance: {'init_evidence': True, 'probe': True})
+    request = {'run_id': 'run', 'seq': 1, 'kind': 'start',
+               'payload': {'config_path': 'unused', 'fakenet_config': {}, 'diverter_config': {}}}
+    class Response(io.BytesIO):
+        def write(self, raw):
+            observation = read_stacks(tmp_path, 'run', identity)
+            assert observation and 'child_main' in observation, 'first ready response escaped before stack capture'
+            return super().write(raw)
+    response = Response()
+    monkeypatch.setattr(managed, 'redirect_child_streams', lambda path: (
+        io.BytesIO(json.dumps(request).encode() + b'\n'), response, io.StringIO()))
+    assert managed.child_main('run', tmp_path) == 1
+    assert json.loads(response.getvalue())['result']['probe'] is True
