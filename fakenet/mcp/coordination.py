@@ -71,6 +71,15 @@ class Coordinator:
         self._exit_failure = None
         self._operation_context = threading.local()
 
+    def on_run_end(self, hook):
+        """Register the single point that releases run-scoped ownership.
+
+        Every stop entry (tool, SCM pre-stop, internal protective stop)
+        converges on this coordinator, so one hook keeps run-scoped state in
+        step instead of each caller remembering to release it.
+        """
+        self._run_end_hook = hook
+
     # -- read-only surface -------------------------------------------------
     def snapshot(self):
         with self._lock:
@@ -109,6 +118,12 @@ class Coordinator:
     def controller(self):
         with self._lock:
             return self._controller
+
+    @property
+    def needs_recovery(self):
+        """True while a failure or exit responsibility is still owned."""
+        with self._lock:
+            return self._state in ('failed', 'recovering') or self._draining
 
     # -- mutation surface --------------------------------------------------
     def _active_conflicts(self, conflict_names):
@@ -239,10 +254,19 @@ class Coordinator:
                               release_controller=False)
                 if result.get('run_id') is None:
                     result.pop('run_id', None)
+            previous_run = self._run_id
             self._run_id = result.get('run_id', self._run_id)
             if 'state' in result:
                 self._state = result['state']
-            self._failure_reason = result.get('failure_reason')
+            failure = result.get('failure_reason')
+            if failure is not None:
+                self._failure_reason = failure
+            elif self._state != 'failed':
+                # Only a completion that leaves the service outside a failed
+                # state may clear the reason: an asynchronous termination
+                # reason must survive an unrelated configuration completion.
+                self._failure_reason = None
+            run_ended = previous_run is not None and self._run_id is None
             if result.get('controller') is not None:
                 self._controller = result['controller']
             if result.get('release_controller'):
@@ -253,6 +277,8 @@ class Coordinator:
                 'command.completed', command_id=command_id, operation=kind,
                 state=self._state, state_version=self._state_version)
 
+            if run_ended:
+                self._release_run_scope()
             if 'last_run_outcome' in result:
                 self._last_run_outcome = result['last_run_outcome']
             elif result.get('release_controller') and result.get('changed', True) and \
@@ -267,6 +293,10 @@ class Coordinator:
                 'command_id': command_id,
                 'last_run_outcome': self._last_run_outcome,
             }
+            if result.get('bound_run_id') is not None:
+                # The instance this request was bound to, reported next to
+                # the instance that actually exists now.
+                response['bound_run_id'] = result['bound_run_id']
             self._commands[command_id] = {
                 'controller': controller, 'response': response,
                 'describe': describe,
@@ -274,13 +304,20 @@ class Coordinator:
             self._finish_operation(command_id)
             return dict(response)
 
+    def _release_run_scope(self):
+        hook = getattr(self, '_run_end_hook', None)
+        if hook is not None:
+            hook()
+
     def record_terminal_failure(self, reason):
         """P04/CHK-041: terminal-failure bookkeeping. When the protective
         stop CONVERGED (real stopped), the contract keeps that terminal
         state with last_run_outcome=failed and the reason observable —
         only a non-converged outcome lands in failed."""
         with self._lock:
+            run_ended = False
             if self._state == 'stopped':
+                run_ended = self._run_id is not None
                 self._run_id = None
                 self._controller = None
             if self._state != 'stopped':
@@ -288,6 +325,8 @@ class Coordinator:
             self._failure_reason = reason
             self._last_run_outcome = 'failed'
             self._events.record('terminal_failure', reason=reason)
+            if run_ended:
+                self._release_run_scope()
 
     @property
     def last_run_outcome(self):
@@ -315,10 +354,14 @@ class Coordinator:
             if marker and marker.get('needs_recovery'):
                 self._run_id = marker.get('run_id')
                 self._controller = marker.get('controller_id')
+            run_ended = False
             if state == 'stopped':
+                run_ended = self._run_id is not None
                 self._run_id = None
                 self._controller = None
             self._events.record('recovery', state=state, reason=reason)
+            if run_ended:
+                self._release_run_scope()
 
     def wait_for_idle(self, timeout):
         with self._idle:

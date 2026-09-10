@@ -117,6 +117,8 @@ class AppContext:
                 supervisor._log_size_probe = log_size
                 self.runner = supervisor
         self.coordinator = coordinator or Coordinator(self.runner)
+        if store is None:
+            self.coordinator.on_run_end(lambda: self.store.set_active(None))
         if (runner is None and real_supervisor is None and
                 os.environ.get('FAKENETNG_MCP_TESTDOUBLE') != '1'):
             self.coordinator.update_health_state('recovering')
@@ -281,7 +283,10 @@ def register_tools(server, ctx):
         controller, classification = ctx.controller_identity()
 
         def execute(coord):
-            if not coord.running:
+            if not coord.running and not coord.needs_recovery:
+                # Nothing is running and nothing is owned; the stop is a
+                # no-op, but it still releases any run-scoped config lock.
+                ctx.store.set_active(None)
                 return {'state': 'stopped', 'changed': False}
             result = ctx.runner.stop(coord)
             if result.get('state') == 'stopped' and not result.get('run_id'):
@@ -311,8 +316,10 @@ def register_tools(server, ctx):
             identity = coord.snapshot().get('config_identity')
             previous_run_id = coord.snapshot()['run_id']
             result = ctx.runner.restart(coord, controller, identity)
-            # restart stays bound to the original run_id (record 023).
-            result['run_id'] = previous_run_id
+            # The request is bound to the run it was issued against (record
+            # 023) so a retry cannot restart another instance, but the
+            # response reports the instance that actually exists now.
+            result['bound_run_id'] = previous_run_id
             return result
 
         try:

@@ -265,6 +265,13 @@ class ConfigStore:
         if exists and allow_create:
             raise refuse(errors.NAME_CONFLICT, 'config already exists',
                          {'name': name})
+        if (not exists and _is_builtin_candidate(name)
+                and (self.builtin_root / name).is_file()):
+            # A custom file must never shadow a builtin: read(name) prefers
+            # the builtin, so create-then-read would address two objects.
+            raise refuse(errors.NAME_CONFLICT,
+                         'name is reserved by a builtin config',
+                         {'name': name})
         if exists and expected_sha256 is not None and \
                 expected_sha256 != before_sha:
             raise refuse(
@@ -304,6 +311,14 @@ class ConfigStore:
             raise errors.McpError(
                 errors.INTERNAL_ERROR, 'commit failed',
                 {'reason': repr(exc)[:160]}) from exc
+        except BaseException:
+            # An audit failure must leave no staging file behind and must
+            # keep the visible config untouched.
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
         return {'name': name, 'sha256': after_sha, 'changed': True}
 
     def create(self, *, controller, command_id, name, content):
@@ -330,6 +345,16 @@ class ConfigStore:
             raise errors.McpError(
                 errors.BUILTIN_READONLY, 'builtin configs are read-only',
                 {'name': name})
+        if _is_builtin_candidate(new_name) and \
+                (self.builtin_root / new_name).is_file():
+            self.audit(controller=controller, command_id=command_id,
+                       target=name, operation='rename',
+                       before_sha256=record['sha256'], after_sha256=None,
+                       result=errors.NAME_CONFLICT)
+            raise errors.McpError(
+                errors.NAME_CONFLICT,
+                'name is reserved by a builtin config',
+                {'name': new_name})
         destination = self._custom_path(new_name)
         if destination.is_file():
             self.audit(controller=controller, command_id=command_id,
