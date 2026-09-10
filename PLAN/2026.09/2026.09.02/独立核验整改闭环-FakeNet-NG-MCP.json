@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "c3f06521f6ebc8c9b857e7361dbafdca3c7b49a8",
+  "current_head": "84823cf3e27a9c2790ebca5dd93c6ca806a11e19",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -382,11 +382,11 @@
       "accepted_at": "2026-09-10T05:55:11.936410+00:00"
     }
   ],
-  "checkpoint": "INTENT-146接线已完成待实机验证：Linux354/4跳过，Condition锁释放和incident复用反例通过；VM仍旧9d17d1c stopped，未部署新包。",
+  "checkpoint": "INTENT-147完整Windows捕获前置顺序回归；已保留失败，2行修正start_guard优先于能力自检，Linux定向6通过，未部署。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-147",
-    "action": "提交退出取证接线中间源码，执行同源完整Windows构建与三EXE入口冒烟，再做获批Win10部署和原生门禁；失败按既有契约归因整改",
+    "id": "INTENT-148",
+    "action": "提交原契约内防火墙前置顺序修正，另目录完整重建，不覆盖84823cf失败证据",
     "status": "EXECUTING"
   },
   "events": [
@@ -1213,35 +1213,11 @@
     }
   ],
   "active_build": {
-    "status": "PASS",
-    "source_commit": "9d17d1c4d045352e52fa31e1e0197d581dfe0433",
-    "output": "dist/mcp-remediation-20260910-9d17d1c",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-9d17d1c.txt",
-    "session_id": 50321,
-    "zip_sha256": "b655d2eedeb115ea1a580fbf737f64bf67c56a0418b6997779b78fbe6b83e146",
-    "windows_test_gate": {
-      "verdict": "PASS",
-      "expected_skip_modules": [
-        "test_configstore_links",
-        "test_gui_configmodel",
-        "test_gui_vm_acceptance",
-        "test_singleinstance"
-      ],
-      "groups": {
-        "main": {
-          "tests": 866,
-          "failures": 0,
-          "errors": 0,
-          "skipped": 8
-        },
-        "http": {
-          "tests": 17,
-          "failures": 0,
-          "errors": 0,
-          "skipped": 0
-        }
-      }
-    }
+    "status": "FAILED",
+    "source_head": "84823cf3e27a9c2790ebca5dd93c6ca806a11e19",
+    "console": "Logs/fakenetng-mcp/remediation-20260910/build-84823cf-console.txt",
+    "output": "dist/mcp-remediation-20260910-84823cf",
+    "test_result": "921 passed / 8 skipped / 1 failed (firewall preflight order)"
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/before-plan-change-006-prototype/runtime.zip",

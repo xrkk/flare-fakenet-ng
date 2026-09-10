@@ -93,6 +93,8 @@ class RealSupervisor:
         return result
 
     def start(self, coordinator, controller, config_identity):
+        if self._start_guard:
+            self._start_guard()
         if os.name == 'nt' and self._fakenet is None:
             marker, corrupt = self._snapshot.read()
             if not corrupt and not (marker and marker['needs_recovery']):
