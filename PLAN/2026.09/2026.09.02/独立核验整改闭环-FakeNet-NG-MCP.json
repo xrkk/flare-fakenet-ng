@@ -9,10 +9,10 @@
     "gate": "PASS",
     "at": "2026-09-09T14:26:46.931484+08:00"
   },
-  "status": "IMPLEMENTING",
+  "status": "READY_TO_REVERIFY",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "84823cf3e27a9c2790ebca5dd93c6ca806a11e19",
+  "current_head": "39c6d16df6d8e3e4baf7b0ddf867d471dd3d9682",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -324,6 +324,15 @@
     {
       "head": "f4c5f2cac96326a1faf8b381c961b9ced2d985a5",
       "purpose": "修复HTTP健康回归；构建证据保留Logs"
+    },
+    {
+      "head": "39c6d16df6d8e3e4baf7b0ddf867d471dd3d9682",
+      "parent": "47c8173f0bd3432ec393a86f5f4c1808eb8ee8aa",
+      "scope": [
+        "安装阻断根因修复：冻结包不得依赖构建未冻结模块"
+      ],
+      "verified": "3个预期文件（exit_installation.py、supervisor.py、test_exit_installation.py）；Linux MCP 361通过4跳过；固定源完整Windows构建PASS",
+      "purpose": "原契约内修复，未改需求/总纲/Pxx/依赖边/验收边界，未新增PLAN-CHANGE，未变更CHK状态"
     }
   ],
   "plan_changes": [
@@ -382,12 +391,12 @@
       "accepted_at": "2026-09-10T05:55:11.936410+00:00"
     }
   ],
-  "checkpoint": "INTENT-147完整Windows捕获前置顺序回归；已保留失败，2行修正start_guard优先于能力自检，Linux定向6通过，未部署。",
+  "checkpoint": "47c8173真实安装阻断已定位为冻结包缺失psutil（84823cf在exit_installation新增import psutil，构建只离线安装wheelhouse固定SDK集）；已在原契约内改用随包原生kernel32快照枚举+TargetHandle绝对映像固定，不新增依赖、不改规范。提交39c6d16d完整Windows构建PASS（929/8、HTTP17、三EXE冒烟、ZIP校验PASS），受控升级后install exit0、登记/ACL读回正确、入口healthy、能力自检passed、正常停止controlled_normal_exit零dump、两阶段停服后helper/managed归零。全部CHK仍OPEN，核验仍1/5；本次只闭合安装阻断，非ACC通过。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-148",
-    "action": "提交原契约内防火墙前置顺序修正，另目录完整重建，不覆盖84823cf失败证据",
-    "status": "EXECUTING"
+    "id": "INTENT-151",
+    "action": "交回用户转独立核验；本次范围仅为47c8173安装阻断的原契约内闭合与同候选原生入口证据，不关闭任何CHK",
+    "status": "COMPLETED"
   },
   "events": [
     {
@@ -620,6 +629,15 @@
       "actual": "固定源完整构建PASS、首个ready修正提交、当前ProgramData91文件源/副本/宿主验证完成；未实施PLAN-CHANGE-006，进入WAITING_USER_INPUT。",
       "source_head": "9d17d1c4d045352e52fa31e1e0197d581dfe0433",
       "package_sha256": "b655d2eedeb115ea1a580fbf737f64bf67c56a0418b6997779b78fbe6b83e146"
+    },
+    {
+      "at": "2026-09-10T09:40:00+00:00",
+      "intent": "INTENT-149/150/151",
+      "actual": "第三方接手对账后最小复现捕获安装真实stderr（No module named psutil）；原契约内以原生快照枚举替代psutil；39c6d16完整构建PASS并受控部署；install exit0、登记与ACL读回正确、入口healthy、能力自检passed、正常停止controlled_normal_exit零dump、两阶段停服后helper/managed归零；全部CHK仍OPEN。",
+      "source_head": "39c6d16df6d8e3e4baf7b0ddf867d471dd3d9682",
+      "package_sha256": "d48ea597ff08722073aac7c3509fcdddf6d43ca28b7702a299c7775986e98beb",
+      "status": "READY_TO_REVERIFY",
+      "chk_closed": []
     }
   ],
   "response_record": {
@@ -868,17 +886,28 @@
     }
   ],
   "candidate": {
-    "source_commit": "9d17d1c4d045352e52fa31e1e0197d581dfe0433",
-    "candidate_id": "mcp-c9d17d1c4-b655d2eedeb1",
-    "package": "dist/mcp-remediation-20260910-9d17d1c/fakenetng-mcp-candidate.zip",
-    "sha256": "b655d2eedeb115ea1a580fbf737f64bf67c56a0418b6997779b78fbe6b83e146",
-    "status": "BUILT_NOT_DEPLOYED",
-    "formal_acc_pass": false
+    "source_commit": "39c6d16df6d8e3e4baf7b0ddf867d471dd3d9682",
+    "candidate_id": "mcp-c39c6d16d-d48ea597ff08",
+    "package": "dist/mcp-remediation-20260910-39c6d16/fakenetng-mcp-candidate.zip",
+    "sha256": "d48ea597ff08722073aac7c3509fcdddf6d43ca28b7702a299c7775986e98beb",
+    "status": "DEPLOYED_AND_ENTRY_VERIFIED",
+    "formal_acc_pass": false,
+    "superseded": {
+      "source_commit": "47c8173f0bd3432ec393a86f5f4c1808eb8ee8aa",
+      "sha256": "174bbf9f48338b7eaf4a7d10ca153a76aa41da51fee757ee69a65c4aa5ec6981",
+      "preserved_at": "C:\\Windows\\Temp\\FakeNetMCP-20260910-39c6d16-upgrade\\previous-package"
+    }
   },
   "pause_handoff": {
-    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.10-01-暂停交接-FakeNet-NG-MCP.md",
-    "blob": "3cea051bf3e59c7aed45caa585f0d349f9392559",
-    "sha256": "165b5ea7e48cf0b894ca804c51f6305b4dc3f03fcc997e1129429c27f9775441"
+    "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260910/第三方整改交接-47c8173.md",
+    "source_head": "47c8173f0bd3432ec393a86f5f4c1808eb8ee8aa",
+    "reason": "USER_REQUESTED_THIRD_PARTY_MODIFICATION",
+    "vm_reconciliation": "Logs/fakenetng-mcp/remediation-20260910/native-47c8173-install-reconciliation.json",
+    "resolved_by": {
+      "source_head": "39c6d16df6d8e3e4baf7b0ddf867d471dd3d9682",
+      "root_cause": "frozen package lacked psutil imported by exit_installation (84823cf)",
+      "native_proof": "Logs/fakenetng-mcp/remediation-20260910/native-47c8173-install-diagnostic-02.json"
+    }
   },
   "resume_requires": null,
   "resume_started_at": "2026-09-10T00:50:47.277736+08:00",
@@ -1213,11 +1242,16 @@
     }
   ],
   "active_build": {
-    "status": "FAILED",
-    "source_head": "84823cf3e27a9c2790ebca5dd93c6ca806a11e19",
-    "console": "Logs/fakenetng-mcp/remediation-20260910/build-84823cf-console.txt",
-    "output": "dist/mcp-remediation-20260910-84823cf",
-    "test_result": "921 passed / 8 skipped / 1 failed (firewall preflight order)"
+    "status": "PASS",
+    "source_head": "39c6d16df6d8e3e4baf7b0ddf867d471dd3d9682",
+    "console": "Logs/fakenetng-mcp/remediation-20260910/build-39c6d16-console.txt",
+    "stage": "Logs/fakenetng-mcp/builds/39c6d16d-qd6fvouc/",
+    "output": "dist/mcp-remediation-20260910-39c6d16",
+    "windows_main": "929 passed / 8 skipped",
+    "windows_http": "17 passed",
+    "zip_sha256": "d48ea597ff08722073aac7c3509fcdddf6d43ca28b7702a299c7775986e98beb",
+    "exit_role_smoke": "dedicated install refused=2, monitor no arguments refused=3; zero stdout/stderr",
+    "linux_mcp": "361 passed / 4 skipped"
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/before-plan-change-006-prototype/runtime.zip",
@@ -1237,12 +1271,15 @@
   },
   "active_native_validation": {
     "status": "COMPLETED",
-    "mode": "9d17d1c normal regression diagnostic",
-    "evidence": "Logs/fakenetng-mcp/remediation-20260910/native-9d17d1c-normal.json",
-    "formal_acc_pass": false,
-    "normal_pass": true,
-    "http_count": 44,
-    "http_errors": 0
+    "mode": "39c6d16 controlled install, entry and capability self-test (bounded; not the full ACC matrix)",
+    "install_evidence": "Logs/fakenetng-mcp/remediation-20260910/native-39c6d16-install.json",
+    "entry_evidence": "Logs/fakenetng-mcp/remediation-20260910/native-39c6d16-entry.json",
+    "shutdown_evidence": "Logs/fakenetng-mcp/remediation-20260910/native-39c6d16-shutdown.json",
+    "install_exit_code": 0,
+    "capability_selftest_passed": true,
+    "normal_stop_classification": "controlled_normal_exit",
+    "helper_processes_after": 0,
+    "formal_acc_pass": false
   },
   "environment_question": {
     "status": "AWAITING_INFORMATION",
@@ -1265,6 +1302,13 @@
     {
       "verification": "Logs/fakenetng-mcp/remediation-20260910/trace-control-etl-before-reset/verification.json",
       "verified_files": 2
+    },
+    {
+      "verification": "Logs/fakenetng-mcp/remediation-20260910/native-39c6d16-shutdown.json",
+      "export": "Logs/fakenetng-mcp/remediation-20260910/native-39c6d16-exit-evidence.zip",
+      "sha256": "82f4d84af2c102644cf161cbb74eb1f671317ae3832c9bfcfb8fddf599bef560",
+      "verified_files": 15,
+      "all_match": true
     }
   ],
   "vm_reset_intent": {
@@ -1283,7 +1327,7 @@
   },
   "final_author_record": {
     "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
-    "blob": "36dc715334de40f62dd08ddfc3279901ba6df1f5",
-    "section": "§60 PLAN-CHANGE-006"
+    "blob": "8e3133fa9a49a14d91bda6859ebece8676b6259e",
+    "section": "§69 47c8173新包安装阻断的根因、原契约内修复与39c6d16原生验证"
   }
 }
