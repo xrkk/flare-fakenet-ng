@@ -1,6 +1,8 @@
 import json
+import hashlib
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,3 +82,28 @@ def test_orphan_selection_requires_all_live_ownership_facts(change):
     elif change == 'mode':
         row['LogFileMode'] = 2
     assert not owned_trace_sessions([row], root, RUN if change == 'excluded' else None)
+
+
+def test_service_restart_does_not_reopen_completed_run_evidence(tmp_path, monkeypatch):
+    from fakenet.mcp import supervisor, endpoint_observation
+    directory = tmp_path / 'artifacts' / 'runs' / RUN
+    directory.mkdir(parents=True)
+    (directory / 'active-config.ini').write_bytes(b'completed configuration')
+    marker = {'run_id': RUN, 'needs_recovery': False,
+              'config_sha256': hashlib.sha256(b'completed configuration').hexdigest()}
+    monkeypatch.setattr(supervisor, 'os', SimpleNamespace(name='nt'))
+    exclusions = []
+    monkeypatch.setattr(endpoint_observation, 'stop_orphan_observers',
+                        lambda root, exclude: exclusions.append(exclude) or [])
+    def reopen(*args):
+        raise AssertionError('completed run must not receive new trace evidence')
+    monkeypatch.setattr(endpoint_observation, 'EndpointObservation', reopen)
+    instance = supervisor.RealSupervisor(
+        snapshot=SimpleNamespace(read=lambda: (marker, False)),
+        baseline_store=SimpleNamespace(root=tmp_path / 'baselines'),
+        artifacts_root=tmp_path / 'artifacts')
+    instance.stop = lambda coordinator: {'state': 'stopped'}
+    coordinator = SimpleNamespace(restore_responsibility=lambda *args: None)
+    assert instance.recover(coordinator) == 'stopped'
+    assert exclusions == [None]
+    assert list(directory.iterdir()) == [directory / 'active-config.ini']

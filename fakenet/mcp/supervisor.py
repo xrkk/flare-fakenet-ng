@@ -369,7 +369,8 @@ class RealSupervisor:
                 from fakenet.mcp.endpoint_observation import (
                     EndpointObservation, stop_orphan_observers, write_evidence)
                 import uuid
-                active_run = marker['run_id'] if marker and not corrupt and self._run_dir else None
+                active_run = (marker['run_id'] if marker and not corrupt and
+                              marker['needs_recovery'] and self._run_dir else None)
                 stopped = stop_orphan_observers(self._artifacts_root, active_run)
                 if stopped:
                     log_root = self._baseline_store.root.parent / 'logs'

@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "1b16f0fe20b291dc9a4f08a5561c6f82751c7ed8",
+  "current_head": "5018c4b05e7a78ccfb5e641cf8ae8eeaa8a67ff7",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "INTENT-118完成：1b16f0f构建/包验证通过并部署干净VM，默认配置加载成功、run_id=null/stopped。Tcl捕获修正通过完整构建，UDP恢复与其余CHK未闭合。",
+  "checkpoint": "INTENT-120：5018c4b已提交并冻结同源runner，新目录构建进行中。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-120",
-    "action": "定向提交观察接入6个作者文件并新目录构建；现VM1b16f0f仅stopped入口，采用受控停服/保留旧包的重部署，不重新恢复快照。"
+    "id": "INTENT-123",
+    "action": "提交完成态观察边界修正与实际证据，新固定源码构建后受控升级，核对已完成run不追加证据，再继续故障矩阵。"
   },
   "events": [
     {
@@ -809,11 +809,11 @@
     }
   ],
   "candidate": {
-    "source_commit": "1b16f0fe20b291dc9a4f08a5561c6f82751c7ed8",
-    "candidate_id": "mcp-c1b16f0fe-22656dc4904b",
-    "package": "dist/mcp-remediation-20260910-1b16f0f/fakenetng-mcp-candidate.zip",
-    "sha256": "22656dc4904bc692ca69ee9f3b160dc54d1dfbc9cf911704862708696c7ef9a9",
-    "status": "DEPLOYED_ENTRY_ONLY",
+    "source_commit": "5018c4b05e7a78ccfb5e641cf8ae8eeaa8a67ff7",
+    "candidate_id": "mcp-c5018c4b0-20e5b515d8ab",
+    "package": "dist/mcp-remediation-20260910-5018c4b/fakenetng-mcp-candidate.zip",
+    "sha256": "20e5b515d8ab932339ab9ac87db44c07bd6e572c53094ceb03082f3ecd3339bc",
+    "status": "NATIVE_DIAGNOSTICS_COMPLETED",
     "formal_acc_pass": false
   },
   "pause_handoff": {
@@ -1143,15 +1143,23 @@
     {
       "intent": "INTENT-119",
       "actual": "逐run观察接入完成，原审计判定未放宽；Linux250通过3跳过、原生枚举18会话精确清理探针通过；待固定候选真实启停验证。"
+    },
+    {
+      "intent": "INTENT-121",
+      "actual": "5018c4b受控升级成功，旧1b16包保留；真实run06d9c7d7健康到stopped/ok，51HTTP零错误。ETW完整零丢失、1665事件13生命周期均闭合，run包d4dd4456fdae6ea87bb9c5ed645499cdac29b79fe97dbcda9abcaa6bc19b1c11逐文件验证。"
+    },
+    {
+      "intent": "INTENT-122",
+      "actual": "SCM精准崩溃及新实例恢复stopped通过；ETW完整零丢失并停止，两个run现场全部导出且复核guest源SHA一致。完成态观察重复开启问题已红绿修正，待新候选。"
     }
   ],
   "active_build": {
-    "session_id": 52386,
-    "source_commit": "1b16f0fe20b291dc9a4f08a5561c6f82751c7ed8",
+    "session_id": 57987,
+    "source_commit": "5018c4b05e7a78ccfb5e641cf8ae8eeaa8a67ff7",
     "status": "PASS",
-    "output": "dist/mcp-remediation-20260910-1b16f0f",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-1b16f0f.txt",
-    "package_sha256": "22656dc4904bc692ca69ee9f3b160dc54d1dfbc9cf911704862708696c7ef9a9"
+    "output": "dist/mcp-remediation-20260910-5018c4b",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-5018c4b.txt",
+    "package_sha256": "20e5b515d8ab932339ab9ac87db44c07bd6e572c53094ceb03082f3ecd3339bc"
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/native-8303ea2-active-probe-full-runtime.zip",
@@ -1170,22 +1178,13 @@
     "sha256": "724ed41e0c7b67179ce3dda8daf6d7dca907b61ca3d8cb3f07c0d20bb3fec286"
   },
   "active_native_validation": {
-    "session_id": 53596,
+    "session_id": 17830,
     "status": "COMPLETED",
-    "source_head": "8303ea2abdf25610c1ce582fe0bdd545eb881eb6",
-    "runner_source": "8303ea2abdf25610c1ce582fe0bdd545eb881eb6",
-    "runner_snapshot": "Logs/fakenetng-mcp/remediation-20260910/native-source-8303ea2",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/native-8303ea2-active-probe-console.txt",
+    "source_head": "5018c4b05e7a78ccfb5e641cf8ae8eeaa8a67ff7",
+    "run_id": "3632661a-19ed-4d35-97a8-ed6e3f672c11",
+    "mode": "SCM exact crash and endpoint observation recovery",
     "formal_acc_pass": false,
-    "mode": "healthy后关闭主WinDivert句柄，同源活动探测丢失诊断",
-    "run_id": "6bae1a6e-62fc-4c73-801e-5782499b5f84",
-    "http_samples": 836,
-    "http_errors": 0,
-    "checks_pass": 6,
-    "checks_fail": [
-      "protective_recovery_completed"
-    ],
-    "evidence": "Logs/fakenetng-mcp/remediation-20260910/8303ea2-active-probe-diagnostic"
+    "evidence": "Logs/fakenetng-mcp/remediation-20260910/native-5018c4b-scm-trace.json"
   },
   "environment_question": {
     "status": "AWAITING_INFORMATION",
