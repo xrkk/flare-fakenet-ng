@@ -1,0 +1,37 @@
+{
+  "start": {
+    "Code": 0,
+    "EventsLost": 0,
+    "LogBuffersLost": 0,
+    "RealTimeBuffersLost": 0,
+    "LogFileMode": 4194305,
+    "MaximumFileSize": 16,
+    "BuffersWritten": 1,
+    "SessionGuid": "ba7e4950-d43c-4e11-9dc4-082136aabdb2",
+    "LogFileName": "C:\\Windows\\Temp\\FakeNetMCP-20260910-8303ea2-entry\\trace-control-01\\udp.etl"
+  },
+  "stop": {
+    "Code": 0,
+    "EventsLost": 0,
+    "LogBuffersLost": 0,
+    "RealTimeBuffersLost": 0,
+    "LogFileMode": 4194305,
+    "MaximumFileSize": 16,
+    "BuffersWritten": 3,
+    "SessionGuid": "ba7e4950-d43c-4e11-9dc4-082136aabdb2",
+    "LogFileName": "C:\\Windows\\Temp\\FakeNetMCP-20260910-8303ea2-entry\\trace-control-01\\udp.etl"
+  },
+  "after_stop": {
+    "Code": 4201,
+    "EventsLost": 0,
+    "LogBuffersLost": 0,
+    "RealTimeBuffersLost": 0,
+    "LogFileMode": 1,
+    "MaximumFileSize": 16,
+    "BuffersWritten": 0,
+    "SessionGuid": "00000000-0000-0000-0000-000000000000",
+    "LogFileName": ""
+  },
+  "size": 196608,
+  "source_sha256": "cbf875ece027ab3efadd69a712515e8190fb46a5c35dbb69e3ff5167bcef978c"
+}

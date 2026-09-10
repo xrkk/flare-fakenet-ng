@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "2991b5834bedc439ad3dc269f4027581bcd0df83",
+  "current_head": "7478dbcc4a2cff6bde6814a46e3ad3d3fcb42df6",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "INTENT-106完成：环境DNS请求与UDP端点生命周期直接证据及7份ETL已保存；解析器双平台8通过，尚未接入恢复审计。",
+  "checkpoint": "INTENT-110恢复完成门未通过：Workstation仍Suspended；21项端点证据Windows测试通过。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-107",
-    "action": "提交真实生命周期解析与诊断记录，继续实现覆盖接管前/运行/恢复的有界证据采集；缺口、未知差异仍失败关闭，不回写旧失败为通过。"
+    "id": "INTENT-111",
+    "action": "保存有界ETW控制及完整性校验实现、原生证据、双平台21通过结果；定向提交5个作者文件，保留PLAN/FaknetNG.md；等待INTENT-110补做内存Resume授权，不重复启动。"
   },
   "events": [
     {
@@ -820,7 +820,9 @@
     "blob": "3cea051bf3e59c7aed45caa585f0d349f9392559",
     "sha256": "165b5ea7e48cf0b894ca804c51f6305b4dc3f03fcc997e1129429c27f9775441"
   },
-  "resume_requires": null,
+  "resume_requires": {
+    "vm_resume": "WAITING_USER_INPUT: AGENTS禁止第二次启动命令；已请求补做一次内存Resume，不冷启动。"
+  },
   "resume_started_at": "2026-09-10T00:50:47.277736+08:00",
   "resume_checkpoints": [
     {
@@ -1085,6 +1087,19 @@
     {
       "intent": "INTENT-106",
       "actual": "AFD原生事件可按创建代际绑定准确UDP端点；两次系统解析确认Dnscache60063/57759发往宿主DNS后10054并关闭。7份ETL全部导出SHA核验。解析代码及原生复用指针负例Linux/Windows各8通过，尚未接入审计。"
+    },
+    {
+      "intent": "INTENT-107",
+      "actual": "提交7478dbcc4a2cff6bde6814a46e3ad3d3fcb42df6已核对仅5个解析/测试/作者记录/状态文件；原生安装候选仍8303ea2，保护文件未纳入。"
+    },
+    {
+      "intent": "INTENT-109",
+      "actual": "原生ETW控制02五项true；Linux21通过。用户报告环境漂移，旧VM运行状态不得沿用；2份原始ETL补存逐SHA匹配，宿主源修改保留。"
+    },
+    {
+      "intent": "INTENT-110",
+      "actual": "唯一快照revert退出0，Snapshot99内存标记匹配；唯一vmware -x退出0但Workstation实际仍Suspended，Win10VM MCP ConnectError；未重复启动。用户已被询问补做一次Resume的例外授权。恢复完成门未通过，未部署。",
+      "evidence": "Logs/fakenetng-mcp/remediation-20260910/authorized-reset-after-user-drift.json"
     }
   ],
   "active_build": {
@@ -1153,6 +1168,10 @@
     },
     {
       "verification": "Logs/fakenetng-mcp/remediation-20260910/dns-endpoint-etl-04/verification.json",
+      "verified_files": 2
+    },
+    {
+      "verification": "Logs/fakenetng-mcp/remediation-20260910/trace-control-etl-before-reset/verification.json",
       "verified_files": 2
     }
   ]
