@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "3c30230b7740da26922bfdda0194d12fa8d42b31",
+  "current_head": "5888d7a65f9f7db711f1109d30ad50ce8144f9a1",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "3c30230构建852/8+17通过；Win10五项IPC通过，逆序第二取证包转储缺项，原失败保留。",
+  "checkpoint": "5888d7a前四IPC通过，重复序号因Dnscache基线UDP62664缺当次生命周期证据失败；协议两包完整，恢复审计第三包缺栈/转储。原始15文件已导出核对。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-132",
-    "action": "固定逆序响应原生失败包，回放协议失配后仍发送stop产生伪超时；在既有终止性IPC契约内阻止失配通道复用，测试后固定源重建重验。"
+    "id": "INTENT-134",
+    "action": "保全全部ProgramData证据并逐文件源/副本/宿主SHA核验；提交恢复审计取证修正、固定源重建；成功保全后按AGENTS唯一183门禁恢复VM，用新候选继续默认正常和S6验证。DNS服务归属待用户补充，不修改环境DNS或放宽审计。"
   },
   "events": [
     {
@@ -809,11 +809,11 @@
     }
   ],
   "candidate": {
-    "source_commit": "5018c4b05e7a78ccfb5e641cf8ae8eeaa8a67ff7",
-    "candidate_id": "mcp-c5018c4b0-20e5b515d8ab",
-    "package": "dist/mcp-remediation-20260910-5018c4b/fakenetng-mcp-candidate.zip",
-    "sha256": "20e5b515d8ab932339ab9ac87db44c07bd6e572c53094ceb03082f3ecd3339bc",
-    "status": "NATIVE_DIAGNOSTICS_COMPLETED",
+    "source_commit": "5888d7a65f9f7db711f1109d30ad50ce8144f9a1",
+    "candidate_id": "mcp-c5888d7a6-cd7191824ec3",
+    "package": "dist/mcp-remediation-20260910-5888d7a/fakenetng-mcp-candidate.zip",
+    "sha256": "cd7191824ec3667799617b11d8e6fa4383f2ac6a4763a96e1017a358bb8c6cfb",
+    "status": "NATIVE_DIAGNOSTICS_RUNNING",
     "formal_acc_pass": false
   },
   "pause_handoff": {
@@ -1155,13 +1155,14 @@
   ],
   "active_build": {
     "status": "PASS",
-    "source_commit": "3c30230b7740da26922bfdda0194d12fa8d42b31",
-    "output": "dist/mcp-remediation-20260910-3c30230",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-3c30230.txt",
-    "zip_sha256": "33a3b877e70be6c89670461f4d01b9f4ef82a7fb177513a2e395090b9fd208e5",
-    "windows_main_passed": 852,
+    "source_commit": "5888d7a65f9f7db711f1109d30ad50ce8144f9a1",
+    "output": "dist/mcp-remediation-20260910-5888d7a",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-5888d7a.txt",
+    "session_id": 85672,
+    "windows_main_passed": 855,
     "windows_main_skipped": 8,
-    "windows_http_passed": 17
+    "windows_http_passed": 17,
+    "zip_sha256": "cd7191824ec3667799617b11d8e6fa4383f2ac6a4763a96e1017a358bb8c6cfb"
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/native-8303ea2-active-probe-full-runtime.zip",
@@ -1181,25 +1182,23 @@
   },
   "active_native_validation": {
     "status": "COMPLETED_WITH_FAILURE",
-    "source_head": "3c30230b7740da26922bfdda0194d12fa8d42b31",
+    "source_head": "5888d7a65f9f7db711f1109d30ad50ce8144f9a1",
     "formal_acc_pass": false,
-    "upgrade_evidence": "Logs/fakenetng-mcp/remediation-20260910/native-3c30230-upgrade-and-run.json",
-    "evidence": "Logs/fakenetng-mcp/remediation-20260910/3c30230-ipc-matrix",
-    "intent": "沿用INTENT-131，同候选六项IPC故障；保留原失败记录，未关闭CHK。",
-    "session_id": 48155,
+    "evidence": "Logs/fakenetng-mcp/remediation-20260910/5888d7a-ipc-matrix",
+    "session_id": 8862,
+    "upgrade_evidence": "Logs/fakenetng-mcp/remediation-20260910/native-5888d7a-upgrade-and-run.json",
     "checks": {
       "ipc_once_timeout": true,
       "ipc_permanent_timeout": true,
       "ipc_eof": true,
       "ipc_wrong_run": true,
-      "ipc_repeat": true,
-      "ipc_reverse": false
+      "ipc_repeat": false
     }
   },
   "environment_question": {
     "status": "AWAITING_INFORMATION",
-    "question": "固定快照DNS192.168.204.1应由哪个服务提供？",
-    "evidence": "Logs/fakenetng-mcp/remediation-20260910/baseline-dns-hostonly-probe.json",
+    "question": "192.168.204.1预期由哪个服务提供DNS？",
+    "evidence": "Logs/fakenetng-mcp/remediation-20260910/5888d7a-repeat-run/raw-62664-coverage-check.json",
     "blocks_all_work": false
   },
   "active_readonly_validation": {

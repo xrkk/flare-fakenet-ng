@@ -446,9 +446,11 @@ class RealSupervisor:
             stop_stacks = read_file('stop-thread-stacks.txt')
             if stop_stacks and b'File "' in stop_stacks:
                 stacks = 'MANAGED STOP WATCHDOG; LIVE CHILD CAPTURE\n' + stop_stacks.decode('utf-8', 'replace')
-        if not stacks and child and self._run_dir:
+        observed_identity = (child.identity if child else
+                             (self._last_managed_process or {}).get('identity'))
+        if not stacks and observed_identity and self._run_dir:
             from fakenet.mcp.managed_stacks import read_stacks
-            stacks = read_stacks(self._run_dir, self._marker['run_id'], child.identity)
+            stacks = read_stacks(self._run_dir, self._marker['run_id'], observed_identity)
             snapshot_stacks = stacks is not None
         import json
         import platform
@@ -489,6 +491,20 @@ class RealSupervisor:
                                        'job_members': child.job.members() if child else []}
         if child is None and self._last_managed_process:
             versions['managed_process'] = dict(self._last_managed_process)
+        post_job_audit = (
+            reason == 'environment restoration audit failed' and child is None and
+            self._last_managed_process is not None and
+            self._last_managed_process.get('exit_code') is not None and
+            self._last_managed_process.get('job_members') == [])
+        if post_job_audit:
+            # Recovery auditing executes in this live supervisor after the
+            # managed Job is verified empty. Capture that actual failure site;
+            # never present its dump as a replacement for a managed crash dump.
+            audit_identity = process_identity(os.getpid())
+            target_pid = audit_identity['pid']
+            target_creation = audit_identity['creation_time']
+            versions['dump_target'] = dict(role='supervisor', identity=audit_identity,
+                                          phase='post-Job restoration audit')
         if not stacks and child and not child.alive() and self._last_managed_stacks:
             stacks = 'LAST OBSERVATION BEFORE STOP; ROOT HAS EXITED\n' + self._last_managed_stacks
             extra = read_file('fault-child-stacks.txt')
@@ -506,7 +522,8 @@ class RealSupervisor:
                    'firewall_baseline': (baseline or {}).get('firewall'),
                    'artifact_metadata': metadata, 'dump_target_pid': target_pid,
                    'dump_target_creation': target_creation,
-                   'dump_reason': ('managed hang/timeout' if 'timeout' in reason.lower() or
+                   'dump_reason': ('restoration audit failure after verified managed Job exit' if post_job_audit else
+                                   'managed hang/timeout' if 'timeout' in reason.lower() or
                                    'did not exit' in reason.lower() else
                                    'live managed IPC stacks unavailable' if snapshot_stacks else
                                    None if stacks else 'managed stacks unavailable')}

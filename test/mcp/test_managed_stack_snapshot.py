@@ -56,3 +56,44 @@ def test_snapshot_fallback_still_requires_fresh_live_target_dump(tmp_path, monke
     assert contexts[0]['dump_target_pid'] == 42
     assert contexts[0]['dump_target_creation'] == '123'
     assert 'NOT A LIVE IPC RESPONSE' in contexts[0]['managed_thread_stacks']
+
+
+@pytest.mark.parametrize('reason,supervisor_dump', [
+    ('environment restoration audit failed', True),
+    ('managed process exited', False),
+])
+def test_post_job_audit_retains_managed_observation_and_dumps_actual_auditor(
+        tmp_path, monkeypatch, reason, supervisor_dump):
+    import os
+    from types import SimpleNamespace
+    from fakenet.mcp import baseline, incident, service_stop
+    from fakenet.mcp.supervisor import RealSupervisor
+    identity = {'pid': 42, 'creation_time': '123'}
+    save_stacks(tmp_path, 'run', identity, 'Thread 42: last actual managed frames')
+    runner = RealSupervisor(artifacts_root=tmp_path)
+    runner._run_dir = tmp_path
+    runner._marker = {'run_id': 'run', 'config_sha256': 'a'*64}
+    runner._baseline_store = SimpleNamespace(load=lambda run: {'sections': {}})
+    runner._coordinator = SimpleNamespace(events=lambda count: [])
+    runner._last_managed_process = dict(identity=identity, exit_code=1, job_members=[])
+    monkeypatch.setattr(baseline, 'capture', lambda deadline: {})
+    monkeypatch.setattr(service_stop, 'process_identity',
+                        lambda pid: {'pid': pid, 'creation_time': '456'})
+    contexts = []
+    class Collector:
+        def __init__(self, *args):
+            self.root = tmp_path/'incident';self.deadline = float('inf');self.manifest = []
+        def collect(self, context): contexts.append(context)
+    monkeypatch.setattr(incident, 'IncidentCollector', Collector)
+    runner._collect_incident_impl(reason)
+    context = contexts[0]
+    assert 'last actual managed frames' in context['managed_thread_stacks']
+    assert 'NOT A LIVE IPC RESPONSE' in context['managed_thread_stacks']
+    if supervisor_dump:
+        assert context['dump_target_pid'] == os.getpid()
+        assert context['dump_target_creation'] == '456'
+        assert context['versions']['dump_target']['role'] == 'supervisor'
+        assert context['dump_reason'] == 'restoration audit failure after verified managed Job exit'
+    else:
+        assert context['dump_target_pid'] is None
+        assert context['dump_reason'] == 'live managed IPC stacks unavailable'
