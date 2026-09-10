@@ -262,21 +262,25 @@ def test_cli_standard_stop_has_its_own_thirty_second_limit(monkeypatch, tmp_path
     assert phase['stop'] and 30 <= clock[0] < 31
 
 
-def test_run_end_publishes_fixed_producer_files_in_both_locations(tmp_path):
+def test_run_end_publishes_fixed_producer_files_in_both_locations(tmp_path, monkeypatch):
     from fakenet.mcp.artifacts import ArtifactRegistry, RUN_EVIDENCE_FILES
     root = tmp_path / 'artifacts'
-    run = root / 'runs' / 'run'
+    run_id = 'fe75426a-e047-4557-a2f1-7ba0f6d2ac73'
+    run = root / 'runs' / run_id
     run.mkdir(parents=True)
     for name in RUN_EVIDENCE_FILES:
         (run / name).write_bytes(name.encode())
     (run / 'unowned.bin').write_bytes(b'not a declared producer')
     supervisor = RealSupervisor.__new__(RealSupervisor)
     supervisor._artifacts_root, supervisor._run_dir = root, run
-    supervisor._register_run_artifacts('run')
+    from fakenet.mcp import diagnostic_tasks, paths
+    monkeypatch.setattr(paths, 'data_directories', lambda: {'artifacts': root})
+    supervisor._diagnostic_call = diagnostic_tasks.execute
+    supervisor._register_run_artifacts(run_id)
     metadata = {Path(item['path']): item for item in ArtifactRegistry(root).metadata()}
     for name in RUN_EVIDENCE_FILES:
         assert metadata[run / name]['complete']
-        assert metadata[root / 'run' / name]['complete']
+        assert metadata[root / run_id / name]['complete']
     assert metadata[run / 'unowned.bin']['complete'] is False
 
 

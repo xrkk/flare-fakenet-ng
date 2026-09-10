@@ -114,3 +114,52 @@ def test_helper_end_cannot_release_a_still_live_target():
         owner._finish({'complete': True})
     assert closed == ['helper']
     assert owner._target is not None
+
+
+def test_settle_keeps_responsibility_while_target_object_is_live(tmp_path):
+    """CHK-069: a returned watcher thread never drops the retained target."""
+    closed = []
+    owner = _owner_with_handles(closed)
+    owner.directory = tmp_path
+    owner.intent = type('Intent', (), {'invalidate': lambda self: closed.append('intent')})()
+    owner.done = threading.Event()
+    owner.result = {'complete': False, 'helper_ended': False,
+                    'retained_target_handle_closed': False, 'cleanup_error': 'earlier failure'}
+    owner._target.exited = lambda: False
+    assert owner.settle(time.monotonic() + 0.2) is owner.result
+    assert owner.settle(time.monotonic() + 0.2)['retained_target_handle_closed'] is False
+    assert closed == []
+
+
+def test_settle_finishes_release_once_objects_actually_end(monkeypatch, tmp_path):
+    closed = []
+    owner = _owner_with_handles(closed)
+    owner.directory = tmp_path
+    owner.intent = type('Intent', (), {'invalidate': lambda self: closed.append('intent')})()
+    owner.done = threading.Event()
+    owner.done.set()
+    owner.result = {'complete': False, 'helper_ended': False,
+                    'retained_target_handle_closed': False, 'cleanup_error': 'earlier failure'}
+    monkeypatch.setattr('fakenet.mcp.exit_installation.assert_no_helpers',
+                        lambda *_args, **_kwargs: None)
+    report = owner.settle(time.monotonic() + 2)
+    assert closed == ['helper', 'intent', 'target']
+    assert report['helper_ended'] is True
+    assert report['retained_target_handle_closed'] is True
+
+
+def test_settle_waits_for_a_still_live_helper_before_finishing(monkeypatch, tmp_path):
+    closed = []
+    owner = _owner_with_handles(closed)
+    owner.directory = tmp_path
+    owner.intent = type('Intent', (), {'invalidate': lambda self: closed.append('intent')})()
+    owner.done = threading.Event()
+    owner.done.set()
+    owner.result = {'complete': False, 'helper_ended': False,
+                    'retained_target_handle_closed': False}
+    owner._helper.exited = lambda: False
+    monkeypatch.setattr('fakenet.mcp.exit_installation.assert_no_helpers',
+                        lambda *_args, **_kwargs: None)
+    report = owner.settle(time.monotonic() + 0.2)
+    assert report['retained_target_handle_closed'] is False
+    assert closed == []

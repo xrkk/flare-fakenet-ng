@@ -30,14 +30,17 @@ class DiagnosticOwner:
         active = self.active
         return active is not None and not active.ended.is_set()
 
-    def call(self, operation, payload, deadline):
+    def call(self, operation, payload, deadline, wait=None):
         with self._lock:
             if self.pending():
                 raise DiagnosticError('previous diagnostic ownership is unresolved')
             task = DiagnosticCall(self.package, operation, payload, deadline)
             self.active = task
             task.start()
-        task.done.wait(max(0, deadline - time.monotonic()))
+        if wait is None:
+            task.done.wait(max(0, deadline - time.monotonic()))
+        else:
+            wait(task.done, deadline)
         # Expiration is an in-memory gate independent of publication or locks
         # held by a blocked native call in the owning worker.
         if not task.done.is_set() or time.monotonic() >= deadline:
@@ -55,7 +58,7 @@ class DiagnosticCall:
         self.package, self.deadline = package, deadline
         self.request = dict(schema='fakenet.diagnostic-call.v1',
                             attempt=str(uuid.uuid4()), parent_pid=os.getpid(),
-                            operation=operation, payload=payload, deadline=deadline)
+                            operation=operation, payload=payload, deadline=deadline, started=time.monotonic())
         self.done, self.ended, self.cancel = (threading.Event() for _ in range(3))
         self.result = self.error = self.job = None
         self.native = []
@@ -71,12 +74,12 @@ class DiagnosticCall:
         self.worker.start()
 
     def _run(self):
-        import msvcrt
-        from fakenet.mcp.jobobject import ManagedJob
         streams, descriptors, inherited = [], [], []
         response, io_errors = [], []
         writers = []
         try:
+            import msvcrt
+            from fakenet.mcp.jobobject import ManagedJob
             from fakenet.mcp.service_stop import process_identity
             self.request['parent_identity'] = process_identity()
             raw = json.dumps(self.request).encode('utf-8') + b'\n'
@@ -120,6 +123,10 @@ class DiagnosticCall:
             writers.append(writer)
             writer.start()
             while self.job.poll() is None or self.job.members():
+                if self.job.poll() is not None and self.job.members():
+                    self.cancel.set()
+                    self._terminate(min(self.deadline, time.monotonic()+1))
+                    raise DiagnosticError('diagnostic leader exited with remaining descendants')
                 if self.cancel.is_set() or time.monotonic() >= self.deadline:
                     self.cancel.set()
                     self._terminate()
@@ -188,12 +195,12 @@ class DiagnosticCall:
         self.retained_streams = []
         self.ended.set()
 
-    def _terminate(self):
+    def _terminate(self, deadline=None):
         if any(item['event'] == 'terminate_requested' for item in self.native):
             return
         self.native.append(dict(event='terminate_requested', at=time.monotonic()))
         try:
-            self.job.terminate(self.deadline)
+            self.job.terminate(self.deadline if deadline is None else deadline)
             self.native.append(dict(event='terminate_observed', at=time.monotonic()))
         except BaseException as exc:
             self.native.append(dict(event='terminate_unconfirmed', at=time.monotonic(), error=repr(exc)))

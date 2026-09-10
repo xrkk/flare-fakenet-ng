@@ -32,11 +32,23 @@ def surface(coord, runner=None, store=None, artifacts=None):
 
         return register
 
+    def diagnostic_call(operation, payload, deadline):
+        # The tool surface routes enumeration through ctx.diagnostics; the
+        # unit harness executes the same fixed operation locally so the
+        # completion rule under test stays the registry's own.
+        assert operation == 'list-artifacts', operation
+        from fakenet.mcp.artifacts import ArtifactRegistry
+        from pathlib import Path as _Path
+        if isinstance(artifacts, _Path):
+            return ArtifactRegistry(artifacts).metadata(deadline)
+        return []
+
     ctx = SimpleNamespace(
         coordinator=coord, runner=runner or coord._runner,
         store=store or SimpleNamespace(set_active=lambda v: None),
         controller_identity=lambda: ('owner', 'valid_uuid'),
         artifacts_root=artifacts or SimpleNamespace(),
+        diagnostics=SimpleNamespace(call=diagnostic_call),
         error_response=lambda e: {'error': e.to_dict()})
     register_tools(SimpleNamespace(tool=tool), ctx)
     return functions
@@ -490,6 +502,8 @@ def _round_record(tmp_path, identity, label='same'):
                          'sha256': hashlib.sha256(raw).hexdigest()})
     return dict(identity, run_id='run-1',
                 final_state='stopped', audit_diff={}, lock_released_after_stop=True,
+                started_at='2026-09-11T00:00:00+00:00',
+                ended_at='2026-09-11T00:02:00+00:00',
                 probe_window_start=1.1, probe_window_end=2.9,
                 probe_timeline=[{'t': 1, 'ok': True}, {'t': 2, 'ok': True},
                                 {'t': 3, 'ok': True}],

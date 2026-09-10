@@ -21,6 +21,7 @@ class ExitRetention:
         self._helper_job = None
         from fakenet.mcp.diagnostic_process import DiagnosticOwner
         self._diagnostics = DiagnosticOwner(package_root)
+        self._intent_diagnostics = DiagnosticOwner(package_root)
         self._target = TargetHandle(identity['pid'])
         self.package = Path(package_root).resolve()
         self.helper_image = self.package / 'exit-helper' / 'fakenetng-mcp-exit-monitor.exe'
@@ -69,8 +70,8 @@ class ExitRetention:
         payload = dict(run_id=self.record['run_id'], name='stop-intent.json')
         if operation == 'publish':
             payload['record'] = record
-            return self._call('exit-publish', payload, deadline)
-        return self._call('exit-remove-intent', payload, deadline)
+            return self._intent_diagnostics.call('exit-publish', payload, min(self.deadline or float('inf'), deadline))
+        return self._intent_diagnostics.call('exit-remove-intent', payload, min(self.deadline or float('inf'), deadline))
 
     def _publish(self, name, record):
         return self._call('exit-publish', dict(run_id=self.record['run_id'], name=name, record=record))
@@ -114,6 +115,8 @@ class ExitRetention:
                 raise RuntimeError('SPE Job still has live descendants')
             self._helper_job.close()
             self._helper_job = None
+        if getattr(self, '_intent_diagnostics', None) is not None and self._intent_diagnostics.pending():
+            raise RuntimeError('stop intent protocol worker still active')
         if not self._target.exited():
             raise RuntimeError('managed target still active; retain its handle')
         self._call('exit-scan', dict(terminate=False), self.deadline)
@@ -182,6 +185,34 @@ class ExitRetention:
                                    retained_target_handle_closed=False)
         finally:
             self.done.set()
+
+    def settle(self, deadline):
+        """Continue finalization after the watcher ended with retained objects.
+
+        A failed first pass never drops ownership: this bounded retry waits
+        only for objects that are actually still live, then re-runs the same
+        per-object release rules. An object that never ends keeps the
+        responsibility and the failed result."""
+        if not self.done.is_set() or self.result is None:
+            return self.result
+        if (self.result.get('helper_ended') and
+                self.result.get('retained_target_handle_closed')):
+            return self.result
+        report = {key: value for key, value in self.result.items()
+                  if key not in ('helper_ended', 'retained_target_handle_closed',
+                                 'cleanup_error')}
+        while True:
+            helper_live = self._helper is not None and not self._helper.exited()
+            target_live = self._target is not None and not self._target.exited()
+            if not helper_live and not target_live:
+                try:
+                    self._finish(report)
+                except BaseException:
+                    return self.result
+                return self.result
+            if time.monotonic() >= deadline:
+                return self.result
+            time.sleep(0.05)
 
     def _end_helpers(self, deadline):
         if self._helper is not None:

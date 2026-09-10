@@ -32,7 +32,9 @@ def test_result_rejects_foreign_nonempty_source_and_tampered_bytes(tmp_path, ide
 
 def test_round_rejects_summary_without_window_and_service_restart(identity, tmp_path):
     round = dict(identity, final_state='stopped', audit_diff={},
-                 lock_released_after_stop=True, probe={'all_ok': True, 'samples': 8})
+                 lock_released_after_stop=True, probe={'all_ok': True, 'samples': 8},
+                 started_at='2026-09-11T00:00:00+00:00',
+                 ended_at='2026-09-11T00:02:00+00:00')
     assert integrity.validate_round(round, identity)
     round.update(probe_window_start=1.1, probe_window_end=2.9,
                  probe_timeline=[dict(t=1,ok=True),dict(t=2,ok=True),dict(t=3,ok=True)],
@@ -56,3 +58,10 @@ def test_round_rejects_summary_without_window_and_service_restart(identity, tmp_
     round['vm_after'] = round['vm_before']
     round['probe_timeline'][1]['ok'] = False
     assert integrity.validate_round(round, identity)
+    round['probe_timeline'][1]['ok'] = True
+    round['ended_at'] = round['started_at']
+    import datetime
+    round['started_at'] = (datetime.datetime.fromisoformat(round['started_at'])
+                           + datetime.timedelta(seconds=1)).isoformat()
+    assert 'round start/end timestamps absent or out of order' in \
+        integrity.validate_round(round, identity)

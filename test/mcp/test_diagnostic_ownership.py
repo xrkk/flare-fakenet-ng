@@ -105,3 +105,34 @@ def test_windows_fixed_task_uses_job_and_returns_bounded_result():
     assert owner.active.ended.is_set()
     assert owner.last['native'][0]['event'] == 'created'
     assert owner.last['platform_blocked'] is False
+
+
+def test_native_import_failure_is_reported_without_waiting_for_deadline(monkeypatch, tmp_path):
+    import builtins
+    original = builtins.__import__
+    def fail_native(name, *args, **kwargs):
+        if name == 'msvcrt':
+            raise ImportError('injected native import failure')
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', fail_native)
+    owner = DiagnosticOwner(tmp_path)
+    started = time.monotonic()
+    with pytest.raises(DiagnosticError, match='injected native import failure'):
+        owner.call('exit-read', {}, started + 5)
+    assert time.monotonic() - started < 1
+    assert owner.active.ended.is_set()
+    assert not owner.pending()
+
+
+def test_short_protocol_watchdog_does_not_consume_collection_reserve(monkeypatch):
+    from fakenet.mcp import diagnostic_tasks
+    terminated = threading.Event()
+    monkeypatch.setattr(diagnostic_tasks.os, '_exit', lambda code: terminated.set())
+    watchdog = diagnostic_tasks.ItemWatchdog(time.monotonic() + 1)
+    try:
+        assert not terminated.wait(.05)
+        watchdog.deadline = time.monotonic() - .01
+        assert terminated.wait(.2)
+    finally:
+        watchdog.done.set()
+        watchdog.thread.join(1)

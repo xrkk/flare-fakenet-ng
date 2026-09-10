@@ -74,6 +74,9 @@ class RealSupervisor:
         self._last_final_filter = None
         self._endpoint_observation = None
         self._completed_failure_evidence = None
+        from fakenet.mcp.diagnostic_process import DiagnosticOwner
+        package = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[2]
+        self._diagnostics = DiagnosticOwner(package)
 
     def health_detail(self, state, max_wait=0.05):
         # Observations are updated by a bounded IPC poll, never queried under
@@ -200,6 +203,8 @@ class RealSupervisor:
                 raise
 
     def _ensure_exit_capability(self):
+        if self._diagnostics.pending():
+            raise SupervisorStartError('previous diagnostic Job end unconfirmed')
         from fakenet.mcp.exit_installation import verify
         from fakenet.mcp.exit_capability import verify_native
         from fakenet.mcp.service_stop import process_identity
@@ -207,7 +212,13 @@ class RealSupervisor:
             previous = self._exit_retention.result or {}
             if (not self._exit_retention.done.is_set() or not previous.get('helper_ended')
                     or not previous.get('retained_target_handle_closed')):
-                raise SupervisorStartError('previous exit evidence cleanup unverified')
+                # A previous failure keeps ownership; one bounded continuation
+                # resolves it exactly when the owned objects have since ended.
+                if self._exit_retention.done.is_set():
+                    previous = self._exit_retention.settle(time.monotonic() + 60) or previous
+                if (not self._exit_retention.done.is_set() or not previous.get('helper_ended')
+                        or not previous.get('retained_target_handle_closed')):
+                    raise SupervisorStartError('previous exit evidence cleanup unverified')
         package = Path(sys.executable).parent
         verify(package)
         if self._exit_capability is None:
@@ -219,6 +230,13 @@ class RealSupervisor:
             return None
         with self._exit_condition:
             report = retained.wait(self._exit_condition, deadline)
+            if report is not None and not (report.get('helper_ended') and
+                                           report.get('retained_target_handle_closed')):
+                # The owner's first pass may have ended with unresolved
+                # objects; give it one bounded continuation before reporting.
+                settled = retained.settle(deadline)
+                if settled is not None:
+                    report = settled
         self._last_exit_evidence = report
         return report
 
@@ -433,7 +451,7 @@ class RealSupervisor:
                 return self._result('failed', 'exit helper cleanup unverified')
             if coordinator.operation_fenced:
                 return self._result('failed', 'late operation cannot clear recovery responsibility')
-            self._register_run_artifacts(marker['run_id'])
+            self._register_run_artifacts(marker['run_id'], deadline)
             # A failed release/write cannot be reported as a clean stop.
             if self._activity_lock:
                 self._activity_lock.release()
@@ -497,152 +515,82 @@ class RealSupervisor:
         time.sleep(RESTART_SETTLE_SECONDS)
         return self.start(coordinator, controller, config_identity)
 
-    def _register_run_artifacts(self, run_id):
+    def _diagnostic_call(self, operation, payload, deadline):
+        # Condition.wait releases *all* levels of the lifecycle RLock while
+        # the owned child does I/O. The accepted coordinator operation keeps
+        # mutation serialization; read-only health/state use memory.
+        with self._exit_condition:
+            def wait(done, end):
+                while not done.is_set() and time.monotonic() < end:
+                    self._exit_condition.wait(min(.05, max(0, end-time.monotonic())))
+            return self._diagnostics.call(operation, payload, deadline, wait=wait)
+
+    def _register_run_artifacts(self, run_id, deadline=None):
         if self._artifacts_root and self._run_dir:
-            from fakenet.mcp.artifacts import ArtifactRegistry
-            ArtifactRegistry(self._artifacts_root).register_fakenet_outputs(
-                run_id, self._run_dir, prefix='')
+            return self._diagnostic_call('register-artifacts', dict(run_id=run_id), min(deadline or float('inf'), time.monotonic()+60))
 
     def _collect_incident(self, reason, deadline=None):
         try:
             return self._collect_incident_impl(reason, deadline)
-        except BaseException:
+        except BaseException as exc:
+            self._health_cache['incident_error'] = repr(exc)
             logger.exception('incident preparation failed; continuing cleanup')
 
     def _collect_incident_impl(self, reason, deadline=None):
         if not self._artifacts_root or not self._marker:
             return
-        from fakenet.mcp.incident import IncidentCollector
         deadline = min(deadline or float('inf'), time.monotonic() + 180)
-        child = self._fakenet
-        retained = self._exit_retention
+        child, retained = self._fakenet, self._exit_retention
         exit_report = None
         if retained is not None and (child is None or not child.alive() or retained.deadline is not None):
-            exit_report = self._await_exit_evidence(min(deadline, time.monotonic() + 60))
+            exit_report = self._await_exit_evidence(min(deadline, time.monotonic()+60))
         stacks = None
-        snapshot_stacks = False
         if child:
             try:
                 stacks = child.request('stacks', timeout=1)['stacks']
             except BaseException:
                 pass
-        def read_file(name):
-            path = self._run_dir / name if self._run_dir else None
-            return path.read_bytes() if path and path.exists() else None
-        if not stacks:
-            stop_stacks = read_file('stop-thread-stacks.txt')
-            if stop_stacks and b'File "' in stop_stacks:
-                stacks = 'MANAGED STOP WATCHDOG; LIVE CHILD CAPTURE\n' + stop_stacks.decode('utf-8', 'replace')
-        observed_identity = (child.identity if child else
-                             (self._last_managed_process or {}).get('identity'))
-        if not stacks and observed_identity and self._run_dir:
-            from fakenet.mcp.managed_stacks import read_stacks
-            stacks = read_stacks(self._run_dir, self._marker['run_id'], observed_identity)
-            snapshot_stacks = stacks is not None
-        import json
-        import platform
-        import importlib.metadata
-        from fakenet.mcp.baseline import capture, audit_compare
-        from fakenet.mcp.service_stop import process_identity
-        baseline = self._baseline_store.load(self._marker['run_id'])
-        current = capture(deadline)
-        versions = {'python': sys.version, 'os': platform.platform(),
-                    'executable': sys.executable,
-                    'config_sha256': self._marker['config_sha256'], 'dependencies': {}}
-        # Only the pinned candidate dependency set is recorded; the frozen
-        # package cannot load anything the build does not install.
-        for package in ('mcp', 'pydivert', 'pywin32'):
-            try:
-                versions['dependencies'][package] = importlib.metadata.version(package)
-            except importlib.metadata.PackageNotFoundError:
-                versions['dependencies'][package] = 'metadata unavailable'
-        manifest = Path(sys.executable).parent / 'mcp-candidate-manifest.json'
-        if manifest.is_file():
-            versions['candidate_manifest'] = json.loads(manifest.read_text(encoding='utf-8'))
-        metadata = []
-        if self._run_dir:
-            for path in self._run_dir.iterdir():
-                if path.is_file():
-                    raw = path.read_bytes()
-                    metadata.append({'path': str(path), 'size': len(raw),
-                                     'sha256': hashlib.sha256(raw).hexdigest()})
-        target_creation = None
-        target_pid = None
-        if child:
-            try:
-                members = child.job.members()
-                target_pid = child.pid if child.alive() else (members[0] if members else None)
-                target_creation = process_identity(target_pid)['creation_time'] if target_pid else None
-            except OSError:
-                pass
-        versions['managed_process'] = {'identity': child.identity if child else None,
-                                       'exit_code': child.job.poll() if child else None,
-                                       'job_members': child.job.members() if child else []}
-        if child is None and self._last_managed_process:
-            versions['managed_process'] = dict(self._last_managed_process)
-        post_job_audit = (
-            reason == 'environment restoration audit failed' and child is None and
-            self._last_managed_process is not None and
-            self._last_managed_process.get('exit_code') is not None and
-            self._last_managed_process.get('job_members') == [])
-        if post_job_audit:
-            # Recovery auditing executes in this live supervisor after the
-            # managed Job is verified empty. Capture that actual failure site;
-            # never present its dump as a replacement for a managed crash dump.
-            audit_identity = process_identity(os.getpid())
-            target_pid = audit_identity['pid']
-            target_creation = audit_identity['creation_time']
-            versions['dump_target'] = dict(role='supervisor', identity=audit_identity,
-                                          phase='post-Job restoration audit')
-        if not stacks and child and not child.alive() and self._last_managed_stacks:
-            stacks = 'LAST OBSERVATION BEFORE STOP; ROOT HAS EXITED\n' + self._last_managed_stacks
-            extra = read_file('fault-child-stacks.txt')
-            if extra:
-                stacks += '\nMANAGED FAULT CHILD\n' + extra.decode('utf-8')
-        context = {'timeline': self._coordinator.events(500),
-                   'versions': versions,
-                   'config_path': self._active_config_path,
-                   'stdout_stderr': read_file('stdout_stderr.log'),
-                   'run_log_window': read_file('run.log'),
-                   'exception_text': reason, 'managed_thread_stacks': stacks,
-                   'final_filter': self._last_final_filter,
-                   'baseline_diff': {'before': baseline, 'after': current,
-                       'differences': audit_compare((baseline or {}).get('sections'), current)},
-                   'firewall_baseline': (baseline or {}).get('firewall'),
-                   'artifact_metadata': metadata, 'dump_target_pid': target_pid,
-                   'dump_target_creation': target_creation,
-                   'dump_reason': ('restoration audit failure after verified managed Job exit' if post_job_audit else
-                                   'managed hang/timeout' if 'timeout' in reason.lower() or
-                                   'did not exit' in reason.lower() else
-                                   'live managed IPC stacks unavailable' if snapshot_stacks else
-                                   None if stacks else 'managed stacks unavailable')}
-        if exit_report is not None:
-            context['exit_evidence'] = exit_report
-            if not post_job_audit and exit_report.get('complete') and exit_report.get('dump'):
-                context['precollected_exit_dump'] = {
-                    'path': retained.directory / 'target.dmp',
-                    'identity': retained.record,
-                    'dump': exit_report['dump'], 'deadline': retained.deadline}
-                context['dump_reason'] = 'managed exit requires root-cause evidence'
-        # The tree may exit while the bounded stack/baseline observations
-        # above are running. Recheck at the actual collection boundary, not
-        # just when stop first observes its missing response.
-        if (child and child.job.poll() is not None and not child.job.members() and
-                self._completed_failure_evidence == (
-                    self._marker['run_id'], child.identity, reason)):
-            logger.warning('same failure already fully captured; Job exited during incident preparation: %s', reason)
+        managed = (dict(identity=dict(child.identity), exit_code=child.job.poll(), job_members=child.job.members())
+                   if child else dict(self._last_managed_process or {}))
+        same_prior_failure = (self._completed_failure_evidence ==
+                              (self._marker['run_id'], (managed or {}).get('identity'), reason))
+        if (child and managed['exit_code'] is not None and not managed['job_members']
+                and same_prior_failure):
             return
-        collector = IncidentCollector(self._artifacts_root, self._marker['run_id'])
-        if deadline:
-            collector.deadline = min(collector.deadline, time.time() + max(0, deadline-time.monotonic()))
-        collector.collect(context)
-        if (child and collector.manifest and
-                all(entry['result'] == 'ok' for entry in collector.manifest) and
-                any(entry['item'] == 'userdump.dmp' and entry['size'] > 0
-                    for entry in collector.manifest)):
-            self._completed_failure_evidence = (
-                self._marker['run_id'], dict(child.identity), reason)
-        self._health_cache['incident_path'] = str(collector.root)
+        from fakenet.mcp.service_stop import process_identity
+        target = None
+        if child:
+            members = managed['job_members']
+            pid = child.pid if child.alive() else (members[0] if members else None)
+            if pid:
+                target = dict(role='managed', identity=process_identity(pid))
+        if (reason == 'environment restoration audit failed' and child is None and
+                managed.get('exit_code') is not None and managed.get('job_members') == []):
+            target = dict(role='supervisor', identity=process_identity(os.getpid()))
+        import uuid
+        request = dict(run_id=self._marker['run_id'], config_sha256=self._marker['config_sha256'],
+                       reason=reason, live_stacks=stacks, last_stacks=self._last_managed_stacks,
+                       timeline=self._coordinator.events(500), final_filter=self._last_final_filter,
+                       managed=managed, dump_target=target, exit_report=exit_report,
+                       token=str(uuid.uuid4()))
+        summary = self._diagnostic_call('incident-prepare', request, deadline)
+        # The tree may exit while the bounded preparation task runs. Recheck
+        # the managed Job at the actual collection boundary, not just when
+        # stop first observes its missing response. A complete prior pack for
+        # the same failure then suppresses a duplicate collection.
+        if (child and child.job.poll() is not None and not child.job.members()
+                and same_prior_failure):
+            logger.warning('same failure already fully captured; Job exited during incident preparation: %s', reason)
+            self._diagnostic_call('incident-collect',
+                                  dict(run_id=request['run_id'], staging=request['token'], abort=True),
+                                  min(deadline, time.monotonic() + 10))
+            return
+        report = self._diagnostic_call('incident-collect',
+                                       dict(run_id=request['run_id'], staging=request['token']),
+                                       deadline)
+        if child and report.get('complete') and report.get('has_dump'):
+            self._completed_failure_evidence = (self._marker['run_id'], dict(child.identity), reason)
+        self._health_cache['incident_path'] = report['incident_path']
 
     def _inject_exclusion(self, instance):
         """Inject the control-link exclusion keys into the parsed diverter

@@ -106,6 +106,16 @@ def validate_round(record, expected):
     timeline = record.get('probe_timeline')
     if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or not timeline:
         return failures + ['full probe window absent']
+    # The recorded round window itself must be ordered and consistent: a
+    # summary whose ended_at precedes started_at is not a real observation.
+    try:
+        import datetime
+        began_at = datetime.datetime.fromisoformat(record['started_at'])
+        ended_at = datetime.datetime.fromisoformat(record['ended_at'])
+        if ended_at < began_at:
+            raise ValueError('ended before started')
+    except (KeyError, TypeError, ValueError):
+        failures.append('round start/end timestamps absent or out of order')
     times = [p.get('t') for p in timeline]
     if (any(not isinstance(t, (int, float)) for t in times) or
             any(not p.get('ok') for p in timeline)):

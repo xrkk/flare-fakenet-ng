@@ -34,7 +34,7 @@ def _exit_path(payload):
     return run_directory(base, _run_id(payload['run_id'])) / name
 
 
-def execute(operation, payload, deadline):
+def execute(operation, payload, deadline, watchdog=None):
     from fakenet.mcp.exit_files import read, publish, root, run_directory, digest, QUOTA
     if time.monotonic() >= deadline:
         raise TimeoutError('diagnostic task already expired')
@@ -79,6 +79,22 @@ def execute(operation, payload, deadline):
         else:
             assert_no_helpers(package, Observation(deadline, OBSERVATION_BUDGET))
         return dict(helpers_ended=True)
+    if operation == 'incident-prepare':
+        from fakenet.mcp.incident_task import prepare_stage
+        from fakenet.mcp.paths import data_directories
+        _run_id(payload['run_id'])
+        package = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[2]
+        return prepare_stage(payload, data_directories(), package, deadline)
+    if operation == 'incident-collect':
+        from fakenet.mcp.incident_task import collect_stage
+        from fakenet.mcp.paths import data_directories
+        _run_id(payload['run_id'])
+        package = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[2]
+        return collect_stage(payload, data_directories(), package, deadline, watchdog)
+    if operation == 'list-artifacts':
+        from fakenet.mcp.paths import data_directories
+        from fakenet.mcp.artifacts import ArtifactRegistry
+        return ArtifactRegistry(data_directories()['artifacts']).metadata(deadline)
     if operation == 'register-artifacts':
         from fakenet.mcp.paths import data_directories
         from fakenet.mcp.artifacts import ArtifactRegistry
@@ -101,6 +117,7 @@ def main():
     if not kernel.IsProcessInJob(kernel.GetCurrentProcess(), None, c.byref(contained)) or not contained:
         return 2
     request = None
+    watchdog = None
     try:
         raw = sys.stdin.buffer.readline(MAX_FRAME + 1)
         if not raw.endswith(b'\n') or len(raw) > MAX_FRAME:
@@ -121,7 +138,13 @@ def main():
             image = Path(identity['image'])
             if getattr(sys, 'frozen', False) and str(image).casefold() != str(Path(sys.executable).parent / 'fakenetng-mcp.exe').casefold():
                 return 2
-            result = execute(request['operation'], request['payload'], deadline)
+            from contextlib import nullcontext
+            from fakenet.mcp.exit_guard import SingleFlight
+            bulk = request['operation'] in ('incident-prepare', 'incident-collect',
+                                            'exit-verify-dump', 'register-artifacts')
+            watchdog = ItemWatchdog(min(deadline, request['started']+60), reserve=2 if bulk else 0)
+            with (SingleFlight() if bulk else nullcontext()):
+                result = execute(request['operation'], request['payload'], deadline, watchdog)
         if time.monotonic() >= deadline:
             raise TimeoutError('diagnostic result expired')
         report = dict(attempt=request['attempt'], operation=request['operation'], result=result, error=None)
@@ -137,4 +160,21 @@ def main():
         return 2
     sys.stdout.buffer.write(encoded)
     sys.stdout.buffer.flush()
+    if watchdog is not None:
+        watchdog.done.set()
     return code
+
+
+class ItemWatchdog:
+    """Only this short-lived worker exits; the supervisor keeps its Job."""
+    def __init__(self, deadline, reserve=0):
+        import threading
+        self.deadline = deadline
+        self.reserve = reserve
+        self.done = threading.Event()
+        def watch():
+            while not self.done.wait(.01):
+                if time.monotonic() >= self.deadline - self.reserve:
+                    os._exit(124)
+        self.thread = threading.Thread(target=watch, name='diagnostic-item-deadline', daemon=True)
+        self.thread.start()

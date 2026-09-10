@@ -8,10 +8,11 @@ in the ``error`` field per the master-plan §6.1 response contract.
 """
 
 import os
+import sys
+from pathlib import Path
 
 from fakenet.mcp import MCP_PACKAGE_NAME, MCP_PACKAGE_VERSION
 from fakenet.mcp import errors
-from fakenet.mcp.artifacts import completion
 from fakenet.mcp.configstore import ConfigStore
 from fakenet.mcp.coordination import Coordinator
 from fakenet.mcp.testdouble import LifecycleDouble
@@ -124,6 +125,13 @@ class AppContext:
                 os.environ.get('FAKENETNG_MCP_TESTDOUBLE') != '1'):
             self.coordinator.update_health_state('recovering')
         self.artifacts_root = dirs['artifacts']
+        # Artifact enumeration reads and hashes evidence files; it runs in the
+        # fixed diagnostic task with its own budget so no HTTP handler ever
+        # performs potentially blocking evidence I/O inline.
+        from fakenet.mcp.diagnostic_process import DiagnosticOwner
+        package = Path(sys.executable).parent if getattr(sys, 'frozen', False) \
+            else Path(__file__).resolve().parents[2]
+        self.diagnostics = DiagnosticOwner(package)
 
     def _default_config_resolver(self, name, builtin):
         if builtin:
@@ -199,22 +207,15 @@ def register_tools(server, ctx):
 
     @server.tool()
     def list_artifacts() -> dict:
-        items = []
-        if ctx.artifacts_root.is_dir():
-            for path in sorted(ctx.artifacts_root.rglob('*')):
-                if not path.is_file() or path.is_symlink():
-                    continue
-                stat_result = path.stat()
-                import hashlib
+        import time
 
-                digest = completion(path, path.parent)
-                items.append({
-                    'path': str(path),
-                    'type': path.suffix.lstrip('.') or 'file',
-                    'size': stat_result.st_size,
-                    'complete': digest is not None,
-                    'sha256': digest,
-                })
+        from fakenet.mcp.diagnostic_process import DiagnosticError
+        try:
+            items = ctx.diagnostics.call('list-artifacts', {}, time.monotonic() + 60)
+        except DiagnosticError as exc:
+            return {'artifacts': [], 'error': str(exc)}
+        except AttributeError:
+            return {'artifacts': [], 'error': 'artifact enumeration unavailable'}
         return {'artifacts': items, 'error': None}
 
     # -- lifecycle mutations ----------------------------------------------

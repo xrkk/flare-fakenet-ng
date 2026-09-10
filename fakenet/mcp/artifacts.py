@@ -138,12 +138,19 @@ class ArtifactRegistry:
                                        else source / p.name for p in copied])
         return copied
 
-    def metadata(self):
-        """All registered artifacts as metadata-only entries."""
+    def metadata(self, deadline=None):
+        """All registered artifacts as metadata-only entries.
+
+        Enumeration is bounded: when ``deadline`` (monotonic) is supplied and
+        the walk cannot finish inside it, the query fails structurally instead
+        of blocking its caller past the fixed budget."""
+        import time as _time
         items = []
         if not self.root.is_dir():
             return items
         for path in sorted(self.root.rglob('*')):
+            if deadline is not None and _time.monotonic() >= deadline:
+                raise TimeoutError('artifact enumeration deadline exceeded')
             if not path.is_file() or path.is_symlink() or path.name == PUBLICATION_RECORD:
                 continue
             suffix = path.suffix.lstrip('.').lower()

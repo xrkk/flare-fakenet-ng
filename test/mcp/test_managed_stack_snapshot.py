@@ -33,9 +33,11 @@ def test_snapshot_fallback_still_requires_fresh_live_target_dump(tmp_path, monke
     from fakenet.mcp import baseline, incident, service_stop
     from fakenet.mcp.supervisor import RealSupervisor
     identity = {'pid': 42, 'creation_time': '123'}
-    save_stacks(tmp_path, 'run', identity, 'Thread 42: observed managed frames')
+    run_dir = tmp_path/'runs'/'run'
+    run_dir.mkdir(parents=True)
+    save_stacks(run_dir, 'run', identity, 'Thread 42: observed managed frames')
     runner = RealSupervisor(artifacts_root=tmp_path)
-    runner._run_dir = tmp_path
+    runner._run_dir = run_dir
     runner._marker = {'run_id': 'run', 'config_sha256': 'a'*64}
     runner._baseline_store = SimpleNamespace(load=lambda run: {'sections': {}})
     runner._coordinator = SimpleNamespace(events=lambda count: [])
@@ -46,10 +48,19 @@ def test_snapshot_fallback_still_requires_fresh_live_target_dump(tmp_path, monke
     monkeypatch.setattr(service_stop, 'process_identity', lambda pid: identity)
     contexts = []
     class Collector:
-        def __init__(self, *args):
+        def __init__(self, *args, **kwargs):
             self.root = tmp_path/'incident';self.deadline = float('inf');self.manifest = []
         def collect(self, context): contexts.append(context)
     monkeypatch.setattr(incident, 'IncidentCollector', Collector)
+    from fakenet.mcp import incident_task, exit_files
+    monkeypatch.setattr(exit_files, 'root', lambda: tmp_path/'exit-evidence')
+    monkeypatch.setattr(baseline.BaselineStore, 'load', lambda self, run: {'sections': {}})
+    directories = {'artifacts': tmp_path, 'baselines': tmp_path/'baselines'}
+    def diagnostic_call(operation, payload, deadline):
+        if operation == 'incident-prepare':
+            return incident_task.prepare_stage(payload, directories, tmp_path, deadline)
+        return incident_task.collect_stage(payload, directories, tmp_path, deadline)
+    runner._diagnostic_call = diagnostic_call
     runner._collect_incident_impl('managed IPC EOF')
     assert len(contexts) == 1
     assert contexts[0]['dump_reason'] == 'live managed IPC stacks unavailable'
@@ -69,9 +80,11 @@ def test_post_job_audit_retains_managed_observation_and_dumps_actual_auditor(
     from fakenet.mcp import baseline, incident, service_stop
     from fakenet.mcp.supervisor import RealSupervisor
     identity = {'pid': 42, 'creation_time': '123'}
-    save_stacks(tmp_path, 'run', identity, 'Thread 42: last actual managed frames')
+    run_dir = tmp_path/'runs'/'run'
+    run_dir.mkdir(parents=True)
+    save_stacks(run_dir, 'run', identity, 'Thread 42: last actual managed frames')
     runner = RealSupervisor(artifacts_root=tmp_path)
-    runner._run_dir = tmp_path
+    runner._run_dir = run_dir
     runner._marker = {'run_id': 'run', 'config_sha256': 'a'*64}
     runner._baseline_store = SimpleNamespace(load=lambda run: {'sections': {}})
     runner._coordinator = SimpleNamespace(events=lambda count: [])
@@ -81,10 +94,19 @@ def test_post_job_audit_retains_managed_observation_and_dumps_actual_auditor(
                         lambda pid: {'pid': pid, 'creation_time': '456'})
     contexts = []
     class Collector:
-        def __init__(self, *args):
+        def __init__(self, *args, **kwargs):
             self.root = tmp_path/'incident';self.deadline = float('inf');self.manifest = []
         def collect(self, context): contexts.append(context)
     monkeypatch.setattr(incident, 'IncidentCollector', Collector)
+    from fakenet.mcp import incident_task, exit_files
+    monkeypatch.setattr(exit_files, 'root', lambda: tmp_path/'exit-evidence')
+    monkeypatch.setattr(baseline.BaselineStore, 'load', lambda self, run: {'sections': {}})
+    directories = {'artifacts': tmp_path, 'baselines': tmp_path/'baselines'}
+    def diagnostic_call(operation, payload, deadline):
+        if operation == 'incident-prepare':
+            return incident_task.prepare_stage(payload, directories, tmp_path, deadline)
+        return incident_task.collect_stage(payload, directories, tmp_path, deadline)
+    runner._diagnostic_call = diagnostic_call
     runner._collect_incident_impl(reason)
     context = contexts[0]
     assert 'last actual managed frames' in context['managed_thread_stacks']

@@ -68,7 +68,9 @@ class IncidentCollector:
 
     """Collect one bounded incident pack for a failed run."""
 
-    def __init__(self, artifacts_root, run_id, clock=None):
+    def __init__(self, artifacts_root, run_id, clock=None, quota=None):
+        self._quota = quota
+        self.watchdog = None
         parent = Path(artifacts_root) / str(run_id)
         parent.mkdir(parents=True, exist_ok=True)
         number = 1
@@ -83,6 +85,14 @@ class IncidentCollector:
         self.deadline = time.time() + TOTAL_BUDGET_SECONDS
         self.manifest = []
         self._lock = threading.Lock()
+
+    @property
+    def quota(self):
+        return min(DISK_QUOTA_BYTES, self._quota if self._quota is not None else DISK_QUOTA_BYTES)
+
+    def _arm_item(self):
+        if self.watchdog is not None:
+            self.watchdog.deadline = time.monotonic() + max(0, min(ITEM_TIMEOUT_SECONDS, self.deadline-time.time()))
 
     # ------------------------------------------------------------------
     def _record(self, item, result, payload=None, failure_reason=None,
@@ -109,7 +119,7 @@ class IncidentCollector:
         path = self.root / name
         raw_size = len(payload if isinstance(payload, bytes) else str(payload).encode('utf-8', 'replace'))
         used = sum(p.stat().st_size for p in self.root.rglob('*') if p.is_file())
-        if used + raw_size > DISK_QUOTA_BYTES - METADATA_RESERVE_BYTES:
+        if used + raw_size > self.quota - METADATA_RESERVE_BYTES:
             self._record(name, 'failed', failure_reason='disk quota exceeded')
             return None
         try:
@@ -129,7 +139,7 @@ class IncidentCollector:
                        if item.is_file())
         except OSError:
             used = 0
-        return used >= DISK_QUOTA_BYTES - METADATA_RESERVE_BYTES
+        return used >= self.quota - METADATA_RESERVE_BYTES
 
     # ------------------------------------------------------------------
     def collect(self, context):
@@ -139,6 +149,7 @@ class IncidentCollector:
         started = time.time()
         written = []
         for name, kind in BASIC_ITEMS:
+            self._arm_item()
             if self._timed_out():
                 self._record(name, 'failed',
                              failure_reason='total budget exhausted')
@@ -166,7 +177,9 @@ class IncidentCollector:
             written.append(path)
             self._record(name, 'ok', dump_path=path)
 
+        self._arm_item()
         self._conditional_dump(context)
+        self._arm_item()
         if context.get('exit_evidence') is not None:
             evidence = context['exit_evidence']
             path = self._write_item('managed-exit.json', json.dumps(evidence, indent=2))
@@ -296,7 +309,7 @@ class IncidentCollector:
             remaining = min(ITEM_TIMEOUT_SECONDS, self.deadline - time.time())
             used = sum(p.stat().st_size for p in self.root.rglob('*') if p.is_file())
             collect_dump(pid, creation, target, time.monotonic() + max(0, remaining),
-                         quota=max(0, DISK_QUOTA_BYTES - METADATA_RESERVE_BYTES - used))
+                         quota=max(0, self.quota - METADATA_RESERVE_BYTES - used))
             self._record('userdump.dmp', 'ok', dump_path=target)
         except Exception as exc:
             self._record('userdump.dmp', 'failed', failure_reason=repr(exc)[:160])
@@ -314,7 +327,7 @@ class IncidentCollector:
         source = Path(evidence['path'])
         verify_dump(source, identity['pid'])
         used = sum(path.stat().st_size for path in self.root.rglob('*') if path.is_file())
-        if used + info['size'] > DISK_QUOTA_BYTES - METADATA_RESERVE_BYTES:
+        if used + info['size'] > self.quota - METADATA_RESERVE_BYTES:
             raise RuntimeError('exit dump exceeds incident quota')
         end = min(self.deadline, time.time() + ITEM_TIMEOUT_SECONDS)
         partial = target.with_suffix('.dmp.partial')
@@ -330,7 +343,7 @@ class IncidentCollector:
                     if not chunk:
                         break
                     size += len(chunk)
-                    if size > info['size'] or used + size > DISK_QUOTA_BYTES - METADATA_RESERVE_BYTES:
+                    if size > info['size'] or used + size > self.quota - METADATA_RESERVE_BYTES:
                         raise RuntimeError('exit dump changed or exceeded quota')
                     dst.write(chunk)
                     hasher.update(chunk)
@@ -349,7 +362,7 @@ class IncidentCollector:
             'collected_at': time.time(),
             'elapsed_seconds': round(time.time() - started, 3),
             'budget_seconds': TOTAL_BUDGET_SECONDS,
-            'disk_quota_bytes': DISK_QUOTA_BYTES,
+            'disk_quota_bytes': self.quota,
             'entries': self.manifest,
             'complete': all(e['result'] != 'failed' for e in self.manifest),
         }
