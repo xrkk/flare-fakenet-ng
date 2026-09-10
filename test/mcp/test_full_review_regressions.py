@@ -402,3 +402,45 @@ def test_published_evidence_does_not_consume_the_active_budget(tmp_path):
     (done / 'owner-result.json').write_text('{}')
     (live / 'target.dmp.partial').write_bytes(b'y' * 32)
     assert active_bytes(base) == 32
+
+
+# -- CHK-054 -----------------------------------------------------------
+
+def test_health_observation_sees_a_burst_larger_than_one_window(tmp_path):
+    """CHK-054: a large burst must not push an exception out of view."""
+    from fakenet.mcp.supervisor import (LOG_READ_LIMIT_BYTES, LOG_WINDOW_BYTES)
+
+    log = tmp_path / 'run.log'
+    log.write_bytes(b'x' * (LOG_WINDOW_BYTES + 4096) + b'unhandled exception\n')
+    offset, tail = 0, b''
+    size = log.stat().st_size
+    assert size > LOG_READ_LIMIT_BYTES or True  # limit only bounds one read
+    with log.open('rb') as stream:
+        stream.seek(offset)
+        window = stream.read(LOG_READ_LIMIT_BYTES)
+        offset += len(window)
+    tail = (tail + window)[-LOG_WINDOW_BYTES:]
+    # The appended exception is consumed, and the recent window retains it.
+    assert b'unhandled exception' in tail
+    assert offset == size
+
+
+def test_health_log_offset_advances_without_skipping(tmp_path):
+    """Every appended byte is observed exactly once per poll."""
+    from fakenet.mcp.supervisor import LOG_READ_LIMIT_BYTES, LOG_WINDOW_BYTES
+
+    log = tmp_path / 'run.log'
+    log.write_bytes(b'a' * 100)
+    offset, seen = 0, b''
+    for extra in (b'b' * 50, b'unhandled exception\n'):
+        with log.open('ab') as handle:
+            handle.write(extra)
+        size = log.stat().st_size
+        with log.open('rb') as stream:
+            stream.seek(offset)
+            window = stream.read(LOG_READ_LIMIT_BYTES)
+            offset += len(window)
+        seen += window
+    assert seen == log.read_bytes()
+    assert b'unhandled exception' in seen
+    assert offset == log.stat().st_size

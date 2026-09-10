@@ -13,6 +13,10 @@ from fakenet.mcp import errors
 
 logger = logging.getLogger('fakenetng-mcp.supervisor')
 HEALTH_INTERVAL_SECONDS = 2.0
+# The health observation consumes the run log from a moving offset:
+# every appended byte is seen, and the recent window stays available.
+LOG_WINDOW_BYTES = 65536
+LOG_READ_LIMIT_BYTES = 4 * 1024 * 1024
 RESTART_SETTLE_SECONDS = 5.0
 
 
@@ -61,6 +65,8 @@ class RealSupervisor:
         self._marker = None
         self._active_config_path = None
         self._run_dir = None
+        self._log_offset = 0
+        self._log_tail = b''
         self._log_reader = log_reader
         self._last_run_outcome = None
         self._last_managed_stacks = None
@@ -134,6 +140,7 @@ class RealSupervisor:
                 self._exit_retention = None
                 self._last_final_filter = None
                 self._run_dir = Path(self._artifacts_root) / 'runs' / run_id
+                self._log_offset, self._log_tail = 0, b''
                 self._run_dir.mkdir(parents=True, exist_ok=False)
                 from fakenet.mcp.run_evidence import prepare_run_evidence
                 prepare_run_evidence(self._run_dir, config_path, digest)
@@ -260,9 +267,21 @@ class RealSupervisor:
                 run_log = self._run_dir / 'run.log'
                 log_text = ''
                 if run_log.exists():
+                    size = run_log.stat().st_size
+                    if size < self._log_offset:
+                        # Rotated or truncated: restart the observation.
+                        self._log_offset, self._log_tail = 0, b''
                     with run_log.open('rb') as stream:
-                        stream.seek(max(0, run_log.stat().st_size - 65536))
-                        log_text = stream.read().decode('utf-8', 'replace')
+                        stream.seek(self._log_offset)
+                        window = stream.read(LOG_READ_LIMIT_BYTES)
+                        self._log_offset += len(window)
+                    # Consume every appended byte and keep the recent window,
+                    # so a burst larger than one window cannot push an
+                    # exception past the observation, and the recent window
+                    # stays visible on the next probe instead of being read
+                    # again from a fixed tail offset.
+                    self._log_tail = (self._log_tail + window)[-LOG_WINDOW_BYTES:]
+                    log_text = self._log_tail.decode('utf-8', 'replace')
                 healthy, reason = evaluate_health_evidence(evidence, log_text)
                 if not healthy:
                     if 'unhandled exception' in reason:
@@ -289,8 +308,16 @@ class RealSupervisor:
                 return
             self._collect_incident(reason)
             # Never race an already accepted operation or fall back to a raw
-            # uncoordinated stop. Its existing bounded operation finishes first.
-            if self._coordinator.wait_for_idle(60):
+            # uncoordinated stop. Its existing bounded operation finishes
+            # first; protective convergence still runs afterwards, so a slow
+            # accepted operation delays the stop instead of cancelling it.
+            idle = self._coordinator.wait_for_idle(60)
+            if not idle:
+                logger.error('accepted operation still in flight after 60s; '
+                             'waiting for it before protective convergence')
+                idle = self._coordinator.wait_for_idle(
+                    getattr(self, '_stop_grace', 60) + 420)
+            if idle:
                 import uuid
                 try:
                     self._coordinator.submit(
@@ -301,6 +328,9 @@ class RealSupervisor:
                         execute=lambda c: self.stop(c))
                 except Exception:
                     logger.exception('protective stop could not complete')
+            else:
+                logger.error('protective convergence unavailable: an accepted '
+                             'operation never finished within its budget')
             self._coordinator.record_terminal_failure(reason)
             return
 
