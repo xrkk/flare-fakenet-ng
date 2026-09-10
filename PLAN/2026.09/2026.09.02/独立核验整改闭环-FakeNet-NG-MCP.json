@@ -12,7 +12,7 @@
   "status": "READY_TO_REVERIFY",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "2d5a0bca84b55de35dbc036dd38414d6c0dc1cf9",
+  "current_head": "5f25fb934a7b24b593e207874f8177995fe85165",
   "round_limit": 5,
   "completed_rounds": 2,
   "next_round": 3,
@@ -209,9 +209,9 @@
       "response": "接受",
       "owner": "总纲",
       "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
-      "fix": "2d5a0bc：恢复责任/健康观察窗口与在途超时后仍保护性收敛",
+      "fix": "5f25fb9：观测消费的全部字节都判异常（不再先截断），并保留单一延迟收敛责任",
       "evidence": [
-        "Logs/fakenetng-mcp/remediation-20260910/native-2d5a0bc-verify.json",
+        "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
         "test/mcp/test_full_review_regressions.py"
       ],
       "author_stage": "FIXED_PENDING_INDEPENDENT_RECHECK",
@@ -248,9 +248,9 @@
       "response": "接受",
       "owner": "P04",
       "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
-      "fix": "2d5a0bc：最终SCM发布纳入总截止并防迟到成功",
+      "fix": "5f25fb9：成功文件落盘后复检窗口，逾期改写为failed",
       "evidence": [
-        "Logs/fakenetng-mcp/remediation-20260910/native-2d5a0bc-verify.json",
+        "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
         "test/mcp/test_full_review_regressions.py"
       ],
       "author_stage": "FIXED_PENDING_INDEPENDENT_RECHECK",
@@ -282,9 +282,9 @@
       "response": "接受",
       "owner": "P04",
       "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
-      "fix": "2d5a0bc：incident总预算、通用dump MDMP与目标身份、活动配额范围",
+      "fix": "5f25fb9：通用dump暂存+额度+截止+MDMP校验后原子发布；已发布run目录不再计数/枚举",
       "evidence": [
-        "Logs/fakenetng-mcp/remediation-20260910/native-2d5a0bc-verify.json",
+        "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
         "test/mcp/test_full_review_regressions.py"
       ],
       "author_stage": "FIXED_PENDING_INDEPENDENT_RECHECK",
@@ -303,9 +303,9 @@
       "response": "接受",
       "owner": "P05",
       "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
-      "fix": "2d5a0bc：runner按PID/创建时间固定所有权并保全被删证据",
+      "fix": "5f25fb9：清理脚本改为合法PowerShell并只删除自有清单（含逐项SHA）；重启路径按名强杀改为SCM固定实例",
       "evidence": [
-        "Logs/fakenetng-mcp/remediation-20260910/native-2d5a0bc-verify.json",
+        "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
         "test/mcp/test_full_review_regressions.py"
       ],
       "author_stage": "FIXED_PENDING_INDEPENDENT_RECHECK",
@@ -342,9 +342,9 @@
       "response": "接受",
       "owner": "P05",
       "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
-      "fix": "2d5a0bc：原始基线差异重算与跨轮唯一性/类别",
+      "fix": "5f25fb9：validate_rounds接入release汇总并按run身份去重",
       "evidence": [
-        "Logs/fakenetng-mcp/remediation-20260910/native-2d5a0bc-verify.json",
+        "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
         "test/mcp/test_full_review_regressions.py"
       ],
       "author_stage": "FIXED_PENDING_INDEPENDENT_RECHECK",
@@ -371,9 +371,9 @@
       "owner": "P04",
       "source": "2026.09.10-06-独立核验-总纲-FakeNet-NG-MCP.md",
       "defect": "4096预算与deadline未覆盖原生枚举与最终复查",
-      "fix": "2d5a0bc：统一观测窗口覆盖全部扫描与复查（硬抢占已登记候选）",
+      "fix": "5f25fb9：取得快照句柄后立即进入try/finally再做窗口检查，消除本批引入的句柄泄漏",
       "evidence": [
-        "Logs/fakenetng-mcp/remediation-20260910/native-2d5a0bc-verify.json",
+        "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
         "test/mcp/test_full_review_regressions.py"
       ],
       "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
@@ -386,9 +386,9 @@
       "owner": "P04",
       "source": "2026.09.10-08-当前会话全面核验-总纲-FakeNet-NG-MCP.md",
       "defect": "aef5ecc的finally在残余检查失败时提前关闭保留目标句柄",
-      "fix": "2d5a0bc：助手句柄在其结束被观察后释放，保留目标句柄仅在残余检查通过后释放",
+      "fix": "5f25fb9：失败清理分支在助手结束后由单一owner回收目标句柄并记录",
       "evidence": [
-        "Logs/fakenetng-mcp/remediation-20260910/native-2d5a0bc-verify.json",
+        "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
         "test/mcp/test_full_review_regressions.py"
       ],
       "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
@@ -401,9 +401,9 @@
       "owner": "P02",
       "source": "2026.09.10-08-当前会话全面核验-总纲-FakeNet-NG-MCP.md",
       "defect": "产物complete按扩展名猜测，.partial被当作完成",
-      "fix": "2d5a0bc：完成以产品发布事实判定（.part/.partial为非发布态），未发布文件不给最终SHA，registry与list_artifacts同规则",
+      "fix": "5f25fb9：以生产者发布记录+当前字节一致性判定完成，未声明或写入中的文件不给最终SHA",
       "evidence": [
-        "Logs/fakenetng-mcp/remediation-20260910/native-2d5a0bc-verify.json",
+        "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
         "test/mcp/test_full_review_regressions.py"
       ],
       "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
@@ -517,6 +517,22 @@
       ],
       "verified": "产品与验收同批；Linux MCP 401通过4跳过；固定源完整Windows 969通过8跳过、HTTP17通过；同候选原生复验通过",
       "purpose": "核验§7第1—2步同批整改；未改需求/总纲/Pxx/依赖边/验收边界，未新增AUD，未关闭CHK"
+    },
+    {
+      "head": "5f25fb934a7b24b593e207874f8177995fe85165",
+      "parent": "9f2f31ff0fb151c1b8059c91cf127623ddd1028a",
+      "scope": [
+        "CHK-054",
+        "CHK-057",
+        "CHK-060",
+        "CHK-062",
+        "CHK-066",
+        "CHK-068",
+        "CHK-069",
+        "CHK-070"
+      ],
+      "verified": "Linux MCP 405通过4跳过；固定源完整Windows 973通过8跳过、HTTP17通过；同候选原生复验通过",
+      "purpose": "定向复核09号记录余项闭合；未改规范/依赖边/验收边界，未关闭CHK"
     }
   ],
   "plan_changes": [
@@ -575,11 +591,11 @@
       "accepted_at": "2026-09-10T05:55:11.936410+00:00"
     }
   ],
-  "checkpoint": "第3轮全面核验（当前会话记录2026.09.10-08，20项CHK）后同批整改：修复CHK-054/055/056/057/058/060/064/068/069/070/071/072的确定反例，并把15组反例转为期望正确行为的回归；加固runner所有权（CHK-062）与轮次重算/去重（CHK-066）。2d5a0bc完整构建PASS（Windows 969/8、HTTP17、三EXE冒烟、ZIP PASS）并原生复验通过（install exit0、能力自检passed、正常停止controlled_normal_exit零dump、停服后归零）。CHK-053—072共20项仍全部OPEN，轮次2/5，非ACC通过。",
+  "checkpoint": "定向复核（记录2026.09.10-09）余项已闭合：日志全量判定与延迟收敛、停服成功文件窗口、生产者发布记录决定完成、跨轮校验接入真实汇总并按run去重、快照句柄先持有后检查、runner脚本合法化与自有清单清理、通用dump原子有界、历史不占活动配额、失败路径单owner回收目标句柄。5f25fb9完整构建PASS（Windows 973/8、HTTP17）并原生复验通过。CHK-053—072共20项仍全部OPEN，轮次2/5；作者不再声称\"确定反例全部修复\"。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-155",
-    "action": "交回用户转下一轮独立核验；本批只落地有确定反例的机制修复与回归，不关闭任何CHK",
+    "id": "INTENT-157",
+    "action": "交回用户转下一轮独立核验；本轮只闭合09号记录所列余项，不关闭任何CHK",
     "status": "COMPLETED"
   },
   "events": [
@@ -844,6 +860,15 @@
       "package_sha256": "6a009071c5e434c0e4f5725a73610b1e566387ff0fe7de6bda096ddf42a32a33",
       "status": "READY_TO_REVERIFY",
       "chk_closed": []
+    },
+    {
+      "at": "2026-09-10T15:10:00+00:00",
+      "intent": "INTENT-156/157",
+      "actual": "闭合09号记录7类余项：日志全量判定/延迟收敛、成功文件窗口、生产者发布记录、跨轮校验接入并按run去重、快照句柄先持有、runner合法脚本与自有清单清理、通用dump原子有界、历史不占活动配额、失败路径单owner回收句柄；5f25fb9构建PASS并原生复验通过；20项CHK全部OPEN。",
+      "source_head": "5f25fb934a7b24b593e207874f8177995fe85165",
+      "package_sha256": "51dd054716fc6732108259b0c240c7cb444f0412f950b5367718aaaa9a0f2cf6",
+      "status": "READY_TO_REVERIFY",
+      "chk_closed": []
     }
   ],
   "response_record": {
@@ -1092,17 +1117,17 @@
     }
   ],
   "candidate": {
-    "source_commit": "2d5a0bca84b55de35dbc036dd38414d6c0dc1cf9",
-    "candidate_id": "mcp-c2d5a0bca-6a009071c5e4",
-    "package": "dist/mcp-remediation-20260910-2d5a0bc/fakenetng-mcp-candidate.zip",
-    "sha256": "6a009071c5e434c0e4f5725a73610b1e566387ff0fe7de6bda096ddf42a32a33",
+    "source_commit": "5f25fb934a7b24b593e207874f8177995fe85165",
+    "candidate_id": "mcp-c5f25fb93-51dd054716fc",
+    "package": "dist/mcp-remediation-20260910-5f25fb9/fakenetng-mcp-candidate.zip",
+    "sha256": "51dd054716fc6732108259b0c240c7cb444f0412f950b5367718aaaa9a0f2cf6",
     "status": "DEPLOYED_AND_ENTRY_VERIFIED",
     "formal_acc_pass": false,
     "preserved_prior_candidates": [
       {
-        "source_commit": "aef5ecc19e87958b1dae572ac1b836b94105c150",
-        "sha256": "d61185c2a83f6225ee661f2209476a799736262ad5913fbc1f4756ddc849647a",
-        "preserved_at": "C:\\Windows\\Temp\\FakeNetMCP-20260910-2d5a0bc-upgrade\\previous-package"
+        "source_commit": "2d5a0bca84b55de35dbc036dd38414d6c0dc1cf9",
+        "sha256": "6a009071c5e434c0e4f5725a73610b1e566387ff0fe7de6bda096ddf42a32a33",
+        "preserved_at": "C:\\Windows\\Temp\\FakeNetMCP-20260910-5f25fb9-upgrade\\previous-package"
       },
       {
         "source_commit": "47c8173f0bd3432ec393a86f5f4c1808eb8ee8aa",
@@ -1461,15 +1486,15 @@
   ],
   "active_build": {
     "status": "PASS",
-    "source_head": "2d5a0bca84b55de35dbc036dd38414d6c0dc1cf9",
-    "console": "Logs/fakenetng-mcp/remediation-20260910/build-2d5a0bc-console.txt",
-    "stage": "Logs/fakenetng-mcp/builds/2d5a0bca-p9708521/",
-    "output": "dist/mcp-remediation-20260910-2d5a0bc",
-    "windows_main": "969 passed / 8 skipped",
+    "source_head": "5f25fb934a7b24b593e207874f8177995fe85165",
+    "console": "Logs/fakenetng-mcp/remediation-20260910/build-5f25fb9-console.txt",
+    "stage": "Logs/fakenetng-mcp/builds/5f25fb93-*",
+    "output": "dist/mcp-remediation-20260910-5f25fb9",
+    "windows_main": "973 passed / 8 skipped",
     "windows_http": "17 passed",
-    "zip_sha256": "6a009071c5e434c0e4f5725a73610b1e566387ff0fe7de6bda096ddf42a32a33",
+    "zip_sha256": "51dd054716fc6732108259b0c240c7cb444f0412f950b5367718aaaa9a0f2cf6",
     "exit_role_smoke": "dedicated install refused=2, monitor no arguments refused=3; zero stdout/stderr",
-    "linux_mcp": "401 passed / 4 skipped"
+    "linux_mcp": "405 passed / 4 skipped"
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/before-plan-change-006-prototype/runtime.zip",
@@ -1489,18 +1514,18 @@
   },
   "active_native_validation": {
     "status": "COMPLETED",
-    "mode": "2d5a0bc controlled install, entry, capability self-test and shutdown (bounded; not the full ACC matrix)",
-    "evidence": "Logs/fakenetng-mcp/remediation-20260910/native-2d5a0bc-verify.json",
-    "export": "Logs/fakenetng-mcp/remediation-20260910/native-2d5a0bc-exit-evidence.zip",
+    "mode": "5f25fb9 controlled install, entry, capability self-test and shutdown (bounded; not the full ACC matrix)",
+    "evidence": "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
+    "export": "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-exit-evidence.zip",
     "install_exit_code": 0,
     "capability_selftest_passed": true,
+    "fresh_capability_run": "7db186d2-f963-4883-8d83-1442b60bb065",
     "normal_stop_classification": "controlled_normal_exit",
     "helper_processes_after": 0,
     "helper_functions_reached": [
       "assert_no_helpers"
     ],
     "end_helpers_reached_natively": false,
-    "counterexample_regressions": "test/mcp/test_full_review_regressions.py (25 cases)",
     "formal_acc_pass": false
   },
   "environment_question": {
@@ -1545,6 +1570,13 @@
       "sha256": "c91fd0c1f83af127c30246959ea9f2bb65ae0dd4a7dc8c33ae74b6e603b3d3eb",
       "verified_files": 41,
       "all_match": true
+    },
+    {
+      "verification": "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
+      "export": "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-exit-evidence.zip",
+      "sha256": "05409b5fa4181e212846cdc67f2e8e37fc4a4b459766f4e54bb18fbb4c3618a3",
+      "verified_files": 54,
+      "all_match": true
     }
   ],
   "vm_reset_intent": {
@@ -1563,7 +1595,7 @@
   },
   "final_author_record": {
     "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
-    "blob": "4d5a2783ba4fca65ed1a86eddd477d2432114fd6",
-    "section": "§71 CHK-054—066/068—072 产品与验收机制同批整改及2d5a0bc复验"
+    "blob": "7618c0ce5223abbc58bb4354bb42c35f733165d9",
+    "section": "§72 定向复核（09号记录）余项闭合及5f25fb9复验"
   }
 }
