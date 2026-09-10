@@ -141,6 +141,7 @@ def validate_rounds(records, required_classes=None):
     failures = []
     seen = set()
     classes = {}
+    capture_paths = set()
     for index, record in enumerate(records or []):
         run_id = record.get('run_id') if isinstance(record, dict) else None
         fault_class = record.get('class') if isinstance(record, dict) else None
@@ -156,6 +157,11 @@ def validate_rounds(records, required_classes=None):
             failures.append('round run reused: %s (as %s)' % (run_id, fault_class))
             continue
         seen.add(run_id)
+        for item in record.get('capture_evidence', []):
+            path = str(Path(item['path']).resolve())
+            if path in capture_paths:
+                failures.append('environment capture reused across rounds: ' + path)
+            capture_paths.add(path)
         classes[fault_class] = classes.get(fault_class, 0) + 1
     for fault_class, minimum in (required_classes or {}).items():
         if classes.get(fault_class, 0) < minimum:
@@ -173,6 +179,26 @@ def validate_sample_category(record, prefix):
         expected = 'default.ini' if prefix == 'normal-builtin' else 'release-custom.ini'
         if record.get('class') != 'normal' or record.get('config') != expected:
             failures.append('normal sample configuration/category mismatch')
+        try:
+            observed = record['config_read']
+            identity = {key: observed[key] for key in ('name', 'sha256', 'builtin')}
+            if (identity['name'] != expected or identity['builtin'] != (prefix == 'normal-builtin') or
+                    hashlib.sha256(observed['content'].encode('utf-8')).hexdigest() != identity['sha256'] or
+                    record['load_response']['config_identity'] != identity or
+                    record['start_response']['run_id'] != record['run_id'] or
+                    record['lock_held_evidence']['status']['run_id'] != record['run_id'] or
+                    record['lock_held_evidence']['status']['config_identity'] != identity or
+                    record['lock_held_evidence']['file_probe']['before'] != identity['sha256'] or
+                    record['lock_held_evidence']['file_probe']['after'] != identity['sha256']):
+                raise ValueError('normal sample actual run/config identity mismatch')
+            if prefix == 'normal-custom':
+                builtin = record['builtin_config_read']
+                if (not builtin['builtin'] or builtin['name'] != 'default.ini' or
+                        hashlib.sha256(builtin['content'].encode('utf-8')).hexdigest() != builtin['sha256'] or
+                        observed['content'].replace('\r\n', '\n') != custom_config_body(builtin['content'])):
+                    raise ValueError('custom sample semantic configuration mismatch')
+        except (KeyError, TypeError, ValueError) as exc:
+            failures.append('normal sample identity evidence unavailable: ' + str(exc))
     else:
         expected = prefix.removeprefix('fault-')
         receipt = (record.get('fault_evidence') or {}).get('receipt') or {}
@@ -222,3 +248,23 @@ def validate_incident_export(exported, run_id):
     except (KeyError, TypeError, OSError, ValueError, zipfile.BadZipFile) as exc:
         failures.append('incident export invalid: ' + str(exc))
     return failures
+
+
+def custom_config_body(content):
+    """The exact approved custom sample delta, applied to the actual builtin."""
+    lines, found = [], set()
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(('DumpHTTPWebRoot:', 'DumpHTTPWebRoot =', 'DumpHTTPWebRoot=')):
+            line = 'DumpHTTPWebRoot: '
+            found.add('webroot')
+        if stripped.startswith(('DumpPacketsFilePrefix:', 'DumpPacketsFilePrefix =', 'DumpPacketsFilePrefix=')):
+            line = 'DumpPacketsFilePrefix = release-custom'
+            found.add('prefix')
+        lines.append(line)
+    if found != {'webroot', 'prefix'}:
+        raise ValueError('builtin does not contain the required custom delta fields')
+    body = '\n'.join(lines) + '\n'
+    if body == content.replace('\r\n', '\n'):
+        raise ValueError('custom configuration has no semantic delta')
+    return body

@@ -19,6 +19,11 @@ IN_PROGRESS_SUFFIXES = ('.part', '.partial')
 # A producer declares its finished artifacts here, next to them, with the
 # size and digest they had when it declared them finished.
 PUBLICATION_RECORD = 'published.json'
+# Fixed producers in run_evidence, managed IPC, creation evidence and ETW.
+# Publication is called only after the managed tree and observers ended.
+RUN_EVIDENCE_FILES = ('active-config.ini', 'creation.jsonl', 'ipc-parent.jsonl',
+                      'ipc-child.jsonl', 'stop-thread-stacks.txt',
+                      'fault-child-stacks.txt', 'udp.etl')
 
 
 def is_published(name):
@@ -106,7 +111,7 @@ class ArtifactRegistry:
         run_dir.mkdir(parents=True, exist_ok=True)
         source = Path(package_root)
         copied = []
-        for pattern in ('*.pcap', '*.log', '*report*.html', '*.json'):
+        for pattern in ('*.pcap', '*.log', '*report*.html', '*.json') + RUN_EVIDENCE_FILES:
             for path in sorted(source.glob(pattern)):
                 if path.parent != source or path.name == PUBLICATION_RECORD:
                     continue
@@ -139,7 +144,7 @@ class ArtifactRegistry:
         if not self.root.is_dir():
             return items
         for path in sorted(self.root.rglob('*')):
-            if not path.is_file() or path.is_symlink():
+            if not path.is_file() or path.is_symlink() or path.name == PUBLICATION_RECORD:
                 continue
             suffix = path.suffix.lstrip('.').lower()
             item_type = {'pcap': 'pcap', 'log': 'log', 'html': 'report',

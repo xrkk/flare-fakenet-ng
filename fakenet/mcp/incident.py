@@ -20,6 +20,7 @@ from pathlib import Path
 ITEM_TIMEOUT_SECONDS = 60
 TOTAL_BUDGET_SECONDS = 180
 DISK_QUOTA_BYTES = 512 * 1024 * 1024
+METADATA_RESERVE_BYTES = 64 * 1024
 
 BASIC_ITEMS = (
     ('timeline.json', 'timeline'),
@@ -108,7 +109,7 @@ class IncidentCollector:
         path = self.root / name
         raw_size = len(payload if isinstance(payload, bytes) else str(payload).encode('utf-8', 'replace'))
         used = sum(p.stat().st_size for p in self.root.rglob('*') if p.is_file())
-        if used + raw_size > DISK_QUOTA_BYTES:
+        if used + raw_size > DISK_QUOTA_BYTES - METADATA_RESERVE_BYTES:
             self._record(name, 'failed', failure_reason='disk quota exceeded')
             return None
         try:
@@ -128,7 +129,7 @@ class IncidentCollector:
                        if item.is_file())
         except OSError:
             used = 0
-        return used >= DISK_QUOTA_BYTES
+        return used >= DISK_QUOTA_BYTES - METADATA_RESERVE_BYTES
 
     # ------------------------------------------------------------------
     def collect(self, context):
@@ -295,10 +296,14 @@ class IncidentCollector:
             remaining = min(ITEM_TIMEOUT_SECONDS, self.deadline - time.time())
             used = sum(p.stat().st_size for p in self.root.rglob('*') if p.is_file())
             collect_dump(pid, creation, target, time.monotonic() + max(0, remaining),
-                         quota=max(0, DISK_QUOTA_BYTES - used))
+                         quota=max(0, DISK_QUOTA_BYTES - METADATA_RESERVE_BYTES - used))
             self._record('userdump.dmp', 'ok', dump_path=target)
         except Exception as exc:
             self._record('userdump.dmp', 'failed', failure_reason=repr(exc)[:160])
+        finally:
+            diagnostic = self.root / 'dump-tool.json'
+            if diagnostic.is_file():
+                self._record('dump-tool.json', 'ok', dump_path=diagnostic)
 
     def _copy_exit_dump(self, evidence, target):
         from fakenet.mcp.exit_native import verify_dump
@@ -309,29 +314,34 @@ class IncidentCollector:
         source = Path(evidence['path'])
         verify_dump(source, identity['pid'])
         used = sum(path.stat().st_size for path in self.root.rglob('*') if path.is_file())
-        if used + info['size'] > DISK_QUOTA_BYTES:
+        if used + info['size'] > DISK_QUOTA_BYTES - METADATA_RESERVE_BYTES:
             raise RuntimeError('exit dump exceeds incident quota')
         end = min(self.deadline, time.time() + ITEM_TIMEOUT_SECONDS)
         partial = target.with_suffix('.dmp.partial')
         size, hasher = 0, hashlib.sha256()
-        with source.open('rb') as src, partial.open('xb') as dst:
-            while True:
-                if time.time() >= end:
-                    raise TimeoutError('exit dump assembly deadline exceeded')
-                chunk = src.read(1024 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > info['size'] or used + size > DISK_QUOTA_BYTES:
-                    raise RuntimeError('exit dump changed or exceeded quota')
-                dst.write(chunk)
-                hasher.update(chunk)
-            dst.flush()
-            os.fsync(dst.fileno())
-        if size != info['size'] or hasher.hexdigest() != info['sha256'] or time.time() >= end:
-            raise RuntimeError('exit dump assembly incomplete/changed/late')
-        verify_dump(partial, identity['pid'])
-        os.replace(partial, target)
+        if partial.exists():
+            raise RuntimeError('exit dump staging already exists')
+        try:
+            with source.open('rb') as src, partial.open('xb') as dst:
+                while True:
+                    if time.time() >= end:
+                        raise TimeoutError('exit dump assembly deadline exceeded')
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > info['size'] or used + size > DISK_QUOTA_BYTES - METADATA_RESERVE_BYTES:
+                        raise RuntimeError('exit dump changed or exceeded quota')
+                    dst.write(chunk)
+                    hasher.update(chunk)
+                dst.flush()
+                os.fsync(dst.fileno())
+            if size != info['size'] or hasher.hexdigest() != info['sha256'] or time.time() >= end:
+                raise RuntimeError('exit dump assembly incomplete/changed/late')
+            verify_dump(partial, identity['pid'])
+            os.replace(partial, target)
+        finally:
+            partial.unlink(missing_ok=True)
 
     def _write_manifest(self, started):
         manifest = {
@@ -345,5 +355,7 @@ class IncidentCollector:
         }
         self.root.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(manifest, ensure_ascii=False, indent=2) + '\n'
+        if len(payload.encode('utf-8')) > METADATA_RESERVE_BYTES // 2:
+            raise RuntimeError('incident manifest exceeds metadata reserve')
         (self.root / 'manifest.json').write_text(payload, encoding='utf-8')
         return manifest

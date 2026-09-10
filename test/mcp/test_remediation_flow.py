@@ -101,7 +101,7 @@ def test_dump_timeout_stops_writer_before_removing_staging(monkeypatch, tmp_path
     monkeypatch.setattr(dumpworker.os, 'set_handle_inheritable', lambda *a: None, raising=False)
     monkeypatch.setattr(dumpworker.time, 'monotonic', lambda: clock[0])
     with pytest.raises(TimeoutError):
-        dumpworker.collect_dump(10, '100', target, 101.0, quota=64)
+        dumpworker.collect_dump(10, '100', target, 101.0, quota=4160)
     assert events == [True]
     assert not target.exists() and not staging.exists()
 
@@ -141,7 +141,7 @@ def test_failed_helper_observation_never_closes_unacquired_target(monkeypatch, t
     assert owner.result['retained_target_handle_closed'] is False
 
 
-def test_real_normal_round_produces_identity_used_by_summary(monkeypatch):
+def test_real_normal_round_produces_identity_used_by_summary(monkeypatch, tmp_path):
     import importlib.util
     import sys
     root = Path(__file__).resolve().parent / 'acceptance'
@@ -153,11 +153,16 @@ def test_real_normal_round_produces_identity_used_by_summary(monkeypatch):
     gate.base = 'unused'
     gate.vm_continuity = lambda: {}
     gate.capture_sections = lambda: {}
-    gate.config_lock_probe = lambda i, during_run: ('config_in_use' if during_run else 'released', {})
+    import hashlib
+    config = dict(name='default.ini', builtin=True, content='test', sha256=hashlib.sha256(b'test').hexdigest())
+    identity = {key: config[key] for key in ('name', 'builtin', 'sha256')}
+    gate.config_lock_probe = lambda i, during_run: ('config_in_use' if during_run else 'released',
+        dict(status=dict(run_id='actual-started-run', config_identity=identity),
+             file_probe=dict(before=identity['sha256'], after=identity['sha256'])))
     gate.stop_once = lambda: {'state': 'stopped'}
     gate.audit_diff = lambda before: {}
     monkeypatch.setattr(module, 'call', lambda base, tool, *a, **k:
-                        {'state_version': 2, 'run_id': 'actual-started-run'})
+                        config if tool == 'read_config' else {'state_version': 2, 'run_id': 'actual-started-run', 'config_identity': identity})
     monkeypatch.setattr(module, 'continuous_probe', lambda *a: (True, [True]))
     monkeypatch.setattr(module, 'wait_state', lambda *a, **k: (True, {'state': 'stopped'}))
     record = gate._normal_round(1, module.DEFAULT_INI)
@@ -167,6 +172,36 @@ def test_real_normal_round_produces_identity_used_by_summary(monkeypatch):
     assert module.validate_rounds([
         {'run_id': record['run_id'], 'class': 'normal-builtin'},
         {'run_id': record['run_id'], 'class': 'fault-child_hang'}])
+
+    # Exercise the persisted producer record through the actual summary reader.
+    gate.root, gate.release, gate.cid = tmp_path, tmp_path / 'release', 'candidate'
+    gate.release.mkdir()
+    expected = {field: field for field in module.IDENTITY_FIELDS}
+    gate.args = SimpleNamespace(**expected)
+    monkeypatch.setattr(module, 'REPO_ROOT', tmp_path)
+    record.update(expected, vm_before={'pid': 1}, vm_after={'pid': 1},
+                  probe_window_start=1, probe_window_end=2,
+                  probe_timeline=[dict(t=1, ok=True), dict(t=2, ok=True)])
+    captures = []
+    for name in ('before', 'after'):
+        path = tmp_path / (name + '.json')
+        raw = json.dumps(dict(expected, complete=True, started_at=1, ended_at=2,
+            sections={key:'raw' for key in ('routes', 'dns_servers', 'windivert_processes', 'listen_ports', 'services')})).encode()
+        path.write_bytes(raw)
+        captures.append(dict(path=str(path), size=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
+    record['capture_evidence'] = captures
+    writer = SimpleNamespace(evidence=[], add_evidence=lambda *a: None)
+    path = gate.round_path('normal-builtin', 1)
+    gate.record_round(path, record, writer)
+    gate.mode_summary(writer)
+    failures = json.loads((gate.release / 'release-acc-index.json').read_text())['record_integrity_failures']
+    assert str(path) not in failures
+    assert 'windows-version' in failures
+    record['run_id'] = 'forged-new-run'
+    path.write_text(json.dumps(record))
+    gate.mode_summary(writer)
+    failures = json.loads((gate.release / 'release-acc-index.json').read_text())['record_integrity_failures']
+    assert any('actual run/config identity mismatch' in item for item in failures[str(path)])
 
 
 def test_cleanup_exports_bytes_and_refuses_foreign_baselines(monkeypatch, tmp_path):
@@ -194,3 +229,111 @@ def test_cleanup_exports_bytes_and_refuses_foreign_baselines(monkeypatch, tmp_pa
     exported = json.loads(Path(writer.evidence[0]['path']).read_text())
     assert base64.b64decode(exported[0]['body']) == b'owned bytes'
     assert 'Remove-Item -LiteralPath' in calls[-1]
+
+
+def test_cli_standard_stop_has_its_own_thirty_second_limit(monkeypatch, tmp_path):
+    import sys
+    from fakenet.mcp import service_stop, snapshot
+    clock = [0.0]
+    phase = {'prestop': False, 'stop': False}
+    scm = SimpleNamespace(
+        SC_MANAGER_CONNECT=1, SERVICE_QUERY_STATUS=4, SERVICE_STOP=32,
+        SERVICE_START=16, SERVICE_USER_DEFINED_CONTROL=256, SERVICE_STOPPED=1,
+        SERVICE_RUNNING=4, SERVICE_ACCEPT_STOP=1, SERVICE_CONTROL_STOP=1,
+        OpenSCManager=lambda *a: 1, OpenService=lambda *a: 2,
+        CloseServiceHandle=lambda h: None)
+    scm.QueryServiceStatusEx = lambda h: dict(CurrentState=3 if phase['stop'] else 4,
+                                             ProcessId=42, ControlsAccepted=1)
+    def control(handle, code):
+        phase['prestop' if code == 128 else 'stop'] = True
+    scm.ControlService = control
+    monkeypatch.setitem(sys.modules, 'win32service', scm)
+    monkeypatch.setattr(service_stop, 'time', SimpleNamespace(
+        monotonic=lambda: clock[0], sleep=lambda delay: clock.__setitem__(0, clock[0] + delay)))
+    monkeypatch.setattr(service_stop, 'process_identity', lambda *a: dict(pid=42, creation_time='1'))
+    monkeypatch.setattr(service_stop, 'read_result', lambda p: dict(
+        pid=42, creation_time='1', instance_id='instance',
+        attempt=1 if phase['prestop'] else 0,
+        phase='succeeded' if phase['prestop'] else 'idle', deadline_monotonic=100.0))
+    monkeypatch.setattr(snapshot.StateSnapshot, 'read', lambda s: (None, False))
+    with pytest.raises(TimeoutError, match='STOPPED'):
+        service_stop.stop_installed_service(SimpleNamespace(stop_grace_seconds=60),
+                                             tmp_path / 'stop.json', tmp_path / 'state.json')
+    assert phase['stop'] and 30 <= clock[0] < 31
+
+
+def test_run_end_publishes_fixed_producer_files_in_both_locations(tmp_path):
+    from fakenet.mcp.artifacts import ArtifactRegistry, RUN_EVIDENCE_FILES
+    root = tmp_path / 'artifacts'
+    run = root / 'runs' / 'run'
+    run.mkdir(parents=True)
+    for name in RUN_EVIDENCE_FILES:
+        (run / name).write_bytes(name.encode())
+    (run / 'unowned.bin').write_bytes(b'not a declared producer')
+    supervisor = RealSupervisor.__new__(RealSupervisor)
+    supervisor._artifacts_root, supervisor._run_dir = root, run
+    supervisor._register_run_artifacts('run')
+    metadata = {Path(item['path']): item for item in ArtifactRegistry(root).metadata()}
+    for name in RUN_EVIDENCE_FILES:
+        assert metadata[run / name]['complete']
+        assert metadata[root / 'run' / name]['complete']
+    assert metadata[run / 'unowned.bin']['complete'] is False
+
+
+def test_dump_tool_failure_body_is_bounded_and_preserved(monkeypatch, tmp_path):
+    from fakenet.mcp import dumpworker, exit_native
+    class Target:
+        def __init__(self, pid): raise OSError('native failure ' + 'x' * 10000)
+    monkeypatch.setattr(exit_native, 'TargetHandle', Target)
+    assert dumpworker.dump_main(42, '100', tmp_path / 'userdump.dmp.part') == 1
+    raw = (tmp_path / 'dump-tool.json').read_bytes()
+    result = json.loads(raw)
+    assert len(raw) <= 4096 and 'native failure' in result['error']
+    assert result['complete'] is False and result['exception_type'] == 'OSError'
+
+
+def test_final_incident_metadata_fits_reserved_quota(monkeypatch, tmp_path):
+    from fakenet.mcp import incident
+    monkeypatch.setattr(incident, 'DISK_QUOTA_BYTES', incident.METADATA_RESERVE_BYTES + 64)
+    monkeypatch.setattr(incident, 'BASIC_ITEMS', (('timeline.json', 'timeline'),))
+    collector = incident.IncidentCollector(tmp_path, 'run')
+    collector._collect_item = lambda *a: b'x' * 64
+    collector.collect({})
+    assert (collector.root / 'timeline.json').stat().st_size == 64
+    assert sum(p.stat().st_size for p in collector.root.iterdir()) <= incident.DISK_QUOTA_BYTES
+    assert (collector.root / 'published.json').is_file()
+
+
+def test_cross_round_captures_cannot_be_relabelled(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(Path(__file__).parent / 'acceptance'))
+    from evidence_integrity import validate_rounds
+    capture = dict(path=str(tmp_path / 'same-capture.json'))
+    issues = validate_rounds([dict(run_id='one', **{'class': 'normal'}, capture_evidence=[capture]),
+                              dict(run_id='two', **{'class': 'normal'}, capture_evidence=[capture])])
+    assert any('capture reused across rounds' in item for item in issues)
+
+
+def test_custom_name_conflict_requires_actual_semantic_delta(monkeypatch):
+    import hashlib
+    import importlib.util
+    root = Path(__file__).parent / 'acceptance'
+    monkeypatch.syspath_prepend(str(root))
+    spec = importlib.util.spec_from_file_location('release_custom_test', root / 'run_p05_release.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    gate = module.ReleaseGate.__new__(module.ReleaseGate)
+    gate.base = 'unused'
+    body = 'DumpHTTPWebRoot: webroot\nDumpPacketsFilePrefix = packets\n'
+    actual = [body]
+    def call(base, tool, args=None, **kw):
+        if tool == 'get_status': return {'state_version': 1}
+        if tool == 'create_config': return {'error': {'code': 'name_conflict'}}
+        builtin = args['name'] == 'default.ini'
+        text = body if builtin else actual[0]
+        return dict(name=args['name'], content=text, builtin=builtin,
+                    sha256=hashlib.sha256(text.encode()).hexdigest())
+    monkeypatch.setattr(module, 'call', call)
+    assert gate.ensure_custom_config() is False
+    from evidence_integrity import custom_config_body
+    actual[0] = custom_config_body(body)
+    assert gate.ensure_custom_config() is True

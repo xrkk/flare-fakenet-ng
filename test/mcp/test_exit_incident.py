@@ -36,7 +36,7 @@ def test_modified_completed_dump_cannot_be_reused(assembly):
     with pytest.raises(RuntimeError, match='changed'):
         collector._copy_exit_dump(evidence, target)
     assert not target.exists()
-    assert target.with_suffix('.dmp.partial').exists()
+    assert not target.with_suffix('.dmp.partial').exists()
 
 
 def test_other_run_dump_cannot_satisfy_current_incident(assembly):

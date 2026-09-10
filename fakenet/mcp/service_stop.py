@@ -285,11 +285,12 @@ def stop_installed_service(config, result_path, snapshot_path):
                             if getattr(exc, 'winerror', None) == 1061:
                                 continue
                             raise
+                        stop_deadline = min(deadline, time.monotonic() + 30)
                         break
             time.sleep(0.1)
         else:
             raise TimeoutError('pre-stop did not succeed within total budget')
-        while time.monotonic() < deadline:
+        while time.monotonic() < stop_deadline:
             status = scm.QueryServiceStatusEx(service)
             if status['CurrentState'] == scm.SERVICE_STOPPED:
                 if status['Win32ExitCode'] or status['ServiceSpecificExitCode']:

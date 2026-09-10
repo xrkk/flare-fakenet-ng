@@ -197,25 +197,23 @@ class ReleaseGate:
         return record
 
     def ensure_custom_config(self):
+        from evidence_integrity import custom_config_body
         builtin = call(self.base, 'read_config', {'name': DEFAULT_INI},
                        controller=None)
         content = builtin.get('content') or ''
-        # semantic delta: no webroot dependency + dedicated prefix
-        lines = []
-        for line in content.splitlines():
-            if 'DumpHTTPWebRoot' in line:
-                line = 'DumpHTTPWebRoot: '
-            if 'DumpPacketsFilePrefix' in line:
-                line = CUSTOM_BODY_DELTA
-            lines.append(line)
-        body = '\n'.join(lines) + '\n'
+        body = custom_config_body(content)
         version = call(self.base, 'get_status')['state_version']
         created = call(self.base, 'create_config',
                        {'name': CUSTOM_INI, 'content': body,
                         'command_id': unique_command('rel-cfg'),
                         'expected_state_version': version}, timeout=60)
-        return created.get('error') is None or \
-            (created.get('error') or {}).get('code') == 'name_conflict'
+        if created.get('error') and created['error'].get('code') != 'name_conflict':
+            return False
+        actual = call(self.base, 'read_config', {'name': CUSTOM_INI}, controller=None)
+        return (actual.get('builtin') is False and
+                actual.get('content', '').replace('\r\n', '\n') == body and
+                hashlib.sha256(actual['content'].encode('utf-8')).hexdigest() == actual.get('sha256'))
+
 
     # -- one normal round --------------------------------------------------
 
@@ -254,6 +252,9 @@ class ReleaseGate:
     def _normal_round(self, index, config_name):
         record = {'round': index, 'config': config_name,
                   'started_at': now_iso(), 'vm': self.vm_continuity()}
+        record['config_read'] = call(self.base, 'read_config', {'name': config_name}, controller=None)
+        if config_name == CUSTOM_INI:
+            record['builtin_config_read'] = call(self.base, 'read_config', {'name': DEFAULT_INI}, controller=None)
         before = self.capture_sections()
         version = call(self.base, 'get_status')['state_version']
         loaded = call(self.base, 'load_config',
@@ -271,6 +272,7 @@ class ReleaseGate:
             record['failure'] = 'start: %s' % started['error']
             self.stop_once()
             return record
+        record['load_response'], record['start_response'] = loaded, started
         record['run_id'] = started['run_id']
         record['class'] = 'normal'
         ok, timeline = continuous_probe(self.base, 4)
@@ -425,12 +427,21 @@ class ReleaseGate:
         for exported in record.get('incident_exports', []):
             writer.evidence.append({key: exported[key] for key in ('path', 'size', 'sha256')})
 
+    def saved_sample_issues(self):
+        records = []
+        for path in sorted(self.release.glob('*-*.json')):
+            prefix, _, index = path.stem.rpartition('-')
+            if not index.isdigit() or not prefix.startswith(('normal-', 'fault-')):
+                continue
+            records.append(json.loads(path.read_text(encoding='utf-8')))
+        return validate_rounds(records)
+
     def prior_round(self, path, writer):
         if not path.exists():
             return False
         record = json.loads(path.read_text(encoding='utf-8'))
-        issues = validate_round(record, {field: getattr(self.args, field) for field in IDENTITY_FIELDS})
-        if issues or record['vm_after'] != self.vm_continuity():
+        issues = validate_round(record, {field: getattr(self.args, field) for field in IDENTITY_FIELDS}) + validate_sample_category(record, path.stem.rsplit('-', 1)[0])
+        if issues or self.saved_sample_issues() or record['vm_after'] != self.vm_continuity():
             raise RuntimeError('prior round failed/incomplete or VM drift; preserve it and restart full counting in a new evidence directory')
         raw = path.read_bytes()
         writer.evidence.append({'name': path.stem, 'path': str(path),
@@ -442,12 +453,14 @@ class ReleaseGate:
 
     def done_rounds(self, prefix, total):
         done = []
+        if self.saved_sample_issues():
+            return done
         for index in range(1, total + 1):
             path = self.round_path(prefix, index)
             if path.is_file():
                 try:
                     record = json.loads(path.read_text(encoding='utf-8'))
-                    if not validate_round(record, {field: getattr(self.args, field) for field in IDENTITY_FIELDS}):
+                    if not (validate_round(record, {field: getattr(self.args, field) for field in IDENTITY_FIELDS}) + validate_sample_category(record, prefix)):
                         done.append(index)
                 except ValueError:
                     pass
@@ -466,6 +479,9 @@ class ReleaseGate:
                 if self.prior_round(path, writer):
                     continue
                 record = self.run_normal_round(index, config)
+                category_issues = validate_sample_category(record, prefix)
+                if category_issues:
+                    record['failure'] = '; '.join(category_issues)
                 self.record_round(path, record, writer)
                 if record.get('failure'):
                     failures.append({'group': group, 'round': index,
@@ -493,6 +509,9 @@ class ReleaseGate:
                 if self.prior_round(path, writer):
                     continue
                 record = self.run_fault_round(klass, index)
+                category_issues = validate_sample_category(record, prefix)
+                if category_issues:
+                    record['failure'] = '; '.join(category_issues)
                 self.record_round(path, record, writer)
                 if record.get('failure'):
                     failures.append({'class': klass, 'round': index,
@@ -613,7 +632,7 @@ class ReleaseGate:
                 issues = validate_round(record, identity) + validate_sample_category(record, prefix)
                 if issues:
                     integrity_failures[str(path)] = issues
-                samples.append({'run_id': record.get('run_id'), 'class': prefix})
+                samples.append(dict(record, **{'class': prefix}))
         # Cross-round: unique runs with the required category counts, so a
         # repeated sample or a missing class cannot pass as 100+50.
         cross_round = validate_rounds(samples, required)
@@ -632,6 +651,17 @@ class ReleaseGate:
                         'tested_windows_version')
             except ValueError:
                 os_version = None
+        import re
+        if not isinstance(os_version, str) or not re.fullmatch(r'10\.0\.\d+\.\d+', os_version):
+            integrity_failures['windows-version'] = ['actual Windows 10 version missing or invalid']
+        else:
+            try:
+                final_result = json.loads((self.root / 'ACC-017' / 'result.json').read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                final_result = {}
+            if not any(Path(item.get('path', '')).resolve() == os_probe.resolve()
+                       for item in final_result.get('evidence', [])):
+                integrity_failures['windows-version'] = ['OS probe not bound to final result evidence']
         manifest = {
             'schema': 'fakenet.mcp-release-manifest.v1',
             'candidate_id': self.cid,

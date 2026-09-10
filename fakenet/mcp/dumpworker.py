@@ -2,6 +2,7 @@
 """Diagnostic subprocess with target identity, bounded writes and owned staging."""
 import contextlib
 import os
+import json
 import sys
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ def collect_dump(pid, creation_time, target, deadline, quota=None):
     target = Path(target)
     staging = target.with_name(target.name + '.part')
     limit = min(512 * 1024 * 1024, quota if quota is not None else 512 * 1024 * 1024)
+    limit -= 4096  # bounded structured tool output, including failed calls
     if limit < 32 or time.monotonic() >= deadline:
         raise TimeoutError('dump has no remaining budget')
     # The current incident owns this unique directory; never replace another
@@ -45,7 +47,7 @@ def collect_dump(pid, creation_time, target, deadline, quota=None):
                         raise TimeoutError('dump helper exceeded deadline')
                     time.sleep(min(0.02, max(0, deadline - time.monotonic())))
                 if job.poll() != 0:
-                    raise RuntimeError('dump helper failed')
+                    raise RuntimeError('dump helper failed; see dump-tool.json')
                 verify_dump(staging, pid, limit)
                 if time.monotonic() >= deadline:
                     raise TimeoutError('dump exceeded deadline before publication')
@@ -68,14 +70,26 @@ def collect_dump(pid, creation_time, target, deadline, quota=None):
 
 
 def dump_main(pid, creation_time, target, quota=512 * 1024 * 1024, deadline=None):
-    from fakenet.mcp.exit_native import TargetHandle
-    deadline = deadline if deadline is not None else time.monotonic() + 60
-    if quota < 32 or quota > 512 * 1024 * 1024 or time.monotonic() >= deadline:
-        raise RuntimeError('invalid dump budget')
-    with TargetHandle(pid) as process:
-        if process.identity()['creation_time'] != str(creation_time):
-            raise RuntimeError('dump target identity changed before the handle opened')
-        # Reuse the callback that rejects writes BEFORE exceeding the quota;
-        # a parent-side file-size poll cannot enforce that invariant.
-        process.dump(target, quota=quota, deadline=deadline)
-    return 0
+    diagnostic = Path(target).parent / 'dump-tool.json'
+    result = {'pid': pid, 'creation_time': str(creation_time), 'complete': False}
+    code = 1
+    try:
+        from fakenet.mcp.exit_native import TargetHandle
+        deadline = deadline if deadline is not None else time.monotonic() + 60
+        if quota < 32 or quota > 512 * 1024 * 1024 or time.monotonic() >= deadline:
+            raise RuntimeError('invalid dump budget')
+        with TargetHandle(pid) as process:
+            if process.identity()['creation_time'] != str(creation_time):
+                raise RuntimeError('dump target identity changed before the handle opened')
+            process.dump(target, quota=quota, deadline=deadline)
+        result['complete'], code = True, 0
+    except Exception as exc:
+        result['exception_type'] = type(exc).__name__
+        result['error'] = str(exc)[:400]
+        result['winerror'] = getattr(exc, 'winerror', None)
+    # ASCII escaping has a known maximum size; exception text is capped above.
+    raw = json.dumps(result, ensure_ascii=True).encode('ascii')
+    if len(raw) > 4096:
+        raise RuntimeError('dump diagnostic exceeds reserved quota')
+    diagnostic.write_bytes(raw)
+    return code
