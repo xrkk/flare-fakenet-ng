@@ -136,3 +136,58 @@ def test_short_protocol_watchdog_does_not_consume_collection_reserve(monkeypatch
     finally:
         watchdog.done.set()
         watchdog.thread.join(1)
+
+
+class _FakeJob:
+    def __init__(self, listed, alive=()):
+        self.listed = list(listed)
+        self.alive = set(alive)
+        self.terminations = 0
+
+    def poll(self):
+        return 0
+
+    def members(self):
+        return list(self.listed)
+
+    def member_alive(self, pid):
+        return pid in self.alive
+
+    def terminate(self, deadline):
+        self.terminations += 1
+        self.listed = []
+
+
+def _call_with_job(job):
+    from fakenet.mcp.diagnostic_process import DiagnosticCall
+    call = DiagnosticCall.__new__(DiagnosticCall)
+    call.job = job
+    call.deadline = time.monotonic() + 5
+    call.cancel = threading.Event()
+    call._terminate = lambda deadline=None: job.terminate(deadline)
+    return call
+
+
+def test_listed_dead_member_after_leader_exit_is_not_a_descendant_error():
+    """The kernel can keep a terminated PID in the Job list until its
+    process object is destroyed; that transient listing must not fail a
+    completed diagnostic call."""
+    job = _FakeJob(listed=[4242])  # the leader itself, already exited
+    call = _call_with_job(job)
+    # The list drains on its own shortly after termination.
+    def drain_after_first_look(pid):
+        if job.listed == [4242]:
+            job.listed = []
+        return False
+    job.member_alive = drain_after_first_look
+    call._await_job_end()
+    assert job.terminations == 0
+
+
+def test_live_member_after_leader_exit_fails_after_bounded_terminate():
+    job = _FakeJob(listed=[4242, 999], alive={999})
+    call = _call_with_job(job)
+    with pytest.raises(DiagnosticError, match='remaining descendants'):
+        call._await_job_end()
+    assert job.terminations == 1
+    assert call.cancel.is_set()

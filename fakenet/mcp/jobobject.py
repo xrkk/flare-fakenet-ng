@@ -161,10 +161,27 @@ class ManagedJob:
                 self._error()
         raise RuntimeError('Job process list exceeded bound')
 
+    def member_alive(self, pid):
+        """True only while the PID is a live process, not a terminating
+        entry the kernel still lists inside the Job."""
+        c, w = self.c, self.w
+        open_process = self._bind('OpenProcess', [w.DWORD, w.BOOL, w.DWORD], w.HANDLE)
+        wait_one = self._bind('WaitForSingleObject', [w.HANDLE, w.DWORD], w.DWORD)
+        close = self._bind('CloseHandle', [w.HANDLE], w.BOOL)
+        handle = open_process(0x00100000 | 0x1000, False, pid)
+        if not handle:
+            return False
+        try:
+            state = wait_one(handle, 0)
+        finally:
+            close(handle)
+        # WAIT_TIMEOUT (258) is the only state that still has live code.
+        return state == 258
+
     def terminate(self, deadline):
         if not self.kernel.TerminateJobObject(self.handle, 1):
             self._error()
-        while self.members():
+        while any(self.member_alive(pid) for pid in self.members()):
             if time.monotonic() >= deadline:
                 raise TimeoutError('managed Job did not become empty')
             time.sleep(0.02)

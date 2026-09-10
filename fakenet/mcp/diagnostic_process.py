@@ -122,16 +122,7 @@ class DiagnosticCall:
             writer = threading.Thread(target=exchange, name='diagnostic-pipe', daemon=True)
             writers.append(writer)
             writer.start()
-            while self.job.poll() is None or self.job.members():
-                if self.job.poll() is not None and self.job.members():
-                    self.cancel.set()
-                    self._terminate(min(self.deadline, time.monotonic()+1))
-                    raise DiagnosticError('diagnostic leader exited with remaining descendants')
-                if self.cancel.is_set() or time.monotonic() >= self.deadline:
-                    self.cancel.set()
-                    self._terminate()
-                    break
-                time.sleep(0.01)
+            self._await_job_end()
             if self.cancel.is_set():
                 raise DiagnosticError('diagnostic expired; result rejected')
             writer.join(max(0, self.deadline - time.monotonic()))
@@ -172,6 +163,24 @@ class DiagnosticCall:
                     self._release_if_ended()
                 except BaseException:
                     pass
+
+    def _await_job_end(self):
+        while self.job.poll() is None or self.job.members():
+            if self.job.poll() is not None:
+                # A terminated PID can stay listed until its process object
+                # is destroyed; a listed-but-dead member is not an unowned
+                # descendant. Only a genuinely live member after the leader
+                # exited fails the call.
+                if any(self.job.member_alive(pid) for pid in self.job.members()):
+                    self.cancel.set()
+                    self._terminate(min(self.deadline, time.monotonic()+1))
+                    raise DiagnosticError(
+                        'diagnostic leader exited with remaining descendants')
+            if self.cancel.is_set() or time.monotonic() >= self.deadline:
+                self.cancel.set()
+                self._terminate()
+                break
+            time.sleep(0.01)
 
     def _release_if_ended(self):
         if self.job and self.job.process and (self.job.poll() is None or self.job.members()):
