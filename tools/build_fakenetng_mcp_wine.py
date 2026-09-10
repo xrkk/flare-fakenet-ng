@@ -529,10 +529,27 @@ def build(repo, source_commit, output_root, output_directory=None):
         if not onedir.is_dir():
             raise RuntimeError('PyInstaller onedir output missing')
         smoke = smoke_frozen_exe(onedir, build_root)
+        role_smoke = []
+        for executable, arguments, expected in (
+                (onedir / 'fakenetng-mcp-managed.exe', ['install'], 2),
+                (stage / 'fakenetng-mcp-exit-monitor-dist' / 'fakenetng-mcp-exit-monitor.exe', [], 3)):
+            result = subprocess.run(['xvfb-run', '-a', 'wine', wine_path(executable)] + arguments,
+                                    capture_output=True, text=True, timeout=30)
+            role_smoke.append(dict(image=executable.name, arguments=arguments,
+                                   exit_code=result.returncode, expected=expected,
+                                   stdout=result.stdout, stderr=result.stderr))
+            if result.returncode != expected:
+                raise RuntimeError('frozen exit role boundary failed: %r' % role_smoke[-1])
+        (build_root / 'exit-role-smoke.json').write_text(json.dumps(role_smoke, indent=2), encoding='utf-8')
+        smoke['exit_role_boundaries'] = role_smoke
 
         package = stage / 'candidate-package'
         package.mkdir()
         shutil.copytree(onedir, package, dirs_exist_ok=True)
+        helper = stage / 'fakenetng-mcp-exit-monitor-dist'
+        if not (helper / 'fakenetng-mcp-exit-monitor.exe').is_file():
+            raise RuntimeError('frozen exit monitor output missing')
+        shutil.copytree(helper, package / 'exit-helper')
         shutil.copytree(stage / 'fakenet' / 'configs', package / 'configs')
         shutil.copytree(stage / 'fakenet' / 'defaultFiles',
                         package / 'defaultFiles')

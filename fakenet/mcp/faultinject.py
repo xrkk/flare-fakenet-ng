@@ -212,7 +212,8 @@ class FaultInjector:
         import subprocess
         import sys
 
-        prefix = ([sys.executable] if getattr(sys, 'frozen', False) else
+        from pathlib import Path
+        prefix = ([str(Path(sys.executable).parent / 'fakenetng-mcp.exe')] if getattr(sys, 'frozen', False) else
                   [sys.executable, '-m', 'fakenet.mcp'])
         self._child = subprocess.Popen(
             prefix + ['managed-fault-hang'],

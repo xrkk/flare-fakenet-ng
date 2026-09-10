@@ -81,8 +81,31 @@ exe = EXE(pyz,
           upx=False,
           console=True)
 
-coll = COLLECT(exe,
+managed = EXE(pyz,
+              a.scripts,
+              [],
+              exclude_binaries=True,
+              icon=None,
+              name='fakenetng-mcp-managed',
+              debug=False,
+              strip=False,
+              upx=False,
+              console=True)
+
+coll = COLLECT(exe, managed,
                a.binaries + driver_files + a.datas,
                strip=False,
                upx=False,
                name='fakenetng-mcp-dist')
+
+# The registered notification helper is a separate, unregistered image with
+# a small entry graph. It must never dispatch service/managed CLI commands.
+monitor_analysis = Analysis(['fakenet/mcp/exit_monitor.py'], pathex=['.'],
+                            hiddenimports=['win32timezone'], datas=None,
+                            hookspath=[], runtime_hooks=[], excludes=[])
+monitor_pyz = PYZ(monitor_analysis.pure)
+monitor = EXE(monitor_pyz, monitor_analysis.scripts, [], exclude_binaries=True,
+              name='fakenetng-mcp-exit-monitor', debug=False, strip=False,
+              upx=False, console=True)
+monitor_coll = COLLECT(monitor, monitor_analysis.binaries, monitor_analysis.datas,
+                       strip=False, upx=False, name='fakenetng-mcp-exit-monitor-dist')

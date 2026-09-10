@@ -521,17 +521,17 @@ def terminate_current_managed_child(channel, snapshot):
         "$c=Get-CimInstance Win32_Process -Filter 'ProcessId=CHILD_PID'; "
         "if($service.State -ne 'Running' -or $service.ProcessId -eq CHILD_PID -or "
         "$c.ParentProcessId -ne $service.ProcessId -or "
-        "$c.ExecutablePath -ne 'C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe' -or "
+        "$c.ExecutablePath -ne 'C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp-managed.exe' -or "
         "$c.CommandLine -notmatch 'managed-child[ ]+RUN_ID(?:[ ]|$)'){throw 'child scope mismatch'}; "
         "$before=@{pid=$p.Id;creation_time=$p.StartTime.ToFileTimeUtc().ToString(); "
         "parent_pid=$c.ParentProcessId;command_line=$c.CommandLine;image=$c.ExecutablePath;run_id='RUN_ID'}; "
-        "$p.Kill(); if(-not $p.WaitForExit(10000)){throw 'child did not exit'}; "
+        "$p.Kill(); if(-not $p.WaitForExit(65000)){throw 'child did not exit'}; "
         "$after=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\"; "
         "@{child=$before;exit_code=$p.ExitCode;service_pid_before=$service.ProcessId; "
         "service_pid_after=$after.ProcessId;service_state_after=$after.State} | ConvertTo-Json -Depth 5 -Compress "
         "} finally {$p.Dispose()}"
     ).replace('CHILD_PID', str(child_pid)).replace('CREATED', created).replace('RUN_ID', run_id)
-    return channel.powershell(command, timeout=30)
+    return channel.powershell(command, timeout=80)
 
 
 def acc004_s6_uncontrolled_exit(base, channel, writer):

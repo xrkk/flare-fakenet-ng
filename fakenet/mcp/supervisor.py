@@ -47,6 +47,12 @@ class RealSupervisor:
         self._fakenet = None
         self._activity_lock = None
         self._lock = threading.RLock()
+        self._exit_condition = threading.Condition(self._lock)
+        import uuid
+        self._exit_instance = str(uuid.uuid4())
+        self._exit_capability = None
+        self._exit_retention = None
+        self._last_exit_evidence = None
         self._health_stop = threading.Event()
         self._health_publication_lock = threading.Lock()
         self._health_thread = None
@@ -87,6 +93,10 @@ class RealSupervisor:
         return result
 
     def start(self, coordinator, controller, config_identity):
+        if os.name == 'nt' and self._fakenet is None:
+            marker, corrupt = self._snapshot.read()
+            if not corrupt and not (marker and marker['needs_recovery']):
+                self._ensure_exit_capability()
         with self._lock:
             if self._start_guard:
                 self._start_guard()
@@ -118,6 +128,8 @@ class RealSupervisor:
                 self._last_run_outcome = None
                 self._last_managed_stacks = None
                 self._last_managed_process = None
+                self._last_exit_evidence = None
+                self._exit_retention = None
                 self._last_final_filter = None
                 self._run_dir = Path(self._artifacts_root) / 'runs' / run_id
                 self._run_dir.mkdir(parents=True, exist_ok=False)
@@ -141,6 +153,10 @@ class RealSupervisor:
                 root = (Path(sys.executable).parent if getattr(sys, 'frozen', False)
                         else Path(__file__).resolve().parents[2])
                 self._fakenet = ManagedProcess(run_id, self._run_dir, root)
+                from fakenet.mcp.exit_retention import ExitRetention
+                from fakenet.mcp.service_stop import process_identity
+                self._exit_retention = ExitRetention(run_id, self._fakenet.identity,
+                    process_identity(), self._exit_instance, root)
                 self._fakenet.observe_creation('before_start')
                 detail = self._fakenet.request('start', {
                     'config_path': str(config_path),
@@ -173,6 +189,29 @@ class RealSupervisor:
                     self._activity_lock = None
                 self._finish_endpoint_observation()
                 raise
+
+    def _ensure_exit_capability(self):
+        from fakenet.mcp.exit_installation import verify
+        from fakenet.mcp.exit_capability import verify_native
+        from fakenet.mcp.service_stop import process_identity
+        if self._exit_retention is not None:
+            previous = self._exit_retention.result or {}
+            if (not self._exit_retention.done.is_set() or not previous.get('helper_ended')
+                    or not previous.get('retained_target_handle_closed')):
+                raise SupervisorStartError('previous exit evidence cleanup unverified')
+        package = Path(sys.executable).parent
+        verify(package)
+        if self._exit_capability is None:
+            self._exit_capability = verify_native(package, process_identity(), self._exit_instance)
+
+    def _await_exit_evidence(self, deadline):
+        retained = self._exit_retention
+        if retained is None:
+            return None
+        with self._exit_condition:
+            report = retained.wait(self._exit_condition, deadline)
+        self._last_exit_evidence = report
+        return report
 
     def _finish_endpoint_observation(self, deadline=None):
         observation = getattr(self, '_endpoint_observation', None)
@@ -301,12 +340,16 @@ class RealSupervisor:
                 try:
                     self._last_managed_stacks = self._fakenet.request('stacks', timeout=min(
                         1, max(0, grace_deadline - time.monotonic())))['stacks']
+                    if self._exit_retention is not None:
+                        self._exit_retention.intent.publish(grace_deadline)
                     self._fakenet.request('stop', timeout=max(0, grace_deadline - time.monotonic()))
                     while self._fakenet.job.members() and time.monotonic() < grace_deadline:
                         time.sleep(0.05)
                     if self._fakenet.job.members():
                         raise TimeoutError('managed descendants did not exit within stop grace')
                 except BaseException as exc:
+                    if self._exit_retention is not None:
+                        self._exit_retention.intent.invalidate()
                     reason = str(exc)
                     coordinator.update_health_state('failed', reason)
                     # A lost stop reply can outlive the entire managed tree.
@@ -335,6 +378,10 @@ class RealSupervisor:
                     self._fakenet = None
                 except BaseException as exc:
                     return self._result('failed', 'Job termination failed: ' + repr(exc))
+            exit_report = self._await_exit_evidence(min(deadline, time.monotonic() + 60))
+            if exit_report is not None and not exit_report.get('complete'):
+                reason = reason or 'managed exit evidence incomplete'
+                self._last_run_outcome = 'failed'
             if self._health_cache.get('final_filter'):
                 self._last_final_filter = self._health_cache['final_filter']
             self._health_cache = {'process_alive': False, 'init_evidence': False, 'probe': False}
@@ -348,6 +395,8 @@ class RealSupervisor:
                 logger.error('full restoration audit failed: %r', differences)
                 self._collect_incident('environment restoration audit failed', deadline=deadline)
                 return self._result('failed', 'environment restoration audit failed')
+            if exit_report is not None and not exit_report.get('helper_ended'):
+                return self._result('failed', 'exit helper cleanup unverified')
             if coordinator.operation_fenced:
                 return self._result('failed', 'late operation cannot clear recovery responsibility')
             self._register_run_artifacts(marker['run_id'])
@@ -432,6 +481,10 @@ class RealSupervisor:
         from fakenet.mcp.incident import IncidentCollector
         deadline = min(deadline or float('inf'), time.monotonic() + 180)
         child = self._fakenet
+        retained = self._exit_retention
+        exit_report = None
+        if retained is not None and (child is None or not child.alive() or retained.deadline is not None):
+            exit_report = self._await_exit_evidence(min(deadline, time.monotonic() + 60))
         stacks = None
         snapshot_stacks = False
         if child:
@@ -527,6 +580,14 @@ class RealSupervisor:
                                    'did not exit' in reason.lower() else
                                    'live managed IPC stacks unavailable' if snapshot_stacks else
                                    None if stacks else 'managed stacks unavailable')}
+        if exit_report is not None:
+            context['exit_evidence'] = exit_report
+            if not post_job_audit and exit_report.get('complete') and exit_report.get('dump'):
+                context['precollected_exit_dump'] = {
+                    'path': retained.directory / 'target.dmp',
+                    'identity': retained.record,
+                    'dump': exit_report['dump'], 'deadline': retained.deadline}
+                context['dump_reason'] = 'managed exit requires root-cause evidence'
         # The tree may exit while the bounded stack/baseline observations
         # above are running. Recheck at the actual collection boundary, not
         # just when stop first observes its missing response.

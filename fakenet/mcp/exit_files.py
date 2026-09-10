@@ -4,6 +4,7 @@ import hashlib
 import json
 import ntpath
 import os
+import time
 from pathlib import Path
 import uuid
 
@@ -91,11 +92,13 @@ def validate_target(record, observed_pid):
     return record
 
 
-def digest(path, limit=QUOTA):
+def digest(path, limit=QUOTA, deadline=None):
     total = 0
     hasher = hashlib.sha256()
     with Path(path).open('rb') as stream:
         while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError('exit evidence hash deadline exceeded')
             data = stream.read(1024 * 1024)
             if not data:
                 break

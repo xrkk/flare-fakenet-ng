@@ -48,6 +48,12 @@ def monitor_scene(tmp_path, monkeypatch):
     monkeypatch.setattr(exit_files, 'root', lambda: tmp_path)
     monkeypatch.setattr(service_stop, 'process_identity', lambda: dict(pid=44,
         creation_time=str(int((time.time() + 11644473600) * 10000000))))
+    publish = exit_files.publish
+    def owner_ack(path, value):
+        publish(path, value)
+        if path.name == 'entry.json':
+            publish(directory / 'owner-acquired.json', dict(target=record, helper=value['helper']))
+    monkeypatch.setattr(exit_files, 'publish', owner_ack)
     return tmp_path, directory, record, events, Gate, Target
 
 

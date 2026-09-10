@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "aa4b0ea41c24b553d142727d594d3e9a7badb694",
+  "current_head": "c3f06521f6ebc8c9b857e7361dbafdca3c7b49a8",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -382,11 +382,11 @@
       "accepted_at": "2026-09-10T05:55:11.936410+00:00"
     }
   ],
-  "checkpoint": "INTENT-144基础组件实际Linux42/1跳过、Windows43通过，原型11-13已导出逐SHA并核对13原型无残留；尚未接线/构建正式候选。",
+  "checkpoint": "INTENT-146接线已完成待实机验证：Linux354/4跳过，Condition锁释放和incident复用反例通过；VM仍旧9d17d1c stopped，未部署新包。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-145",
-    "action": "仅提交已验证退出证据基础模块、测试和作者检查点，然后继续已授权生命周期/打包接线；不关闭CHK",
+    "id": "INTENT-147",
+    "action": "提交退出取证接线中间源码，执行同源完整Windows构建与三EXE入口冒烟，再做获批Win10部署和原生门禁；失败按既有契约归因整改",
     "status": "EXECUTING"
   },
   "events": [

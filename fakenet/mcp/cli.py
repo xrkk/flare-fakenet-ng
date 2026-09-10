@@ -80,6 +80,12 @@ def cmd_install(args):
         allowed_host_ips=args.allowed_host,
         extra_control_ports=getattr(args, 'extra_exclude_port', []) or [],
         source='install-cli')
+    try:
+        from fakenet.mcp.exit_installation import verify_assets
+        verify_assets(Path(_exe_path()).parent)
+    except Exception as exc:
+        print('exit evidence package preflight failed: %s' % exc, file=sys.stderr)
+        return 1
     paths.ensure_data_directories()
     bin_path = '"%s" run' % _exe_path()
     try:
@@ -119,6 +125,12 @@ def cmd_install(args):
     except RuntimeError as exc:
         print('firewall rule failed: %s' % exc, file=sys.stderr)
         return 1
+    try:
+        from fakenet.mcp.exit_installation import install
+        install(Path(_exe_path()).parent)
+    except Exception as exc:
+        print('exit evidence registration failed: %s' % exc, file=sys.stderr)
+        return 1
     print('installed: %s (listen %s:%d, allowed %s)' % (
         SERVICE_NAME, cfg.listen_ip, cfg.listen_port,
         ','.join(cfg.allowed_host_ips)))
@@ -130,6 +142,12 @@ def cmd_uninstall(args):
         print('uninstall requires Windows (sc.exe)', file=sys.stderr)
         return 2
     if cmd_stop(None):
+        return 1
+    try:
+        from fakenet.mcp.exit_installation import restore
+        restore(Path(_exe_path()).parent)
+    except Exception as exc:
+        print('exit evidence cleanup failed: %s' % exc, file=sys.stderr)
         return 1
     deleted = _sc('delete', SERVICE_NAME)
     try:
@@ -360,6 +378,15 @@ def build_parser():
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    dedicated = (getattr(sys, 'frozen', False)
+                 and Path(sys.executable).name.lower() == 'fakenetng-mcp-managed.exe')
+    if dedicated and (not argv or argv[0] not in ('managed-child', 'exit-capability')):
+        return 2
+    if argv and argv[0] == 'exit-capability':
+        if not dedicated or len(argv) != 2:
+            return 2
+        from fakenet.mcp.exit_capability import child_main
+        return child_main(argv[1])
     if argv == ['managed-fault-hang']:
         from fakenet.mcp.faultinject import enabled
         if not enabled():

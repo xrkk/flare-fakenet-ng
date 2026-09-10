@@ -9,7 +9,7 @@ import time
 
 
 class TargetHandle:
-    def __init__(self, pid):
+    def __init__(self, pid, allow_terminate=False):
         if type(pid) is not int or pid <= 0 or pid == os.getpid():
             raise ValueError('invalid managed target PID')
         self.pid = pid
@@ -23,7 +23,9 @@ class TargetHandle:
         k.QueryFullProcessImageNameW.restype = w.BOOL
         k.ReadProcessMemory.argtypes = [w.HANDLE, w.LPCVOID, w.LPVOID, c.c_size_t, c.POINTER(c.c_size_t)]
         k.ReadProcessMemory.restype = w.BOOL
-        self.handle = k.OpenProcess(0x400 | 0x10 | 0x40, False, pid)
+        self.handle = k.OpenProcess(0x100000 | 0x400 | 0x10 | 0x40 |
+                                   (1 if allow_terminate else 0), False, pid)
+        self.allow_terminate = allow_terminate
         if not self.handle:
             raise c.WinError(c.get_last_error())
 
@@ -48,6 +50,22 @@ class TargetHandle:
         if got.value != size:
             raise RuntimeError('partial target process-parameter read')
         return buf.raw
+
+    def exited(self):
+        self.kernel.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
+        self.kernel.WaitForSingleObject.restype = w.DWORD
+        result = self.kernel.WaitForSingleObject(self.handle, 0)
+        if result == 0xffffffff:
+            raise c.WinError(c.get_last_error())
+        return result == 0
+
+    def terminate_helper(self):
+        if not self.allow_terminate:
+            raise RuntimeError('target handle cannot terminate processes; use its Job')
+        self.kernel.TerminateProcess.argtypes = [w.HANDLE, w.UINT]
+        self.kernel.TerminateProcess.restype = w.BOOL
+        if not self.exited() and not self.kernel.TerminateProcess(self.handle, 124):
+            raise c.WinError(c.get_last_error())
 
     def command_line(self):
         # Current release is Win64 only. These are the documented winternl

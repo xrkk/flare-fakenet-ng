@@ -66,6 +66,19 @@ def main(arguments):
                       else 'external_termination')
         publish(directory / 'entry.json', dict(target=record, helper=helper,
                 acquired=True, deadline_monotonic=deadline[0]))
+        # Give the supervisor a chance to pin this helper before a fast dump
+        # completes. Its independent handle then proves actual termination.
+        while time.monotonic() < deadline[0]:
+            try:
+                owner = read(directory / 'owner-acquired.json')
+            except FileNotFoundError:
+                time.sleep(0.02)
+                continue
+            if owner != dict(target=record, helper=helper):
+                raise RuntimeError('owner acquisition acknowledgment mismatch')
+            break
+        else:
+            raise TimeoutError('owner did not pin helper before deadline')
         candidate = claim(directory, record, observed)
         if candidate is not None:
             report['stop_intent_claim'] = candidate
@@ -87,7 +100,7 @@ def main(arguments):
             partial = directory / 'target.dmp.partial'
             report['dump_io'] = target.dump(partial, quota=remaining, deadline=deadline[0])
             size = verify_dump(partial, record['pid'], remaining)
-            sha, observed_size = digest(partial, remaining)
+            sha, observed_size = digest(partial, remaining, deadline[0])
             if size != observed_size or time.monotonic() >= deadline[0]:
                 raise RuntimeError('dump changed or completed after deadline')
             final = directory / 'target.dmp'

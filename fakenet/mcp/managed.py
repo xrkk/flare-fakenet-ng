@@ -94,7 +94,7 @@ class ManagedProcess:
         error_log = self.stderr.open('ab', buffering=0)
         handles = [msvcrt.get_osfhandle(child_in), msvcrt.get_osfhandle(child_out),
                    msvcrt.get_osfhandle(error_log.fileno())]
-        command = ([sys.executable] if getattr(sys, 'frozen', False) else
+        command = ([str(Path(package_root) / 'fakenetng-mcp-managed.exe')] if getattr(sys, 'frozen', False) else
                    [sys.executable, '-m', 'fakenet.mcp'])
         command += ['managed-child', run_id, str(self.run_dir)]
         try:

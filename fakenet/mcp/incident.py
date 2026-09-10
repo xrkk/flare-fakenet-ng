@@ -158,6 +158,13 @@ class IncidentCollector:
             self._record(name, 'ok', dump_path=path)
 
         self._conditional_dump(context)
+        if context.get('exit_evidence') is not None:
+            evidence = context['exit_evidence']
+            path = self._write_item('managed-exit.json', json.dumps(evidence, indent=2))
+            if path:
+                self._record('managed-exit.json', 'ok' if evidence.get('complete') else 'failed',
+                             dump_path=path,
+                             failure_reason=None if evidence.get('complete') else 'exit evidence incomplete')
         self._write_manifest(started)
 
     # ------------------------------------------------------------------
@@ -261,6 +268,10 @@ class IncidentCollector:
         self.root.mkdir(parents=True, exist_ok=True)
         target = self.root / 'userdump.dmp'
         try:
+            if context.get('precollected_exit_dump'):
+                self._copy_exit_dump(context['precollected_exit_dump'], target)
+                self._record('userdump.dmp', 'ok', dump_path=target)
+                return
             from fakenet.mcp.dumpworker import collect_dump
             pid = context.get('dump_target_pid')
             creation = context.get('dump_target_creation')
@@ -271,6 +282,39 @@ class IncidentCollector:
             self._record('userdump.dmp', 'ok', dump_path=target)
         except Exception as exc:
             self._record('userdump.dmp', 'failed', failure_reason=repr(exc)[:160])
+
+    def _copy_exit_dump(self, evidence, target):
+        from fakenet.mcp.exit_native import verify_dump
+        import hashlib
+        identity, info = evidence['identity'], evidence['dump']
+        if identity['run_id'] != self.run_id:
+            raise RuntimeError('exit dump belongs to another run')
+        source = Path(evidence['path'])
+        verify_dump(source, identity['pid'])
+        used = sum(path.stat().st_size for path in self.root.rglob('*') if path.is_file())
+        if used + info['size'] > DISK_QUOTA_BYTES:
+            raise RuntimeError('exit dump exceeds incident quota')
+        end = min(self.deadline, time.time() + ITEM_TIMEOUT_SECONDS)
+        partial = target.with_suffix('.dmp.partial')
+        size, hasher = 0, hashlib.sha256()
+        with source.open('rb') as src, partial.open('xb') as dst:
+            while True:
+                if time.time() >= end:
+                    raise TimeoutError('exit dump assembly deadline exceeded')
+                chunk = src.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > info['size'] or used + size > DISK_QUOTA_BYTES:
+                    raise RuntimeError('exit dump changed or exceeded quota')
+                dst.write(chunk)
+                hasher.update(chunk)
+            dst.flush()
+            os.fsync(dst.fileno())
+        if size != info['size'] or hasher.hexdigest() != info['sha256'] or time.time() >= end:
+            raise RuntimeError('exit dump assembly incomplete/changed/late')
+        verify_dump(partial, identity['pid'])
+        os.replace(partial, target)
 
     def _write_manifest(self, started):
         manifest = {
