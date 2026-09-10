@@ -958,11 +958,16 @@ class Diverter(DiverterBase, WinUtilMixin):
         both filter construction paths (base assignment and the
         egress-control rebuild) are covered; exclusion params present but
         unverifiable => fail closed."""
+        control_ip = self._dict.get('controllinkexcludeip')
+        control_port = self._dict.get('controllinkexcludeport')
+        if control_ip is None and control_port is None:
+            # No MCP control link is configured, so this is an independent
+            # GUI/CLI run: the module's exclusion policy, including the
+            # DEC-008 loopback exemption, must not change its filter.
+            return
         try:
             self.filter = apply_control_link_exclusion(
-                self.filter,
-                self._dict.get('controllinkexcludeip'),
-                self._dict.get('controllinkexcludeport'))
+                self.filter, control_ip, control_port)
             # DEC-008: loopback never leaves the machine; diverting it
             # hijacks local IPC to fake services. Applied after the
             # control-link fold (which recognizes the base shapes) and

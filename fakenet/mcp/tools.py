@@ -11,6 +11,7 @@ import os
 
 from fakenet.mcp import MCP_PACKAGE_NAME, MCP_PACKAGE_VERSION
 from fakenet.mcp import errors
+from fakenet.mcp.artifacts import is_published
 from fakenet.mcp.configstore import ConfigStore
 from fakenet.mcp.coordination import Coordinator
 from fakenet.mcp.testdouble import LifecycleDouble
@@ -206,13 +207,14 @@ def register_tools(server, ctx):
                 stat_result = path.stat()
                 import hashlib
 
+                published = is_published(path.name)
                 items.append({
                     'path': str(path),
                     'type': path.suffix.lstrip('.') or 'file',
                     'size': stat_result.st_size,
-                    'complete': not path.name.endswith('.part'),
-                    'sha256': hashlib.sha256(
-                        path.read_bytes()).hexdigest(),
+                    'complete': published,
+                    'sha256': (hashlib.sha256(path.read_bytes()).hexdigest()
+                               if published else None),
                 })
         return {'artifacts': items, 'error': None}
 

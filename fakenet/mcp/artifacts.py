@@ -10,6 +10,16 @@ import hashlib
 from pathlib import Path
 
 
+# Producers stage under these suffixes and publish with an atomic replace;
+# anything still carrying one is not a finished artifact.
+IN_PROGRESS_SUFFIXES = ('.part', '.partial')
+
+
+def is_published(name):
+    """True only for names this product publishes atomically."""
+    return not str(name).lower().endswith(IN_PROGRESS_SUFFIXES)
+
+
 class ArtifactRegistry:
 
     def __init__(self, artifacts_root):
@@ -56,11 +66,15 @@ class ArtifactRegistry:
             item_type = {'pcap': 'pcap', 'log': 'log', 'html': 'report',
                          'dmp': 'userdump', 'ini': 'config'}.get(
                              suffix, suffix or 'file')
+            published = is_published(path.name)
             items.append({
                 'path': str(path),
                 'type': item_type,
                 'size': path.stat().st_size,
-                'complete': not path.name.endswith('.part'),
-                'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                'complete': published,
+                # An unpublished name still being written has no final
+                # content, so it must not advertise a final digest.
+                'sha256': (hashlib.sha256(path.read_bytes()).hexdigest()
+                           if published else None),
             })
         return items

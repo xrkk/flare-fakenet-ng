@@ -44,15 +44,22 @@ class ServiceConfig:
         self.log_level = str(log_level or 'INFO').upper()
         if extra_control_ports is None:
             extra_control_ports = []
-        if isinstance(extra_control_ports, (int, str)):
+        if isinstance(extra_control_ports, bool):
+            raise ConfigError('extra control ports must be integers in 1..65535')
+        if isinstance(extra_control_ports, int):
             extra_control_ports = [extra_control_ports]
+        if not isinstance(extra_control_ports, (list, tuple)):
+            raise ConfigError('extra control ports must be a list of integers')
         clean_ports = []
         for item in extra_control_ports:
-            port = int(item)
-            if not (1 <= port <= 65535):
+            # Rejecting illegal types keeps the protection parameter an input
+            # contract: a coercion would silently invent a bound port.
+            if isinstance(item, bool) or not isinstance(item, int):
+                raise ConfigError('extra control ports must be integers in 1..65535')
+            if not (1 <= item <= 65535):
                 raise ConfigError('extra control ports must be in 1..65535')
-            if port != int(listen_port) and port not in clean_ports:
-                clean_ports.append(port)
+            if item != int(listen_port) and item not in clean_ports:
+                clean_ports.append(item)
         self.extra_control_ports = clean_ports
         grace = int(stop_grace_seconds if stop_grace_seconds is not None
                     else 60)

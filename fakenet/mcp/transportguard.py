@@ -36,6 +36,7 @@ import uuid
 
 from fakenet.mcp import CONTROLLER_HEADER, MCP_PROTOCOL_VERSION
 
+JSONRPC_INVALID_REQUEST = -32600
 JSONRPC_HEADER_MISMATCH = -32020
 JSONRPC_UNSUPPORTED_VERSION = -32022  # spec-allocated error code
 SUPPORTED_VERSIONS = [MCP_PROTOCOL_VERSION]
@@ -110,7 +111,8 @@ class TransportGuardMiddleware:
             request_id = message.get('id') if isinstance(message, dict) else None
             if not isinstance(params, dict) or not isinstance(request_method, str):
                 await self._jsonrpc(send, 400, _error_body(
-                    request_id, -32600, 'Invalid JSON-RPC request'))
+                    request_id, JSONRPC_INVALID_REQUEST,
+                'Invalid JSON-RPC request'))
                 return
             initial = request_method == 'initialize'
             requested = params.get('protocolVersion') if initial else version_header
@@ -160,6 +162,18 @@ class TransportGuardMiddleware:
 
         request_method = message['method']
         request_id = message.get('id')
+
+        # The request object shape is validated before any field of it is
+        # read, in every protocol mode, so a malformed request is rejected
+        # structurally instead of escaping the domain error boundary.
+        params = message.get('params')
+        if params is not None and not isinstance(params, dict):
+            await self._jsonrpc(send, 400, _error_body(
+                request_id, JSONRPC_INVALID_REQUEST,
+                'Invalid JSON-RPC request: params must be an object',
+                {'params_type': type(params).__name__}))
+            self._log('rejected: params is not an object')
+            return
 
         if request_method in _LEGACY_METHODS:
             await self._jsonrpc(send, 400, _error_body(

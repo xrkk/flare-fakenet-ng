@@ -9,6 +9,7 @@ Logs/fakenetng-mcp/main-review-26debdd/.
 
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -140,3 +141,145 @@ def test_every_run_end_releases_the_config_lock(store):
                                  'running')
     coord.restore_responsibility(None, 'stopped')
     assert store.active_name is None
+
+
+# -- CHK-064 / CHK-070 ------------------------------------------------
+
+def test_illegal_extra_control_port_types_are_rejected():
+    """CHK-064: protected ports keep an input contract."""
+    from fakenet.mcp.config import ConfigError
+    for bad in ([True], [29094.9], {'29094': 'not a list'}, ['29094'], [None],
+                '29094'):
+        with pytest.raises(ConfigError):
+            ServiceConfig('192.168.204.149', 28788, ['192.168.204.1'],
+                          extra_control_ports=bad)
+    config = ServiceConfig('192.168.204.149', 28788, ['192.168.204.1'],
+                           extra_control_ports=[28787, 28790])
+    assert config.extra_control_ports == [28787, 28790]
+
+
+def test_unpublished_artifacts_are_not_reported_as_complete(tmp_path):
+    """CHK-070: completion is the producer's publish fact, not a suffix guess."""
+    from fakenet.mcp.artifacts import ArtifactRegistry
+    root = tmp_path / 'artifacts'
+    root.mkdir()
+    (root / 'target.dmp.partial').write_bytes(b'partial')
+    (root / 'udp.etl.part').write_bytes(b'partial')
+    (root / 'userdump.dmp').write_bytes(b'MZfinal')
+    items = {item['path'].rsplit('/', 1)[-1]: item
+             for item in ArtifactRegistry(root).metadata()}
+    assert items['target.dmp.partial']['complete'] is False
+    assert items['target.dmp.partial']['sha256'] is None
+    assert items['udp.etl.part']['complete'] is False
+    assert items['userdump.dmp']['complete'] is True
+    assert items['userdump.dmp']['sha256'] is not None
+
+
+def test_list_artifacts_uses_the_same_completion_rule(tmp_path):
+    """CHK-070: the tool surface agrees with the registry."""
+    root = tmp_path / 'artifacts'
+    root.mkdir()
+    (root / 'target.dmp.partial').write_bytes(b'partial')
+    (root / 'run.log').write_bytes(b'final')
+    coord = Coordinator(LifecycleDouble())
+    tools = surface(coord, artifacts=root)
+    items = {item['path'].rsplit('/', 1)[-1]: item
+             for item in tools['list_artifacts']()['artifacts']}
+    assert items['target.dmp.partial']['complete'] is False
+    assert items['target.dmp.partial']['sha256'] is None
+    assert items['run.log']['complete'] is True
+
+
+# -- CHK-071 -----------------------------------------------------------
+
+def _shared_link_exclusion():
+    """Call the real diverter method without importing the platform module."""
+    import ast
+
+    from fakenet.mcp import controlfilter
+    source = (Path(__file__).resolve().parents[2]
+              / 'fakenet/diverters/windows.py').read_text()
+    tree = ast.parse(source)
+    method = next(node for node in ast.walk(tree)
+                  if isinstance(node, ast.FunctionDef)
+                  and node.name == '_apply_control_link_exclusion')
+    env = {'apply_control_link_exclusion': controlfilter.apply_control_link_exclusion,
+           'apply_loopback_exclusion': controlfilter.apply_loopback_exclusion,
+           'ControlFilterError': controlfilter.ControlFilterError,
+           'PolicyConfigError': RuntimeError,
+           'WinDivert': SimpleNamespace(check_filter=lambda f: (True, 0, None))}
+    exec(compile(ast.Module(body=[method], type_ignores=[]),
+                 '<shared-method>', 'exec'), env)
+    return env['_apply_control_link_exclusion']
+
+
+def test_independent_gui_filter_is_unchanged():
+    """CHK-071: without an MCP control link the filter stays as built."""
+    apply = _shared_link_exclusion()
+    obj = SimpleNamespace(filter='outbound and ip', _dict={})
+    apply(obj)
+    assert obj.filter == 'outbound and ip'
+
+
+def test_configured_control_link_still_applies_both_exclusions():
+    apply = _shared_link_exclusion()
+    obj = SimpleNamespace(filter='outbound and ip',
+                          _dict={'controllinkexcludeip': '192.168.204.1',
+                                 'controllinkexcludeport': '28788'})
+    apply(obj)
+    assert '192.168.204.1' in obj.filter
+    assert '127.0.0.0' in obj.filter
+
+
+# -- CHK-072 -----------------------------------------------------------
+
+def _modern_request(params):
+    import asyncio
+    import json
+
+    from fakenet.mcp.transportguard import TransportGuardMiddleware
+
+    async def drive():
+        guard = TransportGuardMiddleware(lambda *a: None)
+        message = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                   'params': params}
+        responses = []
+
+        async def receive():
+            return {'type': 'http.request',
+                    'body': json.dumps(message).encode(), 'more_body': False}
+
+        async def send(value):
+            responses.append(value)
+
+        scope = {'type': 'http', 'path': '/mcp', 'method': 'POST',
+                 'headers': [(b'mcp-protocol-version', b'2026-07-28'),
+                             (b'mcp-method', b'tools/call'),
+                             (b'mcp-name', b'ping')]}
+        forwarded = []
+
+        async def app(*args):
+            forwarded.append(args)
+
+        guard.app = app
+        await guard(scope, receive, send)
+        return responses, forwarded
+
+    return asyncio.run(drive())
+
+
+@pytest.mark.parametrize('params', [[1], 'scalar', 7])
+def test_malformed_modern_params_are_rejected_structurally(params):
+    """CHK-072: a malformed request never escapes the error boundary."""
+    responses, forwarded = _modern_request(params)
+    assert forwarded == [], 'malformed request must not reach the app'
+    statuses = [item.get('status') for item in responses
+                if item.get('type') == 'http.response.start']
+    assert statuses == [400]
+    assert any(b'"error"' in item.get('body', b'') for item in responses
+               if item.get('type') == 'http.response.body')
+
+
+def test_absent_modern_params_are_still_accepted():
+    response_wire = _modern_request({'name': 'ping'})
+    assert response_wire[1], 'a well formed request must be forwarded'
