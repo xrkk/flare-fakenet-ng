@@ -61,6 +61,7 @@ class RealSupervisor:
         self._last_managed_process = None
         self._last_final_filter = None
         self._endpoint_observation = None
+        self._completed_failure_evidence = None
 
     def health_detail(self, state, max_wait=0.05):
         # Observations are updated by a bounded IPC poll, never queried under
@@ -308,7 +309,20 @@ class RealSupervisor:
                 except BaseException as exc:
                     reason = str(exc)
                     coordinator.update_health_state('failed', reason)
-                    self._collect_incident(reason, deadline=deadline)
+                    # A lost stop reply can outlive the entire managed tree.
+                    # Keep the failure outcome, but do not request a new dump
+                    # from an already exited target. Unknown/live membership
+                    # and protocol errors retain the normal evidence path.
+                    exited_after_transport_failure = (
+                        isinstance(exc, (TimeoutError, EOFError)) and
+                        self._fakenet.job.poll() is not None and
+                        not self._fakenet.job.members() and
+                        self._completed_failure_evidence == (
+                            marker['run_id'], self._fakenet.identity, reason))
+                    if exited_after_transport_failure:
+                        logger.warning('stop transport failed after verified Job exit: %s', reason)
+                    else:
+                        self._collect_incident(reason, deadline=deadline)
                 try:
                     # Even a successful root stop may leave descendants. The
                     # Job is the sole scope and emptiness is independently read.
@@ -493,6 +507,12 @@ class RealSupervisor:
         if deadline:
             collector.deadline = min(collector.deadline, time.time() + max(0, deadline-time.monotonic()))
         collector.collect(context)
+        if (child and collector.manifest and
+                all(entry['result'] == 'ok' for entry in collector.manifest) and
+                any(entry['item'] == 'userdump.dmp' and entry['size'] > 0
+                    for entry in collector.manifest)):
+            self._completed_failure_evidence = (
+                self._marker['run_id'], dict(child.identity), reason)
         self._health_cache['incident_path'] = str(collector.root)
 
     def _inject_exclusion(self, instance):

@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "5018c4b05e7a78ccfb5e641cf8ae8eeaa8a67ff7",
+  "current_head": "a8f45543f20686e9f40ea4cb52babf728c6dc26d",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "INTENT-120：5018c4b已提交并冻结同源runner，新目录构建进行中。",
+  "checkpoint": "a8f4554实机IPC单次超时通过；永久超时原恢复审计通过，但第二重复incident向已退出目标取dump失败，矩阵按首失败停止；整改及Linux MCP252/3通过。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-123",
-    "action": "提交完成态观察边界修正与实际证据，新固定源码构建后受控升级，核对已完成run不追加证据，再继续故障矩阵。"
+    "id": "INTENT-124",
+    "action": "提交同run/同进程/同原因完整取证后的停止响应超时去重复修正，固定源全构建后受控升级并重跑IPC矩阵；不得删改旧失败包。"
   },
   "events": [
     {
@@ -1154,12 +1154,12 @@
     }
   ],
   "active_build": {
-    "session_id": 57987,
-    "source_commit": "5018c4b05e7a78ccfb5e641cf8ae8eeaa8a67ff7",
+    "session_id": 98010,
+    "source_commit": "a8f45543f20686e9f40ea4cb52babf728c6dc26d",
     "status": "PASS",
-    "output": "dist/mcp-remediation-20260910-5018c4b",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-5018c4b.txt",
-    "package_sha256": "20e5b515d8ab932339ab9ac87db44c07bd6e572c53094ceb03082f3ecd3339bc"
+    "output": "dist/mcp-remediation-20260910-a8f4554",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-a8f4554.txt",
+    "package_sha256": "3a8851c5f18efb72ce8d0da144bf75183cd719663a41136248baa0f71d089d56"
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/native-8303ea2-active-probe-full-runtime.zip",
@@ -1178,13 +1178,20 @@
     "sha256": "724ed41e0c7b67179ce3dda8daf6d7dca907b61ca3d8cb3f07c0d20bb3fec286"
   },
   "active_native_validation": {
-    "session_id": 17830,
-    "status": "COMPLETED",
-    "source_head": "5018c4b05e7a78ccfb5e641cf8ae8eeaa8a67ff7",
-    "run_id": "3632661a-19ed-4d35-97a8-ed6e3f672c11",
-    "mode": "SCM exact crash and endpoint observation recovery",
+    "status": "COMPLETED_WITH_FAILURE",
+    "source_head": "a8f45543f20686e9f40ea4cb52babf728c6dc26d",
+    "mode": "six-case IPC matrix",
     "formal_acc_pass": false,
-    "evidence": "Logs/fakenetng-mcp/remediation-20260910/native-5018c4b-scm-trace.json"
+    "evidence": "Logs/fakenetng-mcp/remediation-20260910/a8f4554-ipc-matrix",
+    "completed_artifacts_unchanged": true,
+    "http_errors": 0,
+    "next_intent": "same candidate six-case IPC matrix; preserve first failure",
+    "session_id": 15147,
+    "checks": {
+      "ipc_once_timeout": true,
+      "ipc_permanent_timeout": false
+    },
+    "reason": "second incident dump target already exited; first complete pack includes dump; raw restoration audit passed"
   },
   "environment_question": {
     "status": "AWAITING_INFORMATION",

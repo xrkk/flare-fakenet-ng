@@ -68,3 +68,44 @@ def test_restoration_failure_collects_incident_and_keeps_responsibility(tmp_path
         assert snapshot.read()[0]['needs_recovery']
         assert len(evidence) == 1 and evidence[0][1] is not None
         assert ('restoration audit failed' if phase == 'audit' else 'restoration command failed') in evidence[0][0]
+
+
+def test_stop_transport_failure_after_tree_exit_does_not_dump_dead_target(tmp_path):
+    for error, members, exit_code, prior_run, expected_incidents in (
+            (TimeoutError('managed IPC response timeout'), [], 0, 'run1', 0),
+            (EOFError('managed pipe closed'), [], 0, 'run1', 0),
+            (TimeoutError('managed IPC response timeout'), [], 0, None, 1),
+            (TimeoutError('managed IPC response timeout'), [], 0, 'old-run', 1),
+            (TimeoutError('managed IPC response timeout'), [42], None, 'run1', 1),
+            (TimeoutError('managed IPC response timeout'), [43], 0, 'run1', 1),
+            (ValueError('wrong run response'), [], 0, 'run1', 1)):
+        root = tmp_path / str(expected_incidents) / type(error).__name__ / str(members)
+        root.mkdir(parents=True, exist_ok=True)
+        snapshot = StateSnapshot(root / 'state.json')
+        marker = dict(run_id='run1', controller_id='owner', state_version=2,
+                      command_id='stop1', config_sha256='a'*64,
+                      baseline_path=str(root/'run1.json'), needs_recovery=True)
+        snapshot.write(**marker)
+        baseline = SimpleNamespace(root=root, compensate=lambda *a: None,
+                                   full_audit_diff=lambda *a, **k: {})
+        runner = RealSupervisor(snapshot=snapshot, baseline_store=baseline)
+        coord = Coordinator(runner)
+        coord.restore_responsibility(marker, 'failed')
+        live_members = list(members)
+        def request(kind, **kwargs):
+            if kind == 'stacks':
+                return {'stacks': 'live managed stacks'}
+            raise error
+        child = SimpleNamespace(request=request, identity={'pid': 42, 'creation_time': '123'},
+                                job=SimpleNamespace(members=lambda: list(live_members), poll=lambda: exit_code),
+                                terminate=lambda deadline: live_members.clear(), close=lambda: None)
+        runner._fakenet = child
+        if prior_run:
+            runner._completed_failure_evidence = (prior_run, dict(child.identity), str(error))
+        incidents = []
+        runner._collect_incident = lambda reason, deadline=None: incidents.append(reason)
+        result = runner.stop(coord)
+        assert result['state'] == 'stopped'
+        assert result['last_run_outcome'] == 'failed'
+        assert len(incidents) == expected_incidents
+        assert not snapshot.read()[0]['needs_recovery']
