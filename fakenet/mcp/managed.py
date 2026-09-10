@@ -115,6 +115,7 @@ class ManagedProcess:
             os.close(child_out)
             error_log.close()
         self._reader = threading.Thread(target=self._read, name='managed-ipc', daemon=True)
+        self._read_failure = None
         self._reader.start()
 
     def observe_creation(self, stage):
@@ -131,6 +132,7 @@ class ManagedProcess:
                     raise ValueError('managed response exceeded size limit')
                 self._responses.put_nowait(json.loads(raw))
         except BaseException as exc:
+            self._read_failure = exc
             try:
                 self._responses.put_nowait(exc)
             except queue.Full:
@@ -153,6 +155,8 @@ class ManagedProcess:
             record_ipc(self.run_dir, 'parent', 'request', message)
             if not self.alive():
                 raise EOFError('managed process exited')
+            if getattr(self, '_read_failure', None) is not None:
+                raise self._read_failure.with_traceback(None)
             if self._write_failed:
                 raise EOFError('managed IPC write was cancelled')
             encoded = json.dumps(message).encode('utf-8') + b'\n'
@@ -289,7 +293,11 @@ def child_main(run_id, run_dir):
     from fakenet.fakenet import Fakenet
     from fakenet.mcp.faultinject import FaultInjector
     from fakenet.mcp.incident import IncidentCollector
+    from fakenet.mcp.managed_stacks import save_stacks
+    from fakenet.mcp.service_stop import process_identity
+    identity = process_identity(os.getpid())
     instance = None
+    channel_closed = False
     fault = FaultInjector()
     seq = 0
     for raw in protocol_in:
@@ -334,6 +342,11 @@ def child_main(run_id, run_dir):
             detail = traceback.format_exc()
             logging.getLogger('managed').error(detail)
             response['error'] = detail
+        if request.get('kind') in ('health', 'stacks') and instance is not None:
+            try:
+                save_stacks(directory, run_id, identity, IncidentCollector._thread_stacks())
+            except OSError as exc:
+                logging.getLogger('managed').warning('managed stack snapshot unavailable: %r', exc)
         action, response = fault.ipc_response(request, response)
         record_ipc(directory, 'child', action,
                    response if action == 'send' else request)
@@ -341,9 +354,11 @@ def child_main(run_id, run_dir):
             continue
         if action == 'eof':
             protocol_out.close()
-            return 1
-        protocol_out.write(json.dumps(response).encode('utf-8') + b'\n')
-        protocol_out.flush()
+            channel_closed = True
+            continue
+        if not channel_closed:
+            protocol_out.write(json.dumps(response).encode('utf-8') + b'\n')
+            protocol_out.flush()
         if exiting:
             return 0
     return 1

@@ -150,3 +150,11 @@ def test_ipc_evidence_rejects_cached_response_as_timeout_recovery(monkeypatch):
     assert check_ipc_case('ipc_once_timeout', 'run', rows) == []
     rows[2]['frame']['run_id'] = 'previous-run'
     assert check_ipc_case('ipc_once_timeout', 'run', rows)
+
+
+def test_eof_is_terminal_for_subsequent_requests_not_a_new_timeout(tmp_path, monkeypatch):
+    with transport(tmp_path, monkeypatch, 'ipc_eof') as managed:
+        with pytest.raises(EOFError):
+            managed.request('health', timeout=1)
+        with pytest.raises(EOFError, match='managed IPC EOF'):
+            managed.request('stacks', timeout=0.01)

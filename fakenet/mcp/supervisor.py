@@ -433,6 +433,7 @@ class RealSupervisor:
         deadline = min(deadline or float('inf'), time.monotonic() + 180)
         child = self._fakenet
         stacks = None
+        snapshot_stacks = False
         if child:
             try:
                 stacks = child.request('stacks', timeout=1)['stacks']
@@ -445,6 +446,10 @@ class RealSupervisor:
             stop_stacks = read_file('stop-thread-stacks.txt')
             if stop_stacks and b'File "' in stop_stacks:
                 stacks = 'MANAGED STOP WATCHDOG; LIVE CHILD CAPTURE\n' + stop_stacks.decode('utf-8', 'replace')
+        if not stacks and child and self._run_dir:
+            from fakenet.mcp.managed_stacks import read_stacks
+            stacks = read_stacks(self._run_dir, self._marker['run_id'], child.identity)
+            snapshot_stacks = stacks is not None
         import json
         import platform
         import importlib.metadata
@@ -503,6 +508,7 @@ class RealSupervisor:
                    'dump_target_creation': target_creation,
                    'dump_reason': ('managed hang/timeout' if 'timeout' in reason.lower() or
                                    'did not exit' in reason.lower() else
+                                   'live managed IPC stacks unavailable' if snapshot_stacks else
                                    None if stacks else 'managed stacks unavailable')}
         # The tree may exit while the bounded stack/baseline observations
         # above are running. Recheck at the actual collection boundary, not
