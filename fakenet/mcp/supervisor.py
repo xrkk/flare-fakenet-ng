@@ -60,6 +60,7 @@ class RealSupervisor:
         self._last_managed_stacks = None
         self._last_managed_process = None
         self._last_final_filter = None
+        self._endpoint_observation = None
 
     def health_detail(self, state, max_wait=0.05):
         # Observations are updated by a bounded IPC poll, never queried under
@@ -92,6 +93,8 @@ class RealSupervisor:
                 raise SupervisorStartError('real lifecycle requires Windows')
             if self._fakenet is not None:
                 raise SupervisorStartError('managed process already exists')
+            if not self._finish_endpoint_observation():
+                raise SupervisorStartError('previous endpoint observer cleanup unverified')
             marker, corrupt = self._snapshot.read()
             if corrupt or (marker and marker['needs_recovery']):
                 raise SupervisorStartError('unresolved recovery responsibility')
@@ -119,6 +122,9 @@ class RealSupervisor:
                 self._run_dir.mkdir(parents=True, exist_ok=False)
                 from fakenet.mcp.run_evidence import prepare_run_evidence
                 prepare_run_evidence(self._run_dir, config_path, digest)
+                from fakenet.mcp.endpoint_observation import EndpointObservation
+                self._endpoint_observation = EndpointObservation(self._run_dir, run_id)
+                self._endpoint_observation.start()
                 for key in ('dumppacketsfileprefix', 'dumphttpwebroot'):
                     value = str(parsed.diverter_config.get(key, '') or '').strip()
                     if value and not os.path.isabs(value):
@@ -164,7 +170,20 @@ class RealSupervisor:
                 if self._activity_lock:
                     self._activity_lock.release()
                     self._activity_lock = None
+                self._finish_endpoint_observation()
                 raise
+
+    def _finish_endpoint_observation(self, deadline=None):
+        observation = getattr(self, '_endpoint_observation', None)
+        if observation is None:
+            return True
+        try:
+            report = observation.finish(deadline)
+            if report.get('absent'):
+                return True
+        except Exception:
+            logger.exception('endpoint observation finalization failed')
+        return False
 
     def _publish_health(self, child, state, evidence, reason=None):
         # Publication is short and never performs IPC or file I/O. Stop takes
@@ -263,6 +282,8 @@ class RealSupervisor:
                     self._snapshot.write(**marker)
                     self._marker = marker
             if self._fakenet is None and not (marker and marker['needs_recovery']):
+                if not self._finish_endpoint_observation(deadline):
+                    return self._result('failed', 'endpoint observation cleanup unverified')
                 if self._activity_lock:
                     self._activity_lock.release()
                     self._activity_lock = None
@@ -306,6 +327,8 @@ class RealSupervisor:
             self._baseline_store.compensate(marker['run_id'], deadline)
             differences = self._baseline_store.full_audit_diff(marker['run_id'], deadline=deadline,
                                                               settle_seconds=30)
+            if not self._finish_endpoint_observation(deadline):
+                return self._result('failed', 'endpoint observation cleanup unverified')
             if differences:
                 logger.error('full restoration audit failed: %r', differences)
                 self._collect_incident('environment restoration audit failed', deadline=deadline)
@@ -327,6 +350,7 @@ class RealSupervisor:
             self._collect_incident('stop/recovery failed: ' + repr(exc), deadline=deadline)
             return self._result('failed', str(exc))
         finally:
+            self._finish_endpoint_observation(deadline)
             self._lock.release()
 
     def recover(self, coordinator):
@@ -340,6 +364,23 @@ class RealSupervisor:
             self._run_dir, self._active_config_path = locate_run_evidence(
                 self._artifacts_root, marker)
         coordinator.restore_responsibility(marker, 'recovering')
+        if os.name == 'nt' and self._artifacts_root:
+            try:
+                from fakenet.mcp.endpoint_observation import (
+                    EndpointObservation, stop_orphan_observers, write_evidence)
+                import uuid
+                active_run = marker['run_id'] if marker and not corrupt and self._run_dir else None
+                stopped = stop_orphan_observers(self._artifacts_root, active_run)
+                if stopped:
+                    log_root = self._baseline_store.root.parent / 'logs'
+                    log_root.mkdir(parents=True, exist_ok=True)
+                    write_evidence(log_root / ('endpoint-orphans-%s.json' % uuid.uuid4()), stopped)
+                if active_run:
+                    self._endpoint_observation = EndpointObservation(self._run_dir, active_run)
+            except Exception as exc:
+                coordinator.restore_responsibility(marker, 'failed',
+                    'endpoint observer cleanup failed: ' + repr(exc))
+                return 'failed'
         if corrupt:
             coordinator.restore_responsibility(marker, 'failed', 'corrupt recovery snapshot')
             return 'failed'

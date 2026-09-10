@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "530b20fadabff04016eca6826e9fb623fc8c53a0",
+  "current_head": "1b16f0fe20b291dc9a4f08a5561c6f82751c7ed8",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "VM已由用户启动，三身份与干净部署门通过；当前530b20f，未部署；Tcl全量组合失败归因未闭合。",
+  "checkpoint": "INTENT-118完成：1b16f0f构建/包验证通过并部署干净VM，默认配置加载成功、run_id=null/stopped。Tcl捕获修正通过完整构建，UDP恢复与其余CHK未闭合。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-117",
-    "action": "授权范围内修正Windows构建测试入口：含Tk的主组显式capture=sys，保留全部测试、XML、HTTP组及外层进程日志。提交后全新固定源完整构建验证，不将临时通过直接计ACC。"
+    "id": "INTENT-120",
+    "action": "定向提交观察接入6个作者文件并新目录构建；现VM1b16f0f仅stopped入口，采用受控停服/保留旧包的重部署，不重新恢复快照。"
   },
   "events": [
     {
@@ -809,10 +809,11 @@
     }
   ],
   "candidate": {
-    "source_commit": "d0a27bc7ae2bb33d640ef1aab0c914ae14c39889",
-    "candidate_id": "mcp-cd0a27bc7-3d869e928be8",
-    "package_path": "dist/mcp-remediation-20260910-d0a27bc/fakenetng-mcp-candidate.zip",
-    "package_sha256": "3d869e928be8d6db0479e4c8e0a63f197c66081f8976cc15440599bbc7fc3c00",
+    "source_commit": "1b16f0fe20b291dc9a4f08a5561c6f82751c7ed8",
+    "candidate_id": "mcp-c1b16f0fe-22656dc4904b",
+    "package": "dist/mcp-remediation-20260910-1b16f0f/fakenetng-mcp-candidate.zip",
+    "sha256": "22656dc4904bc692ca69ee9f3b160dc54d1dfbc9cf911704862708696c7ef9a9",
+    "status": "DEPLOYED_ENTRY_ONLY",
     "formal_acc_pass": false
   },
   "pause_handoff": {
@@ -1125,16 +1126,32 @@
     {
       "intent": "INTENT-116",
       "actual": "全新同源stage默认fd捕获再次失败808/8跳过/1失败；仅PYTEST_ADDOPTS=--capture=sys对照主809/8跳过、HTTP17通过。复用stage全量两次通过；纯Tk600次及pytest最小400次均未复现，底层具体句柄仍未跟踪。"
+    },
+    {
+      "intent": "INTENT-117",
+      "actual": "提交1b16f0f仅构建入口/作者回应/状态3文件；已验证git diff check，用户文件未纳入；新固定源完整构建session52386启动。"
+    },
+    {
+      "intent": "INTENT-117",
+      "actual": "1b16f0f完整固定源构建退出0；Windows主809/8跳过、HTTP17通过，编译/候选包校验PASS；无测试排除扩张。"
+    },
+    {
+      "intent": "INTENT-118",
+      "actual": "session59172退出0，host-only ZIP SHA核对通过；SCM入口state=stopped/version1，load_config成功version2/error=null，未启动引擎；临时PackageServer上下文已退出。",
+      "evidence": "Logs/fakenetng-mcp/remediation-20260910/native-1b16f0f-entry-only.json"
+    },
+    {
+      "intent": "INTENT-119",
+      "actual": "逐run观察接入完成，原审计判定未放宽；Linux250通过3跳过、原生枚举18会话精确清理探针通过；待固定候选真实启停验证。"
     }
   ],
   "active_build": {
-    "session_id": 64196,
-    "source_commit": "530b20fadabff04016eca6826e9fb623fc8c53a0",
-    "status": "FAILED",
-    "output": "dist/mcp-remediation-20260910-530b20f-retry01",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-530b20f-retry01.txt",
-    "previous_failure_log": "Logs/fakenetng-mcp/remediation-20260910/build-530b20f.txt",
-    "failure": "Same first GUI Tcl initialization failure: 808 passed, 8 skipped, 1 failed"
+    "session_id": 52386,
+    "source_commit": "1b16f0fe20b291dc9a4f08a5561c6f82751c7ed8",
+    "status": "PASS",
+    "output": "dist/mcp-remediation-20260910-1b16f0f",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-1b16f0f.txt",
+    "package_sha256": "22656dc4904bc692ca69ee9f3b160dc54d1dfbc9cf911704862708696c7ef9a9"
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/native-8303ea2-active-probe-full-runtime.zip",

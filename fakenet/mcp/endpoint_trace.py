@@ -2,6 +2,7 @@
 
 import base64
 import json
+import ntpath
 import uuid
 
 
@@ -36,7 +37,7 @@ public static class FakeNetEndpointTraceV1 {
     public sealed class Info {
         public uint Code, EventsLost, LogBuffersLost, RealTimeBuffersLost;
         public uint LogFileMode, MaximumFileSize, BuffersWritten;
-        public string SessionGuid, LogFileName;
+        public string SessionGuid, LogFileName, SessionName;
     }
     [DllImport("advapi32.dll", CharSet=CharSet.Unicode)]
     static extern uint StartTraceW(out ulong handle, string name, IntPtr properties);
@@ -45,6 +46,9 @@ public static class FakeNetEndpointTraceV1 {
     [DllImport("advapi32.dll")]
     static extern uint EnableTraceEx2(ulong handle, ref Guid provider, uint control,
         byte level, ulong anyKeywords, ulong allKeywords, uint timeout, IntPtr parameters);
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode)]
+    static extern uint QueryAllTracesW([In, Out] IntPtr[] properties,
+        uint count, out uint actual);
 
     const int Allocation = 8192;
     static IntPtr Allocate(Guid id, string path) {
@@ -78,9 +82,11 @@ public static class FakeNetEndpointTraceV1 {
     }
     static Info ReadInfo(IntPtr memory, uint code) {
         Properties p = (Properties)Marshal.PtrToStructure(memory, typeof(Properties));
-        if (p.LogFileNameOffset >= Allocation)
+        if (p.LogFileNameOffset >= Allocation || p.LoggerNameOffset >= Allocation)
             throw new InvalidDataException("invalid trace filename offset");
         return new Info { Code=code, SessionGuid=p.Wnode.Guid.ToString(),
+            SessionName=p.LoggerNameOffset == 0 ? "" :
+                Marshal.PtrToStringUni(IntPtr.Add(memory, (int)p.LoggerNameOffset)),
             LogFileName=p.LogFileNameOffset == 0 ? "" :
                 Marshal.PtrToStringUni(IntPtr.Add(memory, (int)p.LogFileNameOffset)),
             EventsLost=p.EventsLost, LogBuffersLost=p.LogBuffersLost,
@@ -97,6 +103,32 @@ public static class FakeNetEndpointTraceV1 {
         } finally { Marshal.FreeHGlobal(memory); }
     }
     public static Info Query(string name) { return Control(name, 0); }
+    public static Info[] Sessions() {
+        // Query only: no session is changed by enumeration. A bounded array
+        // that is insufficient fails instead of returning a partial inventory.
+        IntPtr[] buffers = new IntPtr[64];
+        try {
+            for (int i=0; i<buffers.Length; i++) {
+                buffers[i] = Marshal.AllocHGlobal(Allocation);
+                Marshal.Copy(new byte[Allocation], 0, buffers[i], Allocation);
+                Properties p = new Properties();
+                p.Wnode.BufferSize = Allocation;
+                p.LoggerNameOffset = (uint)Marshal.SizeOf(typeof(Properties));
+                p.LogFileNameOffset = p.LoggerNameOffset + 2048;
+                Marshal.StructureToPtr(p, buffers[i], false);
+            }
+            uint actual;
+            uint code = QueryAllTracesW(buffers, (uint)buffers.Length, out actual);
+            if (code != 0) throw new Win32Exception((int)code);
+            if (actual > buffers.Length) throw new InvalidDataException("partial trace inventory");
+            Info[] result = new Info[actual];
+            for (int i=0; i<actual; i++) result[i] = ReadInfo(buffers[i], 0);
+            return result;
+        } finally {
+            foreach (IntPtr buffer in buffers)
+                if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
+        }
+    }
     static void Verify(Info info, string path, string id) {
         if (info.Code != 0 || info.SessionGuid != new Guid(id).ToString() ||
             !String.Equals(Path.GetFullPath(info.LogFileName), Path.GetFullPath(path),
@@ -149,6 +181,34 @@ def trace_action_script(action, run_id, path):
             "'query'{$r=[FakeNetEndpointTraceV1]::Query($p.name)}"
             "'stop'{$r=[FakeNetEndpointTraceV1]::Stop($p.name,$p.path,$p.id)}}; "
             "$r|ConvertTo-Json -Depth 5 -Compress")
+
+
+def trace_inventory_script():
+    return ("$ErrorActionPreference='Stop'; Add-Type -TypeDefinition @'\n" +
+            TRACE_CONTROL_CS + "\n'@; ConvertTo-Json -InputObject "
+            "@([FakeNetEndpointTraceV1]::Sessions()) -Depth 5 -Compress")
+
+
+def owned_trace_sessions(rows, artifacts_root, exclude_run=None):
+    """Select live ownership facts; never read artifact content as authority."""
+    result = []
+    prefix = 'fakenetng-mcp-udp-'
+    for row in rows:
+        name = row.get('SessionName', '')
+        if not isinstance(name, str) or not name.startswith(prefix):
+            continue
+        try:
+            run_id = str(uuid.UUID(name[len(prefix):]))
+        except (ValueError, AttributeError):
+            continue
+        expected = ntpath.join(str(artifacts_root), 'runs', run_id, 'udp.etl.part')
+        if (name == prefix + run_id and run_id != exclude_run and
+                row.get('SessionGuid') == run_id and row.get('Code') == 0 and
+                row.get('LogFileMode') == 0x00400001 and
+                ntpath.normcase(ntpath.normpath(row.get('LogFileName') or '')) ==
+                ntpath.normcase(ntpath.normpath(expected))):
+            result.append({'run_id': run_id, 'path': row['LogFileName']})
+    return result
 
 
 def complete_trace(start, stop, after_stop, size):
