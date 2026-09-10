@@ -177,7 +177,10 @@ class IncidentCollector:
         # Declare the finished members so a reader can tell a final artifact
         # from a file that is still being written.
         from fakenet.mcp.artifacts import write_publication
-        write_publication(self.root, written + [self.root / 'manifest.json'])
+        write_publication(self.root, [self.root / item['item']
+                                     for item in self.manifest
+                                     if item['result'] == 'ok'] +
+                          [self.root / 'manifest.json'])
 
     # ------------------------------------------------------------------
     def _collect_item(self, kind, context):
@@ -290,7 +293,9 @@ class IncidentCollector:
             if not pid or not creation:
                 raise RuntimeError('managed dump target identity unavailable')
             remaining = min(ITEM_TIMEOUT_SECONDS, self.deadline - time.time())
-            collect_dump(pid, creation, target, time.monotonic() + max(0, remaining))
+            used = sum(p.stat().st_size for p in self.root.rglob('*') if p.is_file())
+            collect_dump(pid, creation, target, time.monotonic() + max(0, remaining),
+                         quota=max(0, DISK_QUOTA_BYTES - used))
             self._record('userdump.dmp', 'ok', dump_path=target)
         except Exception as exc:
             self._record('userdump.dmp', 'failed', failure_reason=repr(exc)[:160])

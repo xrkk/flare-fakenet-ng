@@ -70,6 +70,35 @@ class Coordinator:
         self._exit_fenced = set()
         self._exit_failure = None
         self._operation_context = threading.local()
+        self._idle_recovery = None
+        self._idle_recovery_running = False
+
+    def recover_when_idle(self, action):
+        """Retain one internal cleanup responsibility until mutations finish.
+
+        This is not a queue of client commands. No waiting thread or timeout
+        can discard the recovery action while an accepted operation owns data.
+        """
+        with self._lock:
+            if self._idle_recovery is None:
+                self._idle_recovery = action
+            self._dispatch_idle_recovery()
+
+    def _dispatch_idle_recovery(self):
+        if (self._active_operations or self._idle_recovery is None or
+                self._idle_recovery_running):
+            return
+        self._idle_recovery_running = True
+        action = self._idle_recovery
+
+        def recover():
+            try:
+                action()
+            finally:
+                with self._lock:
+                    self._idle_recovery = None
+                    self._idle_recovery_running = False
+        threading.Thread(target=recover, name='protective-recovery', daemon=True).start()
 
     def on_run_end(self, hook):
         """Register the single point that releases run-scoped ownership.
@@ -141,6 +170,7 @@ class Coordinator:
         self._active_operations.pop(command_id, None)
         self._operation_active = bool(self._active_operations)
         self._idle.notify_all()
+        self._dispatch_idle_recovery()
         # Never evict an in-flight command; a retry must find its original.
         completed = [key for key in self._commands
                      if key not in self._active_operations]
@@ -167,7 +197,8 @@ class Coordinator:
             # every new CLIENT mutation is rejected immediately, never
             # queued; the service's own protective/controlled stop is an
             # internal transition and may proceed.
-            if (self._draining or self._state == 'recovering') and not internal:
+            if (self._draining or self._state == 'recovering' or
+                    self._idle_recovery is not None) and not internal:
                 raise errors.McpError(
                     errors.NOT_ALLOWED_IN_STATE,
                     'service is in controlled shutdown; new mutations '

@@ -33,7 +33,7 @@ from run_p03_acc import continuous_probe, stop_run, unique_command, wait_state  
 sys.path.insert(0, str(REPO_ROOT))
 from fakenet.mcp.faultinject import FAULTS  # noqa: E402
 from evidence_integrity import (IDENTITY_FIELDS, validate_result,
-                                validate_round, validate_rounds)
+                                validate_round, validate_rounds, validate_sample_category)
 
 DEFAULT_INI = 'default.ini'
 CUSTOM_INI = 'release-custom.ini'
@@ -271,6 +271,8 @@ class ReleaseGate:
             record['failure'] = 'start: %s' % started['error']
             self.stop_once()
             return record
+        record['run_id'] = started['run_id']
+        record['class'] = 'normal'
         ok, timeline = continuous_probe(self.base, 4)
         record['probe'] = {'all_ok': ok, 'samples': len(timeline)}
         if not ok:
@@ -346,6 +348,7 @@ class ReleaseGate:
         record['start_response'] = started
         if started.get('error'):
             return dict(record, failure='start rejected')
+        record['run_id'] = started['run_id']
         if started.get('state') == 'healthy':
             stopped = self.stop_once()
             record['stop_response'] = stopped
@@ -376,6 +379,9 @@ class ReleaseGate:
         from helpers import export_incident_bundle
         import ntpath
         run_id = record['fault_evidence']['receipt']['run_id']
+        if run_id != record['run_id']:
+            record['failure'] = 'fault receipt belongs to another run'
+            return record
         exports = []
         names = set()
         for item in incidents:
@@ -604,7 +610,7 @@ class ReleaseGate:
                 except (OSError, ValueError, TypeError) as exc:
                     integrity_failures[str(path)] = [repr(exc)]
                     continue
-                issues = validate_round(record, identity)
+                issues = validate_round(record, identity) + validate_sample_category(record, prefix)
                 if issues:
                     integrity_failures[str(path)] = issues
                 samples.append({'run_id': record.get('run_id'), 'class': prefix})

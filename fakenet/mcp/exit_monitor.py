@@ -17,15 +17,18 @@ def active_bytes(base):
     """
     used = 0
     count = 0
-    entries = []
-    if base.is_dir():
+    def active_entries():
+        if not base.is_dir():
+            return
         for child in base.iterdir():
+            if child.is_symlink():
+                raise RuntimeError('linked exit diagnostic directory')
             if child.is_dir() and (child / OWNER_RESULT).is_file():
                 continue
-            entries.append(child)
+            yield child
             if child.is_dir():
-                entries.extend(child.rglob('*'))
-    for path in entries:
+                yield from child.rglob('*')
+    for path in active_entries():
         count += 1
         if count > 10000 or path.is_symlink():
             raise RuntimeError('unbounded/linked exit diagnostic directory')

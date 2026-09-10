@@ -120,6 +120,7 @@ def test_health_timeout_uses_two_second_request_period(tmp_path, monkeypatch, pe
     instance._run_dir = tmp_path
     instance._health_cache = {'probe': True}
     instance._coordinator = SimpleNamespace(wait_for_idle=lambda timeout: False,
+                                            recover_when_idle=lambda action: None,
                                             record_terminal_failure=lambda reason: None)
     instance._collect_incident = lambda reason: None
     def publish(child, state, evidence, reason=None):

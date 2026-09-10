@@ -290,12 +290,6 @@ class RealSupervisor:
                 log_text = self._observe_run_log()
                 healthy, reason = evaluate_health_evidence(evidence, log_text)
                 if not healthy:
-                    if 'unhandled exception' in reason:
-                        failures += 1
-                        if failures < 2:
-                            if not self._publish_health(child, 'degraded', evidence, reason):
-                                return
-                            continue
                     raise RuntimeError(reason)
                 failures = 0
                 if not self._publish_health(child, 'healthy', evidence):
@@ -325,9 +319,7 @@ class RealSupervisor:
                 # completion is still converged instead of abandoned.
                 logger.error('accepted operation still in flight after 60s; '
                              'deferring protective convergence to its end')
-                threading.Thread(target=self._converge_when_idle,
-                                 name='deferred-protective-stop',
-                                 daemon=True).start()
+                self._coordinator.recover_when_idle(self._submit_protective_stop)
             self._coordinator.record_terminal_failure(reason)
             return
 
@@ -343,14 +335,6 @@ class RealSupervisor:
                 execute=lambda c: self.stop(c))
         except Exception:
             logger.exception('protective stop could not complete')
-
-    def _converge_when_idle(self):
-        budget = getattr(self, '_stop_grace', 60) + 420
-        if not self._coordinator.wait_for_idle(budget):
-            logger.error('protective convergence unavailable: an accepted '
-                         'operation never finished within its budget')
-            return
-        self._submit_protective_stop()
 
     def stop(self, coordinator, baseline_audit=True, deadline=None):
         deadline = deadline or time.monotonic() + self._stop_grace + 360

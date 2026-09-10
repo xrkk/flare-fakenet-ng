@@ -103,7 +103,7 @@ def build_service_class(service_main, orchestrator=None):
                     self.checkPoint if self._status == scm.SERVICE_STOP_PENDING else 0, 30000))
 
         def SvcStop(self):
-            if self.prestop is None or not self.prestop.ready:
+            if self.prestop is None or not self.prestop.stop_authorized():
                 return 1061
             self.report(scm.SERVICE_STOP_PENDING)
             self.stop_event.set()

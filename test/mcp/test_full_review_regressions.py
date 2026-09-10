@@ -383,7 +383,7 @@ def test_generic_dump_rejects_a_non_mdmp_result(monkeypatch, tmp_path):
 
     class Job:
         def spawn(self, command, *args):
-            Path(command[-1]).write_bytes(b'X')
+            Path(command[-3]).write_bytes(b'X')
             return 1
 
         def poll(self):

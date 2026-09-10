@@ -7,6 +7,7 @@ acceptance VM (sub-plan P03 v1 IMP-P03-08). Exit codes 0/1/2/3+.
 """
 
 import argparse
+import base64
 import datetime
 import json
 import sys
@@ -235,11 +236,11 @@ def run_acc001(base, channel, writer, args=None):
         # direction 1: service running -> real GUI must refuse to start
         # (dialog blocks, so the runner kills it after sampling the log).
         launch1 = channel.powershell(
-            "Start-Process -FilePath '%s' | Out-Null; Start-Sleep 12; "
-            "$p = Get-Process FakeNet-NG -ErrorAction SilentlyContinue; "
-            "$alive = if ($p) { $p.Count } else { 0 }; "
-            "if ($p) { $p | Stop-Process -Force }; \"ALIVE=$alive\""
-            % gui_exe, timeout=120)
+            "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath '%s' -PassThru; "
+            "[void]$p.Handle; Start-Sleep 12; $alive=-not $p.HasExited; "
+            "if($alive){$p.Kill(); if(-not $p.WaitForExit(5000)){throw 'owned GUI did not exit'}}; "
+            "@{alive=$alive;pid=$p.Id} | ConvertTo-Json -Compress"
+            % gui_exe.replace("'", "''"), timeout=120)
         writer.add_evidence('acc001-gui-refused-process', launch1)
         log1 = read_newest_gui_log()
         writer.observe('gui log while service runs: %r' % log1[:400])
@@ -251,16 +252,16 @@ def run_acc001(base, channel, writer, args=None):
 
         # direction 2: service stopped -> GUI starts and holds the mutex ->
         # the service's own start must be refused with the guard error.
-        channel.powershell('sc.exe stop fakenetng-mcp | Out-Null; '
-                           'Start-Sleep 4; "SVC_DOWN"', timeout=120)
+        controlled_service_stop(channel)
         launch2 = channel.powershell(
-            "Start-Process -FilePath '%s' | Out-Null; Start-Sleep 14; "
-            "$p = Get-Process FakeNet-NG -ErrorAction SilentlyContinue; "
-            "$alive = if ($p) { $p.Count } else { 0 }; \"GUI_RUNNING=$alive\""
-            % gui_exe, timeout=120)
+            "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath '%s' -PassThru; "
+            "[void]$p.Handle; $born=$p.StartTime.ToFileTimeUtc(); Start-Sleep 14; "
+            "@{alive=(-not $p.HasExited);pid=$p.Id;created=$born} | ConvertTo-Json -Compress"
+            % gui_exe.replace("'", "''"), timeout=120)
+        owned_gui = json.loads(launch2['output'])
         writer.add_evidence('acc001-gui-running', launch2)
         checks['gui_runs_when_service_down'] = \
-            'GUI_RUNNING=1' in launch2['output']
+            owned_gui['alive'] is True
         channel.powershell('sc.exe start fakenetng-mcp 2>&1 | Out-Null; '
                            'Start-Sleep 10; (Get-Service fakenetng-mcp).Status',
                            timeout=120)
@@ -272,11 +273,11 @@ def run_acc001(base, channel, writer, args=None):
         writer.add_evidence('acc001-service-guard-log', svc_log)
         checks['service_refused_while_gui_runs'] = \
             'mutually exclusive' in (svc_log['output'] or '')
-        channel.powershell(
-            'Get-Process FakeNet-NG -ErrorAction SilentlyContinue | '
-            'Stop-Process -Force; Start-Sleep 3; '
-            'sc.exe start fakenetng-mcp | Out-Null; Start-Sleep 8; '
-            '"CLEANED"', timeout=150)
+        from helpers import kill_owned_process
+        if owned_gui['alive']:
+            writer.add_evidence('acc001-owned-gui-stop', kill_owned_process(
+                channel, owned_gui['pid'], owned_gui['created'], 'acc001-gui'))
+        restart_service(channel)
         wait_state(base, lambda st: st.get('state') is not None, timeout=120)
     else:
         # No GUI package deployed: skip (None = not tested, not pass).
@@ -791,8 +792,17 @@ def run_acc008(base, channel, writer):
     writer.action('acc008', 'snapshot semantics: atomic fields, fault '
                             'injection, no forbidden frameworks')
     checks = {}
+    previous = channel.powershell(
+        "@(Get-ChildItem (Join-Path $env:ProgramData 'FakeNet-NG-MCP\\baselines') "
+        "-Filter '*.json' -ErrorAction SilentlyContinue).Count", timeout=30)
+    if int(previous['output']) != 0:
+        writer.blocker = {'reason': 'ACC008 needs a fresh candidate scene; existing baselines are preserved'}
+        writer.add_evidence('acc008-existing-baselines', previous)
+        return EXIT_BLOCKED
     # (1) seven fields during a run; marker cleared after clean stop.
+    owned_runs = set()
     started = load_and_start(base)
+    owned_runs.add(started["run_id"])
     writer.add_evidence('acc008-start-payload', started)
     healthy, snap_status = wait_state(
         base, lambda s: s.get('state') == 'healthy', timeout=45)
@@ -825,8 +835,32 @@ def run_acc008(base, channel, writer):
     state_file = ("Join-Path $env:ProgramData "
                   "'FakeNet-NG-MCP\\state\\state.json'")
 
+    def preserve_marker(label):
+        raw = channel.powershell(
+            "[Convert]::ToBase64String([IO.File]::ReadAllBytes((%s)))" % state_file,
+            timeout=30)['output']
+        marker = json.loads(base64.b64decode(raw).decode('utf-8-sig'))
+        if marker.get('run_id') not in owned_runs:
+            raise StepError('marker not owned by this ACC')
+        writer.add_evidence(label, {'body_base64': raw, 'marker': marker})
+        return raw
+
+    def restore_marker(raw, label):
+        # Preserve the injected failure bytes before restoring the SAME run's
+        # valid recovery responsibility. Never substitute an empty marker.
+        writer.add_evidence(label, channel.powershell(
+            "[Convert]::ToBase64String([IO.File]::ReadAllBytes((%s)))" % state_file,
+            timeout=30))
+        channel.powershell(
+            "$ErrorActionPreference='Stop'; $p=(%s); "
+            "$tmp=$p+'.restore-'+[guid]::NewGuid().ToString(); "
+            "[IO.File]::WriteAllBytes($tmp,[Convert]::FromBase64String('%s')); "
+            "[IO.File]::Replace($tmp,$p,$null); 'RESTORED_OWNED_RESPONSIBILITY'"
+            % (state_file, raw), timeout=30)
+
     # (2) corrupt snapshot with residue => recovery 'failed', start refused.
-    load_and_start(base)
+    owned_runs.add(load_and_start(base)["run_id"])
+    original_marker = preserve_marker("acc008-valid-marker-before-corruption")
     channel.powershell(
         "Set-Content (%s) 'NOT JSON {{' -Encoding ascii; 'CORRUPTED'"
         % state_file, timeout=60)
@@ -843,47 +877,43 @@ def run_acc008(base, channel, writer):
                         (snap2 or {}).get('state_version', 1)}, timeout=90)
     writer.add_evidence('acc008-corrupt-start-refused', refused)
     checks['start_forbidden_on_corrupt'] = refused.get('error') is not None
-    # repair: clean stop marker for the next variant
-    channel.powershell(
-        'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; Start-Sleep 2; '
-        '"{}" | Set-Content (%s); "MARKER_RESET"' % state_file, timeout=90)
+    restore_marker(original_marker, 'acc008-corrupt-marker-body')
     restart_service(channel)
-    wait_state(base, lambda s: s.get('state') is not None, timeout=90)
+    wait_state(base, lambda s: s.get('state') == 'stopped', timeout=90)
 
     # (3) residue-inconsistent: live marker + an extra listening port that
     # the pre-start baseline never recorded => 'failed'.
+    owned_runs.add(load_and_start(base)["run_id"])
+    listener_body = ("$ErrorActionPreference='Stop'; "
+                     "$l=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,47889); "
+                     "$l.Start(); try {Start-Sleep 600} finally {$l.Stop()}")
+    encoded = base64.b64encode(listener_body.encode('utf-16-le')).decode('ascii')
     listener_job = channel.powershell(
-        "$l = [System.Net.Sockets.TcpListener]::new("
-        "[Net.IPAddress]::Any, 47889); $l.Start(); "
-        "@{state='EXTRA_UP';pid=$PID;"
-        "created=(Get-Process -Id $PID).StartTime.ToFileTimeUtc()} | "
-        "ConvertTo-Json -Compress", timeout=60)
-    writer.add_evidence('acc008-extra-listener', listener_job)
-    writer.add_evidence('acc008-residue-kill',
-                        kill_current_service(channel, 'residue-inconsistent'))
-    time.sleep(2)
-    restart_service(channel)
-    back, snap3 = wait_state(base, lambda s: s.get('state') is not None,
-                             timeout=150)
-    checks['residue_inconsistency_fails'] = \
-        _recovery_outcome(channel) == 'failed'
-    # remove the extra listener (kill the owning powershell via port) and
-    # normalize state for later ACCs.
-    # Only the listener process this runner started is stopped: matching on
-    # the port would kill whichever process happens to own it.
+        "$ErrorActionPreference='Stop'; "
+        "$p=Start-Process (Join-Path $PSHOME 'powershell.exe') -ArgumentList "
+        "'-NoProfile -NonInteractive -EncodedCommand %s' -PassThru -WindowStyle Hidden; "
+        "[void]$p.Handle; $born=$p.StartTime.ToFileTimeUtc(); "
+        "@{pid=$p.Id;created=$born} | ConvertTo-Json -Compress" % encoded, timeout=30)
     listener = json.loads(listener_job['output'])
+    writer.add_evidence('acc008-extra-listener', listener_job)
     try:
+        ready = channel.powershell(
+            "Start-Sleep 2; $p=Get-Process -Id %d -ErrorAction Stop; "
+            "if($p.StartTime.ToFileTimeUtc() -ne %d){throw 'listener changed'}; "
+            "if(-not (Get-NetTCPConnection -LocalPort 47889 -State Listen | "
+            "Where-Object OwningProcess -eq $p.Id)){throw 'owned listener not listening'}; 'READY'"
+            % (listener['pid'], listener['created']), timeout=30)
+        writer.add_evidence('acc008-listener-ready', ready)
+        writer.add_evidence('acc008-residue-kill', kill_current_service(channel, 'residue-inconsistent'))
+        back, snap3 = wait_state(base, lambda s: s.get('state') == 'failed', timeout=150)
+        checks['residue_inconsistency_fails'] = back and _recovery_outcome(channel) == 'failed'
+    finally:
         from helpers import kill_owned_process
-        killed = kill_owned_process(channel, listener['pid'],
-                                    listener['created'], 'acc008-listener')
-    except Exception as exc:  # noqa: BLE001 - evidence only
-        killed = {'error': repr(exc)}
-    writer.add_evidence('acc008-listener-stop', killed)
-    channel.powershell(
-        'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; Start-Sleep 2; '
-        '"{}" | Set-Content (%s); "MARKER_RESET"' % state_file, timeout=90)
+        writer.add_evidence('acc008-listener-stop', kill_owned_process(
+            channel, listener['pid'], listener['created'], 'acc008-listener'))
+    # Removing our injected listener allows the same real recovery audit.
     restart_service(channel)
-    wait_state(base, lambda s: s.get('state') is not None, timeout=90)
+    wait_state(base, lambda s: s.get('state') == 'stopped', timeout=90)
 
     # (4) write-failure: with a config ALREADY LOADED (CHK-040: the
     # refusal must come from the state-write layer, not from a missing
@@ -913,32 +943,9 @@ def run_acc008(base, channel, writer):
 
     # (5) missing snapshot with NO residue => recovery treats as stopped.
     # Clear leftover baselines so the residue check is truly empty.
-    # Preserve and own the cleanup: the removed objects are enumerated first,
-    # exported with per-file digests, and only that inventory is deleted.
-    inventory = json.loads(channel.powershell(
-        "$ErrorActionPreference='Stop'; "
-        "$state=Join-Path $env:ProgramData 'FakeNet-NG-MCP\\state\\state.json'; "
-        "$root=Join-Path $env:ProgramData 'FakeNet-NG-MCP\\baselines'; "
-        "$items=@(); "
-        "if(Test-Path $state){$items+=[pscustomobject]@{path=$state;"
-        "sha256=(Get-FileHash $state -Algorithm SHA256).Hash.ToLower();size=(Get-Item $state).Length}}; "
-        "if(Test-Path $root){$items+=@(Get-ChildItem $root -Filter *.json -ErrorAction SilentlyContinue | "
-        "ForEach-Object {[pscustomobject]@{path=$_.FullName;"
-        "sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower();size=$_.Length}})}; "
-        "@{items=$items;count=$items.Count} | ConvertTo-Json -Depth 4 -Compress", timeout=120)['output'])
-    writer.add_evidence('acc008-cleanup-inventory', inventory)
-    removed = []
-    for item in inventory['items']:
-        removed.append(channel.powershell(
-            "$ErrorActionPreference='Stop'; "
-            "$p='" + item['path'] + "'; "
-            "if(-not (Test-Path $p)){throw 'owned object vanished'}; "
-            "$sha=(Get-FileHash $p -Algorithm SHA256).Hash.ToLower(); "
-            "if($sha -ne '" + item['sha256'] + "'){throw 'owned object changed before removal'}; "
-            "Remove-Item -LiteralPath $p -Force; 'REMOVED'", timeout=90)['output'].strip())
-    writer.add_evidence('acc008-cleanup-removed', {
-        'inventory': inventory, 'removed': removed,
-        'only_owned_objects': len(removed) == inventory['count']})
+    controlled_service_stop(channel)
+    from helpers import preserve_owned_state
+    preserve_owned_state(channel, writer, owned_runs)
     restart_service(channel)
     back, snap5 = wait_state(base, lambda s: s.get('state') is not None,
                              timeout=150)

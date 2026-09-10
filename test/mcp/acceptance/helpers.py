@@ -376,12 +376,14 @@ def kill_current_service(channel, context=''):
         "$ErrorActionPreference='Stop'; "
         "$svc=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\"; "
         "if(-not $svc -or -not $svc.ProcessId){throw 'no service instance to kill'}; "
-        "if($svc.PathName -notlike '*fakenetng-mcp.exe*'){throw 'service image unexpected'}; "
+        "$exe=Join-Path $env:ProgramFiles 'FakeNet-NG-MCP\\fakenetng-mcp.exe'; "
+        "if($svc.PathName -ne ('\"'+$exe+'\" run')){throw 'service image unexpected'}; "
         "$p=Get-Process -Id $svc.ProcessId -ErrorAction Stop; "
-        "$born=$p.StartTime.ToFileTimeUtc(); "
+        "[void]$p.Handle; $born=$p.StartTime.ToFileTimeUtc(); "
+        "if($p.Path -ne $exe){throw 'actual service image unexpected'}; "
         "$again=Get-Process -Id $svc.ProcessId -ErrorAction Stop; "
         "if($again.StartTime.ToFileTimeUtc() -ne $born){throw 'service PID was reused'}; "
-        "$again | Stop-Process -Force; "
+        "$p.Kill(); if(-not $p.WaitForExit(5000)){throw 'service did not exit'}; "
         "@{killed_pid=$svc.ProcessId;created=$born;image=$p.Path;context='" + context + "'} | "
         "ConvertTo-Json -Compress", timeout=60)
 
@@ -391,6 +393,63 @@ def kill_owned_process(channel, pid, created, context=''):
     return channel.powershell(
         "$ErrorActionPreference='Stop'; "
         "$p=Get-Process -Id " + str(int(pid)) + " -ErrorAction Stop; "
-        "if($p.StartTime.ToFileTimeUtc() -ne " + str(int(created)) + ")"
+        "[void]$p.Handle; if($p.StartTime.ToFileTimeUtc() -ne " + str(int(created)) + ")"
         "{throw 'owned process PID was reused'}; "
-        "$p | Stop-Process -Force; 'KILLED'", timeout=60)
+        "$p.Kill(); if(-not $p.WaitForExit(5000)){throw 'owned process did not exit'}; 'KILLED'", timeout=60)
+
+
+def preserve_owned_state(channel, writer, run_ids):
+    """Export bytes before deleting only this ACC's state and baseline files.
+
+    Existing foreign baselines block the no-residue scenario. Enumerating a
+    directory grants no ownership and a digest alone cannot preserve evidence.
+    """
+    import base64
+    import hashlib
+    import uuid
+    owned = {str(uuid.UUID(value)) for value in run_ids}
+    if not owned:
+        raise StepError('no owned runs for state cleanup')
+    raw = channel.powershell(
+        "$ErrorActionPreference='Stop'; "
+        "$svc=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\"; "
+        "if($svc -and ($svc.State -ne 'Stopped' -or $svc.ProcessId)){throw 'service must be stopped'}; "
+        "$root=Join-Path $env:ProgramData 'FakeNet-NG-MCP'; "
+        "$files=@(Get-ChildItem (Join-Path $root 'baselines') -Filter '*.json' -ErrorAction Stop); "
+        "$state=Join-Path $root 'state\\state.json'; if(Test-Path $state){$files+=Get-Item $state}; "
+        "$rows=@($files | ForEach-Object {if($_.Length -gt 8388608){throw 'state export exceeds bound'}; "
+        "@{path=$_.FullName;name=$_.Name;size=$_.Length;"
+        "sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower();"
+        "body=[Convert]::ToBase64String([IO.File]::ReadAllBytes($_.FullName))}}); "
+        "ConvertTo-Json -InputObject $rows -Depth 4 -Compress", timeout=60)
+    records = json.loads(raw['output'])
+    from pathlib import PureWindowsPath
+    for item in records:
+        path = PureWindowsPath(item['path'])
+        body = base64.b64decode(item['body'], validate=True)
+        if len(body) != item['size'] or hashlib.sha256(body).hexdigest() != item['sha256']:
+            raise StepError('state export hash mismatch')
+        if path.name == 'state.json':
+            state = json.loads(body.decode('utf-8-sig'))
+            if state.get('run_id') not in owned or state.get('needs_recovery'):
+                raise StepError('state is not a clean marker owned by this ACC')
+        elif path.stem not in owned:
+            raise StepError('foreign baseline retained: ' + str(path))
+    # add_evidence persists exact base64 bytes under Logs before any delete.
+    backup = writer.add_evidence('acc008-preserved-state-bodies', records)
+    if json.loads(backup.read_text(encoding='utf-8')) != records:
+        raise StepError('host state backup readback mismatch')
+    import os
+    with backup.open('rb') as stream:
+        os.fsync(stream.fileno())
+    for item in records:
+        path = item['path']
+        if "'" in path:
+            raise StepError('unexpected state path')
+        channel.powershell(
+            "$ErrorActionPreference='Stop'; $p='" + path + "'; "
+            "if((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLower() -ne '" +
+            item['sha256'] + "'){throw 'owned file changed'}; "
+            "Remove-Item -LiteralPath $p -Force; 'REMOVED'", timeout=30)
+    writer.add_evidence('acc008-owned-cleanup', {'run_ids': sorted(owned),
+                                               'removed': [r['path'] for r in records]})

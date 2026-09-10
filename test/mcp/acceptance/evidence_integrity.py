@@ -43,7 +43,7 @@ def validate_round(record, expected):
         failures.append('audit absent or dirty')
     if not record.get('lock_released_after_stop'):
         failures.append('configuration lock not released')
-    if record.get('class'):
+    if record.get('class') and record.get('class') != 'normal':
         try:
             import ntpath
             run_id = record['fault_evidence']['receipt']['run_id']
@@ -161,6 +161,27 @@ def validate_rounds(records, required_classes=None):
         if classes.get(fault_class, 0) < minimum:
             failures.append('category under-sampled: %s (%d/%d)'
                             % (fault_class, classes.get(fault_class, 0), minimum))
+    return failures
+
+
+def validate_sample_category(record, prefix):
+    """Compare the file's requested slot with actual run/trigger facts."""
+    failures = []
+    if not record.get('run_id'):
+        failures.append('sample has no actual run identity')
+    if prefix.startswith('normal-'):
+        expected = 'default.ini' if prefix == 'normal-builtin' else 'release-custom.ini'
+        if record.get('class') != 'normal' or record.get('config') != expected:
+            failures.append('normal sample configuration/category mismatch')
+    else:
+        expected = prefix.removeprefix('fault-')
+        receipt = (record.get('fault_evidence') or {}).get('receipt') or {}
+        trigger = receipt.get('receipt') or {}
+        if (record.get('class') != expected or trigger.get('fault') != expected or
+                trigger.get('nonce') != record.get('nonce') or not record.get('nonce') or
+                receipt.get('run_id') != record.get('run_id') or
+                (record.get('start_response') or {}).get('run_id') != record.get('run_id')):
+            failures.append('fault sample run/category/trigger mismatch')
     return failures
 
 

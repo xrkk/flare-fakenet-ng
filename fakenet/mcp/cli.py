@@ -396,10 +396,10 @@ def main(argv=None):
         time.sleep(3600)
         return 0
     if argv and argv[0] == 'incident-dump':
-        if len(argv) != 4:
+        if len(argv) != 6:
             return 2
         from fakenet.mcp.dumpworker import dump_main
-        return dump_main(int(argv[1]), argv[2], argv[3])
+        return dump_main(int(argv[1]), argv[2], argv[3], int(argv[4]), float(argv[5]))
     if argv and argv[0] == 'managed-child':
         if len(argv) != 3:
             return 2

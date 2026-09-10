@@ -12,6 +12,13 @@ from pathlib import Path
 PRESTOP_CONTROL = 128
 
 
+def valid_success(result):
+    """Success is a current attempt fact, never a durable stop permit."""
+    deadline = result.get('deadline_monotonic')
+    return (result.get('phase') == 'succeeded' and
+            type(deadline) in (int, float) and time.monotonic() < deadline)
+
+
 def replace_result(source, destination):
     """Publish a complete result while Windows diagnostic readers are open."""
     if os.name != 'nt' or not Path(destination).exists():
@@ -76,6 +83,8 @@ def read_result(path):
         else:
             text = Path(path).read_text(encoding='utf-8')
         data = json.loads(text)
+        if isinstance(data, dict) and data.get('phase') == 'succeeded' and not valid_success(data):
+            data = dict(data, phase='failed', reason='pre-stop publication expired')
         return data if isinstance(data, dict) else None
     except read_errors:
         return None
@@ -103,13 +112,15 @@ class ServiceStop:
         self._worker = None
         self._attempt = 0
         self.ready = False
+        self._committed = False
+        self._deadline = None
         self._result = None
         self._write('idle')
 
     def _write(self, phase, reason=None):
         data = dict(self.identity, instance_id=self.instance,
                     attempt=self._attempt, phase=phase, reason=reason,
-                    timestamp=time.time())
+                    timestamp=time.time(), deadline_monotonic=self._deadline)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(dir=self.path.parent, prefix='.stop-')
         try:
@@ -125,11 +136,12 @@ class ServiceStop:
 
     def request(self):
         with self._lock:
-            if self.ready or (self._worker and self._worker.is_alive()):
+            if self.stop_authorized() or (self._worker and self._worker.is_alive()):
                 return dict(self._result)
             if not self.coordinator.wait_for_idle(0) and self._attempt:
                 return dict(self._result)
             self.coordinator.begin_draining()
+            self.ready = self._committed = False
             self._attempt += 1
             self._write('draining')
             self._worker = threading.Thread(target=self._run,
@@ -138,13 +150,20 @@ class ServiceStop:
             return dict(self._result)
 
     def _fail(self, reason):
+        self.ready = self._committed = False
         self.coordinator.fail_controlled_exit(reason)
         with self._lock:
             self.ready = False
             self._write('failed', reason)
 
+    def stop_authorized(self):
+        # The SCM handler must not wait on a worker doing file/SCM I/O.
+        return (self.ready and self._committed and self._deadline is not None
+                and time.monotonic() < self._deadline)
+
     def _run(self):
         deadline = time.monotonic() + self.budget
+        self._deadline = deadline
         expired = threading.Event()
         complete = threading.Event()
         def timeout():
@@ -189,6 +208,7 @@ class ServiceStop:
                         # The success file itself must land inside the window;
                         # a late one is rewritten as a failure by _fail.
                         raise TimeoutError('prestop total budget exhausted')
+                    self._committed = True
                     complete.set()
                 except BaseException:
                     self.ready = False
@@ -253,11 +273,18 @@ def stop_installed_service(config, result_path, snapshot_path):
                     phase = current.get('phase')
                     if phase == 'failed':
                         raise RuntimeError(current.get('reason') or 'pre-stop failed')
-                    if phase == 'succeeded' and status['ControlsAccepted'] & scm.SERVICE_ACCEPT_STOP:
+                    if valid_success(current) and status['ControlsAccepted'] & scm.SERVICE_ACCEPT_STOP:
                         # Handle pins this service; recheck PID creation before STOP.
                         if process_identity(status['ProcessId']) != identity:
                             raise RuntimeError('service PID was reused')
-                        scm.ControlService(service, scm.SERVICE_CONTROL_STOP)
+                        try:
+                            scm.ControlService(service, scm.SERVICE_CONTROL_STOP)
+                        except Exception as exc:
+                            # Publication may be visible just before the short
+                            # in-memory commit. Only the service can authorize.
+                            if getattr(exc, 'winerror', None) == 1061:
+                                continue
+                            raise
                         break
             time.sleep(0.1)
         else:

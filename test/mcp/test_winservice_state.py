@@ -23,6 +23,7 @@ def service_type(monkeypatch, main, ready=False):
                         types.SimpleNamespace(ServiceFramework=Framework))
     called = []
     orchestration = types.SimpleNamespace(ready=ready, request=lambda: called.append(128))
+    orchestration.stop_authorized = lambda: orchestration.ready
     service = build_service_class(main, orchestration)(['service'])
     return service, scm, reports, called
 

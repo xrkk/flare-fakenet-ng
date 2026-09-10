@@ -108,7 +108,7 @@ class ArtifactRegistry:
         copied = []
         for pattern in ('*.pcap', '*.log', '*report*.html', '*.json'):
             for path in sorted(source.glob(pattern)):
-                if path.parent != source:
+                if path.parent != source or path.name == PUBLICATION_RECORD:
                     continue
                 if keep is not None and not keep(path):
                     continue
@@ -127,6 +127,10 @@ class ArtifactRegistry:
                 copied.append(destination)
         if copied:
             write_publication(run_dir, copied)
+            # These source files belong to the now-ended run as well. They
+            # remain discoverable under runs/<id>, so publish both locations.
+            write_publication(source, [source / p.name[len(prefix):] if prefix
+                                       else source / p.name for p in copied])
         return copied
 
     def metadata(self):
