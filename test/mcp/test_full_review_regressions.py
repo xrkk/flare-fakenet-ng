@@ -444,3 +444,80 @@ def test_health_log_offset_advances_without_skipping(tmp_path):
     assert seen == log.read_bytes()
     assert b'unhandled exception' in seen
     assert offset == log.stat().st_size
+
+
+# -- CHK-066 -----------------------------------------------------------
+
+def _integrity_module():
+    import importlib.util
+
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        'full_review_integrity', root / 'test/mcp/acceptance/evidence_integrity.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _round_record(tmp_path, identity, label='same'):
+    import hashlib
+    import json
+
+    from fakenet.mcp import baseline
+
+    captures = []
+    for name in ('before', 'after'):
+        path = tmp_path / (name + '.json')
+        raw = json.dumps(dict(identity, complete=True, started_at=1.2, ended_at=2.8,
+                              sections={key: label
+                                        for key in baseline.BASELINE_FIELDS})).encode()
+        path.write_bytes(raw)
+        captures.append({'path': str(path.resolve()), 'size': len(raw),
+                         'sha256': hashlib.sha256(raw).hexdigest()})
+    return dict(identity, run_id='run-1',
+                final_state='stopped', audit_diff={}, lock_released_after_stop=True,
+                probe_window_start=1.1, probe_window_end=2.9,
+                probe_timeline=[{'t': 1, 'ok': True}, {'t': 2, 'ok': True},
+                                {'t': 3, 'ok': True}],
+                vm_before={'pid': 1, 'created': 1},
+                vm_after={'pid': 1, 'created': 1},
+                capture_evidence=captures)
+
+
+def test_round_rejects_unrecorded_raw_baseline_difference(tmp_path):
+    """CHK-066: differing raw baselines cannot hide behind an empty diff."""
+    import hashlib
+    import json
+
+    integrity = _integrity_module()
+    identity = dict(candidate_id='candidate', source_commit='a' * 40,
+                    package_sha256='b' * 64, requirements_blob='c' * 40,
+                    master_plan_blob='d' * 40)
+    record = _round_record(tmp_path, identity)
+    assert integrity.validate_round(record, identity) == []
+    # A round whose raw after-capture differs may not declare a clean diff.
+    item = record['capture_evidence'][-1]
+    path = Path(item['path'])
+    payload = json.loads(path.read_bytes())
+    payload['sections'] = {key: 'changed' for key in payload['sections']}
+    raw = json.dumps(payload).encode()
+    path.write_bytes(raw)
+    item['size'] = len(raw)
+    item['sha256'] = hashlib.sha256(raw).hexdigest()
+    assert any('raw baseline diff not recorded' in issue
+               for issue in integrity.validate_round(record, identity))
+
+
+def test_summary_rejects_reused_rounds_and_missing_categories():
+    """CHK-066: the sample set is unique runs with the required categories."""
+    integrity = _integrity_module()
+    rounds = [{'run_id': 'r1', 'class': 'normal'},
+              {'run_id': 'r1', 'class': 'normal'},
+              {'run_id': 'r2', 'class': 'normal'}]
+    issues = integrity.validate_rounds(rounds, {'normal': 3})
+    assert any('sample reused' in issue for issue in issues)
+    assert any('under-sampled' in issue for issue in issues)
+    complete = integrity.validate_rounds(
+        [{'run_id': 'r%d' % i, 'class': 'normal'} for i in range(3)],
+        {'normal': 3})
+    assert complete == []

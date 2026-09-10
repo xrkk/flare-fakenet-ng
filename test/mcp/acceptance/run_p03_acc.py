@@ -830,9 +830,9 @@ def run_acc008(base, channel, writer):
     channel.powershell(
         "Set-Content (%s) 'NOT JSON {{' -Encoding ascii; 'CORRUPTED'"
         % state_file, timeout=60)
-    channel.powershell(
-        'Get-Process fakenetng-mcp | Stop-Process -Force; "KILLED"',
-        timeout=60)
+    from helpers import kill_current_service
+    writer.add_evidence('acc008-corrupt-kill',
+                        kill_current_service(channel, 'corrupt-snapshot'))
     back, snap2 = wait_state(base, lambda s: s.get('state') is not None,
                              timeout=150)
     checks['corrupt_snapshot_fails_recovery'] = \
@@ -854,11 +854,13 @@ def run_acc008(base, channel, writer):
     # the pre-start baseline never recorded => 'failed'.
     listener_job = channel.powershell(
         "$l = [System.Net.Sockets.TcpListener]::new("
-        "[Net.IPAddress]::Any, 47889); $l.Start(); 'EXTRA_UP'", timeout=60)
+        "[Net.IPAddress]::Any, 47889); $l.Start(); "
+        "@{state='EXTRA_UP';pid=$PID;"
+        "created=(Get-Process -Id $PID).StartTime.ToFileTimeUtc()} | "
+        "ConvertTo-Json -Compress", timeout=60)
     writer.add_evidence('acc008-extra-listener', listener_job)
-    channel.powershell(
-        'Get-Process fakenetng-mcp | Stop-Process -Force; "KILLED"',
-        timeout=60)
+    writer.add_evidence('acc008-residue-kill',
+                        kill_current_service(channel, 'residue-inconsistent'))
     time.sleep(2)
     restart_service(channel)
     back, snap3 = wait_state(base, lambda s: s.get('state') is not None,
@@ -867,11 +869,16 @@ def run_acc008(base, channel, writer):
         _recovery_outcome(channel) == 'failed'
     # remove the extra listener (kill the owning powershell via port) and
     # normalize state for later ACCs.
-    channel.powershell(
-        'Get-NetTCPConnection -LocalPort 47889 -State Listen '
-        '-ErrorAction SilentlyContinue | ForEach-Object { '
-        'Stop-Process -Id $_.OwningProcess -Force -ErrorAction '
-        'SilentlyContinue }; "EXTRA_DOWN"', timeout=90)
+    # Only the listener process this runner started is stopped: matching on
+    # the port would kill whichever process happens to own it.
+    listener = json.loads(listener_job['output'])
+    try:
+        from helpers import kill_owned_process
+        killed = kill_owned_process(channel, listener['pid'],
+                                    listener['created'], 'acc008-listener')
+    except Exception as exc:  # noqa: BLE001 - evidence only
+        killed = {'error': repr(exc)}
+    writer.add_evidence('acc008-listener-stop', killed)
     channel.powershell(
         'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; Start-Sleep 2; '
         '"{}" | Set-Content (%s); "MARKER_RESET"' % state_file, timeout=90)
@@ -906,12 +913,22 @@ def run_acc008(base, channel, writer):
 
     # (5) missing snapshot with NO residue => recovery treats as stopped.
     # Clear leftover baselines so the residue check is truly empty.
-    channel.powershell(
-        'Remove-Item (%s) -Force; '
-        'Get-ChildItem (Join-Path $env:ProgramData '
-        '"FakeNet-NG-MCP\\baselines") -Filter *.json -ErrorAction '
-        'SilentlyContinue | Remove-Item -Force; "CLEAN"' % state_file,
-        timeout=90)
+    # Preserve the corpora: export what is removed so the scene and its
+    # attribution evidence survive the cleanup (CHK-062).
+    cleanup = channel.powershell(
+        "$ErrorActionPreference='Stop'; "
+        "$state=' + state_file[state_file.index('(') + 1:].rstrip(' )') + '; "
+        "$root=Join-Path $env:ProgramData 'FakeNet-NG-MCP\\baselines'; "
+        "$export=Join-Path $env:TEMP ('acc008-preserved-' + [guid]::NewGuid().ToString() + '.zip'); "
+        "$items=@(); if(Test-Path $state){$items+=$state}; "
+        "if(Test-Path $root){$items+=@(Get-ChildItem $root -Filter *.json -ErrorAction SilentlyContinue "
+        "| Select-Object -ExpandProperty FullName)}; "
+        "if($items.Count -gt 0){Compress-Archive -Path $items -DestinationPath $export -Force}; "
+        "$items | ForEach-Object {Remove-Item $_ -Force}; "
+        "@{removed=$items.Count;preserved=$export;"
+        "sha256=$(if(Test-Path $export){(Get-FileHash $export -Algorithm SHA256).Hash.ToLower()}else{$null})} | "
+        "ConvertTo-Json -Compress", timeout=120)
+    writer.add_evidence('acc008-cleanup-preserved', cleanup)
     restart_service(channel)
     back, snap5 = wait_state(base, lambda s: s.get('state') is not None,
                              timeout=150)

@@ -363,3 +363,34 @@ EXIT_PASS = 0
 EXIT_FAIL = 1
 EXIT_BLOCKED = 2
 EXIT_TOOL_ERROR = 3
+
+
+def kill_current_service(channel, context=''):
+    """Force-kill only the currently registered service instance.
+
+    The PID and creation time come from SCM and are re-checked immediately
+    before the kill, so an unrelated same-named process is never targeted
+    and a reused PID is refused (CHK-062).
+    """
+    return channel.powershell(
+        "$ErrorActionPreference='Stop'; "
+        "$svc=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\"; "
+        "if(-not $svc -or -not $svc.ProcessId){throw 'no service instance to kill'}; "
+        "if($svc.PathName -notlike '*fakenetng-mcp.exe*'){throw 'service image unexpected'}; "
+        "$p=Get-Process -Id $svc.ProcessId -ErrorAction Stop; "
+        "$born=$p.StartTime.ToFileTimeUtc(); "
+        "$again=Get-Process -Id $svc.ProcessId -ErrorAction Stop; "
+        "if($again.StartTime.ToFileTimeUtc() -ne $born){throw 'service PID was reused'}; "
+        "$again | Stop-Process -Force; "
+        "@{killed_pid=$svc.ProcessId;created=$born;image=$p.Path;context='" + context + "'} | "
+        "ConvertTo-Json -Compress", timeout=60)
+
+
+def kill_owned_process(channel, pid, created, context=''):
+    """Kill one runner-owned process, pinned by PID and creation time."""
+    return channel.powershell(
+        "$ErrorActionPreference='Stop'; "
+        "$p=Get-Process -Id " + str(int(pid)) + " -ErrorAction Stop; "
+        "if($p.StartTime.ToFileTimeUtc() -ne " + str(int(created)) + ")"
+        "{throw 'owned process PID was reused'}; "
+        "$p | Stop-Process -Force; 'KILLED'", timeout=60)

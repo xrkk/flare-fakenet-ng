@@ -87,6 +87,21 @@ def validate_round(record, expected):
                     raise ValueError('environment capture outside current round')
             except (KeyError, TypeError, OSError, ValueError) as exc:
                 failures.append(str(exc))
+        if len(captures) >= 2:
+            # Recompute the environment difference from the raw captures: a
+            # summary that reports a clean audit_diff while its own raw
+            # baselines differ must not pass (CHK-066).
+            try:
+                raw_before = json.loads(Path(captures[0]['path']).read_bytes())
+                raw_after = json.loads(Path(captures[-1]['path']).read_bytes())
+            except (KeyError, TypeError, OSError, ValueError) as exc:
+                failures.append('raw baseline reread failed: ' + str(exc))
+            else:
+                recomputed = raw_section_diff(raw_before.get('sections', {}),
+                                              raw_after.get('sections', {}))
+                if recomputed and not record.get('audit_diff'):
+                    failures.append('raw baseline diff not recorded: %s'
+                                    % sorted(recomputed))
     start, end = record.get('probe_window_start'), record.get('probe_window_end')
     timeline = record.get('probe_timeline')
     if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or not timeline:
@@ -102,6 +117,49 @@ def validate_round(record, expected):
     before, after = record.get('vm_before'), record.get('vm_after')
     if not before or before != after:
         failures.append('VM/service identity drift')
+    return failures
+
+
+def raw_section_diff(before, after):
+    """Sections whose raw before/after content actually differs."""
+    from fakenet.mcp import baseline
+    changed = set()
+    for key in set(before or {}) | set(after or {}):
+        left = baseline._normalize(key, (before or {}).get(key))
+        right = baseline._normalize(key, (after or {}).get(key))
+        if left != right:
+            changed.add(key)
+    return changed
+
+
+def validate_rounds(records, required_classes=None):
+    """Cross-round uniqueness and category coverage for a release summary.
+
+    A summary that counts the same run twice, or that omits a required
+    fault class, is not the required sample set (CHK-066).
+    """
+    failures = []
+    seen = set()
+    classes = {}
+    for index, record in enumerate(records or []):
+        run_id = record.get('run_id') if isinstance(record, dict) else None
+        fault_class = record.get('class') if isinstance(record, dict) else None
+        if not run_id:
+            failures.append('round %d has no run identity' % index)
+            continue
+        if not fault_class:
+            failures.append('round %d has no fault class' % index)
+            continue
+        key = (run_id, fault_class)
+        if key in seen:
+            failures.append('round sample reused: %s/%s' % (run_id, fault_class))
+            continue
+        seen.add(key)
+        classes[fault_class] = classes.get(fault_class, 0) + 1
+    for fault_class, minimum in (required_classes or {}).items():
+        if classes.get(fault_class, 0) < minimum:
+            failures.append('category under-sampled: %s (%d/%d)'
+                            % (fault_class, classes.get(fault_class, 0), minimum))
     return failures
 
 
