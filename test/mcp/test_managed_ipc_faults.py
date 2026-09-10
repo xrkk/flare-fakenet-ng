@@ -158,3 +158,18 @@ def test_eof_is_terminal_for_subsequent_requests_not_a_new_timeout(tmp_path, mon
             managed.request('health', timeout=1)
         with pytest.raises(EOFError, match='managed IPC EOF'):
             managed.request('stacks', timeout=0.01)
+
+
+@pytest.mark.parametrize('fault', ['ipc_wrong_run', 'ipc_repeat', 'ipc_reverse'])
+def test_mismatched_channel_cannot_send_later_lifecycle_requests(tmp_path, monkeypatch, fault):
+    with transport(tmp_path, monkeypatch, fault) as managed:
+        with pytest.raises(RuntimeError, match='run/sequence mismatch'):
+            managed.request('health', timeout=1)
+        original = managed._send
+        def forbidden_write(data):
+            raise AssertionError('terminally mismatched channel was reused')
+        monkeypatch.setattr(managed, '_send', SimpleNamespace(
+            write=forbidden_write, close=original.close))
+        for kind in ('stacks', 'stop', 'health'):
+            with pytest.raises(RuntimeError, match='run/sequence mismatch'):
+                managed.request(kind, timeout=0.1)

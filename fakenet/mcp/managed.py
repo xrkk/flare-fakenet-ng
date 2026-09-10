@@ -85,6 +85,7 @@ class ManagedProcess:
         self._responses = queue.Queue(maxsize=64)
         self._reader = None
         self._write_failed = False
+        self._protocol_failure = None
         child_in, parent_out = os.pipe()
         parent_in, child_out = os.pipe()
         self._send = os.fdopen(parent_out, 'wb', buffering=0)
@@ -155,6 +156,8 @@ class ManagedProcess:
             record_ipc(self.run_dir, 'parent', 'request', message)
             if not self.alive():
                 raise EOFError('managed process exited')
+            if getattr(self, '_protocol_failure', None) is not None:
+                raise self._protocol_failure.with_traceback(None)
             if getattr(self, '_read_failure', None) is not None:
                 raise self._read_failure.with_traceback(None)
             if self._write_failed:
@@ -182,7 +185,11 @@ class ManagedProcess:
                 raise response
             record_ipc(self.run_dir, 'parent', 'response', response)
             if response.get('run_id') != self.run_id or response.get('seq') != seq:
-                raise RuntimeError('managed IPC run/sequence mismatch')
+                # This channel has lost its run/sequence contract. Sending stop
+                # or stacks through it can consume a stale response and invent
+                # a later timeout; retain the original terminal fault instead.
+                self._protocol_failure = RuntimeError('managed IPC run/sequence mismatch')
+                raise self._protocol_failure
             if response.get('error'):
                 raise RuntimeError(response['error'])
             return response['result']

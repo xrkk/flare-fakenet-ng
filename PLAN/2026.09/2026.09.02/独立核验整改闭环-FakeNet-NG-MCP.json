@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "3adeaad0aad1ee6d96b64d276dc2db8190972c5a",
+  "current_head": "3c30230b7740da26922bfdda0194d12fa8d42b31",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "3adeaad单次/永久IPC超时通过，EOF包缺栈/转储失败；已整改EOF只断响应管道及真实栈观测/强制转储，Linux285/3。",
+  "checkpoint": "3c30230构建852/8+17通过；Win10五项IPC通过，逆序第二取证包转储缺项，原失败保留。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-131",
-    "action": "提交EOF与取证路径修正，固定源全构建后受控升级，同候选重跑完整六类IPC，保留旧失败包。"
+    "id": "INTENT-132",
+    "action": "固定逆序响应原生失败包，回放协议失配后仍发送stop产生伪超时；在既有终止性IPC契约内阻止失配通道复用，测试后固定源重建重验。"
   },
   "events": [
     {
@@ -1155,11 +1155,13 @@
   ],
   "active_build": {
     "status": "PASS",
-    "source_commit": "3adeaad0aad1ee6d96b64d276dc2db8190972c5a",
-    "output": "dist/mcp-remediation-20260910-3adeaad",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-3adeaad.txt",
-    "session_id": 69294,
-    "package_sha256": "f5dbef4d6d830973348323b6d2915a157a9df972302b183e2fb9fbf8df223657"
+    "source_commit": "3c30230b7740da26922bfdda0194d12fa8d42b31",
+    "output": "dist/mcp-remediation-20260910-3c30230",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-3c30230.txt",
+    "zip_sha256": "33a3b877e70be6c89670461f4d01b9f4ef82a7fb177513a2e395090b9fd208e5",
+    "windows_main_passed": 852,
+    "windows_main_skipped": 8,
+    "windows_http_passed": 17
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/native-8303ea2-active-probe-full-runtime.zip",
@@ -1179,15 +1181,19 @@
   },
   "active_native_validation": {
     "status": "COMPLETED_WITH_FAILURE",
-    "source_head": "3adeaad0aad1ee6d96b64d276dc2db8190972c5a",
-    "mode": "controlled upgrade then IPC matrix",
+    "source_head": "3c30230b7740da26922bfdda0194d12fa8d42b31",
     "formal_acc_pass": false,
-    "evidence": "Logs/fakenetng-mcp/remediation-20260910/3adeaad-ipc-matrix",
-    "session_id": 17491,
+    "upgrade_evidence": "Logs/fakenetng-mcp/remediation-20260910/native-3c30230-upgrade-and-run.json",
+    "evidence": "Logs/fakenetng-mcp/remediation-20260910/3c30230-ipc-matrix",
+    "intent": "沿用INTENT-131，同候选六项IPC故障；保留原失败记录，未关闭CHK。",
+    "session_id": 48155,
     "checks": {
       "ipc_once_timeout": true,
       "ipc_permanent_timeout": true,
-      "ipc_eof": false
+      "ipc_eof": true,
+      "ipc_wrong_run": true,
+      "ipc_repeat": true,
+      "ipc_reverse": false
     }
   },
   "environment_question": {
