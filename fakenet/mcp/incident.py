@@ -155,6 +155,12 @@ class IncidentCollector:
             path = self._write_item(name, payload)
             if path is None:
                 continue
+            if self._timed_out():
+                # A collection that only finished after the total budget is
+                # not complete evidence, however long the item itself took.
+                self._record(name, 'failed', dump_path=path,
+                             failure_reason='total budget exhausted')
+                continue
             self._record(name, 'ok', dump_path=path)
 
         self._conditional_dump(context)

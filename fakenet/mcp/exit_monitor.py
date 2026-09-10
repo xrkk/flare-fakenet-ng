@@ -5,6 +5,39 @@ import threading
 import time
 
 
+OWNER_RESULT = 'owner-result.json'
+
+
+def active_bytes(base):
+    """Bytes of diagnostics still in progress, with the directory bound."""
+    used = 0
+    count = 0
+    for path in base.rglob('*'):
+        count += 1
+        if count > 10000 or path.is_symlink():
+            raise RuntimeError('unbounded/linked exit diagnostic directory')
+        if not path.is_file():
+            continue
+        if _published(base, path):
+            # The 512 MiB budget covers diagnostics still in progress.
+            # Evidence that was already published must not starve a new
+            # collection, and it is never deleted to make room.
+            continue
+        used += path.stat().st_size
+    return used
+
+
+def _published(base, path):
+    """True for evidence already published by its owning supervisor."""
+    try:
+        relative = path.relative_to(base)
+    except ValueError:
+        return False
+    if len(relative.parts) < 2:
+        return False
+    return (base / relative.parts[0] / OWNER_RESULT).is_file()
+
+
 def main(arguments):
     # The rejection deadline starts before importing the collection modules.
     entered = time.monotonic()
@@ -48,14 +81,7 @@ def main(arguments):
         if time.monotonic() >= deadline[0]:
             return 3
         # All rejected target/duplicate paths above create no persistent output.
-        used = 0
-        count = 0
-        for path in base.rglob('*'):
-            count += 1
-            if count > 10000 or path.is_symlink():
-                raise RuntimeError('unbounded/linked exit diagnostic directory')
-            if path.is_file():
-                used += path.stat().st_size
+        used = active_bytes(base)
         remaining = QUOTA - used - 128 * 1024
         if remaining <= 0:
             raise RuntimeError('global exit diagnostic quota exhausted')

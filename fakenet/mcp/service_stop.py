@@ -148,10 +148,12 @@ class ServiceStop:
         expired = threading.Event()
         complete = threading.Event()
         def timeout():
+            # Flag the exhaustion before taking the worker's lock: a slow
+            # final publication must not hide the budget from the watchdog.
+            expired.set()
             with self._lock:
                 if complete.is_set():
                     return
-                expired.set()
                 self._fail('prestop total budget exhausted')
         watchdog = threading.Timer(self.budget, timeout)
         watchdog.daemon = True
@@ -178,6 +180,10 @@ class ServiceStop:
                 self.ready = True
                 try:
                     self.publish_ready()
+                    if expired.is_set() or time.monotonic() >= deadline:
+                        # The freeze order is kept, but a publication that
+                        # outlived the total budget is not a success.
+                        raise TimeoutError('prestop total budget exhausted')
                     self._write('succeeded')
                     complete.set()
                 except BaseException:

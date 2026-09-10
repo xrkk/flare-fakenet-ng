@@ -58,7 +58,7 @@ def process_capture_script():
         "if($LASTEXITCODE -ne 0){throw 'tasklist module observation failed'}; "
         "$service=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\"; "
         "$managed=@(Get-CimInstance Win32_Process | Where-Object {"
-        "$_.Name -in @('fakenetng-mcp.exe','fakenet.exe')} | Select-Object "
+        "$_.Name -in @('fakenetng-mcp.exe','fakenet.exe','fakenetng-mcp-managed.exe')} | Select-Object "
         "@{Name='ProcessName';Expression={$_.Name -replace '\\.exe$',''}},"
         "@{Name='Id';Expression={$_.ProcessId}},"
         "@{Name='StartTime';Expression={$_.CreationDate}},ExecutablePath,CommandLine); "
@@ -115,9 +115,21 @@ def _normalize(section, value):
                 # Raw PID and creation time remain in the baseline. Comparing
                 # identities across SCM restart permits PID replacement only,
                 # never losing a process, module, driver or multiplicity.
+                # Only the process instance may change across an approved
+                # SCM restart: the image path and command line stay part of
+                # the identity, so a same-named foreign image replacing a
+                # managed one is a real difference rather than an erasure.
+                managed = []
+                for process in observed['managed']:
+                    if is_control_client(process, observed.get('service_command')):
+                        continue
+                    managed.append([
+                        process.get('ProcessName'),
+                        ntpath.normcase(process.get('ExecutablePath') or ''),
+                        process.get('CommandLine') or '',
+                    ])
                 observed = {'modules': sorted(modules),
-                            'managed': sorted(p['ProcessName'] for p in observed['managed']
-                                              if not is_control_client(p, observed.get('service_command'))),
+                            'managed': sorted(managed),
                             'drivers': sorted(observed['drivers'], key=lambda p: p['Name'])}
                 return json.dumps(observed, sort_keys=True, ensure_ascii=False)
         except (ValueError, TypeError, KeyError):

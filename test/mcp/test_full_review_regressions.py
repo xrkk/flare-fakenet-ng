@@ -283,3 +283,122 @@ def test_malformed_modern_params_are_rejected_structurally(params):
 def test_absent_modern_params_are_still_accepted():
     response_wire = _modern_request({'name': 'ping'})
     assert response_wire[1], 'a well formed request must be forwarded'
+
+
+# -- CHK-055 -----------------------------------------------------------
+
+def test_baseline_keeps_managed_identity_and_dedicated_image():
+    """CHK-055: the audit must see a swapped image, and the dedicated
+    managed image must be part of the captured baseline at all."""
+    import json
+
+    from fakenet.mcp import baseline
+
+    def capture_of(path):
+        return json.dumps({
+            'modules': [],
+            'managed': [{'ProcessName': 'fakenetng-mcp', 'Id': 123,
+                         'StartTime': '1', 'ExecutablePath': path,
+                         'CommandLine': path + ' run'}],
+            'drivers': [],
+            'service_command': '"C:\\product\\fakenetng-mcp.exe" run'})
+
+    product = capture_of('C:\\product\\fakenetng-mcp.exe')
+    foreign = capture_of('C:\\foreign\\fakenetng-mcp.exe')
+    assert baseline._normalize('windivert_processes', product) != \
+        baseline._normalize('windivert_processes', foreign)
+    # the approved instance change (same image, new PID/time) still compares equal
+    respawned = json.dumps(json.loads(product.replace('123', '999'))
+                           | {'managed': [dict(
+                               json.loads(product)['managed'][0], Id=999,
+                               StartTime='2')]})
+    assert baseline._normalize('windivert_processes', product) == \
+        baseline._normalize('windivert_processes', respawned)
+    assert 'fakenetng-mcp-managed.exe' in baseline.process_capture_script()
+
+
+# -- CHK-057 -----------------------------------------------------------
+
+def test_slow_final_publication_is_not_reported_as_success(tmp_path):
+    """CHK-057: the whole final publication is inside the total budget."""
+    from fakenet.mcp.service_stop import ServiceStop, read_result
+    coord = Coordinator(LifecycleDouble())
+    stop = ServiceStop(coord, lambda deadline: {'state': 'stopped'},
+                       lambda: time.sleep(0.15), tmp_path / 'stop.json',
+                       identity={'pid': 123, 'creation_time': '1'})
+    stop.budget = 0.03
+    started = time.monotonic()
+    stop.request()
+    stop._worker.join(5)
+    assert not stop._worker.is_alive()
+    result = read_result(stop.path)
+    assert result['phase'] == 'failed'
+    assert stop.ready is False
+    assert time.monotonic() - started >= 0.03
+
+
+# -- CHK-060 -----------------------------------------------------------
+
+def test_incident_item_finishing_after_the_budget_is_not_complete(monkeypatch, tmp_path):
+    """CHK-060: the total budget bounds the collection, not just each item."""
+    import json
+
+    from fakenet.mcp import incident
+
+    clock = [100.0]
+    with monkeypatch.context() as patch:
+        patch.setattr(incident, 'time', SimpleNamespace(time=lambda: clock[0]))
+        collector = incident.IncidentCollector(tmp_path / 'incident', 'run')
+
+        def slow(kind, context):
+            clock[0] += 181
+            return 'payload'
+
+        patch.setattr(incident, 'BASIC_ITEMS',
+                      (('timeline.json', 'timeline'),))
+        patch.setattr(collector, '_collect_item', slow)
+        collector.collect({})
+    manifest = json.loads((collector.root / 'manifest.json').read_text())
+    assert manifest['complete'] is False
+    assert manifest['entries'][0]['result'] == 'failed'
+
+
+def test_generic_dump_rejects_a_non_mdmp_result(monkeypatch, tmp_path):
+    """CHK-060: a non-MDMP file is not a dump."""
+    from fakenet.mcp import dumpworker, jobobject
+
+    class Job:
+        def spawn(self, command, *args):
+            Path(command[-1]).write_bytes(b'X')
+            return 1
+
+        def poll(self):
+            return 0
+
+        def close(self):
+            pass
+
+    target = tmp_path / 'invalid.dmp'
+    monkeypatch.setitem(__import__('sys').modules, 'msvcrt',
+                        SimpleNamespace(get_osfhandle=lambda handle: handle))
+    monkeypatch.setattr(jobobject, 'ManagedJob', Job)
+    monkeypatch.setattr(dumpworker.os, 'set_handle_inheritable',
+                        lambda *a: None, raising=False)
+    with pytest.raises(RuntimeError):
+        dumpworker.collect_dump(123, '1', target, time.monotonic() + 5)
+    assert not target.exists()
+
+
+def test_published_evidence_does_not_consume_the_active_budget(tmp_path):
+    """CHK-060: archived evidence must not starve a new collection."""
+    from fakenet.mcp.exit_monitor import active_bytes
+
+    base = tmp_path / 'exit-evidence'
+    done = base / 'run-done'
+    live = base / 'run-live'
+    done.mkdir(parents=True)
+    live.mkdir(parents=True)
+    (done / 'target.dmp').write_bytes(b'x' * 4096)
+    (done / 'owner-result.json').write_text('{}')
+    (live / 'target.dmp.partial').write_bytes(b'y' * 32)
+    assert active_bytes(base) == 32

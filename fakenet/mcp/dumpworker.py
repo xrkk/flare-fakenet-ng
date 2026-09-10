@@ -33,6 +33,17 @@ def collect_dump(pid, creation_time, target, deadline):
             time.sleep(0.02)
         if job.poll() != 0 or not target.exists() or target.stat().st_size == 0:
             raise RuntimeError('dump helper failed, inspect collector stderr')
+        from fakenet.mcp.exit_native import verify_dump
+        try:
+            # The same structural and target-identity check the exit capture
+            # uses: a non-MDMP or foreign file is not evidence.
+            verify_dump(target, pid)
+        except BaseException:
+            try:
+                target.unlink()
+            except OSError:
+                pass
+            raise
     finally:
         for handle in handles:
             os.set_handle_inheritable(handle, False)
@@ -60,8 +71,18 @@ def dump_main(pid, creation_time, target):
     process = kernel.OpenProcess(0x400 | 0x10 | 0x40, False, pid)
     if not process:
         raise c.WinError(c.get_last_error())
+    kernel.GetProcessTimes.argtypes = [w.HANDLE] + [c.POINTER(c.c_uint64)] * 4
+    kernel.GetProcessTimes.restype = w.BOOL
     file = None
     try:
+        # Re-read the identity from the handle actually being dumped: closing
+        # the gap between the PID lookup and OpenProcess keeps a reused PID
+        # from being dumped under the old target's name.
+        stamps = [c.c_uint64() for _ in range(4)]
+        if not kernel.GetProcessTimes(process, *(c.byref(item) for item in stamps)):
+            raise c.WinError(c.get_last_error())
+        if str(stamps[0].value) != str(creation_time):
+            raise RuntimeError('dump target identity changed before the handle opened')
         file = kernel.CreateFileW(str(target), 0x40000000, 0, None, 1, 0x80, None)
         if file in (None, c.c_void_p(-1).value):
             raise c.WinError(c.get_last_error())
