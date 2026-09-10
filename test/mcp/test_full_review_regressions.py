@@ -166,7 +166,7 @@ def test_unpublished_artifacts_are_not_reported_as_complete(tmp_path):
     (root / 'target.dmp.partial').write_bytes(b'partial')
     (root / 'udp.etl.part').write_bytes(b'partial')
     (root / 'userdump.dmp').write_bytes(b'MZfinal')
-    items = {item['path'].rsplit('/', 1)[-1]: item
+    items = {Path(item['path']).name: item
              for item in ArtifactRegistry(root).metadata()}
     assert items['target.dmp.partial']['complete'] is False
     assert items['target.dmp.partial']['sha256'] is None
@@ -183,7 +183,7 @@ def test_list_artifacts_uses_the_same_completion_rule(tmp_path):
     (root / 'run.log').write_bytes(b'final')
     coord = Coordinator(LifecycleDouble())
     tools = surface(coord, artifacts=root)
-    items = {item['path'].rsplit('/', 1)[-1]: item
+    items = {Path(item['path']).name: item
              for item in tools['list_artifacts']()['artifacts']}
     assert items['target.dmp.partial']['complete'] is False
     assert items['target.dmp.partial']['sha256'] is None
