@@ -137,8 +137,13 @@ def test_total_deadline_reports_failure_while_worker_remains_fenced(tmp_path):
     stop.request()
     assert entered.wait(1)
     try:
+        # The result file is replaced atomically, so a poll may observe it
+        # mid-replacement; the phase assertion below is unchanged.
         limit = time.monotonic() + 1
-        while read_result(stop.path)['phase'] != 'failed' and time.monotonic() < limit:
+        while time.monotonic() < limit:
+            current = read_result(stop.path)
+            if current is not None and current.get('phase') == 'failed':
+                break
             time.sleep(0.01)
         assert read_result(stop.path)['phase'] == 'failed'
         assert stop._worker.is_alive()
