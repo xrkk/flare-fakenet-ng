@@ -187,7 +187,11 @@ def run_windows_test_gate(stage, build_root):
 
     main_xml = validation / 'windows-pytest-main.xml'
     main_log = validation / 'windows-pytest-main.txt'
-    main_args = ['-m', 'pytest', '-q', '--disable-warnings']
+    # The main group creates multiple Tcl interpreters. On Windows, pytest's
+    # fd capture replaces native standard handles and can disrupt Tcl file
+    # channels (including init.tcl reads). Keep native handles stable; the
+    # outer subprocess still records native stdout/stderr in the build log.
+    main_args = ['-m', 'pytest', '-q', '--disable-warnings', '--capture=sys']
     main_args.extend('--ignore=%s' % path for path in HTTP_CONFLICT_TESTS)
     main_args.extend(['--junitxml', wine_path(main_xml)])
     wine_python_logged(main_args, stage, main_log, env=env)
