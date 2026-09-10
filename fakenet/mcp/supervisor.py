@@ -517,7 +517,9 @@ class RealSupervisor:
         versions = {'python': sys.version, 'os': platform.platform(),
                     'executable': sys.executable,
                     'config_sha256': self._marker['config_sha256'], 'dependencies': {}}
-        for package in ('mcp', 'pydivert', 'pywin32', 'psutil'):
+        # Only the pinned candidate dependency set is recorded; the frozen
+        # package cannot load anything the build does not install.
+        for package in ('mcp', 'pydivert', 'pywin32'):
             try:
                 versions['dependencies'][package] = importlib.metadata.version(package)
             except importlib.metadata.PackageNotFoundError:

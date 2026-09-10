@@ -1,13 +1,22 @@
 # Copyright 2026 Google LLC
 """Fixed package/registration prerequisites for target-only exit evidence."""
 import json
+import os
 from pathlib import Path
+import time
 
 from fakenet.mcp import exit_registration as registration
 from fakenet.mcp.exit_files import root, digest
 
 HELPER = 'exit-helper/fakenetng-mcp-exit-monitor.exe'
+HELPER_IMAGE = 'fakenetng-mcp-exit-monitor.exe'
 MANAGED = registration.IMAGE
+# Bound the helper sweep so a large process table cannot make cleanup
+# observation unbounded.
+OBSERVATION_BUDGET = 4096
+# ERROR_INVALID_PARAMETER / ERROR_NOT_FOUND: the PID left the process table
+# between the snapshot and the native open.
+_EXITED = (87, 1168)
 
 
 def verify_assets(package):
@@ -120,48 +129,128 @@ def install(package):
         return created
 
 
-def assert_no_helpers(package):
-    import psutil
+def live_processes():
+    """Return (pid, image base name) for the current process table.
+
+    Enumeration uses the native snapshot API so the frozen package needs no
+    module beyond the pinned dependency set the candidate build installs.
+    """
+    import ctypes as c
+    from ctypes import wintypes as w
+
+    class PROCESSENTRY32W(c.Structure):
+        _fields_ = [('dwSize', w.DWORD),
+                    ('cntUsage', w.DWORD),
+                    ('th32ProcessID', w.DWORD),
+                    ('th32DefaultHeapID', c.c_void_p),
+                    ('th32ModuleID', w.DWORD),
+                    ('cntThreads', w.DWORD),
+                    ('th32ParentProcessID', w.DWORD),
+                    ('pcPriClassBase', c.c_long),
+                    ('dwFlags', w.DWORD),
+                    ('szExeFile', w.WCHAR * 260)]
+
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateToolhelp32Snapshot.argtypes = [w.DWORD, w.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype = w.HANDLE
+    kernel.Process32FirstW.argtypes = [w.HANDLE, c.POINTER(PROCESSENTRY32W)]
+    kernel.Process32NextW.argtypes = [w.HANDLE, c.POINTER(PROCESSENTRY32W)]
+    kernel.Process32FirstW.restype = w.BOOL
+    kernel.Process32NextW.restype = w.BOOL
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    snapshot = kernel.CreateToolhelp32Snapshot(0x2, 0)
+    if not snapshot or snapshot == c.c_void_p(-1).value:
+        raise c.WinError(c.get_last_error())
+    found = []
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = c.sizeof(entry)
+        if not kernel.Process32FirstW(snapshot, c.byref(entry)):
+            raise c.WinError(c.get_last_error())
+        while True:
+            found.append((entry.th32ProcessID, entry.szExeFile))
+            # Exhaustion reports ERROR_NO_MORE_FILES, which ends the walk.
+            if not kernel.Process32NextW(snapshot, c.byref(entry)):
+                break
+    finally:
+        kernel.CloseHandle(snapshot)
+    return found
+
+
+def _pin_helper(pid, expected, allow_terminate):
+    """Return a native handle when this PID is the packaged helper image."""
+    from fakenet.mcp.exit_native import TargetHandle
+    try:
+        handle = TargetHandle(pid, allow_terminate=allow_terminate)
+    except OSError as exc:
+        if exc.winerror in _EXITED:
+            return None
+        raise
+    try:
+        image = handle.identity()['image'].casefold()
+    except OSError as exc:
+        # A PID that left the process table is not this package's helper; any
+        # other failure is reported instead of being silently skipped.
+        if exc.winerror not in _EXITED:
+            handle.close()
+            raise
+        image = None
+    except BaseException:
+        handle.close()
+        raise
+    if image == expected:
+        return handle
+    handle.close()
+    return None
+
+
+def _packaged_helpers(package, allow_terminate=False, deadline=None,
+                      budget=None):
+    """Resolve live helper processes of this exact package to native handles.
+
+    Only an image whose full path equals the packaged helper is returned, so a
+    foreign program that shares the image name is never opened or terminated.
+    """
     expected = str(Path(package).resolve() / HELPER).casefold()
-    for process in psutil.process_iter(['pid', 'name']):
-        if (process.info.get('name') or '').casefold() != 'fakenetng-mcp-exit-monitor.exe':
-            continue
-        try:
-            if process.exe().casefold() == expected:
-                raise RuntimeError('exit helper still active: %d' % process.pid)
-        except psutil.NoSuchProcess:
-            continue
+    handles = []
+    try:
+        for index, (pid, image) in enumerate(live_processes()):
+            if budget is not None and index >= budget:
+                raise RuntimeError('helper cleanup observation budget exhausted')
+            if deadline is not None and time.monotonic() >= deadline:
+                raise RuntimeError('helper cleanup observation budget exhausted')
+            if pid == os.getpid() or image.casefold() != HELPER_IMAGE:
+                continue
+            handle = _pin_helper(pid, expected, allow_terminate)
+            if handle is None:
+                continue
+            handles.append(handle)
+            if allow_terminate:
+                # Terminate as soon as one is pinned: an aborted sweep must
+                # not leave an already-identified helper running.
+                handle.terminate_helper()
+    except BaseException:
+        for handle in handles:
+            handle.close()
+        raise
+    return handles
+
+
+def assert_no_helpers(package):
+    handles = _packaged_helpers(package)
+    try:
+        if handles:
+            raise RuntimeError('exit helper still active: %d' % handles[0].pid)
+    finally:
+        for handle in handles:
+            handle.close()
 
 
 def end_helpers(package, deadline):
     """Close only native-pinned helpers from this exact installed package."""
-    import psutil
-    import time
-    from fakenet.mcp.exit_native import TargetHandle
-    expected = str(Path(package).resolve() / HELPER).casefold()
-    handles = []
+    handles = _packaged_helpers(package, allow_terminate=True, deadline=deadline,
+                                budget=OBSERVATION_BUDGET)
     try:
-        for index, process in enumerate(psutil.process_iter(['pid', 'name'])):
-            if index >= 4096 or time.monotonic() >= deadline:
-                raise RuntimeError('helper cleanup observation budget exhausted')
-            if (process.info.get('name') or '').casefold() != 'fakenetng-mcp-exit-monitor.exe':
-                continue
-            try:
-                handle = TargetHandle(process.pid, allow_terminate=True)
-            except OSError:
-                if not psutil.pid_exists(process.pid):
-                    continue
-                raise
-            try:
-                matches = handle.identity()['image'].casefold() == expected
-            except BaseException:
-                handle.close()
-                raise
-            if not matches:
-                handle.close()
-                continue
-            handles.append(handle)
-            handle.terminate_helper()
         while any(not handle.exited() for handle in handles) and time.monotonic() < deadline:
             time.sleep(0.01)
         if any(not handle.exited() for handle in handles):
