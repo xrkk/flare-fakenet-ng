@@ -9,10 +9,10 @@
     "gate": "PASS",
     "at": "2026-09-09T14:26:46.931484+08:00"
   },
-  "status": "WAITING_USER_INPUT",
+  "status": "REMEDIATING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "a78b706461f4014def1bfe129ba43a0e95811033",
+  "current_head": "036eb74e6235c3b248524c29975074c7e9f58100",
   "round_limit": 5,
   "completed_rounds": 2,
   "next_round": 3,
@@ -618,8 +618,8 @@
     },
     {
       "id": "PLAN-CHANGE-007",
-      "status": "PENDING_USER_DECISION",
-      "stage": "AFFECTED_IMPLEMENTATION_PAUSED",
+      "status": "ACCEPTED",
+      "stage": "IMPLEMENTATION_AUTHORIZED",
       "record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.10-11-PLAN-CHANGE-007-硬结束平台边界与隔离采集提案.md",
       "trigger": "总纲18.5硬结束与不可保证取消/终止的Windows I/O边界；10号复核helper未验证时不能释放目标",
       "affected_edges": [
@@ -628,12 +628,18 @@
         "P03→P04 IMP-P04-02/05",
         "P04→P05 ACC004/014/017及ACC019"
       ],
-      "recommendation": "A：保持产品故障60/180秒和归零门禁；隔离诊断工作，仅有原生证据的内核/驱动不可取消情形进入平台阻断并保留责任；需要规范回流，未批准"
+      "recommendation": "A：保持产品故障60/180秒和归零门禁；隔离诊断工作，仅有原生证据的内核/驱动不可取消情形进入平台阻断并保留责任；需要规范回流，未批准",
+      "decision": "用户对推荐A回复授权，随后resume；仅按007明确的平台适用前提回流，无额外豁免",
+      "accepted_at": "2026-09-10T23:30:03.194514+08:00"
     }
   ],
   "checkpoint": "INTENT-159 verified: a78b706 Linux419/4, Windows987/8+HTTP17; waiting normative decision; records-only descendants allowed at resume after diff reconciliation",
-  "stop_reason": "PLAN-CHANGE-007硬结束平台适用前提/验收分支需用户裁决；纯实现源码测试通过，未构建部署或原生全矩阵，不关闭CHK",
-  "pending_intent": null,
+  "stop_reason": null,
+  "pending_intent": {
+    "id": "INTENT-162",
+    "at": "2026-09-10T23:49:57.245603+08:00",
+    "action": "按15号通过对象实施固定诊断任务隔离、非阻塞停止意图、真实句柄/Job保留和跨层调用点；先本地/Windows验证再新候选原生，不关闭CHK"
+  },
   "events": [
     {
       "at": "2026-09-09T14:26:46.931484+08:00",
@@ -919,6 +925,16 @@
       "status": "WAITING_USER_INPUT",
       "source_head": "a78b706461f4014def1bfe129ba43a0e95811033",
       "chk_closed": []
+    },
+    {
+      "at": "2026-09-10T23:30:03.194514+08:00",
+      "intent": "INTENT-160",
+      "actual": "授权已登记；需求v4/总纲v8及P01v8/P03v7/P04v6/P05v6回流草案完成，待保真自评与必要审核"
+    },
+    {
+      "at": "2026-09-10T23:44:53.451210+08:00",
+      "intent": "INTENT-161",
+      "actual": "首次意见两项均接受；原审核对象保存后修订19.2/四Pxx并再自评；审核实例恢复一次仍等记录和复审，代码未改"
     }
   ],
   "response_record": {
@@ -1055,8 +1071,8 @@
     }
   ],
   "plan_self_review": {
-    "path": "PLAN/2026.09/2026.09.09/2026.09.10-04-规范回流再自评-PLAN-CHANGE-006.md",
-    "blob": "09be7b6b3fd9dc0262beec7348c8ad2e8435d07e",
+    "path": "PLAN/2026.09/2026.09.09/2026.09.10-14-规范回流再自评-PLAN-CHANGE-007.md",
+    "blob": "e7d642759d3870ea87f053ea69d035cac48a7acf",
     "fidelity": [
       40,
       40,
@@ -1066,21 +1082,27 @@
       0
     ],
     "affected_fidelity": [
-      2,
-      2,
+      7,
+      7,
       0,
       0,
       0,
       0
     ],
-    "result": "待同实例必要复审，非实施通过"
+    "result": "接受独立实例两项完整意见后再自评；待同实例首次记录及复审，不恢复实施资格"
   },
   "plan_reviewer": {
-    "instance": "/root/plan_change_006_review",
+    "instance": "/root/plan_change_007_review",
     "model": "gpt-5.6-sol",
     "reasoning_effort": "high",
-    "mode": "PLAN-CHANGE-006必要方案审核；非CHK第2轮",
-    "status": "PASSED"
+    "mode": "PLAN-CHANGE-007必要方案审核；不计CHK轮次",
+    "status": "PASSED",
+    "responses_received": [
+      "PC007-R01",
+      "PC007-R02"
+    ],
+    "original_objects": "Logs/fakenetng-mcp/main-remediation/pc007-first-review-objects/objects.json",
+    "service_observation": "实例回报非工具/服务阻塞，首审13号已完成；恢复一次后同实例复审14号对象"
   },
   "plan_review_records": [
     {
@@ -1163,6 +1185,53 @@
       "fidelity": [
         40,
         40,
+        0,
+        0,
+        0,
+        0
+      ],
+      "open": []
+    },
+    {
+      "path": "PLAN/2026.09/2026.09.09/2026.09.10-13-必要方案审核-PLAN-CHANGE-007.md",
+      "blob": "21112e31e455062c16cc1f604064fe548ba14ab0",
+      "result": "不通过；007实施资格未恢复",
+      "fidelity": [
+        40,
+        36,
+        0,
+        4,
+        0,
+        0
+      ],
+      "affected_fidelity": [
+        7,
+        3,
+        0,
+        4,
+        0,
+        0
+      ],
+      "items": [
+        "PC007-R01",
+        "PC007-R02"
+      ]
+    },
+    {
+      "path": "PLAN/2026.09/2026.09.09/2026.09.10-15-必要方案定向复审-PLAN-CHANGE-007.md",
+      "blob": "6da4adb0196fb6bd391aad957054697ff04f93ce",
+      "result": "通过，007实施资格恢复",
+      "fidelity": [
+        40,
+        40,
+        0,
+        0,
+        0,
+        0
+      ],
+      "affected_fidelity": [
+        7,
+        7,
         0,
         0,
         0,
