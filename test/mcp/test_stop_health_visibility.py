@@ -109,3 +109,31 @@ def test_stop_transport_failure_after_tree_exit_does_not_dump_dead_target(tmp_pa
         assert result['last_run_outcome'] == 'failed'
         assert len(incidents) == expected_incidents
         assert not snapshot.read()[0]['needs_recovery']
+
+
+def test_tree_exit_during_incident_preparation_reuses_same_complete_failure(tmp_path, monkeypatch):
+    from fakenet.mcp import baseline, incident
+    runner = RealSupervisor(artifacts_root=tmp_path)
+    runner._run_dir = tmp_path
+    runner._marker = {'run_id': 'run1', 'config_sha256': 'a'*64}
+    runner._baseline_store = SimpleNamespace(load=lambda run: {'sections': {}})
+    runner._coordinator = SimpleNamespace(events=lambda count: [])
+    identity = {'pid': 42, 'creation_time': '123'}
+    runner._completed_failure_evidence = ('run1', identity, 'managed IPC response timeout')
+    state = {'alive': True}
+    def stacks(kind, **kwargs):
+        raise TimeoutError('response missing')
+    child = SimpleNamespace(identity=identity, pid=42, request=stacks,
+                            alive=lambda: state['alive'],
+                            job=SimpleNamespace(poll=lambda: None if state['alive'] else 0,
+                                                members=lambda: [42] if state['alive'] else []))
+    runner._fakenet = child
+    def capture(deadline):
+        state['alive'] = False
+        return {}
+    monkeypatch.setattr(baseline, 'capture', capture)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('must not create a duplicate pack for an already captured exited target')
+    monkeypatch.setattr(incident, 'IncidentCollector', forbidden)
+    runner._collect_incident_impl('managed IPC response timeout')
+    assert not state['alive']

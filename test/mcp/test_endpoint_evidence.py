@@ -71,3 +71,19 @@ def test_native_send_completion_is_paired_and_missing_completion_stays_unknown()
     source.pop(sent['completed'])
     first = next(r for r in udp_lifetimes(source) if r['bound'])['outbound'][0]
     assert first['completed'] is None and first['succeeded'] is False
+
+
+def test_overlapping_identical_send_buffers_remain_ambiguous_until_new_socket():
+    import copy
+    source = json.loads((Path(__file__).parent / 'fixtures' / 'native_afd_udp_52623.json').read_text())['events']
+    life = next(r for r in udp_lifetimes(source) if r['bound'])
+    first = life['outbound'][0]
+    entry, completion = source[first['event']], source[first['completed']]
+    prefix = source[:first['event']]
+    # Two indistinguishable calls overlap; after the first exit, a third
+    # starts before the second exit. Neither exit may certify that third call.
+    rows = udp_lifetimes(prefix + [copy.deepcopy(e) for e in
+                                  (entry, entry, completion, entry, completion, completion)])
+    sends = next(r for r in rows if r['bound'])['outbound']
+    assert len(sends) == 3
+    assert all(not s['succeeded'] and s['completed'] is None for s in sends)

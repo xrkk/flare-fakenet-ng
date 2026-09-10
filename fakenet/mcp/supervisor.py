@@ -504,6 +504,14 @@ class RealSupervisor:
                    'dump_reason': ('managed hang/timeout' if 'timeout' in reason.lower() or
                                    'did not exit' in reason.lower() else
                                    None if stacks else 'managed stacks unavailable')}
+        # The tree may exit while the bounded stack/baseline observations
+        # above are running. Recheck at the actual collection boundary, not
+        # just when stop first observes its missing response.
+        if (child and child.job.poll() is not None and not child.job.members() and
+                self._completed_failure_evidence == (
+                    self._marker['run_id'], child.identity, reason)):
+            logger.warning('same failure already fully captured; Job exited during incident preparation: %s', reason)
+            return
         collector = IncidentCollector(self._artifacts_root, self._marker['run_id'])
         if deadline:
             collector.deadline = min(collector.deadline, time.time() + max(0, deadline-time.monotonic()))

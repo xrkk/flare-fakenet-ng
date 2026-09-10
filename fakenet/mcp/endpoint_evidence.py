@@ -99,6 +99,11 @@ def udp_lifetimes(events):
                 else:
                     pending_sends[send_key] = sent
             else:
+                if send_key in pending_sends and pending_sends[send_key] is None:
+                    # Once calls overlap with indistinguishable buffers, an
+                    # exit cannot tell which call finished. Keep this key
+                    # poisoned until a new socket generation starts.
+                    continue
                 sent = pending_sends.pop(send_key, None)
                 if sent is not None:
                     sent.update(completed=index, completion_time=event['time'], succeeded=successful)
