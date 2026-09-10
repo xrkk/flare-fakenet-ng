@@ -440,7 +440,8 @@ def preserve_owned_state(channel, writer, run_ids):
     if json.loads(backup.read_text(encoding='utf-8')) != records:
         raise StepError('host state backup readback mismatch')
     import os
-    with backup.open('rb') as stream:
+    # Windows FlushFileBuffers requires a write-capable handle.
+    with backup.open('r+b') as stream:
         os.fsync(stream.fileno())
     for item in records:
         path = item['path']
