@@ -63,6 +63,16 @@ def _owner_with_handles(closed):
     owner._helper = _Handle('helper', closed)
     owner._target = _Handle('target', closed)
     owner.package = '.'
+    owner.record = {'run_id': 'current'}
+    def diagnostic(operation, payload, deadline=None):
+        if operation == 'exit-scan':
+            from fakenet.mcp.exit_installation import assert_no_helpers
+            return assert_no_helpers(owner.package)
+        if operation == 'exit-publish':
+            from fakenet.mcp.exit_files import publish
+            return publish(owner.directory / payload['name'], payload['record'])
+        raise AssertionError('unexpected diagnostic operation')
+    owner._call = diagnostic
     owner.deadline = time.monotonic() + 30
     return owner
 
@@ -94,3 +104,13 @@ def test_retained_target_handle_closes_after_a_passing_residual_check(monkeypatc
     assert closed == ['helper', 'intent', 'target']
     assert report['helper_ended'] is True
     assert report['retained_target_handle_closed'] is True
+
+
+def test_helper_end_cannot_release_a_still_live_target():
+    closed = []
+    owner = _owner_with_handles(closed)
+    owner._target.exited = lambda: False
+    with pytest.raises(RuntimeError, match='managed target still active'):
+        owner._finish({'complete': True})
+    assert closed == ['helper']
+    assert owner._target is not None

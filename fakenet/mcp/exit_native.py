@@ -9,7 +9,7 @@ import time
 
 
 class TargetHandle:
-    def __init__(self, pid, allow_terminate=False):
+    def __init__(self, pid, allow_terminate=False, allow_job=False):
         if type(pid) is not int or pid <= 0 or pid == os.getpid():
             raise ValueError('invalid managed target PID')
         self.pid = pid
@@ -24,7 +24,7 @@ class TargetHandle:
         k.ReadProcessMemory.argtypes = [w.HANDLE, w.LPCVOID, w.LPVOID, c.c_size_t, c.POINTER(c.c_size_t)]
         k.ReadProcessMemory.restype = w.BOOL
         self.handle = k.OpenProcess(0x100000 | 0x400 | 0x10 | 0x40 |
-                                   (1 if allow_terminate else 0), False, pid)
+                                   (1 if allow_terminate else 0) | (0x100 if allow_job else 0), False, pid)
         self.allow_terminate = allow_terminate
         if not self.handle:
             raise c.WinError(c.get_last_error())

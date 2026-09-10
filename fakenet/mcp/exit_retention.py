@@ -18,6 +18,9 @@ class ExitRetention:
         self._helper = None
         self._helper_identity = None
         self._cancel = threading.Event()
+        self._helper_job = None
+        from fakenet.mcp.diagnostic_process import DiagnosticOwner
+        self._diagnostics = DiagnosticOwner(package_root)
         self._target = TargetHandle(identity['pid'])
         self.package = Path(package_root).resolve()
         self.helper_image = self.package / 'exit-helper' / 'fakenetng-mcp-exit-monitor.exe'
@@ -33,9 +36,8 @@ class ExitRetention:
                 supervisor_instance=instance)
             self.base = root()
             self.directory = run_directory(self.base, run_id)
-            self.directory.mkdir(exist_ok=False)
-            self.intent = StopIntent(self.directory, self.record)
-            publish(self.base / 'target.json', self.record)
+            self.intent = StopIntent(self.directory, self.record, io=self._intent_io)
+            self._call('exit-init', dict(record=self.record), time.monotonic() + 10)
             self.worker = threading.Thread(target=self._watch, name='managed-exit-evidence', daemon=True)
             self.worker.start()
         except BaseException:
@@ -43,22 +45,38 @@ class ExitRetention:
             raise
 
     def _open_helper(self, identity):
-        handle = TargetHandle(identity['pid'], allow_terminate=True)
+        handle = TargetHandle(identity['pid'], allow_terminate=True, allow_job=True)
         try:
             actual = handle.identity()
             if (actual['creation_time'] != identity['creation_time'] or
                     actual['image'].casefold() != str(self.helper_image).casefold()):
                 raise RuntimeError('exit helper identity mismatch')
+            from fakenet.mcp.jobobject import ManagedJob
+            self._helper = handle
+            self._helper_job = ManagedJob()
+            self._helper_job.adopt_notification(handle.handle)
             return handle
         except BaseException:
-            handle.close()
+            if self._helper is not handle:
+                handle.close()
             raise
 
+    def _call(self, operation, payload, deadline=None):
+        end = min(self.deadline or float('inf'), deadline or time.monotonic() + 1)
+        return self._diagnostics.call(operation, payload, end)
+
+    def _intent_io(self, operation, record, deadline):
+        payload = dict(run_id=self.record['run_id'], name='stop-intent.json')
+        if operation == 'publish':
+            payload['record'] = record
+            return self._call('exit-publish', payload, deadline)
+        return self._call('exit-remove-intent', payload, deadline)
+
+    def _publish(self, name, record):
+        return self._call('exit-publish', dict(run_id=self.record['run_id'], name=name, record=record))
+
     def _read_optional(self, name):
-        try:
-            return read(self.directory / name)
-        except FileNotFoundError:
-            return None
+        return self._call('exit-read', dict(run_id=self.record['run_id'], name=name))
 
     def _check_result(self, report):
         if (report.get('schema') != 'fakenet.exit-result.v1' or
@@ -76,10 +94,8 @@ class ExitRetention:
                 info = report['dump']
                 if info.get('name') != 'target.dmp':
                     raise RuntimeError('unexpected exit dump path')
-                path = self.directory / 'target.dmp'
-                sha, size = digest(path, deadline=self.deadline)
-                verify_dump(path, self.record['pid'])
-                if size != info.get('size') or sha != info.get('sha256'):
+                checked = self._call('exit-verify-dump', dict(run_id=self.record['run_id'], pid=self.record['pid']), self.deadline)
+                if checked['size'] != info.get('size') or checked['sha256'] != info.get('sha256'):
                     raise RuntimeError('exit dump integrity mismatch')
             elif report.get('classification') != 'controlled_normal_exit':
                 raise RuntimeError('unexpected exit has no verified dump')
@@ -93,20 +109,19 @@ class ExitRetention:
             # released now; the retained target handle may not.
             self._helper.close()
             self._helper = None
-        from fakenet.mcp.exit_installation import (OBSERVATION_BUDGET,
-                                                   Observation,
-                                                   assert_no_helpers)
-        # The residual check spends this run's remaining window.  The retained
-        # target handle stays independent and open until that check proves no
-        # helper of this package is still running: a failed check must not
-        # release it early, or late collection loses its target.
-        assert_no_helpers(self.package,
-                          observation=Observation(self.deadline, OBSERVATION_BUDGET))
+        if getattr(self, '_helper_job', None) is not None:
+            if self._helper_job.members():
+                raise RuntimeError('SPE Job still has live descendants')
+            self._helper_job.close()
+            self._helper_job = None
+        if not self._target.exited():
+            raise RuntimeError('managed target still active; retain its handle')
+        self._call('exit-scan', dict(terminate=False), self.deadline)
         self.intent.invalidate()
         self._target.close()
         report.update(helper_ended=True, retained_target_handle_closed=True)
         self.result = report
-        publish(self.directory / 'owner-result.json', report)
+        self._publish('owner-result.json', report)
 
     def _watch(self):
         try:
@@ -120,16 +135,15 @@ class ExitRetention:
                         raise RuntimeError('exit helper acquisition identity mismatch')
                     self._helper_identity = entry['helper']
                     self._helper = self._open_helper(self._helper_identity)
-                    publish(self.directory / 'owner-acquired.json',
-                            dict(target=self.record, helper=self._helper_identity))
+                    self._publish('owner-acquired.json', dict(target=self.record, helper=self._helper_identity))
                     created = int(self._helper_identity['creation_time']) / 10000000 - 11644473600
                     native_deadline = now + max(0, 60 - (time.time() - created))
                     self.deadline = min(self.deadline or float('inf'), native_deadline)
                 if self._helper is not None:
                     claim = self._read_optional('normal-claim.json')
-                    if claim and not (self.directory / 'normal-ack.json').exists():
+                    if claim and not self._read_optional('normal-ack.json'):
                         accepted = self.intent.accept_normal(claim.get('claim'), claim.get('notification', {}))
-                        publish(self.directory / 'normal-ack.json', dict(claim=claim.get('claim'), accepted=accepted))
+                        self._publish('normal-ack.json', dict(claim=claim.get('claim'), accepted=accepted))
                     if self._helper.exited():
                         report = self._read_optional('result.json')
                         if not report:
@@ -138,8 +152,7 @@ class ExitRetention:
                         return
                 if self.deadline is not None and now >= self.deadline - 1:
                     self.intent.invalidate()
-                    from fakenet.mcp.exit_installation import end_helpers
-                    end_helpers(self.package, self.deadline)
+                    self._end_helpers(self.deadline)
                     if self._helper is not None:
                         self._helper.terminate_helper()
                         while not self._helper.exited() and time.monotonic() < self.deadline:
@@ -153,9 +166,7 @@ class ExitRetention:
             self.intent.invalidate()
             # A failed helper must still be stopped by its pinned native handle.
             try:
-                from fakenet.mcp.exit_installation import end_helpers
-                end_helpers(self.package, min(self.deadline or time.monotonic() + 1,
-                                              time.monotonic() + 1))
+                self._end_helpers(min(self.deadline or time.monotonic() + 1, time.monotonic() + 1))
                 if self._helper is not None:
                     self._helper.terminate_helper()
                     end = min(self.deadline or time.monotonic() + 1, time.monotonic() + 1)
@@ -171,6 +182,15 @@ class ExitRetention:
                                    retained_target_handle_closed=False)
         finally:
             self.done.set()
+
+    def _end_helpers(self, deadline):
+        if self._helper is not None:
+            self._helper.terminate_helper()
+            if self._helper_job is not None:
+                self._helper_job.terminate(deadline)
+            if not self._helper.exited():
+                raise RuntimeError('SPE end not observed; no parallel scan')
+        return self._call('exit-scan', dict(terminate=True), deadline)
 
     def cancel(self):
         self.intent.invalidate()

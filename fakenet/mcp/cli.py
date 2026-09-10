@@ -395,6 +395,9 @@ def main(argv=None):
         Path('fault-child-stacks.txt').write_text(IncidentCollector._thread_stacks(), encoding='utf-8')
         time.sleep(3600)
         return 0
+    if argv == ['diagnostic-task']:
+        from fakenet.mcp.diagnostic_tasks import main as diagnostic_main
+        return diagnostic_main()
     if argv and argv[0] == 'incident-dump':
         if len(argv) != 6:
             return 2

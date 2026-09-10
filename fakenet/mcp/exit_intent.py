@@ -51,7 +51,7 @@ def _matches(intent, identity, now):
 
 
 class StopIntent:
-    def __init__(self, directory, identity, clock=time.monotonic):
+    def __init__(self, directory, identity, clock=time.monotonic, io=None):
         self.directory = Path(directory)
         self.identity = {key: identity[key] for key in IDENTITY_FIELDS}
         self.clock = clock
@@ -59,10 +59,13 @@ class StopIntent:
         self.current = None
         self.consumed = False
         self.lock = threading.Lock()
+        self.io = io
+        self._publishing = None
+        self.io_failure = None
 
     def publish(self, grace_deadline):
         with self.lock:
-            if self.current is not None:
+            if self.current is not None or self._publishing is not None:
                 raise RuntimeError('stop intent already active')
             now = self.clock()
             if not math.isfinite(grace_deadline) or grace_deadline <= now:
@@ -72,33 +75,66 @@ class StopIntent:
                           sequence=self.sequence, nonce=secrets.token_hex(32),
                           issued_monotonic=now, issued_time=time.time(),
                           expires_monotonic=grace_deadline)
-            path = self.directory / 'stop-intent.json'
-            _save(path, intent)
-            if read(path, 4096) != intent:
-                raise RuntimeError('stop intent read-back mismatch')
-            self.current = intent
-            self.consumed = False
-            return dict(intent)
+            self._publishing = intent
+        try:
+            if self.io:
+                self.io('publish', intent, grace_deadline)
+            else:
+                path = self.directory / 'stop-intent.json'
+                _save(path, intent)
+                if read(path, 4096) != intent:
+                    raise RuntimeError('stop intent read-back mismatch')
+            with self.lock:
+                if self._publishing != intent or self.clock() >= grace_deadline:
+                    raise RuntimeError('stop intent publication revoked/expired')
+                self.current = intent
+                self._publishing = None
+                self.consumed = False
+                return dict(intent)
+        except BaseException:
+            with self.lock:
+                if self._publishing == intent:
+                    self._publishing = None
+                self.current = None
+            raise
+
+    def _remove(self):
+        # Revocation is already an in-memory fact. Failure to remove an old
+        # file can never restore it; keep the error for the owner to report.
+        try:
+            if self.io:
+                self.io('remove', None, self.clock() + 1)
+            else:
+                (self.directory / 'stop-intent.json').unlink(missing_ok=True)
+        except BaseException as exc:
+            self.io_failure = repr(exc)
+            return False
+        return True
 
     def invalidate(self):
         with self.lock:
             self.current = None
+            self._publishing = None
             self.consumed = False
-            (self.directory / 'stop-intent.json').unlink(missing_ok=True)
+        self._remove()
 
     def accept_normal(self, claim, observed):
-        """Consume live authority once, after the helper reports its claim."""
+        """Consume live authority once; never hold its lock during file I/O."""
         with self.lock:
             current = self.current
-            (self.directory / 'stop-intent.json').unlink(missing_ok=True)
             valid = bool(not self.consumed and current is not None and current == claim
-                        and _matches(current, self.identity, self.clock())
-                        and observed.get('target_pid') == self.identity['pid']
-                        and observed.get('initiator_pid') == self.identity['pid']
-                        and observed.get('exit_status') == 0)
+                         and _matches(current, self.identity, self.clock())
+                         and observed.get('target_pid') == self.identity['pid']
+                         and observed.get('initiator_pid') == self.identity['pid']
+                         and observed.get('exit_status') == 0)
             if valid:
                 self.consumed = True
-            return valid
+        if not self._remove():
+            with self.lock:
+                self.current = None
+                self.consumed = False
+            return False
+        return valid
 
     def normal_is_valid(self, claim):
         """Revalidate after the helper completes; later failure revokes the ack."""
