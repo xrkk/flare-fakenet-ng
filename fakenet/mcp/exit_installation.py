@@ -1,5 +1,6 @@
 # Copyright 2026 Google LLC
 """Fixed package/registration prerequisites for target-only exit evidence."""
+import ctypes as c
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,24 @@ OBSERVATION_BUDGET = 4096
 # ERROR_INVALID_PARAMETER / ERROR_NOT_FOUND: the PID left the process table
 # between the snapshot and the native open.
 _EXITED = (87, 1168)
+# ERROR_NO_MORE_FILES is the only Toolhelp result that means clean exhaustion.
+_EXHAUSTED = 18
+_BUDGET_EXHAUSTED = 'helper cleanup observation budget exhausted'
+
+
+class _ProcessEntry32W(c.Structure):
+    """PROCESSENTRY32W with the field widths pinned to the documented Win64
+    layout, so the walk reads the same offsets on every host."""
+    _fields_ = [('dwSize', c.c_uint32),
+                ('cntUsage', c.c_uint32),
+                ('th32ProcessID', c.c_uint32),
+                ('th32DefaultHeapID', c.c_void_p),
+                ('th32ModuleID', c.c_uint32),
+                ('cntThreads', c.c_uint32),
+                ('th32ParentProcessID', c.c_uint32),
+                ('pcPriClassBase', c.c_int32),
+                ('dwFlags', c.c_uint32),
+                ('szExeFile', c.c_wchar * 260)]
 
 
 def verify_assets(package):
@@ -129,52 +148,88 @@ def install(package):
         return created
 
 
-def live_processes():
-    """Return (pid, image base name) for the current process table.
+def _native_error(code):
+    """Build an OSError carrying the Win32 failure code on every host."""
+    win_error = getattr(c, 'WinError', None)
+    if win_error is not None:
+        return win_error(code)
+    error = OSError(code, 'Win32 error %d' % code)
+    error.winerror = code
+    return error
 
-    Enumeration uses the native snapshot API so the frozen package needs no
-    module beyond the pinned dependency set the candidate build installs.
+
+def _kernel32():
+    return c.WinDLL('kernel32', use_last_error=True)
+
+
+def _last_error():
+    return c.get_last_error()
+
+
+def _guard(observed, budget, deadline):
+    """Fail closed once the sweep can no longer finish inside its window."""
+    if budget is not None and observed >= budget:
+        raise RuntimeError(_BUDGET_EXHAUSTED)
+    if deadline is not None and time.monotonic() >= deadline:
+        raise RuntimeError(_BUDGET_EXHAUSTED)
+
+
+def _require_exhausted(code):
+    if code != _EXHAUSTED:
+        raise _native_error(code)
+
+
+def _walk_snapshot(snapshot, kernel, budget, deadline, last_error):
+    """Yield (pid, image base name) from a Toolhelp snapshot, failing closed.
+
+    Only ERROR_NO_MORE_FILES means clean exhaustion; every other
+    Process32FirstW/Process32NextW result is raised, so a partial process
+    table can never be presented as a complete one.  The observation budget
+    and the remaining deadline are checked around each native call, at the
+    start of the walk and before it may report exhaustion.
     """
-    import ctypes as c
-    from ctypes import wintypes as w
+    entry = _ProcessEntry32W()
+    entry.dwSize = c.sizeof(entry)
+    observed = 0
+    _guard(observed, budget, deadline)
+    if not kernel.Process32FirstW(snapshot, c.byref(entry)):
+        _require_exhausted(last_error())
+        # The window must still hold when the walk reports an empty table.
+        _guard(observed, budget, deadline)
+        return
+    while True:
+        _guard(observed, budget, deadline)
+        yield entry.th32ProcessID, entry.szExeFile
+        observed += 1
+        if not kernel.Process32NextW(snapshot, c.byref(entry)):
+            _require_exhausted(last_error())
+            # A slow walk must not report a complete table after its window.
+            _guard(observed, budget, deadline)
+            return
 
-    class PROCESSENTRY32W(c.Structure):
-        _fields_ = [('dwSize', w.DWORD),
-                    ('cntUsage', w.DWORD),
-                    ('th32ProcessID', w.DWORD),
-                    ('th32DefaultHeapID', c.c_void_p),
-                    ('th32ModuleID', w.DWORD),
-                    ('cntThreads', w.DWORD),
-                    ('th32ParentProcessID', w.DWORD),
-                    ('pcPriClassBase', c.c_long),
-                    ('dwFlags', w.DWORD),
-                    ('szExeFile', w.WCHAR * 260)]
 
-    kernel = c.WinDLL('kernel32', use_last_error=True)
-    kernel.CreateToolhelp32Snapshot.argtypes = [w.DWORD, w.DWORD]
-    kernel.CreateToolhelp32Snapshot.restype = w.HANDLE
-    kernel.Process32FirstW.argtypes = [w.HANDLE, c.POINTER(PROCESSENTRY32W)]
-    kernel.Process32NextW.argtypes = [w.HANDLE, c.POINTER(PROCESSENTRY32W)]
-    kernel.Process32FirstW.restype = w.BOOL
-    kernel.Process32NextW.restype = w.BOOL
-    kernel.CloseHandle.argtypes = [w.HANDLE]
+def live_processes(budget=None, deadline=None):
+    """Yield (pid, image base name) for the current process table.
+
+    Enumeration is native and interruptible, so the frozen package needs no
+    module beyond the pinned dependency set the candidate build installs while
+    the caller's budget and deadline still bound the walk itself.
+    """
+    kernel = _kernel32()
+    kernel.CreateToolhelp32Snapshot.argtypes = [c.c_uint32, c.c_uint32]
+    kernel.CreateToolhelp32Snapshot.restype = c.c_void_p
+    kernel.Process32FirstW.argtypes = [c.c_void_p, c.POINTER(_ProcessEntry32W)]
+    kernel.Process32NextW.argtypes = [c.c_void_p, c.POINTER(_ProcessEntry32W)]
+    kernel.Process32FirstW.restype = c.c_int
+    kernel.Process32NextW.restype = c.c_int
+    kernel.CloseHandle.argtypes = [c.c_void_p]
     snapshot = kernel.CreateToolhelp32Snapshot(0x2, 0)
     if not snapshot or snapshot == c.c_void_p(-1).value:
-        raise c.WinError(c.get_last_error())
-    found = []
+        raise _native_error(_last_error())
     try:
-        entry = PROCESSENTRY32W()
-        entry.dwSize = c.sizeof(entry)
-        if not kernel.Process32FirstW(snapshot, c.byref(entry)):
-            raise c.WinError(c.get_last_error())
-        while True:
-            found.append((entry.th32ProcessID, entry.szExeFile))
-            # Exhaustion reports ERROR_NO_MORE_FILES, which ends the walk.
-            if not kernel.Process32NextW(snapshot, c.byref(entry)):
-                break
+        yield from _walk_snapshot(snapshot, kernel, budget, deadline, _last_error)
     finally:
         kernel.CloseHandle(snapshot)
-    return found
 
 
 def _pin_helper(pid, expected, allow_terminate):
@@ -210,15 +265,16 @@ def _packaged_helpers(package, allow_terminate=False, deadline=None,
 
     Only an image whose full path equals the packaged helper is returned, so a
     foreign program that shares the image name is never opened or terminated.
+    The budget and deadline bound the native walk and each pinned process, not
+    just the consumption of an already-materialised table.
     """
     expected = str(Path(package).resolve() / HELPER).casefold()
     handles = []
+    walk = live_processes(budget=budget, deadline=deadline)
     try:
-        for index, (pid, image) in enumerate(live_processes()):
-            if budget is not None and index >= budget:
-                raise RuntimeError('helper cleanup observation budget exhausted')
+        for pid, image in walk:
             if deadline is not None and time.monotonic() >= deadline:
-                raise RuntimeError('helper cleanup observation budget exhausted')
+                raise RuntimeError(_BUDGET_EXHAUSTED)
             if pid == os.getpid() or image.casefold() != HELPER_IMAGE:
                 continue
             handle = _pin_helper(pid, expected, allow_terminate)
@@ -233,11 +289,13 @@ def _packaged_helpers(package, allow_terminate=False, deadline=None,
         for handle in handles:
             handle.close()
         raise
+    finally:
+        walk.close()
     return handles
 
 
-def assert_no_helpers(package):
-    handles = _packaged_helpers(package)
+def assert_no_helpers(package, deadline=None, budget=None):
+    handles = _packaged_helpers(package, deadline=deadline, budget=budget)
     try:
         if handles:
             raise RuntimeError('exit helper still active: %d' % handles[0].pid)
@@ -247,7 +305,11 @@ def assert_no_helpers(package):
 
 
 def end_helpers(package, deadline):
-    """Close only native-pinned helpers from this exact installed package."""
+    """Close only native-pinned helpers from this exact installed package.
+
+    One remaining deadline and one observation budget cover the whole sweep:
+    the first native scan, the termination wait and the final residual check.
+    """
     handles = _packaged_helpers(package, allow_terminate=True, deadline=deadline,
                                 budget=OBSERVATION_BUDGET)
     try:
@@ -255,7 +317,7 @@ def end_helpers(package, deadline):
             time.sleep(0.01)
         if any(not handle.exited() for handle in handles):
             raise RuntimeError('helper termination did not complete')
-        assert_no_helpers(package)
+        assert_no_helpers(package, deadline=deadline, budget=OBSERVATION_BUDGET)
     finally:
         for handle in handles:
             handle.close()

@@ -88,13 +88,20 @@ class ExitRetention:
     def _finish(self, report):
         if self._helper is not None and not self._helper.exited():
             raise RuntimeError('helper has not ended')
-        from fakenet.mcp.exit_installation import assert_no_helpers
-        assert_no_helpers(self.package)
-        self.intent.invalidate()
-        if self._helper is not None:
-            self._helper.close()
-            self._helper = None
-        self._target.close()
+        from fakenet.mcp.exit_installation import (OBSERVATION_BUDGET,
+                                                   assert_no_helpers)
+        try:
+            # The residual check shares this run's remaining window and the
+            # same observation budget as the cleanup sweep.
+            assert_no_helpers(self.package, deadline=self.deadline,
+                              budget=OBSERVATION_BUDGET)
+        finally:
+            # Handles are released even when the residual check fails closed.
+            self.intent.invalidate()
+            if self._helper is not None:
+                self._helper.close()
+                self._helper = None
+            self._target.close()
         report.update(helper_ended=True, retained_target_handle_closed=True)
         self.result = report
         publish(self.directory / 'owner-result.json', report)
