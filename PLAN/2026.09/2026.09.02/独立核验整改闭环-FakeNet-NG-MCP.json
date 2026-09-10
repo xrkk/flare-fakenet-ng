@@ -9,10 +9,10 @@
     "gate": "PASS",
     "at": "2026-09-09T14:26:46.931484+08:00"
   },
-  "status": "READY_TO_REVERIFY",
+  "status": "WAITING_USER_INPUT",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "5f25fb934a7b24b593e207874f8177995fe85165",
+  "current_head": "a78b706461f4014def1bfe129ba43a0e95811033",
   "round_limit": 5,
   "completed_rounds": 2,
   "next_round": 3,
@@ -214,8 +214,9 @@
         "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
         "test/mcp/test_full_review_regressions.py"
       ],
-      "author_stage": "FIXED_PENDING_INDEPENDENT_RECHECK",
-      "closed_by_author": false
+      "author_stage": "READY_TO_REVERIFY",
+      "closed_by_author": false,
+      "latest_response": "§73: a78b706纯实现整改已通过Linux/Windows，硬结束仍待007；不替代原生矩阵"
     },
     "CHK-055": {
       "status": "OPEN",
@@ -253,8 +254,9 @@
         "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
         "test/mcp/test_full_review_regressions.py"
       ],
-      "author_stage": "FIXED_PENDING_INDEPENDENT_RECHECK",
-      "closed_by_author": false
+      "author_stage": "READY_TO_REVERIFY",
+      "closed_by_author": false,
+      "latest_response": "§73: a78b706纯实现整改已通过Linux/Windows，硬结束仍待007；不替代原生矩阵"
     },
     "CHK-058": {
       "status": "OPEN",
@@ -287,8 +289,9 @@
         "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
         "test/mcp/test_full_review_regressions.py"
       ],
-      "author_stage": "FIXED_PENDING_INDEPENDENT_RECHECK",
-      "closed_by_author": false
+      "author_stage": "WAITING_USER_INPUT",
+      "closed_by_author": false,
+      "latest_response": "§73: a78b706纯实现整改已通过Linux/Windows，硬结束仍待007；不替代原生矩阵"
     },
     "CHK-061": {
       "status": "OPEN",
@@ -308,8 +311,9 @@
         "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
         "test/mcp/test_full_review_regressions.py"
       ],
-      "author_stage": "FIXED_PENDING_INDEPENDENT_RECHECK",
-      "closed_by_author": false
+      "author_stage": "READY_TO_REVERIFY",
+      "closed_by_author": false,
+      "latest_response": "§73: a78b706纯实现整改已通过Linux/Windows，硬结束仍待007；不替代原生矩阵"
     },
     "CHK-063": {
       "status": "OPEN",
@@ -347,8 +351,9 @@
         "Logs/fakenetng-mcp/remediation-20260910/native-5f25fb9-verify.json",
         "test/mcp/test_full_review_regressions.py"
       ],
-      "author_stage": "FIXED_PENDING_INDEPENDENT_RECHECK",
-      "closed_by_author": false
+      "author_stage": "READY_TO_REVERIFY",
+      "closed_by_author": false,
+      "latest_response": "§73: a78b706纯实现整改已通过Linux/Windows，硬结束仍待007；不替代原生矩阵"
     },
     "CHK-067": {
       "status": "OPEN",
@@ -377,8 +382,9 @@
         "test/mcp/test_full_review_regressions.py"
       ],
       "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
-      "author_stage": "FIXED_PENDING_INDEPENDENT_RECHECK",
-      "closed_by_author": false
+      "author_stage": "WAITING_USER_INPUT",
+      "closed_by_author": false,
+      "latest_response": "§73: a78b706纯实现整改已通过Linux/Windows，硬结束仍待007；不替代原生矩阵"
     },
     "CHK-069": {
       "status": "OPEN",
@@ -392,8 +398,9 @@
         "test/mcp/test_full_review_regressions.py"
       ],
       "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
-      "author_stage": "FIXED_PENDING_INDEPENDENT_RECHECK",
-      "closed_by_author": false
+      "author_stage": "WAITING_USER_INPUT",
+      "closed_by_author": false,
+      "latest_response": "§73: a78b706纯实现整改已通过Linux/Windows，硬结束仍待007；不替代原生矩阵"
     },
     "CHK-070": {
       "status": "OPEN",
@@ -407,8 +414,9 @@
         "test/mcp/test_full_review_regressions.py"
       ],
       "response_record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
-      "author_stage": "FIXED_PENDING_INDEPENDENT_RECHECK",
-      "closed_by_author": false
+      "author_stage": "READY_TO_REVERIFY",
+      "closed_by_author": false,
+      "latest_response": "§73: a78b706纯实现整改已通过Linux/Windows，硬结束仍待007；不替代原生矩阵"
     },
     "CHK-071": {
       "status": "OPEN",
@@ -533,6 +541,24 @@
       ],
       "verified": "Linux MCP 405通过4跳过；固定源完整Windows 973通过8跳过、HTTP17通过；同候选原生复验通过",
       "purpose": "定向复核09号记录余项闭合；未改规范/依赖边/验收边界，未关闭CHK"
+    },
+    {
+      "head": "bd6126bca1073d33b3d88c45348d9789846aa1cc",
+      "parent": "aeefa17805f6a9a33a2b77f11f64a35cc47c2ff9",
+      "purpose": "主会话接手现契约内整改，详§73",
+      "verified": "最终a78b706 Linux419/4、Windows987/8及HTTP17；中间失败完整保留"
+    },
+    {
+      "head": "22a0678342acbbd7d344a77b75cd4fde722d1ecf",
+      "parent": "bd6126bca1073d33b3d88c45348d9789846aa1cc",
+      "purpose": "主会话接手现契约内整改，详§73",
+      "verified": "最终a78b706 Linux419/4、Windows987/8及HTTP17；中间失败完整保留"
+    },
+    {
+      "head": "a78b706461f4014def1bfe129ba43a0e95811033",
+      "parent": "22a0678342acbbd7d344a77b75cd4fde722d1ecf",
+      "purpose": "主会话接手现契约内整改，详§73",
+      "verified": "最终a78b706 Linux419/4、Windows987/8及HTTP17；中间失败完整保留"
     }
   ],
   "plan_changes": [
@@ -589,15 +615,25 @@
       "recommendation": "A：保留证据门槛，先限定目标的退出时采集原型及方案回流；不得自动转储终止发起者。",
       "decision": "用户在详细说明后回复A；先最新候选原生S6及条件式转储判定，必要时才限定目标原型和规范回流，非无条件启用IFEO。",
       "accepted_at": "2026-09-10T05:55:11.936410+00:00"
+    },
+    {
+      "id": "PLAN-CHANGE-007",
+      "status": "PENDING_USER_DECISION",
+      "stage": "AFFECTED_IMPLEMENTATION_PAUSED",
+      "record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.10-11-PLAN-CHANGE-007-硬结束平台边界与隔离采集提案.md",
+      "trigger": "总纲18.5硬结束与不可保证取消/终止的Windows I/O边界；10号复核helper未验证时不能释放目标",
+      "affected_edges": [
+        "记录034/035→OUT014/ACC014",
+        "P01 IMP-P01-03/06→P03 IMP-P03-02/04",
+        "P03→P04 IMP-P04-02/05",
+        "P04→P05 ACC004/014/017及ACC019"
+      ],
+      "recommendation": "A：保持产品故障60/180秒和归零门禁；隔离诊断工作，仅有原生证据的内核/驱动不可取消情形进入平台阻断并保留责任；需要规范回流，未批准"
     }
   ],
-  "checkpoint": "定向复核（记录2026.09.10-09）余项已闭合：日志全量判定与延迟收敛、停服成功文件窗口、生产者发布记录决定完成、跨轮校验接入真实汇总并按run去重、快照句柄先持有后检查、runner脚本合法化与自有清单清理、通用dump原子有界、历史不占活动配额、失败路径单owner回收目标句柄。5f25fb9完整构建PASS（Windows 973/8、HTTP17）并原生复验通过。CHK-053—072共20项仍全部OPEN，轮次2/5；作者不再声称\"确定反例全部修复\"。",
-  "stop_reason": null,
-  "pending_intent": {
-    "id": "INTENT-157",
-    "action": "交回用户转下一轮独立核验；本轮只闭合09号记录所列余项，不关闭任何CHK",
-    "status": "COMPLETED"
-  },
+  "checkpoint": "INTENT-159 verified: a78b706 Linux419/4, Windows987/8+HTTP17; waiting normative decision; records-only descendants allowed at resume after diff reconciliation",
+  "stop_reason": "PLAN-CHANGE-007硬结束平台适用前提/验收分支需用户裁决；纯实现源码测试通过，未构建部署或原生全矩阵，不关闭CHK",
+  "pending_intent": null,
   "events": [
     {
       "at": "2026-09-09T14:26:46.931484+08:00",
@@ -869,6 +905,20 @@
       "package_sha256": "51dd054716fc6732108259b0c240c7cb444f0412f950b5367718aaaa9a0f2cf6",
       "status": "READY_TO_REVERIFY",
       "chk_closed": []
+    },
+    {
+      "at": "2026-09-10T20:39:32.697655+08:00",
+      "intent": "INTENT-158",
+      "actual": "用户接手授权已对账，完成现契约内中间代码整改和Linux全量，Windows失败一项已归因修复并重跑；登记PLAN-CHANGE-007，未改规范、未部署、未关闭CHK",
+      "source_head": "22a0678342acbbd7d344a77b75cd4fde722d1ecf"
+    },
+    {
+      "at": "2026-09-10T21:11:46.098187+08:00",
+      "intent": "INTENT-159",
+      "actual": "INTENT-159 verified: a78b706 Linux419/4, Windows987/8+HTTP17; waiting normative decision; records-only descendants allowed at resume after diff reconciliation",
+      "status": "WAITING_USER_INPUT",
+      "source_head": "a78b706461f4014def1bfe129ba43a0e95811033",
+      "chk_closed": []
     }
   ],
   "response_record": {
@@ -975,28 +1025,33 @@
     },
     {
       "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-02-总纲-FakeNet-NG-MCP.md",
-      "blob": "308db9f2e87488c1c7bbcb2d5d0e54bb14fdcbaa",
-      "sha256": "ca871e68b4f8386d3265ad32804a1ad0ccf4eb6ae11291dd6d526ee2fc5a6c5a"
+      "blob": "4670c91f46b224b5d2890a94a545d93c060c3dcf",
+      "sha256": "62e842b8acaad342b32530f40f23d04376cc8e896677f2f1993a8d33a6c77045"
     },
     {
       "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-06-实施子方案-P01-可部署的MCP服务入口.md",
-      "blob": "e5fca05b39748fb1e163ee41a87106a6c458f939",
-      "sha256": "bbff9f845b1685d85ed8bf5862d7d052351f7886c55ce62240ad7e8b0d9075ee"
+      "blob": "8f05a89898bf208ea0d494d432743d8cbf0a6b2d",
+      "sha256": "8a5ac6a4e9ec7e28a3bb695f3621d2187a9e8724b5f1a4570a98a3dfb6543b69"
+    },
+    {
+      "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-11-实施子方案-P02-控制接口身份与配置管理.md",
+      "blob": "042d33835b171c38b1e035084955abd7c38d3048",
+      "sha256": "936cdf40d7dd3ed7cb16d675f274122d5e056fdd3f7cbb901998104709e9f440"
     },
     {
       "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-16-实施子方案-P03-FakeNetNG网络生命周期与真实健康.md",
-      "blob": "b987f1070cb705015f8f24dd2947459bfa8a915b",
-      "sha256": "aaab84a4da8ad9e072e66618080b087813ab58e30047c94b6c7839333035c076"
+      "blob": "3b5747bafc2a3fa99f7bc84b3b168533b100990b",
+      "sha256": "089b68c91acfccaad63b39a227c6e30929bdc22f780d71cf9b1d92fe239e6284"
     },
     {
       "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-21-实施子方案-P04-失败收敛环境恢复与根因证据.md",
-      "blob": "5ed348867d505efe81c80f03cea434ed1ec0e858",
-      "sha256": "82ffedf9f9c799d96de70e9e351c94007ed6bdf075926a75765608859b653650"
+      "blob": "509cfd21cc06bb73e8ba5b2304d35d50cd499bee",
+      "sha256": "1f3f7b04a6ed5dea004867605d6b0ccd4f5ebd8e20ea9f45be225845be2c0863"
     },
     {
       "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-26-实施子方案-P05-真实Win10发布门禁与交付证据.md",
-      "blob": "029a46ce1fa852b712f61ef1812a3339229fda95",
-      "sha256": "fcb89129f3da2d22bd2e56592a23ae93b7f993c35c6ff62eda290163a28a7d54"
+      "blob": "ecf0757835af966cd2264b18443d728ce3cbefd4",
+      "sha256": "47339712f6a2e9766e2789a6de74a6d62d9073d5293fad707ce02e780f6e1a54"
     }
   ],
   "plan_self_review": {
@@ -1152,7 +1207,7 @@
       "native_proof": "Logs/fakenetng-mcp/remediation-20260910/native-47c8173-install-diagnostic-02.json"
     }
   },
-  "resume_requires": null,
+  "resume_requires": "用户裁决PLAN-CHANGE-007；恢复时核对规范、a78b706后仅记录diff、受保护blob、实际VM身份及新核验实例资格",
   "resume_started_at": "2026-09-10T00:50:47.277736+08:00",
   "resume_checkpoints": [
     {
@@ -1482,6 +1537,10 @@
     {
       "intent": "INTENT-122",
       "actual": "SCM精准崩溃及新实例恢复stopped通过；ETW完整零丢失并停止，两个run现场全部导出且复核guest源SHA一致。完成态观察重复开启问题已红绿修正，待新候选。"
+    },
+    {
+      "intent": "INTENT-159",
+      "actual": "INTENT-159 verified: a78b706 Linux419/4, Windows987/8+HTTP17; waiting normative decision; records-only descendants allowed at resume after diff reconciliation"
     }
   ],
   "active_build": {
@@ -1597,5 +1656,57 @@
     "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
     "blob": "7618c0ce5223abbc58bb4354bb42c35f733165d9",
     "section": "§72 定向复核（09号记录）余项闭合及5f25fb9复验"
-  }
+  },
+  "main_session_takeover": {
+    "at": "2026-09-10T20:13:52.474856+08:00",
+    "authorization": "用户：整改责任交给你，你来改。开始吧",
+    "record": "PLAN/2026.09/2026.09.09/2026.09.10-10-当前会话定向复核-5f25fb9批量整改.md",
+    "protected_blob": "2c0d09e03162dfeb3a05517f9d3755af0d5e52ce",
+    "intent": "整批整改054/057/060/062/066/068/069/070，保留其余CHK与全部原生门禁，不放宽规范",
+    "checkpoint": "INTENT-159 verified: a78b706 Linux419/4, Windows987/8+HTTP17; waiting normative decision; records-only descendants allowed at resume after diff reconciliation",
+    "advisory_review": {
+      "instance": "/root/implementation_sanity_bd6126b",
+      "model": "gpt-5.6-sol",
+      "reasoning": "high",
+      "mode": "code sanity only, not a CHK review round",
+      "findings": "7项交叉发现已整改，详§73.2；不关闭CHK"
+    }
+  },
+  "objects_current_history": [
+    {
+      "reason": "INTENT-159对账：旧objects_current缓存未随已接受006基线更新；此处保留旧缓存，当前读取与接手前aeefa17完全一致",
+      "objects": [
+        {
+          "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-01-需求提炼-FakeNet-NG-MCP.md",
+          "blob": "c38568168fdc792280aa82d57ec7fb589e267965",
+          "sha256": "1665c3ba08ce112ec054cb674342dd47d1c3470d91ba63005a21e9e9310aab31"
+        },
+        {
+          "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-02-总纲-FakeNet-NG-MCP.md",
+          "blob": "308db9f2e87488c1c7bbcb2d5d0e54bb14fdcbaa",
+          "sha256": "ca871e68b4f8386d3265ad32804a1ad0ccf4eb6ae11291dd6d526ee2fc5a6c5a"
+        },
+        {
+          "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-06-实施子方案-P01-可部署的MCP服务入口.md",
+          "blob": "e5fca05b39748fb1e163ee41a87106a6c458f939",
+          "sha256": "bbff9f845b1685d85ed8bf5862d7d052351f7886c55ce62240ad7e8b0d9075ee"
+        },
+        {
+          "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-16-实施子方案-P03-FakeNetNG网络生命周期与真实健康.md",
+          "blob": "b987f1070cb705015f8f24dd2947459bfa8a915b",
+          "sha256": "aaab84a4da8ad9e072e66618080b087813ab58e30047c94b6c7839333035c076"
+        },
+        {
+          "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-21-实施子方案-P04-失败收敛环境恢复与根因证据.md",
+          "blob": "5ed348867d505efe81c80f03cea434ed1ec0e858",
+          "sha256": "82ffedf9f9c799d96de70e9e351c94007ed6bdf075926a75765608859b653650"
+        },
+        {
+          "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.03-26-实施子方案-P05-真实Win10发布门禁与交付证据.md",
+          "blob": "029a46ce1fa852b712f61ef1812a3339229fda95",
+          "sha256": "fcb89129f3da2d22bd2e56592a23ae93b7f993c35c6ff62eda290163a28a7d54"
+        }
+      ]
+    }
+  ]
 }
