@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "d58da2e7a8087156a847867f4eff547f329642c4",
+  "current_head": "f59cab4829427b53c21eba0e5bfb1e8690b1c6c5",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -369,8 +369,8 @@
   "checkpoint": "d58da2e两个incident完整，取证竞态实机已验证；永久IPC因已关闭双栈新增端点失败。新归因回放两样本接受，Linux277/3；原失败保留，单独作者恢复stop成功。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-129",
-    "action": "提交已闭合双栈新增端点归因，固定源全构建后受控升级、同候选重跑六类IPC；不将作者恢复计为验收成功。"
+    "id": "INTENT-130",
+    "action": "提交仅测试夹具显式UTF-8读取修正，固定新源完整构建后继续受控升级及IPC复验。"
   },
   "events": [
     {
@@ -1154,12 +1154,12 @@
     }
   ],
   "active_build": {
-    "status": "PASS",
-    "source_commit": "d58da2e7a8087156a847867f4eff547f329642c4",
-    "output": "dist/mcp-remediation-20260910-d58da2e",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-d58da2e.txt",
-    "session_id": 8514,
-    "package_sha256": "17b9a489000f42c0d792944ce76fd6dd96128c6f84f3f754e3c88c3e89764beb"
+    "status": "FAILED",
+    "source_commit": "f59cab4829427b53c21eba0e5bfb1e8690b1c6c5",
+    "output": "dist/mcp-remediation-20260910-f59cab4",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-f59cab4.txt",
+    "session_id": 57716,
+    "reason": "6 native dual UDP fixture tests read UTF-8 via cp1252; explicit UTF-8 fix"
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/native-8303ea2-active-probe-full-runtime.zip",

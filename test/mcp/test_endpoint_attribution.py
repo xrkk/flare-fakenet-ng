@@ -82,7 +82,7 @@ def test_full_audit_preserves_raw_difference_and_requires_two_complete_proofs(tm
 
 
 def dual_case():
-    return json.loads((Path(__file__).parent/'fixtures/native_afd_closed_dual_udp.json').read_text())
+    return json.loads((Path(__file__).parent/'fixtures/native_afd_closed_dual_udp.json').read_text(encoding='utf-8'))
 
 
 def test_native_dual_udp_addition_closed_after_sample_has_complete_proof():
