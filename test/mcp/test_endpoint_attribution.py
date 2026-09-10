@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from fakenet.mcp.endpoint_attribution import closed_udp_removals, event_ns
+from fakenet.mcp.endpoint_attribution import closed_udp_changes, event_ns
 from fakenet.mcp.baseline import BASELINE_FIELDS
 
 
@@ -28,7 +28,7 @@ def case():
 def test_complete_native_lifetime_explains_only_removed_udp_and_preserves_raw_input():
     args = case()
     original = copy.deepcopy(args)
-    result = closed_udp_removals(*args)
+    result = closed_udp_changes(*args)
     assert result['accepted'], result
     assert result['attributed'][0]['port'] == 52623
     assert args == original
@@ -52,7 +52,7 @@ def test_unknown_or_unrelated_difference_cannot_be_waived(problem):
     elif problem == 'duplicate': base['sections']['listen_ports'] += '\n' + base['sections']['listen_ports']
     elif problem == 'wrong_run': sample['run_id'] = 'different'
     elif problem == 'failed_capture': sample['current']['dns_servers'] = '__COLLECTION_FAILED__'
-    assert not closed_udp_removals(base, sample, proof)['accepted']
+    assert not closed_udp_changes(base, sample, proof)['accepted']
 
 
 @pytest.mark.parametrize('complete', [True, False])
@@ -79,3 +79,41 @@ def test_full_audit_preserves_raw_difference_and_requires_two_complete_proofs(tm
     assert all(row['current'] == current for row in rows)
     decision = json.loads(log.with_suffix('.attribution.json').read_text())
     assert decision['accepted'] is complete
+
+
+def dual_case():
+    return json.loads((Path(__file__).parent/'fixtures/native_afd_closed_dual_udp.json').read_text())
+
+
+def test_native_dual_udp_addition_closed_after_sample_has_complete_proof():
+    data = dual_case()
+    result = closed_udp_changes(data['baseline'], data['sample'], data['proof'])
+    assert result['accepted'], result
+    row = result['attributed'][0]
+    assert row['direction'] == 'added'
+    assert set(row['addresses']) == {'0.0.0.0', '::'}
+    assert row['pid'] == 2128 and row['port'] == 56095
+
+
+@pytest.mark.parametrize('problem', ['not_closed', 'mapped_send_failed', 'competing_bind',
+                                    'not_born_after_baseline', 'close_outside_trace'])
+def test_dual_projection_requires_unique_bind_success_and_observed_close(problem):
+    data = dual_case()
+    proof = data['proof']
+    if problem == 'not_closed':
+        proof['events'] = [e for e in proof['events'] if e['id'] != 1001]
+    elif problem == 'mapped_send_failed':
+        for e in proof['events']:
+            if e['id'] in (1007, 1013) and "<Data Name='EnterExit'>1</Data>" in e['xml']:
+                e['xml'] = e['xml'].replace("<Data Name='Status'>0</Data>", "<Data Name='Status'>1</Data>")
+    elif problem == 'competing_bind':
+        event = next(e for e in proof['events'] if e['id'] == 1030 and
+                     "<Data Name='EnterExit'>1</Data>" in e['xml'] and '0xffffb904605879d0' in e['xml'])
+        other = copy.deepcopy(event)
+        other['xml'] = other['xml'].replace('0xffffb904605879d0', '0xffffb90400000001')
+        proof['events'].append(other)
+    elif problem == 'not_born_after_baseline':
+        data['baseline']['observation_windows']['listen_ports']['end_ns'] = data['sample']['observation_windows']['listen_ports']['start_ns'] - 1
+    elif problem == 'close_outside_trace':
+        proof['end']['time_ns'] = data['sample']['observation_windows']['listen_ports']['end_ns']
+    assert not closed_udp_changes(data['baseline'], data['sample'], proof)['accepted']

@@ -270,15 +270,15 @@ class BaselineStore:
         return audit_compare(baseline.get('sections'), capture())
 
     def full_audit_diff(self, run_id, deadline=None, settle_seconds=0, observation=None):
-        """P04 full recovery audit: all five normalized sections must match
-        the pre-start baseline."""
+        """Audit all five sections, preserving raw differences and requiring
+        complete same-run proof for any closed ephemeral UDP exception."""
         baseline = self.load(run_id)
         if baseline is None:
             return {'__missing_baseline__': True}
         if settle_seconds:
-            # Never discard an endpoint or adjust the baseline. Retain every
-            # complete observation; only two consecutive exact full-scope
-            # comparisons can pass the bounded settling window.
+            # Never adjust the baseline. Preserve every raw observation;
+            # exact matches need two samples. Other differences need the
+            # complete closed-lifecycle proof evaluated after tracing ends.
             audit_deadline = min(deadline or float('inf'), time.monotonic() + settle_seconds)
             log_root = self.root.parent / 'logs'
             log_root.mkdir(parents=True, exist_ok=True)
@@ -306,11 +306,11 @@ class BaselineStore:
                         return {}
                     time.sleep(min(0.5, max(0, audit_deadline - time.monotonic())))
             if observation is not None and len(samples) == 2:
-                from fakenet.mcp.endpoint_attribution import closed_udp_removals
+                from fakenet.mcp.endpoint_attribution import closed_udp_changes
                 from fakenet.mcp.endpoint_observation import write_evidence
                 try:
                     proof = observation.audit_proof(deadline)
-                    decisions = [closed_udp_removals(baseline, sample, proof) for sample in samples]
+                    decisions = [closed_udp_changes(baseline, sample, proof) for sample in samples]
                     accepted = all(row['accepted'] for row in decisions)
                     decision = {'run_id': run_id, 'raw_audit': str(log),
                                 'accepted': accepted, 'samples': decisions}

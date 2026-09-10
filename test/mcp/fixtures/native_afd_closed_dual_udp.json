@@ -1,0 +1,1457 @@
+{
+  "baseline": {
+    "run_id": "d3055bda-76b4-4b95-8b13-b0f6d8634936",
+    "sections": {
+      "routes": "===========================================================================\n接口列表\n 11...00 0c 29 4c fd c0 ......Intel(R) 82574L Gigabit Network Connection\n  1...........................Software Loopback Interface 1\n===========================================================================\n\nIPv4 路由表\n===========================================================================\n活动路由:\n网络目标        网络掩码          网关       接口   跃点数\n          0.0.0.0          0.0.0.0    192.168.204.1  192.168.204.149    281\n        127.0.0.0        255.0.0.0            在链路上         127.0.0.1    331\n        127.0.0.1  255.255.255.255            在链路上         127.0.0.1    331\n  127.255.255.255  255.255.255.255            在链路上         127.0.0.1    331\n    192.168.204.0    255.255.255.0            在链路上   192.168.204.149    281\n  192.168.204.149  255.255.255.255            在链路上   192.168.204.149    281\n  192.168.204.255  255.255.255.255            在链路上   192.168.204.149    281\n        224.0.0.0        240.0.0.0            在链路上         127.0.0.1    331\n        224.0.0.0        240.0.0.0            在链路上   192.168.204.149    281\n  255.255.255.255  255.255.255.255            在链路上         127.0.0.1    331\n  255.255.255.255  255.255.255.255            在链路上   192.168.204.149    281\n===========================================================================\n永久路由:\n  网络地址          网络掩码  网关地址  跃点数\n          0.0.0.0          0.0.0.0    192.168.204.1     默认 \n===========================================================================",
+      "dns_servers": "[{\"InterfaceAlias\":\"Ethernet0\",\"ServerAddresses\":[\"192.168.204.1\"]},{\"InterfaceAlias\":\"Loopback Pseudo-Interface 1\",\"ServerAddresses\":[]}]",
+      "windivert_processes": "{\"modules\":[\"INFO: No tasks are running which match the specified criteria.\"],\"service_command\":\"\\\"C:\\\\Program Files\\\\FakeNet-NG-MCP\\\\fakenetng-mcp.exe\\\" run\",\"managed\":[{\"ProcessName\":\"fakenetng-mcp\",\"Id\":7128,\"StartTime\":{\"value\":\"\\/Date(1789013480114)\\/\",\"DateTime\":\"2026年9月10日 12:11:20\"},\"ExecutablePath\":\"C:\\\\Program Files\\\\FakeNet-NG-MCP\\\\fakenetng-mcp.exe\",\"CommandLine\":\"\\\"C:\\\\Program Files\\\\FakeNet-NG-MCP\\\\fakenetng-mcp.exe\\\" run\"}],\"drivers\":[]}",
+      "listen_ports": "活动连接\n\n  协议  本地地址          外部地址        状态           PID\n  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       972\n  TCP    0.0.0.0:445            0.0.0.0:0              LISTENING       4\n  TCP    0.0.0.0:5040           0.0.0.0:0              LISTENING       5044\n  TCP    0.0.0.0:49664          0.0.0.0:0              LISTENING       708\n  TCP    0.0.0.0:49665          0.0.0.0:0              LISTENING       540\n  TCP    0.0.0.0:49666          0.0.0.0:0              LISTENING       1172\n  TCP    0.0.0.0:49667          0.0.0.0:0              LISTENING       1220\n  TCP    0.0.0.0:49668          0.0.0.0:0              LISTENING       2472\n  TCP    0.0.0.0:49669          0.0.0.0:0              LISTENING       664\n  TCP    0.0.0.0:49670          0.0.0.0:0              LISTENING       2896\n  TCP    127.0.0.1:30016        127.0.0.1:30017        ESTABLISHED     7128\n  TCP    127.0.0.1:30017        127.0.0.1:30016        ESTABLISHED     7128\n  TCP    127.0.0.1:49678        127.0.0.1:49679        ESTABLISHED     7296\n  TCP    127.0.0.1:49679        127.0.0.1:49678        ESTABLISHED     7296\n  TCP    192.168.204.149:139    0.0.0.0:0              LISTENING       4\n  TCP    192.168.204.149:28787  0.0.0.0:0              LISTENING       7296\n  TCP    192.168.204.149:28788  0.0.0.0:0              LISTENING       7128\n  TCP    192.168.204.149:28788  192.168.204.1:44544    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:44576    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:44612    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:44664    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:44682    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:44692    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:44774    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:44776    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:44786    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:48584    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:48606    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:48648    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:54300    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:54306    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:54316    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:54332    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:54334    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:54400    ESTABLISHED     7128\n  TCP    [::]:135               [::]:0                 LISTENING       972\n  TCP    [::]:445               [::]:0                 LISTENING       4\n  TCP    [::]:49664             [::]:0                 LISTENING       708\n  TCP    [::]:49665             [::]:0                 LISTENING       540\n  TCP    [::]:49666             [::]:0                 LISTENING       1172\n  TCP    [::]:49667             [::]:0                 LISTENING       1220\n  TCP    [::]:49668             [::]:0                 LISTENING       2472\n  TCP    [::]:49669             [::]:0                 LISTENING       664\n  TCP    [::]:49670             [::]:0                 LISTENING       2896\n  UDP    0.0.0.0:123            *:*                                    3288\n  UDP    0.0.0.0:500            *:*                                    2888\n  UDP    0.0.0.0:4500           *:*                                    2888\n  UDP    0.0.0.0:5353           *:*                                    2128\n  UDP    0.0.0.0:5355           *:*                                    2128\n  UDP    127.0.0.1:1900         *:*                                    7432\n  UDP    127.0.0.1:51058        *:*                                    7432\n  UDP    127.0.0.1:59419        *:*                                    2912\n  UDP    192.168.204.149:137    *:*                                    4\n  UDP    192.168.204.149:138    *:*                                    4\n  UDP    192.168.204.149:1900   *:*                                    7432\n  UDP    192.168.204.149:51057  *:*                                    7432\n  UDP    [::]:123               *:*                                    3288\n  UDP    [::]:500               *:*                                    2888\n  UDP    [::]:4500              *:*                                    2888\n  UDP    [::]:5353              *:*                                    2128\n  UDP    [::]:5355              *:*                                    2128\n  UDP    [::1]:1900             *:*                                    7432\n  UDP    [::1]:51056            *:*                                    7432\n  UDP    [fe80::de75:a66a:725b:3539%11]:1900  *:*                                    7432\n  UDP    [fe80::de75:a66a:725b:3539%11]:51055  *:*                                    7432",
+      "services": "[{\"Name\":\"dnscache\",\"Status\":4},{\"Name\":\"mpssvc\",\"Status\":4}]"
+    },
+    "observation_windows": {
+      "listen_ports": {
+        "start_ns": 1789013605289053900,
+        "end_ns": 1789013605320363300
+      }
+    },
+    "firewall": "\n规则名称:                             FakeNet-NG MCP\n----------------------------------------------------------------------\n已启用:                               是\n方向:                                 入\n配置文件:                             域,专用,公用\n分组:                                 \n本地 IP:                              任何\n远程 IP:                              192.168.204.1/32\n协议:                                 TCP\n本地端口:     　                      28788\n远程端口: 　     　                   任何\n边缘遍历:                             否\n接口类型:                             任何\n安全:                                 NotRequired\n规则源:                          本地设置\n操作:                                 允许\n确定。\n\n",
+    "managed_driver_root": "C:\\Program Files\\FakeNet-NG-MCP"
+  },
+  "sample": {
+    "time": 1789013651.9470634,
+    "run_id": "d3055bda-76b4-4b95-8b13-b0f6d8634936",
+    "current": {
+      "routes": "===========================================================================\n接口列表\n 11...00 0c 29 4c fd c0 ......Intel(R) 82574L Gigabit Network Connection\n  1...........................Software Loopback Interface 1\n===========================================================================\n\nIPv4 路由表\n===========================================================================\n活动路由:\n网络目标        网络掩码          网关       接口   跃点数\n          0.0.0.0          0.0.0.0    192.168.204.1  192.168.204.149    281\n        127.0.0.0        255.0.0.0            在链路上         127.0.0.1    331\n        127.0.0.1  255.255.255.255            在链路上         127.0.0.1    331\n  127.255.255.255  255.255.255.255            在链路上         127.0.0.1    331\n    192.168.204.0    255.255.255.0            在链路上   192.168.204.149    281\n  192.168.204.149  255.255.255.255            在链路上   192.168.204.149    281\n  192.168.204.255  255.255.255.255            在链路上   192.168.204.149    281\n        224.0.0.0        240.0.0.0            在链路上         127.0.0.1    331\n        224.0.0.0        240.0.0.0            在链路上   192.168.204.149    281\n  255.255.255.255  255.255.255.255            在链路上         127.0.0.1    331\n  255.255.255.255  255.255.255.255            在链路上   192.168.204.149    281\n===========================================================================\n永久路由:\n  网络地址          网络掩码  网关地址  跃点数\n          0.0.0.0          0.0.0.0    192.168.204.1     默认 \n===========================================================================",
+      "dns_servers": "[{\"InterfaceAlias\":\"Ethernet0\",\"ServerAddresses\":[\"192.168.204.1\"]},{\"InterfaceAlias\":\"Loopback Pseudo-Interface 1\",\"ServerAddresses\":[]}]",
+      "windivert_processes": "{\"modules\":[\"INFO: No tasks are running which match the specified criteria.\"],\"service_command\":\"\\\"C:\\\\Program Files\\\\FakeNet-NG-MCP\\\\fakenetng-mcp.exe\\\" run\",\"managed\":[{\"ProcessName\":\"fakenetng-mcp\",\"Id\":7128,\"StartTime\":{\"value\":\"\\/Date(1789013480114)\\/\",\"DateTime\":\"2026年9月10日 12:11:20\"},\"ExecutablePath\":\"C:\\\\Program Files\\\\FakeNet-NG-MCP\\\\fakenetng-mcp.exe\",\"CommandLine\":\"\\\"C:\\\\Program Files\\\\FakeNet-NG-MCP\\\\fakenetng-mcp.exe\\\" run\"}],\"drivers\":[]}",
+      "listen_ports": "活动连接\n\n  协议  本地地址          外部地址        状态           PID\n  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       972\n  TCP    0.0.0.0:445            0.0.0.0:0              LISTENING       4\n  TCP    0.0.0.0:5040           0.0.0.0:0              LISTENING       5044\n  TCP    0.0.0.0:49664          0.0.0.0:0              LISTENING       708\n  TCP    0.0.0.0:49665          0.0.0.0:0              LISTENING       540\n  TCP    0.0.0.0:49666          0.0.0.0:0              LISTENING       1172\n  TCP    0.0.0.0:49667          0.0.0.0:0              LISTENING       1220\n  TCP    0.0.0.0:49668          0.0.0.0:0              LISTENING       2472\n  TCP    0.0.0.0:49669          0.0.0.0:0              LISTENING       664\n  TCP    0.0.0.0:49670          0.0.0.0:0              LISTENING       2896\n  TCP    127.0.0.1:30016        127.0.0.1:30017        ESTABLISHED     7128\n  TCP    127.0.0.1:30017        127.0.0.1:30016        ESTABLISHED     7128\n  TCP    127.0.0.1:49678        127.0.0.1:49679        ESTABLISHED     7296\n  TCP    127.0.0.1:49679        127.0.0.1:49678        ESTABLISHED     7296\n  TCP    192.168.204.149:139    0.0.0.0:0              LISTENING       4\n  TCP    192.168.204.149:28787  0.0.0.0:0              LISTENING       7296\n  TCP    192.168.204.149:28788  0.0.0.0:0              LISTENING       7128\n  TCP    192.168.204.149:28788  192.168.204.1:35384    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35386    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35392    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35406    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35412    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35426    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35436    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35446    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35460    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35470    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35482    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35518    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35528    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35536    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35556    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35570    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:35576    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37364    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37388    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37418    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37422    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37430    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37444    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37472    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37482    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37528    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37548    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37578    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37600    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37614    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37630    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:37636    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:46582    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:46600    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:46612    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:46628    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:46632    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:46646    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:46656    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:46672    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:46674    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:46676    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:46678    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:46734    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:50772    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:50802    TIME_WAIT       0\n  TCP    192.168.204.149:28788  192.168.204.1:50820    TIME_WAIT       0\n  TCP    [::]:135               [::]:0                 LISTENING       972\n  TCP    [::]:445               [::]:0                 LISTENING       4\n  TCP    [::]:49664             [::]:0                 LISTENING       708\n  TCP    [::]:49665             [::]:0                 LISTENING       540\n  TCP    [::]:49666             [::]:0                 LISTENING       1172\n  TCP    [::]:49667             [::]:0                 LISTENING       1220\n  TCP    [::]:49668             [::]:0                 LISTENING       2472\n  TCP    [::]:49669             [::]:0                 LISTENING       664\n  TCP    [::]:49670             [::]:0                 LISTENING       2896\n  UDP    0.0.0.0:123            *:*                                    3288\n  UDP    0.0.0.0:500            *:*                                    2888\n  UDP    0.0.0.0:4500           *:*                                    2888\n  UDP    0.0.0.0:5353           *:*                                    2128\n  UDP    0.0.0.0:5355           *:*                                    2128\n  UDP    0.0.0.0:56095          *:*                                    2128\n  UDP    127.0.0.1:1900         *:*                                    7432\n  UDP    127.0.0.1:51058        *:*                                    7432\n  UDP    127.0.0.1:59419        *:*                                    2912\n  UDP    192.168.204.149:137    *:*                                    4\n  UDP    192.168.204.149:138    *:*                                    4\n  UDP    192.168.204.149:1900   *:*                                    7432\n  UDP    192.168.204.149:51057  *:*                                    7432\n  UDP    [::]:123               *:*                                    3288\n  UDP    [::]:500               *:*                                    2888\n  UDP    [::]:4500              *:*                                    2888\n  UDP    [::]:5353              *:*                                    2128\n  UDP    [::]:5355              *:*                                    2128\n  UDP    [::]:56095             *:*                                    2128\n  UDP    [::1]:1900             *:*                                    7432\n  UDP    [::1]:51056            *:*                                    7432\n  UDP    [fe80::de75:a66a:725b:3539%11]:1900  *:*                                    7432\n  UDP    [fe80::de75:a66a:725b:3539%11]:51055  *:*                                    7432",
+      "services": "[{\"Name\":\"dnscache\",\"Status\":4},{\"Name\":\"mpssvc\",\"Status\":4}]"
+    },
+    "differences": {
+      "listen_ports": {
+        "before": "TCP 0.0.0.0:135 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:445 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:49664 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:49665 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:49666 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:49667 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:49668 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:49669 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:49670 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:5040 0.0.0.0:0 LISTENING\nTCP 192.168.204.149:139 0.0.0.0:0 LISTENING\nTCP 192.168.204.149:28787 0.0.0.0:0 LISTENING\nTCP 192.168.204.149:28788 0.0.0.0:0 LISTENING\nTCP [::]:135 [::]:0 LISTENING\nTCP [::]:445 [::]:0 LISTENING\nTCP [::]:49664 [::]:0 LISTENING\nTCP [::]:49665 [::]:0 LISTENING\nTCP [::]:49666 [::]:0 LISTENING\nTCP [::]:49667 [::]:0 LISTENING\nTCP [::]:49668 [::]:0 LISTENING\nTCP [::]:49669 [::]:0 LISTENING\nTCP [::]:49670 [::]:0 LISTENING\nUDP 0.0.0.0:123 *:*\nUDP 0.0.0.0:4500 *:*\nUDP 0.0.0.0:500 *:*\nUDP 0.0.0.0:5353 *:*\nUDP 0.0.0.0:5355 *:*\nUDP 127.0.0.1:1900 *:*\nUDP 127.0.0.1:51058 *:*\nUDP 127.0.0.1:59419 *:*\nUDP 192.168.204.149:137 *:*\nUDP 192.168.204.149:138 *:*\nUDP 192.168.204.149:1900 *:*\nUDP 192.168.204.149:51057 *:*\nUDP [::1]:1900 *:*\nUDP [::1]:51056 *:*\nUDP [::]:123 *:*\nUDP [::]:4500 *:*\nUDP [::]:500 *:*\nUDP [::]:5353 *:*\nUDP [::]:5355 *:*\nUDP [fe80::de75:a66a:725b:3539%11]:1900 *:*\nUDP [fe80::de75:a66a:725b:3539%11]:51055 *:*\n协议 本地地址 外部地址 状态 PID\n活动连接",
+        "after": "TCP 0.0.0.0:135 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:445 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:49664 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:49665 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:49666 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:49667 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:49668 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:49669 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:49670 0.0.0.0:0 LISTENING\nTCP 0.0.0.0:5040 0.0.0.0:0 LISTENING\nTCP 192.168.204.149:139 0.0.0.0:0 LISTENING\nTCP 192.168.204.149:28787 0.0.0.0:0 LISTENING\nTCP 192.168.204.149:28788 0.0.0.0:0 LISTENING\nTCP [::]:135 [::]:0 LISTENING\nTCP [::]:445 [::]:0 LISTENING\nTCP [::]:49664 [::]:0 LISTENING\nTCP [::]:49665 [::]:0 LISTENING\nTCP [::]:49666 [::]:0 LISTENING\nTCP [::]:49667 [::]:0 LISTENING\nTCP [::]:49668 [::]:0 LISTENING\nTCP [::]:49669 [::]:0 LISTENING\nTCP [::]:49670 [::]:0 LISTENING\nUDP 0.0.0.0:123 *:*\nUDP 0.0.0.0:4500 *:*\nUDP 0.0.0.0:500 *:*\nUDP 0.0.0.0:5353 *:*\nUDP 0.0.0.0:5355 *:*\nUDP 0.0.0.0:56095 *:*\nUDP 127.0.0.1:1900 *:*\nUDP 127.0.0.1:51058 *:*\nUDP 127.0.0.1:59419 *:*\nUDP 192.168.204.149:137 *:*\nUDP 192.168.204.149:138 *:*\nUDP 192.168.204.149:1900 *:*\nUDP 192.168.204.149:51057 *:*\nUDP [::1]:1900 *:*\nUDP [::1]:51056 *:*\nUDP [::]:123 *:*\nUDP [::]:4500 *:*\nUDP [::]:500 *:*\nUDP [::]:5353 *:*\nUDP [::]:5355 *:*\nUDP [::]:56095 *:*\nUDP [fe80::de75:a66a:725b:3539%11]:1900 *:*\nUDP [fe80::de75:a66a:725b:3539%11]:51055 *:*\n协议 本地地址 外部地址 状态 PID\n活动连接"
+      }
+    },
+    "observation_windows": {
+      "listen_ports": {
+        "start_ns": 1789013651572083900,
+        "end_ns": 1789013651603253900
+      }
+    }
+  },
+  "proof": {
+    "run_id": "d3055bda-76b4-4b95-8b13-b0f6d8634936",
+    "start": {
+      "run_id": "d3055bda-76b4-4b95-8b13-b0f6d8634936",
+      "time_ns": 1789013603726744800,
+      "trace": {
+        "Code": 0,
+        "EventsLost": 0,
+        "LogBuffersLost": 0,
+        "RealTimeBuffersLost": 0,
+        "LogFileMode": 4194305,
+        "MaximumFileSize": 16,
+        "BuffersWritten": 1,
+        "SessionGuid": "d3055bda-76b4-4b95-8b13-b0f6d8634936",
+        "LogFileName": "C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs\\d3055bda-76b4-4b95-8b13-b0f6d8634936\\udp.etl.part",
+        "SessionName": "fakenetng-mcp-udp-d3055bda-76b4-4b95-8b13-b0f6d8634936"
+      },
+      "processes": [
+        {
+          "ProcessId": 0,
+          "CreationTime": "134326112953778550"
+        },
+        {
+          "ProcessId": 4,
+          "CreationTime": "134326112953778550"
+        },
+        {
+          "ProcessId": 108,
+          "CreationTime": "134326112909609300"
+        },
+        {
+          "ProcessId": 320,
+          "CreationTime": "134326112953886230"
+        },
+        {
+          "ProcessId": 428,
+          "CreationTime": "134326112970142190"
+        },
+        {
+          "ProcessId": 540,
+          "CreationTime": "134326112971727690"
+        },
+        {
+          "ProcessId": 548,
+          "CreationTime": "134326112971768260"
+        },
+        {
+          "ProcessId": 640,
+          "CreationTime": "134326112972428680"
+        },
+        {
+          "ProcessId": 664,
+          "CreationTime": "134326112972630590"
+        },
+        {
+          "ProcessId": 708,
+          "CreationTime": "134326112972988500"
+        },
+        {
+          "ProcessId": 844,
+          "CreationTime": "134326112974832060"
+        },
+        {
+          "ProcessId": 868,
+          "CreationTime": "134326112974968570"
+        },
+        {
+          "ProcessId": 876,
+          "CreationTime": "134326112974969920"
+        },
+        {
+          "ProcessId": 972,
+          "CreationTime": "134326112975728760"
+        },
+        {
+          "ProcessId": 1020,
+          "CreationTime": "134326112975943320"
+        },
+        {
+          "ProcessId": 368,
+          "CreationTime": "134326112976760870"
+        },
+        {
+          "ProcessId": 432,
+          "CreationTime": "134326112977168990"
+        },
+        {
+          "ProcessId": 1156,
+          "CreationTime": "134326112977515020"
+        },
+        {
+          "ProcessId": 1164,
+          "CreationTime": "134326112977518270"
+        },
+        {
+          "ProcessId": 1172,
+          "CreationTime": "134326112977522120"
+        },
+        {
+          "ProcessId": 1220,
+          "CreationTime": "134326112977575330"
+        },
+        {
+          "ProcessId": 1296,
+          "CreationTime": "134326112977829810"
+        },
+        {
+          "ProcessId": 1340,
+          "CreationTime": "134326112977936620"
+        },
+        {
+          "ProcessId": 1384,
+          "CreationTime": "134326112978019550"
+        },
+        {
+          "ProcessId": 1472,
+          "CreationTime": "134326112978193670"
+        },
+        {
+          "ProcessId": 1500,
+          "CreationTime": "134326112978286960"
+        },
+        {
+          "ProcessId": 1596,
+          "CreationTime": "134326112978770330"
+        },
+        {
+          "ProcessId": 1616,
+          "CreationTime": "134326112978811940"
+        },
+        {
+          "ProcessId": 1624,
+          "CreationTime": "134326112978832000"
+        },
+        {
+          "ProcessId": 1640,
+          "CreationTime": "134326112978844600"
+        },
+        {
+          "ProcessId": 1720,
+          "CreationTime": "134326112979042110"
+        },
+        {
+          "ProcessId": 1788,
+          "CreationTime": "134326112979282980"
+        },
+        {
+          "ProcessId": 1796,
+          "CreationTime": "134326112979312580"
+        },
+        {
+          "ProcessId": 1888,
+          "CreationTime": "134326112979572000"
+        },
+        {
+          "ProcessId": 1896,
+          "CreationTime": "134326112979574070"
+        },
+        {
+          "ProcessId": 1952,
+          "CreationTime": "134326112979733400"
+        },
+        {
+          "ProcessId": 1980,
+          "CreationTime": "134326112979820580"
+        },
+        {
+          "ProcessId": 1988,
+          "CreationTime": "134326112980548950"
+        },
+        {
+          "ProcessId": 2128,
+          "CreationTime": "134326112980850530"
+        },
+        {
+          "ProcessId": 2136,
+          "CreationTime": "134326112980851190"
+        },
+        {
+          "ProcessId": 2144,
+          "CreationTime": "134326112980854120"
+        },
+        {
+          "ProcessId": 2224,
+          "CreationTime": "134326112981179280"
+        },
+        {
+          "ProcessId": 2376,
+          "CreationTime": "134326112981527170"
+        },
+        {
+          "ProcessId": 2464,
+          "CreationTime": "134326112981808790"
+        },
+        {
+          "ProcessId": 2472,
+          "CreationTime": "134326112981855090"
+        },
+        {
+          "ProcessId": 2616,
+          "CreationTime": "134326112982284630"
+        },
+        {
+          "ProcessId": 2680,
+          "CreationTime": "134326112982602020"
+        },
+        {
+          "ProcessId": 2840,
+          "CreationTime": "134326112983430250"
+        },
+        {
+          "ProcessId": 2888,
+          "CreationTime": "134326112983615740"
+        },
+        {
+          "ProcessId": 2896,
+          "CreationTime": "134326112983618590"
+        },
+        {
+          "ProcessId": 2912,
+          "CreationTime": "134326112983680530"
+        },
+        {
+          "ProcessId": 2948,
+          "CreationTime": "134326112983739800"
+        },
+        {
+          "ProcessId": 2956,
+          "CreationTime": "134326112983752740"
+        },
+        {
+          "ProcessId": 2964,
+          "CreationTime": "134326112983753140"
+        },
+        {
+          "ProcessId": 2980,
+          "CreationTime": "134326112983778180"
+        },
+        {
+          "ProcessId": 3020,
+          "CreationTime": "134326112983947970"
+        },
+        {
+          "ProcessId": 2520,
+          "CreationTime": "134326112984246410"
+        },
+        {
+          "ProcessId": 2600,
+          "CreationTime": "134326112984333920"
+        },
+        {
+          "ProcessId": 3092,
+          "CreationTime": "134326112984443040"
+        },
+        {
+          "ProcessId": 3128,
+          "CreationTime": "134326112984674700"
+        },
+        {
+          "ProcessId": 3136,
+          "CreationTime": "134326112984678450"
+        },
+        {
+          "ProcessId": 3148,
+          "CreationTime": "134326112984699550"
+        },
+        {
+          "ProcessId": 3164,
+          "CreationTime": "134326112984768580"
+        },
+        {
+          "ProcessId": 3296,
+          "CreationTime": "134326112985171820"
+        },
+        {
+          "ProcessId": 3500,
+          "CreationTime": "134326112986106100"
+        },
+        {
+          "ProcessId": 3552,
+          "CreationTime": "134326112986423310"
+        },
+        {
+          "ProcessId": 4064,
+          "CreationTime": "134326112989796590"
+        },
+        {
+          "ProcessId": 4088,
+          "CreationTime": "134326112989903110"
+        },
+        {
+          "ProcessId": 4080,
+          "CreationTime": "134326112991186700"
+        },
+        {
+          "ProcessId": 4272,
+          "CreationTime": "134326112993321100"
+        },
+        {
+          "ProcessId": 4368,
+          "CreationTime": "134326112994034540"
+        },
+        {
+          "ProcessId": 4512,
+          "CreationTime": "134326112995886530"
+        },
+        {
+          "ProcessId": 4532,
+          "CreationTime": "134326112996018000"
+        },
+        {
+          "ProcessId": 4584,
+          "CreationTime": "134326112996161250"
+        },
+        {
+          "ProcessId": 4744,
+          "CreationTime": "134326112996882730"
+        },
+        {
+          "ProcessId": 4804,
+          "CreationTime": "134326112997146340"
+        },
+        {
+          "ProcessId": 4856,
+          "CreationTime": "134326112997548870"
+        },
+        {
+          "ProcessId": 4884,
+          "CreationTime": "134326112997667260"
+        },
+        {
+          "ProcessId": 5044,
+          "CreationTime": "134326112999183150"
+        },
+        {
+          "ProcessId": 4216,
+          "CreationTime": "134326112999679010"
+        },
+        {
+          "ProcessId": 5532,
+          "CreationTime": "134326113005583180"
+        },
+        {
+          "ProcessId": 5680,
+          "CreationTime": "134326113006878490"
+        },
+        {
+          "ProcessId": 5800,
+          "CreationTime": "134326113007845720"
+        },
+        {
+          "ProcessId": 6060,
+          "CreationTime": "134326113014476840"
+        },
+        {
+          "ProcessId": 6128,
+          "CreationTime": "134326113015957210"
+        },
+        {
+          "ProcessId": 5384,
+          "CreationTime": "134326113018434440"
+        },
+        {
+          "ProcessId": 4644,
+          "CreationTime": "134326113020962080"
+        },
+        {
+          "ProcessId": 6468,
+          "CreationTime": "134326113026931560"
+        },
+        {
+          "ProcessId": 6940,
+          "CreationTime": "134326113086853770"
+        },
+        {
+          "ProcessId": 6984,
+          "CreationTime": "134326113090783650"
+        },
+        {
+          "ProcessId": 6992,
+          "CreationTime": "134326113090958590"
+        },
+        {
+          "ProcessId": 688,
+          "CreationTime": "134326113125833150"
+        },
+        {
+          "ProcessId": 1044,
+          "CreationTime": "134326113130932050"
+        },
+        {
+          "ProcessId": 3996,
+          "CreationTime": "134326113139995640"
+        },
+        {
+          "ProcessId": 7192,
+          "CreationTime": "134326113141535970"
+        },
+        {
+          "ProcessId": 7200,
+          "CreationTime": "134326113142049480"
+        },
+        {
+          "ProcessId": 7280,
+          "CreationTime": "134326113143619080"
+        },
+        {
+          "ProcessId": 7296,
+          "CreationTime": "134326113143774660"
+        },
+        {
+          "ProcessId": 7316,
+          "CreationTime": "134326113144262390"
+        },
+        {
+          "ProcessId": 7452,
+          "CreationTime": "134326113155631600"
+        },
+        {
+          "ProcessId": 7632,
+          "CreationTime": "134326113157198920"
+        },
+        {
+          "ProcessId": 7640,
+          "CreationTime": "134326113157256260"
+        },
+        {
+          "ProcessId": 7664,
+          "CreationTime": "134326113158046240"
+        },
+        {
+          "ProcessId": 5808,
+          "CreationTime": "134326113189309910"
+        },
+        {
+          "ProcessId": 6436,
+          "CreationTime": "134326113193398090"
+        },
+        {
+          "ProcessId": 7432,
+          "CreationTime": "134326113193859290"
+        },
+        {
+          "ProcessId": 8372,
+          "CreationTime": "134326113233698120"
+        },
+        {
+          "ProcessId": 8400,
+          "CreationTime": "134326113233748530"
+        },
+        {
+          "ProcessId": 9000,
+          "CreationTime": "134327258734575480"
+        },
+        {
+          "ProcessId": 9212,
+          "CreationTime": "134327258736360600"
+        },
+        {
+          "ProcessId": 6824,
+          "CreationTime": "134327258736662810"
+        },
+        {
+          "ProcessId": 1060,
+          "CreationTime": "134334863931374360"
+        },
+        {
+          "ProcessId": 9080,
+          "CreationTime": "134334863931644680"
+        },
+        {
+          "ProcessId": 8040,
+          "CreationTime": "134334863932200580"
+        },
+        {
+          "ProcessId": 4912,
+          "CreationTime": "134334864088061000"
+        },
+        {
+          "ProcessId": 4972,
+          "CreationTime": "134334864088101910"
+        },
+        {
+          "ProcessId": 7336,
+          "CreationTime": "134334864091108870"
+        },
+        {
+          "ProcessId": 2196,
+          "CreationTime": "134334864491829290"
+        },
+        {
+          "ProcessId": 3288,
+          "CreationTime": "134334864493249930"
+        },
+        {
+          "ProcessId": 5184,
+          "CreationTime": "134334864495739200"
+        },
+        {
+          "ProcessId": 8624,
+          "CreationTime": "134334864525329880"
+        },
+        {
+          "ProcessId": 3200,
+          "CreationTime": "134334864527005570"
+        },
+        {
+          "ProcessId": 5496,
+          "CreationTime": "134334868322462630"
+        },
+        {
+          "ProcessId": 6320,
+          "CreationTime": "134334868322512030"
+        },
+        {
+          "ProcessId": 6412,
+          "CreationTime": "134334868322539430"
+        },
+        {
+          "ProcessId": 3512,
+          "CreationTime": "134334868324651410"
+        },
+        {
+          "ProcessId": 9024,
+          "CreationTime": "134334869556865700"
+        },
+        {
+          "ProcessId": 7128,
+          "CreationTime": "134334870801141590"
+        },
+        {
+          "ProcessId": 2320,
+          "CreationTime": "134334871817009120"
+        },
+        {
+          "ProcessId": 7048,
+          "CreationTime": "134334872032759530"
+        },
+        {
+          "ProcessId": 5832,
+          "CreationTime": "134334872032772960"
+        }
+      ]
+    },
+    "end": {
+      "run_id": "d3055bda-76b4-4b95-8b13-b0f6d8634936",
+      "complete": true,
+      "absent": true,
+      "stop": {
+        "Code": 0,
+        "EventsLost": 0,
+        "LogBuffersLost": 0,
+        "RealTimeBuffersLost": 0,
+        "LogFileMode": 4194305,
+        "MaximumFileSize": 16,
+        "BuffersWritten": 191,
+        "SessionGuid": "d3055bda-76b4-4b95-8b13-b0f6d8634936",
+        "LogFileName": "C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs\\d3055bda-76b4-4b95-8b13-b0f6d8634936\\udp.etl.part",
+        "SessionName": "fakenetng-mcp-udp-d3055bda-76b4-4b95-8b13-b0f6d8634936"
+      },
+      "after_stop": {
+        "Code": 4201,
+        "EventsLost": 0,
+        "LogBuffersLost": 0,
+        "RealTimeBuffersLost": 0,
+        "LogFileMode": 4194305,
+        "MaximumFileSize": 16,
+        "BuffersWritten": 0,
+        "SessionGuid": "00000000-0000-0000-0000-000000000000",
+        "LogFileName": "",
+        "SessionName": ""
+      },
+      "size": 12517376,
+      "sha256": "d9d7f07e21729c447992f67c8815e28bb08cf0c1fde2dced1bdc44886f113bcb",
+      "processes": [
+        {
+          "ProcessId": 0,
+          "CreationTime": "134326112953778550"
+        },
+        {
+          "ProcessId": 4,
+          "CreationTime": "134326112953778550"
+        },
+        {
+          "ProcessId": 108,
+          "CreationTime": "134326112909609300"
+        },
+        {
+          "ProcessId": 320,
+          "CreationTime": "134326112953886230"
+        },
+        {
+          "ProcessId": 428,
+          "CreationTime": "134326112970142190"
+        },
+        {
+          "ProcessId": 540,
+          "CreationTime": "134326112971727690"
+        },
+        {
+          "ProcessId": 548,
+          "CreationTime": "134326112971768260"
+        },
+        {
+          "ProcessId": 640,
+          "CreationTime": "134326112972428680"
+        },
+        {
+          "ProcessId": 664,
+          "CreationTime": "134326112972630590"
+        },
+        {
+          "ProcessId": 708,
+          "CreationTime": "134326112972988500"
+        },
+        {
+          "ProcessId": 844,
+          "CreationTime": "134326112974832060"
+        },
+        {
+          "ProcessId": 868,
+          "CreationTime": "134326112974968570"
+        },
+        {
+          "ProcessId": 876,
+          "CreationTime": "134326112974969920"
+        },
+        {
+          "ProcessId": 972,
+          "CreationTime": "134326112975728760"
+        },
+        {
+          "ProcessId": 1020,
+          "CreationTime": "134326112975943320"
+        },
+        {
+          "ProcessId": 368,
+          "CreationTime": "134326112976760870"
+        },
+        {
+          "ProcessId": 432,
+          "CreationTime": "134326112977168990"
+        },
+        {
+          "ProcessId": 1156,
+          "CreationTime": "134326112977515020"
+        },
+        {
+          "ProcessId": 1164,
+          "CreationTime": "134326112977518270"
+        },
+        {
+          "ProcessId": 1172,
+          "CreationTime": "134326112977522120"
+        },
+        {
+          "ProcessId": 1220,
+          "CreationTime": "134326112977575330"
+        },
+        {
+          "ProcessId": 1296,
+          "CreationTime": "134326112977829810"
+        },
+        {
+          "ProcessId": 1340,
+          "CreationTime": "134326112977936620"
+        },
+        {
+          "ProcessId": 1384,
+          "CreationTime": "134326112978019550"
+        },
+        {
+          "ProcessId": 1472,
+          "CreationTime": "134326112978193670"
+        },
+        {
+          "ProcessId": 1500,
+          "CreationTime": "134326112978286960"
+        },
+        {
+          "ProcessId": 1596,
+          "CreationTime": "134326112978770330"
+        },
+        {
+          "ProcessId": 1616,
+          "CreationTime": "134326112978811940"
+        },
+        {
+          "ProcessId": 1624,
+          "CreationTime": "134326112978832000"
+        },
+        {
+          "ProcessId": 1640,
+          "CreationTime": "134326112978844600"
+        },
+        {
+          "ProcessId": 1720,
+          "CreationTime": "134326112979042110"
+        },
+        {
+          "ProcessId": 1788,
+          "CreationTime": "134326112979282980"
+        },
+        {
+          "ProcessId": 1796,
+          "CreationTime": "134326112979312580"
+        },
+        {
+          "ProcessId": 1888,
+          "CreationTime": "134326112979572000"
+        },
+        {
+          "ProcessId": 1896,
+          "CreationTime": "134326112979574070"
+        },
+        {
+          "ProcessId": 1952,
+          "CreationTime": "134326112979733400"
+        },
+        {
+          "ProcessId": 1980,
+          "CreationTime": "134326112979820580"
+        },
+        {
+          "ProcessId": 1988,
+          "CreationTime": "134326112980548950"
+        },
+        {
+          "ProcessId": 2128,
+          "CreationTime": "134326112980850530"
+        },
+        {
+          "ProcessId": 2136,
+          "CreationTime": "134326112980851190"
+        },
+        {
+          "ProcessId": 2144,
+          "CreationTime": "134326112980854120"
+        },
+        {
+          "ProcessId": 2224,
+          "CreationTime": "134326112981179280"
+        },
+        {
+          "ProcessId": 2376,
+          "CreationTime": "134326112981527170"
+        },
+        {
+          "ProcessId": 2464,
+          "CreationTime": "134326112981808790"
+        },
+        {
+          "ProcessId": 2472,
+          "CreationTime": "134326112981855090"
+        },
+        {
+          "ProcessId": 2616,
+          "CreationTime": "134326112982284630"
+        },
+        {
+          "ProcessId": 2680,
+          "CreationTime": "134326112982602020"
+        },
+        {
+          "ProcessId": 2840,
+          "CreationTime": "134326112983430250"
+        },
+        {
+          "ProcessId": 2888,
+          "CreationTime": "134326112983615740"
+        },
+        {
+          "ProcessId": 2896,
+          "CreationTime": "134326112983618590"
+        },
+        {
+          "ProcessId": 2912,
+          "CreationTime": "134326112983680530"
+        },
+        {
+          "ProcessId": 2948,
+          "CreationTime": "134326112983739800"
+        },
+        {
+          "ProcessId": 2956,
+          "CreationTime": "134326112983752740"
+        },
+        {
+          "ProcessId": 2964,
+          "CreationTime": "134326112983753140"
+        },
+        {
+          "ProcessId": 2980,
+          "CreationTime": "134326112983778180"
+        },
+        {
+          "ProcessId": 3020,
+          "CreationTime": "134326112983947970"
+        },
+        {
+          "ProcessId": 2520,
+          "CreationTime": "134326112984246410"
+        },
+        {
+          "ProcessId": 2600,
+          "CreationTime": "134326112984333920"
+        },
+        {
+          "ProcessId": 3092,
+          "CreationTime": "134326112984443040"
+        },
+        {
+          "ProcessId": 3128,
+          "CreationTime": "134326112984674700"
+        },
+        {
+          "ProcessId": 3136,
+          "CreationTime": "134326112984678450"
+        },
+        {
+          "ProcessId": 3148,
+          "CreationTime": "134326112984699550"
+        },
+        {
+          "ProcessId": 3164,
+          "CreationTime": "134326112984768580"
+        },
+        {
+          "ProcessId": 3296,
+          "CreationTime": "134326112985171820"
+        },
+        {
+          "ProcessId": 3500,
+          "CreationTime": "134326112986106100"
+        },
+        {
+          "ProcessId": 3552,
+          "CreationTime": "134326112986423310"
+        },
+        {
+          "ProcessId": 4064,
+          "CreationTime": "134326112989796590"
+        },
+        {
+          "ProcessId": 4088,
+          "CreationTime": "134326112989903110"
+        },
+        {
+          "ProcessId": 4080,
+          "CreationTime": "134326112991186700"
+        },
+        {
+          "ProcessId": 4272,
+          "CreationTime": "134326112993321100"
+        },
+        {
+          "ProcessId": 4368,
+          "CreationTime": "134326112994034540"
+        },
+        {
+          "ProcessId": 4512,
+          "CreationTime": "134326112995886530"
+        },
+        {
+          "ProcessId": 4532,
+          "CreationTime": "134326112996018000"
+        },
+        {
+          "ProcessId": 4584,
+          "CreationTime": "134326112996161250"
+        },
+        {
+          "ProcessId": 4744,
+          "CreationTime": "134326112996882730"
+        },
+        {
+          "ProcessId": 4804,
+          "CreationTime": "134326112997146340"
+        },
+        {
+          "ProcessId": 4856,
+          "CreationTime": "134326112997548870"
+        },
+        {
+          "ProcessId": 4884,
+          "CreationTime": "134326112997667260"
+        },
+        {
+          "ProcessId": 5044,
+          "CreationTime": "134326112999183150"
+        },
+        {
+          "ProcessId": 4216,
+          "CreationTime": "134326112999679010"
+        },
+        {
+          "ProcessId": 5532,
+          "CreationTime": "134326113005583180"
+        },
+        {
+          "ProcessId": 5680,
+          "CreationTime": "134326113006878490"
+        },
+        {
+          "ProcessId": 5800,
+          "CreationTime": "134326113007845720"
+        },
+        {
+          "ProcessId": 6060,
+          "CreationTime": "134326113014476840"
+        },
+        {
+          "ProcessId": 6128,
+          "CreationTime": "134326113015957210"
+        },
+        {
+          "ProcessId": 5384,
+          "CreationTime": "134326113018434440"
+        },
+        {
+          "ProcessId": 4644,
+          "CreationTime": "134326113020962080"
+        },
+        {
+          "ProcessId": 6468,
+          "CreationTime": "134326113026931560"
+        },
+        {
+          "ProcessId": 6940,
+          "CreationTime": "134326113086853770"
+        },
+        {
+          "ProcessId": 6984,
+          "CreationTime": "134326113090783650"
+        },
+        {
+          "ProcessId": 6992,
+          "CreationTime": "134326113090958590"
+        },
+        {
+          "ProcessId": 688,
+          "CreationTime": "134326113125833150"
+        },
+        {
+          "ProcessId": 1044,
+          "CreationTime": "134326113130932050"
+        },
+        {
+          "ProcessId": 3996,
+          "CreationTime": "134326113139995640"
+        },
+        {
+          "ProcessId": 7192,
+          "CreationTime": "134326113141535970"
+        },
+        {
+          "ProcessId": 7200,
+          "CreationTime": "134326113142049480"
+        },
+        {
+          "ProcessId": 7280,
+          "CreationTime": "134326113143619080"
+        },
+        {
+          "ProcessId": 7296,
+          "CreationTime": "134326113143774660"
+        },
+        {
+          "ProcessId": 7316,
+          "CreationTime": "134326113144262390"
+        },
+        {
+          "ProcessId": 7452,
+          "CreationTime": "134326113155631600"
+        },
+        {
+          "ProcessId": 7632,
+          "CreationTime": "134326113157198920"
+        },
+        {
+          "ProcessId": 7640,
+          "CreationTime": "134326113157256260"
+        },
+        {
+          "ProcessId": 7664,
+          "CreationTime": "134326113158046240"
+        },
+        {
+          "ProcessId": 5808,
+          "CreationTime": "134326113189309910"
+        },
+        {
+          "ProcessId": 6436,
+          "CreationTime": "134326113193398090"
+        },
+        {
+          "ProcessId": 7432,
+          "CreationTime": "134326113193859290"
+        },
+        {
+          "ProcessId": 8372,
+          "CreationTime": "134326113233698120"
+        },
+        {
+          "ProcessId": 8400,
+          "CreationTime": "134326113233748530"
+        },
+        {
+          "ProcessId": 9000,
+          "CreationTime": "134327258734575480"
+        },
+        {
+          "ProcessId": 9212,
+          "CreationTime": "134327258736360600"
+        },
+        {
+          "ProcessId": 6824,
+          "CreationTime": "134327258736662810"
+        },
+        {
+          "ProcessId": 1060,
+          "CreationTime": "134334863931374360"
+        },
+        {
+          "ProcessId": 9080,
+          "CreationTime": "134334863931644680"
+        },
+        {
+          "ProcessId": 8040,
+          "CreationTime": "134334863932200580"
+        },
+        {
+          "ProcessId": 4912,
+          "CreationTime": "134334864088061000"
+        },
+        {
+          "ProcessId": 4972,
+          "CreationTime": "134334864088101910"
+        },
+        {
+          "ProcessId": 7336,
+          "CreationTime": "134334864091108870"
+        },
+        {
+          "ProcessId": 2196,
+          "CreationTime": "134334864491829290"
+        },
+        {
+          "ProcessId": 3288,
+          "CreationTime": "134334864493249930"
+        },
+        {
+          "ProcessId": 5184,
+          "CreationTime": "134334864495739200"
+        },
+        {
+          "ProcessId": 8624,
+          "CreationTime": "134334864525329880"
+        },
+        {
+          "ProcessId": 3200,
+          "CreationTime": "134334864527005570"
+        },
+        {
+          "ProcessId": 5496,
+          "CreationTime": "134334868322462630"
+        },
+        {
+          "ProcessId": 6320,
+          "CreationTime": "134334868322512030"
+        },
+        {
+          "ProcessId": 6412,
+          "CreationTime": "134334868322539430"
+        },
+        {
+          "ProcessId": 3512,
+          "CreationTime": "134334868324651410"
+        },
+        {
+          "ProcessId": 9024,
+          "CreationTime": "134334869556865700"
+        },
+        {
+          "ProcessId": 7128,
+          "CreationTime": "134334870801141590"
+        },
+        {
+          "ProcessId": 2320,
+          "CreationTime": "134334871817009120"
+        },
+        {
+          "ProcessId": 7004,
+          "CreationTime": "134334872108554180"
+        },
+        {
+          "ProcessId": 8716,
+          "CreationTime": "134334872464654650"
+        },
+        {
+          "ProcessId": 9048,
+          "CreationTime": "134334872532299930"
+        },
+        {
+          "ProcessId": 8232,
+          "CreationTime": "134334872532317330"
+        }
+      ],
+      "time_ns": 1789013656947004100
+    },
+    "etl_sha256": "d9d7f07e21729c447992f67c8815e28bb08cf0c1fde2dced1bdc44886f113bcb",
+    "events": [
+      {
+        "time": "2026-09-10T04:13:24.6371367Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:24.6371367Z'/><EventRecordID>9</EventRecordID><Correlation ActivityID='{5faa37e0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9045faa37e0</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:24.6371506Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:24.6371506Z'/><EventRecordID>10</EventRecordID><Correlation ActivityID='{5faa37e0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9045faa37e0</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700C18B000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:30.9010697Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:30.9010697Z'/><EventRecordID>2008</EventRecordID><Correlation ActivityID='{6058d2a0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9046058d2a0</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:30.9010828Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:30.9010828Z'/><EventRecordID>2009</EventRecordID><Correlation ActivityID='{6058d2a0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9046058d2a0</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700C086000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:30.9259491Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:30.9259491Z'/><EventRecordID>2048</EventRecordID><Correlation ActivityID='{60587800-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb90460587800</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:30.9259672Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:30.9259672Z'/><EventRecordID>2049</EventRecordID><Correlation ActivityID='{60587800-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb90460587800</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700FB39000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:35.9603615Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:35.9603615Z'/><EventRecordID>2597</EventRecordID><Correlation ActivityID='{6058c420-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9046058c420</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:35.9603733Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:35.9603733Z'/><EventRecordID>2598</EventRecordID><Correlation ActivityID='{6058c420-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9046058c420</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700CF79000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:39.9921590Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:39.9921590Z'/><EventRecordID>3089</EventRecordID><Correlation ActivityID='{605870c0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605870c0</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:39.9921754Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:39.9921754Z'/><EventRecordID>3090</EventRecordID><Correlation ActivityID='{605870c0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605870c0</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700E9EF000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:44.0202535Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:44.0202535Z'/><EventRecordID>3529</EventRecordID><Correlation ActivityID='{5f1ff270-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9045f1ff270</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:44.0202639Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:44.0202639Z'/><EventRecordID>3530</EventRecordID><Correlation ActivityID='{5f1ff270-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9045f1ff270</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700FFFC000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:48.0435371Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:48.0435371Z'/><EventRecordID>3975</EventRecordID><Correlation ActivityID='{60586240-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb90460586240</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:48.0435471Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:48.0435471Z'/><EventRecordID>3976</EventRecordID><Correlation ActivityID='{60586240-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb90460586240</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700E7C1000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:51.6786441Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:51.6786441Z'/><EventRecordID>4387</EventRecordID><Correlation ActivityID='{6058bce0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9046058bce0</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:51.6786680Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:51.6786680Z'/><EventRecordID>4388</EventRecordID><Correlation ActivityID='{6058bce0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9046058bce0</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700DE6F000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:52.0603131Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:52.0603131Z'/><EventRecordID>4458</EventRecordID><Correlation ActivityID='{5fde1b50-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9045fde1b50</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:52.0603252Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:52.0603252Z'/><EventRecordID>4459</EventRecordID><Correlation ActivityID='{5fde1b50-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9045fde1b50</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700CF5D000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:55.1017740Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:55.1017740Z'/><EventRecordID>4797</EventRecordID><Correlation ActivityID='{5fde2460-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9045fde2460</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:55.1017883Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:55.1017883Z'/><EventRecordID>4798</EventRecordID><Correlation ActivityID='{5fde2460-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9045fde2460</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700C229000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:58.1360315Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:58.1360315Z'/><EventRecordID>5147</EventRecordID><Correlation ActivityID='{5f1ff270-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9045f1ff270</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:58.1360434Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:58.1360434Z'/><EventRecordID>5148</EventRecordID><Correlation ActivityID='{5f1ff270-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9045f1ff270</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700F0DA000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:59.7054466Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:59.7054466Z'/><EventRecordID>5344</EventRecordID><Correlation ActivityID='{60587290-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb90460587290</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:13:59.7054613Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:13:59.7054613Z'/><EventRecordID>5345</EventRecordID><Correlation ActivityID='{60587290-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb90460587290</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700E0FB000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:14:05.1520676Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:05.1520676Z'/><EventRecordID>5927</EventRecordID><Correlation ActivityID='{5f1ff270-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9045f1ff270</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:14:05.1520800Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:05.1520800Z'/><EventRecordID>5928</EventRecordID><Correlation ActivityID='{5f1ff270-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb9045f1ff270</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700D355000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:14:06.7385536Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:06.7385536Z'/><EventRecordID>6132</EventRecordID><Correlation ActivityID='{605879d0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>1006</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='AddressFamily'>23</Data><Data Name='SocketType'>2</Data><Data Name='Protocol'>17</Data><Data Name='ProcessId'>0x850</Data><Data Name='Status'>0</Data></EventData></Event>",
+        "id": 1000
+      },
+      {
+        "time": "2026-09-10T04:14:06.7385731Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1000</EventID><Version>0</Version><Level>4</Level><Task>1000</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:06.7385731Z'/><EventRecordID>6133</EventRecordID><Correlation ActivityID='{605879d0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>1013</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='AddressFamily'>0</Data><Data Name='SocketType'>0</Data><Data Name='Protocol'>0</Data><Data Name='ProcessId'>0x850</Data><Data Name='Status'>0</Data></EventData></Event>",
+        "id": 1000
+      },
+      {
+        "time": "2026-09-10T04:14:06.7386024Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>10</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:06.7386024Z'/><EventRecordID>6134</EventRecordID><Correlation ActivityID='{605879d0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>7010</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000000000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:14:06.7386230Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1030</EventID><Version>0</Version><Level>4</Level><Task>1030</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:06.7386230Z'/><EventRecordID>6135</EventRecordID><Correlation ActivityID='{605879d0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>7022</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>1700DB1F000000000000000000000000000000000000000000000000</Data></EventData></Event>",
+        "id": 1030
+      },
+      {
+        "time": "2026-09-10T04:14:06.7386387Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-10T04:14:06.7386387Z'/><EventRecordID>6136</EventRecordID><Correlation ActivityID='{5de50ca0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045de50f28</Data><Data Name='BufferLength'>49</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+        "id": 1013
+      },
+      {
+        "time": "2026-09-10T04:14:06.7388899Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1006</EventID><Version>0</Version><Level>4</Level><Task>1006</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:06.7388899Z'/><EventRecordID>6137</EventRecordID><Correlation ActivityID='{60171710-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>4049</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045f9c3580</Data><Data Name='BufferLength'>4096</Data><Data Name='Status'>0</Data></EventData></Event>",
+        "id": 1006
+      },
+      {
+        "time": "2026-09-10T04:14:06.7389660Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1015</EventID><Version>0</Version><Level>2</Level><Task>1015</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:06.7389660Z'/><EventRecordID>6138</EventRecordID><Correlation ActivityID='{60171710-b904-ffff-0000-000000000000}'/><Execution ProcessID='0' ThreadID='0'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>4052</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045f9c3580</Data><Data Name='BufferLength'>0</Data><Data Name='Status'>3221226047</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>170000350000000000000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+        "id": 1015
+      },
+      {
+        "time": "2026-09-10T04:14:06.7389747Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-10T04:14:06.7389747Z'/><EventRecordID>6139</EventRecordID><Correlation ActivityID='{5de50ca0-b904-ffff-0000-000000000000}'/><Execution ProcessID='0' ThreadID='0'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3102</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045de50f28</Data><Data Name='BufferLength'>49</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+        "id": 1013
+      },
+      {
+        "time": "2026-09-10T04:14:06.7389930Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-10T04:14:06.7389930Z'/><EventRecordID>6140</EventRecordID><Correlation ActivityID='{5de50ca0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045de50f28</Data><Data Name='BufferLength'>49</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+        "id": 1013
+      },
+      {
+        "time": "2026-09-10T04:14:06.7390400Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-10T04:14:06.7390400Z'/><EventRecordID>6141</EventRecordID><Correlation ActivityID='{5de50ca0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3200</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045de50f28</Data><Data Name='BufferLength'>49</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+        "id": 1013
+      },
+      {
+        "time": "2026-09-10T04:14:06.7390479Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1006</EventID><Version>0</Version><Level>4</Level><Task>1006</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:06.7390479Z'/><EventRecordID>6142</EventRecordID><Correlation ActivityID='{5fd64050-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>4049</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb90461086370</Data><Data Name='BufferLength'>4096</Data><Data Name='Status'>0</Data></EventData></Event>",
+        "id": 1006
+      },
+      {
+        "time": "2026-09-10T04:14:07.7433966Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-10T04:14:07.7433966Z'/><EventRecordID>6242</EventRecordID><Correlation ActivityID='{5de50ca0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045de50f28</Data><Data Name='BufferLength'>49</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+        "id": 1013
+      },
+      {
+        "time": "2026-09-10T04:14:07.7436316Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1015</EventID><Version>0</Version><Level>2</Level><Task>1015</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:07.7436316Z'/><EventRecordID>6243</EventRecordID><Correlation ActivityID='{5fd64050-b904-ffff-0000-000000000000}'/><Execution ProcessID='0' ThreadID='0'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>4052</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb90461086370</Data><Data Name='BufferLength'>0</Data><Data Name='Status'>3221226047</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>170000350000000000000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+        "id": 1015
+      },
+      {
+        "time": "2026-09-10T04:14:07.7436521Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-10T04:14:07.7436521Z'/><EventRecordID>6244</EventRecordID><Correlation ActivityID='{5de50ca0-b904-ffff-0000-000000000000}'/><Execution ProcessID='0' ThreadID='0'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3102</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045de50f28</Data><Data Name='BufferLength'>49</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+        "id": 1013
+      },
+      {
+        "time": "2026-09-10T04:14:07.7436616Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-10T04:14:07.7436616Z'/><EventRecordID>6245</EventRecordID><Correlation ActivityID='{5de50ca0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045de50f28</Data><Data Name='BufferLength'>49</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+        "id": 1013
+      },
+      {
+        "time": "2026-09-10T04:14:07.7437153Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1006</EventID><Version>0</Version><Level>4</Level><Task>1006</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:07.7437153Z'/><EventRecordID>6246</EventRecordID><Correlation ActivityID='{5de4d010-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>4049</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb90461075ea0</Data><Data Name='BufferLength'>4096</Data><Data Name='Status'>0</Data></EventData></Event>",
+        "id": 1006
+      },
+      {
+        "time": "2026-09-10T04:14:07.7437879Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-10T04:14:07.7437879Z'/><EventRecordID>6247</EventRecordID><Correlation ActivityID='{5de50ca0-b904-ffff-0000-000000000000}'/><Execution ProcessID='0' ThreadID='0'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3102</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045de50f28</Data><Data Name='BufferLength'>49</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+        "id": 1013
+      },
+      {
+        "time": "2026-09-10T04:14:11.7441653Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-10T04:14:11.7441653Z'/><EventRecordID>6669</EventRecordID><Correlation ActivityID='{5de50ca0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>3100</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045de50f28</Data><Data Name='BufferLength'>49</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+        "id": 1013
+      },
+      {
+        "time": "2026-09-10T04:14:11.7443418Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1015</EventID><Version>0</Version><Level>2</Level><Task>1015</Task><Opcode>12</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:11.7443418Z'/><EventRecordID>6670</EventRecordID><Correlation ActivityID='{5de4d010-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>4052</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb90461075ea0</Data><Data Name='BufferLength'>0</Data><Data Name='Status'>3221226047</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>170000350000000000000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+        "id": 1015
+      },
+      {
+        "time": "2026-09-10T04:14:11.7443843Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1013</EventID><Version>0</Version><Level>4</Level><Task>1013</Task><Opcode>12</Opcode><Keywords>0x8000000000000015</Keywords><TimeCreated SystemTime='2026-09-10T04:14:11.7443843Z'/><EventRecordID>6671</EventRecordID><Correlation ActivityID='{5de50ca0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='7360'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>3200</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='BufferCount'>1</Data><Data Name='Buffer'>0xffffb9045de50f28</Data><Data Name='BufferLength'>49</Data><Data Name='Status'>0</Data><Data Name='AddressLen'>28</Data><Data Name='Address'>17000035C0A8CC0100000000000000000000FFFFC0A8CC0100000000</Data></EventData></Event>",
+        "id": 1013
+      },
+      {
+        "time": "2026-09-10T04:14:11.7444438Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1002</EventID><Version>0</Version><Level>4</Level><Task>1002</Task><Opcode>16</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:11.7444438Z'/><EventRecordID>6672</EventRecordID><Correlation ActivityID='{605879d0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>2002</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='Status'>0</Data></EventData></Event>",
+        "id": 1002
+      },
+      {
+        "time": "2026-09-10T04:14:11.7444605Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1002</EventID><Version>0</Version><Level>4</Level><Task>1002</Task><Opcode>16</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:11.7444605Z'/><EventRecordID>6673</EventRecordID><Correlation ActivityID='{605879d0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>2003</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='Status'>0</Data></EventData></Event>",
+        "id": 1002
+      },
+      {
+        "time": "2026-09-10T04:14:11.7444621Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:11.7444621Z'/><EventRecordID>6674</EventRecordID><Correlation ActivityID='{605879d0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>0</Data><Data Name='Location'>2000</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='Status'>0</Data></EventData></Event>",
+        "id": 1001
+      },
+      {
+        "time": "2026-09-10T04:14:11.7444622Z",
+        "provider": "Microsoft-Windows-Winsock-AFD",
+        "xml": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Winsock-AFD' Guid='{e53c6823-7bb8-44bb-90dc-3f86090d48a6}'/><EventID>1001</EventID><Version>0</Version><Level>4</Level><Task>1001</Task><Opcode>15</Opcode><Keywords>0x8000000000000005</Keywords><TimeCreated SystemTime='2026-09-10T04:14:11.7444622Z'/><EventRecordID>6675</EventRecordID><Correlation ActivityID='{605879d0-b904-ffff-0000-000000000000}'/><Execution ProcessID='2128' ThreadID='3088'/><Channel></Channel><Computer>DESKTOP-3FI41GR</Computer><Security/></System><EventData><Data Name='EnterExit'>1</Data><Data Name='Location'>2001</Data><Data Name='Process'>0xffffb9045ddc3080</Data><Data Name='Endpoint'>0xffffb904605879d0</Data><Data Name='Status'>0</Data></EventData></Event>",
+        "id": 1001
+      }
+    ]
+  }
+}

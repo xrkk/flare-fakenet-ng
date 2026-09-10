@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "9cd9bf40bbc8e5929c4262591bb2897bfeb445a8",
+  "current_head": "d58da2e7a8087156a847867f4eff547f329642c4",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "9cd9bf4可控UDP归因通过；IPC单次通过、永久取证竞态仍失败。修正真实collector创建边界并补发送并发歧义，Linux271/3通过。",
+  "checkpoint": "d58da2e两个incident完整，取证竞态实机已验证；永久IPC因已关闭双栈新增端点失败。新归因回放两样本接受，Linux277/3；原失败保留，单独作者恢复stop成功。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-127",
-    "action": "提交取证准备期间退出竞态修正，固定源构建后受控升级并同候选IPC复验；保留所有旧失败包。"
+    "id": "INTENT-129",
+    "action": "提交已闭合双栈新增端点归因，固定源全构建后受控升级、同候选重跑六类IPC；不将作者恢复计为验收成功。"
   },
   "events": [
     {
@@ -1154,11 +1154,12 @@
     }
   ],
   "active_build": {
-    "session_id": 65421,
-    "source_commit": "9cd9bf40bbc8e5929c4262591bb2897bfeb445a8",
     "status": "PASS",
-    "output": "dist/mcp-remediation-20260910-9cd9bf4",
-    "package_sha256": "4e86287d7d127e0a622eb7bdb44c258ec67ca73842d914ac891cf51a17623c21"
+    "source_commit": "d58da2e7a8087156a847867f4eff547f329642c4",
+    "output": "dist/mcp-remediation-20260910-d58da2e",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-d58da2e.txt",
+    "session_id": 8514,
+    "package_sha256": "17b9a489000f42c0d792944ce76fd6dd96128c6f84f3f754e3c88c3e89764beb"
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/native-8303ea2-active-probe-full-runtime.zip",
@@ -1178,15 +1179,16 @@
   },
   "active_native_validation": {
     "status": "COMPLETED_WITH_FAILURE",
-    "source_head": "9cd9bf40bbc8e5929c4262591bb2897bfeb445a8",
+    "source_head": "d58da2e7a8087156a847867f4eff547f329642c4",
     "mode": "six-case IPC matrix",
     "formal_acc_pass": false,
-    "session_id": 28667,
-    "evidence": "Logs/fakenetng-mcp/remediation-20260910/9cd9bf4-ipc-matrix",
+    "session_id": 96667,
+    "evidence": "Logs/fakenetng-mcp/remediation-20260910/d58da2e-ipc-matrix",
     "checks": {
       "ipc_once_timeout": true,
       "ipc_permanent_timeout": false
-    }
+    },
+    "author_recovery": "stopped, separate from failed scenario"
   },
   "environment_question": {
     "status": "AWAITING_INFORMATION",
