@@ -166,12 +166,31 @@ def _last_error():
     return c.get_last_error()
 
 
-def _guard(observed, budget, deadline):
-    """Fail closed once the sweep can no longer finish inside its window."""
-    if budget is not None and observed >= budget:
-        raise RuntimeError(_BUDGET_EXHAUSTED)
-    if deadline is not None and time.monotonic() >= deadline:
-        raise RuntimeError(_BUDGET_EXHAUSTED)
+class Observation:
+    """One shared observation window for a whole cleanup chain.
+
+    The first native scan, the per-candidate work, the termination wait and
+    the residual check all spend the same remaining deadline and the same
+    remaining observation count, so reusing a constant cannot let one chain
+    consume several budgets.
+    """
+
+    def __init__(self, deadline=None, budget=None):
+        self.deadline = deadline
+        self.remaining = budget
+
+    def check(self):
+        """Fail closed once the shared window has closed."""
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            raise RuntimeError(_BUDGET_EXHAUSTED)
+
+    def observe(self):
+        """Account for one observed process entry inside the shared budget."""
+        if self.remaining is not None:
+            if self.remaining <= 0:
+                raise RuntimeError(_BUDGET_EXHAUSTED)
+            self.remaining -= 1
+        self.check()
 
 
 def _require_exhausted(code):
@@ -179,42 +198,42 @@ def _require_exhausted(code):
         raise _native_error(code)
 
 
-def _walk_snapshot(snapshot, kernel, budget, deadline, last_error):
+def _walk_snapshot(snapshot, kernel, observation, last_error):
     """Yield (pid, image base name) from a Toolhelp snapshot, failing closed.
 
     Only ERROR_NO_MORE_FILES means clean exhaustion; every other
     Process32FirstW/Process32NextW result is raised, so a partial process
-    table can never be presented as a complete one.  The observation budget
-    and the remaining deadline are checked around each native call, at the
-    start of the walk and before it may report exhaustion.
+    table can never be presented as a complete one.  Every native call is
+    bracketed by the shared window, so no call is made after it has closed and
+    no complete table is reported once it has closed.
     """
     entry = _ProcessEntry32W()
     entry.dwSize = c.sizeof(entry)
-    observed = 0
-    _guard(observed, budget, deadline)
-    if not kernel.Process32FirstW(snapshot, c.byref(entry)):
+    observation.check()
+    found = kernel.Process32FirstW(snapshot, c.byref(entry))
+    observation.check()
+    if not found:
         _require_exhausted(last_error())
-        # The window must still hold when the walk reports an empty table.
-        _guard(observed, budget, deadline)
         return
     while True:
-        _guard(observed, budget, deadline)
+        observation.observe()
         yield entry.th32ProcessID, entry.szExeFile
-        observed += 1
-        if not kernel.Process32NextW(snapshot, c.byref(entry)):
+        observation.check()
+        following = kernel.Process32NextW(snapshot, c.byref(entry))
+        observation.check()
+        if not following:
             _require_exhausted(last_error())
-            # A slow walk must not report a complete table after its window.
-            _guard(observed, budget, deadline)
             return
 
 
-def live_processes(budget=None, deadline=None):
+def live_processes(observation=None):
     """Yield (pid, image base name) for the current process table.
 
-    Enumeration is native and interruptible, so the frozen package needs no
-    module beyond the pinned dependency set the candidate build installs while
-    the caller's budget and deadline still bound the walk itself.
+    Enumeration is native and interruptible between calls, so the frozen
+    package needs no module beyond the pinned dependency set the candidate
+    build installs while the caller's window still bounds the walk itself.
     """
+    observation = observation if observation is not None else Observation()
     kernel = _kernel32()
     kernel.CreateToolhelp32Snapshot.argtypes = [c.c_uint32, c.c_uint32]
     kernel.CreateToolhelp32Snapshot.restype = c.c_void_p
@@ -223,11 +242,13 @@ def live_processes(budget=None, deadline=None):
     kernel.Process32FirstW.restype = c.c_int
     kernel.Process32NextW.restype = c.c_int
     kernel.CloseHandle.argtypes = [c.c_void_p]
+    observation.check()
     snapshot = kernel.CreateToolhelp32Snapshot(0x2, 0)
+    observation.check()
     if not snapshot or snapshot == c.c_void_p(-1).value:
         raise _native_error(_last_error())
     try:
-        yield from _walk_snapshot(snapshot, kernel, budget, deadline, _last_error)
+        yield from _walk_snapshot(snapshot, kernel, observation, _last_error)
     finally:
         kernel.CloseHandle(snapshot)
 
@@ -259,22 +280,21 @@ def _pin_helper(pid, expected, allow_terminate):
     return None
 
 
-def _packaged_helpers(package, allow_terminate=False, deadline=None,
-                      budget=None):
+def _packaged_helpers(package, allow_terminate=False, observation=None):
     """Resolve live helper processes of this exact package to native handles.
 
     Only an image whose full path equals the packaged helper is returned, so a
     foreign program that shares the image name is never opened or terminated.
-    The budget and deadline bound the native walk and each pinned process, not
-    just the consumption of an already-materialised table.
+    The shared window bounds the native walk and each pinned process, not just
+    the consumption of an already-materialised table.
     """
+    observation = observation if observation is not None else Observation()
     expected = str(Path(package).resolve() / HELPER).casefold()
     handles = []
-    walk = live_processes(budget=budget, deadline=deadline)
+    walk = live_processes(observation)
     try:
         for pid, image in walk:
-            if deadline is not None and time.monotonic() >= deadline:
-                raise RuntimeError(_BUDGET_EXHAUSTED)
+            observation.check()
             if pid == os.getpid() or image.casefold() != HELPER_IMAGE:
                 continue
             handle = _pin_helper(pid, expected, allow_terminate)
@@ -294,8 +314,8 @@ def _packaged_helpers(package, allow_terminate=False, deadline=None,
     return handles
 
 
-def assert_no_helpers(package, deadline=None, budget=None):
-    handles = _packaged_helpers(package, deadline=deadline, budget=budget)
+def assert_no_helpers(package, observation=None):
+    handles = _packaged_helpers(package, observation=observation)
     try:
         if handles:
             raise RuntimeError('exit helper still active: %d' % handles[0].pid)
@@ -304,20 +324,21 @@ def assert_no_helpers(package, deadline=None, budget=None):
             handle.close()
 
 
-def end_helpers(package, deadline):
+def end_helpers(package, deadline, budget=OBSERVATION_BUDGET):
     """Close only native-pinned helpers from this exact installed package.
 
-    One remaining deadline and one observation budget cover the whole sweep:
-    the first native scan, the termination wait and the final residual check.
+    One observation window covers the whole sweep: the first native scan, the
+    per-candidate work, the termination wait and the final residual check.
     """
-    handles = _packaged_helpers(package, allow_terminate=True, deadline=deadline,
-                                budget=OBSERVATION_BUDGET)
+    observation = Observation(deadline, budget)
+    handles = _packaged_helpers(package, allow_terminate=True,
+                                observation=observation)
     try:
         while any(not handle.exited() for handle in handles) and time.monotonic() < deadline:
             time.sleep(0.01)
         if any(not handle.exited() for handle in handles):
             raise RuntimeError('helper termination did not complete')
-        assert_no_helpers(package, deadline=deadline, budget=OBSERVATION_BUDGET)
+        assert_no_helpers(package, observation=observation)
     finally:
         for handle in handles:
             handle.close()

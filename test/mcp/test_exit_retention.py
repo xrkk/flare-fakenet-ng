@@ -44,3 +44,53 @@ def test_current_owner_rejects_result_from_other_run():
     with pytest.raises(RuntimeError, match='identity mismatch'):
         owner._check_result(dict(schema='fakenet.exit-result.v1',
                                 target={'run_id': 'old'}, helper=owner._helper_identity))
+
+
+class _Handle:
+    def __init__(self, name, closed):
+        self.name = name
+        self._closed = closed
+
+    def exited(self):
+        return True
+
+    def close(self):
+        self._closed.append(self.name)
+
+
+def _owner_with_handles(closed):
+    owner = ExitRetention.__new__(ExitRetention)
+    owner._helper = _Handle('helper', closed)
+    owner._target = _Handle('target', closed)
+    owner.package = '.'
+    owner.deadline = time.monotonic() + 30
+    return owner
+
+
+def test_retained_target_handle_survives_a_failed_residual_check(monkeypatch):
+    """CHK-069: a failed residual check must not release the target handle."""
+    closed = []
+    owner = _owner_with_handles(closed)
+
+    def refuse(*_args, **_kwargs):
+        raise RuntimeError('exit helper still active: 1')
+
+    monkeypatch.setattr('fakenet.mcp.exit_installation.assert_no_helpers', refuse)
+    with pytest.raises(RuntimeError, match='still active'):
+        owner._finish({'complete': True})
+    assert closed == ['helper']
+    assert owner._target is not None
+
+
+def test_retained_target_handle_closes_after_a_passing_residual_check(monkeypatch, tmp_path):
+    closed = []
+    owner = _owner_with_handles(closed)
+    owner.directory = tmp_path
+    owner.intent = type('Intent', (), {'invalidate': lambda self: closed.append('intent')})()
+    monkeypatch.setattr('fakenet.mcp.exit_installation.assert_no_helpers',
+                        lambda *_args, **_kwargs: None)
+    report = {'complete': True}
+    owner._finish(report)
+    assert closed == ['helper', 'intent', 'target']
+    assert report['helper_ended'] is True
+    assert report['retained_target_handle_closed'] is True

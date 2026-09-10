@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 from fakenet.mcp import exit_installation
-from fakenet.mcp.exit_installation import verify_assets, HELPER, HELPER_IMAGE, MANAGED
+from fakenet.mcp.exit_installation import (Observation, verify_assets, HELPER,
+                                           HELPER_IMAGE, MANAGED)
 
 EXHAUSTED = 18
 
@@ -227,7 +228,7 @@ def test_snapshot_handle_is_released_on_enumeration_error(native, package):
 def test_observation_budget_bounds_the_native_walk(native, package):
     native['rows'] = [(pid, 'unrelated.exe') for pid in range(1, 8)]
     with pytest.raises(RuntimeError, match='observation budget exhausted'):
-        list(exit_installation.live_processes(budget=3))
+        list(exit_installation.live_processes(Observation(budget=3)))
 
 
 def test_helper_sweep_is_bounded_by_the_observation_budget(native, package):
@@ -245,9 +246,9 @@ def test_slow_enumeration_fails_closed_instead_of_reporting_no_helpers(
     native['rows'] = rows
     native['delay'] = 0.2
     with pytest.raises(RuntimeError, match='observation budget exhausted'):
-        exit_installation._packaged_helpers(package,
-                                            deadline=time.monotonic() + 0.01,
-                                            budget=exit_installation.OBSERVATION_BUDGET)
+        exit_installation._packaged_helpers(
+            package, observation=Observation(
+                time.monotonic() + 0.01, exit_installation.OBSERVATION_BUDGET))
     assert native['closed'] == [0x51]
 
 
@@ -278,6 +279,16 @@ def test_cleanup_shares_one_deadline_with_the_final_recheck(native, package, mon
         exit_installation.end_helpers(package, clock[0] + 10)
     # The failure is at the residual recheck, after the helper was terminated.
     assert native['handles'][0].terminated is True
+
+
+def test_completed_sweep_cannot_shrink_the_residual_check_budget(native, package):
+    """The residual check must spend the same counter, not a fresh one."""
+    native['rows'] = [(pid, 'unrelated.exe') for pid in range(1, 6)]
+    observation = Observation(time.monotonic() + 30, 5)
+    assert exit_installation._packaged_helpers(package, observation=observation) == []
+    assert observation.remaining == 0
+    with pytest.raises(RuntimeError, match='observation budget exhausted'):
+        exit_installation.assert_no_helpers(package, observation=observation)
 
 
 def test_packaged_helper_path_has_no_unbundled_dependency():
