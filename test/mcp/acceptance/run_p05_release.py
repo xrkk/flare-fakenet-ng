@@ -32,7 +32,8 @@ from run_p02_acc import VALID_INI, call, sha_of, status  # noqa: E402
 from run_p03_acc import continuous_probe, stop_run, unique_command, wait_state  # noqa: E402
 sys.path.insert(0, str(REPO_ROOT))
 from fakenet.mcp.faultinject import FAULTS  # noqa: E402
-from evidence_integrity import IDENTITY_FIELDS, validate_result, validate_round
+from evidence_integrity import (IDENTITY_FIELDS, validate_result,
+                                validate_round, validate_rounds)
 
 DEFAULT_INI = 'default.ini'
 CUSTOM_INI = 'release-custom.ini'
@@ -592,15 +593,26 @@ class ReleaseGate:
         identity = {field: getattr(self.args, field) for field in IDENTITY_FIELDS}
         groups = [('normal-builtin', 50), ('normal-custom', 50)] + [
             ('fault-' + klass, 10) for klass in FAULT_CLASSES]
+        samples = []
+        required = {}
         for prefix, count in groups:
+            required[prefix] = count
             for index in range(1, count + 1):
                 path = self.round_path(prefix, index)
                 try:
-                    issues = validate_round(json.loads(path.read_text(encoding='utf-8')), identity)
+                    record = json.loads(path.read_text(encoding='utf-8'))
                 except (OSError, ValueError, TypeError) as exc:
-                    issues = [repr(exc)]
+                    integrity_failures[str(path)] = [repr(exc)]
+                    continue
+                issues = validate_round(record, identity)
                 if issues:
                     integrity_failures[str(path)] = issues
+                samples.append({'run_id': record.get('run_id'), 'class': prefix})
+        # Cross-round: unique runs with the required category counts, so a
+        # repeated sample or a missing class cannot pass as 100+50.
+        cross_round = validate_rounds(samples, required)
+        if cross_round:
+            integrity_failures['cross-round'] = cross_round
         wrong_candidate = {acc: row for acc, row in acc_index.items()
                           if row['candidate_id'] != self.cid}
         failures = {acc: row['status'] for acc, row in acc_index.items()

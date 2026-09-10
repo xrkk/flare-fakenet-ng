@@ -160,27 +160,40 @@ def test_illegal_extra_control_port_types_are_rejected():
 
 def test_unpublished_artifacts_are_not_reported_as_complete(tmp_path):
     """CHK-070: completion is the producer's publish fact, not a suffix guess."""
-    from fakenet.mcp.artifacts import ArtifactRegistry
+    from fakenet.mcp.artifacts import ArtifactRegistry, write_publication
     root = tmp_path / 'artifacts'
     root.mkdir()
     (root / 'target.dmp.partial').write_bytes(b'partial')
     (root / 'udp.etl.part').write_bytes(b'partial')
+    # A final-looking name that the producer never declared is not complete.
+    (root / 'run.log').write_bytes(b'still being written')
     (root / 'userdump.dmp').write_bytes(b'MZfinal')
+    write_publication(root, [root / 'userdump.dmp'])
     items = {Path(item['path']).name: item
              for item in ArtifactRegistry(root).metadata()}
     assert items['target.dmp.partial']['complete'] is False
     assert items['target.dmp.partial']['sha256'] is None
     assert items['udp.etl.part']['complete'] is False
+    assert items['run.log']['complete'] is False
+    assert items['run.log']['sha256'] is None
     assert items['userdump.dmp']['complete'] is True
     assert items['userdump.dmp']['sha256'] is not None
+    # A declared artifact that keeps changing is not complete either.
+    (root / 'userdump.dmp').write_bytes(b'MZfinal plus more')
+    again = {Path(item['path']).name: item
+             for item in ArtifactRegistry(root).metadata()}
+    assert again['userdump.dmp']['complete'] is False
+    assert again['userdump.dmp']['sha256'] is None
 
 
 def test_list_artifacts_uses_the_same_completion_rule(tmp_path):
     """CHK-070: the tool surface agrees with the registry."""
     root = tmp_path / 'artifacts'
     root.mkdir()
+    from fakenet.mcp.artifacts import write_publication
     (root / 'target.dmp.partial').write_bytes(b'partial')
     (root / 'run.log').write_bytes(b'final')
+    write_publication(root, [root / 'run.log'])
     coord = Coordinator(LifecycleDouble())
     tools = surface(coord, artifacts=root)
     items = {Path(item['path']).name: item
@@ -188,6 +201,7 @@ def test_list_artifacts_uses_the_same_completion_rule(tmp_path):
     assert items['target.dmp.partial']['complete'] is False
     assert items['target.dmp.partial']['sha256'] is None
     assert items['run.log']['complete'] is True
+    assert items['run.log']['sha256'] is not None
 
 
 # -- CHK-071 -----------------------------------------------------------
@@ -515,9 +529,84 @@ def test_summary_rejects_reused_rounds_and_missing_categories():
               {'run_id': 'r1', 'class': 'normal'},
               {'run_id': 'r2', 'class': 'normal'}]
     issues = integrity.validate_rounds(rounds, {'normal': 3})
-    assert any('sample reused' in issue for issue in issues)
+    assert any('run reused' in issue for issue in issues)
     assert any('under-sampled' in issue for issue in issues)
     complete = integrity.validate_rounds(
         [{'run_id': 'r%d' % i, 'class': 'normal'} for i in range(3)],
         {'normal': 3})
     assert complete == []
+
+
+def test_log_fault_early_in_a_large_burst_is_observed(tmp_path):
+    """CHK-054: the whole consumed range is judged, not a truncated prefix."""
+    import ast
+
+    from fakenet.mcp import supervisor as supervisor_module
+
+    source = Path(supervisor_module.__file__).read_text()
+    tree = ast.parse(source)
+    method = next(node for node in ast.walk(tree)
+                  if isinstance(node, ast.FunctionDef)
+                  and node.name == '_observe_run_log')
+    env = dict(LOG_READ_LIMIT_BYTES=supervisor_module.LOG_READ_LIMIT_BYTES,
+               LOG_WINDOW_BYTES=supervisor_module.LOG_WINDOW_BYTES, Path=Path)
+    exec(compile(ast.Module(body=[method], type_ignores=[]),
+                 '<observe>', 'exec'), env)
+    observe = env['_observe_run_log']
+
+    run_dir = tmp_path / 'run'
+    run_dir.mkdir()
+    log = run_dir / 'run.log'
+    # The fault sits in the first 20 bytes, followed by far more than one
+    # observation window of ordinary output.
+    log.write_bytes(b'unhandled exception\n' + b'x' * (70000))
+    owner = SimpleNamespace(_run_dir=run_dir, _log_offset=0, _log_tail=b'')
+
+    observed = observe(owner)
+    assert 'unhandled exception' in observed
+    # The retained window stays available for the next probe without
+    # re-reading, and no bytes are skipped.
+    assert owner._log_offset == log.stat().st_size
+    assert len(owner._log_tail) == supervisor_module.LOG_WINDOW_BYTES
+    log.write_bytes(log.read_bytes() + b'unhandled exception\n')
+    again = observe(owner)
+    assert 'unhandled exception' in again
+
+
+def test_late_success_file_is_not_reported_as_succeeded(monkeypatch, tmp_path):
+    """CHK-057: the success file itself must land inside the budget."""
+    from fakenet.mcp.service_stop import ServiceStop, read_result
+    coord = Coordinator(LifecycleDouble())
+    stop = ServiceStop(coord, lambda deadline: {'state': 'stopped'},
+                       lambda: None, tmp_path / 'stop.json',
+                       identity={'pid': 1})
+    stop.budget = 0.05
+    original = ServiceStop._write
+
+    def slow_write(self, phase, reason=None):
+        if phase == 'succeeded':
+            time.sleep(0.12)
+        return original(self, phase, reason)
+
+    monkeypatch.setattr(ServiceStop, '_write', slow_write)
+    stop.request()
+    stop._worker.join(5)
+    assert not stop._worker.is_alive()
+    assert read_result(stop.path)['phase'] == 'failed'
+    assert stop.ready is False
+
+
+def test_archived_runs_do_not_gate_the_active_budget(tmp_path):
+    """CHK-060: published history is neither counted nor enumerated."""
+    from fakenet.mcp.exit_monitor import active_bytes
+
+    base = tmp_path / 'exit-evidence'
+    archived = base / 'run-archived'
+    archived.mkdir(parents=True)
+    (archived / 'owner-result.json').write_text('{}')
+    for index in range(12000):
+        (archived / ('f%d' % index)).write_bytes(b'x')
+    live = base / 'run-live'
+    live.mkdir(parents=True)
+    (live / 'entry.json').write_bytes(b'y' * 16)
+    assert active_bytes(base) == 16

@@ -7,13 +7,16 @@ import time
 from pathlib import Path
 
 
-def collect_dump(pid, creation_time, target, deadline):
+def collect_dump(pid, creation_time, target, deadline, quota=None):
     import msvcrt
     from fakenet.mcp.jobobject import ManagedJob
     target = Path(target)
+    # The helper writes a staging file; only a verified MDMP is published
+    # under the final name, and only inside the caller's remaining budget.
+    staging = target.with_name(target.name + '.part')
     prefix = ([sys.executable] if getattr(sys, 'frozen', False) else
               [sys.executable, '-m', 'fakenet.mcp'])
-    command = prefix + ['incident-dump', str(pid), str(creation_time), str(target)]
+    command = prefix + ['incident-dump', str(pid), str(creation_time), str(staging)]
     job = ManagedJob()
     streams = [open(os.devnull, 'rb'), target.with_suffix('.collector.log').open('wb'),
                target.with_suffix('.collector.err').open('wb')]
@@ -23,24 +26,28 @@ def collect_dump(pid, creation_time, target, deadline):
             os.set_handle_inheritable(handle, True)
         root = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[2]
         job.spawn(command, root, handles)
+        limit = 512 * 1024 * 1024 if quota is None else min(quota, 512 * 1024 * 1024)
         while job.poll() is None:
             if time.monotonic() >= deadline:
                 job.terminate(time.monotonic() + 2)
                 raise TimeoutError('dump helper exceeded deadline')
-            if target.exists() and target.stat().st_size > 512 * 1024 * 1024:
+            if staging.exists() and staging.stat().st_size > limit:
                 job.terminate(time.monotonic() + 2)
                 raise RuntimeError('dump exceeded disk quota')
             time.sleep(0.02)
-        if job.poll() != 0 or not target.exists() or target.stat().st_size == 0:
-            raise RuntimeError('dump helper failed, inspect collector stderr')
-        from fakenet.mcp.exit_native import verify_dump
         try:
+            if job.poll() != 0 or not staging.exists() or staging.stat().st_size == 0:
+                raise RuntimeError('dump helper failed, inspect collector stderr')
+            from fakenet.mcp.exit_native import verify_dump
             # The same structural and target-identity check the exit capture
             # uses: a non-MDMP or foreign file is not evidence.
-            verify_dump(target, pid)
+            verify_dump(staging, pid, limit)
+            if time.monotonic() >= deadline:
+                raise TimeoutError('dump exceeded deadline before publication')
+            os.replace(staging, target)
         except BaseException:
             try:
-                target.unlink()
+                staging.unlink()
             except OSError:
                 pass
             raise

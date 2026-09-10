@@ -150,11 +150,12 @@ def validate_rounds(records, required_classes=None):
         if not fault_class:
             failures.append('round %d has no fault class' % index)
             continue
-        key = (run_id, fault_class)
-        if key in seen:
-            failures.append('round sample reused: %s/%s' % (run_id, fault_class))
+        if run_id in seen:
+            # One run is one sample: filing it under another class does not
+            # make it a second observation.
+            failures.append('round run reused: %s (as %s)' % (run_id, fault_class))
             continue
-        seen.add(key)
+        seen.add(run_id)
         classes[fault_class] = classes.get(fault_class, 0) + 1
     for fault_class, minimum in (required_classes or {}).items():
         if classes.get(fault_class, 0) < minimum:

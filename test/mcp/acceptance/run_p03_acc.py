@@ -913,22 +913,32 @@ def run_acc008(base, channel, writer):
 
     # (5) missing snapshot with NO residue => recovery treats as stopped.
     # Clear leftover baselines so the residue check is truly empty.
-    # Preserve the corpora: export what is removed so the scene and its
-    # attribution evidence survive the cleanup (CHK-062).
-    cleanup = channel.powershell(
+    # Preserve and own the cleanup: the removed objects are enumerated first,
+    # exported with per-file digests, and only that inventory is deleted.
+    inventory = json.loads(channel.powershell(
         "$ErrorActionPreference='Stop'; "
-        "$state=' + state_file[state_file.index('(') + 1:].rstrip(' )') + '; "
+        "$state=Join-Path $env:ProgramData 'FakeNet-NG-MCP\\state\\state.json'; "
         "$root=Join-Path $env:ProgramData 'FakeNet-NG-MCP\\baselines'; "
-        "$export=Join-Path $env:TEMP ('acc008-preserved-' + [guid]::NewGuid().ToString() + '.zip'); "
-        "$items=@(); if(Test-Path $state){$items+=$state}; "
-        "if(Test-Path $root){$items+=@(Get-ChildItem $root -Filter *.json -ErrorAction SilentlyContinue "
-        "| Select-Object -ExpandProperty FullName)}; "
-        "if($items.Count -gt 0){Compress-Archive -Path $items -DestinationPath $export -Force}; "
-        "$items | ForEach-Object {Remove-Item $_ -Force}; "
-        "@{removed=$items.Count;preserved=$export;"
-        "sha256=$(if(Test-Path $export){(Get-FileHash $export -Algorithm SHA256).Hash.ToLower()}else{$null})} | "
-        "ConvertTo-Json -Compress", timeout=120)
-    writer.add_evidence('acc008-cleanup-preserved', cleanup)
+        "$items=@(); "
+        "if(Test-Path $state){$items+=[pscustomobject]@{path=$state;"
+        "sha256=(Get-FileHash $state -Algorithm SHA256).Hash.ToLower();size=(Get-Item $state).Length}}; "
+        "if(Test-Path $root){$items+=@(Get-ChildItem $root -Filter *.json -ErrorAction SilentlyContinue | "
+        "ForEach-Object {[pscustomobject]@{path=$_.FullName;"
+        "sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower();size=$_.Length}})}; "
+        "@{items=$items;count=$items.Count} | ConvertTo-Json -Depth 4 -Compress", timeout=120)['output'])
+    writer.add_evidence('acc008-cleanup-inventory', inventory)
+    removed = []
+    for item in inventory['items']:
+        removed.append(channel.powershell(
+            "$ErrorActionPreference='Stop'; "
+            "$p='" + item['path'] + "'; "
+            "if(-not (Test-Path $p)){throw 'owned object vanished'}; "
+            "$sha=(Get-FileHash $p -Algorithm SHA256).Hash.ToLower(); "
+            "if($sha -ne '" + item['sha256'] + "'){throw 'owned object changed before removal'}; "
+            "Remove-Item -LiteralPath $p -Force; 'REMOVED'", timeout=90)['output'].strip())
+    writer.add_evidence('acc008-cleanup-removed', {
+        'inventory': inventory, 'removed': removed,
+        'only_owned_objects': len(removed) == inventory['count']})
     restart_service(channel)
     back, snap5 = wait_state(base, lambda s: s.get('state') is not None,
                              timeout=150)

@@ -136,6 +136,7 @@ class IncidentCollector:
         run_log_window, exception_text, final_filter, baseline_diff,
         artifact_metadata, dump_target_pid (optional)."""
         started = time.time()
+        written = []
         for name, kind in BASIC_ITEMS:
             if self._timed_out():
                 self._record(name, 'failed',
@@ -161,6 +162,7 @@ class IncidentCollector:
                 self._record(name, 'failed', dump_path=path,
                              failure_reason='total budget exhausted')
                 continue
+            written.append(path)
             self._record(name, 'ok', dump_path=path)
 
         self._conditional_dump(context)
@@ -172,6 +174,10 @@ class IncidentCollector:
                              dump_path=path,
                              failure_reason=None if evidence.get('complete') else 'exit evidence incomplete')
         self._write_manifest(started)
+        # Declare the finished members so a reader can tell a final artifact
+        # from a file that is still being written.
+        from fakenet.mcp.artifacts import write_publication
+        write_publication(self.root, written + [self.root / 'manifest.json'])
 
     # ------------------------------------------------------------------
     def _collect_item(self, kind, context):

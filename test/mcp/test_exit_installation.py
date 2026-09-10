@@ -55,7 +55,7 @@ def native(monkeypatch):
     state = {'rows': [], 'images': {}, 'closed': [], 'handles': [],
              'last_error': EXHAUSTED, 'first_result': None, 'next_result': None,
              'delay': 0.0, 'slow_exit': False, 'clock': None,
-             'advance_on_exit': 0.0}
+             'advance_on_exit': 0.0, 'advance_on_create': 0.0}
     index = {'value': -1}
 
     class Api:
@@ -75,6 +75,8 @@ def native(monkeypatch):
         return 1
 
     def snapshot(flags, pid):
+        if state['clock'] is not None:
+            state['clock'][0] += state['advance_on_create']
         return 0x51
 
     def first(handle, pointer):
@@ -308,3 +310,15 @@ def test_module_import_needs_no_third_party_process_library():
     result = subprocess.run([sys.executable, '-c', code], cwd=str(root),
                             capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr
+
+
+def test_snapshot_handle_is_released_when_the_window_closes_after_creation(
+        native, package, monkeypatch):
+    """CHK-068: ownership starts the moment the snapshot is created."""
+    native['rows'] = [(101, 'first.exe')]
+    native['advance_on_create'] = 10.0
+    clock = _fake_clock(monkeypatch, native, start=1000.0)
+    with pytest.raises(RuntimeError, match='observation budget exhausted'):
+        list(exit_installation.live_processes(
+            Observation(clock[0] + 5, exit_installation.OBSERVATION_BUDGET)))
+    assert native['closed'] == [0x51]

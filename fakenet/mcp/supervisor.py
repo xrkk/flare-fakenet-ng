@@ -251,6 +251,29 @@ class RealSupervisor:
                         'identity': child.identity, 'reason': reason})
             return True
 
+    def _observe_run_log(self):
+        """Return every log byte observed since the previous probe.
+
+        The consumed range is judged in full: truncating before the check
+        would drop a fault that sits earlier in a burst.  The retained
+        window is only for continuity across probes, and a rotated or
+        truncated file restarts the observation.
+        """
+        if not self._run_dir:
+            return ''
+        run_log = Path(self._run_dir) / 'run.log'
+        if not run_log.exists():
+            return ''
+        if run_log.stat().st_size < self._log_offset:
+            self._log_offset, self._log_tail = 0, b''
+        with run_log.open('rb') as stream:
+            stream.seek(self._log_offset)
+            window = stream.read(LOG_READ_LIMIT_BYTES)
+            self._log_offset += len(window)
+        consumed = self._log_tail + window
+        self._log_tail = consumed[-LOG_WINDOW_BYTES:]
+        return consumed.decode('utf-8', 'replace')
+
     def _health_loop(self):
         failures = 0
         next_probe = time.monotonic() + HEALTH_INTERVAL_SECONDS
@@ -264,24 +287,7 @@ class RealSupervisor:
             try:
                 detail = child.request('health', timeout=1)
                 evidence = dict(detail, process_alive=child.alive(), identity=child.identity)
-                run_log = self._run_dir / 'run.log'
-                log_text = ''
-                if run_log.exists():
-                    size = run_log.stat().st_size
-                    if size < self._log_offset:
-                        # Rotated or truncated: restart the observation.
-                        self._log_offset, self._log_tail = 0, b''
-                    with run_log.open('rb') as stream:
-                        stream.seek(self._log_offset)
-                        window = stream.read(LOG_READ_LIMIT_BYTES)
-                        self._log_offset += len(window)
-                    # Consume every appended byte and keep the recent window,
-                    # so a burst larger than one window cannot push an
-                    # exception past the observation, and the recent window
-                    # stays visible on the next probe instead of being read
-                    # again from a fixed tail offset.
-                    self._log_tail = (self._log_tail + window)[-LOG_WINDOW_BYTES:]
-                    log_text = self._log_tail.decode('utf-8', 'replace')
+                log_text = self._observe_run_log()
                 healthy, reason = evaluate_health_evidence(evidence, log_text)
                 if not healthy:
                     if 'unhandled exception' in reason:
@@ -311,28 +317,40 @@ class RealSupervisor:
             # uncoordinated stop. Its existing bounded operation finishes
             # first; protective convergence still runs afterwards, so a slow
             # accepted operation delays the stop instead of cancelling it.
-            idle = self._coordinator.wait_for_idle(60)
-            if not idle:
-                logger.error('accepted operation still in flight after 60s; '
-                             'waiting for it before protective convergence')
-                idle = self._coordinator.wait_for_idle(
-                    getattr(self, '_stop_grace', 60) + 420)
-            if idle:
-                import uuid
-                try:
-                    self._coordinator.submit(
-                        command_id='protective-' + str(uuid.uuid4()),
-                        expected_version=self._coordinator.snapshot()['state_version'],
-                        controller=self._coordinator.controller, controller_valid=True,
-                        kind='protective_stop', describe={}, internal=True,
-                        execute=lambda c: self.stop(c))
-                except Exception:
-                    logger.exception('protective stop could not complete')
+            if self._coordinator.wait_for_idle(60):
+                self._submit_protective_stop()
             else:
-                logger.error('protective convergence unavailable: an accepted '
-                             'operation never finished within its budget')
+                # The accepted operation is still in flight. Protection keeps
+                # its single responsibility on a bounded waiter, so a late
+                # completion is still converged instead of abandoned.
+                logger.error('accepted operation still in flight after 60s; '
+                             'deferring protective convergence to its end')
+                threading.Thread(target=self._converge_when_idle,
+                                 name='deferred-protective-stop',
+                                 daemon=True).start()
             self._coordinator.record_terminal_failure(reason)
             return
+
+    def _submit_protective_stop(self):
+        import uuid
+
+        try:
+            self._coordinator.submit(
+                command_id='protective-' + str(uuid.uuid4()),
+                expected_version=self._coordinator.snapshot()['state_version'],
+                controller=self._coordinator.controller, controller_valid=True,
+                kind='protective_stop', describe={}, internal=True,
+                execute=lambda c: self.stop(c))
+        except Exception:
+            logger.exception('protective stop could not complete')
+
+    def _converge_when_idle(self):
+        budget = getattr(self, '_stop_grace', 60) + 420
+        if not self._coordinator.wait_for_idle(budget):
+            logger.error('protective convergence unavailable: an accepted '
+                         'operation never finished within its budget')
+            return
+        self._submit_protective_stop()
 
     def stop(self, coordinator, baseline_audit=True, deadline=None):
         deadline = deadline or time.monotonic() + self._stop_grace + 360

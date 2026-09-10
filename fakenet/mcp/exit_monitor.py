@@ -9,21 +9,28 @@ OWNER_RESULT = 'owner-result.json'
 
 
 def active_bytes(base):
-    """Bytes of diagnostics still in progress, with the directory bound."""
+    """Bytes of diagnostics still in progress, with the directory bound.
+
+    Published run directories are archived: they are neither counted nor
+    enumerated, so their number and size can never turn into an undeclared
+    permanent gate on new collection.  Nothing is deleted to make room.
+    """
     used = 0
     count = 0
-    for path in base.rglob('*'):
+    entries = []
+    if base.is_dir():
+        for child in base.iterdir():
+            if child.is_dir() and (child / OWNER_RESULT).is_file():
+                continue
+            entries.append(child)
+            if child.is_dir():
+                entries.extend(child.rglob('*'))
+    for path in entries:
         count += 1
         if count > 10000 or path.is_symlink():
             raise RuntimeError('unbounded/linked exit diagnostic directory')
-        if not path.is_file():
-            continue
-        if _published(base, path):
-            # The 512 MiB budget covers diagnostics still in progress.
-            # Evidence that was already published must not starve a new
-            # collection, and it is never deleted to make room.
-            continue
-        used += path.stat().st_size
+        if path.is_file():
+            used += path.stat().st_size
     return used
 
 

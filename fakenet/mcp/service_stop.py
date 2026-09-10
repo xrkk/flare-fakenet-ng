@@ -185,6 +185,10 @@ class ServiceStop:
                         # outlived the total budget is not a success.
                         raise TimeoutError('prestop total budget exhausted')
                     self._write('succeeded')
+                    if expired.is_set() or time.monotonic() >= deadline:
+                        # The success file itself must land inside the window;
+                        # a late one is rewritten as a failure by _fail.
+                        raise TimeoutError('prestop total budget exhausted')
                     complete.set()
                 except BaseException:
                     self.ready = False

@@ -163,8 +163,18 @@ class ExitRetention:
                         time.sleep(0.01)
                 self._finish(dict(complete=False, target=self.record, error=self._failure))
             except BaseException as cleanup:
+                # A single owner still reclaims the retained target handle:
+                # only once no helper of this package is left to read it.
+                closed = False
+                try:
+                    if self._helper is None or self._helper.exited():
+                        self._target.close()
+                        closed = True
+                except BaseException:
+                    closed = False
                 self.result = dict(complete=False, target=self.record, error=self._failure,
-                                   helper_ended=False, cleanup_error=repr(cleanup))
+                                   helper_ended=False, cleanup_error=repr(cleanup),
+                                   retained_target_handle_closed=closed)
         finally:
             self.done.set()
 

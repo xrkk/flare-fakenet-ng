@@ -244,10 +244,12 @@ def live_processes(observation=None):
     kernel.CloseHandle.argtypes = [c.c_void_p]
     observation.check()
     snapshot = kernel.CreateToolhelp32Snapshot(0x2, 0)
-    observation.check()
-    if not snapshot or snapshot == c.c_void_p(-1).value:
-        raise _native_error(_last_error())
+    # The handle is owned before any further check: a window that closes
+    # between creation and the walk must still release it.
     try:
+        observation.check()
+        if not snapshot or snapshot == c.c_void_p(-1).value:
+            raise _native_error(_last_error())
         yield from _walk_snapshot(snapshot, kernel, observation, _last_error)
     finally:
         kernel.CloseHandle(snapshot)

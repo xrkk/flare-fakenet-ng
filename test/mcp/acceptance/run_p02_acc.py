@@ -285,10 +285,21 @@ def run_acc011(base, channel, writer):
     # stop, confirm the process is gone, then start and wait for the port.
     channel.powershell(
         'sc.exe stop fakenetng-mcp 2>&1 | Out-Null; Start-Sleep 3; '
-        'Get-Process fakenetng-mcp -ErrorAction SilentlyContinue | '
-        'Stop-Process -Force; Start-Sleep 2; '
-        '$p = Get-Process fakenetng-mcp -ErrorAction SilentlyContinue; '
-        'if ($p) { "STILL_RUNNING" } else { "GONE" }', timeout=180)
+        '"STOPPED"', timeout=180)
+    # Only the SCM-registered instance is force-killed; a same-named foreign
+    # process is never targeted (CHK-062).
+    try:
+        from helpers import kill_current_service
+        killed = kill_current_service(channel, 'acc-011-service-restart')
+    except Exception as exc:  # noqa: BLE001 - evidence only
+        killed = {'error': repr(exc)}
+    if isinstance(killed, dict) and 'output' in killed:
+        killed = killed['output']
+    channel.powershell(
+        "$ErrorActionPreference='SilentlyContinue'; Start-Sleep 2; "
+        "$svc=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\"; "
+        "if($svc -and $svc.ProcessId){\"STILL_RUNNING\"}else{\"GONE\"}",
+        timeout=180)
     channel.powershell('sc.exe start fakenetng-mcp | Out-Null; "STARTED"',
                        timeout=180)
     deadline = time.time() + 120
