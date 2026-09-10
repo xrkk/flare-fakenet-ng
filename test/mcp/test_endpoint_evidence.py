@@ -60,3 +60,14 @@ def test_raw_event_identity_must_match_exported_metadata():
 def test_incomplete_or_unknown_sockaddr_is_not_accepted(raw):
     with pytest.raises(ValueError):
         socket_address(raw)
+
+
+def test_native_send_completion_is_paired_and_missing_completion_stays_unknown():
+    source = json.loads((Path(__file__).parent / 'fixtures' / 'native_afd_udp_52623.json').read_text())['events']
+    rows = [r for r in udp_lifetimes(source) if r['bound']]
+    assert all(r['bind_time'] for r in rows)
+    sent = rows[0]['outbound'][0]
+    assert sent['completed'] > sent['event'] and sent['succeeded'] is True
+    source.pop(sent['completed'])
+    first = next(r for r in udp_lifetimes(source) if r['bound'])['outbound'][0]
+    assert first['completed'] is None and first['succeeded'] is False

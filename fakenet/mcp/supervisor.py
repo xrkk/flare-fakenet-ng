@@ -340,7 +340,8 @@ class RealSupervisor:
             self._health_cache = {'process_alive': False, 'init_evidence': False, 'probe': False}
             self._baseline_store.compensate(marker['run_id'], deadline)
             differences = self._baseline_store.full_audit_diff(marker['run_id'], deadline=deadline,
-                                                              settle_seconds=30)
+                                                              settle_seconds=30,
+                                                              observation=self._endpoint_observation)
             if not self._finish_endpoint_observation(deadline):
                 return self._result('failed', 'endpoint observation cleanup unverified')
             if differences:

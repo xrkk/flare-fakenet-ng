@@ -175,6 +175,10 @@ def audit_compare(baseline_sections, current_sections):
     return differences
 
 
+class CapturedSections(dict):
+    """Five raw sections plus directly observed command time intervals."""
+
+
 def capture(deadline=None):
     """Collect the current environment baseline sections.
 
@@ -190,18 +194,22 @@ def capture(deadline=None):
                 'Select-Object InterfaceAlias,ServerAddresses | '
                 'ConvertTo-Json -Compress'])
     processes = collect(['powershell', '-NoProfile', '-Command', process_capture_script()])
+    ports_start = time.time_ns()
     ports = collect(['netstat', '-ano'])
+    ports_end = time.time_ns()
     services = collect(['powershell', '-NoProfile', '-Command',
                      'Get-Service dnscache,mpssvc | '
                      'Select-Object Name,Status | '
                      'ConvertTo-Json -Compress'])
-    return {
+    result = CapturedSections({
         'routes': routes.strip(),
         'dns_servers': dns.strip(),
         'windivert_processes': processes.strip(),
         'listen_ports': ports.strip(),
         'services': services.strip(),
-    }
+    })
+    result.windows = {'listen_ports': {'start_ns': ports_start, 'end_ns': ports_end}}
+    return result
 
 
 class BaselineStore:
@@ -223,6 +231,7 @@ class BaselineStore:
             if firewall == COLLECTION_FAILED:
                 raise RuntimeError('pre-start firewall evidence unavailable')
         payload = json.dumps({'run_id': run_id, 'sections': sections,
+                              'observation_windows': getattr(sections, 'windows', {}),
                               'firewall': firewall,
                               'managed_driver_root': str(Path(sys.executable).parent)},
                              ensure_ascii=False, indent=2) + '\n'
@@ -260,7 +269,7 @@ class BaselineStore:
             return None
         return audit_compare(baseline.get('sections'), capture())
 
-    def full_audit_diff(self, run_id, deadline=None, settle_seconds=0):
+    def full_audit_diff(self, run_id, deadline=None, settle_seconds=0, observation=None):
         """P04 full recovery audit: all five normalized sections must match
         the pre-start baseline."""
         baseline = self.load(run_id)
@@ -275,20 +284,43 @@ class BaselineStore:
             log_root.mkdir(parents=True, exist_ok=True)
             log = log_root / ('recovery-audit-%s-%s.jsonl' % (run_id, uuid.uuid4()))
             clean = 0
+            samples = []
             differences = {'__audit_deadline__': True}
             with log.open('x', encoding='utf-8') as stream:
                 while time.monotonic() < audit_deadline:
-                    current = capture(audit_deadline)
+                    # The settling interval controls when a sample may start.
+                    # A started sample keeps its bounded outer operation budget;
+                    # don't manufacture partial sections at the settling edge.
+                    current = capture(deadline if observation is not None else audit_deadline)
                     differences = audit_compare(baseline.get('sections'), current)
-                    stream.write(json.dumps({'time': time.time(), 'run_id': run_id,
-                                             'current': current, 'differences': differences},
-                                            ensure_ascii=False) + '\n')
+                    sample = {'time': time.time(), 'run_id': run_id, 'current': current,
+                              'differences': differences,
+                              'observation_windows': getattr(current, 'windows', {})}
+                    samples.append(sample)
+                    samples = samples[-2:]
+                    stream.write(json.dumps(sample, ensure_ascii=False) + '\n')
                     stream.flush()
                     os.fsync(stream.fileno())
                     clean = clean + 1 if not differences else 0
                     if clean == 2:
                         return {}
                     time.sleep(min(0.5, max(0, audit_deadline - time.monotonic())))
+            if observation is not None and len(samples) == 2:
+                from fakenet.mcp.endpoint_attribution import closed_udp_removals
+                from fakenet.mcp.endpoint_observation import write_evidence
+                try:
+                    proof = observation.audit_proof(deadline)
+                    decisions = [closed_udp_removals(baseline, sample, proof) for sample in samples]
+                    accepted = all(row['accepted'] for row in decisions)
+                    decision = {'run_id': run_id, 'raw_audit': str(log),
+                                'accepted': accepted, 'samples': decisions}
+                except Exception as exc:
+                    accepted = False
+                    decision = {'run_id': run_id, 'raw_audit': str(log),
+                                'accepted': False, 'failure': repr(exc)}
+                write_evidence(log.with_suffix('.attribution.json'), decision)
+                if accepted:
+                    return {}
             return differences or {'__audit_stability_unverified__': True}
         return audit_compare(baseline.get('sections'), capture() if deadline is None else capture(deadline))
 

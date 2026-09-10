@@ -120,6 +120,20 @@ class EndpointObservation:
             self.finished = report
         return report
 
+    def audit_proof(self, deadline=None):
+        """Read only this completed run's hash-bound evidence for comparison."""
+        end = self.finish(deadline)
+        if end.get('complete') is not True or end.get('absent') is not True:
+            raise ValueError('endpoint observation is incomplete')
+        start = json.loads((self.directory / 'endpoint-trace-start.json').read_text())
+        events = json.loads((self.directory / 'endpoint-events.json').read_text())
+        digest = hashlib.sha256(self.final.read_bytes()).hexdigest()
+        if (start.get('run_id') != self.run_id or events.get('run_id') != self.run_id or
+                end['sha256'] != digest or events.get('etl_sha256') != digest):
+            raise ValueError('endpoint evidence identity/hash mismatch')
+        return dict(run_id=self.run_id, start=start, end=end,
+                    events=events['events'], etl_sha256=digest)
+
 
 def stop_orphan_observers(artifacts_root, exclude_run=None, execute=powershell_json):
     """At exclusive service entry, clean owned live sessions, not stored jobs."""

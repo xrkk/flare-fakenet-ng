@@ -34,6 +34,7 @@ def udp_lifetimes(events):
     """Return raw event references and facts; never infer missing lifecycle."""
     active = {}
     lifetimes = []
+    pending_sends = {}
     for index, event in enumerate(events):
         if event['provider'] != AFD_PROVIDER:
             continue
@@ -50,9 +51,12 @@ def udp_lifetimes(events):
                 for item in xml.findall('e:EventData/e:Data', EVENT_NS)}
         key = (data['Process'], data['Endpoint'])
         entering = int(data['EnterExit']) == 0
+        if int(data['EnterExit']) not in (0, 1):
+            continue
         successful = int(data['Status'], 0) == 0
         if kind == 1000 and entering:
             previous = active.pop(key, None)
+            pending_sends = {k: v for k, v in pending_sends.items() if k[:2] != key}
             if previous is not None and previous['closed'] is None:
                 previous['superseded_without_close'] = True
             # Track non-UDP creation too: a reused pointer must invalidate the
@@ -62,7 +66,7 @@ def udp_lifetimes(events):
             item = {'process_pointer': key[0], 'endpoint_pointer': key[1],
                     'pid': int(data['ProcessId'], 0), 'created': index,
                     'creation_time': event['time'], 'creation_succeeded': False,
-                    'requested_bind': None, 'bound': None, 'bind_event': None,
+                    'requested_bind': None, 'bound': None, 'bind_event': None, 'bind_time': None,
                     'outbound': [], 'close_requested': None, 'closed': None,
                     'superseded_without_close': False}
             lifetimes.append(item)
@@ -80,9 +84,24 @@ def udp_lifetimes(events):
             elif successful and item['requested_bind'] is not None:
                 item['bound'] = address
                 item['bind_event'] = index
-        elif kind in (1007, 1013) and entering:
-            item['outbound'].append({'event': index, 'time': event['time'],
-                                     'destination': socket_address(data['Address'])})
+                item['bind_time'] = event['time']
+        elif kind in (1007, 1013):
+            # Completion may execute in a different process/thread. Match the
+            # owning kernel process, socket generation and exact buffer call.
+            send_key = key + (kind, data.get('Buffer'), data.get('BufferLength'), data['Address'])
+            if entering:
+                sent = {'event': index, 'time': event['time'],
+                        'destination': socket_address(data['Address']),
+                        'completed': None, 'succeeded': False}
+                item['outbound'].append(sent)
+                if send_key in pending_sends or not data.get('Buffer'):
+                    pending_sends[send_key] = None  # ambiguous, never guess
+                else:
+                    pending_sends[send_key] = sent
+            else:
+                sent = pending_sends.pop(send_key, None)
+                if sent is not None:
+                    sent.update(completed=index, completion_time=event['time'], succeeded=successful)
         elif kind == 1001:
             if entering:
                 item['close_requested'] = index

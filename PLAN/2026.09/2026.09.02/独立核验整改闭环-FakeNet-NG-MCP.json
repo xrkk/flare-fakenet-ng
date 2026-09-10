@@ -12,7 +12,7 @@
   "status": "IMPLEMENTING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "a8f45543f20686e9f40ea4cb52babf728c6dc26d",
+  "current_head": "58d9c00d12d19808a35dd4d4bb766964c3a99b93",
   "round_limit": 5,
   "completed_rounds": 1,
   "next_round": 2,
@@ -366,11 +366,11 @@
       "accepted_at": "2026-09-09T15:49:50.852997+08:00"
     }
   ],
-  "checkpoint": "a8f4554实机IPC单次超时通过；永久超时原恢复审计通过，但第二重复incident向已退出目标取dump失败，矩阵按首失败停止；整改及Linux MCP252/3通过。",
+  "checkpoint": "端点归因实现及Linux MCP267/3通过，新增集成45通过；尚未原生验证，保持现有failed和CHK OPEN。",
   "stop_reason": null,
   "pending_intent": {
-    "id": "INTENT-124",
-    "action": "提交同run/同进程/同原因完整取证后的停止响应超时去重复修正，固定源全构建后受控升级并重跑IPC矩阵；不得删改旧失败包。"
+    "id": "INTENT-126",
+    "action": "提交严格端点归因/采样时窗/发送完成关联，固定源全构建；先完整导出当前VM本任务证据，再按授权快照门禁恢复并实机复验。"
   },
   "events": [
     {
@@ -1154,12 +1154,12 @@
     }
   ],
   "active_build": {
-    "session_id": 98010,
-    "source_commit": "a8f45543f20686e9f40ea4cb52babf728c6dc26d",
+    "session_id": 32325,
+    "source_commit": "58d9c00d12d19808a35dd4d4bb766964c3a99b93",
     "status": "PASS",
-    "output": "dist/mcp-remediation-20260910-a8f4554",
-    "log": "Logs/fakenetng-mcp/remediation-20260910/build-a8f4554.txt",
-    "package_sha256": "3a8851c5f18efb72ce8d0da144bf75183cd719663a41136248baa0f71d089d56"
+    "output": "dist/mcp-remediation-20260910-58d9c00",
+    "log": "Logs/fakenetng-mcp/remediation-20260910/build-58d9c00.txt",
+    "package_sha256": "ca6af7ae2ffcd9aa7601edaef76124459eeffcaa8633f010e323f24d48247c60"
   },
   "latest_guest_export": {
     "path": "Logs/fakenetng-mcp/remediation-20260910/native-8303ea2-active-probe-full-runtime.zip",
@@ -1179,19 +1179,14 @@
   },
   "active_native_validation": {
     "status": "COMPLETED_WITH_FAILURE",
-    "source_head": "a8f45543f20686e9f40ea4cb52babf728c6dc26d",
-    "mode": "six-case IPC matrix",
+    "session_id": 6989,
+    "source_head": "58d9c00d12d19808a35dd4d4bb766964c3a99b93",
+    "mode": "controlled upgrade and normal run",
+    "run_id": "06c56c0f-2a68-4750-a749-512bace499b8",
     "formal_acc_pass": false,
-    "evidence": "Logs/fakenetng-mcp/remediation-20260910/a8f4554-ipc-matrix",
-    "completed_artifacts_unchanged": true,
-    "http_errors": 0,
-    "next_intent": "same candidate six-case IPC matrix; preserve first failure",
-    "session_id": 15147,
-    "checks": {
-      "ipc_once_timeout": true,
-      "ipc_permanent_timeout": false
-    },
-    "reason": "second incident dump target already exited; first complete pack includes dump; raw restoration audit passed"
+    "evidence": "Logs/fakenetng-mcp/remediation-20260910/native-58d9c00-upgrade-and-run.json",
+    "runtime_evidence": "Logs/fakenetng-mcp/remediation-20260910/58d9c00-normal-run",
+    "next_action": "补齐采样时窗与发送完成关联后实现当次端点归因；当前失败现场不清除，不启动IPC矩阵"
   },
   "environment_question": {
     "status": "AWAITING_INFORMATION",
