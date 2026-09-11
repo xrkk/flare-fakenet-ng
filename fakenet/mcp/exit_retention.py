@@ -28,7 +28,7 @@ class ExitRetention:
         # collects the owner dump concurrently; one owner, serialized access.
         self._call_lock = threading.RLock()
         self._helper_job = None
-        from fakenet.mcp.diagnostic_process import DiagnosticOwner
+        from fakenet.mcp.diagnostic_process import DiagnosticError, DiagnosticOwner
         self._diagnostics = DiagnosticOwner(package_root)
         self._intent_diagnostics = DiagnosticOwner(package_root)
         self._target = TargetHandle(identity['pid'])
@@ -299,9 +299,19 @@ class ExitRetention:
         try:
             collect_dump(self.record['pid'], self.record['creation_time'], target_path,
                          time.monotonic() + budget, quota=QUOTA)
-            checked = self._call('exit-verify-dump',
-                                 dict(run_id=self.record['run_id'], pid=self.record['pid']),
-                                 time.monotonic() + budget)
+            checked = None
+            for attempt in range(3):
+                try:
+                    checked = self._call('exit-verify-dump',
+                                         dict(run_id=self.record['run_id'], pid=self.record['pid']),
+                                         time.monotonic() + budget)
+                    break
+                except DiagnosticError as exc:
+                    # A lagging bulk child can still hold the global single
+                    # flight; it releases when that child's teardown ends.
+                    if 'exit evidence helper active' not in repr(exc) or attempt == 2:
+                        raise
+                    time.sleep(10)
             info = dict(name='target.dmp', size=checked['size'], sha256=checked['sha256'])
             self.owner_dump = info
             self._publish('owner-dump.json', dict(
