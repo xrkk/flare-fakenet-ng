@@ -487,27 +487,34 @@ class ControlCase:
             linktype = reader.datalink()
             for ts, buf in reader:
                 if marker_loopback_b in buf or marker_diverted_b in buf:
-                    ip = (dpkt.ethernet.Ethernet(buf).data if
-                          linktype == dpkt.pcap.DLT_EN10MB else dpkt.ip.IP(buf))
-                    if not isinstance(ip, dpkt.ip.IP):
+                    if linktype == dpkt.pcap.DLT_EN10MB:
+                        layer = dpkt.ethernet.Ethernet(buf).data
+                    elif buf and (buf[0] >> 4) == 6:
+                        layer = dpkt.ip6.IP6(buf)
+                    else:
+                        layer = dpkt.ip.IP(buf)
+                    if isinstance(layer, dpkt.ip6.IP6):
+                        family = socket.AF_INET6
+                    elif isinstance(layer, dpkt.ip.IP):
+                        family = socket.AF_INET6 if layer.v == 6 else socket.AF_INET
+                    else:
                         continue
-                    l4 = ip.data
-                    family = socket.AF_INET6 if ip.v == 6 else socket.AF_INET
                     def addr(raw):
                         return socket.inet_ntop(family, raw)
-                    src, dst = addr(ip.src), addr(ip.dst)
+                    src, dst = addr(layer.src), addr(layer.dst)
+                    l4 = layer.data
                     row = dict(file=f['name'], src=src, dst=dst,
                                sport=getattr(l4, 'sport', None),
                                dport=getattr(l4, 'dport', None),
-                               proto=ip.p)
+                               proto=layer.p if layer.v == 4 else layer.nxt)
                     if marker_loopback_b in buf:
                         is_loopback_pair = (
                             ipaddress.ip_address(src).is_loopback and
                             ipaddress.ip_address(dst).is_loopback)
-                        if (ip.p == dpkt.ip.IP_PROTO_UDP and
+                        if (row['proto'] == dpkt.ip.IP_PROTO_UDP and
                                 row['dport'] == loop_port and is_loopback_pair):
                             loop_records.append(row)
-                        elif ip.p == dpkt.ip.IP_PROTO_UDP:
+                        elif row['proto'] == dpkt.ip.IP_PROTO_UDP:
                             # a marker datagram whose destination was
                             # rewritten away from the local listener would
                             # prove diversion; nothing else counts.
