@@ -12,7 +12,7 @@
   "status": "REMEDIATING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "d194cfdb774144fc0af2b1b33fb6272e3e6578ee",
+  "current_head": "acbee18",
   "round_limit": 5,
   "completed_rounds": 2,
   "next_round": 3,
@@ -634,11 +634,11 @@
     }
   ],
   "checkpoint": {
-    "id": "CHECKPOINT-174",
-    "at": "2026-09-11T19:04:52+08:00",
-    "head": "d194cfdb774144fc0af2b1b33fb6272e3e6578ee",
-    "evidence": "Logs/fakenetng-mcp/main-remediation/h6/rerun_blocked2_console.txt",
-    "verification": "blocked重跑仍被fault-mode进入阻断；FAULT-POINTS达fail(推进到实际故障轮)；会话上下文耗尽前登记精确续作点；CHK/轮次不变"
+    "id": "CHECKPOINT-176",
+    "at": "2026-09-11T20:54:48+08:00",
+    "head": "acbee18",
+    "evidence": "Logs/fakenetng-mcp/mcp-c3306553c-c0107c2c6b3f/release/",
+    "verification": "用户快照2(固定IP+MCP自启)生效；3306553全新部署+冒烟通过；exit-monitor 1s→10s修复后P05 normal轮次稳定累积（9+/100 无失败）；runner捕获稳定化(acbee18)；CHK/轮次不变"
   },
   "stop_reason": null,
   "pending_intent": null,
@@ -1069,6 +1069,30 @@
         "evidence": "Logs/fakenetng-mcp/main-remediation/h6/rerun_blocked2_console.txt",
         "verification": "全部result.json与console留存；服务现场failed 19089a84待SCM循环收敛"
       }
+    },
+    {
+      "id": "INTENT-174",
+      "at": "2026-09-11T20:10:36+08:00",
+      "action": "SPE/exit-monitor静默死亡根因闭环：探针+事件日志+双run对照；1s→10s修复并重建候选；另记录TerminateJobObject不触发SPE的发现（fault轮宽限超时路径，待最小实验确认）",
+      "verified": {
+        "id": "CHECKPOINT-175",
+        "at": "2026-09-11T20:10:36+08:00",
+        "head": "PENDING_BUILD",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-18.txt",
+        "verification": "Linux 438/5；spe-job-terminate-finding.json；ProcessExitMonitor事件序列"
+      }
+    },
+    {
+      "id": "INTENT-175",
+      "at": "2026-09-11T20:54:48+08:00",
+      "action": "快照2重置→3306553部署→P05 normal启动；runner侧两处修复(449f888/2bb23e6/acbee18)；resolver quad属主确认为pwsh宿主(pid 5708)并登记",
+      "verified": {
+        "id": "CHECKPOINT-176",
+        "at": "2026-09-11T20:54:48+08:00",
+        "head": "acbee18",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-19.txt",
+        "verification": "Linux 438/5；normal轮次累积中"
+      }
     }
   ],
   "response_record": {
@@ -1397,14 +1421,14 @@
     }
   ],
   "candidate": {
-    "source_commit": "d194cfdb774144fc0af2b1b33fb6272e3e6578ee",
-    "candidate_id": "mcp-cd194cfdb-feda0a3ceaef",
-    "package": "dist/mcp-remediation-20260911-stable/fakenetng-mcp-candidate.zip",
-    "sha256": "feda0a3ceaef0a57bdfdf667768237d338f40a190e9eeb9266f025f6a342b668",
-    "exe_sha256": "(see manifest; head-fix tree)",
-    "status": "DEPLOYED_ON_VM233_CONTROL_MATRIX_8_8_H6_2_PARTIAL",
-    "gate": "Linux 438/5 (pc007-linux-15); Windows main 1015/0/8 + HTTP 17 (build-embedded)",
-    "contains": "11b71e1..3efda04 chain + released-handle-ended fix (3ab4312) + stable listen-port rows (d194cfd)"
+    "source_commit": "3306553c6fe850cdc4f447159a9c86846b26a6d9",
+    "candidate_id": "mcp-c3306553c-c0107c2c6b3f",
+    "package": "dist/mcp-remediation-20260911-monitortime/fakenetng-mcp-candidate.zip",
+    "sha256": "c0107c2c6b3f6a6f9611804798e8dbb0156fbcdd93b7a268e46d62d1eac08ce4",
+    "exe_sha256": "fd9a507f1e856c2c…(manifest)",
+    "status": "DEPLOYED_P05_NORMAL_IN_PROGRESS",
+    "gate": "Linux 438/5; Windows main 1015/0/8 + HTTP 17",
+    "contains": "d194cfd chain + exit-monitor 10s rejection window (3306553); runner-side fixes separate"
   },
   "pause_handoff": {
     "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260910/第三方整改交接-47c8173.md",
