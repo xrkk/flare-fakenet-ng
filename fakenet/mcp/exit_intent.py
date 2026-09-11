@@ -118,6 +118,21 @@ class StopIntent:
             self.consumed = False
         self._remove()
 
+    def invalidate_local(self):
+        """In-memory revocation with a direct bounded file removal.
+
+        Used by lock-free finalization when child spawns are unavailable;
+        revocation is already an in-memory fact and a stale file can never
+        restore it."""
+        with self.lock:
+            self.current = None
+            self._publishing = None
+            self.consumed = False
+        try:
+            (self.directory / 'stop-intent.json').unlink(missing_ok=True)
+        except OSError as exc:
+            self.io_failure = repr(exc)
+
     def accept_normal(self, claim, observed):
         """Consume live authority once; never hold its lock during file I/O."""
         with self.lock:

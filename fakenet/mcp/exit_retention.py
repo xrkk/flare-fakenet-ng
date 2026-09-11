@@ -214,6 +214,13 @@ class ExitRetention:
                     if owner_dump is not None:
                         report['dump'] = owner_dump
                         report['dump_owner_collected'] = True
+                    # Helper-less finalization runs beside the supervisor's
+                    # incident collection; child spawns there can queue past
+                    # any per-call budget. The watch thread holds no lock, so
+                    # the small bounded result write goes straight to disk.
+                    if self._helper is None:
+                        self._finish_local(report)
+                        return
                     self._finish(report)
                     return
                 time.sleep(0.02)
@@ -302,6 +309,22 @@ class ExitRetention:
             return info
         finally:
             self._call_lock.release()
+
+    def _finish_local(self, report):
+        """Lock-free finalization for the helper-less hang path.
+
+        Mirrors _finish's release order without any diagnostic child: with
+        no helper ever acquired there is nothing to scan, and the pinned
+        native observations above are the complete ownership story. The
+        result write is small and bounded."""
+        import json as _json
+        from fakenet.mcp.exit_files import publish
+        self.intent.invalidate_local()
+        self._target.close()
+        self._target = None
+        report.update(helper_ended=True, retained_target_handle_closed=True)
+        self.result = report
+        publish(self.directory / 'owner-result.json', report)
 
     def _end_helpers(self, deadline):
         if self._helper is not None:
