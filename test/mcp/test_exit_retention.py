@@ -199,6 +199,8 @@ def test_grace_timeout_collects_owner_dump_before_ending():
         def __truediv__(self, name):
             class P:
                 exists = staticmethod(lambda: False)
+                def read_bytes(self):
+                    return b'x' * 10
             return P()
     owner.directory = EmptyDir()
     owner._call = lambda *a, **k: {'size': 10, 'sha256': 'a' * 64}
