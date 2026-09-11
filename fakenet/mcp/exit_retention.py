@@ -159,13 +159,20 @@ class ExitRetention:
                         return
                 if self.deadline is not None and now >= self.deadline - 1:
                     self.intent.invalidate()
+                    owner_dump = self._collect_owner_dump()
                     self._end_helpers(self.deadline)
                     if self._helper is not None:
                         self._helper.terminate_helper()
                         while not self._helper.exited() and time.monotonic() < self.deadline:
                             time.sleep(0.01)
-                    self._finish(dict(complete=False, target=self.record,
-                                      error='exit evidence deadline exceeded or notification missing'))
+                    report = dict(complete=False, target=self.record,
+                                  error='exit evidence deadline exceeded or notification missing',
+                                  completed_monotonic=time.monotonic(),
+                                  target_handle_closed=True)
+                    if owner_dump is not None:
+                        report['dump'] = owner_dump
+                        report['dump_owner_collected'] = True
+                    self._finish(report)
                     return
                 time.sleep(0.02)
         except BaseException as exc:
@@ -217,6 +224,35 @@ class ExitRetention:
             if time.monotonic() >= deadline:
                 return self.result
             time.sleep(0.05)
+
+    def _collect_owner_dump(self):
+        """Root-cause dump for a still-live hung target, owner-side.
+
+        Windows does not raise the silent-process-exit report for processes
+        terminated through their Job, so the grace-timeout path cannot wait
+        for the exit helper: the supervisor holds the pinned target handle
+        and collects the dump itself before the Job ends the tree. This is
+        the P04 two-dump contract's grace-timeout branch; failure keeps the
+        incomplete report, it never invents evidence."""
+        if self._helper is not None or self._target is None or self._target.exited():
+            return None
+        import hashlib
+        from fakenet.mcp.dumpworker import collect_dump
+        from fakenet.mcp.exit_files import QUOTA
+        target_path = self.directory / 'target.dmp'
+        if target_path.exists():
+            return None
+        remaining = max(0, self.deadline - time.monotonic())
+        collect_dump(self.record['pid'], self.record['creation_time'], target_path,
+                     time.monotonic() + min(remaining, 45), quota=QUOTA)
+        checked = self._call('exit-verify-dump',
+                             dict(run_id=self.record['run_id'], pid=self.record['pid']),
+                             self.deadline)
+        raw = target_path.read_bytes()
+        info = dict(name='target.dmp', size=checked['size'], sha256=checked['sha256'])
+        self._publish('owner-dump.json', dict(
+            info, reason='owner-collected: grace timeout with live target'))
+        return info
 
     def _end_helpers(self, deadline):
         if self._helper is not None:

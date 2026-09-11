@@ -173,3 +173,53 @@ def test_released_target_handle_reports_ended_not_invalid():
     handle.handle = None
     handle.pid = 4242
     assert handle.exited() is True
+
+
+def test_grace_timeout_collects_owner_dump_before_ending():
+    """The grace-timeout path dumps the live target through the pinned
+    handle before the Job ends it (SPE never fires for Job termination)."""
+    import fakenet.mcp.exit_retention as er
+    owner = ExitRetention.__new__(ExitRetention)
+    owner._helper = None
+    class Target:
+        def exited(self):
+            return False
+    owner._target = Target()
+    owner.deadline = time.monotonic() + 30
+    owner.record = {'run_id': 'run', 'pid': 4242, 'creation_time': '123'}
+    class Dir:
+        def __truediv__(self, name):
+            class P:
+                exists = staticmethod(lambda: True)
+            return P()
+    owner.directory = Dir()
+    # target.dmp already exists -> no owner dump
+    assert owner._collect_owner_dump() is None
+    class EmptyDir:
+        def __truediv__(self, name):
+            class P:
+                exists = staticmethod(lambda: False)
+            return P()
+    owner.directory = EmptyDir()
+    owner._call = lambda *a, **k: {'size': 10, 'sha256': 'a' * 64}
+    owner._publish = lambda name, record: None
+    collected = {}
+    def fake_collect(pid, creation, target, deadline, quota=None):
+        collected['pid'] = pid
+        class W:
+            def read_bytes(self):
+                return b'x' * 10
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+        return W()
+    import unittest.mock as mock
+    with mock.patch.object(er, '_call', owner._call), \
+         mock.patch('fakenet.mcp.dumpworker.collect_dump', fake_collect):
+        # read_bytes is on the returned path object; patch Path.read_bytes
+        import pathlib
+        with mock.patch.object(pathlib.Path, 'read_bytes', lambda self: b'x' * 10):
+            info = owner._collect_owner_dump()
+    assert collected['pid'] == 4242
+    assert info == {'name': 'target.dmp', 'size': 10, 'sha256': 'a' * 64}
