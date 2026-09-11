@@ -1517,10 +1517,10 @@
     }
   ],
   "candidate": {
-    "source_commit": "af6a273100000000000000000000000000000000",
+    "source_commit": "af6a2731df08a3c314c7c9f3e2986ecc85377a2f",
     "candidate_id": "mcp-caf6a2731-b89966c72d85",
     "package": "dist/mcp-remediation-20260912-hangdump14/fakenetng-mcp-candidate.zip",
-    "sha256": "b89966c72d85...",
+    "sha256": "b89966c72d85865712ed291f391c894ae800a8b00e596628830df96fb7167933",
     "status": "POLICY_PAUSE_VERIFIED_CONVERGES",
     "gate": "Linux 440/5; Windows build-embedded PASS"
   },
