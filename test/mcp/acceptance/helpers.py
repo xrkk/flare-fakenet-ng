@@ -167,7 +167,12 @@ def configure_fault_service(channel, enabled, grace, allow_change=True):
         "$path='C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json'; $cfg=Get-Content $path -Raw | ConvertFrom-Json; "
         "$cfg | Add-Member -NotePropertyName stop_grace_seconds -NotePropertyValue " + str(int(grace)) + " -Force; "
         "[IO.File]::WriteAllText($path,($cfg | ConvertTo-Json),[Text.UTF8Encoding]::new($false)); "
-        "Start-Service fakenetng-mcp; 'configured'", timeout=60)
+        "$ok=$false; $diag=@();"
+        "foreach($i in 1..4){ try{ Start-Service fakenetng-mcp -ErrorAction Stop; $ok=$true; break }"
+        "catch{ $diag += ('attempt ' + $i + ': ' + $_.Exception.Message); Start-Sleep -Seconds 3 } };"
+        "if(-not $ok){ $diag += ('scm: ' + ((sc.exe query fakenetng-mcp | Out-String) -join ' '));"
+        "$diag += ('log: ' + ((Get-Content 'C:\\ProgramData\\FakeNet-NG-MCP\\logs\\service.log' -Tail 8) -join ' ~ '));"
+        "throw ('service start refused: ' + ($diag -join ' ;; ')) }; 'configured'", timeout=180)
     return {'before': current, 'stop': stopped, 'change': changed}
 
 
