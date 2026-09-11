@@ -134,8 +134,9 @@ class ExitRetention:
             raise RuntimeError('stop intent protocol worker still active')
         if not self._target.exited():
             raise RuntimeError('managed target still active; retain its handle')
-        self._call('exit-scan', dict(terminate=False),
-                   time.monotonic() + FINALIZE_BUDGET)
+        if self._helper is not None or self._helper_job is not None:
+            self._call('exit-scan', dict(terminate=False),
+                       time.monotonic() + FINALIZE_BUDGET)
         self.intent.invalidate()
         self._target.close()
         self._target = None
@@ -292,6 +293,13 @@ class ExitRetention:
                 self._helper_job.terminate(deadline)
             if not self._helper.exited():
                 raise RuntimeError('SPE end not observed; no parallel scan')
+        if self._helper is None and self._helper_job is None:
+            # No helper was ever acquired (job-terminated hang): nothing
+            # packaged is owned, and chained scan children cost tens of
+            # seconds on this host family - more than any finalization
+            # window. The pinned native observations above are the whole
+            # ownership story for this path.
+            return True
         return self._call('exit-scan', dict(terminate=True), deadline)
 
     def cancel(self):
