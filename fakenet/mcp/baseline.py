@@ -208,21 +208,32 @@ def capture(deadline=None):
         return _run(command, timeout=remaining) if remaining > 0 else COLLECTION_FAILED
 
     def collect_ports():
-        # Teardown on the acceptance VM family lags seconds: sockets of
-        # just-finished commands and start-phase diagnostics stay listed
-        # after their process is gone. Record the listen-port section only
-        # once two consecutive observations agree, so the baseline and the
-        # audit both observe a settled listing instead of a transient
-        # shadow. Persisting differences remain visible; nothing is edited.
-        previous = collect(['netstat', '-ano'])
-        budget_end = time.monotonic() + 8
-        while time.monotonic() < budget_end:
-            time.sleep(0.7)
+        # Teardown on the acceptance VM family lags seconds, and resolver
+        # helper sockets churn with every command: sockets of just-finished
+        # commands and start-phase diagnostics stay listed after their
+        # process is gone, and short-lived UDP quads never repeat their
+        # ports. Record only rows present in three time-separated
+        # observations, so both the baseline and the audit describe the
+        # STABLY listening set. Persisting differences remain visible;
+        # nothing is edited.
+        def rows(text):
+            return [line for line in text.splitlines() if line.strip()]
+        stable, seen = None, 0
+        budget_end = time.monotonic() + 12
+        while time.monotonic() < budget_end and seen < 3:
+            time.sleep(1.5)
             current = collect(['netstat', '-ano'])
-            if current == previous and current != COLLECTION_FAILED:
-                return current
-            previous = current
-        return previous
+            if current == COLLECTION_FAILED:
+                continue
+            current_rows = rows(current)
+            if stable is None:
+                stable = set(current_rows)
+            else:
+                stable &= set(current_rows)
+            seen += 1
+        if not stable:
+            return collect(['netstat', '-ano'])
+        return '\n'.join(sorted(stable))
     ports_start = time.time_ns()
     ports = collect_ports()
     ports_end = time.time_ns()
