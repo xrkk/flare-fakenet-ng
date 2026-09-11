@@ -19,6 +19,9 @@ class ExitRetention:
         self._helper_identity = None
         self._cancel = threading.Event()
         self.owner_dump = None
+        # The watch thread polls diagnostics and the supervisor's hang branch
+        # collects the owner dump concurrently; one owner, serialized access.
+        self._call_lock = threading.RLock()
         self._helper_job = None
         from fakenet.mcp.diagnostic_process import DiagnosticOwner
         self._diagnostics = DiagnosticOwner(package_root)
@@ -68,7 +71,8 @@ class ExitRetention:
         # load on the acceptance VMs; the retention window (60s) still bounds
         # every call from above.
         end = min(self.deadline or float('inf'), deadline or time.monotonic() + 5)
-        return self._diagnostics.call(operation, payload, end)
+        with self._call_lock:
+            return self._diagnostics.call(operation, payload, end)
 
     def _intent_io(self, operation, record, deadline):
         payload = dict(run_id=self.record['run_id'], name='stop-intent.json')
@@ -241,19 +245,23 @@ class ExitRetention:
         import hashlib
         from fakenet.mcp.dumpworker import collect_dump
         from fakenet.mcp.exit_files import QUOTA
+        self._call_lock.acquire()
         target_path = self.directory / 'target.dmp'
         if target_path.exists():
             return None
-        collect_dump(self.record['pid'], self.record['creation_time'], target_path,
-                     time.monotonic() + budget, quota=QUOTA)
-        checked = self._call('exit-verify-dump',
-                             dict(run_id=self.record['run_id'], pid=self.record['pid']),
-                             time.monotonic() + budget)
-        info = dict(name='target.dmp', size=checked['size'], sha256=checked['sha256'])
-        self.owner_dump = info
-        self._publish('owner-dump.json', dict(
-            info, reason='owner-collected: grace timeout with live target'))
-        return info
+        try:
+            collect_dump(self.record['pid'], self.record['creation_time'], target_path,
+                         time.monotonic() + budget, quota=QUOTA)
+            checked = self._call('exit-verify-dump',
+                                 dict(run_id=self.record['run_id'], pid=self.record['pid']),
+                                 time.monotonic() + budget)
+            info = dict(name='target.dmp', size=checked['size'], sha256=checked['sha256'])
+            self.owner_dump = info
+            self._publish('owner-dump.json', dict(
+                info, reason='owner-collected: grace timeout with live target'))
+            return info
+        finally:
+            self._call_lock.release()
 
     def _end_helpers(self, deadline):
         if self._helper is not None:
