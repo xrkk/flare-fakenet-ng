@@ -83,7 +83,10 @@ class ExitRetention:
             window = self.deadline
             if window is not None and window < time.monotonic():
                 window = time.monotonic() + FINALIZE_BUDGET
-            end = min(window or float('inf'), deadline or time.monotonic() + 5)
+            # A diagnostic child round-trip on the acceptance VM family
+            # regularly exceeds five seconds; the default poll budget must
+            # tolerate real spawn cost or every poll retains ownership.
+            end = min(window or float('inf'), deadline or time.monotonic() + 30)
             return self._diagnostics.call(operation, payload, end)
 
     def _intent_io(self, operation, record, deadline):
