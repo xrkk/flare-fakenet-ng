@@ -210,7 +210,7 @@ def settle_dead_socket_rows(deadline=None):
         lingering = False
         for line in table.splitlines():
             parts = line.split()
-            if (len(parts) >= 5 and parts[0].upper() == 'UDP' and
+            if (len(parts) >= 4 and parts[0].upper() == 'UDP' and
                     parts[-1].isdigit()):
                 try:
                     from fakenet.mcp.jobobject import process_alive
