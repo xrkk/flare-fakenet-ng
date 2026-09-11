@@ -83,10 +83,17 @@ class ExitRetention:
 
     def _intent_io(self, operation, record, deadline):
         payload = dict(run_id=self.record['run_id'], name='stop-intent.json')
+        # During finalization the retention window has expired by design;
+        # intent protocol calls then run on the finalization budget, not on
+        # an already-past deadline that kills the watch thread.
+        if self.deadline is not None and self.deadline < time.monotonic():
+            budget = time.monotonic() + FINALIZE_BUDGET
+        else:
+            budget = self.deadline or float('inf')
         if operation == 'publish':
             payload['record'] = record
-            return self._intent_diagnostics.call('exit-publish', payload, min(self.deadline or float('inf'), deadline))
-        return self._intent_diagnostics.call('exit-remove-intent', payload, min(self.deadline or float('inf'), deadline))
+            return self._intent_diagnostics.call('exit-publish', payload, min(budget, deadline))
+        return self._intent_diagnostics.call('exit-remove-intent', payload, min(budget, deadline))
 
     def _publish(self, name, record):
         return self._call('exit-publish', dict(run_id=self.record['run_id'], name=name, record=record))
