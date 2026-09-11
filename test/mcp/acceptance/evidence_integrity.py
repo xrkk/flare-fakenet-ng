@@ -272,7 +272,10 @@ def custom_config_body(content):
             line = 'DumpPacketsFilePrefix = release-custom'
             found.add('prefix')
         lines.append(line)
-    if found != {'webroot', 'prefix'}:
+    # The prefix rename is the mandatory semantic delta; the webroot key is
+    # only rewritten when the builtin actually carries it (current default
+    # configs ship without DumpHTTPWebRoot).
+    if 'prefix' not in found:
         raise ValueError('builtin does not contain the required custom delta fields')
     body = '\n'.join(lines) + '\n'
     if body == content.replace('\r\n', '\n'):
