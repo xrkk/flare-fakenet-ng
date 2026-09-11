@@ -5,6 +5,11 @@ import threading
 import time
 
 from fakenet.mcp.exit_files import read, publish, root, run_directory, digest
+
+# Bounded budget for the owner's own finalization after the observation
+# window expires: the scan and publication still need real seconds on
+# teardown-lagging hosts, and the window itself has just been consumed.
+FINALIZE_BUDGET = 15
 from fakenet.mcp.exit_intent import StopIntent
 from fakenet.mcp.exit_native import TargetHandle, verify_dump
 
@@ -127,7 +132,8 @@ class ExitRetention:
             raise RuntimeError('stop intent protocol worker still active')
         if not self._target.exited():
             raise RuntimeError('managed target still active; retain its handle')
-        self._call('exit-scan', dict(terminate=False), self.deadline)
+        self._call('exit-scan', dict(terminate=False),
+                   time.monotonic() + FINALIZE_BUDGET)
         self.intent.invalidate()
         self._target.close()
         self._target = None
@@ -165,7 +171,9 @@ class ExitRetention:
                 if self.deadline is not None and now >= self.deadline - 1:
                     self.intent.invalidate()
                     owner_dump = getattr(self, 'owner_dump', None)
-                    self._end_helpers(self.deadline)
+                    # The window bounds waiting for evidence, not the owner's
+                    # own finalization; slow teardown needs its own budget.
+                    self._end_helpers(time.monotonic() + FINALIZE_BUDGET)
                     if self._helper is not None:
                         self._helper.terminate_helper()
                         while not self._helper.exited() and time.monotonic() < self.deadline:
