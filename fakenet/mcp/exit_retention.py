@@ -18,6 +18,7 @@ class ExitRetention:
         self._helper = None
         self._helper_identity = None
         self._cancel = threading.Event()
+        self.owner_dump = None
         self._helper_job = None
         from fakenet.mcp.diagnostic_process import DiagnosticOwner
         self._diagnostics = DiagnosticOwner(package_root)
@@ -159,7 +160,7 @@ class ExitRetention:
                         return
                 if self.deadline is not None and now >= self.deadline - 1:
                     self.intent.invalidate()
-                    owner_dump = self._collect_owner_dump()
+                    owner_dump = getattr(self, 'owner_dump', None)
                     self._end_helpers(self.deadline)
                     if self._helper is not None:
                         self._helper.terminate_helper()
@@ -225,15 +226,16 @@ class ExitRetention:
                 return self.result
             time.sleep(0.05)
 
-    def _collect_owner_dump(self):
+    def collect_owner_dump(self, budget=45):
         """Root-cause dump for a still-live hung target, owner-side.
 
         Windows does not raise the silent-process-exit report for processes
         terminated through their Job, so the grace-timeout path cannot wait
-        for the exit helper: the supervisor holds the pinned target handle
-        and collects the dump itself before the Job ends the tree. This is
-        the P04 two-dump contract's grace-timeout branch; failure keeps the
-        incomplete report, it never invents evidence."""
+        for the exit helper: the caller invokes this while the hung target
+        is still alive, and the dump is collected through the pinned target
+        handle with its own budget. This is the P04 two-dump contract's
+        grace-timeout branch; failure keeps the incomplete report, it never
+        invents evidence."""
         if self._helper is not None or self._target is None or self._target.exited():
             return None
         import hashlib
@@ -242,14 +244,13 @@ class ExitRetention:
         target_path = self.directory / 'target.dmp'
         if target_path.exists():
             return None
-        remaining = max(0, self.deadline - time.monotonic())
         collect_dump(self.record['pid'], self.record['creation_time'], target_path,
-                     time.monotonic() + min(remaining, 45), quota=QUOTA)
+                     time.monotonic() + budget, quota=QUOTA)
         checked = self._call('exit-verify-dump',
                              dict(run_id=self.record['run_id'], pid=self.record['pid']),
-                             self.deadline)
-        raw = target_path.read_bytes()
+                             time.monotonic() + budget)
         info = dict(name='target.dmp', size=checked['size'], sha256=checked['sha256'])
+        self.owner_dump = info
         self._publish('owner-dump.json', dict(
             info, reason='owner-collected: grace timeout with live target'))
         return info

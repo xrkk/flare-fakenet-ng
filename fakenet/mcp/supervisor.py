@@ -404,6 +404,12 @@ class RealSupervisor:
                 except BaseException as exc:
                     if self._exit_retention is not None:
                         self._exit_retention.intent.invalidate()
+                        if isinstance(exc, TimeoutError):
+                            # The engine hangs and is still alive: collect the
+                            # root-cause dump now, before the Job ends the
+                            # tree (the silent-process-exit report never fires
+                            # for Job termination, so the helper never will).
+                            self._exit_retention.collect_owner_dump()
                     reason = str(exc)
                     coordinator.update_health_state('failed', reason)
                     # A lost stop reply can outlive the entire managed tree.
