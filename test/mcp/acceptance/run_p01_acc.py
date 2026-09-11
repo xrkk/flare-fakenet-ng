@@ -238,7 +238,8 @@ def run_acc016(args, channel, writer):
     return EXIT_PASS if passed else EXIT_FAIL
 
 
-def run_zcode_client_probe(writer, controller_uuid=None):
+def run_zcode_client_probe(writer, controller_uuid=None,
+                           service_url='http://192.168.204.149:28788/mcp'):
     """Drive the real target client (ZCode desktop/CLI MCP stack) headlessly.
 
     Mirrors the DEC-006-unblocking configuration: the CLI's own
@@ -276,7 +277,7 @@ def run_zcode_client_probe(writer, controller_uuid=None):
     servers = cfg.setdefault('mcp', {}).setdefault('servers', {})
     servers['fakenetng-probe'] = {
         'type': 'http',
-        'url': 'http://192.168.204.149:28788/mcp',
+        'url': service_url,
         'headers': {'X-FakeNet-Controller-ID': controller},
         'enabled': True, 'timeoutMs': 60000,
     }
@@ -355,7 +356,8 @@ def run_acc002(args, channel, writer, target_client_probe=True):
     #    the live service.  Other clients can never substitute this step.
     if target_client_probe:
         probe = run_zcode_client_probe(writer,
-                                       controller_uuid=args.controller_uuid)
+                                       controller_uuid=args.controller_uuid,
+                                       service_url=args.target_base_url + '/mcp')
         if not probe.get('ok'):
             writer.blocker = {
                 'step': 'target-client discovery + one no-side-effect '

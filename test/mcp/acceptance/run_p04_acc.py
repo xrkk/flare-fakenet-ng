@@ -134,7 +134,7 @@ def _wait_terminal(base, timeout=90):
                       ('failed', 'degraded', 'stopped'), timeout=timeout)
 
 
-def run_acc015(base, channel, writer):
+def run_acc015(base, channel, writer, allowed_client='192.168.204.149'):
     """Export actual incidents and a PCAP belonging to the same run."""
     from pathlib import PureWindowsPath
     import uuid
@@ -170,7 +170,9 @@ def run_acc015(base, channel, writer):
     bundles = export_run_incidents(channel, run_id, writer.out_dir)
     writer.add_evidence('acc015-actual-incidents', bundles)
     writer.evidence.extend({k: bundle[k] for k in ('path', 'size', 'sha256')} for bundle in bundles)
-    exported = receive_artifact(channel, artifact, writer.out_dir / ('runtime-' + run_id + '.pcap'))
+    exported = receive_artifact(channel, artifact,
+                             writer.out_dir / ('runtime-' + run_id + '.pcap'),
+                             allowed_client=allowed_client)
     writer.add_evidence('acc015-real-band-transfer', exported)
     writer.evidence.append({k: exported[k] for k in ('path', 'size', 'sha256')})
     # This negative check must receive an explicit unknown-tool response;
@@ -531,7 +533,8 @@ def main():
         elif args.acc == 'ACC-014':
             exit_code = run_acc014(base, channel, writer, args)
         elif args.acc == 'ACC-015':
-            exit_code = run_acc015(base, channel, writer)
+            guest = args.win10vm_mcp.replace('http://', '').rsplit(':', 1)[0]
+            exit_code = run_acc015(base, channel, writer, allowed_client=guest)
         elif args.acc == 'ACC-018':
             exit_code = run_acc018(base, channel, writer, args)
         elif args.acc == 'ACC-019':

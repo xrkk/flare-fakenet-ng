@@ -20,7 +20,8 @@ def listener_rows(table, port):
     return result
 
 
-def receive_artifact(channel, artifact, destination):
+def receive_artifact(channel, artifact, destination,
+                      allowed_client='192.168.204.149'):
     source = PureWindowsPath(artifact['path'])
     root = PureWindowsPath('C:/ProgramData/FakeNet-NG-MCP/artifacts')
     if not source.is_relative_to(root) or '..' in source.parts or "'" in str(source):
@@ -38,7 +39,7 @@ def receive_artifact(channel, artifact, destination):
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_PUT(self):
             self.connection.settimeout(10)
-            if (self.client_address[0] != '192.168.204.149' or self.path != token or
+            if (self.client_address[0] != allowed_client or self.path != token or
                     self.headers.get('Content-Length') != str(size)):
                 self.send_error(403)
                 return
