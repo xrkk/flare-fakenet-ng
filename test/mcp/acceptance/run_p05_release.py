@@ -113,7 +113,7 @@ class ReleaseGate:
                     # command host) own rotating resolver sockets; they are
                     # acceptance-driver plumbing, not product environment.
                     "$noise=@(Get-Process pwsh,powershell -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }); "
-                    "$filter={ param($line) $cols=$line.Trim() -split [char]32; "
+                    "$filter={ $cols=$_.Trim() -split [char]32; "
                     "if($cols.Count -ge 4 -and $cols[-1] -match '^[0-9]+$'){ -not ($noise -contains [int]$cols[-1]) } else { $true } }; "
                     "$s1=@(netstat -ano | Where-Object $filter); Start-Sleep -Milliseconds 1200; "
                     "$s2=@(netstat -ano | Where-Object $filter); Start-Sleep -Milliseconds 1200; "
