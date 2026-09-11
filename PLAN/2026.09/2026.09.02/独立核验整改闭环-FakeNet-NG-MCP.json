@@ -12,7 +12,7 @@
   "status": "REMEDIATING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "acbee18",
+  "current_head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
   "round_limit": 5,
   "completed_rounds": 2,
   "next_round": 3,
@@ -634,11 +634,11 @@
     }
   ],
   "checkpoint": {
-    "id": "CHECKPOINT-176",
-    "at": "2026-09-11T20:54:48+08:00",
-    "head": "acbee18",
-    "evidence": "Logs/fakenetng-mcp/mcp-c3306553c-c0107c2c6b3f/release/",
-    "verification": "用户快照2(固定IP+MCP自启)生效；3306553全新部署+冒烟通过；exit-monitor 1s→10s修复后P05 normal轮次稳定累积（9+/100 无失败）；runner捕获稳定化(acbee18)；CHK/轮次不变"
+    "id": "CHECKPOINT-177",
+    "at": "2026-09-11T21:32:41+08:00",
+    "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
+    "evidence": "Logs/fakenetng-mcp/main-remediation/h5-vm233-stabilization-20260911.json",
+    "verification": "bf892ee部署后产品侧正常轮干净收敛（round1/2 final=stopped，含exit握手完整）；W32Time NTP123开机后开听听的影子以披露环境稳定化处理（禁用，可逆）；剩余唯一阻塞=P05 runner自身环境捕获把自身会话socket（pwsh quad/ESTABLISHED）记入原始对比（only-before/after均见28787/28788自连接行）；修复=捕获脚本排除自身$PID行；CHK/轮次不变"
   },
   "stop_reason": null,
   "pending_intent": null,
@@ -1093,6 +1093,18 @@
         "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-19.txt",
         "verification": "Linux 438/5；normal轮次累积中"
       }
+    },
+    {
+      "id": "INTENT-176",
+      "at": "2026-09-11T21:32:41+08:00",
+      "action": "bf892ee部署+冒烟+normal轮：产品侧两轮干净收敛；W32Time稳定化；runner自捕获污染定性（排除自身$PID）",
+      "verified": {
+        "id": "CHECKPOINT-177",
+        "at": "2026-09-11T21:32:41+08:00",
+        "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-21.txt",
+        "verification": "Linux 439/5；构建PASS；产品侧收敛证据在release/轮次记录"
+      }
     }
   ],
   "response_record": {
@@ -1421,14 +1433,13 @@
     }
   ],
   "candidate": {
-    "source_commit": "3306553c6fe850cdc4f447159a9c86846b26a6d9",
-    "candidate_id": "mcp-c3306553c-c0107c2c6b3f",
-    "package": "dist/mcp-remediation-20260911-monitortime/fakenetng-mcp-candidate.zip",
-    "sha256": "c0107c2c6b3f6a6f9611804798e8dbb0156fbcdd93b7a268e46d62d1eac08ce4",
-    "exe_sha256": "fd9a507f1e856c2c…(manifest)",
-    "status": "DEPLOYED_P05_NORMAL_IN_PROGRESS",
-    "gate": "Linux 438/5; Windows main 1015/0/8 + HTTP 17",
-    "contains": "d194cfd chain + exit-monitor 10s rejection window (3306553); runner-side fixes separate"
+    "source_commit": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
+    "candidate_id": "mcp-cbf892ee0-de0f15fd2818",
+    "package": "dist/mcp-remediation-20260911-settle/fakenetng-mcp-candidate.zip",
+    "sha256": "de0f15fd2818e20aec003cb033ca6a1e2620c128cc421744f5df188deefefb28",
+    "status": "DEPLOYED_PRODUCT_ROUNDS_CONVERGE_RUNNER_CAPTURE_PENDING",
+    "gate": "Linux 439/5; Windows 1015/0/8 + HTTP 17",
+    "contains": "d194cfd + monitor 10s (3306553) + dead-socket settle before baseline (0da0de4) + netstat UDP row shape fix (bf892ee)"
   },
   "pause_handoff": {
     "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260910/第三方整改交接-47c8173.md",
@@ -1964,5 +1975,10 @@
     "next": "重跑blocked项与隔离复现fail项→P05 normal100/fault50/final/summary（同候选d194cfd）→H7补完→H8独立复核",
     "fault_mode_entry": "fault-mode进入(configure_fault_service的受控停服+SCM启动)在该VM上确定性失败：CLI停服后sc start报Cannot start service；ACC-004-S3..S6/FAULT-POINTS/ACC-014全部因此blocked/fail；需在空闲服务上隔离复现停服→启动链（本轮复现尝试与运行中的序列互相干扰，未得干净数据）；另记录inflight_timeout失败run 19089a84与coordinator空理由failed路径为待查产品观察",
     "service_state_at_session_end": "failed run 19089a84 inflight_timeout待收敛(SCM硬循环后启动恢复可收敛，已两次验证)"
+  },
+  "h6_3_next": {
+    "fix": "run_p05_release capture script: append | Where-Object { $_ -notmatch (\"\\s+\" + $PID + \"\\s*$\") } to the three netstat samples so the capturing session excludes its own resolver quad and sockets",
+    "then": "restart P05 normal 100 (archive prior release dirs), fault 50, final, summary; rerun control matrix + H6-2 on this same candidate bf892ee; ACC-002 after quota reset 2026-09-14",
+    "product_state": "normal rounds converge product-side end to end (exit handshake files complete)"
   }
 }
