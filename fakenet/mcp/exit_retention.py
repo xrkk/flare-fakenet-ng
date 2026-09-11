@@ -118,6 +118,8 @@ class ExitRetention:
         return dict(report)
 
     def _finish(self, report):
+        had_helper = (self._helper is not None or
+                      getattr(self, '_helper_job', None) is not None)
         if self._helper is not None and not self._helper.exited():
             raise RuntimeError('helper has not ended')
         if self._helper is not None:
@@ -134,8 +136,7 @@ class ExitRetention:
             raise RuntimeError('stop intent protocol worker still active')
         if not self._target.exited():
             raise RuntimeError('managed target still active; retain its handle')
-        if (self._helper is not None or
-                getattr(self, '_helper_job', None) is not None):
+        if had_helper:
             self._call('exit-scan', dict(terminate=False),
                        time.monotonic() + FINALIZE_BUDGET)
         self.intent.invalidate()
