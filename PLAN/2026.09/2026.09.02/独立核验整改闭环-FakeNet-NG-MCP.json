@@ -12,7 +12,7 @@
   "status": "REMEDIATING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "036eb74e6235c3b248524c29975074c7e9f58100",
+  "current_head": "3efda042a6a992f375759f6328965b0d78e6153a",
   "round_limit": 5,
   "completed_rounds": 2,
   "next_round": 3,
@@ -633,13 +633,15 @@
       "accepted_at": "2026-09-10T23:30:03.194514+08:00"
     }
   ],
-  "checkpoint": "INTENT-159 verified: a78b706 Linux419/4, Windows987/8+HTTP17; waiting normative decision; records-only descendants allowed at resume after diff reconciliation",
-  "stop_reason": null,
-  "pending_intent": {
-    "id": "INTENT-162",
-    "at": "2026-09-10T23:49:57.245603+08:00",
-    "action": "按15号通过对象实施固定诊断任务隔离、非阻塞停止意图、真实句柄/Job保留和跨层调用点；先本地/Windows验证再新候选原生，不关闭CHK"
+  "checkpoint": {
+    "id": "CHECKPOINT-170",
+    "at": "2026-09-11T10:28:51+08:00",
+    "head": "3efda042a6a992f375759f6328965b0d78e6153a",
+    "evidence": "Logs/fakenetng-mcp/main-remediation/audit-shadow-finding-20260911.json",
+    "verification": "3efda04候选构建校验通过（listen-port稳定采样+控制监听器容错）；ae8228b控制矩阵5/8通过、29095暴露监听器脚本与启动期诊断影子两类问题已修复；专用VM快照冷启动后MCP未自启，矩阵待环境恢复；CHK/轮次不变"
   },
+  "stop_reason": null,
+  "pending_intent": null,
   "events": [
     {
       "at": "2026-09-09T14:26:46.931484+08:00",
@@ -935,6 +937,90 @@
       "at": "2026-09-10T23:44:53.451210+08:00",
       "intent": "INTENT-161",
       "actual": "首次意见两项均接受；原审核对象保存后修订19.2/四Pxx并再自评；审核实例恢复一次仍等记录和复审，代码未改"
+    },
+    {
+      "id": "INTENT-163",
+      "at": "2026-09-11T00:18:50.873987+08:00",
+      "action": "自动审批一次超时、一次连接失败拒绝后保存未完成实施现场并进入 PAUSED_TRANSIENT；不重试被拒命令、不创建候选、不关闭 CHK",
+      "verified": {
+        "id": "CHECKPOINT-163",
+        "at": "2026-09-11T02:14:30.353789+08:00",
+        "head": "419aa907f1ed4c1484b8a106868979d464749152",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-resume-20260911.json",
+        "verification": "定向30通过1跳过；源码工作树已记录SHA；受保护文件blob未变；未提交、未构建、未操作VM；CHK/轮次不变"
+      }
+    },
+    {
+      "id": "INTENT-164",
+      "at": "2026-09-11T07:33:46+08:00",
+      "action": "恢复H0对账后继续INTENT-162：两阶段incident准备/采集边界去重、ExitRetention接续settle、list_artifacts诊断任务隔离、轮次时间序校验；固定源码11b71e1并跑全量Linux/Windows回归",
+      "verified": {
+        "id": "CHECKPOINT-164",
+        "at": "2026-09-11T07:33:46+08:00",
+        "head": "11b71e1c882f37a90712fc2926d185aa8337d899",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-progress-20260911.json",
+        "verification": "Linux pc007-linux-06 434/5；Windows windows-11b71e1 gate PASS 1011/8+HTTP17；构建进行中；受保护blob不变；CHK/轮次不变"
+      }
+    },
+    {
+      "id": "INTENT-165",
+      "at": "2026-09-11T07:47:22+08:00",
+      "action": "真机冒烟暴露diagnostic leader瞬态成员误判→修复为原生liveness探测；按AGENTS授权重置VM（唯一Snapshot 183、checkpoint标记、vmware -x、身份门禁通过）；重建f85ee7f候选",
+      "verified": {
+        "id": "CHECKPOINT-165",
+        "at": "2026-09-11T07:47:22+08:00",
+        "head": "f85ee7f143ed3acc90b2bd16cb6b66d4898eb195",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/failed-candidate-index-20260911.json",
+        "verification": "Linux 436/5；VM身份门禁DESKTOP-3FI41GR；11b71e1失败候选保留并索引"
+      }
+    },
+    {
+      "id": "INTENT-166",
+      "at": "2026-09-11T08:11:26+08:00",
+      "action": "总纲VM地址变更(.233/Win10VM-FakenetNG已注册)；f85ee7f安装后冒烟暴露leader teardown宽限缺失；a33ac2e宽限+d902e2b轮询余量修复，重建候选",
+      "verified": {
+        "id": "CHECKPOINT-167",
+        "at": "2026-09-11T08:11:26+08:00",
+        "head": "d902e2b49cdec2f19440262e1c278f7932052294",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-09.txt",
+        "verification": "Linux 437/5；失败候选与现场证据保留；未关闭CHK"
+      }
+    },
+    {
+      "id": "INTENT-167",
+      "at": "2026-09-11T08:21:38+08:00",
+      "action": "d902e2b候选构建部署；冒烟通过后遭遇DHCPv6 546瞬时监听污染恢复审计（按现行合同为严格失败，产品无缺陷）；renew6解除当前责任后禁用适配器IPv6 DHCP作披露的环境稳定化；宿主侧runner地址参数化5d3c8e9",
+      "verified": {
+        "id": "CHECKPOINT-168",
+        "at": "2026-09-11T08:21:38+08:00",
+        "head": "5d3c8e9",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/h5-vm233-stabilization-20260911.json",
+        "verification": "CLI停服exit 0/SCM Stopped/needs_recovery=false；正常启停与探针8/8通过"
+      }
+    },
+    {
+      "id": "INTENT-168",
+      "at": "2026-09-11T09:42:33+08:00",
+      "action": "实现CHK-064控制用例runner（8例）；真机暴露基线捕获自影子毒化恢复审计→netstat先行修复；d902e2b控制证据保留但矩阵将统一在ae8228b候选重跑",
+      "verified": {
+        "id": "CHECKPOINT-169",
+        "at": "2026-09-11T09:42:33+08:00",
+        "head": "ae8228ba4bb4e5f4f57ea4b5f838869c88f25620",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/audit-shadow-finding-20260911.json",
+        "verification": "Linux 437/5（pc007-linux-10）；CONTROL-DEFAULT/EXTRA×4/INVALID已pass于d902e2b；LOOPBACK待ae8228b重跑"
+      }
+    },
+    {
+      "id": "INTENT-169",
+      "at": "2026-09-11T10:28:51+08:00",
+      "action": "netstat稳定采样修复+监听器容错；发现验收目标为专用VM且DHCP漂移；恢复其快照后MCP未自启，环境阻塞登记；H7文档继续",
+      "verified": {
+        "id": "CHECKPOINT-170",
+        "at": "2026-09-11T10:28:51+08:00",
+        "head": "3efda042a6a992f375759f6328965b0d78e6153a",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/build-3efda04-console.txt",
+        "verification": "Linux 437/5（pc007-linux-12）；构建PASS；VM环境阻塞与所需用户动作已记录"
+      }
     }
   ],
   "response_record": {
@@ -1031,7 +1117,25 @@
       28790,
       29095,
       29094
-    ]
+    ],
+    "restore_20260911": {
+      "at": "2026-09-11T07:50:05+08:00",
+      "decision": "用户自述刚手动修改过VM，指示作者自行恢复快照后继续；guest内改动无需保留"
+    },
+    "vm_address_20260911": {
+      "at": "2026-09-11T08:06:03+08:00",
+      "decision": "总纲修改（用户）：测试用虚拟机改为 192.168.204.233:28787，经 Win10VM-FakenetNG MCP 连接（http type, url http://192.168.204.233:28787/mcp，已注册到 ~/.zcode/cli/config.json）；该主机FakenetNG非最新版时由执行方/核验方自行更新",
+      "environment_identity": {
+        "computer": "DESKTOP-3FI41GR",
+        "ip": "192.168.204.233",
+        "mac": "00:0C:29:C1:CA:49",
+        "uuid": "D9FD4D56-3DC4-C64B-19F1-411EEBC1CA49",
+        "os": "10.0.19045.0",
+        "fakenet_at_read": "not installed (clean machine)",
+        "note": "same computer name as the old .149 VM but distinct MAC/UUID: a different VM instance; old .149 identity (MAC 00:0c:29:4c:fd:c0) remains historical evidence only"
+      },
+      "authorized_action": "executor installs latest candidate mcp-cf85ee7f (zip 8d0dbc09e82b60954b99b95aa970dd505c4523573dfca593411c2ef878382cd7)"
+    }
   },
   "objects_current": [
     {
@@ -1241,29 +1345,13 @@
     }
   ],
   "candidate": {
-    "source_commit": "5f25fb934a7b24b593e207874f8177995fe85165",
-    "candidate_id": "mcp-c5f25fb93-51dd054716fc",
-    "package": "dist/mcp-remediation-20260910-5f25fb9/fakenetng-mcp-candidate.zip",
-    "sha256": "51dd054716fc6732108259b0c240c7cb444f0412f950b5367718aaaa9a0f2cf6",
-    "status": "DEPLOYED_AND_ENTRY_VERIFIED",
-    "formal_acc_pass": false,
-    "preserved_prior_candidates": [
-      {
-        "source_commit": "2d5a0bca84b55de35dbc036dd38414d6c0dc1cf9",
-        "sha256": "6a009071c5e434c0e4f5725a73610b1e566387ff0fe7de6bda096ddf42a32a33",
-        "preserved_at": "C:\\Windows\\Temp\\FakeNetMCP-20260910-5f25fb9-upgrade\\previous-package"
-      },
-      {
-        "source_commit": "47c8173f0bd3432ec393a86f5f4c1808eb8ee8aa",
-        "sha256": "174bbf9f48338b7eaf4a7d10ca153a76aa41da51fee757ee69a65c4aa5ec6981",
-        "preserved_at": "C:\\Windows\\Temp\\FakeNetMCP-20260910-39c6d16-upgrade\\previous-package"
-      },
-      {
-        "source_commit": "9d17d1c4d045352e52fa31e1e0197d581dfe0433",
-        "sha256": "b655d2eedeb115ea1a580fbf737f64bf67c56a0418b6997779b78fbe6b83e146",
-        "preserved_at": "C:\\Windows\\Temp\\FakeNetMCP-20260910-47c8173-upgrade\\previous-package"
-      }
-    ]
+    "source_commit": "3efda042a6a992f375759f6328965b0d78e6153a",
+    "candidate_id": "mcp-c3efda042-9ea2d3078dee",
+    "package": "dist/mcp-remediation-20260911-3efda04/fakenetng-mcp-candidate.zip",
+    "sha256": "9ea2d3078dee5fa1e998dfb6344e4eb83d73098ea9ced454ef49a98a40f48990",
+    "exe_sha256": "9219b4fa36c7b3d2b41f76f0c5fdba3e6a4f9488d69c0fdf1d77cc9a7e39ca14",
+    "status": "BUILT_VERIFIED_NOT_DEPLOYED_VM_CHANNEL_DOWN",
+    "gate": "Linux 437/5; Windows main 1014/0/8 + HTTP 17 (build-embedded)"
   },
   "pause_handoff": {
     "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260910/第三方整改交接-47c8173.md",
@@ -1276,7 +1364,7 @@
       "native_proof": "Logs/fakenetng-mcp/remediation-20260910/native-47c8173-install-diagnostic-02.json"
     }
   },
-  "resume_requires": "用户裁决PLAN-CHANGE-007；恢复时核对规范、a78b706后仅记录diff、受保护blob、实际VM身份及新核验实例资格",
+  "resume_requires": "审批服务恢复后按INTENT-162继续；先对账当前HEAD与pc007-resume-20260911.json工作树SHA，不重复旧测试进程动作，不宣称READY_TO_REVERIFY。",
   "resume_started_at": "2026-09-10T00:50:47.277736+08:00",
   "resume_checkpoints": [
     {
@@ -1708,18 +1796,9 @@
     }
   ],
   "vm_reset_intent": {
-    "status": "COMPLETED",
-    "snapshot": "Snapshot 183-FakenetNG测试专用",
-    "revert_count_planned": 1,
-    "resume_count_planned": 1,
-    "evidence": "Logs/fakenetng-mcp/remediation-20260910/plan-change-006-A-source-evidence-check.json",
-    "verified_files": 91,
-    "sha256": "5090c4a3496e8cfe5520a9be7d6162c83ddcd1a9cad8ecadece4feaafbdc3411",
-    "revert_exit": 0,
-    "resume_exit": 0,
-    "checkpoint_marker": "Snapshot99.vmsn",
-    "identity_gate": "DESKTOP-3FI41GR",
-    "identity_evidence": "Logs/fakenetng-mcp/remediation-20260910/plan-change-006-A-post-reset-identity.json"
+    "at": "2026-09-11T07:50:05+08:00",
+    "reason": "user instructed restore after manual guest modification",
+    "procedure": "single revertToSnapshot 'Snapshot 183-FakenetNG测试专用'; checkpoint.vmState check; vmware -x; MCP read-only identity gate"
   },
   "final_author_record": {
     "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.09/2026.09.09-02-整改回应与PLAN-CHANGE登记-FakeNet-NG-MCP.md",
@@ -1777,5 +1856,12 @@
         }
       ]
     }
-  ]
+  ],
+  "environment_block": {
+    "at": "2026-09-11T10:28:51+08:00",
+    "situation": "专属验收VM /home/adminn/vmware/Win10(MalBox)-FakenetNG/Win10(MalBox)-FakenetNG.vmx (MAC 00:0c:29:c1:ca:49, BIOS UUID 564dfdd9c43d4bc6-19f141 1eebc1ca49, 同名 DESKTOP-3FI41GR) 在DHCP下地址漂移(.233→.243)；恢复其唯一快照 Snapshot 1-开启Windows-MCP（关机态磁盘快照）并冷启动后，guest内Win10VM MCP(28787)未自启，仅基础Windows服务，无任何可用入口；vmrun guest操作无凭据，控制台无法远程驱动",
+    "prior_actions": "曾将guest固定为静态.233失败（改动命令未能送达，MCP已停）；旧win10h2-MalBox VM被误revert至其Snapshot 183并以vmware -x恢复，现停于快照态，未受损害",
+    "needed_from_user": "在FakenetNG VM内启动Win10VM MCP(28787)并保证开机自启；将IPv4固定为192.168.204.233/24(网关.2、DNS .2)以匹配总纲地址；或告知该VM的可用入口",
+    "work_continues": "H7文档与记录工作继续，不受阻塞"
+  }
 }
