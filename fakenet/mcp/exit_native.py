@@ -52,6 +52,11 @@ class TargetHandle:
         return buf.raw
 
     def exited(self):
+        if not self.handle:
+            # The handle is released only after its object was verified
+            # ended; a released own handle is ended by that invariant, and
+            # a later ownership continuation must not fail on it.
+            return True
         self.kernel.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
         self.kernel.WaitForSingleObject.restype = w.DWORD
         result = self.kernel.WaitForSingleObject(self.handle, 0)

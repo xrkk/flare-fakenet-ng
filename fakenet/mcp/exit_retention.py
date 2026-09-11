@@ -125,6 +125,7 @@ class ExitRetention:
         self._call('exit-scan', dict(terminate=False), self.deadline)
         self.intent.invalidate()
         self._target.close()
+        self._target = None
         report.update(helper_ended=True, retained_target_handle_closed=True)
         self.result = report
         self._publish('owner-result.json', report)

@@ -163,3 +163,13 @@ def test_settle_waits_for_a_still_live_helper_before_finishing(monkeypatch, tmp_
     report = owner.settle(time.monotonic() + 0.2)
     assert report['retained_target_handle_closed'] is False
     assert closed == []
+
+
+def test_released_target_handle_reports_ended_not_invalid():
+    """A partially failed finalization may leave a released handle; later
+    ownership continuation (wait/settle/collect) must never fail on it."""
+    from fakenet.mcp.exit_native import TargetHandle
+    handle = TargetHandle.__new__(TargetHandle)
+    handle.handle = None
+    handle.pid = 4242
+    assert handle.exited() is True
