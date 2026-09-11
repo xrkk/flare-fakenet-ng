@@ -76,9 +76,14 @@ class ExitRetention:
         # load on the acceptance VMs; the retention window (60s) still bounds
         # every call from above. The budget starts when the lock is granted:
         # a caller that waited behind the owner-dump collection must not run
-        # with an already-expired deadline.
+        # with an already-expired deadline. Once finalization has begun the
+        # window is intentionally past; calls then run on the finalization
+        # budget instead of an instantly-expiring clamp.
         with self._call_lock:
-            end = min(self.deadline or float('inf'), deadline or time.monotonic() + 5)
+            window = self.deadline
+            if window is not None and window < time.monotonic():
+                window = time.monotonic() + FINALIZE_BUDGET
+            end = min(window or float('inf'), deadline or time.monotonic() + 5)
             return self._diagnostics.call(operation, payload, end)
 
     def _intent_io(self, operation, record, deadline):
