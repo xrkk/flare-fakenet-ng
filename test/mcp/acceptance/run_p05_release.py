@@ -109,12 +109,13 @@ class ReleaseGate:
                 # record only rows present in three time-separated samples.
                 raw = self.channel.powershell(
                     "$ErrorActionPreference='Stop'; "
-                    "$s1=(netstat -ano | Out-String); Start-Sleep -Milliseconds 1200; "
-                    "$s2=(netstat -ano | Out-String); Start-Sleep -Milliseconds 1200; "
-                    "$s3=(netstat -ano | Out-String); "
-                    "$r1=@($s1 -split [char]10 | Where-Object {$_.Trim()}); "
-                    "$r2=@($s2 -split [char]10 | Where-Object {$_.Trim()}); "
-                    "$r3=@($s3 -split [char]10 | Where-Object {$_.Trim()}); "
+                    "$own=[regex]::Escape(' ' + $PID) + '$'; "
+                    "$s1=@(netstat -ano | Where-Object { $_ -notmatch $own }); Start-Sleep -Milliseconds 1200; "
+                    "$s2=@(netstat -ano | Where-Object { $_ -notmatch $own }); Start-Sleep -Milliseconds 1200; "
+                    "$s3=@(netstat -ano | Where-Object { $_ -notmatch $own }); "
+                    "$r1=@($s1 | Where-Object {$_.Trim()}); "
+                    "$r2=@($s2 | Where-Object {$_.Trim()}); "
+                    "$r3=@($s3 | Where-Object {$_.Trim()}); "
                     "(@($r1 | Where-Object { $r2 -contains $_ -and $r3 -contains $_ }) -join [char]10)",
                     timeout=90)['output'].strip()
             else:
