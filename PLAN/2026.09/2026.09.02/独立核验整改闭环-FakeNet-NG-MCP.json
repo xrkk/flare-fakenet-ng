@@ -12,7 +12,7 @@
   "status": "REMEDIATING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
+  "current_head": "93839d9e530480694b56f5ccfa04e09f35c2a976",
   "round_limit": 5,
   "completed_rounds": 2,
   "next_round": 3,
@@ -634,11 +634,11 @@
     }
   ],
   "checkpoint": {
-    "id": "CHECKPOINT-181",
-    "at": "2026-09-12T02:20:26+08:00",
-    "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
-    "evidence": "Logs/fakenetng-mcp/mcp-cbf892ee0-de0f15fd2818/release/fault-policy_pause-001.json",
-    "verification": "ACC-012 normal 100/100 PASS；fault-50 第一轮暴露 grace-timeout→Job终止→SPE不触发→无dump的确定性产品缺口（修复方案已登记）；场景已收敛回stopped；CHK/轮次不变"
+    "id": "CHECKPOINT-182",
+    "at": "2026-09-12T02:41:12+08:00",
+    "head": "93839d9e530480694b56f5ccfa04e09f35c2a976",
+    "evidence": "Logs/fakenetng-mcp/main-remediation/build-ownerdump-console.txt",
+    "verification": "owner-dump修复已构建部署（Linux440/5、构建PASS）；单fault验证被停服/启动期能力检查竞态挡住（新调查项）；VM现场已收敛stopped；CHK/轮次不变"
   },
   "stop_reason": null,
   "pending_intent": null,
@@ -1153,6 +1153,18 @@
         "evidence": "Logs/fakenetng-mcp/main-remediation/spe-job-terminate-finding.json",
         "verification": "normal 100/100 保留；fault待产品修复后重跑"
       }
+    },
+    {
+      "id": "INTENT-181",
+      "at": "2026-09-12T02:41:12+08:00",
+      "action": "owner-dump宽限超时修复→候选#11部署→单fault验证暴露停服/能力检查竞态，登记待查；现场收敛",
+      "verified": {
+        "id": "CHECKPOINT-182",
+        "at": "2026-09-12T02:41:12+08:00",
+        "head": "93839d9e530480694b56f5ccfa04e09f35c2a976",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-28.txt",
+        "verification": "Linux 440/5；构建PASS；单fault验证待竞态调查"
+      }
     }
   ],
   "response_record": {
@@ -1481,13 +1493,13 @@
     }
   ],
   "candidate": {
-    "source_commit": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
-    "candidate_id": "mcp-cbf892ee0-de0f15fd2818",
-    "package": "dist/mcp-remediation-20260911-settle/fakenetng-mcp-candidate.zip",
-    "sha256": "de0f15fd2818e20aec003cb033ca6a1e2620c128cc421744f5df188deefefb28",
-    "status": "DEPLOYED_PRODUCT_ROUNDS_CONVERGE_RUNNER_CAPTURE_PENDING",
-    "gate": "Linux 439/5; Windows 1015/0/8 + HTTP 17",
-    "contains": "d194cfd + monitor 10s (3306553) + dead-socket settle before baseline (0da0de4) + netstat UDP row shape fix (bf892ee)"
+    "source_commit": "93839d9e530480694b56f5ccfa04e09f35c2a976",
+    "candidate_id": "mcp-c93839d9e-100a51a0cc6d",
+    "package": "dist/mcp-remediation-20260911-ownerdump/fakenetng-mcp-candidate.zip",
+    "sha256": "100a51a0cc6db9b445d330df71bf9ead07961d5e3892f6227a7b9bc96dc4e0a0",
+    "status": "DEPLOYED_OWNER_DUMP_FIX_VERIFICATION_PENDING",
+    "gate": "Linux 440/5; Windows main+http build-embedded PASS",
+    "contains": "bf892ee chain + owner-side grace-timeout dump (7776c0e/ebe22e1/93839d9)"
   },
   "pause_handoff": {
     "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260910/第三方整改交接-47c8173.md",
@@ -2038,5 +2050,10 @@
     ],
     "required_fix": "产品：宽限超时路径在 Job 终止前经保留的 pinned TargetHandle 直接采集根因 dump （dumpworker.collect_dump），使挂起类故障（policy_pause/child_hang）的退出证据不依赖SPE；这是P04两dump契约在grace-timeout分支的落点",
     "scope": "新源码提交→新候选→重部署→fault 50重跑；normal 100/100不受影响（ACC-012 pass 已留证）"
+  },
+  "h6_3_state": {
+    "normal_100": "ACC-012 PASS on bf892ee (Logs/fakenetng-mcp/mcp-cbf892ee0-de0f15fd2818/release, 50+50 zero failures) — MUST RERUN on final candidate per same-candidate rule after fault fix lands",
+    "fault_50": "policy_pause-001 on bf892ee failed deterministically (Job-termination SPE gap, CHECKPOINT-181); owner-dump fix built in 93839d9; single-round verification on 93839d9 hit a NEW interaction: fault-mode entry controlled stop returned not cleanly stopped with a capability/config-load run (53d2702c) in flight — needs pre-stop/converge-vs-startup-capability race investigation",
+    "next_session": "1) reproduce single policy_pause on 93839d9 with service.log full window capture; 2) if pass: fault-50 + normal-100 rerun on 93839d9; 3) final/summary; control matrix + H6-2 rerun on final candidate; 4) ACC-002 after quota reset 2026-09-14; H7/H8"
   }
 }
