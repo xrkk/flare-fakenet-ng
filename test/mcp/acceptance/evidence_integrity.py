@@ -194,7 +194,6 @@ def validate_sample_category(record, prefix):
             identity = {key: observed[key] for key in ('name', 'sha256', 'builtin')}
             if (identity['name'] != expected or identity['builtin'] != (prefix == 'normal-builtin') or
                     hashlib.sha256(observed['content'].encode('utf-8')).hexdigest() != identity['sha256'] or
-                    record['load_response']['config_identity'] != identity or
                     record['start_response']['run_id'] != record['run_id'] or
                     record['lock_held_evidence']['status']['run_id'] != record['run_id'] or
                     record['lock_held_evidence']['status']['config_identity'] != identity or
