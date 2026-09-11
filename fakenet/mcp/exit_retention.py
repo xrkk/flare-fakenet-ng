@@ -9,7 +9,7 @@ from fakenet.mcp.exit_files import read, publish, root, run_directory, digest
 # Bounded budget for the owner's own finalization after the observation
 # window expires: the scan and publication still need real seconds on
 # teardown-lagging hosts, and the window itself has just been consumed.
-FINALIZE_BUDGET = 15
+FINALIZE_BUDGET = 45
 from fakenet.mcp.exit_intent import StopIntent
 from fakenet.mcp.exit_native import TargetHandle, verify_dump
 

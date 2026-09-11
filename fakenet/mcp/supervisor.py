@@ -438,7 +438,7 @@ class RealSupervisor:
                     self._fakenet = None
                 except BaseException as exc:
                     return self._result('failed', 'Job termination failed: ' + repr(exc))
-            exit_report = self._await_exit_evidence(min(deadline, time.monotonic() + 85))
+            exit_report = self._await_exit_evidence(min(deadline, time.monotonic() + 120))
             if exit_report is not None and not exit_report.get('complete'):
                 reason = reason or 'managed exit evidence incomplete'
                 self._last_run_outcome = 'failed'
@@ -552,7 +552,7 @@ class RealSupervisor:
         exit_report = None
         if retained is not None and (child is None or not child.alive() or retained.deadline is not None):
             # window (60s) plus the owner's bounded finalization budget
-            exit_report = self._await_exit_evidence(min(deadline, time.monotonic()+85))
+            exit_report = self._await_exit_evidence(min(deadline, time.monotonic()+120))
         stacks = None
         if child:
             try:
