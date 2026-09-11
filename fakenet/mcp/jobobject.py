@@ -10,6 +10,29 @@ import subprocess
 import time
 
 
+def process_alive(pid):
+    """True while the PID is a live process (native, no Job needed)."""
+    import ctypes as c
+    from ctypes import wintypes as w
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    open_process = kernel.OpenProcess
+    open_process.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+    open_process.restype = w.HANDLE
+    wait_one = kernel.WaitForSingleObject
+    wait_one.argtypes = [w.HANDLE, w.DWORD]
+    wait_one.restype = w.DWORD
+    close = kernel.CloseHandle
+    close.argtypes = [w.HANDLE]
+    close.restype = w.BOOL
+    handle = open_process(0x00100000 | 0x1000, False, int(pid))
+    if not handle:
+        return False
+    try:
+        return wait_one(handle, 0) == 258  # WAIT_TIMEOUT
+    finally:
+        close(handle)
+
+
 class ManagedJob:
     def __init__(self):
         if os.name != 'nt':

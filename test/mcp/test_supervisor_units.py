@@ -232,3 +232,26 @@ def test_recovery_failed_when_snapshot_corrupt_with_residue(tmp_path):
 class _View:
     def __init__(self):
         self._failure_reason = None
+
+
+def test_baseline_waits_for_dead_owned_socket_rows(monkeypatch):
+    """The listen-port baseline must not record rows of ended helpers."""
+    from fakenet.mcp import baseline
+    calls = {'netstat': 0}
+
+    class FakeRun:
+        def __init__(self, text):
+            self.text = text
+
+        def run(self, command, **kwargs):
+            calls['netstat'] += 1
+            # first poll: one UDP row owned by a dead pid; later: clean
+            if calls['netstat'] == 1:
+                return type('R', (), {'stdout': 'UDP 0.0.0.0:55330 *:* 4242\n'})()
+            return type('R', (), {'stdout': 'UDP 0.0.0.0:5353 *:* 7636\n'})()
+
+    monkeypatch.setattr(baseline.subprocess, 'run', FakeRun(None).run)
+    from fakenet.mcp import jobobject
+    monkeypatch.setattr(jobobject, 'process_alive', lambda pid: pid == 7636)
+    baseline.settle_dead_socket_rows(deadline=__import__('time').monotonic() + 5)
+    assert calls['netstat'] >= 2

@@ -154,6 +154,8 @@ class RealSupervisor:
                     value = str(parsed.diverter_config.get(key, '') or '').strip()
                     if value and not os.path.isabs(value):
                         parsed.diverter_config[key] = str(self._run_dir / value)
+                from fakenet.mcp.baseline import settle_dead_socket_rows
+                settle_dead_socket_rows()
                 saved = self._baseline_store.save(run_id)
                 self._marker = dict(run_id=run_id, controller_id=controller,
                                     state_version=coordinator.snapshot()['state_version'],

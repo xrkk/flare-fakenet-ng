@@ -191,6 +191,39 @@ class CapturedSections(dict):
     """Five raw sections plus directly observed command time intervals."""
 
 
+def settle_dead_socket_rows(deadline=None):
+    """Wait until netstat lists no UDP row whose owning process is gone.
+
+    Product-spawned PowerShell helpers (endpoint observation control) end
+    before the baseline is captured, but their resolver sockets stay
+    listed for seconds during teardown. Recording such a row poisons the
+    strict listen-port comparison with a shadow the closed-UDP attribution
+    must refuse (its owner is no longer alive). Bounded; fails open."""
+    import subprocess
+    budget_end = time.monotonic() + (15 if deadline is None else min(15, deadline - time.monotonic()))
+    while time.monotonic() < budget_end:
+        try:
+            table = subprocess.run(['netstat', '-ano'], capture_output=True,
+                                   text=True, timeout=30).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        lingering = False
+        for line in table.splitlines():
+            parts = line.split()
+            if (len(parts) >= 5 and parts[0].upper() == 'UDP' and
+                    parts[-1].isdigit()):
+                try:
+                    from fakenet.mcp.jobobject import process_alive
+                    if parts[-1] != '0' and not process_alive(int(parts[-1])):
+                        lingering = True
+                        break
+                except Exception:
+                    return
+        if not lingering:
+            return
+        time.sleep(0.5)
+
+
 def capture(deadline=None):
     """Collect the current environment baseline sections.
 
