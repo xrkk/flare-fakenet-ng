@@ -176,9 +176,11 @@ def test_released_target_handle_reports_ended_not_invalid():
 
 
 def test_owner_dump_public_collector_targets_live_process_only():
+    import threading
     owner = ExitRetention.__new__(ExitRetention)
     owner._helper = None
     owner.owner_dump = None
+    owner._call_lock = threading.RLock()
     class Target:
         def exited(self):
             return False
