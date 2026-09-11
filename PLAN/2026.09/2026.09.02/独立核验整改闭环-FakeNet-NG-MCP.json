@@ -634,11 +634,11 @@
     }
   ],
   "checkpoint": {
-    "id": "CHECKPOINT-179",
-    "at": "2026-09-11T22:57:44+08:00",
+    "id": "CHECKPOINT-180",
+    "at": "2026-09-12T02:08:57+08:00",
     "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
-    "evidence": "Logs/fakenetng-mcp/mcp-cbf892ee0-de0f15fd2818/release/",
-    "verification": "runner捕获：排除全部pwsh/powershell宿主行(fb4ec45)+管道变量绑定修复后，P05 normal 7+/100 零失败稳定累积；产品源bf892ee未变；CHK/轮次不变"
+    "evidence": "Logs/fakenetng-mcp/mcp-cbf892ee0-de0f15fd2818/ACC-012/result.json",
+    "verification": "P05 normal 100/100 PASS（50 builtin+50 custom，零失败，ACC-012 pass）；产品源bf892ee；环境稳定化三类齐备（DHCPv6/W32Time/Edge）；runner捕获修复链完整；fault 50已启动；CHK/轮次不变"
   },
   "stop_reason": null,
   "pending_intent": null,
@@ -1128,6 +1128,18 @@
         "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
         "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-24.txt",
         "verification": "Linux 439/5；normal累积中"
+      }
+    },
+    {
+      "id": "INTENT-179",
+      "at": "2026-09-12T02:08:57+08:00",
+      "action": "P05 normal 100/100通过（第5次尝试：清Edge+死行过滤后零失败）；fault启动",
+      "verified": {
+        "id": "CHECKPOINT-180",
+        "at": "2026-09-12T02:08:57+08:00",
+        "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
+        "evidence": "Logs/fakenetng-mcp/mcp-cbf892ee0-de0f15fd2818/release/normal-summary.json",
+        "verification": "builtin 50/50 + custom 50/50"
       }
     }
   ],
