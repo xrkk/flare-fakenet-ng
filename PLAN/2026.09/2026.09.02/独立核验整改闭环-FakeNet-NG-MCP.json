@@ -12,7 +12,7 @@
   "status": "REMEDIATING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "3efda042a6a992f375759f6328965b0d78e6153a",
+  "current_head": "d194cfdb774144fc0af2b1b33fb6272e3e6578ee",
   "round_limit": 5,
   "completed_rounds": 2,
   "next_round": 3,
@@ -634,11 +634,11 @@
     }
   ],
   "checkpoint": {
-    "id": "CHECKPOINT-170",
-    "at": "2026-09-11T10:28:51+08:00",
-    "head": "3efda042a6a992f375759f6328965b0d78e6153a",
-    "evidence": "Logs/fakenetng-mcp/main-remediation/audit-shadow-finding-20260911.json",
-    "verification": "3efda04候选构建校验通过（listen-port稳定采样+控制监听器容错）；ae8228b控制矩阵5/8通过、29095暴露监听器脚本与启动期诊断影子两类问题已修复；专用VM快照冷启动后MCP未自启，矩阵待环境恢复；CHK/轮次不变"
+    "id": "CHECKPOINT-172",
+    "at": "2026-09-11T12:38:59+08:00",
+    "head": "d194cfdb774144fc0af2b1b33fb6272e3e6578ee",
+    "evidence": "Logs/fakenetng-mcp/main-remediation/build-stable-console.txt",
+    "verification": "最终候选mcp-cd194cfdb构建校验通过（含全部六项真机修复）；VM场景因快照不含用户运行时修复而待用户恢复；CHK/轮次不变；3efda04上控制矩阵8/8与H6-2部分通过证据保留"
   },
   "stop_reason": null,
   "pending_intent": null,
@@ -1021,6 +1021,30 @@
         "evidence": "Logs/fakenetng-mcp/main-remediation/build-3efda04-console.txt",
         "verification": "Linux 437/5（pc007-linux-12）；构建PASS；VM环境阻塞与所需用户动作已记录"
       }
+    },
+    {
+      "id": "INTENT-170",
+      "at": "2026-09-11T12:14:46+08:00",
+      "action": "环境恢复→3efda04矩阵推进；句柄修复3ab4312与稳定行过滤两处产品修复；控制矩阵8/8；H6-2重跑归因出系统性缺陷并逐一修复",
+      "verified": {
+        "id": "CHECKPOINT-171",
+        "at": "2026-09-11T12:14:46+08:00",
+        "head": "PENDING_BUILD",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-15.txt",
+        "verification": "Linux 438/5；控制矩阵8/8（mcp-c3efda042证据目录）；失败归因与修复链完整"
+      }
+    },
+    {
+      "id": "INTENT-171",
+      "at": "2026-09-11T12:38:59+08:00",
+      "action": "稳定行过滤修复+候选#7构建；VM场景重置暴露快照未含用户运行时修复，环境再次待恢复",
+      "verified": {
+        "id": "CHECKPOINT-172",
+        "at": "2026-09-11T12:38:59+08:00",
+        "head": "d194cfdb774144fc0af2b1b33fb6272e3e6578ee",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/build-stable-console.txt",
+        "verification": "Linux 438/5；Windows 1015/8+HTTP17；待VM环境"
+      }
     }
   ],
   "response_record": {
@@ -1135,6 +1159,10 @@
         "note": "same computer name as the old .149 VM but distinct MAC/UUID: a different VM instance; old .149 identity (MAC 00:0c:29:4c:fd:c0) remains historical evidence only"
       },
       "authorized_action": "executor installs latest candidate mcp-cf85ee7f (zip 8d0dbc09e82b60954b99b95aa970dd505c4523573dfca593411c2ef878382cd7)"
+    },
+    "quota_restored_20260911": {
+      "at": "2026-09-11T12:14:46+08:00",
+      "decision": "用户确认额度恢复并指示继续；同轮用户自行恢复FakenetNG VM（MCP自启+静态.233）"
     }
   },
   "objects_current": [
@@ -1345,13 +1373,14 @@
     }
   ],
   "candidate": {
-    "source_commit": "3efda042a6a992f375759f6328965b0d78e6153a",
-    "candidate_id": "mcp-c3efda042-9ea2d3078dee",
-    "package": "dist/mcp-remediation-20260911-3efda04/fakenetng-mcp-candidate.zip",
-    "sha256": "9ea2d3078dee5fa1e998dfb6344e4eb83d73098ea9ced454ef49a98a40f48990",
-    "exe_sha256": "9219b4fa36c7b3d2b41f76f0c5fdba3e6a4f9488d69c0fdf1d77cc9a7e39ca14",
-    "status": "BUILT_VERIFIED_NOT_DEPLOYED_VM_CHANNEL_DOWN",
-    "gate": "Linux 437/5; Windows main 1014/0/8 + HTTP 17 (build-embedded)"
+    "source_commit": "d194cfdb774144fc0af2b1b33fb6272e3e6578ee",
+    "candidate_id": "mcp-cd194cfdb-feda0a3ceaef",
+    "package": "dist/mcp-remediation-20260911-stable/fakenetng-mcp-candidate.zip",
+    "sha256": "feda0a3ceaef0a57bdfdf667768237d338f40a190e9eeb9266f025f6a342b668",
+    "exe_sha256": "(see manifest; head-fix tree)",
+    "status": "BUILT_VERIFIED_AWAITING_VM_SCENE_RESET",
+    "gate": "Linux 438/5 (pc007-linux-15); Windows main 1015/0/8 + HTTP 17 (build-embedded)",
+    "contains": "11b71e1..3efda04 chain + released-handle-ended fix (3ab4312) + stable listen-port rows (d194cfd)"
   },
   "pause_handoff": {
     "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260910/第三方整改交接-47c8173.md",
@@ -1858,10 +1887,10 @@
     }
   ],
   "environment_block": {
-    "at": "2026-09-11T10:28:51+08:00",
-    "situation": "专属验收VM /home/adminn/vmware/Win10(MalBox)-FakenetNG/Win10(MalBox)-FakenetNG.vmx (MAC 00:0c:29:c1:ca:49, BIOS UUID 564dfdd9c43d4bc6-19f141 1eebc1ca49, 同名 DESKTOP-3FI41GR) 在DHCP下地址漂移(.233→.243)；恢复其唯一快照 Snapshot 1-开启Windows-MCP（关机态磁盘快照）并冷启动后，guest内Win10VM MCP(28787)未自启，仅基础Windows服务，无任何可用入口；vmrun guest操作无凭据，控制台无法远程驱动",
-    "prior_actions": "曾将guest固定为静态.233失败（改动命令未能送达，MCP已停）；旧win10h2-MalBox VM被误revert至其Snapshot 183并以vmware -x恢复，现停于快照态，未受损害",
-    "needed_from_user": "在FakenetNG VM内启动Win10VM MCP(28787)并保证开机自启；将IPv4固定为192.168.204.233/24(网关.2、DNS .2)以匹配总纲地址；或告知该VM的可用入口",
-    "work_continues": "H7文档与记录工作继续，不受阻塞"
+    "at": "2026-09-11T12:38:59+08:00",
+    "situation": "为清除被句柄缺陷终态毒化的run场景（03198062：观察中断后归因结构性不可用、解析器UDP四元组端口不复现），revert FakenetNG VM至其快照；但用户在运行实例上做的MCP自启+静态.233修复未包含在快照中，冷启动后guest无网络出现且MCP未自启，无入口",
+    "needed_from_user": "再次在FakenetNG VM内启动Win10VM MCP并固定IPv4 192.168.204.233/24（网关.2/DNS .2）；强烈建议修复后重做/更新该VM快照，使revert保留修复；或提供guest凭据/自启方案由执行方处理",
+    "resume_plan": "环境恢复→全新安装mcp-cd194cfdb→v6 DHCP稳定化→冒烟→同候选重跑控制矩阵8例+H6-2全部+P05 100/50/final/summary",
+    "known_blocked": "ACC-002目标客户端步骤：宿主ZCode CLI周/月限额至2026-09-14 07:39重置；原始协议探测部分已通过"
   }
 }
