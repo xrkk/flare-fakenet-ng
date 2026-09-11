@@ -145,11 +145,20 @@ class ExitRetention:
 
     def _watch(self):
         try:
+            from fakenet.mcp.diagnostic_process import DiagnosticError
             while True:
                 now = time.monotonic()
                 if self.deadline is None and (self._target.exited() or self._cancel.is_set()):
                     self.deadline = now + 60
-                entry = self._read_optional('entry.json')
+                try:
+                    entry = self._read_optional('entry.json')
+                except DiagnosticError:
+                    # A lagging previous child keeps ownership briefly
+                    # unresolved; polling is retryable and the deadline
+                    # machinery bounds the wait. Dying here would leave the
+                    # retention permanently unfinished.
+                    time.sleep(0.5)
+                    continue
                 if entry and self._helper is None:
                     if entry.get('target') != self.record or entry.get('acquired') is not True:
                         raise RuntimeError('exit helper acquisition identity mismatch')
