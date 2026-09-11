@@ -634,11 +634,11 @@
     }
   ],
   "checkpoint": {
-    "id": "CHECKPOINT-178",
-    "at": "2026-09-11T21:43:46+08:00",
+    "id": "CHECKPOINT-179",
+    "at": "2026-09-11T22:57:44+08:00",
     "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
     "evidence": "Logs/fakenetng-mcp/mcp-cbf892ee0-de0f15fd2818/release/",
-    "verification": "runner自捕获排除(846d3df)后P05 normal前9轮零失败持续累积；产品源bf892ee（Linux439/5、Win1015/8+HTTP17、构建PASS）已部署.233；CHK/轮次不变（2/5，20 OPEN）"
+    "verification": "runner捕获：排除全部pwsh/powershell宿主行(fb4ec45)+管道变量绑定修复后，P05 normal 7+/100 零失败稳定累积；产品源bf892ee未变；CHK/轮次不变"
   },
   "stop_reason": null,
   "pending_intent": null,
@@ -1116,6 +1116,18 @@
         "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
         "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-22.txt",
         "verification": "Linux 439/5；normal 9+/100 无失败"
+      }
+    },
+    {
+      "id": "INTENT-178",
+      "at": "2026-09-11T22:57:44+08:00",
+      "action": "宿主行排除的scriptblock管道绑定修复→normal零失败累积",
+      "verified": {
+        "id": "CHECKPOINT-179",
+        "at": "2026-09-11T22:57:44+08:00",
+        "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-24.txt",
+        "verification": "Linux 439/5；normal累积中"
       }
     }
   ],
