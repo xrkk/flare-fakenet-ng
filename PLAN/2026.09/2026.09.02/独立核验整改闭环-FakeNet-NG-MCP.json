@@ -634,11 +634,11 @@
     }
   ],
   "checkpoint": {
-    "id": "CHECKPOINT-180",
-    "at": "2026-09-12T02:08:57+08:00",
+    "id": "CHECKPOINT-181",
+    "at": "2026-09-12T02:20:26+08:00",
     "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
-    "evidence": "Logs/fakenetng-mcp/mcp-cbf892ee0-de0f15fd2818/ACC-012/result.json",
-    "verification": "P05 normal 100/100 PASS（50 builtin+50 custom，零失败，ACC-012 pass）；产品源bf892ee；环境稳定化三类齐备（DHCPv6/W32Time/Edge）；runner捕获修复链完整；fault 50已启动；CHK/轮次不变"
+    "evidence": "Logs/fakenetng-mcp/mcp-cbf892ee0-de0f15fd2818/release/fault-policy_pause-001.json",
+    "verification": "ACC-012 normal 100/100 PASS；fault-50 第一轮暴露 grace-timeout→Job终止→SPE不触发→无dump的确定性产品缺口（修复方案已登记）；场景已收敛回stopped；CHK/轮次不变"
   },
   "stop_reason": null,
   "pending_intent": null,
@@ -1140,6 +1140,18 @@
         "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
         "evidence": "Logs/fakenetng-mcp/mcp-cbf892ee0-de0f15fd2818/release/normal-summary.json",
         "verification": "builtin 50/50 + custom 50/50"
+      }
+    },
+    {
+      "id": "INTENT-180",
+      "at": "2026-09-12T02:20:26+08:00",
+      "action": "fault-50首轮归因：Job终止不触发SPE的缺口在挂起类故障上确定性复现；修复方案登记",
+      "verified": {
+        "id": "CHECKPOINT-181",
+        "at": "2026-09-12T02:20:26+08:00",
+        "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/spe-job-terminate-finding.json",
+        "verification": "normal 100/100 保留；fault待产品修复后重跑"
       }
     }
   ],
@@ -2016,5 +2028,15 @@
     "fix": "run_p05_release capture script: append | Where-Object { $_ -notmatch (\"\\s+\" + $PID + \"\\s*$\") } to the three netstat samples so the capturing session excludes its own resolver quad and sockets",
     "then": "restart P05 normal 100 (archive prior release dirs), fault 50, final, summary; rerun control matrix + H6-2 on this same candidate bf892ee; ACC-002 after quota reset 2026-09-14",
     "product_state": "normal rounds converge product-side end to end (exit handshake files complete)"
+  },
+  "h6_3_fault_blocker": {
+    "at": "2026-09-12T02:20:26+08:00",
+    "finding": "fault轮（policy_pause-001）确定性失败于exit helper cleanup unverified：宽限超时路径 supervisor terminate→TerminateJobObject 杀死挂起的受管进程，Windows SPE 不为 Job 终止触发 exit-monitor（外部单进程 TerminateProcess 探针已证明SPE与监控正常），证据目录为空，保留 60s 窗口耗尽后报 helper 未验证",
+    "evidence": [
+      "Logs/fakenetng-mcp/main-remediation/spe-job-terminate-finding.json",
+      "Logs/fakenetng-mcp/mcp-cbf892ee0-de0f15fd2818/release/fault-policy_pause-001.json"
+    ],
+    "required_fix": "产品：宽限超时路径在 Job 终止前经保留的 pinned TargetHandle 直接采集根因 dump （dumpworker.collect_dump），使挂起类故障（policy_pause/child_hang）的退出证据不依赖SPE；这是P04两dump契约在grace-timeout分支的落点",
+    "scope": "新源码提交→新候选→重部署→fault 50重跑；normal 100/100不受影响（ACC-012 pass 已留证）"
   }
 }
