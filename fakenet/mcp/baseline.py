@@ -206,8 +206,25 @@ def capture(deadline=None):
     def collect(command):
         remaining = 60 if deadline is None else min(60, deadline - time.monotonic())
         return _run(command, timeout=remaining) if remaining > 0 else COLLECTION_FAILED
+
+    def collect_ports():
+        # Teardown on the acceptance VM family lags seconds: sockets of
+        # just-finished commands and start-phase diagnostics stay listed
+        # after their process is gone. Record the listen-port section only
+        # once two consecutive observations agree, so the baseline and the
+        # audit both observe a settled listing instead of a transient
+        # shadow. Persisting differences remain visible; nothing is edited.
+        previous = collect(['netstat', '-ano'])
+        budget_end = time.monotonic() + 8
+        while time.monotonic() < budget_end:
+            time.sleep(0.7)
+            current = collect(['netstat', '-ano'])
+            if current == previous and current != COLLECTION_FAILED:
+                return current
+            previous = current
+        return previous
     ports_start = time.time_ns()
-    ports = collect(['netstat', '-ano'])
+    ports = collect_ports()
     ports_end = time.time_ns()
     routes = collect(['route', 'print', '-4'])
     dns = collect(['powershell', '-NoProfile', '-Command',

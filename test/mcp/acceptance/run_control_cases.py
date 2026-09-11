@@ -86,14 +86,17 @@ def start_guest_tcp_listener(channel, port, nonce):
         "$listener.Start();"
         "$log='C:\\Windows\\Temp\\ctrl-listener-" + nonce + ".log';"
         "Set-Content -Path $log -Value ('started pid=' + $PID);"
-        "try{while($true){$c=$listener.AcceptTcpClient();"
+        "try{while($true){try{"
+        "$c=$listener.AcceptTcpClient();"
         "$stream=$c.GetStream();$buffer=New-Object byte[] 256;"
         "$read=$stream.Read($buffer,0,256);"
         "$text=[Text.Encoding]::ASCII.GetString($buffer,0,$read);"
         "Add-Content -Path $log -Value ('recv ' + $text);"
+        "if($text.Contains(':')){"
         "$reply='echo:' + $text.Substring($text.IndexOf(':')+1);"
         "$bytes=[Text.Encoding]::ASCII.GetBytes($reply);"
-        "$stream.Write($bytes,0,$bytes.Length);$c.Close()}}finally{$listener.Stop()}")
+        "$stream.Write($bytes,0,$bytes.Length)};"
+        "$c.Close()}catch{}}}finally{$listener.Stop()}")
     result = channel.powershell(
         "Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','" +
         script.replace("'", "''") + "' -PassThru | ForEach-Object { $_.Id }", timeout=30)
