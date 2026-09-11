@@ -74,9 +74,11 @@ class ExitRetention:
     def _call(self, operation, payload, deadline=None):
         # The poll round-trip must absorb slow child teardown under AV/EDR
         # load on the acceptance VMs; the retention window (60s) still bounds
-        # every call from above.
-        end = min(self.deadline or float('inf'), deadline or time.monotonic() + 5)
+        # every call from above. The budget starts when the lock is granted:
+        # a caller that waited behind the owner-dump collection must not run
+        # with an already-expired deadline.
         with self._call_lock:
+            end = min(self.deadline or float('inf'), deadline or time.monotonic() + 5)
             return self._diagnostics.call(operation, payload, end)
 
     def _intent_io(self, operation, record, deadline):
