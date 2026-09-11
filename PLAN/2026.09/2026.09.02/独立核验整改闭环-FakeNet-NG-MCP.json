@@ -12,7 +12,7 @@
   "status": "REMEDIATING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "93839d9e530480694b56f5ccfa04e09f35c2a976",
+  "current_head": "PENDING_BUILD",
   "round_limit": 5,
   "completed_rounds": 2,
   "next_round": 3,
@@ -634,11 +634,11 @@
     }
   ],
   "checkpoint": {
-    "id": "CHECKPOINT-182",
-    "at": "2026-09-12T02:41:12+08:00",
-    "head": "93839d9e530480694b56f5ccfa04e09f35c2a976",
-    "evidence": "Logs/fakenetng-mcp/main-remediation/build-ownerdump-console.txt",
-    "verification": "owner-dump修复已构建部署（Linux440/5、构建PASS）；单fault验证被停服/启动期能力检查竞态挡住（新调查项）；VM现场已收敛stopped；CHK/轮次不变"
+    "id": "CHECKPOINT-183",
+    "at": "2026-09-12T03:04:58+08:00",
+    "head": "PENDING_BUILD",
+    "evidence": "Logs/fakenetng-mcp/main-remediation/build-hangdump2-console.txt",
+    "verification": "policy_pause单轮在a5daad6上验证：owner-dump真实采集818KB挂起引擎转储（target.dmp落盘）；停服/能力检查竞态证伪——53d2702c/b5c65573实为已消费fault的故障轮，其失败是owner-dump缺失的旧缺陷；仅剩exit-publish成员词表缺owner-dump.json（已修复，重建中）；CHK/轮次不变"
   },
   "stop_reason": null,
   "pending_intent": null,
@@ -1164,6 +1164,18 @@
         "head": "93839d9e530480694b56f5ccfa04e09f35c2a976",
         "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-28.txt",
         "verification": "Linux 440/5；构建PASS；单fault验证待竞态调查"
+      }
+    },
+    {
+      "id": "INTENT-182",
+      "at": "2026-09-12T03:04:58+08:00",
+      "action": "竞态调查闭环：policy_pause为停止路径钩子；前两轮失败=旧owner-dump缺陷；a5daad6验证dump真实采集；词表修复重建",
+      "verified": {
+        "id": "CHECKPOINT-183",
+        "at": "2026-09-12T03:04:58+08:00",
+        "head": "PENDING_BUILD",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-31.txt",
+        "verification": "target.dmp[818301]已采；Linux 440/5"
       }
     }
   ],
