@@ -103,7 +103,7 @@ class StopIntent:
         # file can never restore it; keep the error for the owner to report.
         try:
             if self.io:
-                self.io('remove', None, self.clock() + 1)
+                self.io('remove', None, self.clock() + 5)
             else:
                 (self.directory / 'stop-intent.json').unlink(missing_ok=True)
         except BaseException as exc:

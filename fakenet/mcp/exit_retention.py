@@ -63,7 +63,10 @@ class ExitRetention:
             raise
 
     def _call(self, operation, payload, deadline=None):
-        end = min(self.deadline or float('inf'), deadline or time.monotonic() + 1)
+        # The poll round-trip must absorb slow child teardown under AV/EDR
+        # load on the acceptance VMs; the retention window (60s) still bounds
+        # every call from above.
+        end = min(self.deadline or float('inf'), deadline or time.monotonic() + 5)
         return self._diagnostics.call(operation, payload, end)
 
     def _intent_io(self, operation, record, deadline):
@@ -169,10 +172,10 @@ class ExitRetention:
             self.intent.invalidate()
             # A failed helper must still be stopped by its pinned native handle.
             try:
-                self._end_helpers(min(self.deadline or time.monotonic() + 1, time.monotonic() + 1))
+                self._end_helpers(min(self.deadline or time.monotonic() + 5, time.monotonic() + 5))
                 if self._helper is not None:
                     self._helper.terminate_helper()
-                    end = min(self.deadline or time.monotonic() + 1, time.monotonic() + 1)
+                    end = min(self.deadline or time.monotonic() + 5, time.monotonic() + 5)
                     while not self._helper.exited() and time.monotonic() < end:
                         time.sleep(0.01)
                 self._finish(dict(complete=False, target=self.record, error=self._failure))
