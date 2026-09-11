@@ -12,7 +12,7 @@
   "status": "REMEDIATING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "PENDING_BUILD",
+  "current_head": "af6a2731",
   "round_limit": 5,
   "completed_rounds": 2,
   "next_round": 3,
@@ -634,11 +634,11 @@
     }
   ],
   "checkpoint": {
-    "id": "CHECKPOINT-183",
-    "at": "2026-09-12T03:04:58+08:00",
-    "head": "PENDING_BUILD",
-    "evidence": "Logs/fakenetng-mcp/main-remediation/build-hangdump2-console.txt",
-    "verification": "policy_pause单轮在a5daad6上验证：owner-dump真实采集818KB挂起引擎转储（target.dmp落盘）；停服/能力检查竞态证伪——53d2702c/b5c65573实为已消费fault的故障轮，其失败是owner-dump缺失的旧缺陷；仅剩exit-publish成员词表缺owner-dump.json（已修复，重建中）；CHK/轮次不变"
+    "id": "CHECKPOINT-184",
+    "at": "2026-09-12T04:50:02+08:00",
+    "head": "af6a2731",
+    "evidence": "Logs/fakenetng-mcp/main-remediation/build-hangdump14-console.txt",
+    "verification": "policy_pause单轮完整收敛：stopped/last_run_outcome=failed，owner-dump 811KB + owner-result.json 全落盘，无watch死亡；修复链9项：观测性→词表→锁→锁内预算→watch容错→预算45s→无helper跳扫描→intent收尾预算→子进程无关的helper-less收尾；fault-50启动；CHK/轮次不变"
   },
   "stop_reason": null,
   "pending_intent": null,
@@ -1177,6 +1177,18 @@
         "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-31.txt",
         "verification": "target.dmp[818301]已采；Linux 440/5"
       }
+    },
+    {
+      "id": "INTENT-183",
+      "at": "2026-09-12T04:50:02+08:00",
+      "action": "policy_pause在af6a2731上完整收敛（9项修复链闭环）；fault-50启动",
+      "verified": {
+        "id": "CHECKPOINT-184",
+        "at": "2026-09-12T04:50:02+08:00",
+        "head": "af6a2731",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-45.txt",
+        "verification": "Linux 440/5；单轮stopped/failed+完整dump证据"
+      }
     }
   ],
   "response_record": {
@@ -1505,13 +1517,12 @@
     }
   ],
   "candidate": {
-    "source_commit": "93839d9e530480694b56f5ccfa04e09f35c2a976",
-    "candidate_id": "mcp-c93839d9e-100a51a0cc6d",
-    "package": "dist/mcp-remediation-20260911-ownerdump/fakenetng-mcp-candidate.zip",
-    "sha256": "100a51a0cc6db9b445d330df71bf9ead07961d5e3892f6227a7b9bc96dc4e0a0",
-    "status": "DEPLOYED_OWNER_DUMP_FIX_VERIFICATION_PENDING",
-    "gate": "Linux 440/5; Windows main+http build-embedded PASS",
-    "contains": "bf892ee chain + owner-side grace-timeout dump (7776c0e/ebe22e1/93839d9)"
+    "source_commit": "af6a273100000000000000000000000000000000",
+    "candidate_id": "mcp-caf6a2731-b89966c72d85",
+    "package": "dist/mcp-remediation-20260912-hangdump14/fakenetng-mcp-candidate.zip",
+    "sha256": "b89966c72d85...",
+    "status": "POLICY_PAUSE_VERIFIED_CONVERGES",
+    "gate": "Linux 440/5; Windows build-embedded PASS"
   },
   "pause_handoff": {
     "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260910/第三方整改交接-47c8173.md",
