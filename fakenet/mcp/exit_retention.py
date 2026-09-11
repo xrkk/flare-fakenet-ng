@@ -201,6 +201,9 @@ class ExitRetention:
                 time.sleep(0.02)
         except BaseException as exc:
             self._failure = repr(exc)
+            import logging
+            logging.getLogger('fakenetng-mcp.exitretention').exception(
+                'exit retention watch ended: %r', exc)
             self.intent.invalidate()
             # A failed helper must still be stopped by its pinned native handle.
             try:
