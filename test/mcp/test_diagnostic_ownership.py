@@ -184,7 +184,29 @@ def test_listed_dead_member_after_leader_exit_is_not_a_descendant_error():
     assert job.terminations == 0
 
 
-def test_live_member_after_leader_exit_fails_after_bounded_terminate():
+def test_teardown_live_member_within_grace_does_not_fail(monkeypatch):
+    """A leader still tearing down is listed and unsignaled for a while;
+    the call must not fail while it settles inside the grace window."""
+    from fakenet.mcp import diagnostic_process
+    monkeypatch.setattr(diagnostic_process, 'DESCENDANT_GRACE_SECONDS', 0.2)
+    job = _FakeJob(listed=[4242], alive={4242})
+    call = _call_with_job(job)
+    seen = {'count': 0}
+    def settle_after_teardown(pid):
+        seen['count'] += 1
+        if seen['count'] >= 3:  # terminates well inside the grace window
+            job.alive.clear()
+            job.listed = []  # the kernel delists a terminated process
+            job.member_alive = lambda p: False
+        return True
+    job.member_alive = settle_after_teardown
+    call._await_job_end()
+    assert job.terminations == 0
+
+
+def test_live_member_after_leader_exit_fails_after_bounded_terminate(monkeypatch):
+    from fakenet.mcp import diagnostic_process
+    monkeypatch.setattr(diagnostic_process, 'DESCENDANT_GRACE_SECONDS', 0.05)
     job = _FakeJob(listed=[4242, 999], alive={999})
     call = _call_with_job(job)
     with pytest.raises(DiagnosticError, match='remaining descendants'):

@@ -14,6 +14,12 @@ import uuid
 
 MAX_FRAME = 1024 * 1024
 
+# A leader that published its exit code can stay listed and unsignaled
+# for a while during process teardown (AV/EDR load). Members must stay
+# live past this bounded grace before the call fails as unowned
+# descendants; the call deadline still bounds everything.
+DESCENDANT_GRACE_SECONDS = 5.0
+
 
 class DiagnosticError(RuntimeError):
     pass
@@ -165,17 +171,22 @@ class DiagnosticCall:
                     pass
 
     def _await_job_end(self):
+        live_since = None
         while self.job.poll() is None or self.job.members():
             if self.job.poll() is not None:
-                # A terminated PID can stay listed until its process object
-                # is destroyed; a listed-but-dead member is not an unowned
-                # descendant. Only a genuinely live member after the leader
-                # exited fails the call.
                 if any(self.job.member_alive(pid) for pid in self.job.members()):
-                    self.cancel.set()
-                    self._terminate(min(self.deadline, time.monotonic()+1))
-                    raise DiagnosticError(
-                        'diagnostic leader exited with remaining descendants')
+                    if live_since is None:
+                        live_since = time.monotonic()
+                    # A leader in teardown can still be listed and unsignaled;
+                    # only members that stay live past the bounded grace are
+                    # unowned descendants.
+                    if time.monotonic() - live_since >= DESCENDANT_GRACE_SECONDS:
+                        self.cancel.set()
+                        self._terminate(min(self.deadline, time.monotonic() + 1))
+                        raise DiagnosticError(
+                            'diagnostic leader exited with remaining descendants')
+                else:
+                    live_since = None
             if self.cancel.is_set() or time.monotonic() >= self.deadline:
                 self.cancel.set()
                 self._terminate()
