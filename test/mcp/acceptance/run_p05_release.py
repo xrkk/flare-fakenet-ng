@@ -103,8 +103,23 @@ class ReleaseGate:
         }
         out['dns_servers'] = self.capture_dns_servers()
         for section, command in commands.items():
-            raw = self.channel.powershell("$ErrorActionPreference='Stop'; " + command,
-                                          timeout=60)['output'].strip()
+            if section == 'listen_ports':
+                # Mirror the product's capture hygiene: resolver helper
+                # sockets on this VM open a rotating four-family UDP quad;
+                # record only rows present in three time-separated samples.
+                raw = self.channel.powershell(
+                    "$ErrorActionPreference='Stop'; "
+                    "$s1=(netstat -ano | Out-String); Start-Sleep -Milliseconds 1200; "
+                    "$s2=(netstat -ano | Out-String); Start-Sleep -Milliseconds 1200; "
+                    "$s3=(netstat -ano | Out-String); "
+                    "$r1=@($s1 -split [char]10 | Where-Object {$_.Trim()}); "
+                    "$r2=@($s2 -split [char]10 | Where-Object {$_.Trim()}); "
+                    "$r3=@($s3 -split [char]10 | Where-Object {$_.Trim()}); "
+                    "(@($r1 | Where-Object { $r2 -contains $_ -and $r3 -contains $_ }) -join [char]10)",
+                    timeout=90)['output'].strip()
+            else:
+                raw = self.channel.powershell("$ErrorActionPreference='Stop'; " + command,
+                                              timeout=60)['output'].strip()
             if not raw:
                 raise RuntimeError('empty capture: ' + section)
             out[section] = raw
