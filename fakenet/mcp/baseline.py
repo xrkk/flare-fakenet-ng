@@ -196,19 +196,25 @@ def capture(deadline=None):
 
     Each value is ``text`` on success or ``'__COLLECTION_FAILED__'`` when
     the collection command itself failed — the auditor treats a failed
-    section as UNKNOWN (never silently equal, CHK-018)."""
+    section as UNKNOWN (never silently equal, CHK-018).
+
+    The native netstat section runs FIRST: on teardown-lagging hosts the
+    preceding PowerShell section's own ephemeral sockets can still be
+    listed and would poison the strict listen-port comparison with a
+    capture-induced shadow that the closed-UDP attribution must refuse
+    (its owner process no longer exists at observation end)."""
     def collect(command):
         remaining = 60 if deadline is None else min(60, deadline - time.monotonic())
         return _run(command, timeout=remaining) if remaining > 0 else COLLECTION_FAILED
+    ports_start = time.time_ns()
+    ports = collect(['netstat', '-ano'])
+    ports_end = time.time_ns()
     routes = collect(['route', 'print', '-4'])
     dns = collect(['powershell', '-NoProfile', '-Command',
                 'Get-DnsClientServerAddress -AddressFamily IPv4 | '
                 'Select-Object InterfaceAlias,ServerAddresses | '
                 'ConvertTo-Json -Compress'])
     processes = collect(['powershell', '-NoProfile', '-Command', process_capture_script()])
-    ports_start = time.time_ns()
-    ports = collect(['netstat', '-ano'])
-    ports_end = time.time_ns()
     services = collect(['powershell', '-NoProfile', '-Command',
                      'Get-Service dnscache,mpssvc | '
                      'Select-Object Name,Status | '
