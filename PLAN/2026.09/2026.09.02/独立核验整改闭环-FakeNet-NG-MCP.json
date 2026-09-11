@@ -634,11 +634,11 @@
     }
   ],
   "checkpoint": {
-    "id": "CHECKPOINT-177",
-    "at": "2026-09-11T21:32:41+08:00",
+    "id": "CHECKPOINT-178",
+    "at": "2026-09-11T21:43:46+08:00",
     "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
-    "evidence": "Logs/fakenetng-mcp/main-remediation/h5-vm233-stabilization-20260911.json",
-    "verification": "bf892ee部署后产品侧正常轮干净收敛（round1/2 final=stopped，含exit握手完整）；W32Time NTP123开机后开听听的影子以披露环境稳定化处理（禁用，可逆）；剩余唯一阻塞=P05 runner自身环境捕获把自身会话socket（pwsh quad/ESTABLISHED）记入原始对比（only-before/after均见28787/28788自连接行）；修复=捕获脚本排除自身$PID行；CHK/轮次不变"
+    "evidence": "Logs/fakenetng-mcp/mcp-cbf892ee0-de0f15fd2818/release/",
+    "verification": "runner自捕获排除(846d3df)后P05 normal前9轮零失败持续累积；产品源bf892ee（Linux439/5、Win1015/8+HTTP17、构建PASS）已部署.233；CHK/轮次不变（2/5，20 OPEN）"
   },
   "stop_reason": null,
   "pending_intent": null,
@@ -1104,6 +1104,18 @@
         "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
         "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-21.txt",
         "verification": "Linux 439/5；构建PASS；产品侧收敛证据在release/轮次记录"
+      }
+    },
+    {
+      "id": "INTENT-177",
+      "at": "2026-09-11T21:43:46+08:00",
+      "action": "runner捕获排除自身$PID行(846d3df)→P05 normal零失败累积中",
+      "verified": {
+        "id": "CHECKPOINT-178",
+        "at": "2026-09-11T21:43:46+08:00",
+        "head": "bf892ee0d1bb0d66ae578a53c2f11e849af3ccb0",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-22.txt",
+        "verification": "Linux 439/5；normal 9+/100 无失败"
       }
     }
   ],
