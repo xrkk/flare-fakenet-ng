@@ -215,8 +215,7 @@ def test_grace_timeout_collects_owner_dump_before_ending():
                 return False
         return W()
     import unittest.mock as mock
-    with mock.patch.object(er, '_call', owner._call), \
-         mock.patch('fakenet.mcp.dumpworker.collect_dump', fake_collect):
+    with mock.patch('fakenet.mcp.dumpworker.collect_dump', fake_collect):
         # read_bytes is on the returned path object; patch Path.read_bytes
         import pathlib
         with mock.patch.object(pathlib.Path, 'read_bytes', lambda self: b'x' * 10):
