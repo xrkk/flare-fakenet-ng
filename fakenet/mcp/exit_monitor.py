@@ -50,8 +50,12 @@ def _published(base, path):
 
 def main(arguments):
     # The rejection deadline starts before importing the collection modules.
+    # It must cover those imports: on AV-loaded acceptance VMs the import
+    # set alone can exceed one second, and a watchdog exit there leaves no
+    # evidence at all. Ten seconds still rejects stale notifications fast
+    # and stays inside the helper's sixty-second budget.
     entered = time.monotonic()
-    deadline = [entered + 1]
+    deadline = [entered + 10]
     done = threading.Event()
 
     def expire():
