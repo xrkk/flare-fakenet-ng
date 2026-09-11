@@ -634,11 +634,11 @@
     }
   ],
   "checkpoint": {
-    "id": "CHECKPOINT-173",
-    "at": "2026-09-11T18:49:35+08:00",
+    "id": "CHECKPOINT-174",
+    "at": "2026-09-11T19:04:52+08:00",
     "head": "d194cfdb774144fc0af2b1b33fb6272e3e6578ee",
-    "evidence": "Logs/fakenetng-mcp/main-remediation/h6/final_p1_p4_console.txt",
-    "verification": "d194cfd部署.233（用户再次恢复VM现场后全新安装）；冒烟通过；控制矩阵8/8一次通过；H6-2同候选序列：8 pass（005/010/003/008? 见console）、8 fail、6 blocked、2 tool-error；故障run 0c7db9bf(exit helper cleanup unverified一次)经SCM硬循环后启动恢复干净收敛；CHK/轮次不变"
+    "evidence": "Logs/fakenetng-mcp/main-remediation/h6/rerun_blocked2_console.txt",
+    "verification": "blocked重跑仍被fault-mode进入阻断；FAULT-POINTS达fail(推进到实际故障轮)；会话上下文耗尽前登记精确续作点；CHK/轮次不变"
   },
   "stop_reason": null,
   "pending_intent": null,
@@ -1056,6 +1056,18 @@
         "head": "d194cfdb774144fc0af2b1b33fb6272e3e6578ee",
         "evidence": "Logs/fakenetng-mcp/mcp-cd194cfdb-feda0a3ceaef/",
         "verification": "控制矩阵8/8 result.json齐备；H6-2 console与各result留存"
+      }
+    },
+    {
+      "id": "INTENT-173",
+      "at": "2026-09-11T19:04:52+08:00",
+      "action": "blocked项重跑：fault-mode进入阻断定性为停服→SCM启动链问题，需隔离复现；会话收尾",
+      "verified": {
+        "id": "CHECKPOINT-174",
+        "at": "2026-09-11T19:04:52+08:00",
+        "head": "d194cfdb774144fc0af2b1b33fb6272e3e6578ee",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/h6/rerun_blocked2_console.txt",
+        "verification": "全部result.json与console留存；服务现场failed 19089a84待SCM循环收敛"
       }
     }
   ],
@@ -1925,6 +1937,8 @@
       "fault run一次exit helper cleanup unverified后，同实例内HTTP stop反复~16s失败且无failure_reason返回（协调器层存在fenced/理由为空路径待查），SCM硬循环后启动恢复可干净收敛——已留证event日志",
       "CLI停服在draining终态返回not cleanly stopped(空理由)——同族待查"
     ],
-    "next": "重跑blocked项与隔离复现fail项→P05 normal100/fault50/final/summary（同候选d194cfd）→H7补完→H8独立复核"
+    "next": "重跑blocked项与隔离复现fail项→P05 normal100/fault50/final/summary（同候选d194cfd）→H7补完→H8独立复核",
+    "fault_mode_entry": "fault-mode进入(configure_fault_service的受控停服+SCM启动)在该VM上确定性失败：CLI停服后sc start报Cannot start service；ACC-004-S3..S6/FAULT-POINTS/ACC-014全部因此blocked/fail；需在空闲服务上隔离复现停服→启动链（本轮复现尝试与运行中的序列互相干扰，未得干净数据）；另记录inflight_timeout失败run 19089a84与coordinator空理由failed路径为待查产品观察",
+    "service_state_at_session_end": "failed run 19089a84 inflight_timeout待收敛(SCM硬循环后启动恢复可收敛，已两次验证)"
   }
 }
