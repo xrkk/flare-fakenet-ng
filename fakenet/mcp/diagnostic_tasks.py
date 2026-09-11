@@ -13,8 +13,8 @@ import time
 import uuid
 
 EXIT_FILES = frozenset(('target.json', 'entry.json', 'result.json', 'owner-acquired.json',
-                        'owner-result.json', 'normal-claim.json', 'normal-ack.json',
-                        'stop-intent.json', 'capability.json'))
+                        'owner-result.json', 'owner-dump.json', 'normal-claim.json',
+                        'normal-ack.json', 'stop-intent.json', 'capability.json'))
 
 
 def _run_id(value):
