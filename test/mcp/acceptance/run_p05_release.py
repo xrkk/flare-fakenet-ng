@@ -109,10 +109,15 @@ class ReleaseGate:
                 # record only rows present in three time-separated samples.
                 raw = self.channel.powershell(
                     "$ErrorActionPreference='Stop'; "
-                    "$own=[regex]::Escape(' ' + $PID) + '$'; "
-                    "$s1=@(netstat -ano | Where-Object { $_ -notmatch $own }); Start-Sleep -Milliseconds 1200; "
-                    "$s2=@(netstat -ano | Where-Object { $_ -notmatch $own }); Start-Sleep -Milliseconds 1200; "
-                    "$s3=@(netstat -ano | Where-Object { $_ -notmatch $own }); "
+                    # PowerShell hosts (this session and the long-lived MCP
+                    # command host) own rotating resolver sockets; they are
+                    # acceptance-driver plumbing, not product environment.
+                    "$noise=@(Get-Process pwsh,powershell -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }); "
+                    "$filter={ param($line) $cols=$line.Trim() -split [char]32; "
+                    "if($cols.Count -ge 4 -and $cols[-1] -match '^[0-9]+$'){ -not ($noise -contains [int]$cols[-1]) } else { $true } }; "
+                    "$s1=@(netstat -ano | Where-Object $filter); Start-Sleep -Milliseconds 1200; "
+                    "$s2=@(netstat -ano | Where-Object $filter); Start-Sleep -Milliseconds 1200; "
+                    "$s3=@(netstat -ano | Where-Object $filter); "
                     "$r1=@($s1 | Where-Object {$_.Trim()}); "
                     "$r2=@($s2 | Where-Object {$_.Trim()}); "
                     "$r3=@($s3 | Where-Object {$_.Trim()}); "
