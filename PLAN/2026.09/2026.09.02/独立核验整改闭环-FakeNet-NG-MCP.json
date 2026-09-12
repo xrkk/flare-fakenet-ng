@@ -12,7 +12,7 @@
   "status": "REMEDIATING",
   "branch": "process-redirect-v23",
   "initial_head": "95695d2fb24dc998b506582392eef0f23ba4d05b",
-  "current_head": "af6a2731",
+  "current_head": "6090f8161ec06eb1879dd6c55214af9f768fff80",
   "round_limit": 5,
   "completed_rounds": 2,
   "next_round": 3,
@@ -634,11 +634,11 @@
     }
   ],
   "checkpoint": {
-    "id": "CHECKPOINT-184",
-    "at": "2026-09-12T04:50:02+08:00",
-    "head": "af6a2731",
-    "evidence": "Logs/fakenetng-mcp/main-remediation/build-hangdump14-console.txt",
-    "verification": "policy_pause单轮完整收敛：stopped/last_run_outcome=failed，owner-dump 811KB + owner-result.json 全落盘，无watch死亡；修复链9项：观测性→词表→锁→锁内预算→watch容错→预算45s→无helper跳扫描→intent收尾预算→子进程无关的helper-less收尾；fault-50启动；CHK/轮次不变"
+    "id": "CHECKPOINT-185",
+    "at": "2026-09-12T17:07:38+08:00",
+    "head": "6090f8161ec06eb1879dd6c55214af9f768fff80",
+    "evidence": "Logs/fakenetng-mcp/main-remediation/urgent-threadexit-fix-20260912.json",
+    "verification": "紧急修复完成：良性探针后SystemExit→failed保护停止的根因闭环修复并真机验证；候选mcp-c6090f816已部署.233并通过同型探针复测；fault-50需在此最终候选上从头重跑（13941f8上的4轮零失败因换候选作废）；CHK/轮次不变"
   },
   "stop_reason": null,
   "pending_intent": null,
@@ -1189,6 +1189,18 @@
         "evidence": "Logs/fakenetng-mcp/main-remediation/pc007-linux-45.txt",
         "verification": "Linux 440/5；单轮stopped/failed+完整dump证据"
       }
+    },
+    {
+      "id": "INTENT-185",
+      "at": "2026-09-12T17:07:38+08:00",
+      "action": "用户紧急插入：维护交接72文件取证→根因(ProxyListener线程sys.exit)→修复+回归测试→候选#25构建→.233部署→同型良性探针60秒健康窗口验证通过",
+      "verified": {
+        "id": "CHECKPOINT-185",
+        "at": "2026-09-12T17:07:38+08:00",
+        "head": "6090f8161ec06eb1879dd6c55214af9f768fff80",
+        "evidence": "Logs/fakenetng-mcp/main-remediation/urgent-threadexit-fix-20260912.json",
+        "verification": "PRE-FIX SystemExit(1) in-process repro + post-fix 60s healthy + zero traceback lines"
+      }
     }
   ],
   "response_record": {
@@ -1517,12 +1529,13 @@
     }
   ],
   "candidate": {
-    "source_commit": "af6a2731df08a3c314c7c9f3e2986ecc85377a2f",
-    "candidate_id": "mcp-caf6a2731-b89966c72d85",
-    "package": "dist/mcp-remediation-20260912-hangdump14/fakenetng-mcp-candidate.zip",
-    "sha256": "b89966c72d85865712ed291f391c894ae800a8b00e596628830df96fb7167933",
-    "status": "POLICY_PAUSE_VERIFIED_CONVERGES",
-    "gate": "Linux 440/5; Windows build-embedded PASS"
+    "source_commit": "6090f8161ec06eb1879dd6c55214af9f768fff80",
+    "candidate_id": "mcp-c6090f816-93d4b3cf2252",
+    "package": "dist/mcp-remediation-20260912-threadexit/fakenetng-mcp-candidate.zip",
+    "sha256": "93d4b3cf2252...(full in candidate-verification.json)",
+    "status": "DEPLOYED_ON_VM233_BENIGN_PROBE_VERIFIED",
+    "gate": "Linux 440/5 + 2 new regression tests; Windows build-embedded PASS",
+    "contains": "hangdump23 chain(83d6722) + deadline owner-dump fallback(13941f8) + TCP proxy thread return fix(6090f81)"
   },
   "pause_handoff": {
     "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenetng-mcp/remediation-20260910/第三方整改交接-47c8173.md",
@@ -2078,5 +2091,14 @@
     "normal_100": "ACC-012 PASS on bf892ee (Logs/fakenetng-mcp/mcp-cbf892ee0-de0f15fd2818/release, 50+50 zero failures) — MUST RERUN on final candidate per same-candidate rule after fault fix lands",
     "fault_50": "policy_pause-001 on bf892ee failed deterministically (Job-termination SPE gap, CHECKPOINT-181); owner-dump fix built in 93839d9; single-round verification on 93839d9 hit a NEW interaction: fault-mode entry controlled stop returned not cleanly stopped with a capability/config-load run (53d2702c) in flight — needs pre-stop/converge-vs-startup-capability race investigation",
     "next_session": "1) reproduce single policy_pause on 93839d9 with service.log full window capture; 2) if pass: fault-50 + normal-100 rerun on 93839d9; 3) final/summary; control matrix + H6-2 rerun on final candidate; 4) ACC-002 after quota reset 2026-09-14; H7/H8"
+  },
+  "urgent_fix_20260912": {
+    "at": "2026-09-12T17:07:38+08:00",
+    "source": "maintainer handoff /home/adminn/projects/MalTrace/.tmp/fakenet-maintainer-handoff-20260912 (72-file SHA-verified evidence, runs f464a287/c886473a)",
+    "root_cause": "ThreadedTCPClientSocket.run sys.exit(1) on proxied-listener close; SystemExit escapes except-Exception; managed thread hook records unhandled exception; health log scan fails the run",
+    "fix_commit": "6090f8161ec06eb1879dd6c55214af9f768fff80",
+    "verification": "pre-fix source proven to raise SystemExit(1) from run(); fix candidate deployed on .233, same probe class (TCP 80/443/139/50460 + UDP 53/137/1900 to 198.51.100.77) executed, healthy throughout 60s window, run.log has zero unhandled-exception lines; run c6a966af-ff9a-4457-b6a6-30f1e8a2ea1",
+    "evidence": "Logs/fakenetng-mcp/main-remediation/urgent-threadexit-fix-20260912.json",
+    "maintainer_scene": "VM .149 originals untouched; cross-VM re-verification left to maintainer"
   }
 }
