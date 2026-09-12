@@ -399,6 +399,15 @@ def test_host_only_transfer_serves_only_the_staged_probe_and_stops(monkeypatch):
         assert transfer.server.shutdown_called and transfer.server.close_called
 
 
+def test_command_ids_are_unique_across_preserved_suite_roots():
+    args = ['generate', '--candidate-id', 'candidate', '--source-commit', 'source',
+            '--package-sha256', '0' * 64]
+    first = suite.Suite(suite.parse_args([*args, '--suite-root', '/tmp/suite-first']))
+    retry = suite.Suite(suite.parse_args([*args, '--suite-root', '/tmp/suite-retry']))
+    assert first._command_id('preflight', 1, 1) != retry._command_id('preflight', 1, 1)
+    assert first._command_id('sst-001', 1, 3) == first._command_id('sst-001', 1, 3)
+
+
 def test_vm_transport_ignores_sse_heartbeats_but_rejects_ambiguous_events():
     payload = ': ping\n\nevent: message\ndata: {"jsonrpc":"2.0","result":{}}\n\n'
     assert suite.RawMcp._decode_event_stream(payload) == '{"jsonrpc":"2.0","result":{}}'

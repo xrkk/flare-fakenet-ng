@@ -863,8 +863,17 @@ class Suite:
                                  args.package_sha256)
         self.service = RawMcp(args.target_base_url) if args.target_base_url else None
         self.vm = VmMcp(args.win10vm_mcp) if args.win10vm_mcp else None
+        # MCP binds a command id to the controller that first used it.  A
+        # failed suite root must be preserved and a later root must therefore
+        # never reuse the old root's deterministic command ids.
+        self.command_namespace = digest(str(self.root))[:8]
         self.manifest_path = self.root / 'scenario-manifest.json'
         self.preflight_path = self.root / 'preflight.json'
+
+    def _command_id(self, scenario_id: str, attempt: int, sequence: int,
+                    suffix: str = '') -> str:
+        return '%s-%s%s-%02d-%03d' % (self.command_namespace, scenario_id,
+                                      suffix, attempt, sequence)
 
     def require_clients(self) -> None:
         if not self.service or not self.vm:
@@ -947,7 +956,7 @@ class Suite:
         assert self.service
         status = self._status()
         args = dict(arguments)
-        args['command_id'] = '%s-%02d-%03d' % (scenario_id, attempt, sequence)
+        args['command_id'] = self._command_id(scenario_id, attempt, sequence)
         args['expected_state_version'] = status['state_version']
         result = self.service.tool(name, args, timeout=480 if name in ('start', 'stop') else 120)
         if result.get('error'):
@@ -1041,7 +1050,7 @@ class Suite:
             # it is not accepted as the DeepSeek relay proof.
             p6, raw = check('P6-test-net', lambda: self._vm_json(
                 "$ErrorActionPreference='Stop';$x=Test-NetConnection 198.51.100.77 -Port 1337 -WarningAction SilentlyContinue;"
-                "@{computer=$env:COMPUTERNAME;tcp=$x.TcpTestSucceeded;remote=$x.RemoteAddress.IPAddressToString()}|ConvertTo-Json -Compress", 60))
+                "@{computer=$env:COMPUTERNAME;tcp=$x.TcpTestSucceeded;remote=[string]$x.RemoteAddress}|ConvertTo-Json -Compress", 60))
             evidence.write('p6-test-net.json', {'value': p6, 'raw': raw})
             b1 = profile_content(profile_for_bucket('B1', 0), route['external_dns_server'])
             p7 = check('P7-deepseek-relay', lambda: self._preflight_b1(b1, 'preflight-b1', 1))
@@ -2025,7 +2034,7 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
             sent = dict(arguments or {})
             if mutation:
                 status = self._status()
-                sent.update(command_id='%s-recovery-%02d-%03d' % (scenario_id, attempt, sequence),
+                sent.update(command_id=self._command_id(scenario_id, attempt, sequence, '-recovery'),
                             expected_state_version=status['state_version'])
             outcome = self.service.tool_outcome(tool, sent, timeout=480 if tool in ('start', 'stop') else 120)
             entry = {'tool': tool, 'sent_arguments': outcome['sent_arguments'],
@@ -2156,7 +2165,7 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
             command_id = None
             if mutation:
                 status = self._status()
-                command_id = '%s-%02d-%03d' % (scenario_id, attempt, sequence)
+                command_id = self._command_id(scenario_id, attempt, sequence)
                 sent.update(command_id=command_id,
                             expected_state_version=(status['state_version'] if forced_version is None else forced_version))
             began = time.monotonic()
@@ -2190,7 +2199,7 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
             nonlocal sequence
             sequence += 1
             status = self._status()
-            sent = dict(args, command_id='%s-%02d-%03d' % (scenario_id, attempt, sequence),
+            sent = dict(args, command_id=self._command_id(scenario_id, attempt, sequence),
                         expected_state_version=status['state_version'])
             outcome = self.service.tool_outcome(tool, sent, timeout=480 if tool == 'stop' else 120)  # type: ignore[union-attr]
             entry = {'label': label, 'tool': tool, 'command_id': sent['command_id'],
