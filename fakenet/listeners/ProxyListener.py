@@ -167,8 +167,13 @@ class ThreadedTCPClientSocket(threading.Thread):
                     if data:
                         self.listener_q.put(data)
                     else:
+                        # The proxied listener closed the connection. A
+                        # plain return ends this daemon thread; sys.exit
+                        # would raise SystemExit through threading's
+                        # bootstrap, which the managed runtime reports as an
+                        # unhandled thread exception and fails the run.
                         self.sock.close()
-                        sys.exit(1)
+                        return
         except Exception as e:
             self.logger.debug('Listener socket exception %s' % str(e))
 
