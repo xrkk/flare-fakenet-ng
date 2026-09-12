@@ -34,6 +34,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from fakenet.mcp.faultinject import FAULTS  # noqa: E402
 from evidence_integrity import (IDENTITY_FIELDS, validate_result,
                                 validate_round, validate_rounds, validate_sample_category)
+from release_matrix import MatrixUsageError, matrix_counts, parse_limit
 
 DEFAULT_INI = 'default.ini'
 CUSTOM_INI = 'release-custom.ini'
@@ -539,6 +540,7 @@ class ReleaseGate:
         return done
 
     def mode_normal(self, writer):
+        counts = matrix_counts(self.args, self.release)
         plans = [('builtin', DEFAULT_INI), ('custom', CUSTOM_INI)]
         if not self.ensure_custom_config():
             writer.blocker = {'reason': 'custom release config unavailable'}
@@ -546,7 +548,7 @@ class ReleaseGate:
         failures = []
         for group, config in plans:
             prefix = 'normal-%s' % group
-            for index in range(1, NORMAL_ROUNDS_PER_CONFIG + 1):
+            for index in range(1, counts[prefix] + 1):
                 path = self.round_path(prefix, index)
                 if self.prior_round(path, writer):
                     continue
@@ -561,22 +563,23 @@ class ReleaseGate:
                     writer.add_evidence('normal-first-failure', failures[0])
                     return EXIT_FAIL
         summary = {'builtin': len(self.done_rounds(
-            'normal-builtin', NORMAL_ROUNDS_PER_CONFIG)),
+            'normal-builtin', counts['normal-builtin'])),
             'custom': len(self.done_rounds(
-                'normal-custom', NORMAL_ROUNDS_PER_CONFIG))}
+                'normal-custom', counts['normal-custom']))}
         (self.release / 'normal-summary.json').write_text(
             json.dumps(summary, ensure_ascii=False, indent=1),
             encoding='utf-8')
         writer.add_evidence('normal-summary', summary)
-        return EXIT_PASS if summary['builtin'] == NORMAL_ROUNDS_PER_CONFIG \
-            and summary['custom'] == NORMAL_ROUNDS_PER_CONFIG else EXIT_FAIL
+        return EXIT_PASS if summary['builtin'] == counts['normal-builtin'] \
+            and summary['custom'] == counts['normal-custom'] else EXIT_FAIL
 
     def mode_fault(self, writer):
+        counts = matrix_counts(self.args, self.release)
         writer.add_evidence('fault-mode-enabled', self.configure_fault_mode(True))
         failures = []
         for klass in FAULT_CLASSES:
             prefix = 'fault-%s' % klass
-            for index in range(1, FAULT_ROUNDS_PER_CLASS + 1):
+            for index in range(1, counts[prefix] + 1):
                 path = self.round_path(prefix, index)
                 if self.prior_round(path, writer):
                     continue
@@ -591,7 +594,7 @@ class ReleaseGate:
                     writer.add_evidence('fault-first-failure', failures[0])
                     return EXIT_FAIL
         summary = {klass: len(self.done_rounds(
-            'fault-%s' % klass, FAULT_ROUNDS_PER_CLASS))
+            'fault-%s' % klass, counts['fault-' + klass]))
             for klass in FAULT_CLASSES}
         (self.release / 'fault-summary.json').write_text(
             json.dumps(summary, ensure_ascii=False, indent=1),
@@ -599,10 +602,11 @@ class ReleaseGate:
         writer.add_evidence('fault-summary', summary)
         writer.add_evidence('fault-mode-disabled', self.configure_fault_mode(False))
         return EXIT_PASS if all(
-            v == FAULT_ROUNDS_PER_CLASS for v in summary.values()) \
+            v == counts['fault-' + klass] for klass, v in summary.items()) \
             else EXIT_FAIL
 
     def mode_final(self, writer):
+        matrix_counts(self.args, self.release)
         checks = {}
         checks['identity'] = self.channel.computer_name() == \
             'DESKTOP-3FI41GR'
@@ -641,6 +645,7 @@ class ReleaseGate:
         return EXIT_PASS if passed else EXIT_FAIL
 
     def mode_summary(self, writer):
+        counts = matrix_counts(self.args, self.release)
         acc_index = {}
         integrity_failures = {}
         allowed_labels = {
@@ -686,10 +691,14 @@ class ReleaseGate:
                     'FAULT-POINTS', 'ACC-012', 'ACC-013', 'ACC-016',
                     'ACC-017', 'P01-ENTRY']
         expected.extend(CONTROL_CASE_LABELS)
+        reduced = (self.release / 'matrix-manifest.json').is_file()
+        if reduced:
+            # This is the explicitly scoped normal/fault/final smoke index,
+            # not a claim that unrelated ACCs passed on this candidate.
+            expected = ['ACC-012', 'ACC-013', 'ACC-017']
         missing = [acc for acc in expected if acc not in acc_index]
         identity = {field: getattr(self.args, field) for field in IDENTITY_FIELDS}
-        groups = [('normal-builtin', 50), ('normal-custom', 50)] + [
-            ('fault-' + klass, 10) for klass in FAULT_CLASSES]
+        groups = list(counts.items())
         samples = []
         required = {}
         for prefix, count in groups:
@@ -746,6 +755,10 @@ class ReleaseGate:
             'wrong_candidate': list(wrong_candidate),
             'failures': failures,
         }
+        if reduced:
+            manifest['matrix_mode'] = 'reduced'
+            manifest['planned'] = counts
+            manifest['scope'] = 'normal/fault/final smoke only; scenario obligations remain separate'
         (self.release / 'release-acc-index.json').write_text(
             json.dumps(manifest, ensure_ascii=False, indent=1),
             encoding='utf-8')
@@ -767,6 +780,7 @@ def main():
     parser.add_argument('--mode', required=True,
                         choices=['normal', 'fault', 'final', 'summary'])
     parser.add_argument('--source-commit', required=True)
+    parser.add_argument('--rounds-limit', help='Explicit reduced matrix: builtin=3,custom=2 or per-class=1')
     parser.add_argument('--package', required=True)
     parser.add_argument('--package-sha256', required=True)
     parser.add_argument('--manifest', required=True)
@@ -782,6 +796,11 @@ def main():
     parser.add_argument('--output-root',
                         default=str(REPO_ROOT / 'Logs' / 'fakenetng-mcp'))
     args = parser.parse_args()
+    if args.rounds_limit is not None:
+        try:
+            parse_limit(args.mode, args.rounds_limit)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     started_at = now_iso()
     acc_for_mode = {'normal': 'ACC-012', 'fault': 'ACC-013',
@@ -804,6 +823,9 @@ def main():
             exit_code = gate.mode_final(writer)
         elif args.mode == 'summary':
             exit_code = gate.mode_summary(writer)
+    except MatrixUsageError as exc:
+        writer.blocker = {'reason': 'usage error: %s' % exc}
+        exit_code = EXIT_BLOCKED
     except Exception as exc:  # noqa: BLE001
         import traceback; traceback.print_exc()
         writer.blocker = {'reason': 'tool error: %r' % exc}
