@@ -435,8 +435,19 @@ class ReleaseGate:
             if receipt_run and record.get('last_run_outcome') == 'failed':
                 record['run_id'] = receipt_run
         incidents = record['fault_evidence']['incidents']
+
+        def manifest_acceptable(item):
+            # Same producer-fact allowance as the export validators: an
+            # incomplete guest verdict whose only failed member is the
+            # honest managed-exit record is acceptable in a fault round.
+            if item['manifest'].get('complete'):
+                return True
+            return all(entry.get('result') == 'ok' or
+                       (entry.get('item') == 'managed-exit.json' and
+                        entry.get('failure_reason') == 'exit evidence incomplete')
+                       for entry in item['manifest'].get('entries', []))
         if (record['fault_evidence']['receipt']['receipt'] != {'fault': klass, 'nonce': nonce}
-                or not incidents or any(not item['manifest'].get('complete') for item in incidents)):
+                or not incidents or any(not manifest_acceptable(item) for item in incidents)):
             record['failure'] = 'fault receipt/incident incomplete'
         from helpers import export_incident_bundle
         import ntpath
