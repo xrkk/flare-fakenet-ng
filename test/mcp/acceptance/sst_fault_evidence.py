@@ -29,6 +29,20 @@ class EvidenceError(ValueError):
     pass
 
 
+def packet_matches_session(packet, src, dst):
+    """Require one decoded TCP packet for the exact connection, either way."""
+    if not isinstance(packet, str):
+        return False
+    endpoint = r'(?:[0-9]{1,3}\.){4}[0-9]+'
+    pairs = re.findall(r'(?<![\w.])(' + endpoint + r') > (' + endpoint
+                       + r'): Flags \[[^\]\r\n]*\]', packet)
+    if len(pairs) != 1:
+        return False
+    expected = tuple(value.rsplit(':', 1) for value in (src, dst))
+    forward = tuple('.'.join(value) for value in expected)
+    return pairs[0] in (forward, forward[::-1])
+
+
 def exception_blocks(text):
     starts = [m.start() for m in HEADER.finditer(text)]
     cuts = sorted(set([0] + starts + [len(text)]))
@@ -362,7 +376,7 @@ def assess(case, root, expected_candidate=CANDIDATE):
         packet_ends = []
         for ref in session['packet_refs']:
             packet = read(ref)
-            if not isinstance(packet, str) or address not in packet or port not in packet:
+            if not packet_matches_session(packet, session['src'], session['dst']):
                 raise EvidenceError('packet tuple cannot be linked')
             if re.search(r'Flags \[[^\]]*[FR]', packet):
                 packet_ends.append(bounds(packet)[0])

@@ -30,6 +30,21 @@ RuntimeError: injected cleanup error
 
 
 class EvidenceOracleTests(unittest.TestCase):
+    def test_packet_requires_exact_both_endpoints_in_either_direction(self):
+        src, dst = '192.168.204.233:61824', '198.51.100.77:1337'
+        packet = 'length 66: 192.168.204.233.61824 > 198.51.100.77.1337: Flags [R.], seq 1'
+        self.assertTrue(sst.packet_matches_session(packet, src, dst))
+        reverse = 'length 66: 198.51.100.77.1337 > 192.168.204.233.61824: Flags [F.], seq 1'
+        self.assertTrue(sst.packet_matches_session(reverse, src, dst))
+        for wrong in (packet.replace('.61824 >', '.618240 >'),
+                      packet.replace('198.51.100.77', '198.51.100.78'),
+                      packet.replace('.1337:', '.13370:'),
+                      packet.replace('192.168.204.233', '1192.168.204.233'),
+                      'comment 192.168.204.233 61824 Flags [R.]',
+                      packet + '\n' + reverse):
+            with self.subTest(packet=wrong):
+                self.assertFalse(sst.packet_matches_session(wrong, src, dst))
+
     def test_exact_native_listener_block(self):
         self.assertEqual(sst.exception_kind(L1), 'L1')
         self.assertEqual(sst.exception_kind(L1.replace('Thread-4', 'Thread-892')), 'L1')
