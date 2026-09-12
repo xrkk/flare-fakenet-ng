@@ -297,20 +297,23 @@ class ExitRetention:
         target_path = self.directory / 'target.dmp'
         if target_path.exists():
             return None
+        def single_flight_busy(exc):
+            return 'exit evidence helper active' in repr(exc)
+
         try:
-            collect_dump(self.record['pid'], self.record['creation_time'], target_path,
-                         time.monotonic() + budget, quota=QUOTA)
-            checked = None
-            for attempt in range(3):
+            for attempt in range(4):
                 try:
+                    # Both the dump collection and its verification acquire
+                    # the global single flight; a concurrent incident bulk
+                    # child can hold it for tens of seconds on this host.
+                    collect_dump(self.record['pid'], self.record['creation_time'], target_path,
+                                 time.monotonic() + budget, quota=QUOTA)
                     checked = self._call('exit-verify-dump',
                                          dict(run_id=self.record['run_id'], pid=self.record['pid']),
                                          time.monotonic() + budget)
                     break
                 except DiagnosticError as exc:
-                    # A lagging bulk child can still hold the global single
-                    # flight; it releases when that child's teardown ends.
-                    if 'exit evidence helper active' not in repr(exc) or attempt == 2:
+                    if not single_flight_busy(exc) or attempt == 3:
                         raise
                     time.sleep(10)
             info = dict(name='target.dmp', size=checked['size'], sha256=checked['sha256'])
