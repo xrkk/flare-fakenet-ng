@@ -315,6 +315,12 @@ class ExitRetention:
                 except DiagnosticError as exc:
                     if not single_flight_busy(exc) or attempt == 3:
                         raise
+                    # The aborted attempt can leave its unpublished staging
+                    # behind; this run's directory is exclusively owned, so
+                    # clearing our own partial artifact is safe.
+                    for residue in (target_path,
+                                    target_path.with_name(target_path.name + '.part')):
+                        residue.unlink(missing_ok=True)
                     time.sleep(10)
             info = dict(name='target.dmp', size=checked['size'], sha256=checked['sha256'])
             self.owner_dump = info
