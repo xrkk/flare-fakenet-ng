@@ -401,7 +401,12 @@ class ReleaseGate:
         if started.get('state') == 'healthy':
             stopped = self.stop_once()
             record['stop_response'] = stopped
-        _, snap = wait_state(self.base, lambda s: s.get('state') in ('stopped', 'failed'), timeout=480)
+        # 'failed' is also an intermediate health publication while the
+        # protective convergence is still running (engine Job, WinDivert
+        # teardown); auditing there reads a half-converged environment.
+        # Terminal shape: stopped, or failed with the recovery cleared.
+        _, snap = wait_state(self.base, lambda s: s.get('state') == 'stopped' or
+                             (s.get('state') == 'failed' and not s.get('run_id')), timeout=480)
         snap = snap or {}
         record['final_state'] = snap.get('state')
         record['last_run_outcome'] = snap.get('last_run_outcome')
