@@ -155,6 +155,7 @@ class ReleaseGate:
         return raw
 
     def audit_diff(self, before):
+        import time as _time
         from fakenet.mcp.baseline import audit_compare
 
         # CHK-042: consume the shared directional schema straight from
@@ -162,7 +163,16 @@ class ReleaseGate:
         # re-narrowing here read the retired before/after keys, computed
         # an empty delta and silently POPPED real residue from the gate.
         # One schema, shared with the product's stop audit.
-        return audit_compare(before, self.capture_sections())
+        # Failed-start fault classes leave the WinDivert driver service
+        # unloading for tens of seconds after convergence; the product's
+        # own audit settles over thirty seconds, so this gate mirrors
+        # that: a windivert-only difference is re-observed, bounded.
+        for attempt in range(4):
+            diff = audit_compare(before, self.capture_sections())
+            if not diff or set(diff) != {'windivert_processes'} or attempt == 3:
+                return diff
+            _time.sleep(10)
+        return diff
 
     def vm_continuity(self):
         result = self.channel.powershell(
