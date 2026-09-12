@@ -213,6 +213,8 @@ class ManagedProcess:
 
 def probe_instance(instance):
     """Observe real WinDivert/listener handles; used only inside the child."""
+    from fakenet.listeners.DomainEgressRelay import DomainEgressRelay
+
     diverter = getattr(instance, 'diverter', None)
     handle = getattr(diverter, 'handle', None)
     main_thread = getattr(diverter, 'diverter_thread', None)
@@ -227,13 +229,19 @@ def probe_instance(instance):
     listeners = bool(providers)
     observations = []
     for provider in providers:
-        sockets = [getattr(provider, attr, None) for attr in ('server', 'sock', 'socket')]
-        sockets.append(getattr(getattr(provider, 'server', None), 'socket', None))
+        if isinstance(provider, DomainEgressRelay):
+            # The relay owns its listener directly rather than a socketserver.
+            # Both resources are required, including during startup/teardown.
+            sockets = [provider._listener]
+            thread = provider._accept_thread
+            thread_alive = thread is not None and thread.is_alive()
+        else:
+            sockets = [getattr(provider, attr, None) for attr in ('server', 'sock', 'socket')]
+            sockets.append(getattr(getattr(provider, 'server', None), 'socket', None))
+            thread = getattr(provider, 'server_thread', None)
+            thread_alive = thread is None or thread.is_alive()
         descriptors = [sock for sock in sockets if callable(getattr(sock, 'fileno', None))]
-        live = bool(descriptors) and all(sock.fileno() >= 0 for sock in descriptors)
-        thread = getattr(provider, 'server_thread', None)
-        if thread is not None:
-            live = live and thread.is_alive()
+        live = bool(descriptors) and all(sock.fileno() >= 0 for sock in descriptors) and thread_alive
         observations.append({'provider': type(provider).__name__,
                              'name': getattr(provider, 'name', None),
                              'handles': [sock.fileno() for sock in descriptors], 'alive': live})
