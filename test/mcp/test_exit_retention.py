@@ -209,3 +209,66 @@ def test_owner_dump_public_collector_targets_live_process_only():
     assert owner.collect_owner_dump() is None
 
 
+def test_helper_admission_winerror_records_exact_native_stage(monkeypatch, tmp_path):
+    """P05 must identify a late/open/admission failure without certifying it.
+
+    The exported P05 result has a real WinError 87 and no owner ACK.  A future
+    run must distinguish ``OpenProcess`` from the two native admission calls;
+    the failure remains incomplete until the helper result is independently
+    verified.
+    """
+    from types import SimpleNamespace
+    from fakenet.mcp import exit_retention, jobobject
+
+    owner = ExitRetention.__new__(ExitRetention)
+    owner.record = {'run_id': 'current'}
+    owner.done = threading.Event()
+    owner.deadline = None
+    owner._target = SimpleNamespace(exited=lambda: True)
+    owner._cancel = threading.Event()
+    owner._helper = None
+    owner._helper_job = None
+    owner.intent = SimpleNamespace(invalidate=lambda: None)
+    owner.helper_image = tmp_path / 'exit-helper' / 'fakenetng-mcp-exit-monitor.exe'
+    owner.directory = tmp_path
+    helper = {'pid': 84, 'creation_time': '456'}
+    entry = {'target': owner.record, 'helper': helper, 'acquired': True}
+    owner._read_optional = lambda name: entry if name == 'entry.json' else None
+    owner._end_helpers = lambda _deadline: None
+    owner._finish = lambda report: setattr(owner, 'result', report)
+
+    class Handle:
+        def __init__(self, pid, **_kwargs):
+            assert pid == helper['pid']
+            self.handle = 0x1234
+
+        def identity(self):
+            return dict(helper, image=str(owner.helper_image))
+
+        def terminate_helper(self):
+            return None
+
+        def exited(self):
+            return True
+
+    class Job:
+        def adopt_notification(self, handle, observe=None):
+            assert handle == 0x1234 and observe is not None
+            observe('AssignProcessToJobObject')
+            raise OSError(22, 'The parameter is incorrect.', None, 87)
+
+    monkeypatch.setattr(exit_retention, 'TargetHandle', Handle)
+    monkeypatch.setattr(jobobject, 'ManagedJob', Job)
+    owner._watch()
+
+    assert owner.done.is_set()
+    assert owner.result['complete'] is False
+    assert owner.result['failure_stage'] == 'open exit helper'
+    assert owner.result['native_api'] == 'AssignProcessToJobObject'
+    assert '87' in owner.result['error']
+    observation = owner.result['owner_observation']
+    assert observation['entry_read_attempts'] == 1
+    assert observation['entry_read_diagnostic_errors'] == 0
+    assert observation['helper_creation_time'] == helper['creation_time']
+    assert observation['entry_observed_monotonic'] > 0
+    assert 'ack_attempted_monotonic' not in observation

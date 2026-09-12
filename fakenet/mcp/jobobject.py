@@ -149,16 +149,20 @@ class ManagedJob:
             delete(attributes)
         return self.pid
 
-    def adopt_notification(self, process_handle):
+    def adopt_notification(self, process_handle, observe=None):
         """An OS-launched SPE helper is pinned before admission, never spawned
         by us without containment. Admission failure must refuse its ACK."""
         assign = self._bind('AssignProcessToJobObject',
                             [self.w.HANDLE, self.w.HANDLE], self.w.BOOL)
+        if observe is not None:
+            observe('AssignProcessToJobObject')
         if not assign(self.handle, process_handle):
             self._error()
         observed = self.w.BOOL()
         verify = self._bind('IsProcessInJob', [self.w.HANDLE, self.w.HANDLE,
                             self.c.POINTER(self.w.BOOL)], self.w.BOOL)
+        if observe is not None:
+            observe('IsProcessInJob')
         if not verify(process_handle, self.handle, self.c.byref(observed)) or not observed.value:
             raise RuntimeError('SPE helper Job admission not confirmed')
 

@@ -118,7 +118,9 @@ def test_post_job_audit_retains_managed_observation_and_dumps_actual_auditor(
         assert context['dump_reason'] == 'restoration audit failure after verified managed Job exit'
     else:
         assert context['dump_target_pid'] is None
-        assert context['dump_reason'] == 'live managed IPC stacks unavailable'
+        # A retained stack snapshot documents the exited process, but cannot
+        # authorize a fresh dump after the managed Job is empty.
+        assert context['dump_reason'] is None
 
 
 def test_start_response_already_has_identified_stack_observation(tmp_path, monkeypatch):

@@ -100,6 +100,18 @@ def prepare(request, directories, package, deadline):
                                        phase='post-Job restoration audit')
     identity_target = target.get('identity') or {}
     config = run_dir / 'active-config.ini'
+    managed_dump_target = (target.get('role') == 'managed' and
+                           type(identity_target.get('pid')) is int and
+                           identity_target['pid'] > 0 and
+                           isinstance(identity_target.get('creation_time'), str) and
+                           identity_target['creation_time'])
+    dump_reason = ('restoration audit failure after verified managed Job exit'
+                   if target.get('role') == 'supervisor' else
+                   ('managed hang/timeout'
+                    if 'timeout' in reason.lower() or 'did not exit' in reason.lower() else
+                    'live managed IPC stacks unavailable' if snapshot_stacks else
+                    None if stacks else 'managed stacks unavailable')
+                   if managed_dump_target else None)
     context = dict(timeline=request['timeline'], versions=versions, config_path=config,
                    stdout_stderr=read_file('stdout_stderr.log'),
                    run_log_window=read_file('run.log'), exception_text=reason,
@@ -109,11 +121,7 @@ def prepare(request, directories, package, deadline):
                    firewall_baseline=(baseline or {}).get('firewall'), artifact_metadata=metadata,
                    dump_target_pid=identity_target.get('pid'),
                    dump_target_creation=identity_target.get('creation_time'),
-                   dump_reason=('restoration audit failure after verified managed Job exit'
-                       if target.get('role') == 'supervisor' else 'managed hang/timeout'
-                       if 'timeout' in reason.lower() or 'did not exit' in reason.lower() else
-                       'live managed IPC stacks unavailable' if snapshot_stacks else
-                       None if stacks else 'managed stacks unavailable'))
+                   dump_reason=dump_reason)
     exit_report = request.get('exit_report')
     if exit_report is not None:
         context['exit_evidence'] = exit_report

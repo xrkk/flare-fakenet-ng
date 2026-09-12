@@ -28,6 +28,14 @@ class ExitRetention:
         # collects the owner dump concurrently; one owner, serialized access.
         self._call_lock = threading.RLock()
         self._helper_job = None
+        self._helper_admission_api = None
+        self._entry_read_attempts = 0
+        self._entry_read_diagnostic_errors = 0
+        self._entry_observed_monotonic = None
+        self._helper_creation_time = None
+        self._helper_deadline_monotonic = None
+        self._ack_attempted_monotonic = None
+        self._ack_published_monotonic = None
         from fakenet.mcp.diagnostic_process import DiagnosticError, DiagnosticOwner
         self._diagnostics = DiagnosticOwner(package_root)
         self._intent_diagnostics = DiagnosticOwner(package_root)
@@ -55,21 +63,52 @@ class ExitRetention:
             raise
 
     def _open_helper(self, identity):
+        self._helper_admission_api = 'OpenProcess'
         handle = TargetHandle(identity['pid'], allow_terminate=True, allow_job=True)
         try:
+            self._helper_admission_api = 'GetProcessTimes/QueryFullProcessImageNameW'
             actual = handle.identity()
             if (actual['creation_time'] != identity['creation_time'] or
                     actual['image'].casefold() != str(self.helper_image).casefold()):
                 raise RuntimeError('exit helper identity mismatch')
             from fakenet.mcp.jobobject import ManagedJob
             self._helper = handle
+            self._helper_admission_api = 'CreateJobObjectW/SetInformationJobObject'
             self._helper_job = ManagedJob()
-            self._helper_job.adopt_notification(handle.handle)
+            self._helper_job.adopt_notification(handle.handle,
+                                                observe=self._observe_helper_admission_api)
             return handle
         except BaseException:
             if self._helper is not handle:
                 handle.close()
             raise
+
+    def _observe_helper_admission_api(self, name):
+        self._helper_admission_api = name
+
+    def _owner_observation(self):
+        """Bounded timing/API facts for a real SPE helper handoff.
+
+        These fields are produced by the current supervisor only.  They make
+        a late helper, a queued diagnostic read and native Job admission
+        failures distinguishable without treating any incomplete result as a
+        successful exit observation.
+        """
+        result = dict(entry_read_attempts=getattr(self, '_entry_read_attempts', 0),
+                      entry_read_diagnostic_errors=getattr(
+                          self, '_entry_read_diagnostic_errors', 0))
+        for key in ('_entry_observed_monotonic', '_helper_creation_time',
+                    '_helper_deadline_monotonic', '_ack_attempted_monotonic',
+                    '_ack_published_monotonic'):
+            value = getattr(self, key, None)
+            if value is not None:
+                result[key[1:]] = value
+        return result
+
+    def _record_observation(self, report):
+        report = dict(report)
+        report['owner_observation'] = self._owner_observation()
+        return report
 
     def _call(self, operation, payload, deadline=None):
         # The poll round-trip must absorb slow child teardown under AV/EDR
@@ -162,42 +201,64 @@ class ExitRetention:
         self._publish('owner-result.json', report)
 
     def _watch(self):
+        failure_stage = 'poll managed target exit'
         try:
             from fakenet.mcp.diagnostic_process import DiagnosticError
             while True:
+                failure_stage = 'poll managed target exit'
                 now = time.monotonic()
                 if self.deadline is None and (self._target.exited() or self._cancel.is_set()):
                     self.deadline = now + 60
                 try:
+                    failure_stage = 'read exit helper entry'
+                    self._entry_read_attempts = getattr(self, '_entry_read_attempts', 0) + 1
                     entry = self._read_optional('entry.json')
                 except DiagnosticError:
                     # A lagging previous child keeps ownership briefly
                     # unresolved; polling is retryable and the deadline
                     # machinery bounds the wait. Dying here would leave the
                     # retention permanently unfinished.
+                    self._entry_read_diagnostic_errors = (
+                        getattr(self, '_entry_read_diagnostic_errors', 0) + 1)
                     time.sleep(0.5)
                     continue
                 if entry and self._helper is None:
+                    self._entry_observed_monotonic = time.monotonic()
+                    failure_stage = 'validate exit helper entry'
                     if entry.get('target') != self.record or entry.get('acquired') is not True:
                         raise RuntimeError('exit helper acquisition identity mismatch')
                     self._helper_identity = entry['helper']
+                    self._helper_creation_time = self._helper_identity.get('creation_time')
+                    self._helper_deadline_monotonic = entry.get('deadline_monotonic')
+                    failure_stage = 'open exit helper'
                     self._helper = self._open_helper(self._helper_identity)
+                    failure_stage = 'publish exit helper acknowledgment'
+                    self._ack_attempted_monotonic = time.monotonic()
                     self._publish('owner-acquired.json', dict(target=self.record, helper=self._helper_identity))
+                    self._ack_published_monotonic = time.monotonic()
                     created = int(self._helper_identity['creation_time']) / 10000000 - 11644473600
                     native_deadline = now + max(0, 60 - (time.time() - created))
                     self.deadline = min(self.deadline or float('inf'), native_deadline)
                 if self._helper is not None:
+                    failure_stage = 'read normal stop claim'
                     claim = self._read_optional('normal-claim.json')
                     if claim and not self._read_optional('normal-ack.json'):
+                        failure_stage = 'publish normal stop acknowledgment'
                         accepted = self.intent.accept_normal(claim.get('claim'), claim.get('notification', {}))
                         self._publish('normal-ack.json', dict(claim=claim.get('claim'), accepted=accepted))
+                    failure_stage = 'query exit helper state'
                     if self._helper.exited():
+                        failure_stage = 'read exit helper result'
                         report = self._read_optional('result.json')
                         if not report:
                             raise RuntimeError('helper ended without final result')
-                        self._finish(self._check_result(report))
+                        failure_stage = 'verify exit helper result'
+                        report = self._check_result(report)
+                        failure_stage = 'finalize exit helper result'
+                        self._finish(self._record_observation(report))
                         return
                 if self.deadline is not None and now >= self.deadline - 1:
+                    failure_stage = 'finalize exit evidence deadline'
                     self.intent.invalidate()
                     owner_dump = getattr(self, 'owner_dump', None)
                     if owner_dump is None and self._target is not None and not self._target.exited():
@@ -217,10 +278,10 @@ class ExitRetention:
                         self._helper.terminate_helper()
                         while not self._helper.exited() and time.monotonic() < self.deadline:
                             time.sleep(0.01)
-                    report = dict(complete=False, target=self.record,
+                    report = self._record_observation(dict(complete=False, target=self.record,
                                   error='exit evidence deadline exceeded or notification missing',
                                   completed_monotonic=time.monotonic(),
-                                  target_handle_closed=True)
+                                  target_handle_closed=True))
                     if owner_dump is not None:
                         report['dump'] = owner_dump
                         report['dump_owner_collected'] = True
@@ -254,7 +315,13 @@ class ExitRetention:
                     end = min(self.deadline or time.monotonic() + 5, time.monotonic() + 5)
                     while not self._helper.exited() and time.monotonic() < end:
                         time.sleep(0.01)
-                self._finish(dict(complete=False, target=self.record, error=self._failure))
+                report = dict(complete=False, target=self.record, error=self._failure,
+                              failure_stage=failure_stage)
+                if failure_stage == 'open exit helper':
+                    native_api = getattr(self, '_helper_admission_api', None)
+                    if native_api is not None:
+                        report['native_api'] = native_api
+                self._finish(self._record_observation(report))
             except BaseException as cleanup:
                 # An absent acquisition handle is not proof of absence.
                 # Keep ownership when the residual check could not establish

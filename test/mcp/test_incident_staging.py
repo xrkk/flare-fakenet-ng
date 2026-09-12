@@ -128,3 +128,49 @@ def test_oversized_source_becomes_unavailable_not_unbounded(tmp_path, monkeypatc
     incident_task.collect_stage(dict(run_id=run_id, staging=request['token']),
                                 directories, tmp_path, time.monotonic() + 30)
     assert contexts[0]['stdout_stderr'] is None
+
+
+def test_post_job_stack_snapshot_never_escalates_a_dead_managed_dump_target(
+        tmp_path, monkeypatch):
+    """A saved stack observation is evidence, not permission to dump an exited PID.
+
+    P05 diverter_stop produced a second incident after the managed Job had
+    already become empty.  Its retained exit report remained explicitly
+    incomplete, but the incident preparer nevertheless requested a managed
+    dump without an identity.  That turns a truthful skipped escalation into
+    a synthetic ``managed dump target identity unavailable`` failure.
+    """
+    from fakenet.mcp.managed_stacks import save_stacks
+
+    request = _request(
+        reason='managed exit evidence incomplete',
+        managed={'identity': {'pid': 4756, 'creation_time': '134337052233887438'},
+                 'exit_code': 1, 'job_members': []},
+        dump_target=None,
+        exit_report={'complete': False, 'error': 'OSError(..., 87)'})
+    run_dir = tmp_path / 'runs' / request['run_id']
+    run_dir.mkdir(parents=True)
+    save_stacks(run_dir, request['run_id'], request['managed']['identity'],
+                'managed stack snapshot captured before the Job ended')
+
+    _prepare(tmp_path, monkeypatch, request)
+    staging = (tmp_path / request['run_id'] /
+               ('incident-staging-%s.json' % request['token']))
+    context = json.loads(staging.read_text(encoding='utf-8'))
+
+    assert context['dump_target_pid'] is None
+    assert context['dump_target_creation'] is None
+    assert context['dump_reason'] is None
+    assert context['exit_evidence']['complete'] is False
+
+    # The collector keeps the actual exit-evidence failure visible, but its
+    # dump member is a truthful no-escalation skip instead of a failed call
+    # with no target identity.
+    from fakenet.mcp.incident import IncidentCollector
+    collector = IncidentCollector(tmp_path, request['run_id'])
+    collector.collect(context)
+    entries = {entry['item']: entry for entry in collector.manifest}
+    assert entries['userdump.dmp']['result'] == 'skipped'
+    assert entries['userdump.dmp']['failure_reason'] == 'no escalation condition'
+    assert entries['managed-exit.json']['result'] == 'failed'
+    assert entries['managed-exit.json']['failure_reason'] == 'exit evidence incomplete'
