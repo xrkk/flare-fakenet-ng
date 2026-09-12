@@ -214,6 +214,12 @@ class ExitRetention:
                     if owner_dump is not None:
                         report['dump'] = owner_dump
                         report['dump_owner_collected'] = True
+                        # The grace-timeout branch of the two-dump contract
+                        # is satisfied by the verified owner-collected dump:
+                        # no helper ever fires for Job termination, so this
+                        # IS the complete evidence for that path.
+                        report['complete'] = True
+                        report['error'] = None
                     # Helper-less finalization runs beside the supervisor's
                     # incident collection; child spawns there can queue past
                     # any per-call budget. The watch thread holds no lock, so
