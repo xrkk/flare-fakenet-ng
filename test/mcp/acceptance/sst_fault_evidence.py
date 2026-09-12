@@ -274,10 +274,23 @@ def assess(case, root, expected_candidate=CANDIDATE):
                     and detail.get('capture_error') is None and len(dead) == 1
                     and any(h < 0 for h in dead[0].get('handles', []))), 'listener-specific failed start inputs'
         if fault == 'diverter_stop':
+            listeners = detail.get('listeners', [])
+            dead = [x for x in listeners if x.get('alive') is not True]
+            # windows._watch_diverter_thread stops policy listeners after the
+            # native main receiver exits. This known consequence may precede
+            # the start reply; an unrelated listener failure still rejects it.
+            logs = [raw.decode('utf-8-sig') for path, raw in evidence.data.items()
+                    if Path(path).name == 'run.log']
+            relay_stopped = (len(dead) == 1
+                and dead[0].get('name') == dead[0].get('provider') == 'DomainEgressRelay'
+                and dead[0].get('handles') == [-1]
+                and len(listeners) > 1
+                and len(logs) == 1
+                and re.search(r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} CRITICAL Diverter '
+                    r'WinDivert receiver exited; closing capture and restoring network\r?$', logs[0], re.M))
             return (diverter_action() and detail.get('init_evidence') is True
                     and detail.get('probe') is False and detail.get('capture_error') is None
-                    and bool(detail.get('listeners'))
-                    and all(x.get('alive') for x in detail['listeners'])), 'native main handle closure with other startup inputs intact'
+                    and bool(listeners) and (not dead or relay_stopped)), 'native main handle closure; only evidenced policy-relay teardown allowed'
         return False, 'native start probe does not independently expose main-handle close'
 
     def diverter_action():

@@ -164,6 +164,23 @@ class EvidenceOracleTests(unittest.TestCase):
             return {x['id']:x['passed'] for x in sst.assess(case,root)['checks']}
         self.assertTrue(observe()['trigger_success'])
         self.assertTrue(observe()['start_attribution'])
+        # A main receiver exit stops the policy relay before the start reply.
+        ipc = json.loads((root/'ipc.json').read_text())
+        ipc['frame']['result']['listeners'] = [dict(name='RawTCPListener', alive=True),
+            dict(name='DomainEgressRelay', provider='DomainEgressRelay', alive=False, handles=[-1])]
+        def update_file(name, raw):
+            (root/name).write_bytes(raw)
+            case['files'] = [f for f in case['files'] if f['path'] != name]
+            case['files'].append(dict(path=name, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
+            if name == 'ipc.json':
+                case['start_response_ref']['byte_end'] = len(raw)
+        update_file('ipc.json', json.dumps(ipc).encode())
+        self.assertFalse(observe()['start_attribution'])  # no receiver-exit evidence
+        update_file('run.log', b'2026-09-12 19:29:15,000 CRITICAL Diverter WinDivert receiver exited; closing capture and restoring network\n')
+        self.assertTrue(observe()['start_attribution'])
+        ipc['frame']['result']['listeners'][0]['alive'] = False
+        update_file('ipc.json', json.dumps(ipc).encode())
+        self.assertFalse(observe()['start_attribution'])  # unrelated failed listener
         action['after']['handle']=101
         self.assertFalse(observe()['trigger_success'])
         action['after'].update(handle=100,last_error=5)
