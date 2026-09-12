@@ -213,7 +213,9 @@ class FaultInjector:
         before = native_handle_observation(raw_handle)
         began = time.time_ns()
         try:
-            handle.close()
+            # Use the same close boundary as normal teardown: PyDivert 2.1.0
+            # otherwise treats a stale Windows last-error as a close failure.
+            diverter._close_windivert_handle()
             after = native_handle_observation(raw_handle)
             ended = time.time_ns()
             receipt = json.loads((Path.cwd() / 'fault-triggered.json').read_text(encoding='utf-8'))

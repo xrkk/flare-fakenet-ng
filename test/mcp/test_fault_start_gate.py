@@ -80,3 +80,44 @@ def test_native_handle_query_distinguishes_open_and_closed_handle():
         assert kernel.CloseHandle(handle)
     after = faultinject.native_handle_observation(handle)
     assert after['return_code'] == 0 and after['last_error'] == 6
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows last-error semantics required')
+def test_diverter_fault_clears_stale_error_and_preserves_action(tmp_path, monkeypatch):
+    import ctypes
+    from fakenet.diverters.windows import Diverter
+
+    injector, logs, arm = setup_gate(tmp_path, monkeypatch)
+    faultinject._fault_file().unlink()
+    injector.arm('diverter_stop')
+    closed = []
+
+    class Handle:
+        _handle = 123
+
+        def close(self):
+            # PyDivert 2.1.0's wrapper checks last-error even after success.
+            closed.append(True)
+            if ctypes.windll.kernel32.GetLastError():
+                raise ctypes.WinError()
+
+    diverter = Diverter.__new__(Diverter)
+    diverter.handle = Handle()
+    monkeypatch.setattr(faultinject, 'native_handle_observation', lambda raw: {
+        'handle': raw, 'return_code': 0 if closed else 1,
+        'last_error': 6 if closed else 0})
+    # clear() includes filesystem operations which can leave ERROR_FILE_NOT_FOUND.
+    original_clear = faultinject.clear
+    def clear_with_stale_error():
+        original_clear()
+        ctypes.windll.kernel32.SetLastError(2)
+    monkeypatch.setattr(faultinject, 'clear', clear_with_stale_error)
+
+    assert injector.inject_diverter_stop(diverter)
+    action = json.loads((tmp_path / 'run-identity' / 'fault-action.json').read_text())
+    assert closed == [True]
+    assert diverter.handle is None
+    assert action['before']['return_code'] == 1
+    assert action['after']['last_error'] == 6
+    assert action['fault'] == 'diverter_stop'
+    assert action['start_time_ns'] <= action['end_time_ns']
