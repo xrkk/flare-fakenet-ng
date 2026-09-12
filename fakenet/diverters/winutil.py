@@ -1420,14 +1420,22 @@ class WinUtilMixin(diverterbase.DiverterPerOSDelegate):
 
         Size = ULONG(0)
 
-        windll.iphlpapi.GetAdaptersAddresses(AF_INET, 0, None, None,
-                                             byref(Size))
+        sizing_result = windll.iphlpapi.GetAdaptersAddresses(
+            AF_INET, 0, None, None, byref(Size))
+        self._last_get_adapters_addresses = {
+            'sizing_result': int(sizing_result),
+            'buffer_size': int(Size.value),
+            'result': None,
+        }
 
         AdapterAddresses = create_string_buffer(Size.value)
         pAdapterAddresses = cast(AdapterAddresses,
                                  POINTER(IP_ADAPTER_ADDRESSES))
 
-        if not windll.iphlpapi.GetAdaptersAddresses(AF_INET, 0, None, pAdapterAddresses, byref(Size)) == NO_ERROR:
+        result = windll.iphlpapi.GetAdaptersAddresses(
+            AF_INET, 0, None, pAdapterAddresses, byref(Size))
+        self._last_get_adapters_addresses['result'] = int(result)
+        if result != NO_ERROR:
             self.logger.error('Failed calling GetAdaptersAddresses')
             return
 
@@ -1476,12 +1484,19 @@ class WinUtilMixin(diverterbase.DiverterPerOSDelegate):
 
         OutBufLen = DWORD(0)
 
-        windll.iphlpapi.GetAdaptersInfo(None, byref(OutBufLen))
+        sizing_result = windll.iphlpapi.GetAdaptersInfo(None, byref(OutBufLen))
+        self._last_get_adapters_info = {
+            'sizing_result': int(sizing_result),
+            'buffer_size': int(OutBufLen.value),
+            'result': None,
+        }
 
         AdapterInfo = create_string_buffer(OutBufLen.value)
         pAdapterInfo = cast(AdapterInfo, POINTER(IP_ADAPTER_INFO))
 
-        if not windll.iphlpapi.GetAdaptersInfo(byref(AdapterInfo), byref(OutBufLen)) == NO_ERROR:
+        result = windll.iphlpapi.GetAdaptersInfo(byref(AdapterInfo), byref(OutBufLen))
+        self._last_get_adapters_info['result'] = int(result)
+        if result != NO_ERROR:
             self.logger.error('Failed calling GetAdaptersInfo')
             return
 

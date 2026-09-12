@@ -103,6 +103,15 @@ def execute(operation, payload, deadline, watchdog=None):
         copied = ArtifactRegistry(artifacts).register_fakenet_outputs(
             run_id, artifacts / 'runs' / run_id, prefix='')
         return dict(count=len(copied))
+    if operation == 'pre-start-native-network':
+        from fakenet.mcp.paths import data_directories
+        from fakenet.mcp.startup_network import persist_and_assert
+        run_id = _run_id(payload['run_id'])
+        artifacts = data_directories()['artifacts'].resolve()
+        run_dir = (artifacts / 'runs' / run_id).resolve()
+        if not run_dir.is_dir() or run_dir.parent != (artifacts / 'runs').resolve():
+            raise ValueError('pre-start network run directory unavailable')
+        return persist_and_assert(run_dir)
     raise ValueError('unknown diagnostic operation')
 
 

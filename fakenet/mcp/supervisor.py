@@ -18,6 +18,16 @@ HEALTH_INTERVAL_SECONDS = 2.0
 LOG_WINDOW_BYTES = 65536
 LOG_READ_LIMIT_BYTES = 4 * 1024 * 1024
 RESTART_SETTLE_SECONDS = 5.0
+STARTUP_NETWORK_DEADLINE_SECONDS = 30.0
+
+
+def _assert_startup_network_ready(run_id, parsed, diagnostic_call):
+    """Keep the pre-baseline check identical to FakeNet's diversion branch."""
+    if str(parsed.fakenet_config.get('diverttraffic', '')).lower() != 'yes':
+        return None
+    return diagnostic_call(
+        'pre-start-native-network', dict(run_id=run_id),
+        time.monotonic() + STARTUP_NETWORK_DEADLINE_SECONDS)
 
 
 def evaluate_health_evidence(detail, run_log):
@@ -156,6 +166,7 @@ class RealSupervisor:
                         parsed.diverter_config[key] = str(self._run_dir / value)
                 from fakenet.mcp.baseline import settle_dead_socket_rows
                 settle_dead_socket_rows()
+                _assert_startup_network_ready(run_id, parsed, self._diagnostic_call)
                 saved = self._baseline_store.save(run_id)
                 self._marker = dict(run_id=run_id, controller_id=controller,
                                     state_version=coordinator.snapshot()['state_version'],
