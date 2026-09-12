@@ -30,6 +30,15 @@ RuntimeError: injected cleanup error
 
 
 class EvidenceOracleTests(unittest.TestCase):
+    def test_domain_probe_uses_connected_numeric_endpoint(self):
+        event = {'dst': 'api.deepseek.com:443', 'actual_dst': '60.28.220.199:443'}
+        self.assertEqual(sst.connection_destination(event), '60.28.220.199:443')
+        self.assertTrue(sst.packet_matches_session(
+            '192.168.204.233.61824 > 60.28.220.199.443: Flags [R.]',
+            '192.168.204.233:61824', sst.connection_destination(event)))
+        self.assertEqual(sst.connection_destination({'dst': '198.51.100.77:1337'}),
+                         '198.51.100.77:1337')
+
     def test_packet_requires_exact_both_endpoints_in_either_direction(self):
         src, dst = '192.168.204.233:61824', '198.51.100.77:1337'
         packet = 'length 66: 192.168.204.233.61824 > 198.51.100.77.1337: Flags [R.], seq 1'

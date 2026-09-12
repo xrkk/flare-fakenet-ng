@@ -43,6 +43,12 @@ def packet_matches_session(packet, src, dst):
     return pairs[0] in (forward, forward[::-1])
 
 
+def connection_destination(established):
+    # A hostname is the requested target; packet tuples use the connected
+    # socket's numeric RemoteEndPoint recorded by the raw probe.
+    return established.get('actual_dst') or established.get('dst')
+
+
 def exception_blocks(text):
     starts = [m.start() for m in HEADER.finditer(text)]
     cuts = sorted(set([0] + starts + [len(text)]))
@@ -369,7 +375,7 @@ def assess(case, root, expected_candidate=CANDIDATE):
         address, port = established['src'].rsplit(':', 1)
         if not all(token in managed for token in (f'pid={session["probe_pid"]} ', f'sport={port} ', f'src={address}')):
             raise EvidenceError('managed flow is not this VM outbound probe')
-        if established.get('dst') != session['dst'] or established['src'] != session['src']:
+        if connection_destination(established) != session['dst'] or established['src'] != session['src']:
             raise EvidenceError('connection tuple mismatch')
         if not session['packet_refs']:
             raise EvidenceError('independent packet capture is missing')
