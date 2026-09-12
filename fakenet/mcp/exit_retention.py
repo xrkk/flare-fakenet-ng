@@ -287,6 +287,7 @@ class ExitRetention:
         handle with its own budget. This is the P04 two-dump contract's
         grace-timeout branch; failure keeps the incomplete report, it never
         invents evidence."""
+        from fakenet.mcp.diagnostic_process import DiagnosticError
         if self._helper is not None or self._target is None or self._target.exited():
             return None
         import hashlib
