@@ -335,6 +335,70 @@ def test_positive_curl_branch_binds_its_pid_flow_and_outer_nic_tuple():
         assert not runner._traffic_oracle(run, profile, nonce, sentinel)['passed']
 
 
+def test_auxiliary_cases_are_released_for_any_healthy_primary_interleave():
+    """B1/B2/B4 boundary cases wait for health, independently of primary timing."""
+    runner = object.__new__(suite.Suite)
+    calls = []
+
+    def release(capture, profile):
+        calls.append(('release', capture, profile['interleave']))
+        return {'phase': 'after-healthy'}
+
+    def await_cases(capture, profile, count):
+        calls.append(('await', capture, count))
+        return {'case_close_count': count}
+
+    runner._release_probe_cases = release
+    runner._await_probe_cases = await_cases
+    profile = {'interleave': 'before-start',
+               'negative_cases': ({'expectation': 'deny'},),
+               'probe_cases': ({'expectation': 'takeover_allow'},)}
+    run = {}
+    runner._run_auxiliary_cases(run, {'case': 'probe.cases'}, profile)
+    assert calls == [('release', {'case': 'probe.cases'}, 'before-start'),
+                     ('await', {'case': 'probe.cases'}, 2)]
+    assert run == {'case_release': {'phase': 'after-healthy'},
+                   'case_completion': {'case_close_count': 2}}
+
+
+def test_host_only_transfer_serves_only_the_staged_probe_and_stops(monkeypatch):
+    """Staging must never expose a directory or leave a host-only listener running."""
+    created = []
+
+    class FakeServer:
+        def __init__(self, address, handler):
+            created.append((address, handler))
+            self.server_address = (address[0], 31337)
+            self.daemon_threads = False
+            self.shutdown_called = False
+            self.close_called = False
+
+        def serve_forever(self):
+            return
+
+        def shutdown(self):
+            self.shutdown_called = True
+
+        def server_close(self):
+            self.close_called = True
+
+    monkeypatch.setattr(suite.http.server, 'ThreadingHTTPServer', FakeServer)
+    with tempfile.TemporaryDirectory() as temp:
+        source = Path(temp) / 'scenario_probes.ps1'
+        source.write_bytes(b'probe-bytes')
+        with suite.HostOnlyFileTransfer(source, 'scenario_probes.ps1') as transfer:
+            assert transfer.url.startswith('http://192.168.204.1:')
+            assert transfer.url.endswith('/scenario_probes.ps1')
+            assert transfer.sha256 == hashlib.sha256(b'probe-bytes').hexdigest()
+            assert transfer.record()['stopped'] is False
+        record = transfer.record()
+        assert record['bind'] == '192.168.204.1'
+        assert record['bytes'] == len(b'probe-bytes')
+        assert record['stopped'] is True
+        assert created[0][0] == ('192.168.204.1', 0)
+        assert transfer.server.shutdown_called and transfer.server.close_called
+
+
 def test_vm_transport_ignores_sse_heartbeats_but_rejects_ambiguous_events():
     payload = ': ping\n\nevent: message\ndata: {"jsonrpc":"2.0","result":{}}\n\n'
     assert suite.RawMcp._decode_event_stream(payload) == '{"jsonrpc":"2.0","result":{}}'

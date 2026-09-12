@@ -20,6 +20,7 @@ import argparse
 import base64
 import datetime as dt
 import hashlib
+import http.server
 import importlib.util
 import ipaddress
 import json
@@ -66,6 +67,68 @@ class SuiteError(RuntimeError):
 
 class Blocked(SuiteError):
     """A precondition cannot be proved; callers must not continue."""
+
+
+class HostOnlyFileTransfer:
+    """Serve one immutable test input on the authorized host-only address."""
+
+    def __init__(self, source: Path, public_name: str):
+        self.source = source
+        self.public_name = public_name
+        self.payload = source.read_bytes()
+        self.sha256 = hashlib.sha256(self.payload).hexdigest()
+        self.requests: list[dict[str, Any]] = []
+        self.server: http.server.ThreadingHTTPServer | None = None
+        self.thread: threading.Thread | None = None
+        self.stopped = False
+        self.port: int | None = None
+
+    @property
+    def url(self) -> str:
+        if self.port is None:
+            raise RuntimeError('host-only transfer has not started')
+        return 'http://192.168.204.1:%d/%s' % (self.port, self.public_name)
+
+    def __enter__(self) -> 'HostOnlyFileTransfer':
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - base-class contract
+                if self.path != '/' + outer.public_name:
+                    outer.requests.append({'method': 'GET', 'path': self.path, 'status': 404})
+                    self.send_error(404)
+                    return
+                outer.requests.append({'method': 'GET', 'path': self.path, 'status': 200,
+                                       'bytes': len(outer.payload)})
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/octet-stream')
+                self.send_header('Content-Length', str(len(outer.payload)))
+                self.end_headers()
+                self.wfile.write(outer.payload)
+
+            def log_message(self, _format: str, *args: Any) -> None:
+                return
+
+        self.server = http.server.ThreadingHTTPServer(('192.168.204.1', 0), Handler)
+        self.server.daemon_threads = True
+        self.port = int(self.server.server_address[1])
+        self.thread = threading.Thread(target=self.server.serve_forever,
+                                       name='scenario-probe-hostonly-transfer', daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, _type: Any, _value: Any, _traceback: Any) -> None:
+        if self.server is not None:
+            self.server.shutdown()
+            self.server.server_close()
+        if self.thread is not None:
+            self.thread.join(timeout=10)
+        self.stopped = True
+
+    def record(self) -> dict[str, Any]:
+        return {'bind': '192.168.204.1', 'url': self.url, 'name': self.public_name,
+                'sha256': self.sha256, 'bytes': len(self.payload),
+                'requests': list(self.requests), 'stopped': self.stopped}
 
 
 def utc_now() -> str:
@@ -895,13 +958,24 @@ class Suite:
         assert self.vm
         script = (Path(__file__).with_name('scenario_probes.ps1')).read_bytes()
         guest = GUEST_ROOT + r'\scenario-suite-20260912\scenario_probes.ps1'
-        command = (
-            "$ErrorActionPreference='Stop';$p=" + quote_ps(guest) + ";"
-            "New-Item -ItemType Directory -Force -Path (Split-Path $p) | Out-Null;"
-            "[IO.File]::WriteAllBytes($p,[Convert]::FromBase64String(" +
-            quote_ps(base64.b64encode(script).decode('ascii')) + "));"
-            "@{path=$p;sha256=(Get-FileHash $p -Algorithm SHA256).Hash.ToLower();bytes=(Get-Item $p).Length}|ConvertTo-Json -Compress")
-        value, raw = self._vm_json(command, 120)
+        source = Path(__file__).with_name('scenario_probes.ps1')
+        with HostOnlyFileTransfer(source, 'scenario_probes.ps1') as transfer:
+            temporary = guest + '.download-' + uuid.uuid4().hex
+            command = (
+                "$ErrorActionPreference='Stop';$p=" + quote_ps(guest) + ";$tmp=" + quote_ps(temporary) +
+                ";$uri=" + quote_ps(transfer.url) + ";"
+                "New-Item -ItemType Directory -Force -Path (Split-Path $p) | Out-Null;"
+                "try{$web=New-Object Net.WebClient;$web.Proxy=$null;$web.DownloadFile($uri,$tmp);"
+                "$sha=(Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower();if($sha -ne " + quote_ps(hashlib.sha256(script).hexdigest()) +
+                "){throw 'host-only scenario probe SHA-256 mismatch'};if(Test-Path $p){Remove-Item -LiteralPath $p -Force};[IO.File]::Move($tmp,$p);"
+                "@{path=$p;sha256=(Get-FileHash $p -Algorithm SHA256).Hash.ToLower();bytes=(Get-Item $p).Length;uri=$uri}|ConvertTo-Json -Compress}"
+                "finally{if(Test-Path $tmp){Remove-Item -LiteralPath $tmp -Force}}")
+            value, raw = self._vm_json(command, 120)
+        transfer_record = transfer.record()
+        if transfer_record['requests'] != [{'method': 'GET', 'path': '/scenario_probes.ps1',
+                                            'status': 200, 'bytes': len(script)}]:
+            raise SuiteError('host-only probe transfer request is incomplete or ambiguous')
+        value['host_only_transfer'] = transfer_record
         if value.get('sha256') != hashlib.sha256(script).hexdigest() or value.get('bytes') != len(script):
             raise SuiteError('guest probe staging hash mismatch')
         value['raw'] = raw
@@ -1157,6 +1231,20 @@ class Suite:
             "if($null -eq $result){throw 'released probe cases/curl did not complete within 90 seconds'};$result|ConvertTo-Json -Depth 6 -Compress", 105)
         value['raw'] = raw
         return value
+
+    def _run_auxiliary_cases(self, run: dict[str, Any], capture: dict[str, Any],
+                             profile: dict[str, Any]) -> None:
+        """Release and observe every boundary case after this run is healthy.
+
+        Boundary probes deliberately have their own control file: their
+        ``after-healthy`` timing must not be coupled to the primary probe's
+        declared lifecycle interleave.  Keeping the release and completion in
+        one helper also makes the first and restart runs use the same contract.
+        """
+        cases = list(profile.get('negative_cases', ())) + list(profile.get('probe_cases', ()))
+        run['case_release'] = self._release_probe_cases(capture, profile)
+        if run['case_release'] is not None:
+            run['case_completion'] = self._await_probe_cases(capture, profile, len(cases))
 
     def _stop_capture_and_probe(self, capture: dict[str, Any]) -> dict[str, Any]:
         assert self.vm
@@ -2257,12 +2345,7 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                 if interleave in ('after-healthy', 'restart-window'):
                     first_run['probe_release'] = self._release_probe(
                         captures[first_label], interleave)
-                    first_run['case_release'] = self._release_probe_cases(
-                        captures[first_label], runtime_profile)
-                if first_run['case_release'] is not None:
-                    first_run['case_completion'] = self._await_probe_cases(
-                        captures[first_label], runtime_profile, len(list(runtime_profile.get('negative_cases', ())) +
-                                                   list(runtime_profile.get('probe_cases', ()))))
+                self._run_auxiliary_cases(first_run, captures[first_label], runtime_profile)
                 if scenario.get('lifecycle_chain') == 'restart':
                     # Bind the first run before restart changes current-run
                     # identity.  Its probe/ETL is independent of run-02.
@@ -2299,12 +2382,7 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                     runs.append(active_run)
                     if restarted.get('state') != 'healthy':
                         raise SuiteError('restart did not publish healthy')
-                    active_run['case_release'] = self._release_probe_cases(
-                        captures[second_label], runtime_profile)
-                    if active_run['case_release'] is not None:
-                        active_run['case_completion'] = self._await_probe_cases(
-                            captures[second_label], runtime_profile, len(list(runtime_profile.get('negative_cases', ())) +
-                                                        list(runtime_profile.get('probe_cases', ()))))
+                    self._run_auxiliary_cases(active_run, captures[second_label], runtime_profile)
                 else:
                     active_run = first_run
                 for sample_index in range(3):
