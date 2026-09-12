@@ -556,7 +556,13 @@ class RealSupervisor:
         deadline = min(deadline or float('inf'), time.monotonic() + 180)
         child, retained = self._fakenet, self._exit_retention
         exit_report = None
-        if retained is not None and (child is None or not child.alive() or retained.deadline is not None):
+        # A grace-timeout reason means the tree is being torn down now and
+        # the owner dump lands within the retention window; awaiting it here
+        # lets the incident consume the verified dump as precollected exit
+        # evidence instead of failing on an already-dead dump target.
+        grace_timeout = ('did not exit' in reason.lower() or 'timeout' in reason.lower())
+        if retained is not None and (child is None or not child.alive() or
+                                     retained.deadline is not None or grace_timeout):
             # window (60s) plus the owner's bounded finalization budget
             exit_report = self._await_exit_evidence(min(deadline, time.monotonic()+120))
         stacks = None
