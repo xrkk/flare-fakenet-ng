@@ -409,7 +409,13 @@ class RealSupervisor:
                             # root-cause dump now, before the Job ends the
                             # tree (the silent-process-exit report never fires
                             # for Job termination, so the helper never will).
-                            self._exit_retention.collect_owner_dump()
+                            # A failed collection must not overwrite the hang
+                            # classification that drives the incident's dump.
+                            try:
+                                self._exit_retention.collect_owner_dump()
+                            except BaseException as dump_exc:
+                                logger.error('owner dump collection failed: %r', dump_exc)
+                                self._health_cache['owner_dump_error'] = repr(dump_exc)
                     reason = str(exc)
                     coordinator.update_health_state('failed', reason)
                     # A lost stop reply can outlive the entire managed tree.
