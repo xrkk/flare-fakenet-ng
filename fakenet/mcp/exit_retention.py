@@ -200,6 +200,16 @@ class ExitRetention:
                 if self.deadline is not None and now >= self.deadline - 1:
                     self.intent.invalidate()
                     owner_dump = getattr(self, 'owner_dump', None)
+                    if owner_dump is None and self._target is not None and not self._target.exited():
+                        # The helper produced no dump and is about to be
+                        # ended; the still-live hung target is dumpable now
+                        # and never will be again.
+                        try:
+                            owner_dump = self.collect_owner_dump(force=True)
+                        except BaseException as exc:
+                            import logging
+                            logging.getLogger('fakenetng-mcp.exitretention').error(
+                                'deadline owner dump fallback failed: %r', exc)
                     # The window bounds waiting for evidence, not the owner's
                     # own finalization; slow teardown needs its own budget.
                     self._end_helpers(time.monotonic() + FINALIZE_BUDGET)
@@ -283,7 +293,7 @@ class ExitRetention:
                 return self.result
             time.sleep(0.05)
 
-    def collect_owner_dump(self, budget=45):
+    def collect_owner_dump(self, budget=45, force=False):
         """Root-cause dump for a still-live hung target, owner-side.
 
         Windows does not raise the silent-process-exit report for processes
@@ -294,7 +304,9 @@ class ExitRetention:
         grace-timeout branch; failure keeps the incomplete report, it never
         invents evidence."""
         from fakenet.mcp.diagnostic_process import DiagnosticError
-        if self._helper is not None or self._target is None or self._target.exited():
+        if self._target is None or self._target.exited():
+            return None
+        if self._helper is not None and not force:
             return None
         import hashlib
         from fakenet.mcp.dumpworker import collect_dump
