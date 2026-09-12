@@ -30,6 +30,20 @@ RuntimeError: injected cleanup error
 
 
 class EvidenceOracleTests(unittest.TestCase):
+    def test_probe_identity_uses_matching_native_child_ready(self):
+        launcher = dict(event='ready', pid=10, nonce='n', creation_ticks=100)
+        child = dict(event='process_ready', pid=11, nonce='n', creation_ticks=200)
+        established = dict(event='established', pid=11, nonce='n')
+        self.assertTrue(sst.probe_identity_matches([launcher, child, established], established, 200))
+        self.assertFalse(sst.probe_identity_matches([launcher, child, established], established, 100))
+        self.assertFalse(sst.probe_identity_matches([launcher, established, child], established, 200))
+        self.assertFalse(sst.probe_identity_matches(
+            [launcher, dict(child, nonce='other'), established], established, 200))
+        self.assertFalse(sst.probe_identity_matches(
+            [launcher, child, dict(child, creation_ticks=300), established], established, 200))
+        ordinary = dict(established, pid=10)
+        self.assertTrue(sst.probe_identity_matches([launcher, ordinary], ordinary, 100))
+
     def test_domain_probe_uses_connected_numeric_endpoint(self):
         event = {'dst': 'api.deepseek.com:443', 'actual_dst': '60.28.220.199:443'}
         self.assertEqual(sst.connection_destination(event), '60.28.220.199:443')

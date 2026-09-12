@@ -49,6 +49,19 @@ def connection_destination(established):
     return established.get('actual_dst') or established.get('dst')
 
 
+def probe_identity_matches(events, established, creation):
+    """Bind the socket owner, which can differ from the probe launcher."""
+    identities = set()
+    for row in events:
+        if row == established:
+            return identities == {creation} and isinstance(creation, int) and creation > 0
+        if (row.get('event') in ('ready', 'process_ready')
+                and row.get('pid') == established.get('pid')
+                and row.get('nonce') == established.get('nonce')):
+            identities.add(row.get('creation_ticks'))
+    return False
+
+
 def hanging_children(snapshot, run):
     if not isinstance(snapshot, dict):
         return []
@@ -375,12 +388,11 @@ def assess(case, root, expected_candidate=CANDIDATE):
                 raise EvidenceError('cannot splice different/retried connections')
         # End at the first observed close/error/EOF for this exact attempt.
         lifecycle = []
-        first_probe = json.loads(evidence.data[session['established_ref']['path']].splitlines()[0])
-        if (first_probe.get('creation_ticks') != session['probe_creation']
-                or first_probe.get('pid') != session['probe_pid']):
+        probe_events = [json.loads(line) for line in
+                        evidence.data[session['established_ref']['path']].splitlines()]
+        if not probe_identity_matches(probe_events, established, session['probe_creation']):
             raise EvidenceError('probe process creation identity mismatch')
-        for raw_line in evidence.data[session['established_ref']['path']].splitlines():
-            row = json.loads(raw_line)
+        for row in probe_events:
             if all(row.get(k) == established[k] for k in ('pid', 'worker', 'seq', 'nonce')):
                 lifecycle.append(row)
         ends = [x for x in lifecycle if x.get('event') in ('eof', 'error', 'close')]
