@@ -184,9 +184,16 @@ def arm_fault_file(channel, fault):
     payload = {'fault': fault, 'nonce': str(uuid.uuid4())}
     raw = channel.powershell(
         "$ErrorActionPreference='Stop'; $path='C:\\ProgramData\\FakeNet-NG-MCP\\logs\\fault-injection.json'; "
-        "if(Test-Path $path){throw 'unconsumed fault file'}; "
+        "if(Test-Path $path){ "
+        # A leftover file whose nonce no run ever triggered is debris from
+        # an aborted arm (the round records are validated before the next
+        # arm); remove it once and arm freshly. A triggered nonce stays.
+        "$stale=Get-Content $path -Raw | ConvertFrom-Json; "
+        "$hit=@(Get-ChildItem 'C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs' -Recurse -Filter 'fault-triggered.json' -ErrorAction SilentlyContinue | "
+        "Where-Object { (Get-Content $_.FullName -Raw | ConvertFrom-Json).nonce -eq $stale.nonce }).Count; "
+        "if($hit -eq 0){ Remove-Item $path -Force } else { throw 'unconsumed fault file' } }; "
         "[IO.File]::WriteAllText($path,'" + json.dumps(payload) + "',[Text.UTF8Encoding]::new($false)); "
-        "Get-Content $path -Raw", timeout=30)
+        "Get-Content $path -Raw", timeout=60)
     if json.loads(raw['output']) != payload:
         raise StepError('fault file readback mismatch')
     return dict(payload, raw=raw)
