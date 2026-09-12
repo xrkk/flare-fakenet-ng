@@ -2010,17 +2010,80 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
             raise SuiteError('same-run recovery audit lacks five original sections: ' + run_id)
         return audit, current
 
-    def _cleanup_native(self) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Collect post-stop native residue facts used by the fault oracle."""
-        return self._vm_json(
+    def _recorded_probe_identities(self, run: dict[str, Any], nonce: str) -> list[dict[str, Any]]:
+        """Return the PID/UTC-creation tuples sealed in this attempt's JSONL.
+
+        A PID can be reused, so the post-stop residue query must compare the
+        raw PID and ``StartTime.ToUniversalTime().Ticks``.  ``ready`` binds
+        the launcher, ``process_ready`` the B3 native child, and
+        ``curl_started`` any explicitly recorded curl child.
+        """
+        capture = run.get('capture') or {}
+        relative = capture.get('probe_path')
+        if not isinstance(relative, str) or not relative:
+            raise SuiteError('fault cleanup has no transferred probe JSONL')
+        path = (self.root / relative).resolve()
+        if not path.is_relative_to(self.root.resolve()) or not path.is_file():
+            raise SuiteError('fault cleanup probe JSONL is missing/escaping')
+        identities: list[dict[str, Any]] = []
+        for event in self._read_probe_events(path):
+            if event.get('nonce') != nonce or event.get('event') not in {
+                    'ready', 'process_ready', 'curl_started'}:
+                continue
+            pid, ticks = event.get('pid'), event.get('creation_ticks')
+            if type(pid) is not int or type(ticks) is not int or pid <= 0 or ticks <= 0:
+                raise SuiteError('probe identity lacks exact PID/creation ticks: ' + str(event.get('event')))
+            identities.append({'pid': pid, 'creation_ticks': ticks, 'event': event['event']})
+        if not identities or not any(item['event'] == 'ready' for item in identities):
+            raise SuiteError('fault cleanup lacks the probe wrapper identity')
+        launcher = capture.get('probe_launcher_pid')
+        ready = [item for item in identities if item['event'] == 'ready']
+        if type(launcher) is not int or len(ready) != 1 or ready[0]['pid'] != launcher:
+            raise SuiteError('probe wrapper identity does not bind the launcher PID')
+        keys = [(item['pid'], item['creation_ticks']) for item in identities]
+        if len(keys) != len(set(keys)):
+            raise SuiteError('probe identity PID/creation tuple is duplicated')
+        return sorted(identities, key=lambda item: (item['pid'], item['creation_ticks'], item['event']))
+
+    def _cleanup_native(self, run: dict[str, Any], nonce: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Collect fault residue against exact probe/native process identities.
+
+        The restored SCM service host is permitted only when its PID matches
+        the service record and its command ends in ``fakenetng-mcp.exe run``.
+        Every recorded probe or related unknown process is emitted in
+        ``probe_processes`` for the fault oracle to reject.  A PID reused by
+        an unrelated process is not residue once its native start-time tuple
+        proves that the original probe has exited.
+        """
+        expected = self._recorded_probe_identities(run, nonce)
+        value, raw = self._vm_json(
             "$ErrorActionPreference='Stop';$fault='C:\\ProgramData\\FakeNet-NG-MCP\\logs\\fault-injection.json';"
-            "$state='C:\\ProgramData\\FakeNet-NG-MCP\\state\\state.json';"
-            "$managed=@(Get-CimInstance Win32_Process|Where-Object {$_.Name -like 'fakenetng-mcp-managed*'}|"
-            "Select-Object ProcessId,ParentProcessId,CreationDate,Name,CommandLine);"
-            "$probes=@(Get-Process powershell -ErrorAction SilentlyContinue|Where-Object {$_.Path -and $_.Path -like '*scenario*'}|"
-            "Select-Object Id,Path,StartTime);$needs=$false;if(Test-Path $state){$needs=(Get-Content $state -Raw|ConvertFrom-Json).needs_recovery};"
-            "@{state=@{needs_recovery=$needs};managed_processes=$managed;probe_processes=$probes;"
-            "fault_exists=(Test-Path $fault);pktmon=(& pktmon status|Out-String);computer=$env:COMPUTERNAME}|ConvertTo-Json -Depth 8 -Compress", 90)
+            "$state='C:\\ProgramData\\FakeNet-NG-MCP\\state\\state.json';$selfPid=$PID;$selfTicks=[Int64][Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks;$query_identity=[pscustomobject]@{ProcessId=[Int32]$selfPid;creation_ticks=[Int64]$selfTicks;Name=[Diagnostics.Process]::GetCurrentProcess().ProcessName};$expected=" +
+            quote_ps(json.dumps(expected, separators=(',', ':'))) + "|ConvertFrom-Json;"
+            "$service=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\"|Select-Object -First 1 Name,ProcessId,State,PathName;"
+            "$snapshots=@(Get-CimInstance Win32_Process);$processes=@();$process_identity_races=@();foreach($snapshot in $snapshots){$native=Get-Process -Id $snapshot.ProcessId -ErrorAction SilentlyContinue;if($null -eq $native){$process_identity_races+=@([pscustomobject]@{ProcessId=[Int32]$snapshot.ProcessId;ParentProcessId=[Int32]$snapshot.ParentProcessId;CreationDate=$snapshot.CreationDate;Name=$snapshot.Name;CommandLine=$snapshot.CommandLine;reason='vanished_before_native_starttime'});continue};try{$nativeTicks=[Int64]$native.StartTime.ToUniversalTime().Ticks;$snapshotCimTicks=[Int64]$snapshot.CreationDate.ToUniversalTime().Ticks;$confirm=Get-CimInstance Win32_Process -Filter ('ProcessId='+$snapshot.ProcessId)|Select-Object -First 1;if($null -eq $confirm){throw 'vanished_before_cim_confirmation'};$confirmCimTicks=[Int64]$confirm.CreationDate.ToUniversalTime().Ticks}catch{$process_identity_races+=@([pscustomobject]@{ProcessId=[Int32]$snapshot.ProcessId;ParentProcessId=[Int32]$snapshot.ParentProcessId;CreationDate=$snapshot.CreationDate;Name=$snapshot.Name;CommandLine=$snapshot.CommandLine;reason=('native_or_confirmation_unavailable:'+$_);});continue};if($confirm.Name -ne $snapshot.Name -or $confirmCimTicks -ne $snapshotCimTicks){$process_identity_races+=@([pscustomobject]@{ProcessId=[Int32]$snapshot.ProcessId;ParentProcessId=[Int32]$snapshot.ParentProcessId;CreationDate=$snapshot.CreationDate;Name=$snapshot.Name;CommandLine=$snapshot.CommandLine;reason='changed_between_cim_snapshots'});continue};$processes+=@([pscustomobject]@{ProcessId=[Int32]$confirm.ProcessId;ParentProcessId=[Int32]$confirm.ParentProcessId;CreationDate=$confirm.CreationDate;creation_ticks=$nativeTicks;Name=$confirm.Name;CommandLine=$confirm.CommandLine})};"
+            "$managed=@($processes|Where-Object {$_.Name -like 'fakenetng-mcp-managed*'});$probes=@();$unknown=@();$allowed=@();$pidReuse=@();"
+            "foreach($process in $processes){$samePid=@($expected|Where-Object {[Int32]$_.pid -eq $process.ProcessId});$exact=@($samePid|Where-Object {[Int64]$_.creation_ticks -eq $process.creation_ticks});"
+            "$cmd=[string]$process.CommandLine;$serviceHost=($process.Name -eq 'fakenetng-mcp.exe' -and $service -and $process.ProcessId -eq $service.ProcessId -and $cmd -match '(?i)fakenetng-mcp\\.exe\"?\\s+run\\s*$');"
+            "$related=($process.Name -like 'fakenetng-mcp*' -or $cmd -match '(?i)(scenario-suite-20260912|scenario_probes\\.ps1|scenario-probe-client\\.exe|probe-client\\.json|managed-(?:child|fault-hang))');"
+            "$selfQuery=($process.ProcessId -eq $selfPid -and $process.creation_ticks -eq $selfTicks);if($selfQuery){continue};if($serviceHost){$allowed+=@($process);continue};if($exact.Count){$process|Add-Member -NotePropertyName residue_reason -NotePropertyValue 'recorded_probe_pid_and_creation' -Force;$probes+=@($process)}elseif($related){$process|Add-Member -NotePropertyName residue_reason -NotePropertyValue 'related_unknown_command_or_native_identity' -Force;$unknown+=@($process)}elseif($samePid.Count){$process|Add-Member -NotePropertyName residue_reason -NotePropertyValue 'pid_reuse_nonresidue' -Force;$pidReuse+=@($process)}};"
+            "$relevant_identity_races=@();foreach($race in $process_identity_races){$raceExpected=@($expected|Where-Object {[Int32]$_.pid -eq $race.ProcessId});$raceCmd=[string]$race.CommandLine;$raceServiceHost=($race.Name -eq 'fakenetng-mcp.exe' -and $service -and $race.ProcessId -eq $service.ProcessId -and $raceCmd -match '(?i)fakenetng-mcp\\.exe\"?\\s+run\\s*$');$raceRelated=($race.Name -like 'fakenetng-mcp*' -or $raceCmd -match '(?i)(scenario-suite-20260912|scenario_probes\\.ps1|scenario-probe-client\\.exe|probe-client\\.json|managed-(?:child|fault-hang))');if(-not $raceServiceHost -and ($raceExpected.Count -or $raceRelated)){$race|Add-Member -NotePropertyName residue_reason -NotePropertyValue 'relevant_process_identity_race' -Force;$relevant_identity_races+=@($race)}};$probes=@($probes+$unknown+$relevant_identity_races);$needs=$false;if(Test-Path $state){$needs=(Get-Content $state -Raw|ConvertFrom-Json).needs_recovery};"
+            "@{state=@{needs_recovery=$needs};expected_probes=@($expected);query_identity=$query_identity;process_identity_races=$process_identity_races;relevant_identity_races=$relevant_identity_races;managed_processes=$managed;probe_processes=$probes;unknown_related_processes=$unknown;pid_reuse_nonresidue=$pidReuse;query_process=@($processes|Where-Object {$_.ProcessId -eq $selfPid -and $_.creation_ticks -eq $selfTicks});service_host=@($allowed);fault_exists=(Test-Path $fault);pktmon=(& pktmon status|Out-String);computer=$env:COMPUTERNAME}|ConvertTo-Json -Depth 8 -Compress", 90)
+        if value.get('expected_probes') != expected:
+            raise SuiteError('fault cleanup did not echo the exact recorded probe identities')
+        query = value.get('query_identity')
+        query_processes = value.get('query_process')
+        if (not isinstance(query, dict) or type(query.get('ProcessId')) is not int or
+                type(query.get('creation_ticks')) is not int or
+                not isinstance(query_processes, list) or len(query_processes) != 1 or
+                query_processes[0].get('ProcessId') != query['ProcessId'] or
+                query_processes[0].get('creation_ticks') != query['creation_ticks'] or
+                not isinstance(value.get('process_identity_races'), list) or
+                not isinstance(value.get('relevant_identity_races'), list) or
+                not isinstance(value.get('probe_processes'), list) or
+                not isinstance(value.get('service_host'), list)):
+            raise SuiteError('fault cleanup native process observations are incomplete')
+        return value, raw
 
     def _fault_recovery_cycle(self, scenario_id: str, attempt: int) -> dict[str, Any]:
         """Run and record the required distinct normal recovery lifecycle."""
@@ -2243,6 +2306,7 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                 'binding': binding,
             })
             run['capture'] = {'label': label, 'files': transfers, 'all_components': True,
+                              'probe_launcher_pid': capture['pid'],
                               'probe_path': next((x['path'] for x in transfers if x['path'].endswith('probe.jsonl')), None),
                               'pktmon_path': pktmon_record['path'],
                               'pktmon_nic_path': nic_record['path'], 'pktmon_binding': binding,
@@ -2530,7 +2594,7 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                     primary['run_id'], root / 'recovery-audits', evidence)
                 fault_evidence['recovery_cycle'] = self._fault_recovery_cycle(scenario_id, attempt)
                 evidence.write('fault-recovery-cycle.json', fault_evidence['recovery_cycle'])
-                cleanup_native, cleanup_raw = self._cleanup_native()
+                cleanup_native, cleanup_raw = self._cleanup_native(primary, nonce)
                 cleanup_native['raw'] = cleanup_raw
                 fault_evidence['cleanup_native'] = cleanup_native
                 evidence.write('fault-cleanup-native.json', cleanup_native)

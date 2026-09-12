@@ -361,6 +361,83 @@ def test_auxiliary_cases_are_released_for_any_healthy_primary_interleave():
                    'case_completion': {'case_close_count': 2}}
 
 
+def test_fault_cleanup_binds_probe_residue_to_recorded_pid_creation_and_scm_host():
+    """Fault cleanup must distinguish a restored MCP host from suite probes.
+
+    The guest probe log is the immutable source for both the PowerShell
+    launcher and B3's native child.  A process with either identity still
+    present must be reported, while only the SCM-owned ``fakenetng-mcp.exe
+    run`` host is permitted to remain after restoration.
+    """
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        nonce = 'fault-nonce'
+        (root / 'probe.jsonl').write_text(
+            '\n'.join(json.dumps(row) for row in (
+                {'event': 'ready', 'nonce': nonce, 'pid': 4100,
+                 'creation_ticks': 638932111000000000},
+                {'event': 'process_ready', 'nonce': nonce, 'pid': 4101,
+                 'creation_ticks': 638932111100000000},
+            )) + '\n', encoding='utf-8')
+        runner = object.__new__(suite.Suite)
+        runner.root = root
+        runner.vm = object()
+        run = {'capture': {'probe_path': 'probe.jsonl', 'probe_launcher_pid': 4100}}
+        expected = runner._recorded_probe_identities(run, nonce)
+        assert expected == [
+            {'pid': 4100, 'creation_ticks': 638932111000000000, 'event': 'ready'},
+            {'pid': 4101, 'creation_ticks': 638932111100000000, 'event': 'process_ready'},
+        ]
+        seen = {}
+
+        def vm_json(command, timeout):
+            seen['command'] = command
+            seen['timeout'] = timeout
+            return ({'state': {'needs_recovery': False}, 'managed_processes': [],
+                     'probe_processes': [], 'unknown_related_processes': [],
+                     'expected_probes': expected,
+                     'query_identity': {'ProcessId': 5099, 'creation_ticks': 638932112000000000,
+                                        'Name': 'powershell'},
+                     'query_process': [{'ProcessId': 5099, 'creation_ticks': 638932112000000000,
+                                        'Name': 'powershell'}],
+                     'process_identity_races': [], 'relevant_identity_races': [],
+                     'service_host': [{'ProcessId': 1772, 'Name': 'fakenetng-mcp.exe',
+                                       'CommandLine': '"C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe" run'}],
+                     'fault_exists': False, 'pktmon': '数据包监视器没有运行。'},
+                    {'output': '{}'})
+
+        runner._vm_json = vm_json
+        observed, _ = runner._cleanup_native(run, nonce)
+        assert observed['expected_probes'] == expected
+        assert observed['probe_processes'] == []
+        assert seen['timeout'] == 90
+        # The generated guest query is the public boundary: it receives the
+        # exact recorded identities, queries CIM command lines and creation
+        # times, preserves the SCM host only by service PID, and emits unknown
+        # scenario/native residue into the rejecting probe list.
+        assert 'Get-CimInstance Win32_Process' in seen['command']
+        assert 'Get-Process -Id $snapshot.ProcessId' in seen['command']
+        assert '$nativeTicks=[Int64]$native.StartTime.ToUniversalTime().Ticks' in seen['command']
+        assert 'process_identity_races' in seen['command']
+        assert 'relevant_identity_races' in seen['command']
+        assert 'CommandLine=$snapshot.CommandLine' in seen['command']
+        assert 'relevant_process_identity_race' in seen['command']
+        assert 'scenario-suite-20260912' in seen['command']
+        assert 'scenario-probe-client' in seen['command']
+        assert '$service.ProcessId' in seen['command']
+        assert 'unknown_related_processes' in seen['command']
+        # The querying PowerShell process contains these marker strings in its
+        # own command line.  It is excluded by its exact live PID/creation
+        # tuple only; an unrelated process that reused an old probe PID is
+        # instead retained as a non-residue observation.
+        assert '$selfPid=$PID' in seen['command']
+        assert '$selfTicks=[Int64]' in seen['command']
+        assert 'query_identity' in seen['command']
+        assert 'query_process' in seen['command']
+        assert 'pid_reuse_nonresidue' in seen['command']
+        assert 'recorded_probe_pid_reused_with_different_creation' not in seen['command']
+
+
 def test_host_only_transfer_serves_only_the_staged_probe_and_stops(monkeypatch):
     """Staging must never expose a directory or leave a host-only listener running."""
     created = []
