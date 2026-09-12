@@ -246,7 +246,9 @@ def validate_incident_export(exported, run_id, fault_round=False):
             if len(archive.namelist()) != len(set(archive.namelist())):
                 raise ValueError('duplicate archive member')
             manifest = json.loads(archive.read('manifest.json'))
-            if manifest.get('run_id') != run_id or not manifest.get('complete'):
+            if manifest.get('run_id') != run_id:
+                raise ValueError('actual manifest belongs to another run')
+            if not manifest.get('complete') and not fault_round:
                 raise ValueError('actual manifest not complete for this run')
             names = set()
             verified = set()
