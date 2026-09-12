@@ -60,7 +60,18 @@ def clear():
         # the native runner; never overwrite another run's receipt.
         with receipt.open('x', encoding='utf-8') as stream:
             stream.write(path.read_text(encoding='utf-8'))
-        path.unlink()
+        # A freshly written small JSON is routinely held for a moment by
+        # antivirus filters; a sharing violation there must not crash the
+        # fault hook (it replaced the injected fault with a PermissionError
+        # and silently changed the failure class of the run).
+        for attempt in range(10):
+            try:
+                path.unlink()
+                return
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.5)
 
 
 class FaultInjector:
