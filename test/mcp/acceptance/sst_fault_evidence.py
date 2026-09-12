@@ -49,6 +49,19 @@ def connection_destination(established):
     return established.get('actual_dst') or established.get('dst')
 
 
+def hanging_children(snapshot, run):
+    if not isinstance(snapshot, dict):
+        return []
+    rows = snapshot.get('processes', [])
+    parents = {int(x['ProcessId']) for x in rows
+               if x.get('Name') == 'fakenetng-mcp-managed.exe'
+               and ('managed-child ' + run) in (x.get('CommandLine') or '')}
+    return [x for x in rows if x.get('Name') == 'fakenetng-mcp.exe'
+            and 'managed-fault-hang' in (x.get('CommandLine') or '')
+            and int(x.get('ParentProcessId', -1)) in parents
+            and x.get('CreationDate')]
+
+
 def exception_blocks(text):
     starts = [m.start() for m in HEADER.finditer(text)]
     cuts = sorted(set([0] + starts + [len(text)]))
@@ -291,16 +304,7 @@ def assess(case, root, expected_candidate=CANDIDATE):
         if fault == 'child_hang':
             # Native CIM process creation facts, not a caller's success label.
             for obj in observations:
-                if not isinstance(obj, dict):
-                    continue
-                rows = obj.get('processes', [])
-                parents = {int(x['ProcessId']) for x in rows
-                           if x.get('Name') == 'fakenetng-mcp-managed.exe'
-                           and ('managed-child ' + run) in (x.get('CommandLine') or '')}
-                hangs = [x for x in rows if x.get('Name') == 'fakenetng-mcp.exe'
-                         and 'managed-fault-hang' in (x.get('CommandLine') or '')
-                         and int(x.get('ParentProcessId', -1)) in parents
-                         and x.get('CreationDate')]
+                hangs = hanging_children(obj, run)
                 if len(hangs) == 1:
                     return True, 'native child command line, creation and managed parent identified'
             return False, 'managed-fault-hang native creation/parent facts missing'
@@ -326,6 +330,20 @@ def assess(case, root, expected_candidate=CANDIDATE):
         return False, 'no supported raw action-success adapter; no inferred success'
 
     check('trigger_success', trigger_success, case['trigger'].get('success_refs', []))
+
+    if fault == 'child_hang':
+        def child_action_upper():
+            upper = read(case['trigger']['upper_ref'])
+            observations = [read(ref) for ref in case['trigger']['success_refs']]
+            for obj in observations:
+                children = hanging_children(obj, run)
+                if len(children) == 1 and (upper == obj or upper == children[0]['CreationDate']):
+                    # The snapshot's timestamp is conservative only when it
+                    # actually contains this run's hanging child.
+                    bounds(upper)
+                    return True, 'upper bound identifies native hanging child creation or observation'
+            return False, 'healthy start or unrelated observation cannot bound hanging child creation'
+        check('child_action_upper', child_action_upper)
 
     def overlap():
         trigger, session = case['trigger'], case['session']

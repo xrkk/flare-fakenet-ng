@@ -161,6 +161,27 @@ class EvidenceOracleTests(unittest.TestCase):
         value='2026-09-12T21:47:45.466644+08:00'
         self.assertEqual(sst.time_bounds(value),sst.iso_ns(value))
 
+    def test_child_upper_cannot_be_earlier_healthy_start_response(self):
+        root, case = self.minimal_case('child_hang', dict(init_evidence=True, probe=True))
+        creation = '2026-09-12T19:29:16.123456+08:00'
+        native = {'processes': [
+            {'Name': 'fakenetng-mcp-managed.exe', 'ProcessId': 100,
+             'CommandLine': 'managed-child run'},
+            {'Name': 'fakenetng-mcp.exe', 'ProcessId': 101, 'ParentProcessId': 100,
+             'CommandLine': 'managed-fault-hang', 'CreationDate': creation}]}
+        raw = json.dumps(native).encode(); (root / 'native.json').write_bytes(raw)
+        case['files'].append(dict(path='native.json', bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
+        native_ref = dict(path='native.json', byte_start=0, byte_end=len(raw), event_key='json:')
+        creation_ref = dict(native_ref, event_key='json:/processes/1/CreationDate')
+        case['trigger']['success_refs'] = [native_ref, creation_ref]
+        def result():
+            return {x['id']: x['passed'] for x in sst.assess(case, root)['checks']}
+        case['trigger']['upper_ref'] = case['start_response_ref']
+        self.assertTrue(result()['trigger_success'])
+        self.assertFalse(result()['child_action_upper'])
+        case['trigger']['upper_ref'] = creation_ref
+        self.assertTrue(result()['child_action_upper'])
+
     def test_frozen_pause_frame_requires_exact_source_mapping(self):
         root, case = self.minimal_case('policy_pause', dict(init_evidence=True, probe=True))
         source = (PATH.parents[3] / 'fakenet/mcp/faultinject.py').read_bytes()
