@@ -199,7 +199,8 @@ def arm_fault_file(channel, fault):
     return dict(payload, raw=raw)
 
 
-def export_incident_bundle(channel, run_id, destination, incident_name='incident'):
+def export_incident_bundle(channel, run_id, destination, incident_name='incident',
+                          fault_round=False):
     """Export the exact run's package, then verify its bytes on the host."""
     import base64
     import hashlib
@@ -262,6 +263,12 @@ def export_incident_bundle(channel, run_id, destination, incident_name='incident
                 if (name == 'userdump.dmp' and entry.get('result') == 'skipped' and
                         entry.get('failure_reason') == 'no escalation condition' and
                         entry.get('size') == 0 and entry.get('sha256') is None):
+                    continue
+                if (fault_round and name == 'managed-exit.json' and
+                        entry.get('failure_reason') == 'exit evidence incomplete'):
+                    # The producer's honest end fact for a fault scenario
+                    # (CHK-070); the pack's escalation dump carries the
+                    # failure proof.
                     continue
                 failures.append(name + ': ' + str(entry.get('failure_reason')))
                 continue

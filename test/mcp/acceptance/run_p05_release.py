@@ -452,7 +452,8 @@ class ReleaseGate:
                 raise RuntimeError('duplicate incident directory')
             names.add(name)
             exported = export_incident_bundle(self.channel, run_id,
-                      self.release / (name + '-' + run_id + '.zip'), incident_name=name)
+                      self.release / (name + '-' + run_id + '.zip'), incident_name=name,
+                      fault_round=True)
             exports.append(exported)
         record['incident_exports'] = exports
         if (not exports or any(not item['complete'] for item in exports) or
