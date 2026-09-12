@@ -575,35 +575,45 @@ class ReleaseGate:
 
     def mode_fault(self, writer):
         counts = matrix_counts(self.args, self.release)
-        writer.add_evidence('fault-mode-enabled', self.configure_fault_mode(True))
-        failures = []
-        for klass in FAULT_CLASSES:
-            prefix = 'fault-%s' % klass
-            for index in range(1, counts[prefix] + 1):
-                path = self.round_path(prefix, index)
-                if self.prior_round(path, writer):
-                    continue
-                record = self.run_fault_round(klass, index)
-                category_issues = validate_sample_category(record, prefix)
-                if category_issues:
-                    record['failure'] = '; '.join(category_issues)
-                self.record_round(path, record, writer)
-                if record.get('failure'):
-                    failures.append({'class': klass, 'round': index,
-                                    'failure': record['failure']})
-                    writer.add_evidence('fault-first-failure', failures[0])
-                    return EXIT_FAIL
-        summary = {klass: len(self.done_rounds(
-            'fault-%s' % klass, counts['fault-' + klass]))
-            for klass in FAULT_CLASSES}
-        (self.release / 'fault-summary.json').write_text(
-            json.dumps(summary, ensure_ascii=False, indent=1),
-            encoding='utf-8')
-        writer.add_evidence('fault-summary', summary)
-        writer.add_evidence('fault-mode-disabled', self.configure_fault_mode(False))
-        return EXIT_PASS if all(
-            v == counts['fault-' + klass] for klass, v in summary.items()) \
-            else EXIT_FAIL
+        try:
+            writer.add_evidence('fault-mode-enabled', self.configure_fault_mode(True))
+            failures = []
+            for klass in FAULT_CLASSES:
+                prefix = 'fault-%s' % klass
+                for index in range(1, counts[prefix] + 1):
+                    path = self.round_path(prefix, index)
+                    if self.prior_round(path, writer):
+                        continue
+                    record = self.run_fault_round(klass, index)
+                    category_issues = validate_sample_category(record, prefix)
+                    if category_issues:
+                        record['failure'] = '; '.join(category_issues)
+                    self.record_round(path, record, writer)
+                    if record.get('failure'):
+                        failures.append({'class': klass, 'round': index,
+                                        'failure': record['failure']})
+                        writer.add_evidence('fault-first-failure', failures[0])
+                        return EXIT_FAIL
+            summary = {klass: len(self.done_rounds(
+                'fault-%s' % klass, counts['fault-' + klass]))
+                for klass in FAULT_CLASSES}
+            (self.release / 'fault-summary.json').write_text(
+                json.dumps(summary, ensure_ascii=False, indent=1),
+                encoding='utf-8')
+            writer.add_evidence('fault-summary', summary)
+            return EXIT_PASS if all(
+                v == counts['fault-' + klass] for klass, v in summary.items()) \
+                else EXIT_FAIL
+        except Exception as exc:
+            writer.add_evidence('fault-execution-error', {'error': repr(exc)})
+            raise
+        finally:
+            try:
+                restored = self.configure_fault_mode(False)
+            except Exception as exc:
+                writer.add_evidence('fault-mode-restore-failure', {'error': repr(exc)})
+                raise
+            writer.add_evidence('fault-mode-disabled', restored)
 
     def mode_final(self, writer):
         matrix_counts(self.args, self.release)

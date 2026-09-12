@@ -44,3 +44,66 @@ def test_matching_fault_mode_resume_does_not_restart_service(release, tmp_path, 
     assert gate.configure_fault_mode(True)['reused_service_instance']
     assert len(commands) == 1
     assert 'Start-Service' not in commands[0] and '& $exe stop' not in commands[0]
+
+
+@pytest.mark.parametrize('outcome', ['failure', 'exception', 'enable_exception'])
+def test_fault_mode_restored_on_unsuccessful_run(release, tmp_path, monkeypatch, outcome):
+    gate = object.__new__(release.ReleaseGate)
+    gate.args = SimpleNamespace()
+    gate.release = tmp_path
+    transitions, evidence = [], {}
+    monkeypatch.setattr(release, 'matrix_counts', lambda *a: {'fault-policy_pause': 1})
+    monkeypatch.setattr(release, 'FAULT_CLASSES', ('policy_pause',))
+    monkeypatch.setattr(release, 'validate_sample_category', lambda *a: [])
+    def configure(enabled):
+        transitions.append(enabled)
+        if enabled and outcome == 'enable_exception':
+            raise RuntimeError('service readiness failed after enabling')
+        return {'enabled': enabled}
+    gate.configure_fault_mode = configure
+    gate.round_path = lambda *a: tmp_path / 'round.json'
+    gate.prior_round = lambda *a: False
+    gate.record_round = lambda path, record, writer: evidence.update(round=record)
+    def run(*args):
+        if outcome == 'exception':
+            raise RuntimeError('transport lost after arming')
+        return {'failure': 'incident incomplete'}
+    gate.run_fault_round = run
+    writer = SimpleNamespace(add_evidence=lambda key, value: evidence.update({key: value}))
+    if outcome == 'failure':
+        assert gate.mode_fault(writer) == release.EXIT_FAIL
+        assert evidence['round']['failure'] == 'incident incomplete'
+    else:
+        with pytest.raises(RuntimeError):
+            gate.mode_fault(writer)
+    assert transitions == [True, False]
+    assert evidence['fault-mode-disabled'] == {'enabled': False}
+
+
+@pytest.mark.parametrize('restore_fails', [False, True])
+def test_fault_success_requires_successful_restore(release, tmp_path, monkeypatch, restore_fails):
+    gate = object.__new__(release.ReleaseGate)
+    gate.args = SimpleNamespace()
+    gate.release = tmp_path
+    transitions, evidence = [], {}
+    monkeypatch.setattr(release, 'matrix_counts', lambda *a: {'fault-policy_pause': 1})
+    monkeypatch.setattr(release, 'FAULT_CLASSES', ('policy_pause',))
+    def configure(enabled):
+        transitions.append(enabled)
+        if not enabled and restore_fails:
+            raise RuntimeError('restore failed')
+        return {'enabled': enabled}
+    gate.configure_fault_mode = configure
+    gate.round_path = lambda *a: tmp_path / 'round.json'
+    gate.prior_round = lambda *a: True
+    gate.done_rounds = lambda *a: [1]
+    writer = SimpleNamespace(add_evidence=lambda key, value: evidence.update({key: value}))
+    if restore_fails:
+        with pytest.raises(RuntimeError, match='restore failed'):
+            gate.mode_fault(writer)
+        assert 'fault-mode-restore-failure' in evidence
+        assert 'fault-mode-disabled' not in evidence
+    else:
+        assert gate.mode_fault(writer) == release.EXIT_PASS
+        assert evidence['fault-mode-disabled'] == {'enabled': False}
+    assert transitions == [True, False]
