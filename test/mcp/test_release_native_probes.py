@@ -107,3 +107,26 @@ def test_fault_success_requires_successful_restore(release, tmp_path, monkeypatc
         assert gate.mode_fault(writer) == release.EXIT_PASS
         assert evidence['fault-mode-disabled'] == {'enabled': False}
     assert transitions == [True, False]
+
+
+@pytest.mark.parametrize('mode', ['normal', 'fault'])
+def test_category_validation_preserves_original_round_failure(release, tmp_path, monkeypatch, mode):
+    gate = object.__new__(release.ReleaseGate)
+    gate.args = SimpleNamespace()
+    gate.release = tmp_path
+    monkeypatch.setattr(release, 'matrix_counts', lambda *a: {
+        'normal-builtin': 1, 'normal-custom': 1, 'fault-policy_pause': 1})
+    monkeypatch.setattr(release, 'FAULT_CLASSES', ('policy_pause',))
+    monkeypatch.setattr(release, 'validate_sample_category', lambda *a: ['missing run identity'])
+    gate.ensure_custom_config = lambda: True
+    gate.configure_fault_mode = lambda enabled: {'enabled': enabled}
+    gate.round_path = lambda *a: tmp_path / 'round.json'
+    gate.prior_round = lambda *a: False
+    captured = []
+    gate.record_round = lambda path, record, writer: captured.append(record)
+    gate.run_normal_round = lambda *a: {'failure': 'managed start failed: SystemExit(1)'}
+    gate.run_fault_round = gate.run_normal_round
+    writer = SimpleNamespace(add_evidence=lambda *a: None)
+    assert getattr(gate, 'mode_' + mode)(writer) == release.EXIT_FAIL
+    assert 'managed start failed: SystemExit(1)' in captured[0]['failure']
+    assert 'missing run identity' in captured[0]['failure']

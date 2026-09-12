@@ -555,7 +555,8 @@ class ReleaseGate:
                 record = self.run_normal_round(index, config)
                 category_issues = validate_sample_category(record, prefix)
                 if category_issues:
-                    record['failure'] = '; '.join(category_issues)
+                    record['failure'] = '; '.join(
+                        ([str(record['failure'])] if record.get('failure') else []) + category_issues)
                 self.record_round(path, record, writer)
                 if record.get('failure'):
                     failures.append({'group': group, 'round': index,
@@ -587,7 +588,8 @@ class ReleaseGate:
                     record = self.run_fault_round(klass, index)
                     category_issues = validate_sample_category(record, prefix)
                     if category_issues:
-                        record['failure'] = '; '.join(category_issues)
+                        record['failure'] = '; '.join(
+                            ([str(record['failure'])] if record.get('failure') else []) + category_issues)
                     self.record_round(path, record, writer)
                     if record.get('failure'):
                         failures.append({'class': klass, 'round': index,
