@@ -161,6 +161,25 @@ class EvidenceOracleTests(unittest.TestCase):
         value='2026-09-12T21:47:45.466644+08:00'
         self.assertEqual(sst.time_bounds(value),sst.iso_ns(value))
 
+    def test_referenced_probe_clock_checked_without_filename_suffix(self):
+        root, case = self.minimal_case('child_hang', dict(init_evidence=True, probe=True))
+        rows = [{'event': 'ready', 'utc_ticks': 10000000, 'mono': 0, 'stopwatch_frequency': 1000},
+                {'event': 'established', 'utc_ticks': 20000000, 'mono': 0}]
+        raw = ('\n'.join(json.dumps(row) for row in rows) + '\n').encode()
+        (root / 'probe.jsonl').write_bytes(raw)
+        case['files'].append(dict(path='probe.jsonl', bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
+        case['session']['established_ref'] = dict(path='probe.jsonl', byte_start=0,
+                                                 byte_end=len(raw), event_key='json:')
+        checks = {x['id']: x['passed'] for x in sst.assess(case, root)['checks']}
+        self.assertFalse(checks['clock'])
+        rows[1]['mono'] = 1000
+        raw = ('\n'.join(json.dumps(row) for row in rows) + '\n').encode()
+        (root / 'probe.jsonl').write_bytes(raw)
+        case['files'][-1].update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+        case['session']['established_ref']['byte_end'] = len(raw)
+        checks = {x['id']: x['passed'] for x in sst.assess(case, root)['checks']}
+        self.assertTrue(checks['clock'])
+
     def test_child_upper_cannot_be_earlier_healthy_start_response(self):
         root, case = self.minimal_case('child_hang', dict(init_evidence=True, probe=True))
         creation = '2026-09-12T19:29:16.123456+08:00'

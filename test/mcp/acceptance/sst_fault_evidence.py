@@ -219,8 +219,9 @@ def assess(case, root, expected_candidate=CANDIDATE):
         if not (clock['domain'] == 'vm-utc' and 0 < clock['resolution_ns'] <= 10**9
                 and clock['discontinuities'] == []):
             return False, 'invalid VM clock declaration'
+        probe_path = case['session'].get('established_ref', {}).get('path')
         for name, raw in evidence.data.items():
-            if not name.endswith('-probe.jsonl'):
+            if name != probe_path and not name.endswith('-probe.jsonl'):
                 continue
             events = [json.loads(line) for line in raw.splitlines()]
             ready = events[0]
