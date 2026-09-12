@@ -55,7 +55,7 @@ def validate_round(record, expected):
                     len(set(names)) != len(names) or set(names) != set(expected_names)):
                 raise ValueError('incident export coverage mismatch')
             for exported in exports:
-                failures.extend(validate_incident_export(exported, run_id))
+                failures.extend(validate_incident_export(exported, run_id, fault_round=True))
         except (KeyError, TypeError, OSError, ValueError) as exc:
             failures.append('verified incident export unavailable: ' + str(exc))
     captures = record.get('capture_evidence')
@@ -225,8 +225,14 @@ def validate_sample_category(record, prefix):
     return failures
 
 
-def validate_incident_export(exported, run_id):
-    """Re-read actual members; a cached complete flag is insufficient."""
+def validate_incident_export(exported, run_id, fault_round=False):
+    """Re-read actual members; a cached complete flag is insufficient.
+
+    In a fault round the scenario IS the failure: managed-exit.json may
+    honestly record incomplete exit evidence (the producer's end fact,
+    CHK-070) while the pack's escalation dump proves the failure. That
+    one honest bookkeeping failure is acceptable exactly there; normal
+    and release exports keep the strict rule."""
     import zipfile
     from fakenet.mcp.incident import BASIC_ITEMS
     failures = []
@@ -250,6 +256,9 @@ def validate_incident_export(exported, run_id):
                     raise ValueError('invalid or duplicate incident member')
                 names.add(name)
                 if item['result'] == 'skipped' and name == 'userdump.dmp' and item.get('failure_reason') == 'no escalation condition' and item.get('size') == 0 and item.get('sha256') is None:
+                    continue
+                if (fault_round and item['result'] == 'failed' and name == 'managed-exit.json'
+                        and item.get('failure_reason') == 'exit evidence incomplete'):
                     continue
                 if item['result'] != 'ok':
                     raise ValueError('failed incident member: ' + name)
