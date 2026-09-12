@@ -35,3 +35,24 @@ def test_rejects_old_full_and_extra_round(tmp_path):
 @pytest.mark.parametrize('mode,value', [('normal','builtin=3,builtin=2'),('normal','builtin=0,custom=2'),('fault','per-class=11'),('normal','builtin=3'),('final','per-class=1')])
 def test_bad_limits(mode,value):
     with pytest.raises(ValueError):m.parse_limit(mode,value)
+
+
+def test_initial_channel_error_still_writes_failure_evidence(tmp_path, monkeypatch):
+    import sys
+    import importlib
+    monkeypatch.syspath_prepend(str(Path(__file__).parent / 'acceptance'))
+    runner=importlib.import_module('run_p05_release')
+    captured={}
+    class Writer:
+        def __init__(self,*a):pass
+        def write_result(self,**kwargs):captured.update(kwargs)
+    def unavailable():raise RuntimeError('channel unavailable')
+    monkeypatch.setattr(runner,'EvidenceWriter',Writer)
+    monkeypatch.setattr(runner,'ReleaseGate',lambda a:SimpleNamespace(channel=SimpleNamespace(computer_name=unavailable)))
+    argv=['runner','--mode','normal','--output-root',str(tmp_path)]
+    for flag in ['source-commit','package','package-sha256','manifest','requirements-blob','master-plan-blob','vm-identity','config-identity','candidate-id']:
+        argv.extend(['--'+flag,'test'])
+    monkeypatch.setattr(sys,'argv',argv)
+    assert runner.main()==runner.EXIT_TOOL_ERROR
+    assert captured['status']=='tool-error'
+    assert '@unverified' in captured['environment_identity']

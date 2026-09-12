@@ -810,6 +810,7 @@ def main():
     writer = EvidenceWriter(out_dir, started_at)
     gate = ReleaseGate(args)
     exit_code = EXIT_TOOL_ERROR
+    probed_identity = 'unverified'
     try:
         probed_identity = gate.channel.computer_name()
         if probed_identity != 'DESKTOP-3FI41GR':
