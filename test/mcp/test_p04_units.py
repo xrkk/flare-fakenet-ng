@@ -83,11 +83,19 @@ def test_fault_injector_diverter_stop_closes_handle(tmp_path, monkeypatch):
                 self.closed = True
 
         handle = FakeHandle()
-        diverter = type('D', (), {'handle': handle})()
+        class FakeDiverter:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def _close_windivert_handle(self):
+                self.handle.close()
+                self.handle = None
+
+        diverter = FakeDiverter(handle)
         assert injector.inject_diverter_stop(diverter) is True
         assert handle.closed and diverter.handle is None
         # one-shot: re-arming cleared
-        diverter2 = type('D', (), {'handle': FakeHandle()})()
+        diverter2 = FakeDiverter(FakeHandle())
         assert injector.inject_diverter_stop(diverter2) is False
     finally:
         os.environ.pop('FAKENETNG_MCP_FAULT_INJECTION', None)
