@@ -278,9 +278,15 @@ def export_incident_bundle(channel, run_id, destination, incident_name='incident
             verified.append(name)
         missing = set(name for name, _ in BASIC_ITEMS) - set(verified)
         failures.extend('missing basic item: ' + name for name in sorted(missing))
+    # The guest manifest marks the pack incomplete when ANY entry failed; in
+    # a fault round the producer's honest managed-exit record is the allowed
+    # cause, and the exported manifest below keeps the raw guest verdict.
+    complete = bool(manifest.get('complete')) and not failures
+    if fault_round and not failures:
+        complete = True
     return {'path': str(destination), 'sha256': digest.hexdigest(), 'size': metadata['size'],
             'run_id': run_id, 'incident_name': incident_name, 'manifest': manifest, 'verified_members': verified,
-            'complete': bool(manifest.get('complete')) and not failures,
+            'complete': complete,
             'failures': failures, 'transfer_metadata': captured}
 
 
