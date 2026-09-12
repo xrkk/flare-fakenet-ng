@@ -301,11 +301,13 @@ class ExitRetention:
             return 'exit evidence helper active' in repr(exc)
 
         try:
-            for attempt in range(4):
+            for attempt in range(12):
                 try:
                     # Both the dump collection and its verification acquire
-                    # the global single flight; a concurrent incident bulk
-                    # child can hold it for tens of seconds on this host.
+                    # the global single flight; the preceding incident bulk
+                    # child can hold it for its whole (up to 180s) budget
+                    # on this host. Waiting for the flight is bounded by
+                    # the stop's overall deadline, not by this loop alone.
                     collect_dump(self.record['pid'], self.record['creation_time'], target_path,
                                  time.monotonic() + budget, quota=QUOTA)
                     checked = self._call('exit-verify-dump',
@@ -313,7 +315,7 @@ class ExitRetention:
                                          time.monotonic() + budget)
                     break
                 except DiagnosticError as exc:
-                    if not single_flight_busy(exc) or attempt == 3:
+                    if not single_flight_busy(exc) or attempt == 11:
                         raise
                     # The aborted attempt can leave its unpublished staging
                     # behind; this run's directory is exclusively owned, so
@@ -321,7 +323,7 @@ class ExitRetention:
                     for residue in (target_path,
                                     target_path.with_name(target_path.name + '.part')):
                         residue.unlink(missing_ok=True)
-                    time.sleep(10)
+                    time.sleep(15)
             info = dict(name='target.dmp', size=checked['size'], sha256=checked['sha256'])
             self.owner_dump = info
             self._publish('owner-dump.json', dict(
