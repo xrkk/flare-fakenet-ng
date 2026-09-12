@@ -209,8 +209,19 @@ class FaultInjector:
         handle = getattr(diverter, 'handle', None)
         if handle is None:
             return False
+        raw_handle = getattr(handle, '_handle', None)
+        before = native_handle_observation(raw_handle)
+        began = time.time_ns()
         try:
             handle.close()
+            after = native_handle_observation(raw_handle)
+            ended = time.time_ns()
+            receipt = json.loads((Path.cwd() / 'fault-triggered.json').read_text(encoding='utf-8'))
+            with (Path.cwd() / 'fault-action.json').open('x', encoding='utf-8') as stream:
+                json.dump(dict(schema='fakenet.fault-action.v1',
+                    run_id=Path.cwd().name, pid=os.getpid(), **receipt,
+                    action='WinDivertClose', start_time_ns=began, end_time_ns=ended,
+                    before=before, after=after), stream)
         finally:
             diverter.handle = None
         return True
@@ -245,3 +256,56 @@ class FaultInjector:
             except Exception:  # noqa: BLE001
                 pass
             self._child = None
+
+    def wait_for_start_gate(self, timeout=10):
+        """Optional, bounded test rendezvous before the startup fault acts.
+
+        The external test owns readiness evidence. A gate only schedules the
+        action; it is never action-success or traffic evidence. Legacy fault
+        runs without a gate retain their immediate injection behavior.
+        """
+        if not enabled() or armed_fault() not in ('listener_stop', 'diverter_stop', 'child_hang'):
+            return False
+        gate = _fault_file().with_name('fault-injection-gate.json')
+        ready = _fault_file().with_name('fault-injection-ready.json')
+        if not gate.exists():
+            return False
+        arm = json.loads(_fault_file().read_text(encoding='utf-8'))
+        if json.loads(gate.read_text(encoding='utf-8')) != arm:
+            raise ValueError('fault start gate identity mismatch')
+        expected = dict(arm, run_id=Path.cwd().name)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if ready.exists():
+                try:
+                    observed = json.loads(ready.read_text(encoding='utf-8'))
+                except (ValueError, PermissionError):
+                    time.sleep(.01)
+                    continue
+                if observed != expected:
+                    raise ValueError('fault start ready identity mismatch')
+                ready.unlink()
+                gate.unlink()
+                return True
+            time.sleep(.01)
+        raise TimeoutError('fault start gate readiness deadline exceeded')
+
+
+def native_handle_observation(handle):
+    """Raw kernel API result, explicitly unsupported outside native Windows."""
+    if os.name != 'nt' or handle is None:
+        return dict(api='GetHandleInformation', supported=False, handle=None,
+                    return_code=None, last_error=None)
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    query = kernel.GetHandleInformation
+    query.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    query.restype = wintypes.BOOL
+    flags = wintypes.DWORD()
+    value = getattr(handle, 'value', handle)
+    ctypes.set_last_error(0)
+    result = int(query(value, ctypes.byref(flags)))
+    error = ctypes.get_last_error()
+    return dict(api='GetHandleInformation', supported=True, handle=value,
+                return_code=result, last_error=error, flags=flags.value)
