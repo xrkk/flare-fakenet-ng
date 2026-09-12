@@ -22,8 +22,13 @@ def test_armed_health_request_closes_handle_after_healthy(tmp_path, monkeypatch)
     handle = Handle()
     listener = socket.socket()
     try:
-        instance = SimpleNamespace(diverter=SimpleNamespace(handle=handle,
-            diverter_thread=threading.current_thread()),
+        diverter = SimpleNamespace(handle=handle,
+                                   diverter_thread=threading.current_thread())
+        def close_diverter_handle():
+            diverter.handle.close()
+            diverter.handle = None
+        diverter._close_windivert_handle = close_diverter_handle
+        instance = SimpleNamespace(diverter=diverter,
             running_listener_providers=[SimpleNamespace(sock=listener)])
         fault = FaultInjector()
         assert probe_with_faults(instance, fault)['probe']

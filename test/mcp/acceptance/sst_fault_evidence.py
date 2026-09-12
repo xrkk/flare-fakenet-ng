@@ -324,11 +324,13 @@ def assess(case, root, expected_candidate=CANDIDATE):
             return False, 'managed-fault-hang native creation/parent facts missing'
         if fault == 'policy_pause':
             # Frozen Python frames omit source text. Bind the observed line to
-            # the exact source shipped by the two explicitly pinned candidates.
+            # exact frozen source snapshots; the close fix leaves line 127
+            # and the pause hook unchanged.
             mapped_source = any(isinstance(x, str) and
                 hashlib.sha256(x.encode('utf-8')).hexdigest() in {
                     'd22e2c7b174090e52d4cac96b2ade8ae0da57e4b9a244720d868e897fc249f60',
-                    'ce18c70836af10f7c721070fff01cc38dcba41fdb946d5fe74fe73ad9d6fd2c2'}
+                    'ce18c70836af10f7c721070fff01cc38dcba41fdb946d5fe74fe73ad9d6fd2c2',
+                    '567bcd10e579558de287ebc403bd90618048fe120a1f2d2178889462dff18f7d'}
                 and x.splitlines()[126].strip() == 'time.sleep(3600)'
                 for x in observations)
             matched = any(isinstance(x, str) and 'LIVE STOP STACKS timestamp=' in x
