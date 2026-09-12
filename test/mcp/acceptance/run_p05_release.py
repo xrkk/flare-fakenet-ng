@@ -164,14 +164,28 @@ class ReleaseGate:
         # an empty delta and silently POPPED real residue from the gate.
         # One schema, shared with the product's stop audit.
         # Failed-start fault classes leave the WinDivert driver service
-        # unloading for tens of seconds after convergence; the product's
-        # own audit settles over thirty seconds, so this gate mirrors
-        # that: a windivert-only difference is re-observed, bounded.
+        # unloading for minutes after convergence; the product's own audit
+        # settles inside its budget, so this gate mirrors that: for a
+        # windivert-only difference, poll the driver directly (cheap) until
+        # it reports gone, then take one final full capture.
         for attempt in range(4):
             diff = audit_compare(before, self.capture_sections())
-            if not diff or set(diff) != {'windivert_processes'} or attempt == 3:
+            if not diff or set(diff) != {'windivert_processes'}:
                 return diff
-            _time.sleep(10)
+            if attempt == 3:
+                break
+            gone = False
+            for _ in range(36):
+                probe = self.channel.powershell(
+                    "if(Get-CimInstance Win32_SystemDriver -Filter \"Name='WinDivert1.3'\" "
+                    "-ErrorAction SilentlyContinue){'loaded'}else{'gone'}", timeout=30)
+                if probe['output'].strip() == 'gone':
+                    gone = True
+                    break
+                _time.sleep(5)
+            if gone:
+                continue  # one final capture now that the driver reports gone
+            break
         return diff
 
     def vm_continuity(self):
