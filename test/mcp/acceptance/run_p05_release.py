@@ -397,6 +397,14 @@ class ReleaseGate:
             "ForEach-Object {@{path=$_.FullName;manifest=(Get-Content $_.FullName -Raw | ConvertFrom-Json)}}); "
             "@{receipt=$receipts[0];incidents=$manifests} | ConvertTo-Json -Depth 12 -Compress", timeout=60)
         record['fault_evidence'] = json.loads(detail['output'])
+        # Start-injection fault classes (listener_stop fires inside the
+        # engine's start handling) converge as failed starts: the start
+        # response carries no run id, and the triggering receipt holds the
+        # actual run identity.
+        if not record.get('run_id'):
+            receipt_run = (record['fault_evidence'].get('receipt') or {}).get('run_id')
+            if receipt_run and record.get('last_run_outcome') == 'failed':
+                record['run_id'] = receipt_run
         incidents = record['fault_evidence']['incidents']
         if (record['fault_evidence']['receipt']['receipt'] != {'fault': klass, 'nonce': nonce}
                 or not incidents or any(not item['manifest'].get('complete') for item in incidents)):

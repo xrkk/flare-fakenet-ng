@@ -212,10 +212,15 @@ def validate_sample_category(record, prefix):
         expected = prefix.removeprefix('fault-')
         receipt = (record.get('fault_evidence') or {}).get('receipt') or {}
         trigger = receipt.get('receipt') or {}
+        started_run = (record.get('start_response') or {}).get('run_id')
+        if started_run is None and record.get('last_run_outcome') == 'failed':
+            # Start-injection classes converge as failed starts; the receipt
+            # is then the actual run identity of the sample.
+            started_run = receipt.get('run_id')
         if (record.get('class') != expected or trigger.get('fault') != expected or
                 trigger.get('nonce') != record.get('nonce') or not record.get('nonce') or
                 receipt.get('run_id') != record.get('run_id') or
-                (record.get('start_response') or {}).get('run_id') != record.get('run_id')):
+                started_run != record.get('run_id')):
             failures.append('fault sample run/category/trigger mismatch')
     return failures
 
