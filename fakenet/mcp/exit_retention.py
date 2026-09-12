@@ -271,6 +271,14 @@ class ExitRetention:
                             import logging
                             logging.getLogger('fakenetng-mcp.exitretention').error(
                                 'deadline owner dump fallback failed: %r', exc)
+                    # Waiting for the writer flight can let an acknowledged
+                    # helper finish. Consume its verified result before
+                    # classifying the deadline as missing evidence.
+                    if self._helper is not None and self._helper.exited():
+                        report = self._read_optional('result.json')
+                        if report is not None:
+                            self._finish(self._record_observation(self._check_result(report)))
+                            return
                     # The window bounds waiting for evidence, not the owner's
                     # own finalization; slow teardown needs its own budget.
                     self._end_helpers(time.monotonic() + FINALIZE_BUDGET)
@@ -307,6 +315,13 @@ class ExitRetention:
             logging.getLogger('fakenetng-mcp.exitretention').exception(
                 'exit retention watch ended: %r', exc)
             self.intent.invalidate()
+            report = dict(complete=False, target=self.record, error=self._failure,
+                          failure_stage=failure_stage)
+            if failure_stage == 'open exit helper':
+                native_api = getattr(self, '_helper_admission_api', None)
+                if native_api is not None:
+                    report['native_api'] = native_api
+            report = self._record_observation(report)
             # A failed helper must still be stopped by its pinned native handle.
             try:
                 self._end_helpers(min(self.deadline or time.monotonic() + 5, time.monotonic() + 5))
@@ -315,19 +330,12 @@ class ExitRetention:
                     end = min(self.deadline or time.monotonic() + 5, time.monotonic() + 5)
                     while not self._helper.exited() and time.monotonic() < end:
                         time.sleep(0.01)
-                report = dict(complete=False, target=self.record, error=self._failure,
-                              failure_stage=failure_stage)
-                if failure_stage == 'open exit helper':
-                    native_api = getattr(self, '_helper_admission_api', None)
-                    if native_api is not None:
-                        report['native_api'] = native_api
-                self._finish(self._record_observation(report))
+                self._finish(report)
             except BaseException as cleanup:
                 # An absent acquisition handle is not proof of absence.
                 # Keep ownership when the residual check could not establish
                 # that every packaged helper ended. Never invent cleanup.
-                self.result = dict(complete=False, target=self.record, error=self._failure,
-                                   helper_ended=False, cleanup_error=repr(cleanup),
+                self.result = dict(report, helper_ended=False, cleanup_error=repr(cleanup),
                                    retained_target_handle_closed=False)
         finally:
             self.done.set()
@@ -370,52 +378,53 @@ class ExitRetention:
         handle with its own budget. This is the P04 two-dump contract's
         grace-timeout branch; failure keeps the incomplete report, it never
         invents evidence."""
-        from fakenet.mcp.diagnostic_process import DiagnosticError
         if self._target is None or self._target.exited():
             return None
         if self._helper is not None and not force:
             return None
-        import hashlib
         from fakenet.mcp.dumpworker import collect_dump
         from fakenet.mcp.exit_files import QUOTA
-        self._call_lock.acquire()
+        from fakenet.mcp.exit_guard import SingleFlight
         target_path = self.directory / 'target.dmp'
+        if self.owner_dump is not None:
+            return self.owner_dump
         if target_path.exists():
             return None
-        def single_flight_busy(exc):
-            return 'exit evidence helper active' in repr(exc)
-
+        end = time.monotonic() + budget
+        flight = SingleFlight()
+        while not flight.acquire():
+            # A notified helper already owns the global writer flight. Do not
+            # hold its ACK protocol lock while waiting for its dump to finish.
+            if not force:
+                entry = self._read_optional('entry.json')
+                if entry and entry.get('target') == self.record and entry.get('acquired') is True:
+                    return None
+            if time.monotonic() >= end:
+                raise TimeoutError('owner dump writer flight deadline exceeded')
+            time.sleep(min(0.05, max(0, end - time.monotonic())))
         try:
-            for attempt in range(12):
-                try:
-                    # Both the dump collection and its verification acquire
-                    # the global single flight; the preceding incident bulk
-                    # child can hold it for its whole (up to 180s) budget
-                    # on this host. Waiting for the flight is bounded by
-                    # the stop's overall deadline, not by this loop alone.
-                    collect_dump(self.record['pid'], self.record['creation_time'], target_path,
-                                 time.monotonic() + budget, quota=QUOTA)
-                    checked = self._call('exit-verify-dump',
-                                         dict(run_id=self.record['run_id'], pid=self.record['pid']),
-                                         time.monotonic() + budget)
-                    break
-                except DiagnosticError as exc:
-                    if not single_flight_busy(exc) or attempt == 11:
-                        raise
-                    # The aborted attempt can leave its unpublished staging
-                    # behind; this run's directory is exclusively owned, so
-                    # clearing our own partial artifact is safe.
-                    for residue in (target_path,
-                                    target_path.with_name(target_path.name + '.part')):
-                        residue.unlink(missing_ok=True)
-                    time.sleep(15)
-            info = dict(name='target.dmp', size=checked['size'], sha256=checked['sha256'])
-            self.owner_dump = info
-            self._publish('owner-dump.json', dict(
-                info, reason='owner-collected: grace timeout with live target'))
-            return info
+            with self._call_lock:
+                if self.owner_dump is not None:
+                    return self.owner_dump
+                if target_path.exists() or self._target is None or self._target.exited():
+                    return None
+                actual = self._target.identity()
+                if (actual['pid'] != self.record['pid'] or
+                        actual['creation_time'] != self.record['creation_time']):
+                    raise RuntimeError('owner dump retained target identity changed')
+                collect_dump(self.record['pid'], self.record['creation_time'], target_path,
+                             end, quota=QUOTA)
         finally:
-            self._call_lock.release()
+            flight.close()
+        # Verification uses a diagnostic child that acquires the same global
+        # flight; release our writer ownership before invoking that child.
+        checked = self._call('exit-verify-dump',
+                             dict(run_id=self.record['run_id'], pid=self.record['pid']), end)
+        info = dict(name='target.dmp', size=checked['size'], sha256=checked['sha256'])
+        self.owner_dump = info
+        self._publish('owner-dump.json', dict(
+            info, reason='owner-collected: grace timeout with live target'))
+        return info
 
     def _finish_local(self, report):
         """Lock-free finalization for the helper-less hang path.

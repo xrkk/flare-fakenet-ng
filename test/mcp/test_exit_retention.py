@@ -175,7 +175,15 @@ def test_released_target_handle_reports_ended_not_invalid():
     assert handle.exited() is True
 
 
-def test_owner_dump_public_collector_targets_live_process_only():
+def test_owner_dump_public_collector_targets_live_process_only(monkeypatch):
+    from fakenet.mcp import exit_guard
+    flight_state = {"held": False}
+    class Flight:
+        def acquire(self):
+            flight_state["held"] = True
+            return True
+        def close(self): flight_state["held"] = False
+    monkeypatch.setattr(exit_guard, "SingleFlight", Flight)
     import threading
     owner = ExitRetention.__new__(ExitRetention)
     owner._helper = None
@@ -184,6 +192,8 @@ def test_owner_dump_public_collector_targets_live_process_only():
     class Target:
         def exited(self):
             return False
+        def identity(self):
+            return {"pid": 4242, "creation_time": "123"}
     owner._target = Target()
     owner.deadline = time.monotonic() - 5  # retention deadline already passed
     owner.record = {'run_id': 'run', 'pid': 4242, 'creation_time': '123'}
@@ -195,9 +205,13 @@ def test_owner_dump_public_collector_targets_live_process_only():
                     return b'x' * 10
             return P()
     owner.directory = Dir()
-    owner._call = lambda *a, **k: {'size': 10, 'sha256': 'a' * 64}
+    def verify(*a, **k):
+        assert not flight_state['held'], 'verification child must acquire its own flight'
+        return {'size': 10, 'sha256': 'a' * 64}
+    owner._call = verify
     owner._publish = lambda name, record: None
     def fake_collect(pid, creation, target, deadline, quota=None):
+        assert flight_state['held'], 'dump writer requires exclusive flight'
         assert deadline > time.monotonic() + 30, 'own budget, not the expired retention deadline'
     import unittest.mock as mock
     with mock.patch('fakenet.mcp.dumpworker.collect_dump', fake_collect):
@@ -272,3 +286,79 @@ def test_helper_admission_winerror_records_exact_native_stage(monkeypatch, tmp_p
     assert observation['helper_creation_time'] == helper['creation_time']
     assert observation['entry_observed_monotonic'] > 0
     assert 'ack_attempted_monotonic' not in observation
+
+
+def test_missing_helper_result_keeps_failure_observations_when_cleanup_fails():
+    """A cleanup retry must preserve the original failed stage and ACK timing."""
+    from types import SimpleNamespace
+    owner = ExitRetention.__new__(ExitRetention)
+    owner.record = {'run_id': 'current'}
+    owner.done = threading.Event()
+    owner.deadline = time.monotonic() + 60
+    owner._target = SimpleNamespace(exited=lambda: True)
+    owner._cancel = threading.Event()
+    owner._helper = SimpleNamespace(exited=lambda: True)
+    owner.intent = SimpleNamespace(invalidate=lambda: None)
+    owner._ack_published_monotonic = 123.5
+    owner._read_optional = lambda name: None
+    def cleanup(_deadline):
+        raise RuntimeError('managed target still active')
+    owner._end_helpers = cleanup
+    owner._watch()
+    assert owner.done.is_set()
+    assert owner.result['complete'] is False
+    assert 'helper ended without final result' in owner.result['error']
+    assert owner.result['failure_stage'] == 'read exit helper result'
+    assert owner.result['owner_observation']['ack_published_monotonic'] == 123.5
+    assert 'managed target still active' in owner.result['cleanup_error']
+    assert owner.result['retained_target_handle_closed'] is False
+
+
+def test_owner_dump_yields_to_existing_exit_helper_without_taking_protocol_lock(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from fakenet.mcp import exit_guard, dumpworker
+    owner = ExitRetention.__new__(ExitRetention)
+    owner._target = SimpleNamespace(exited=lambda: False)
+    owner._helper = None
+    owner.record = {'run_id': 'current'}
+    owner.owner_dump = None
+    owner.directory = tmp_path
+    owner._read_optional = lambda name: {'target': owner.record, 'acquired': True}
+    class Flight:
+        def acquire(self): return False
+        def close(self): pass
+    class ProtocolLock:
+        def acquire(self): pytest.fail('must not block helper ACK behind owner dump')
+    owner._call_lock = ProtocolLock()
+    monkeypatch.setattr(exit_guard, 'SingleFlight', Flight)
+    monkeypatch.setattr(dumpworker, 'collect_dump', lambda *a, **k: pytest.fail('helper already owns dump flight'))
+    assert owner.collect_owner_dump() is None
+
+
+def test_owner_dump_existing_artifact_never_acquires_protocol_lock(tmp_path):
+    from types import SimpleNamespace
+    owner = ExitRetention.__new__(ExitRetention)
+    owner._target = SimpleNamespace(exited=lambda: False)
+    owner._helper = None
+    owner.owner_dump = None
+    owner.directory = tmp_path
+    (tmp_path / 'target.dmp').write_bytes(b'existing evidence')
+    assert owner.collect_owner_dump() is None
+    assert (tmp_path / 'target.dmp').read_bytes() == b'existing evidence'
+
+
+def test_forced_owner_dump_busy_flight_keeps_deadline_and_does_not_write(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from fakenet.mcp import exit_guard, dumpworker
+    owner = ExitRetention.__new__(ExitRetention)
+    owner._target = SimpleNamespace(exited=lambda: False)
+    owner._helper = object()
+    owner.owner_dump = None
+    owner.directory = tmp_path
+    class Flight:
+        def acquire(self): return False
+    monkeypatch.setattr(exit_guard, 'SingleFlight', Flight)
+    monkeypatch.setattr(dumpworker, 'collect_dump', lambda *a, **k: pytest.fail('concurrent dump'))
+    with pytest.raises(TimeoutError, match='writer flight deadline'):
+        owner.collect_owner_dump(budget=0, force=True)
+    assert not list(tmp_path.iterdir())
