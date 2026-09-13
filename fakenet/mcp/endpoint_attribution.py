@@ -134,3 +134,97 @@ def unique_bind(events, life):
                 int(data['Status'], 0) == 0 and socket_address(data['Address'])['port'] == life['bound']['port']):
             matches.append(data['Endpoint'])
     return matches == [life['endpoint_pointer']]
+
+
+def _managed_process_ids(section):
+    """Baseline-managed process ids from the raw windivert_processes JSON."""
+    try:
+        observed = json.loads(str(section))
+    except (TypeError, ValueError):
+        raise ValueError('managed process evidence is not parseable')
+    if not isinstance(observed, dict) or not isinstance(observed.get('managed'), list):
+        raise ValueError('managed process evidence is incomplete')
+    ids = set()
+    for process in observed['managed']:
+        try:
+            ids.add(int(process['Id']))
+        except (KeyError, TypeError, ValueError):
+            raise ValueError('managed process identity is incomplete')
+    return ids
+
+
+def foreign_udp_owner_changes(baseline, sample, proof):
+    """Accept isolated UDP endpoint changes owned by pre-existing processes.
+
+    A restoration audit must fail on residue this run created.  A changed
+    UDP endpoint whose owning process already existed when the run's endpoint
+    trace began, and is not one of the baseline's managed processes, was
+    never created by this run: its socket lifecycle is environmental.  Owners
+    first observed during the run, baseline-managed owners, mixed or non-UDP
+    differences, and any ambiguity refuse; nothing is waived by port range
+    or process name.
+    """
+    from fakenet.mcp.baseline import audit_compare
+    result = {'accepted': False, 'attributed': [], 'refused': []}
+    try:
+        run = baseline['run_id']
+        if (sample['run_id'] != run or proof['run_id'] != run or
+                proof['start'].get('run_id') != run or proof['end'].get('run_id') != run or
+                proof['end'].get('complete') is not True or
+                proof['end'].get('absent') is not True):
+            raise ValueError('run identity or complete coverage unavailable')
+        diff = audit_compare(baseline['sections'], sample['current'])
+        if not diff:
+            return dict(result, accepted=True, raw_equal=True)
+        if set(diff) != {'listen_ports'} or diff['listen_ports'].get('collection_failed'):
+            raise ValueError('not an isolated endpoint difference')
+        before_window = baseline['observation_windows']['listen_ports']
+        after_window = sample['observation_windows']['listen_ports']
+        if not (proof['start']['time_ns'] <= before_window['start_ns'] and
+                after_window['end_ns'] <= proof['end']['time_ns']):
+            raise ValueError('sampling outside complete observation')
+        normalized = diff['listen_ports']
+        norm_removed = Counter(str(normalized['before']).splitlines()) - Counter(str(normalized['after']).splitlines())
+        norm_added = Counter(str(normalized['after']).splitlines()) - Counter(str(normalized['before']).splitlines())
+        norm_changed = ([('removed', line) for line in norm_removed.elements()] +
+                        [('added', line) for line in norm_added.elements()])
+        if not norm_changed:
+            raise ValueError('no changed rows in normalized difference')
+        for _direction, line in norm_changed:
+            parts = line.split()
+            if len(parts) != 3 or parts[0].upper() != 'UDP':
+                raise ValueError('non-UDP row remains in difference')
+        def raw_owner(text, address_port):
+            for raw in str(text).splitlines():
+                parts = raw.split()
+                if (len(parts) == 4 and parts[0].upper() == 'UDP' and
+                        parts[1] == address_port and parts[2] == '*:*' and
+                        parts[3].isdigit()):
+                    return int(parts[3])
+            raise ValueError('raw owner row unavailable for %s' % address_port)
+        managed = _managed_process_ids(baseline['sections'].get('windivert_processes'))
+        start_ids = {int(row['ProcessId']): str(row['CreationTime'])
+                     for row in proof['start']['processes']}
+        if len(start_ids) != len(proof['start']['processes']):
+            raise ValueError('ambiguous process identity')
+        for direction, line in norm_changed:
+            address_port = line.split()[1]
+            owner = raw_owner(baseline['sections']['listen_ports'] if direction == 'removed'
+                              else sample['current']['listen_ports'], address_port)
+            if owner in managed:
+                result['refused'].append({'direction': direction, 'row': line,
+                                          'pid': owner, 'reason': 'baseline-managed owner'})
+                continue
+            if owner not in start_ids:
+                result['refused'].append({'direction': direction, 'row': line,
+                                          'pid': owner,
+                                          'reason': 'owner created during run or unknown'})
+                continue
+            result['attributed'].append({'direction': direction, 'row': line,
+                                         'pid': owner,
+                                         'creation_time': start_ids[owner]})
+        result['accepted'] = bool(result['attributed']) and not result['refused']
+    except Exception as exc:
+        result['accepted'] = False
+        result['failure'] = str(exc)
+    return result

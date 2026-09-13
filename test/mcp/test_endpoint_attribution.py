@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from fakenet.mcp.endpoint_attribution import closed_udp_changes, event_ns
+from fakenet.mcp.endpoint_attribution import (closed_udp_changes, event_ns,
+                                              foreign_udp_owner_changes)
 from fakenet.mcp.baseline import BASELINE_FIELDS
 
 
@@ -117,3 +118,86 @@ def test_dual_projection_requires_unique_bind_success_and_observed_close(problem
     elif problem == 'close_outside_trace':
         proof['end']['time_ns'] = data['sample']['observation_windows']['listen_ports']['end_ns']
     assert not closed_udp_changes(data['baseline'], data['sample'], proof)['accepted']
+
+
+def foreign_case():
+    run = 'run-foreign-1'
+    sections = {k: 'unchanged' for k in BASELINE_FIELDS}
+    sections.update(listen_ports='UDP 192.168.204.233:52496 *:* 1624',
+                    windivert_processes=json.dumps({'managed': []}))
+    ns = lambda text: event_ns('2026-09-13T12:00:' + text + 'Z')
+    baseline = {'run_id': run, 'sections': sections,
+                'observation_windows': {'listen_ports': {'start_ns': ns('13.0000000'), 'end_ns': ns('13.1000000')}}}
+    sample = {'run_id': run, 'current': dict(sections, listen_ports=''),
+              'observation_windows': {'listen_ports': {'start_ns': ns('20.0000000'), 'end_ns': ns('20.1000000')}}}
+    identities = [{'ProcessId': 1624, 'CreationTime': '134334000000000000'},
+                  {'ProcessId': 7296, 'CreationTime': '134334000000000001'}]
+    proof = {'run_id': run,
+             'start': {'run_id': run, 'time_ns': ns('11.0000000'), 'processes': identities},
+             'end': {'run_id': run, 'time_ns': ns('21.0000000'), 'complete': True,
+                     'absent': True, 'processes': identities}}
+    return baseline, sample, proof
+
+
+def test_foreign_preexisting_udp_owner_change_is_accepted():
+    baseline, sample, proof = foreign_case()
+    result = foreign_udp_owner_changes(baseline, sample, proof)
+    assert result['accepted'], result
+    assert result['attributed'][0]['pid'] == 1624
+
+
+@pytest.mark.parametrize('problem', ['managed_owner', 'owner_created_during_run',
+    'added_foreign_socket', 'non_udp_row', 'missing_owner_identity',
+    'other_section_changed', 'incomplete_proof'])
+def test_foreign_owner_attribution_fails_closed(problem):
+    baseline, sample, proof = foreign_case()
+    if problem == 'managed_owner':
+        baseline['sections']['windivert_processes'] = json.dumps({'managed': [{'Id': 1624}]})
+        sample['current']['windivert_processes'] = baseline['sections']['windivert_processes']
+    elif problem == 'owner_created_during_run':
+        proof['start']['processes'] = [{'ProcessId': 7296, 'CreationTime': '134334000000000001'}]
+    elif problem == 'added_foreign_socket':
+        # A socket first owned by a process created during the run is refused.
+        baseline['sections']['listen_ports'] = ''
+        sample['current']['listen_ports'] = 'UDP 192.168.204.233:53000 *:* 4242'
+    elif problem == 'non_udp_row':
+        baseline['sections']['listen_ports'] = ('UDP 192.168.204.233:52496 *:* 1624\n'
+                                                'TCP 0.0.0.0:55999 0.0.0.0:0 LISTENING 1624')
+        sample['current']['listen_ports'] = ''
+    elif problem == 'missing_owner_identity':
+        baseline['sections']['listen_ports'] = 'UDP 192.168.204.233:52496 *:*'
+    elif problem == 'other_section_changed':
+        sample['current']['routes'] = 'changed'
+    elif problem == 'incomplete_proof':
+        proof['end']['complete'] = False
+    result = foreign_udp_owner_changes(baseline, sample, proof)
+    assert not result['accepted'], result
+
+
+def test_foreign_preexisting_udp_addition_is_also_environmental():
+    baseline, sample, proof = foreign_case()
+    baseline['sections']['listen_ports'] = ''
+    sample['current']['listen_ports'] = 'UDP 192.168.204.233:53000 *:* 1624'
+    result = foreign_udp_owner_changes(baseline, sample, proof)
+    assert result['accepted'], result
+    assert result['attributed'][0]['direction'] == 'added'
+
+
+def test_full_audit_accepts_foreign_preexisting_udp_owner(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from fakenet.mcp import baseline as module
+    baseline, sample, proof = foreign_case()
+    sections = module.CapturedSections(baseline['sections'])
+    sections.windows = baseline['observation_windows']
+    store = module.BaselineStore(tmp_path / 'baselines')
+    store.save(baseline['run_id'], sections)
+    current = module.CapturedSections(sample['current'])
+    current.windows = sample['observation_windows']
+    monkeypatch.setattr(module, 'capture', lambda deadline: current)
+    monkeypatch.setattr(module.time, 'sleep', lambda seconds: None)
+    observed = SimpleNamespace(audit_proof=lambda deadline: proof)
+    result = store.full_audit_diff(baseline['run_id'], settle_seconds=0.02, observation=observed)
+    assert result == {}
+    decision = json.loads(next((tmp_path/'logs').glob('*.attribution.json')).read_text())
+    assert decision['accepted'] is True
+    assert decision['foreign_owner_samples']

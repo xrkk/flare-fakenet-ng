@@ -385,7 +385,8 @@ class BaselineStore:
                         return {}
                     time.sleep(min(0.5, max(0, audit_deadline - time.monotonic())))
             if observation is not None and len(samples) == 2:
-                from fakenet.mcp.endpoint_attribution import closed_udp_changes
+                from fakenet.mcp.endpoint_attribution import (closed_udp_changes,
+                                                              foreign_udp_owner_changes)
                 from fakenet.mcp.endpoint_observation import write_evidence
                 try:
                     proof = observation.audit_proof(deadline)
@@ -394,9 +395,23 @@ class BaselineStore:
                     decision = {'run_id': run_id, 'raw_audit': str(log),
                                 'accepted': accepted, 'samples': decisions}
                 except Exception as exc:
+                    proof = None
                     accepted = False
                     decision = {'run_id': run_id, 'raw_audit': str(log),
                                 'accepted': False, 'failure': repr(exc)}
+                if not accepted and proof is not None:
+                    # Isolated UDP endpoint changes owned by processes that
+                    # predate the run are environmental, not restoration
+                    # residue; attribute them after the strict proof refuses.
+                    try:
+                        foreign = [foreign_udp_owner_changes(baseline, sample, proof)
+                                   for sample in samples]
+                        accepted = all(row['accepted'] for row in foreign)
+                        decision['foreign_owner_samples'] = foreign
+                        decision['accepted'] = accepted
+                    except Exception as exc:
+                        decision['foreign_owner_samples'] = [{'accepted': False,
+                                                              'failure': repr(exc)}]
                 write_evidence(log.with_suffix('.attribution.json'), decision)
                 if accepted:
                     return {}
