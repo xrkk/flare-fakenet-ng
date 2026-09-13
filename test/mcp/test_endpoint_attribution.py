@@ -201,3 +201,23 @@ def test_full_audit_accepts_foreign_preexisting_udp_owner(tmp_path, monkeypatch)
     decision = json.loads(next((tmp_path/'logs').glob('*.attribution.json')).read_text())
     assert decision['accepted'] is True
     assert decision['foreign_owner_samples']
+
+
+def test_foreign_owner_survives_recovery_reaudit_after_trace_end():
+    baseline, sample, proof = foreign_case()
+    # A recovery re-audit samples long after the endpoint trace closed; the
+    # baseline window stays inside the proof, so attribution still holds.
+    sample['observation_windows']['listen_ports'] = {
+        'start_ns': proof['end']['time_ns'] + 3600 * 10**9,
+        'end_ns': proof['end']['time_ns'] + 3600 * 10**9 + 10**8}
+    result = foreign_udp_owner_changes(baseline, sample, proof)
+    assert result['accepted'], result
+
+
+def test_foreign_owner_requires_baseline_window_inside_proof():
+    baseline, sample, proof = foreign_case()
+    baseline['observation_windows']['listen_ports'] = {
+        'start_ns': proof['start']['time_ns'] - 10**9,
+        'end_ns': proof['start']['time_ns']}
+    result = foreign_udp_owner_changes(baseline, sample, proof)
+    assert not result['accepted']

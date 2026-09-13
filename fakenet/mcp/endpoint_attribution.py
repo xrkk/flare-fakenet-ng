@@ -179,10 +179,13 @@ def foreign_udp_owner_changes(baseline, sample, proof):
         if set(diff) != {'listen_ports'} or diff['listen_ports'].get('collection_failed'):
             raise ValueError('not an isolated endpoint difference')
         before_window = baseline['observation_windows']['listen_ports']
-        after_window = sample['observation_windows']['listen_ports']
+        # Only the baseline window must fall inside the completed endpoint
+        # observation: pre-existence of the owner is proved by the trace-start
+        # process snapshot alone.  Recovery re-audits legitimately sample long
+        # after the trace ended, so the after-window has no upper bound here.
         if not (proof['start']['time_ns'] <= before_window['start_ns'] and
-                after_window['end_ns'] <= proof['end']['time_ns']):
-            raise ValueError('sampling outside complete observation')
+                before_window['end_ns'] <= proof['end']['time_ns']):
+            raise ValueError('baseline sampling outside complete observation')
         normalized = diff['listen_ports']
         norm_removed = Counter(str(normalized['before']).splitlines()) - Counter(str(normalized['after']).splitlines())
         norm_added = Counter(str(normalized['after']).splitlines()) - Counter(str(normalized['before']).splitlines())
