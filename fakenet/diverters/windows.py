@@ -906,10 +906,16 @@ class Diverter(DiverterBase, WinUtilMixin):
             _PROCESS_REDIRECT_ROUTE_QUERY_TIMEOUT_SECONDS)
 
     def _run_route_checker(self, targets, checker_name, query_timeout):
-        checker = os.path.abspath(os.path.join(
+        candidates = [os.path.abspath(os.path.join(
             os.path.dirname(__file__), '..', '..',
-            checker_name))
-        if not os.path.isfile(checker):
+            checker_name))]
+        if getattr(sys, 'frozen', False) and getattr(sys, '_MEIPASS', None):
+            # Frozen onedir runs resolve module __file__ under the extracted
+            # tree; the bundle also ships the checkers as datas at its root.
+            candidates.insert(0, os.path.join(sys._MEIPASS, checker_name))
+        checker = next(
+            (path for path in candidates if os.path.isfile(path)), None)
+        if checker is None:
             raise PolicyConfigError(
                 'reviewed IPv4 route checker is missing')
         encoded = base64.b64encode(json.dumps(

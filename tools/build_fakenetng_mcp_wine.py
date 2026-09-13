@@ -135,6 +135,8 @@ def verify_source(stage):
         stage / 'fakenet' / 'mcp' / '__main__.py',
         stage / 'fakenet' / 'mcp' / 'server.py',
         stage / 'fakenet' / 'mcp' / 'transportguard.py',
+        stage / 'Test-ReviewedIPv4Routes.ps1',
+        stage / 'Test-ProcessRedirectRoutes.ps1',
         stage / 'test' / 'mcp' / 'test_sdk_probe.py',
     )
     for path in required:

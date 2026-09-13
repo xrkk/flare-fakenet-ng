@@ -10,7 +10,13 @@ block_cipher = None
 
 a = Analysis(['fakenet/mcp/__main__.py'],
              pathex=['.'],
-             datas=None,
+             # Runtime route checkers required by reviewed-IPv4 and
+             # process-redirect configurations (fakenet/diverters/windows.py
+             # _run_route_checker); they must ship beside the frozen modules.
+             datas=[
+                 ('Test-ReviewedIPv4Routes.ps1', '.'),
+                 ('Test-ProcessRedirectRoutes.ps1', '.'),
+             ],
              hiddenimports=[
                  'mcp',
                  'mcp.types',
