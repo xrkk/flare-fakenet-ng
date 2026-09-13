@@ -31,13 +31,13 @@
   "authorization": {
     "new_fix_chain": "进行中；最新指令授权所有发现的问题在一个方案中分阶段修复，首次审核引入后实施",
     "previous_scenario_loop": "仍停止",
-    "current_failure": "用户明确同意继续处理；下一次正式验收失败仍停"
+    "current_failure": "用户同意按16思路继续；下一正式验收首失败仍停"
   },
   "branch": "process-redirect-v23",
-  "head": "893378f7004190b83005c58ba0020c3fba263406",
-  "checkpoint": "用户已授权处理首错；运行库基线污染根因坐实，探针修正及三次实机局部对照通过；准备新快照构建",
+  "head": "25a0501af47e1c753c74ec776cfeb93a0afa5073",
+  "checkpoint": "listener_stop两个问题已按17补证修复，本地51pass/1skip；准备新源码正式构建",
   "blockers": [],
-  "updated_at": "2026-09-13T11:13:09.726788+08:00",
+  "updated_at": "2026-09-13T11:57:36.030608+08:00",
   "scope_record": {
     "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-03-范围确认-统一问题修复.md",
     "blob": "ccc914f71d0c3fdb5fa1f62d5531443160a1591e"
@@ -96,22 +96,31 @@
     "review_required": false
   },
   "build": {
-    "source_commit": "893378f7004190b83005c58ba0020c3fba263406",
-    "tree": "8976839f54b89f02851043b25740213d447b0271",
-    "session_id": 2657,
-    "output": "dist/mcp-unified-repair-20260913-01",
-    "log_root": "Logs/fakenetng-mcp/builds/893378f7-rtg32alw",
+    "source_commit": "25a0501af47e1c753c74ec776cfeb93a0afa5073",
+    "tree": "030102e960f3cb5449783115e1f7c5350b4c0dad",
     "status": "passed",
-    "candidate_id": "mcp-c893378f7-4845a650f14c",
-    "zip_sha256": "4845a650f14cfc62500b9bc372f39dd17602c788445c706ea08a570eac67450f"
+    "candidate_id": "mcp-c25a0501a-3a4340750d43",
+    "zip_sha256": "3a4340750d43e023201315ff65992e1b2f69060dde6ccca7af9b31888226b2ef",
+    "output": "dist/mcp-unified-repair-20260913-02",
+    "log_root": "Logs/fakenetng-mcp/builds/25a0501a-b5g54i84"
   },
   "acceptance": {
     "status": "stopped_after_first_failure",
-    "acc": "ACC-002",
-    "evidence": "Logs/fakenetng-mcp/unified-repair-20260913/893378f/readiness",
-    "executed_packaged_cases": 1,
+    "acc": "ACC-005",
+    "evidence": "Logs/fakenetng-mcp/unified-repair-20260913/25a0501/failure-export",
+    "executed_packaged_cases": 40,
     "required_packaged_cases": 40,
     "actual_100_executed": 0,
-    "resume_requires_user_instruction": false
+    "resume_requires_user_instruction": false,
+    "normal_p05": "5/5 pass",
+    "readiness": "40/40 pass",
+    "failed_run_id": "4d191cdf-394d-4290-835c-4951c5973067",
+    "p05_fault": "policy_pause pass; listener_stop fail; remaining 3 not executed"
+  },
+  "acceptance_agent": {
+    "task": "/root/terra_repair100_v2",
+    "model": "gpt-5.6-terra",
+    "reasoning": "xhigh",
+    "status": "offline preparation only; actual execution 0"
   }
 }

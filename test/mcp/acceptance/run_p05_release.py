@@ -32,7 +32,7 @@ from run_p02_acc import VALID_INI, call, sha_of, status  # noqa: E402
 from run_p03_acc import continuous_probe, stop_run, unique_command, wait_state  # noqa: E402
 sys.path.insert(0, str(REPO_ROOT))
 from fakenet.mcp.faultinject import FAULTS  # noqa: E402
-from evidence_integrity import (IDENTITY_FIELDS, validate_result,
+from evidence_integrity import (incident_entry_omission_allowed, IDENTITY_FIELDS, validate_result,
                                 validate_round, validate_rounds, validate_sample_category)
 from release_matrix import MatrixUsageError, matrix_counts, parse_limit
 
@@ -444,8 +444,7 @@ class ReleaseGate:
             if item['manifest'].get('complete'):
                 return True
             return all(entry.get('result') == 'ok' or
-                       (entry.get('item') == 'managed-exit.json' and
-                        entry.get('failure_reason') == 'exit evidence incomplete')
+                       incident_entry_omission_allowed(entry, fault_round=True)
                        for entry in item['manifest'].get('entries', []))
         if (record['fault_evidence']['receipt']['receipt'] != {'fault': klass, 'nonce': nonce}
                 or not incidents or any(not manifest_acceptable(item) for item in incidents)):

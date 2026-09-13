@@ -381,3 +381,51 @@ def test_failed_helper_scan_remains_required_on_same_owner_reentry(monkeypatch, 
             owner._finish({'complete': False})
     assert scans == ['scan', 'scan'] and closed == ['helper']
     assert owner._target is not None
+
+
+def test_deadline_drains_existing_read_without_accepting_late_result(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    import fakenet.mcp.exit_retention as module
+    owner = ExitRetention('current', {}, {}, 'instance', tmp_path,
+                          hard_deadline=time.monotonic() - 1)
+    owner.record = {'run_id': 'current'}
+    owner.directory = tmp_path
+    owner.intent = SimpleNamespace(invalidate=lambda: None, invalidate_local=lambda: None)
+    owner.owner_dump = {'name': 'target.dmp', 'sha256': 'verified-before-deadline'}
+    ended, cancel = threading.Event(), threading.Event()
+    task = SimpleNamespace(ended=ended, cancel=cancel,
+        observation=lambda error=None: {'operation': 'exit-read', 'ended': ended.is_set()}, error='expired')
+    owner._diagnostics = SimpleNamespace(active=task, pending=lambda: not ended.is_set())
+    owner._intent_diagnostics = SimpleNamespace(active=None, pending=lambda: False)
+    published = []
+    monkeypatch.setattr(module, 'publish', lambda p, value: published.append(value))
+    owner._publish = lambda name, value: published.append(value)
+    finisher = threading.Thread(target=lambda: (cancel.wait(1), ended.set()))
+    finisher.start()
+    owner._watch()
+    finisher.join(1)
+    assert not finisher.is_alive()
+    assert owner.result['complete'] is True
+    assert owner.result['dump'] == owner.owner_dump
+    assert owner.resources_ended()
+    assert published[-1]['complete'] is True
+
+
+def test_deadline_keeps_unended_diagnostic_owned(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    import fakenet.mcp.exit_retention as module
+    owner = ExitRetention('current', {}, {}, 'instance', tmp_path,
+                          hard_deadline=time.monotonic() - 1)
+    owner.record = {'run_id': 'current'}
+    owner.directory = tmp_path
+    owner.intent = SimpleNamespace(invalidate=lambda: None, invalidate_local=lambda: None)
+    ended = threading.Event()
+    task = SimpleNamespace(ended=ended, cancel=threading.Event(),
+        observation=lambda error=None: {'operation': 'exit-read', 'ended': ended.is_set()}, error='expired')
+    owner._diagnostics = SimpleNamespace(active=task, pending=lambda: True)
+    owner._intent_diagnostics = SimpleNamespace(active=None, pending=lambda: False)
+    monkeypatch.setattr(module, 'FINALIZE_BUDGET', .01)
+    owner._watch()
+    assert owner.result['complete'] is False
+    assert not owner.resources_ended()
+    assert owner._diagnostics.active is task

@@ -225,6 +225,17 @@ def validate_sample_category(record, prefix):
     return failures
 
 
+def incident_entry_omission_allowed(entry, fault_round=False):
+    """The two existing, explicit omissions; never a generic failed-item pass."""
+    return ((entry.get('item') == 'userdump.dmp' and
+             entry.get('result') == 'skipped' and
+             entry.get('failure_reason') == 'no escalation condition' and
+             entry.get('size') == 0 and entry.get('sha256') is None) or
+            (fault_round and entry.get('item') == 'managed-exit.json' and
+             entry.get('result') == 'failed' and
+             entry.get('failure_reason') == 'exit evidence incomplete'))
+
+
 def validate_incident_export(exported, run_id, fault_round=False):
     """Re-read actual members; a cached complete flag is insufficient.
 
@@ -257,10 +268,7 @@ def validate_incident_export(exported, run_id, fault_round=False):
                 if name in names or '/' in name or '\\' in name or name in ('', '.', '..'):
                     raise ValueError('invalid or duplicate incident member')
                 names.add(name)
-                if item['result'] == 'skipped' and name == 'userdump.dmp' and item.get('failure_reason') == 'no escalation condition' and item.get('size') == 0 and item.get('sha256') is None:
-                    continue
-                if (fault_round and item['result'] == 'failed' and name == 'managed-exit.json'
-                        and item.get('failure_reason') == 'exit evidence incomplete'):
+                if incident_entry_omission_allowed(item, fault_round):
                     continue
                 if item['result'] != 'ok':
                     raise ValueError('failed incident member: ' + name)

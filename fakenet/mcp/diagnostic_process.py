@@ -67,12 +67,16 @@ class DiagnosticCall:
                             operation=operation, payload=payload, deadline=deadline, started=time.monotonic())
         self.done, self.ended, self.cancel = (threading.Event() for _ in range(3))
         self.result = self.error = self.job = None
+        self.ended_monotonic = None
         self.native = []
 
     def observation(self, error=None):
         return dict(attempt=self.request['attempt'], operation=self.request['operation'],
                     deadline=self.deadline, error=error,
                     ended=self.ended.is_set(), native=list(self.native),
+                    done=self.done.is_set(), cancelled=self.cancel.is_set(),
+                    observed_monotonic=time.monotonic(),
+                    ended_monotonic=self.ended_monotonic,
                     platform_blocked=False)
 
     def start(self):
@@ -213,6 +217,7 @@ class DiagnosticCall:
         for stream in self.retained_streams:
             stream.close()
         self.retained_streams = []
+        self.ended_monotonic = time.monotonic()
         self.ended.set()
 
     def _terminate(self, deadline=None):

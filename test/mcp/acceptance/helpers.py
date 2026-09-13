@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import anyio
 
+from evidence_integrity import incident_entry_omission_allowed
+
 from mcp import Client
 
 DEFAULT_WIN10VM_MCP = 'http://192.168.204.149:28787/mcp'
@@ -262,15 +264,7 @@ def export_incident_bundle(channel, run_id, destination, incident_name='incident
             if not name or '/' in name or '\\' in name or name in ('.', '..'):
                 raise StepError('invalid incident member name')
             if entry.get('result') != 'ok':
-                if (name == 'userdump.dmp' and entry.get('result') == 'skipped' and
-                        entry.get('failure_reason') == 'no escalation condition' and
-                        entry.get('size') == 0 and entry.get('sha256') is None):
-                    continue
-                if (fault_round and name == 'managed-exit.json' and
-                        entry.get('failure_reason') == 'exit evidence incomplete'):
-                    # The producer's honest end fact for a fault scenario
-                    # (CHK-070); the pack's escalation dump carries the
-                    # failure proof.
+                if incident_entry_omission_allowed(entry, fault_round):
                     continue
                 failures.append(name + ': ' + str(entry.get('failure_reason')))
                 continue

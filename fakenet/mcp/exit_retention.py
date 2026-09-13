@@ -30,6 +30,8 @@ class ExitRetention:
         self._helper_identity = None
         self._cancel = threading.Event()
         self.owner_dump = None
+        self._finalization_deadline = None
+        self._finalization_diagnostics = []
         # The watch thread polls diagnostics and the supervisor's hang branch
         # collects the owner dump concurrently; one owner, serialized access.
         self._call_lock = threading.RLock()
@@ -122,6 +124,8 @@ class ExitRetention:
         result = dict(entry_read_attempts=getattr(self, '_entry_read_attempts', 0),
                       entry_read_diagnostic_errors=getattr(
                           self, '_entry_read_diagnostic_errors', 0))
+        if getattr(self, '_finalization_diagnostics', None):
+            result['finalization_diagnostics'] = self._finalization_diagnostics
         for key in ('_entry_observed_monotonic', '_helper_creation_time',
                     '_helper_deadline_monotonic', '_ack_attempted_monotonic',
                     '_ack_published_monotonic'):
@@ -151,6 +155,7 @@ class ExitRetention:
             # regularly exceeds five seconds; the default poll budget must
             # tolerate real spawn cost or every poll retains ownership.
             end = min(window or float('inf'), deadline or time.monotonic() + 30)
+            end = min(end, getattr(self, '_finalization_deadline', None) or float('inf'))
             return self._diagnostics.call(operation, payload, end)
 
     def _intent_io(self, operation, record, deadline):
@@ -162,6 +167,7 @@ class ExitRetention:
             budget = time.monotonic() + FINALIZE_BUDGET
         else:
             budget = self.deadline or float('inf')
+        budget = min(budget, getattr(self, '_finalization_deadline', None) or float('inf'))
         if operation == 'publish':
             payload['record'] = record
             return self._intent_diagnostics.call('exit-publish', payload, min(budget, deadline))
@@ -223,6 +229,28 @@ class ExitRetention:
         if self._target is not None and not self._target.exited():
             raise RuntimeError('managed target still active; retain its handle')
 
+    def _drain_existing_diagnostics(self, deadline):
+        # A call's success deadline expires before its worker necessarily
+        # finishes cleanup. Observe only those existing tasks; never read a
+        # late result, spawn a replacement, or release an unended owner.
+        observations = []
+        self._finalization_diagnostics = observations
+        tasks = []
+        for name in ('_diagnostics', '_intent_diagnostics'):
+            owner = getattr(self, name, None)
+            task = getattr(owner, 'active', None)
+            if task is not None:
+                row = dict(owner=name, before=task.observation(task.error))
+                observations.append(row)
+                tasks.append((task, row))
+                if not task.ended.is_set():
+                    task.cancel.set()
+        for task, row in tasks:
+            task.ended.wait(max(0, deadline - time.monotonic()))
+            row['after'] = task.observation(task.error)
+            if not task.ended.is_set():
+                raise RuntimeError('diagnostic protocol worker still active after finalization budget')
+
     def _finish(self, report, local=False):
         had_helper = (self._helper is not None or
                       getattr(self, '_helper_job', None) is not None or
@@ -276,11 +304,13 @@ class ExitRetention:
                     self.deadline = now + 60
                 if self.deadline is not None and now >= self.deadline:
                     failure_stage = 'finalize exit evidence deadline'
+                    self._finalization_deadline = now + FINALIZE_BUDGET
                     self.intent.invalidate()
+                    self._drain_existing_diagnostics(self._finalization_deadline)
                     owner_dump = getattr(self, 'owner_dump', None)
                     # The window bounds waiting for evidence, not the owner's
                     # own finalization; slow teardown needs its own budget.
-                    self._end_helpers(time.monotonic() + FINALIZE_BUDGET)
+                    self._end_helpers(self._finalization_deadline)
                     if self._helper is not None:
                         self._helper.terminate_helper()
                         while not self._helper.exited() and time.monotonic() < self.deadline:
@@ -392,6 +422,7 @@ class ExitRetention:
                 self.result = dict(report, helper_ended=False, cleanup_error=repr(cleanup),
                                    retained_target_handle_closed=False)
         finally:
+            self._finalization_deadline = None
             self.done.set()
 
     def settle(self, deadline):
