@@ -23,12 +23,14 @@ _RFC1918_NETWORKS = (
     ipaddress.ip_network('192.168.0.0/16'),
 )
 
+# RFC 5737 documentation ranges (192.0.2.0/24, 198.51.100.0/24,
+# 203.0.113.0/24) are excluded from this rejection list: _global_ipv4
+# accepts them explicitly as valid acceptance original destinations.
 _NON_GLOBAL_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
     '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
     '169.254.0.0/16', '172.16.0.0/12', '192.0.0.0/24',
-    '192.0.2.0/24', '192.88.99.0/24', '192.168.0.0/16',
-    '198.18.0.0/15', '198.51.100.0/24', '203.0.113.0/24',
-    '224.0.0.0/4', '240.0.0.0/4'))
+    '192.88.99.0/24', '192.168.0.0/16',
+    '198.18.0.0/15', '224.0.0.0/4', '240.0.0.0/4'))
 
 
 @dataclass(frozen=True)
@@ -619,13 +621,21 @@ def _canonical_windows_path(value):
     return raw
 
 
+_RFC5737_NETWORKS = tuple(ipaddress.ip_network(cidr) for cidr in (
+    '192.0.2.0/24', '198.51.100.0/24', '203.0.113.0/24'))
+
+
 def _global_ipv4(value):
     try:
         address = ipaddress.ip_address(str(value).strip())
     except ValueError:
         return None
+    # RFC 5737 documentation ranges are deliberately non-routable public
+    # targets; they are valid original destinations for acceptance while
+    # Python marks them not globally reachable.
+    documented = any(address in network for network in _RFC5737_NETWORKS)
     if (address.version != 4 or str(address) != str(value).strip() or
-            not address.is_global or address.is_multicast or
+            (not address.is_global and not documented) or address.is_multicast or
             address.is_reserved or address.is_unspecified or
             address.is_loopback or address.is_link_local or
             any(address in network for network in _NON_GLOBAL_NETWORKS)):

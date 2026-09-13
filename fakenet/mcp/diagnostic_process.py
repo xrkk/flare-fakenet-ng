@@ -12,7 +12,10 @@ import threading
 import time
 import uuid
 
-MAX_FRAME = 1024 * 1024
+# 8 MiB bounds the diagnostic result frame: a full artifacts metadata
+# listing of an acceptance matrix (hundreds of runs) legitimately
+# exceeds 1 MiB and must keep working (discovery100-09).
+MAX_FRAME = 8 * 1024 * 1024
 
 # A leader that published its exit code can stay listed and unsignaled
 # for a while during process teardown (AV/EDR load). Members must stay

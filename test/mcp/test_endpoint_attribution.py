@@ -1,4 +1,5 @@
 import copy
+import ipaddress
 import json
 from pathlib import Path
 
@@ -260,3 +261,21 @@ def test_full_audit_uses_start_only_proof_when_audit_proof_fails(tmp_path, monke
     decision = json.loads(next((tmp_path/'logs').glob('*.attribution.json')).read_text())
     assert decision['proof_mode'] == 'start-only'
     assert decision['accepted'] is True
+
+
+def test_rfc5737_documentation_targets_are_valid_original_redirects():
+    from fakenet.diverters.processredirect import _global_ipv4
+    assert _global_ipv4('198.51.100.77') == '198.51.100.77'
+    assert _global_ipv4('192.0.2.1') == '192.0.2.1'
+    assert _global_ipv4('203.0.113.9') == '203.0.113.9'
+    assert _global_ipv4('123.125.246.121') == '123.125.246.121'
+    assert _global_ipv4('10.0.0.5') is None
+    assert _global_ipv4('127.0.0.1') is None
+    assert _global_ipv4('0.0.0.0') is None
+
+
+def test_diagnostic_result_frame_accommodates_full_matrix_artifacts():
+    from fakenet.mcp.diagnostic_process import MAX_FRAME
+    # Hundreds of acceptance runs with per-file metadata must stay within
+    # one diagnostic frame (discovery100-09 exceeded the previous 1 MiB).
+    assert MAX_FRAME >= 8 * 1024 * 1024
