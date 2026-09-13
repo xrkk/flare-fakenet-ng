@@ -16,6 +16,10 @@ a = Analysis(['fakenet/mcp/__main__.py'],
              datas=[
                  ('Test-ReviewedIPv4Routes.ps1', '.'),
                  ('Test-ProcessRedirectRoutes.ps1', '.'),
+                 ('test/process_redirect_vm/RouteTargetTools.ps1',
+                  'test/process_redirect_vm'),
+                 ('test/process_redirect_vm/RouteResultTools.ps1',
+                  'test/process_redirect_vm'),
              ],
              hiddenimports=[
                  'mcp',
