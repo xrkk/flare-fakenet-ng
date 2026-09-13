@@ -1,3 +1,4 @@
+import pytest
 import configparser
 import unittest
 
@@ -717,3 +718,52 @@ class EgressPolicyTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@pytest.mark.parametrize('text', [
+    None, 'TCP/110.242.69.21/443', 'UDP/110.242.69.21/*',
+    ' TCP/110.242.69.21/0443,\n UDP/110.242.69.21/53 ', '',
+    'tcp/110.242.69.21/443', 'TCP/110.242.69.21/443,',
+    'TCP/110.242.69.21/*,TCP/110.242.69.21/443',
+    'TCP/110.242.69.21/443,TCP/110.242.69.21/0443',
+    'TCP/127.0.0.1/443', 'TCP/110.242.69.21/65536',
+    'TCP/110.242.069.21/443', 'TCP/110.242.69.21/+443',
+    ','.join('TCP/110.242.69.21/%d' % n for n in range(1, 33)),
+    ','.join('TCP/110.242.69.21/%d' % n for n in range(1, 34)),
+    ','.join('TCP/110.242.69.%d/443' % n for n in range(1, 17)),
+    ','.join('TCP/110.242.69.%d/443' % n for n in range(1, 18)),
+])
+def test_gui_full_validation_and_reload_share_core_static_rules(text, tmp_path):
+    from fakenet.gui.configmodel import ConfigModel
+    from fakenet.gui import validator
+    from fakenet.diverters.egresspolicy import parse_reviewed_ipv4_rules
+    model = ConfigModel.load('fakenet/configs/default.ini')
+    model.fakenet().set('DivertTraffic', 'Yes')
+    model.diverter().set('ExternalAccessPolicy', 'EgressControl')
+    model.diverter().set('ExternalAllowedDomains', 'api.deepseek.com')
+    model.diverter().set('ExternalDnsServer', '8.8.8.8')
+    validator.ensure_egress_control_topology(model)
+    for key in ('ExternalProcessRedirectImagePath', 'ExternalProcessRedirectImageSHA256',
+                'ExternalProcessRedirectOriginalIPv4', 'ExternalProcessRedirectTargetIPv4'):
+        model.diverter().delete(key)
+    field = 'ExternalAllowedIPv4Rules'
+    if text is None:
+        model.diverter().delete(field)
+        config = {}
+    else:
+        model.diverter().set(field, text)
+        config = {field.lower(): text}
+    try:
+        parse_reviewed_ipv4_rules(config, set(config))
+        accepted = True
+    except PolicyConfigError:
+        accepted = False
+    def gui_accepts(value):
+        return not any(x.level == validator.ERROR for x in validator.validate(value))
+    assert gui_accepts(model) is accepted
+    saved = tmp_path / 'rules.ini'
+    saved.write_text(model.render())
+    reloaded = ConfigModel.load(str(saved))
+    assert gui_accepts(reloaded) is accepted
+    if text is not None and '\n' not in text:
+        assert text in model.render()

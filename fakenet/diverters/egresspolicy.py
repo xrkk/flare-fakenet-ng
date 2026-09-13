@@ -290,6 +290,17 @@ class ReviewedPacketTuple:
 
 def _parse_reviewed_ipv4_rules(config, config_keys, local_ipv4,
                                external_dns_server, takeover_ipv4):
+    parsed = parse_reviewed_ipv4_rules(config, config_keys)
+    for rule in parsed[0]:
+        if (rule.ipv4 in local_ipv4 or rule.ipv4 == external_dns_server or
+                (takeover_ipv4 and rule.ipv4 == takeover_ipv4)):
+            raise PolicyConfigError(
+                'reviewed IPv4 rule conflicts with a protected address')
+    return parsed
+
+
+def parse_reviewed_ipv4_rules(config, config_keys):
+    """Parse static reviewed rules without machine/network observations."""
     field = 'externalallowedipv4rules'
     if field not in config_keys:
         return (), MappingProxyType({}), MappingProxyType({}), frozenset(), ''
@@ -335,12 +346,6 @@ def _parse_reviewed_ipv4_rules(config, config_keys, local_ipv4,
                 not is_global_ipv4(address)):
             raise PolicyConfigError(
                 'reviewed IPv4 rule requires a global unicast IPv4 address')
-        if (canonical_ipv4 in local_ipv4 or
-                canonical_ipv4 == external_dns_server or
-                (takeover_ipv4 and canonical_ipv4 == takeover_ipv4)):
-            raise PolicyConfigError(
-                'reviewed IPv4 rule conflicts with a protected address')
-
         if raw_port == '*':
             port_scope = 'all'
             port = None

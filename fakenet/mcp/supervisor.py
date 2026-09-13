@@ -66,6 +66,7 @@ class RealSupervisor:
         self._exit_instance = str(uuid.uuid4())
         self._exit_capability = None
         self._exit_retention = None
+        self._capability_owner = None
         self._last_exit_evidence = None
         self._health_stop = threading.Event()
         self._health_publication_lock = threading.Lock()
@@ -106,6 +107,8 @@ class RealSupervisor:
             result['last_run_outcome'] = 'failed'
         if state == 'stopped':
             result['run_id'] = None
+            if self._last_run_outcome is not None:
+                result['last_run_outcome'] = self._last_run_outcome
         elif self._marker:
             result.update(run_id=self._marker['run_id'],
                           controller=self._marker['controller_id'])
@@ -178,10 +181,13 @@ class RealSupervisor:
                 root = (Path(sys.executable).parent if getattr(sys, 'frozen', False)
                         else Path(__file__).resolve().parents[2])
                 self._fakenet = ManagedProcess(run_id, self._run_dir, root)
+                self._fakenet.initialize()
+                self._fakenet.wait_ready()
                 from fakenet.mcp.exit_retention import ExitRetention
                 from fakenet.mcp.service_stop import process_identity
                 self._exit_retention = ExitRetention(run_id, self._fakenet.identity,
                     process_identity(), self._exit_instance, root)
+                self._exit_retention.initialize()
                 self._fakenet.observe_creation('before_start')
                 detail = self._fakenet.request('start', {
                     'config_path': str(config_path),
@@ -216,26 +222,40 @@ class RealSupervisor:
                 raise
 
     def _ensure_exit_capability(self):
+        owner = getattr(self, '_capability_owner', None)
+        if owner is not None:
+            if not owner.ended():
+                raise SupervisorStartError('previous native capability ownership unresolved')
+            self._capability_owner = None
         if self._diagnostics.pending():
             raise SupervisorStartError('previous diagnostic Job end unconfirmed')
         from fakenet.mcp.exit_installation import verify
-        from fakenet.mcp.exit_capability import verify_native
+        from fakenet.mcp.exit_capability import NativeCapabilityOwner, verify_native
         from fakenet.mcp.service_stop import process_identity
         if self._exit_retention is not None:
             previous = self._exit_retention.result or {}
             if (not self._exit_retention.done.is_set() or not previous.get('helper_ended')
-                    or not previous.get('retained_target_handle_closed')):
+                    or not previous.get('retained_target_handle_closed')
+                    or not self._exit_retention.resources_ended()):
                 # A previous failure keeps ownership; one bounded continuation
                 # resolves it exactly when the owned objects have since ended.
                 if self._exit_retention.done.is_set():
                     previous = self._exit_retention.settle(time.monotonic() + 60) or previous
                 if (not self._exit_retention.done.is_set() or not previous.get('helper_ended')
-                        or not previous.get('retained_target_handle_closed')):
+                        or not previous.get('retained_target_handle_closed')
+                    or not self._exit_retention.resources_ended()):
                     raise SupervisorStartError('previous exit evidence cleanup unverified')
         package = Path(sys.executable).parent
         verify(package)
         if self._exit_capability is None:
-            self._exit_capability = verify_native(package, process_identity(), self._exit_instance)
+            owner = NativeCapabilityOwner(package, process_identity(), self._exit_instance)
+            self._capability_owner = owner
+            result = verify_native(package, owner.supervisor_identity, self._exit_instance, owner=owner)
+            if not owner.ended() or owner._cancel.is_set():
+                raise SupervisorStartError('native capability cleanup/cancellation unconfirmed')
+            self._exit_capability = result
+            if self._capability_owner is owner:
+                self._capability_owner = None
 
     def _await_exit_evidence(self, deadline):
         retained = self._exit_retention
@@ -244,7 +264,7 @@ class RealSupervisor:
         with self._exit_condition:
             report = retained.wait(self._exit_condition, deadline)
             if report is not None and not (report.get('helper_ended') and
-                                           report.get('retained_target_handle_closed')):
+                                           report.get('retained_target_handle_closed') and retained.resources_ended()):
                 # The owner's first pass may have ended with unresolved
                 # objects; give it one bounded continuation before reporting.
                 settled = retained.settle(deadline)
@@ -373,6 +393,27 @@ class RealSupervisor:
             return self._result('failed', 'lifecycle lock deadline exceeded')
         try:
             self._health_stop.set()
+            capability = getattr(self, '_capability_owner', None)
+            if capability is not None:
+                cleaned = capability.cleanup(deadline)
+                self._last_exit_evidence = dict(kind='native-capability',
+                    complete=bool(capability.result and capability.result.get('passed')),
+                    error=capability.failure, cleanup_errors=list(capability.cleanup_errors),
+                    resources_ended=capability.ended())
+                if capability.failure:
+                    self._last_run_outcome = 'failed'
+                if not cleaned:
+                    return self._result('failed', 'native capability cleanup unconfirmed: ' +
+                        str(dict(error=capability.failure, cleanup_errors=capability.cleanup_errors)))
+                self._capability_owner = None
+            child = self._fakenet
+            if child is not None and not getattr(child, 'initialized', True):
+                if not child.cleanup(deadline):
+                    return self._result('failed', 'managed initialization cleanup unconfirmed: ' +
+                        str(dict(error=child.failure, cleanup_errors=child.cleanup_errors)))
+                self._last_managed_process = dict(identity=child.identity,
+                    initialization_error=child.failure, cleanup_errors=list(child.cleanup_errors))
+                self._fakenet = None
             marker, corrupt = self._snapshot.read()
             if corrupt:
                 return self._result('failed', 'recovery snapshot corrupt')
@@ -387,6 +428,10 @@ class RealSupervisor:
                     self._snapshot.write(**marker)
                     self._marker = marker
             if self._fakenet is None and not (marker and marker['needs_recovery']):
+                if self._exit_retention is not None:
+                    self._await_exit_evidence(deadline)
+                    if not self._exit_retention.resources_ended():
+                        return self._result('failed', 'exit ownership cleanup unconfirmed')
                 if not self._finish_endpoint_observation(deadline):
                     return self._result('failed', 'endpoint observation cleanup unverified')
                 if self._activity_lock:
@@ -405,7 +450,7 @@ class RealSupervisor:
                 try:
                     self._last_managed_stacks = self._fakenet.request('stacks', timeout=min(
                         1, max(0, grace_deadline - time.monotonic())))['stacks']
-                    if self._exit_retention is not None:
+                    if self._exit_retention is not None and self._exit_retention.intent is not None:
                         self._exit_retention.intent.publish(grace_deadline)
                     self._fakenet.request('stop', timeout=max(0, grace_deadline - time.monotonic()))
                     while self._fakenet.job.members() and time.monotonic() < grace_deadline:
@@ -413,7 +458,7 @@ class RealSupervisor:
                     if self._fakenet.job.members():
                         raise TimeoutError('managed descendants did not exit within stop grace')
                 except BaseException as exc:
-                    if self._exit_retention is not None:
+                    if self._exit_retention is not None and self._exit_retention.intent is not None:
                         self._exit_retention.intent.invalidate()
                         if isinstance(exc, TimeoutError):
                             # The engine hangs and is still alive: collect the
@@ -472,8 +517,8 @@ class RealSupervisor:
                 logger.error('full restoration audit failed: %r', differences)
                 self._collect_incident('environment restoration audit failed', deadline=deadline)
                 return self._result('failed', 'environment restoration audit failed')
-            if exit_report is not None and not exit_report.get('helper_ended'):
-                return self._result('failed', 'exit helper cleanup unverified')
+            if self._exit_retention is not None and not self._exit_retention.resources_ended():
+                return self._result('failed', 'exit ownership cleanup unverified')
             if coordinator.operation_fenced:
                 return self._result('failed', 'late operation cannot clear recovery responsibility')
             self._register_run_artifacts(marker['run_id'], deadline)
@@ -566,6 +611,10 @@ class RealSupervisor:
             return
         deadline = min(deadline or float('inf'), time.monotonic() + 180)
         child, retained = self._fakenet, self._exit_retention
+        if child is not None and not getattr(child, 'initialized', True):
+            self._last_managed_process = dict(identity=child.identity,
+                initialization_error=child.failure, cleanup_errors=list(child.cleanup_errors))
+            child = None
         exit_report = None
         # A grace-timeout reason means the tree is being torn down now and
         # the owner dump lands within the retention window; awaiting it here

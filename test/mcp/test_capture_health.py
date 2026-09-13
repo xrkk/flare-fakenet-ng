@@ -1,6 +1,7 @@
 import socket
 import threading
 from types import SimpleNamespace
+from fakenet.listeners.ListenerBase import health_snapshot
 
 from fakenet.mcp.managed import probe_instance
 
@@ -18,7 +19,7 @@ def test_capture_worker_exit_revokes_health_even_with_open_handles():
         assert ready.wait(1)
         instance = SimpleNamespace(diverter=SimpleNamespace(
             handle=SimpleNamespace(is_open=True), diverter_thread=thread),
-            running_listener_providers=[SimpleNamespace(sock=listener)])
+            running_listener_providers=[SimpleNamespace(health_snapshot=lambda: health_snapshot(listener, threading.current_thread()))])
         assert probe_instance(instance)['probe']
         release.set()
         thread.join(1)
@@ -40,7 +41,7 @@ def test_recorded_capture_failure_revokes_health_before_worker_exits():
         instance = SimpleNamespace(diverter=SimpleNamespace(
             handle=SimpleNamespace(is_open=True), diverter_thread=threading.current_thread(),
             capture_failure=RuntimeError('writer failed')),
-            running_listener_providers=[SimpleNamespace(sock=listener)])
+            running_listener_providers=[SimpleNamespace(health_snapshot=lambda: health_snapshot(listener, threading.current_thread()))])
         observed = probe_instance(instance)
         assert observed['capture_threads_alive']
         assert not observed['probe']

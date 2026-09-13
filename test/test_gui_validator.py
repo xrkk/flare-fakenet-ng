@@ -277,14 +277,14 @@ def test_reviewed_rules_present_but_empty():
     model = build()
     enable_policy(model)
     model.diverter().set('ExternalAllowedIPv4Rules', '')
-    assert any('键存在但为空' in i.message for i in errors(model))
+    assert any('contains an empty rule' in i.message for i in errors(model))
 
 
 def test_reviewed_rules_reject_private_ip():
     model = build()
     enable_policy(model)
     model.diverter().set('ExternalAllowedIPv4Rules', 'TCP/192.168.1.1/443')
-    assert any('全球单播' in i.message for i in errors(model))
+    assert any('global unicast IPv4' in i.message for i in errors(model))
 
 
 def test_reviewed_rules_syntax_and_port():
@@ -292,7 +292,7 @@ def test_reviewed_rules_syntax_and_port():
     enable_policy(model)
     model.diverter().set('ExternalAllowedIPv4Rules',
                          'TCP/110.242.69.21/99999')
-    assert any('端口须为' in i.message for i in errors(model))
+    assert any('port must be between 1 and 65535' in i.message for i in errors(model))
 
 
 def test_reviewed_rules_count_limits():
@@ -301,7 +301,7 @@ def test_reviewed_rules_count_limits():
     rules = ','.join('TCP/110.242.69.%d/443' % (i + 1) for i in range(17))
     model.diverter().set('ExternalAllowedIPv4Rules', rules)
     errs = errors(model)
-    assert any('最多 16 个不同 IPv4' in i.message for i in errs)
+    assert any('at most 16 IPv4 addresses' in i.message for i in errs)
 
 
 # -- Rule 7: process redirect --------------------------------------------------

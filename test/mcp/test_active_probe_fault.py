@@ -2,6 +2,7 @@ import json
 import socket
 import threading
 from types import SimpleNamespace
+from fakenet.listeners.ListenerBase import health_snapshot
 
 from fakenet.mcp.faultinject import FaultInjector
 from fakenet.mcp.managed import probe_with_faults
@@ -29,7 +30,7 @@ def test_armed_health_request_closes_handle_after_healthy(tmp_path, monkeypatch)
             diverter.handle = None
         diverter._close_windivert_handle = close_diverter_handle
         instance = SimpleNamespace(diverter=diverter,
-            running_listener_providers=[SimpleNamespace(sock=listener)])
+            running_listener_providers=[SimpleNamespace(health_snapshot=lambda: health_snapshot(listener, threading.current_thread()))])
         fault = FaultInjector()
         assert probe_with_faults(instance, fault)['probe']
         fault.arm('diverter_stop')

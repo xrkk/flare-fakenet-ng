@@ -71,53 +71,102 @@ def capture_stop_stacks(run_dir):
 
 
 class ManagedProcess:
-    def __init__(self, run_id, run_dir, package_root):
-        import msvcrt
-        from fakenet.mcp.jobobject import ManagedJob
-        from fakenet.mcp.service_stop import process_identity
-        self.run_id = run_id
-        self.run_dir = Path(run_dir)
-        from fakenet.mcp.creation_evidence import observe_creation
-        observe_creation(run_id, self.run_dir, None, 'before_job')
-        self.job = ManagedJob()
+    def __init__(self, run_id, run_dir, package_root, executable=None):
+        # No external resources until the supervisor has stored this owner.
+        self.run_id, self.run_dir = run_id, Path(run_dir)
+        self.package_root, self.executable = Path(package_root), executable
+        self.job = self.pid = self.identity = None
         self._sequence = 0
         self._lock = threading.Lock()
         self._responses = queue.Queue(maxsize=64)
-        self._reader = None
+        self._reader = self._send = self._receive = None
         self._write_failed = False
-        self._protocol_failure = None
-        child_in, parent_out = os.pipe()
-        parent_in, child_out = os.pipe()
-        self._send = os.fdopen(parent_out, 'wb', buffering=0)
-        self._receive = os.fdopen(parent_in, 'rb', buffering=0)
+        self._protocol_failure = self._read_failure = None
+        self.initialized = self._initialization_attempted = False
+        self.failure = None
+        self.cleanup_errors = []
+        self._descriptors, self._inherited, self._streams = [], [], []
         self.stderr = self.run_dir / 'stdout_stderr.log'
-        error_log = self.stderr.open('ab', buffering=0)
-        handles = [msvcrt.get_osfhandle(child_in), msvcrt.get_osfhandle(child_out),
-                   msvcrt.get_osfhandle(error_log.fileno())]
-        command = ([str(Path(package_root) / 'fakenetng-mcp-managed.exe')] if getattr(sys, 'frozen', False) else
-                   [sys.executable, '-m', 'fakenet.mcp'])
-        command += ['managed-child', run_id, str(self.run_dir)]
+
+    def initialize(self):
+        if self._initialization_attempted:
+            raise RuntimeError('managed initialization already attempted')
+        self._initialization_attempted = True
         try:
+            import msvcrt
+            from fakenet.mcp.jobobject import ManagedJob
+            from fakenet.mcp.service_stop import process_identity
+            from fakenet.mcp.creation_evidence import observe_creation
+            observe_creation(self.run_id, self.run_dir, None, 'before_job')
+            self.job = ManagedJob()
+            child_in, parent_out = os.pipe()
+            self._descriptors.extend((child_in, parent_out))
+            parent_in, child_out = os.pipe()
+            self._descriptors.extend((parent_in, child_out))
+            self._send = os.fdopen(parent_out, 'wb', buffering=0)
+            self._descriptors.remove(parent_out)
+            self._streams.append(self._send)
+            self._receive = os.fdopen(parent_in, 'rb', buffering=0)
+            self._descriptors.remove(parent_in)
+            self._streams.append(self._receive)
+            error_log = self.stderr.open('ab', buffering=0)
+            self._streams.append(error_log)
+            handles = [msvcrt.get_osfhandle(child_in), msvcrt.get_osfhandle(child_out),
+                       msvcrt.get_osfhandle(error_log.fileno())]
+            command = ([str(self.executable)] if self.executable else
+                       [str(self.package_root / 'fakenetng-mcp-managed.exe')]
+                       if getattr(sys, 'frozen', False) else
+                       [sys.executable, '-m', 'fakenet.mcp'])
+            command += ['managed-child', self.run_id, str(self.run_dir)]
             self.observe_creation('job_ready')
             for handle in handles:
                 os.set_handle_inheritable(handle, True)
+                self._inherited.append(handle)
             self.pid = self.job.spawn(command, self.run_dir, handles,
                                       observe=self.observe_creation)
             self.identity = process_identity(self.pid)
-        except BaseException:
-            self.job.close()
-            self._send.close()
-            self._receive.close()
-            raise
-        finally:
-            for handle in handles:
-                os.set_handle_inheritable(handle, False)
-            os.close(child_in)
-            os.close(child_out)
+            self._release_inherited()
+            for fd in (child_in, child_out):
+                os.close(fd)
+                self._descriptors.remove(fd)
             error_log.close()
-        self._reader = threading.Thread(target=self._read, name='managed-ipc', daemon=True)
-        self._read_failure = None
-        self._reader.start()
+            self._streams.remove(error_log)
+            self._reader = threading.Thread(target=self._read, name='managed-ipc', daemon=True)
+            self._reader.start()
+            self.initialized = True
+            return self
+        except BaseException as exc:
+            self.failure = repr(exc)
+            # The pre-registered owner survives, including spawn's after_api
+            # callback failure before spawn returns the PID to this frame.
+            if self.job is not None:
+                self.pid = self.pid or self.job.pid
+            raise
+
+    def _release_inherited(self):
+        for handle in list(self._inherited):
+            os.set_handle_inheritable(handle, False)
+            self._inherited.remove(handle)
+
+    def wait_ready(self, timeout=10):
+        result = self.request('ready', timeout=min(10, timeout))
+        identity = result.get('identity', {})
+        if (result.get('ready') is not True or self.identity is None or
+                any(identity.get(k) != self.identity.get(k)
+                    for k in ('pid', 'creation_time'))):
+            raise RuntimeError('managed readiness identity mismatch')
+        return result
+
+    def cleanup(self, deadline):
+        # No IPC or diagnostic capture for an incomplete initialization.
+        try:
+            if self.job is not None and self.job.process:
+                self.terminate(deadline)
+            self.close()
+            return True
+        except BaseException as exc:
+            self.cleanup_errors.append(repr(exc))
+            return False
 
     def observe_creation(self, stage):
         from fakenet.mcp.creation_evidence import observe_creation
@@ -140,10 +189,10 @@ class ManagedProcess:
                 pass
 
     def alive(self):
-        return self.job.poll() is None and self.pid in self.job.members()
+        return bool(self.job is not None and self.job.poll() is None and self.pid in self.job.members())
 
     def request(self, kind, payload=None, timeout=1):
-        if kind not in ('start', 'stop', 'health', 'stacks'):
+        if kind not in ('ready', 'start', 'stop', 'health', 'stacks'):
             raise ValueError('unsupported managed operation')
         deadline = time.monotonic() + timeout
         if not self._lock.acquire(timeout=max(0, timeout)):
@@ -202,19 +251,55 @@ class ManagedProcess:
 
     def terminate(self, deadline):
         self.job.terminate(deadline)
+        while self.job.poll() is None or self.job.members():
+            if time.monotonic() >= deadline:
+                raise TimeoutError('managed Job object end unconfirmed')
+            time.sleep(min(0.02, max(0, deadline - time.monotonic())))
 
     def close(self):
-        self.job.close()
-        self._send.close()
-        if self._reader:
+        if self.job is not None:
+            if self.job.process and (self.job.poll() is None or self.job.members()):
+                raise RuntimeError('managed Job end unconfirmed; ownership retained')
+        errors = []
+        for handle in list(self._inherited):
+            try:
+                os.set_handle_inheritable(handle, False)
+                self._inherited.remove(handle)
+            except BaseException as exc:
+                errors.append(repr(exc))
+        for fd in list(self._descriptors):
+            try:
+                if self._inherited:
+                    import msvcrt
+                    if msvcrt.get_osfhandle(fd) in self._inherited:
+                        continue
+                os.close(fd)
+                self._descriptors.remove(fd)
+            except BaseException as exc:
+                errors.append(repr(exc))
+        if self._reader and self._reader.ident is not None:
             self._reader.join(timeout=1)
-        self._receive.close()
+            if self._reader.is_alive():
+                raise RuntimeError('managed pipe reader end unconfirmed')
+        for stream in list(self._streams):
+            try:
+                if self._inherited and not stream.closed:
+                    import msvcrt
+                    if msvcrt.get_osfhandle(stream.fileno()) in self._inherited:
+                        continue
+                stream.close()
+                self._streams.remove(stream)
+            except BaseException as exc:
+                errors.append(repr(exc))
+        if self.job is not None and not errors:
+            self.job.close()
+            self.job = None
+        if errors:
+            raise RuntimeError('managed cleanup: ' + '; '.join(errors))
 
 
 def probe_instance(instance):
     """Observe real WinDivert/listener handles; used only inside the child."""
-    from fakenet.listeners.DomainEgressRelay import DomainEgressRelay
-
     diverter = getattr(instance, 'diverter', None)
     handle = getattr(diverter, 'handle', None)
     main_thread = getattr(diverter, 'diverter_thread', None)
@@ -229,22 +314,19 @@ def probe_instance(instance):
     listeners = bool(providers)
     observations = []
     for provider in providers:
-        if isinstance(provider, DomainEgressRelay):
-            # The relay owns its listener directly rather than a socketserver.
-            # Both resources are required, including during startup/teardown.
-            sockets = [provider._listener]
-            thread = provider._accept_thread
-            thread_alive = thread is not None and thread.is_alive()
-        else:
-            sockets = [getattr(provider, attr, None) for attr in ('server', 'sock', 'socket')]
-            sockets.append(getattr(getattr(provider, 'server', None), 'socket', None))
-            thread = getattr(provider, 'server_thread', None)
-            thread_alive = thread is None or thread.is_alive()
-        descriptors = [sock for sock in sockets if callable(getattr(sock, 'fileno', None))]
-        live = bool(descriptors) and all(sock.fileno() >= 0 for sock in descriptors) and thread_alive
-        observations.append({'provider': type(provider).__name__,
-                             'name': getattr(provider, 'name', None),
-                             'handles': [sock.fileno() for sock in descriptors], 'alive': live})
+        try:
+            detail = provider.health_snapshot()
+            handles = detail['handles']
+            live = (detail.get('alive') is True and isinstance(handles, list) and
+                    bool(handles) and all(isinstance(fd, int) and fd >= 0 for fd in handles))
+            observation = {'handles': handles, 'alive': live}
+            if detail.get('error'):
+                observation['error'] = detail['error']
+        except Exception as exc:
+            live = False
+            observation = {'handles': [], 'alive': False, 'error': repr(exc)}
+        observations.append(dict(observation, provider=type(provider).__name__,
+                                 name=getattr(provider, 'name', None)))
         if not live:
             listeners = False
     return {'init_evidence': bool(providers),
@@ -325,7 +407,10 @@ def child_main(run_id, run_dir):
         exiting = False
         try:
             kind = request['kind']
-            if kind == 'start' and instance is None:
+            if kind == 'ready' and instance is None:
+                response['result'] = {'ready': True, 'identity': {
+                    key: identity[key] for key in ('pid', 'creation_time')}}
+            elif kind == 'start' and instance is None:
                 payload = request['payload']
                 instance = Fakenet()
                 instance.parse_config(payload['config_path'])
@@ -344,11 +429,12 @@ def child_main(run_id, run_dir):
                 response['result'] = probe_with_faults(instance, fault)
             elif kind == 'stacks':
                 response['result'] = {'stacks': IncidentCollector._thread_stacks()}
-            elif kind == 'stop' and instance is not None:
-                with capture_stop_stacks(directory):
-                    fault.before_listener_phase()
-                    instance.stop()
-                    fault.on_stop_error()
+            elif kind == 'stop':
+                if instance is not None:
+                    with capture_stop_stacks(directory):
+                        fault.before_listener_phase()
+                        instance.stop()
+                        fault.on_stop_error()
                 response['result'] = {'stopped': True}
                 exiting = True
             else:

@@ -16,6 +16,12 @@ from fakenet.mcp.exit_native import TargetHandle, verify_dump
 
 class ExitRetention:
     def __init__(self, run_id, identity, supervisor_identity, instance, package_root, hard_deadline=None):
+        self._arguments = (run_id, identity, supervisor_identity, instance)
+        self.package = Path(package_root)
+        self.initialized = self._initialization_attempted = False
+        self._initialization_failed = False
+        self._target = self.record = self.intent = self.worker = None
+        self.base = self.directory = None
         self.done = threading.Event()
         self.result = None
         self.deadline = hard_deadline
@@ -39,10 +45,17 @@ class ExitRetention:
         from fakenet.mcp.diagnostic_process import DiagnosticError, DiagnosticOwner
         self._diagnostics = DiagnosticOwner(package_root)
         self._intent_diagnostics = DiagnosticOwner(package_root)
-        self._target = TargetHandle(identity['pid'])
-        self.package = Path(package_root).resolve()
         self.helper_image = self.package / 'exit-helper' / 'fakenetng-mcp-exit-monitor.exe'
+
+    def initialize(self):
+        if self._initialization_attempted:
+            raise RuntimeError('exit retention initialization already attempted')
+        self._initialization_attempted = True
+        run_id, identity, supervisor_identity, instance = self._arguments
         try:
+            self.package = self.package.resolve()
+            self.helper_image = self.package / 'exit-helper' / 'fakenetng-mcp-exit-monitor.exe'
+            self._target = TargetHandle(identity['pid'])
             actual = self._target.identity()
             if (actual['creation_time'] != identity['creation_time'] or
                     actual['image'].casefold() != str(self.package / 'fakenetng-mcp-managed.exe').casefold()):
@@ -58,8 +71,20 @@ class ExitRetention:
             self._call('exit-init', dict(record=self.record), time.monotonic() + 10)
             self.worker = threading.Thread(target=self._watch, name='managed-exit-evidence', daemon=True)
             self.worker.start()
-        except BaseException:
-            self._target.close()
+            self.initialized = True
+            return self
+        except BaseException as exc:
+            self._initialization_failed = True
+            self._failure = repr(exc)
+            self.result = dict(complete=False, error=self._failure,
+                               failure_stage='initialize exit retention',
+                               helper_ended=False, retained_target_handle_closed=False)
+            if self.record is not None:
+                self.result['target'] = self.record
+            self.done.set()
+            # initialize's caller already owns this object. Independent
+            # diagnostic Jobs must remain visible even when target exits.
+            self.cancel_existing_diagnostics()
             raise
 
     def _open_helper(self, identity):
@@ -171,9 +196,38 @@ class ExitRetention:
                 raise RuntimeError('unexpected exit has no verified dump')
         return dict(report)
 
-    def _finish(self, report):
+    def cancel_existing_diagnostics(self):
+        for name in ('_diagnostics', '_intent_diagnostics'):
+            owner = getattr(self, name, None)
+            task = getattr(owner, 'active', None)
+            if task is not None and not task.ended.is_set():
+                task.cancel.set()
+
+    def resources_ended(self):
+        worker = getattr(self, 'worker', None)
+        return ((worker is None or not worker.is_alive()) and
+                self._target is None and self._helper is None and
+                getattr(self, '_helper_job', None) is None and
+                not any(getattr(self, name, None) is not None and
+                        getattr(self, name).pending()
+                        for name in ('_diagnostics', '_intent_diagnostics')))
+
+    def _release_gate(self):
+        worker = getattr(self, 'worker', None)
+        if worker is not None and worker is not threading.current_thread() and worker.is_alive():
+            raise RuntimeError('exit watcher still active')
+        for name in ('_diagnostics', '_intent_diagnostics'):
+            owner = getattr(self, name, None)
+            if owner is not None and owner.pending():
+                raise RuntimeError('diagnostic protocol worker still active')
+        if self._target is not None and not self._target.exited():
+            raise RuntimeError('managed target still active; retain its handle')
+
+    def _finish(self, report, local=False):
         had_helper = (self._helper is not None or
-                      getattr(self, '_helper_job', None) is not None)
+                      getattr(self, '_helper_job', None) is not None or
+                      getattr(self, '_helper_scan_required', False))
+        self._helper_scan_required = had_helper
         if self._helper is not None and not self._helper.exited():
             raise RuntimeError('helper has not ended')
         if self._helper is not None:
@@ -186,19 +240,30 @@ class ExitRetention:
                 raise RuntimeError('SPE Job still has live descendants')
             self._helper_job.close()
             self._helper_job = None
-        if getattr(self, '_intent_diagnostics', None) is not None and self._intent_diagnostics.pending():
-            raise RuntimeError('stop intent protocol worker still active')
-        if not self._target.exited():
-            raise RuntimeError('managed target still active; retain its handle')
+        self._release_gate()
         if had_helper:
             self._call('exit-scan', dict(terminate=False),
                        time.monotonic() + FINALIZE_BUDGET)
-        self.intent.invalidate()
-        self._target.close()
-        self._target = None
+            self._helper_scan_required = False
+        self._release_gate()
+        if getattr(self, 'intent', None) is not None:
+            if local:
+                self.intent.invalidate_local()
+            else:
+                self.intent.invalidate()
+        self._release_gate()
+        if self._target is not None:
+            self._target.close()
+            self._target = None
         report.update(helper_ended=True, retained_target_handle_closed=True)
         self.result = report
-        self._publish('owner-result.json', report)
+        if getattr(self, '_initialization_failed', False):
+            # A partial identity/intent is not a valid protocol publication.
+            return
+        if local:
+            publish(self.directory / 'owner-result.json', report)
+        else:
+            self._publish('owner-result.json', report)
 
     def _watch(self):
         failure_stage = 'poll managed target exit'
@@ -209,6 +274,39 @@ class ExitRetention:
                 now = time.monotonic()
                 if self.deadline is None and (self._target.exited() or self._cancel.is_set()):
                     self.deadline = now + 60
+                if self.deadline is not None and now >= self.deadline:
+                    failure_stage = 'finalize exit evidence deadline'
+                    self.intent.invalidate()
+                    owner_dump = getattr(self, 'owner_dump', None)
+                    # The window bounds waiting for evidence, not the owner's
+                    # own finalization; slow teardown needs its own budget.
+                    self._end_helpers(time.monotonic() + FINALIZE_BUDGET)
+                    if self._helper is not None:
+                        self._helper.terminate_helper()
+                        while not self._helper.exited() and time.monotonic() < self.deadline:
+                            time.sleep(0.01)
+                    report = self._record_observation(dict(complete=False, target=self.record,
+                                  error='exit evidence deadline exceeded or notification missing',
+                                  completed_monotonic=time.monotonic(),
+                                  target_handle_closed=True))
+                    if owner_dump is not None:
+                        report['dump'] = owner_dump
+                        report['dump_owner_collected'] = True
+                        # The grace-timeout branch of the two-dump contract
+                        # is satisfied by the verified owner-collected dump:
+                        # no helper ever fires for Job termination, so this
+                        # IS the complete evidence for that path.
+                        report['complete'] = True
+                        report['error'] = None
+                    # Helper-less finalization runs beside the supervisor's
+                    # incident collection; child spawns there can queue past
+                    # any per-call budget. The watch thread holds no lock, so
+                    # the small bounded result write goes straight to disk.
+                    if self._helper is None:
+                        self._finish_local(report)
+                        return
+                    self._finish(report)
+                    return
                 try:
                     failure_stage = 'read exit helper entry'
                     self._entry_read_attempts = getattr(self, '_entry_read_attempts', 0) + 1
@@ -220,7 +318,10 @@ class ExitRetention:
                     # retention permanently unfinished.
                     self._entry_read_diagnostic_errors = (
                         getattr(self, '_entry_read_diagnostic_errors', 0) + 1)
-                    time.sleep(0.5)
+                    remaining = (self.deadline - time.monotonic()
+                                 if self.deadline is not None else 0.5)
+                    if remaining > 0:
+                        time.sleep(min(0.5, remaining))
                     continue
                 if entry and self._helper is None:
                     self._entry_observed_monotonic = time.monotonic()
@@ -257,64 +358,12 @@ class ExitRetention:
                         failure_stage = 'finalize exit helper result'
                         self._finish(self._record_observation(report))
                         return
-                if self.deadline is not None and now >= self.deadline - 1:
-                    failure_stage = 'finalize exit evidence deadline'
-                    self.intent.invalidate()
-                    owner_dump = getattr(self, 'owner_dump', None)
-                    if owner_dump is None and self._target is not None and not self._target.exited():
-                        # The helper produced no dump and is about to be
-                        # ended; the still-live hung target is dumpable now
-                        # and never will be again.
-                        try:
-                            owner_dump = self.collect_owner_dump(force=True)
-                        except BaseException as exc:
-                            import logging
-                            logging.getLogger('fakenetng-mcp.exitretention').error(
-                                'deadline owner dump fallback failed: %r', exc)
-                    # Waiting for the writer flight can let an acknowledged
-                    # helper finish. Consume its verified result before
-                    # classifying the deadline as missing evidence.
-                    if self._helper is not None and self._helper.exited():
-                        report = self._read_optional('result.json')
-                        if report is not None:
-                            self._finish(self._record_observation(self._check_result(report)))
-                            return
-                    # The window bounds waiting for evidence, not the owner's
-                    # own finalization; slow teardown needs its own budget.
-                    self._end_helpers(time.monotonic() + FINALIZE_BUDGET)
-                    if self._helper is not None:
-                        self._helper.terminate_helper()
-                        while not self._helper.exited() and time.monotonic() < self.deadline:
-                            time.sleep(0.01)
-                    report = self._record_observation(dict(complete=False, target=self.record,
-                                  error='exit evidence deadline exceeded or notification missing',
-                                  completed_monotonic=time.monotonic(),
-                                  target_handle_closed=True))
-                    if owner_dump is not None:
-                        report['dump'] = owner_dump
-                        report['dump_owner_collected'] = True
-                        # The grace-timeout branch of the two-dump contract
-                        # is satisfied by the verified owner-collected dump:
-                        # no helper ever fires for Job termination, so this
-                        # IS the complete evidence for that path.
-                        report['complete'] = True
-                        report['error'] = None
-                    # Helper-less finalization runs beside the supervisor's
-                    # incident collection; child spawns there can queue past
-                    # any per-call budget. The watch thread holds no lock, so
-                    # the small bounded result write goes straight to disk.
-                    if self._helper is None:
-                        self._finish_local(report)
-                        return
-                    self._finish(report)
-                    return
                 time.sleep(0.02)
         except BaseException as exc:
             self._failure = repr(exc)
             import logging
             logging.getLogger('fakenetng-mcp.exitretention').exception(
                 'exit retention watch ended: %r', exc)
-            self.intent.invalidate()
             report = dict(complete=False, target=self.record, error=self._failure,
                           failure_stage=failure_stage)
             if failure_stage == 'open exit helper':
@@ -322,6 +371,11 @@ class ExitRetention:
                 if native_api is not None:
                     report['native_api'] = native_api
             report = self._record_observation(report)
+            try:
+                if self.intent is not None:
+                    self.intent.invalidate_local()
+            except BaseException as revoke_error:
+                report['intent_cleanup_error'] = repr(revoke_error)
             # A failed helper must still be stopped by its pinned native handle.
             try:
                 self._end_helpers(min(self.deadline or time.monotonic() + 5, time.monotonic() + 5))
@@ -349,9 +403,16 @@ class ExitRetention:
         responsibility and the failed result."""
         if not self.done.is_set() or self.result is None:
             return self.result
+        worker = getattr(self, 'worker', None)
+        if worker is not None and worker.ident is not None and worker is not threading.current_thread():
+            worker.join(max(0, deadline - time.monotonic()))
+            if worker.is_alive():
+                return self.result
         if (self.result.get('helper_ended') and
-                self.result.get('retained_target_handle_closed')):
+                self.result.get('retained_target_handle_closed') and self.resources_ended()):
             return self.result
+        if getattr(self, '_initialization_failed', False):
+            self.cancel_existing_diagnostics()
         report = {key: value for key, value in self.result.items()
                   if key not in ('helper_ended', 'retained_target_handle_closed',
                                  'cleanup_error')}
@@ -360,10 +421,12 @@ class ExitRetention:
             target_live = self._target is not None and not self._target.exited()
             if not helper_live and not target_live:
                 try:
-                    self._finish(report)
-                except BaseException:
+                    self._finish(report, local=getattr(self, '_initialization_failed', False))
                     return self.result
-                return self.result
+                except BaseException as exc:
+                    self.result = dict(report, cleanup_error=repr(exc),
+                        helper_ended=self._helper is None and getattr(self, '_helper_job', None) is None,
+                        retained_target_handle_closed=self._target is None)
             if time.monotonic() >= deadline:
                 return self.result
             time.sleep(0.05)
@@ -390,7 +453,9 @@ class ExitRetention:
             return self.owner_dump
         if target_path.exists():
             return None
-        end = time.monotonic() + budget
+        end = min(time.monotonic() + budget, self.deadline or float('inf'))
+        if time.monotonic() >= end:
+            raise TimeoutError('owner dump collection window expired')
         flight = SingleFlight()
         while not flight.acquire():
             # A notified helper already owns the global writer flight. Do not
@@ -427,20 +492,8 @@ class ExitRetention:
         return info
 
     def _finish_local(self, report):
-        """Lock-free finalization for the helper-less hang path.
-
-        Mirrors _finish's release order without any diagnostic child: with
-        no helper ever acquired there is nothing to scan, and the pinned
-        native observations above are the complete ownership story. The
-        result write is small and bounded."""
-        import json as _json
-        from fakenet.mcp.exit_files import publish
-        self.intent.invalidate_local()
-        self._target.close()
-        self._target = None
-        report.update(helper_ended=True, retained_target_handle_closed=True)
-        self.result = report
-        publish(self.directory / 'owner-result.json', report)
+        """Use identical native/diagnostic release gates without a new worker."""
+        self._finish(report, local=True)
 
     def _end_helpers(self, deadline):
         if self._helper is not None:
@@ -460,8 +513,10 @@ class ExitRetention:
         return self._call('exit-scan', dict(terminate=True), deadline)
 
     def cancel(self):
-        self.intent.invalidate()
         self._cancel.set()
+        self.cancel_existing_diagnostics()
+        if self.intent is not None:
+            self.intent.invalidate_local()
 
     def wait(self, condition, deadline):
         """Caller owns its lifecycle condition; wait releases all lock levels."""
@@ -469,4 +524,7 @@ class ExitRetention:
             condition.wait(timeout=min(0.05, max(0, deadline - time.monotonic())))
         if not self.done.is_set():
             return dict(complete=False, helper_ended=False, error='exit owner wait deadline exceeded')
+        worker = getattr(self, 'worker', None)
+        if worker is not None and worker.ident is not None and worker is not threading.current_thread():
+            worker.join(max(0, deadline - time.monotonic()))
         return self.result

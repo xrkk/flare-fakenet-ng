@@ -1,0 +1,97 @@
+{
+  "workflow_id": "FIX_PLAN_COMPLETE",
+  "entry": "/mnt/d/vpb/话术/方案工作流/12-修复方案/00-完整流程.md",
+  "parameters": {
+    "platform": "Codex",
+    "review_model": "gpt-6-astra",
+    "review_reasoning": "medium",
+    "document_directory": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13",
+    "implementation": "主会话"
+  },
+  "phase": "IMPLEMENT",
+  "phase_step": "执行",
+  "plan": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-06-修复方案-FakeNet-NG统一问题修复.md",
+    "version": "v0.4",
+    "blob": "e352087e003f989fa9a1934edc0da36334eefa0e",
+    "status": "已审核, 可以实施"
+  },
+  "investigation": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-02-调查记录-ACT002生命周期修复.md",
+    "blob": "7919af3c482bc0ec72be9d727969a7e23acecec4"
+  },
+  "sources": {
+    "PLAN/2026.09/2026.09.13/2026.09.13-01-主动式架构健康审计-FakeNet-NG.md": "a026e0ae20ff83e57259f9530449df99afd8c16c",
+    "AGENTS.md": "8c6e68314e6aa1852ec295dad30453d58577bc7a",
+    "fakenet/mcp/managed.py": "007c4f5ecf4e88f296f6ce8f6767c593933cff1a",
+    "fakenet/mcp/supervisor.py": "ad682e6d339800e022afea91bce02ce5ece3c776",
+    "fakenet/mcp/exit_retention.py": "1e92d1931a1b7695ab7b2cb199861022b5ee36e7",
+    "/mnt/d/vpb/话术/方案工作流/12-修复方案/00-完整流程.md": "3e8230253741c31a0e81f0b03efcc3d1cea6f9e9"
+  },
+  "authorization": {
+    "new_fix_chain": "进行中；最新指令授权所有发现的问题在一个方案中分阶段修复，首次审核引入后实施",
+    "previous_scenario_loop": "仍停止"
+  },
+  "branch": "process-redirect-v23",
+  "head": "3cdec36784ed67cfd42149147e88cbb35cba3e50",
+  "checkpoint": "IMP-001—006在途；FTP资源路径已按PLAN-CHANGE-UR-001作者闭环",
+  "blockers": [],
+  "updated_at": "2026-09-13T10:18:00.868032",
+  "scope_record": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-03-范围确认-统一问题修复.md",
+    "blob": "ccc914f71d0c3fdb5fa1f62d5531443160a1591e"
+  },
+  "investigation_supplement": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-04-调查记录-统一问题修复根因.md",
+    "blob": "0f0a1a10b84b01ad39a28e2f1d27ae8f1c386c52"
+  },
+  "lifecycle_supplement": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-05-调查记录-生命周期收尾与截止.md",
+    "blob": "1246cec3ebf6d9f50b1cadb858dca2db31f3697f"
+  },
+  "selfreview_investigation": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-07-调查记录-自检责任与Spike准入.md",
+    "blob": "2fb7c2a272059ed2a44dba4fbfc895d4dd5d88c4"
+  },
+  "self_review": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-08-自评-FakeNet-NG统一问题修复.md",
+    "blob": "b3bb42fd70adbe419eff64a30ea7c730752fe23a",
+    "admission": "通过"
+  },
+  "review_agent": {
+    "task": "/root/unified_repair_targeted",
+    "model": "gpt-6-astra",
+    "reasoning": "medium",
+    "fork_turns": "none"
+  },
+  "audit": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-09-审核-FakeNet-NG统一问题修复.md",
+    "blob": "c77e8355799ae3be5b18c306105fca10d79ec75e",
+    "conclusion": "存在不同意见"
+  },
+  "audit_handling": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-10-审核处理-FakeNet-NG统一问题修复.md",
+    "blob": "04cacf4e09ab00da76f16e923cb893ef8506418e",
+    "review_required": true,
+    "review_mode": "定向"
+  },
+  "targeted_audit": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-11-复审-FakeNet-NG统一问题修复.md",
+    "blob": "4475fcc00072864a03625f9a12422e09a13a963c",
+    "conclusion": "审计通过"
+  },
+  "targeted_handling": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-12-复审处理-FakeNet-NG统一问题修复.md",
+    "blob": "29942de0b4ad9ac66781bdab637ea0b8c6dfad60",
+    "review_required": false
+  },
+  "implementation": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-13-实施记录-FakeNet-NG统一问题修复.md",
+    "executor": "主会话"
+  },
+  "plan_change": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-14-方案变更-FakeNet-NG统一问题修复.md",
+    "blob": "83ccb0287c74a6fce0f6f0f79bd6862b3bcf2a72",
+    "review_required": false
+  }
+}

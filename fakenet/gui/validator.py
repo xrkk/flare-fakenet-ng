@@ -260,12 +260,6 @@ def _is_rfc1918(address):
         address.is_loopback or address.is_link_local)
 
 
-def _is_global_unicast(address):
-    return (not address.is_private and not address.is_loopback and
-            not address.is_link_local and not address.is_multicast and
-            not address.is_reserved and not address.is_unspecified)
-
-
 def _valid_hostname(domain):
     try:
         domain.encode('idna')
@@ -524,64 +518,12 @@ def _check_takeover(model, issues):
 # ---------------------------------------------------------------------------
 
 def _check_reviewed_rules(model, issues):
-    diverter = model.diverter()
-    raw = diverter.get('ExternalAllowedIPv4Rules')
-    if raw is None:
-        return
-    rules = [r.strip() for r in raw.split(',') if r.strip()]
-    if not rules:
-        issues.append(Issue(
-            ERROR, 'Diverter', 'ExternalAllowedIPv4Rules',
-            '键存在但为空即配置错误——不使用时请整行删除'))
-        return
-    if len(rules) > 32:
-        issues.append(Issue(
-            ERROR, 'Diverter', 'ExternalAllowedIPv4Rules',
-            '最多 32 条(当前 %d)' % len(rules)))
-    seen_rules = set()
-    seen_ips = set()
-    for rule in rules:
-        if rule in seen_rules:
-            issues.append(Issue(
-                ERROR, 'Diverter', 'ExternalAllowedIPv4Rules',
-                '重复规则 %r' % rule))
-            continue
-        seen_rules.add(rule)
-        parts = rule.split('/')
-        if len(parts) != 3:
-            issues.append(Issue(
-                ERROR, 'Diverter', 'ExternalAllowedIPv4Rules',
-                '规则 %r 须为 协议/IPv4/端口 三段式' % rule))
-            continue
-        proto, raw_ip, port = (part.strip() for part in parts)
-        if proto.upper() not in ('TCP', 'UDP'):
-            issues.append(Issue(
-                ERROR, 'Diverter', 'ExternalAllowedIPv4Rules',
-                '规则 %r 协议须为 TCP 或 UDP' % rule))
-        try:
-            address = ipaddress.ip_address(raw_ip)
-        except ValueError:
-            issues.append(Issue(
-                ERROR, 'Diverter', 'ExternalAllowedIPv4Rules',
-                '规则 %r 的 IPv4 不合法' % rule))
-            continue
-        if address.version != 4 or not _is_global_unicast(address):
-            issues.append(Issue(
-                ERROR, 'Diverter', 'ExternalAllowedIPv4Rules',
-                '规则 %r 须为全球单播 IPv4(RFC1918/环回等不允许)' % rule))
-        if port != '*':
-            try:
-                if not 1 <= int(port) <= 65535:
-                    raise ValueError
-            except ValueError:
-                issues.append(Issue(
-                    ERROR, 'Diverter', 'ExternalAllowedIPv4Rules',
-                    '规则 %r 端口须为 * 或 1-65535' % rule))
-        seen_ips.add(raw_ip)
-    if len(seen_ips) > 16:
-        issues.append(Issue(
-            ERROR, 'Diverter', 'ExternalAllowedIPv4Rules',
-            '最多 16 个不同 IPv4(当前 %d)' % len(seen_ips)))
+    from fakenet.diverters.egresspolicy import PolicyConfigError, parse_reviewed_ipv4_rules
+    config = {key.lower(): value for key, value in model.diverter().items()}
+    try:
+        parse_reviewed_ipv4_rules(config, set(config))
+    except PolicyConfigError as exc:
+        issues.append(Issue(ERROR, 'Diverter', 'ExternalAllowedIPv4Rules', str(exc)))
 
 
 # ---------------------------------------------------------------------------

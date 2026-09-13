@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -12,10 +13,13 @@ def test_real_ftp_server_nested_socket_health():
     from pyftpdlib.servers import FTPServer
     from pyftpdlib.handlers import FTPHandler
     from fakenet.mcp.managed import probe_instance
+    from fakenet.listeners.FTPListener import FTPListener
     server = FTPServer(('127.0.0.1', 0), FTPHandler)
+    provider = FTPListener({'ipaddr': '127.0.0.1', 'port': 0})
+    provider.server, provider.server_thread = server, threading.current_thread()
     instance = SimpleNamespace(diverter=SimpleNamespace(handle=SimpleNamespace(is_open=True),
                                diverter_thread=SimpleNamespace(is_alive=lambda: True)),
-                               running_listener_providers=[SimpleNamespace(server=server)])
+                               running_listener_providers=[provider])
     try:
         assert not hasattr(server, 'fileno')
         assert probe_instance(instance)['probe']

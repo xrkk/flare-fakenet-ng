@@ -165,6 +165,10 @@ class DomainEgressRelay(object):
             daemon=True)
         self._accept_thread.start()
 
+    def health_snapshot(self):
+        from fakenet.listeners.ListenerBase import health_snapshot
+        return health_snapshot(self._listener, self._accept_thread)
+
     def stop(self):
         self._stop.set()
         if self._listener:

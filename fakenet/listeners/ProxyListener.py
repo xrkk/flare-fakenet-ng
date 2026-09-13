@@ -102,6 +102,12 @@ class ProxyListener(object):
         self.logger.debug("%s Server(%s:%d) thread: %s" % (proto, server_ip,
             server_port, self.server_thread.name))
 
+    def health_snapshot(self):
+        from fakenet.listeners.ListenerBase import health_snapshot
+        server = getattr(self, 'server', None)
+        return health_snapshot(server.socket if server is not None else None,
+                               getattr(self, 'server_thread', None))
+
     def stop(self):
         self.logger.debug('Stopping...')
         if self.server:

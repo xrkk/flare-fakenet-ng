@@ -195,7 +195,7 @@ def test_owner_dump_public_collector_targets_live_process_only(monkeypatch):
         def identity(self):
             return {"pid": 4242, "creation_time": "123"}
     owner._target = Target()
-    owner.deadline = time.monotonic() - 5  # retention deadline already passed
+    owner.deadline = time.monotonic() + 40  # remaining collection window
     owner.record = {'run_id': 'run', 'pid': 4242, 'creation_time': '123'}
     class Dir:
         def __truediv__(self, name):
@@ -212,7 +212,7 @@ def test_owner_dump_public_collector_targets_live_process_only(monkeypatch):
     owner._publish = lambda name, record: None
     def fake_collect(pid, creation, target, deadline, quota=None):
         assert flight_state['held'], 'dump writer requires exclusive flight'
-        assert deadline > time.monotonic() + 30, 'own budget, not the expired retention deadline'
+        assert time.monotonic() < deadline <= owner.deadline
     import unittest.mock as mock
     with mock.patch('fakenet.mcp.dumpworker.collect_dump', fake_collect):
         info = owner.collect_owner_dump(budget=45)
@@ -323,6 +323,7 @@ def test_owner_dump_yields_to_existing_exit_helper_without_taking_protocol_lock(
     owner.record = {'run_id': 'current'}
     owner.owner_dump = None
     owner.directory = tmp_path
+    owner.deadline = None
     owner._read_optional = lambda name: {'target': owner.record, 'acquired': True}
     class Flight:
         def acquire(self): return False
@@ -355,10 +356,28 @@ def test_forced_owner_dump_busy_flight_keeps_deadline_and_does_not_write(monkeyp
     owner._helper = object()
     owner.owner_dump = None
     owner.directory = tmp_path
+    owner.deadline = None
     class Flight:
         def acquire(self): return False
     monkeypatch.setattr(exit_guard, 'SingleFlight', Flight)
     monkeypatch.setattr(dumpworker, 'collect_dump', lambda *a, **k: pytest.fail('concurrent dump'))
-    with pytest.raises(TimeoutError, match='writer flight deadline'):
+    with pytest.raises(TimeoutError, match='collection window expired'):
         owner.collect_owner_dump(budget=0, force=True)
     assert not list(tmp_path.iterdir())
+
+
+def test_failed_helper_scan_remains_required_on_same_owner_reentry(monkeypatch, tmp_path):
+    closed = []
+    owner = _owner_with_handles(closed)
+    owner.directory = tmp_path
+    owner.intent = type('Intent', (), {'invalidate': lambda self: None})()
+    scans = []
+    def reject(*a, **k):
+        scans.append('scan')
+        raise RuntimeError('helper scan unconfirmed')
+    monkeypatch.setattr('fakenet.mcp.exit_installation.assert_no_helpers', reject)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match='scan unconfirmed'):
+            owner._finish({'complete': False})
+    assert scans == ['scan', 'scan'] and closed == ['helper']
+    assert owner._target is not None

@@ -44,3 +44,15 @@ def abs_config_path(path):
         return os.path.abspath(relpath)
 
     return None
+
+def health_snapshot(socket, thread):
+    """Observe the explicit resources supplied by their listener owner."""
+    handles = []
+    try:
+        if socket is not None:
+            handles.append(socket.fileno())
+        alive = bool(handles and all(fd >= 0 for fd in handles)
+                     and thread is not None and thread.is_alive())
+        return {'handles': handles, 'alive': alive}
+    except Exception as exc:
+        return {'handles': handles, 'alive': False, 'error': repr(exc)}

@@ -132,7 +132,7 @@ class ManagedJob:
             si = EXTENDED()
             si.StartupInfo.cb = c.sizeof(si)
             si.StartupInfo.dwFlags = 0x100  # STARTF_USESTDHANDLES
-            si.StartupInfo.hStdInput, si.StartupInfo.hStdOutput, si.StartupInfo.hStdError = handles
+            si.StartupInfo.hStdInput, si.StartupInfo.hStdOutput, si.StartupInfo.hStdError = handles[:3]
             si.lpAttributeList = c.cast(attributes, w.LPVOID)
             text = c.create_unicode_buffer(subprocess.list2cmdline(command))
             if observe:

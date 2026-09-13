@@ -383,10 +383,10 @@ def main(argv=None):
     if dedicated and (not argv or argv[0] not in ('managed-child', 'exit-capability')):
         return 2
     if argv and argv[0] == 'exit-capability':
-        if not dedicated or len(argv) != 2:
+        if not dedicated or len(argv) != 3 or not argv[2].isdecimal() or int(argv[2]) <= 0:
             return 2
         from fakenet.mcp.exit_capability import child_main
-        return child_main(argv[1])
+        return child_main(argv[1], int(argv[2]))
     if argv == ['managed-fault-hang']:
         from fakenet.mcp.faultinject import enabled
         if not enabled():

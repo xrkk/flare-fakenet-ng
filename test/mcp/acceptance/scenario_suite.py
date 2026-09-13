@@ -2669,15 +2669,126 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
             raise Blocked('B3 probe executable identity incomplete')
         return {key: str(value[key]) for key in required}
 
-    def run(self, filter_name: str) -> dict[str, Any]:
+    @staticmethod
+    def _spike_file(root: Path, reference: dict[str, Any]) -> Path:
+        path = (root / reference['path']).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise ValueError('Spike evidence missing or outside root')
+        raw = path.read_bytes()
+        if len(raw) != reference['size'] or hashlib.sha256(raw).hexdigest() != reference['sha256']:
+            raise ValueError('Spike evidence bytes differ')
+        return path
+
+    def _validate_fault_spike(self, path: Path) -> None:
+        """Bind the five executed cases and rejudge their original bytes."""
+        root = path.resolve().parent
+        try:
+            report = read_json(path)
+            if (report.get('schema') != 'sst.fault-spike.v1' or
+                    report.get('identity') != self.identity.as_dict() or
+                    report.get('passed') is not True or report.get('synthetic')):
+                raise ValueError('Spike schema/candidate/result mismatch')
+            if root == self.root:
+                raise ValueError('Spike and actual matrix require distinct roots')
+            manifest_path = self._spike_file(root, report['manifest'])
+            manifest = read_json(manifest_path)
+            if manifest_issues(manifest) or manifest != self.manifest():
+                raise ValueError('Spike manifest differs from actual matrix')
+            cases = report['cases']
+            if (not isinstance(cases, list) or len(cases) != len(FAULTS) or
+                    sorted(report['five_classes']) != sorted(FAULTS) or
+                    sorted(case['fault_class'] for case in cases) != sorted(FAULTS)):
+                raise ValueError('Spike requires exactly one case per fault class')
+            seen_runs = set()
+            for case in cases:
+                selected = sorted((row for row in manifest['scenarios']
+                    if row['fault_class'] == case['fault_class'] and
+                    row['config_profile']['bucket'] != 'default'), key=lambda row: row['scenario_id'])[0]
+                result = read_json(self._spike_file(root, case['result']))
+                if (case['scenario_id'] != selected['scenario_id'] or result.get('scenario') != selected or
+                        result.get('scenario_id') != selected['scenario_id'] or
+                        result.get('identity') != self.identity.as_dict()):
+                    raise ValueError('Spike case/scenario/candidate mismatch')
+                run_ids = [row['run_id'] for row in result.get('run_chain', [])]
+                if not run_ids or case['run_ids'] != run_ids or seen_runs.intersection(run_ids):
+                    raise ValueError('Spike run identity absent/reused/different')
+                seen_runs.update(run_ids)
+                adjudication = result.get('fault_evidence', {}).get('adjudication', {})
+                if case['evidence'] != adjudication.get('result'):
+                    raise ValueError('Spike evidence result reference differs')
+                evidence_result = read_json(self._spike_file(root, case['evidence']))
+                sealed_case = read_json(self._spike_file(root, adjudication['case']))
+                if (case.get('synthetic') or result.get('synthetic') or
+                        evidence_result.get('synthetic') is not False or
+                        sealed_case.get('synthetic') is not False):
+                    raise ValueError('synthetic or unclassified Spike evidence')
+                descriptor = read_json(self._spike_file(root, adjudication['descriptor']))
+                if (descriptor.get('synthetic') or
+                        descriptor.get('candidate_id') != self.identity.candidate_id or
+                        descriptor.get('fault') != case['fault_class'] or
+                        descriptor.get('scenario_id') != case['scenario_id'] or
+                        descriptor.get('run_id') not in run_ids):
+                    raise ValueError('Spike raw descriptor identity differs')
+                calls = [(x.get('tool'), x.get('expect')) for x in result.get('interface_calls', [])]
+                if calls != [(x['tool'], x['expect']) for x in selected['interface_call_plan']]:
+                    raise ValueError('Spike interface call contract differs')
+                issues = result_issues(result, root) + fault_recheck_issues(result, root)
+                if issues:
+                    raise ValueError('; '.join(issues))
+        except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+            raise Blocked('fault run requires bound five-class Spike evidence: ' + str(exc)) from exc
+
+    def _require_fault_spike(self):
+        path = getattr(self.args, 'fault_spike_result', None)
+        if not path:
+            raise Blocked('fault run requires bound five-class Spike evidence')
+        self._validate_fault_spike(Path(path))
+
+    def fault_spike(self) -> dict[str, Any]:
         manifest = self.manifest()
+        if 'spike' not in self.root.name.lower():
+            raise Blocked('fault-spike requires a distinct root named spike')
+        output = self.root / 'fault-spike-result.json'
+        if output.exists() or list((self.root / 'results').glob('scenario-*.json')):
+            raise Blocked('fault-spike requires an unused execution root')
+        selected = [sorted((row for row in manifest['scenarios'] if
+                    row['fault_class'] == fault and row['config_profile']['bucket'] != 'default'),
+                    key=lambda row: row['scenario_id'])[0] for fault in FAULTS]
         self.require_clients()
         self._require_preflight()
+        cases, problems = [], []
+        for scenario in selected:
+            result = self._run_one(scenario, 1)
+            adjudication = result.get('fault_evidence', {}).get('adjudication', {})
+            cases.append(dict(fault_class=scenario['fault_class'], scenario_id=scenario['scenario_id'],
+                run_ids=[row['run_id'] for row in result.get('run_chain', [])],
+                result=file_record(self._result_path(scenario['scenario_id']), self.root),
+                evidence=adjudication.get('result')))
+            problems.extend(result_issues(result, self.root))
+            problems.extend(fault_recheck_issues(result, self.root))
+            try:
+                for key in ('case', 'result'):
+                    sealed = read_json(self._spike_file(self.root, adjudication[key]))
+                    if sealed.get('synthetic') is not False:
+                        problems.append('synthetic or unclassified Spike evidence')
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                problems.append('missing sealed Spike evidence: ' + str(exc))
+            if problems:
+                break
+        report = dict(schema='sst.fault-spike.v1', identity=self.identity.as_dict(),
+            manifest=file_record(self.manifest_path, self.root),
+            five_classes=[case['fault_class'] for case in cases], cases=cases,
+            passed=len(cases) == len(FAULTS) and not problems, problems=problems,
+            not_executed=[row['scenario_id'] for row in selected[len(cases):]])
+        write_new_json(output, report)
+        return report
+
+    def run(self, filter_name: str) -> dict[str, Any]:
+        manifest = self.manifest()
         if filter_name == 'fault':
-            # A successful aggregate Spike result is a hard, explicit input.
-            spike = self.args.fault_spike_result
-            if not spike or not Path(spike).is_file() or not read_json(Path(spike)).get('passed'):
-                raise Blocked('fault run requires a passing five-class §4.1 Spike result')
+            self._require_fault_spike()
+        self.require_clients()
+        self._require_preflight()
         selected = [row for row in manifest['scenarios'] if
                     (row['fault_class'] is None if filter_name == 'benign' else row['fault_class'] is not None)]
         results = []
@@ -2687,9 +2798,13 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                 result = read_json(result_path)
                 if result.get('state') in ('pass', 'fail'):
                     results.append(result)
+                    if result.get('state') != 'pass' and getattr(self.args, 'stop_on_first_failure', False):
+                        break
                     continue
             results.append(self._run_one(scenario, 1))
             if results[-1]['state'] != 'pass':
+                if getattr(self.args, 'stop_on_first_failure', False):
+                    break
                 # Preserve this failure and enforce the continuation gate before
                 # any following scenario.  A failed gate exits blocked, not pass.
                 self._continuation_gate()
@@ -2699,6 +2814,12 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
 
     def resume(self) -> dict[str, Any]:
         manifest = self.manifest()
+        pending = [row for row in manifest['scenarios']
+                   if self._state_path(row['scenario_id']).exists() and
+                   read_json(self._state_path(row['scenario_id'])).get('phase') in
+                   ('pending', 'blocked', 'running')]
+        if any(row['fault_class'] for row in pending):
+            self._require_fault_spike()
         self.require_clients()
         self._require_preflight()
         rerun = []
@@ -2710,6 +2831,8 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
             if state.get('phase') in ('pending', 'blocked', 'running'):
                 self._continuation_gate()
                 rerun.append(self._run_one(scenario, int(state.get('attempt', 0)) + 1))
+                if rerun[-1].get('state') != 'pass' and getattr(self.args, 'stop_on_first_failure', False):
+                    break
         return {'output_dir': str(self.root), 'resumed': len(rerun),
                 'passed': all(row.get('state') == 'pass' for row in rerun)}
 
@@ -3097,7 +3220,7 @@ def actual_coverage(manifest: dict[str, Any], records: Iterable[dict[str, Any]])
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('generate', 'preflight', 'run', 'resume', 'verify', 'summary'))
+    parser.add_argument('command', choices=('generate', 'preflight', 'run', 'resume', 'fault-spike', 'verify', 'summary'))
     parser.add_argument('--target-base-url')
     parser.add_argument('--win10vm-mcp')
     parser.add_argument('--suite-root', default=str(DEFAULT_SUITE_ROOT))
@@ -3113,6 +3236,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--preflight-through', choices=('P4', 'P7'), default='P7')
     parser.add_argument('--filter', choices=('benign', 'fault'))
     parser.add_argument('--fault-spike-result')
+    parser.add_argument('--stop-on-first-failure', action='store_true')
     parser.add_argument('--integrity', action='store_true')
     parser.add_argument('--replay-dry-run')
     args = parser.parse_args(argv)
@@ -3135,6 +3259,8 @@ def main(argv: list[str] | None = None) -> int:
             result = suite.run(args.filter)
         elif args.command == 'resume':
             result = suite.resume()
+        elif args.command == 'fault-spike':
+            result = suite.fault_spike()
         elif args.command == 'verify':
             result = suite.verify(args.replay_dry_run)
         else:
