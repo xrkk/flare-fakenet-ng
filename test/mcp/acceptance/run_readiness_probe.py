@@ -69,6 +69,25 @@ def negative_event_probe(package, mode):
     return dict(mode=mode, rejected=rejected, error=error, resources_ended=owner.ended())
 
 
+def prepare_probe_runtime(handle_count):
+    """Account for process-wide runtime initialization before case ownership.
+
+    Native Win10 controls reproduce socket import (+6) and the first CRT pipe
+    (+1 after both ends close) without constructing a ManagedProcess. Do not
+    warm up a product lifecycle or tolerate any per-case handle delta.
+    """
+    before = handle_count()
+    import socket  # noqa: F401 -- initialize the runtime used by faultinject
+    after_socket = handle_count()
+    read_fd, write_fd = os.pipe()
+    try:
+        os.close(read_fd)
+    finally:
+        os.close(write_fd)
+    return dict(handles_before=before, handles_after_socket=after_socket,
+                handles_after_pipe_close=handle_count(), pipe_ends_closed=True)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('package-root', 'source-root', 'output', 'source-commit', 'package-sha256', 'manifest'):
@@ -131,6 +150,7 @@ def main(argv=None):
         code = 1
         report['negative_probes'] = [negative_event_probe(package, mode)
                                      for mode in ('early-exit', 'no-ready')]
+        report['runtime_initialization'] = prepare_probe_runtime(handle_count)
         for index in range(args.count):
             run_id = str(uuid.uuid4())
             directory = output / run_id

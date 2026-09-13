@@ -9,7 +9,7 @@
     "implementation": "主会话"
   },
   "phase": "IMPLEMENT",
-  "phase_step": "执行",
+  "phase_step": "验证",
   "plan": {
     "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-06-修复方案-FakeNet-NG统一问题修复.md",
     "version": "v0.4",
@@ -30,13 +30,14 @@
   },
   "authorization": {
     "new_fix_chain": "进行中；最新指令授权所有发现的问题在一个方案中分阶段修复，首次审核引入后实施",
-    "previous_scenario_loop": "仍停止"
+    "previous_scenario_loop": "仍停止",
+    "current_failure": "用户明确同意继续处理；下一次正式验收失败仍停"
   },
   "branch": "process-redirect-v23",
-  "head": "3cdec36784ed67cfd42149147e88cbb35cba3e50",
-  "checkpoint": "IMP-001—006在途；FTP资源路径已按PLAN-CHANGE-UR-001作者闭环",
+  "head": "893378f7004190b83005c58ba0020c3fba263406",
+  "checkpoint": "用户已授权处理首错；运行库基线污染根因坐实，探针修正及三次实机局部对照通过；准备新快照构建",
   "blockers": [],
-  "updated_at": "2026-09-13T10:18:00.868032",
+  "updated_at": "2026-09-13T11:13:09.726788+08:00",
   "scope_record": {
     "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-03-范围确认-统一问题修复.md",
     "blob": "ccc914f71d0c3fdb5fa1f62d5531443160a1591e"
@@ -93,5 +94,24 @@
     "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-14-方案变更-FakeNet-NG统一问题修复.md",
     "blob": "83ccb0287c74a6fce0f6f0f79bd6862b3bcf2a72",
     "review_required": false
+  },
+  "build": {
+    "source_commit": "893378f7004190b83005c58ba0020c3fba263406",
+    "tree": "8976839f54b89f02851043b25740213d447b0271",
+    "session_id": 2657,
+    "output": "dist/mcp-unified-repair-20260913-01",
+    "log_root": "Logs/fakenetng-mcp/builds/893378f7-rtg32alw",
+    "status": "passed",
+    "candidate_id": "mcp-c893378f7-4845a650f14c",
+    "zip_sha256": "4845a650f14cfc62500b9bc372f39dd17602c788445c706ea08a570eac67450f"
+  },
+  "acceptance": {
+    "status": "stopped_after_first_failure",
+    "acc": "ACC-002",
+    "evidence": "Logs/fakenetng-mcp/unified-repair-20260913/893378f/readiness",
+    "executed_packaged_cases": 1,
+    "required_packaged_cases": 40,
+    "actual_100_executed": 0,
+    "resume_requires_user_instruction": false
   }
 }
