@@ -120,6 +120,18 @@ class EndpointObservation:
             self.finished = report
         return report
 
+    def start_proof(self):
+        """Load only the trace-start evidence without finalizing anything.
+
+        Foreign-owner attribution proves pre-existence from the trace-start
+        process snapshot alone; it must stay usable when the run's stop path
+        already failed and left the observation incomplete.
+        """
+        start = json.loads((self.directory / 'endpoint-trace-start.json').read_text())
+        if start.get('run_id') != self.run_id:
+            raise ValueError('endpoint trace start identity mismatch')
+        return {'run_id': self.run_id, 'start': start}
+
     def audit_proof(self, deadline=None):
         """Read only this completed run's hash-bound evidence for comparison."""
         end = self.finish(deadline)

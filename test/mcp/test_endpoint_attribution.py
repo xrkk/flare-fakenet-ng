@@ -221,3 +221,42 @@ def test_foreign_owner_requires_baseline_window_inside_proof():
         'end_ns': proof['start']['time_ns']}
     result = foreign_udp_owner_changes(baseline, sample, proof)
     assert not result['accepted']
+
+
+def test_foreign_owner_accepts_start_only_proof_after_failed_observation():
+    baseline, sample, proof = foreign_case()
+    start_only = {'run_id': proof['run_id'], 'start': proof['start']}
+    result = foreign_udp_owner_changes(baseline, sample, start_only)
+    assert result['accepted'], result
+
+
+def test_foreign_owner_still_refuses_incomplete_end_marker():
+    baseline, sample, proof = foreign_case()
+    broken = dict(proof, end=dict(proof['end'], complete=False))
+    result = foreign_udp_owner_changes(baseline, sample, broken)
+    assert not result['accepted']
+
+
+def test_full_audit_uses_start_only_proof_when_audit_proof_fails(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from fakenet.mcp import baseline as module
+    baseline, sample, proof = foreign_case()
+    sections = module.CapturedSections(baseline['sections'])
+    sections.windows = baseline['observation_windows']
+    store = module.BaselineStore(tmp_path / 'baselines')
+    store.save(baseline['run_id'], sections)
+    current = module.CapturedSections(sample['current'])
+    current.windows = sample['observation_windows']
+    monkeypatch.setattr(module, 'capture', lambda deadline: current)
+    monkeypatch.setattr(module.time, 'sleep', lambda seconds: None)
+
+    def broken_audit_proof(deadline):
+        raise ValueError('endpoint observation is incomplete')
+    observed = SimpleNamespace(audit_proof=broken_audit_proof,
+                               start_proof=lambda: {'run_id': proof['run_id'],
+                                                    'start': proof['start']})
+    result = store.full_audit_diff(baseline['run_id'], settle_seconds=0.02, observation=observed)
+    assert result == {}
+    decision = json.loads(next((tmp_path/'logs').glob('*.attribution.json')).read_text())
+    assert decision['proof_mode'] == 'start-only'
+    assert decision['accepted'] is True

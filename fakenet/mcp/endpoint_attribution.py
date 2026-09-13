@@ -169,23 +169,26 @@ def foreign_udp_owner_changes(baseline, sample, proof):
     try:
         run = baseline['run_id']
         if (sample['run_id'] != run or proof['run_id'] != run or
-                proof['start'].get('run_id') != run or proof['end'].get('run_id') != run or
-                proof['end'].get('complete') is not True or
-                proof['end'].get('absent') is not True):
-            raise ValueError('run identity or complete coverage unavailable')
+                proof['start'].get('run_id') != run):
+            raise ValueError('run identity or start coverage unavailable')
+        # A start-only proof is allowed: pre-existence needs nothing else.
+        # With an end marker present, keep the completed-coverage guarantee.
+        if 'end' in proof and (proof['end'].get('run_id') != run or
+                               proof['end'].get('complete') is not True or
+                               proof['end'].get('absent') is not True):
+            raise ValueError('end coverage marker is not complete')
         diff = audit_compare(baseline['sections'], sample['current'])
         if not diff:
             return dict(result, accepted=True, raw_equal=True)
         if set(diff) != {'listen_ports'} or diff['listen_ports'].get('collection_failed'):
             raise ValueError('not an isolated endpoint difference')
         before_window = baseline['observation_windows']['listen_ports']
-        # Only the baseline window must fall inside the completed endpoint
-        # observation: pre-existence of the owner is proved by the trace-start
-        # process snapshot alone.  Recovery re-audits legitimately sample long
-        # after the trace ended, so the after-window has no upper bound here.
-        if not (proof['start']['time_ns'] <= before_window['start_ns'] and
-                before_window['end_ns'] <= proof['end']['time_ns']):
-            raise ValueError('baseline sampling outside complete observation')
+        # Only the baseline window's start must fall after the trace start:
+        # pre-existence of the owner is proved by the trace-start process
+        # snapshot alone.  Recovery re-audits legitimately sample long after
+        # the trace ended, so no upper bound applies here.
+        if proof['start']['time_ns'] > before_window['start_ns']:
+            raise ValueError('baseline sampling predates observation start')
         normalized = diff['listen_ports']
         norm_removed = Counter(str(normalized['before']).splitlines()) - Counter(str(normalized['after']).splitlines())
         norm_added = Counter(str(normalized['after']).splitlines()) - Counter(str(normalized['before']).splitlines())

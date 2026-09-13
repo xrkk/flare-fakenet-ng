@@ -395,10 +395,23 @@ class BaselineStore:
                     decision = {'run_id': run_id, 'raw_audit': str(log),
                                 'accepted': accepted, 'samples': decisions}
                 except Exception as exc:
-                    proof = None
+                    # An incomplete observation (stop path already failed and
+                    # left the trace unfinalized) still carries its start
+                    # evidence; the strict proof is unavailable but foreign
+                    # attribution only needs the trace-start process snapshot.
+                    try:
+                        proof = observation.start_proof()
+                        decision = {'run_id': run_id, 'raw_audit': str(log),
+                                    'accepted': False,
+                                    'audit_proof_failure': repr(exc),
+                                    'proof_mode': 'start-only'}
+                    except Exception as start_exc:
+                        proof = None
+                        decision = {'run_id': run_id, 'raw_audit': str(log),
+                                    'accepted': False,
+                                    'failure': repr(exc),
+                                    'start_proof_failure': repr(start_exc)}
                     accepted = False
-                    decision = {'run_id': run_id, 'raw_audit': str(log),
-                                'accepted': False, 'failure': repr(exc)}
                 if not accepted and proof is not None:
                     # Isolated UDP endpoint changes owned by processes that
                     # predate the run are environmental, not restoration
