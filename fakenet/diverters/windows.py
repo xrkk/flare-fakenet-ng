@@ -1622,10 +1622,17 @@ class Diverter(DiverterBase, WinUtilMixin):
                     # Startup-race flow established before capture: the
                     # divert path rewrites its destination mid-stream and
                     # breaks the connection.  Pass it through untouched.
+                    # Emit the same tuple fields as PROCESS_FLOW so the
+                    # traffic oracle can bind the bypassed flow's policy.
+                    pid, comm = self.get_pid_comm(pkt)
                     self.log_egress_event(
                         'ESTABLISHED_BYPASS',
+                        disposition='ESTABLISHED_BYPASS',
                         original_ip=pkt.dst_ip0, original_port=pkt.dport0,
-                        src=pkt.src_ip0, sport=pkt.sport0)
+                        proto=pkt.proto, dst=pkt.dst_ip0, dport=pkt.dport0,
+                        src=pkt.src_ip0, sport=pkt.sport0,
+                        pid=(pid if pid is not None else 'unknown'),
+                        process=(str(comm).replace(' ', '_') if comm else 'unknown'))
                     self._timed_write_pcap(pkt)
                     self._send_packet(pkt)
                     return
