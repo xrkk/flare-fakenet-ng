@@ -44,6 +44,7 @@ class SupervisorStartError(RuntimeError):
 
 
 class RealSupervisor:
+    START_STABILITY_SECONDS = 2.0
     name = 'real'
 
     def __init__(self, coordination_cls=None, snapshot=None, baseline_store=None,
@@ -199,6 +200,22 @@ class RealSupervisor:
                 if not all(self._health_cache.get(k) for k in
                            ('process_alive', 'init_evidence', 'probe')):
                     raise SupervisorStartError('managed initialization/active probe failed')
+                # Stability window: the managed child reports healthy as soon
+                # as its WinDivert handle opens, but the kernel driver needs a
+                # brief interval to attach filters and route packets. A probe
+                # released during-start connects through the un-routed stack
+                # and escapes to the real internet when healthy is returned
+                # in this gap (discovery100-21: 62-69 second window between
+                # the restart response and the child's first actual packet).
+                time.sleep(self.START_STABILITY_SECONDS)
+                stable = self._fakenet.request('health', timeout=10)
+                self._health_cache.update(stable,
+                                          process_alive=self._fakenet.alive())
+                if not all(self._health_cache.get(k) for k in
+                           ('process_alive', 'init_evidence', 'probe')):
+                    raise SupervisorStartError(
+                        'managed probe unstable after %s second stability window'
+                        % self.START_STABILITY_SECONDS)
                 if coordinator.operation_fenced:
                     return self._result('failed', 'start completed after pre-stop timeout')
                 self._health_stop.clear()
