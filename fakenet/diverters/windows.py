@@ -1688,11 +1688,19 @@ class Diverter(DiverterBase, WinUtilMixin):
         egress-control divert path must pass them through untouched instead of
         rewriting the destination mid-stream.  Keyed by the original tuple so
         that the flow is tracked once and every subsequent packet matches.
+
+        Any SYN-bearing packet (SYN or SYN-ACK) is connection establishment,
+        not mid-stream data: bypassing a local listener's SYN-ACK skips the
+        source-IP fixup that redirected connections need to complete their
+        handshake (deny direct-IP targets never established — discovery100-26
+        sst-089: DIVERT_FAKE redirect succeeded, but the probe's TCP stack
+        rejected the SYN-ACK because it arrived from the local listener IP
+        instead of the original destination).
         """
         if pkt.proto != 'TCP':
             return False
         flags = pkt.hdr.data.flags
-        if (flags & dpkt.tcp.TH_SYN) and not (flags & dpkt.tcp.TH_ACK):
+        if flags & dpkt.tcp.TH_SYN:
             return False
         key = (pkt.src_ip0, pkt.sport0, pkt.dst_ip0, pkt.dport0)
         if key in self._syn_observed_flows or key in self._midstream_bypass_flows:
