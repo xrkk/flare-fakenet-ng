@@ -365,9 +365,20 @@ class ThreadedUDPRequestHandler(socketserver.BaseRequestHandler):
                             orig_src_port, new_sport, 'No')
 
                 sock.sendto(data, (self.server.local_ip, int(top_listener.port)))
-                reply = sock.recv(BUF_SZ)
+                try:
+                    reply = sock.recv(BUF_SZ)
+                except (ConnectionResetError, ConnectionAbortedError, OSError) as exc:
+                    # A denied/sinkholed peer may reset or vanish before the
+                    # reply arrives; this is a normal deny-lifecycle signal,
+                    # not a listener defect (discovery100-41 sst-091: UDP 443
+                    # DIVERT_FAKE traffic produced 16 unhandled tracebacks
+                    # that poisoned the health predicate).
+                    self.server.logger.debug(
+                        'UDP proxy peer closed before reply: %r', exc)
+                    return
+                finally:
+                    sock.close()
                 self.server.logger.debug('Received %d bytes.', len(data))
-                sock.close()
                 remote_sock.sendto(reply, (orig_src_ip, int(orig_src_port)))
         else:
             self.server.logger.debug('No packet data')
