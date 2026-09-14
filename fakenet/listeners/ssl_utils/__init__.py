@@ -43,7 +43,18 @@ class SSLWrapper(object):
             self.ca_key = self.abs_config_path(self.config.get('ca_key', None))
             self.ca_cn = self._load_cert(self.ca_cert).get_subject().CN
         else:
-            self.ca_cert, self.ca_key, self.ca_crl = self.create_cert(self.CN)
+            # Each run's CWD used to mint a fresh same-CN CA and append it to
+            # the OS Root store; after a few runs Schannel chain building
+            # randomly selects a stale duplicate issuer and fails signature
+            # verification (TRUST_E_CERT_SIGNATURE). One persistent CA per
+            # installation keeps the Root store single-entry and the trust
+            # chain stable across runs.
+            persistent = os.path.join(
+                os.environ.get('PROGRAMDATA', os.path.expanduser('~')),
+                'FakeNet-NG-MCP', 'certs')
+            os.makedirs(persistent, exist_ok=True)
+            self.ca_cert, self.ca_key, self.ca_crl = self.create_cert(
+                self.CN, cert_dir=persistent)
         if ( not self.config.get('networkmode', None) == 'multihost' and
              not self.config.get('static_ca').lower() == 'yes'):
             self.logger.debug('adding root cert: %s', self.ca_cert)
