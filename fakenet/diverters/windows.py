@@ -496,6 +496,13 @@ class Diverter(DiverterBase, WinUtilMixin):
         self._flow_audit_last_cleanup = 0.0
         self._policy_listeners = []
         self._takeover_route_snapshot = None
+        # Flows whose SYN was observed by this diverter instance. A TCP
+        # data packet whose flow key is absent here was established before
+        # WinDivert started capturing (startup race): redirecting it
+        # mid-stream breaks the connection and fabricates a reset that
+        # never came from the real peer (discovery100-04 sst-006 conn-1).
+        self._syn_observed_flows = set()
+        self._midstream_bypass_flows = set()
         self._reviewed_route_snapshots = ()
         self._reviewed_target_protocols = frozenset()
         self._reviewed_ip_audit = ReviewedIpFlowAudit()
@@ -1611,6 +1618,17 @@ class Diverter(DiverterBase, WinUtilMixin):
             handled_by_base = False
             if (not redirected and
                     self.egress_policy.non_allowed_action == 'divert'):
+                if self._is_midstream_tcp_flow(pkt):
+                    # Startup-race flow established before capture: the
+                    # divert path rewrites its destination mid-stream and
+                    # breaks the connection.  Pass it through untouched.
+                    self.log_egress_event(
+                        'ESTABLISHED_BYPASS',
+                        original_ip=pkt.dst_ip0, original_port=pkt.dport0,
+                        src=pkt.src_ip0, sport=pkt.sport0)
+                    self._timed_write_pcap(pkt)
+                    self._send_packet(pkt)
+                    return
                 cb3, cb4 = self._callbacks()
                 self.handle_pkt(pkt, cb3, cb4,
                                 raw_already_captured=True)
@@ -1648,9 +1666,34 @@ class Diverter(DiverterBase, WinUtilMixin):
             self.logger.exception('EgressControl packet failed closed')
 
     def _is_new_tcp_syn(self, pkt):
-        return bool(pkt.proto == 'TCP' and
+        is_syn = bool(pkt.proto == 'TCP' and
                     (pkt.hdr.data.flags & dpkt.tcp.TH_SYN) and
                      not (pkt.hdr.data.flags & dpkt.tcp.TH_ACK))
+        if is_syn:
+            self._syn_observed_flows.add((pkt.src_ip0, pkt.sport0,
+                                          pkt.dst_ip0, pkt.dport0))
+        return is_syn
+
+    def _is_midstream_tcp_flow(self, pkt):
+        """True when this TCP packet belongs to a flow whose SYN we never saw.
+
+        Established flows predate the WinDivert session's first capture; the
+        egress-control divert path must pass them through untouched instead of
+        rewriting the destination mid-stream.  Keyed by the original tuple so
+        that the flow is tracked once and every subsequent packet matches.
+        """
+        if pkt.proto != 'TCP':
+            return False
+        flags = pkt.hdr.data.flags
+        if (flags & dpkt.tcp.TH_SYN) and not (flags & dpkt.tcp.TH_ACK):
+            return False
+        key = (pkt.src_ip0, pkt.sport0, pkt.dst_ip0, pkt.dport0)
+        if key in self._syn_observed_flows or key in self._midstream_bypass_flows:
+            return key in self._midstream_bypass_flows
+        # First non-SYN packet for a flow with no SYN on record: the flow
+        # was established before this diverter started capturing.
+        self._midstream_bypass_flows.add(key)
+        return True
 
     @staticmethod
     def _process_redirect_packet_tuple(pkt):
