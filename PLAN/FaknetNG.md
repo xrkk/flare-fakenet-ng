@@ -197,11 +197,6 @@ https://github.com/ZacharyZcR/vmware-mcp
 总纲没过, GLM 没开始修 (虚拟机占用)
 
 
-
-需求文档路径: `/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-01-需求提炼-FakeNet-NG-MCP.md`
-总纲方案路径: `/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-02-总纲-FakeNet-NG-MCP.md`
-
-
 ```
 P01: 可部署的 MCP 服务入口
 P02: 控制接口、身份与配置管理
@@ -214,13 +209,29 @@ P05: 真实 Win10 发布门禁与交付证据
 
 验收总纲.
 
+> 2026.09.09:
 
+修复未实现的总纲
+
+需求文档路径: `/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-01-需求提炼-FakeNet-NG-MCP.md`
+总纲方案路径: `/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.02/2026.09.02-02-总纲-FakeNet-NG-MCP.md`
+
+> 2026.09.12:
 
 评估方案: 为 fakenetng-mcp 设计 "情景压力测试"
 - 设计 100 个 "情景"
 - 每个 "情景" 最少连续测试 10 个 mcp 接口
 - 每个接口最少要包含在 5 个 "情景" 中
+- 每个场景中都要系统产生 "真实" 的流量
 需求不清晰可以用 grill-me 提问 (每次只问一个问题, 给出选项 ABC (最少 2 个), 推荐选项放 A, 且要说明理由)
+
+功能方案
+
+> 2026.09.13:
+
+主动找错
+
+
 
 
 

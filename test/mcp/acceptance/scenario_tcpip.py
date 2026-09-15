@@ -76,7 +76,11 @@ TERMINATE = {('Established', 'FinWait1'), ('Established', 'CloseWait'),
              ('FinWait2', 'TimeWait'),
              # Deny targets intercepted before establishment close directly
              # from SynSent; the kernel never reaches Established (DIVERT_FAKE).
-             ('SynSent', 'Closed')}
+             ('SynSent', 'Closed'),
+             # Handshake-phase RST on the listener side (relay/deny teardown,
+             # discovery100-48 sst-096): the accepted TCB reached SYN-received
+             # and was reset before ESTABLISHED.
+             ('SynRcvd', 'Closed')}
 END_VERBS = {'abort issued', 'abort completed', 'shutdown initiated', 'close issued',
              'disconnect completed', 'connection terminated', 'sent RST'}
 ADDR = r'(?:\d{1,3}\.){3}\d{1,3}:\d+'

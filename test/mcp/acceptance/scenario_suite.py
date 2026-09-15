@@ -1967,13 +1967,17 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         if udp_primary:
             primary = [item for item in primary if item.get('connection_id') == nonce + '-udp-1' and
                        item.get('seq') == 1]
-        elif (len(primary) > 1 and
-              profile['probe_target'].get('expectation') == 'deny'):
+        elif len(primary) > 1 and profile['probe_target'].get(
+                'expectation') in ('deny', 'relay_allow'):
             # A denied primary connection is sinkholed by the local listener
             # and then closed (RawListener timeout), after which the probe's
             # retry loop reconnects; every reconnection is itself denied.
-            # The first established origin is the primary; later ones are
-            # additional deny evidence, not a contract violation.
+            # A relay-allowed primary can equally be closed by the real
+            # remote server (server-side keepalive/idle policy, e.g.
+            # discovery100-48 sst-004: RST after ~11s of drip cadence); the
+            # relay propagates the close and the client reconnects through a
+            # fresh mapping. The first established origin is the primary;
+            # later ones are additional evidence, not a contract violation.
             primary = primary[:1]
         if len(primary) != 1:
             return {'passed': False, 'reason': 'expected exactly one primary connection origin',

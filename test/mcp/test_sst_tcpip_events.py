@@ -476,6 +476,17 @@ def test_curl_policy_window_keeps_outside_same_tuple_as_context():
     assert result['connect']['pid'] == 7948
 
 
+def test_synrcvd_to_closed_is_a_terminal_transition():
+    # discovery100-48 sst-096: the relay's accepted TCB for a denied TLS
+    # client is reset during handshake and closes straight from SYN-received.
+    parsed = tcp.parse_line(
+        line('55.100000000', 'connection 0xFFFFC386FF877260 transition from SynRcvdState  to ClosedState , SndNxt = 1845865176.'),
+        dict(path='pktmon.txt', byte_start=0, byte_end=1))
+    assert parsed is not None and parsed['kind'] == 'transition'
+    assert parsed['transition'] == ('SynRcvd', 'Closed')
+    assert parsed['terminal'] is True
+
+
 @pytest.mark.parametrize('time', ['55,000', '55,499'])
 def test_curl_policy_window_boundary_snaps_inside(time):
     import sys
