@@ -61,23 +61,32 @@ class FnprRequestHandler(socketserver.BaseRequestHandler):
     def handle(self):
         peer = '%s:%s' % self.client_address
         self.request.settimeout(SOCKET_TIMEOUT_SECONDS)
-        data = bytearray()
-        try:
-            while len(data) < MAX_REQUEST_BYTES:
-                chunk = self.request.recv(min(128, MAX_REQUEST_BYTES - len(data)))
-                if not chunk:
-                    break
-                data.extend(chunk)
-                if b'\n' in chunk:
-                    break
-            nonce, role = parse_request(bytes(data))
-            self.request.sendall(build_response(nonce))
-            log_event(self.server.logger, 'probe_ok', peer=peer,
-                      role=role, nonce=nonce, bytes=len(data),
-                      transport='tcp')
-        except Exception as exc:
-            log_event(self.server.logger, 'probe_rejected', peer=peer,
-                      reason=type(exc).__name__, detail=str(exc)[:160],
+        # Serve the connection for its whole life: the scenario client sends
+        # one bounded request per cadence tick on ONE connection and treats
+        # an early server close as a connection failure, retrying with a new
+        # mapping (discovery100-60 sst-041..044: 41-72 error cycles while
+        # every individual request was answered correctly).  The per-recv
+        # timeout bounds an idle connection.
+        while True:
+            data = bytearray()
+            try:
+                while len(data) < MAX_REQUEST_BYTES:
+                    chunk = self.request.recv(min(128, MAX_REQUEST_BYTES - len(data)))
+                    if not chunk:
+                        return
+                    data.extend(chunk)
+                    if b'\n' in chunk:
+                        break
+                nonce, role = parse_request(bytes(data))
+                self.request.sendall(build_response(nonce))
+                log_event(self.server.logger, 'probe_ok', peer=peer,
+                          role=role, nonce=nonce, bytes=len(data),
+                          transport='tcp')
+            except socket.timeout:
+                return
+            except Exception as exc:
+                log_event(self.server.logger, 'probe_rejected', peer=peer,
+                          reason=type(exc).__name__, detail=str(exc)[:160],
                       bytes=len(data), transport='tcp')
 
 

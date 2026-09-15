@@ -185,14 +185,15 @@ def parse_line(text, ref):
         # (I/O request cancelled, connection refused, timeout, etc.) is a
         # terminal connect failure regardless of the specific reason.
         tail = re.sub(r'connect attempt failed with status = .*\.', 'abort issued.', tail)
-        valid = re.fullmatch(r'(requested to connect|connect proceeding|connect completed|abort issued|abort completed|shutdown initiated|close issued|disconnect completed|connection terminated|initiating SYN/RST validation)\.(?: PID = (\d+)\.)?', tail)
+        valid = re.fullmatch(r'(requested to connect|connect proceeding|connect completed|abort issued|abort completed|shutdown initiated|close issued|disconnect completed|connection terminated|initiating SYN/RST validation|(?:send: )?Beginning zero-window probing with SndUna = \d+)\.(?: PID = (\d+)\.)?', tail)
         if not valid:
             raise ValueError('unsupported TCP lifecycle: ' + body)
         endpoint(m[2]); endpoint(m[3])
         event.update(tcb=m[1].upper(), local=m[2], remote=m[3], kind=valid[1],
                      pid=int(valid[2]) if valid[2] else None,
                      terminal=valid[1] in END_VERBS and
-                     valid[1] != 'initiating SYN/RST validation')
+                     valid[1] not in ('initiating SYN/RST validation',
+                                      'Beginning zero-window probing'))
         return event
     m = re.fullmatch(r'Connection 0x0 Transport \(Protocol TCP , AddressFamily = IPV4 \) sent RST with Local = (' + ADDR + r'), Remote = (' + ADDR + r')\. Reason = Receive discarded \.', body)
     if m:
