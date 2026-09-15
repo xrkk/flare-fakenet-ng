@@ -305,6 +305,20 @@ def connection_events(raw, path, log, pid, src, dst, managed_pid, policy_window=
     primary_policy = policy_partition(log, log_path, pid, src, dst, policy_window)
     matching = [row['fields'] for row in primary_policy['inside']]
     peer_policy = {'inside': [], 'outside': []}
+    if not matching:
+        # Legacy default.ini templates audit no egress dispositions at all;
+        # their per-flow marker is "<process> (<pid>) requested TCP <dst>:<p>".
+        # The kernel accept on the local sink (required below) is the
+        # takeover proof (discovery100-84/85 sst-074..079: requested lines,
+        # connect completed, and a managed listener accept all present).
+        a, b = endpoint(src), endpoint(dst)
+        legacy = re.compile(
+            r'\((\d+)\) requested TCP ' + re.escape(b[0]) + ':' + b[1] + r'\s*$')
+        for line in log.splitlines():
+            m = legacy.search(line)
+            if m and (pid is None or m.group(1) == str(pid)):
+                matching = [dict(disposition='LEGACY_SINKHOLE')]
+                break
     dispositions = {f.get('disposition') for f in matching}
     if len(dispositions) != 1:
         # A long-held connection can be re-audited as ESTABLISHED_BYPASS
