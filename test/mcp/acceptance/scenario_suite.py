@@ -2283,6 +2283,25 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                         not_after_local=stop_boundary)
                 except (OSError, ValueError, SuiteError):
                     case_ok = False
+                if dropped_attempt and not case_packets:
+                    # A silently dropped SYN never reaches the captured
+                    # stack components; the TCPIP connect lifecycle
+                    # (bound/requested/proceeding with the exact tuple) is
+                    # the local proof the application attempted the flow
+                    # (discovery100-56 sst-058/063 case-2: zero pktmon wire
+                    # records, full TCPIP connect lifecycle present).
+                    try:
+                        raw_case = (self.root / str(capture.get('pktmon_path', ''))).read_bytes()
+                        text_case = raw_case.decode(
+                            'utf-16' if raw_case.startswith(b'\xff\xfe') else 'utf-8-sig',
+                            errors='replace')
+                        marker_case = 'local=%s remote=%s' % (':'.join(source), ':'.join(target))
+                        case_packets = [
+                            {'lifecycle': line.strip()} for line in
+                            text_case.splitlines()
+                            if marker_case in line and 'connect' in line][:4] or []
+                    except OSError:
+                        case_packets = []
                 if capture.get('observation_contract') == 'con008' and not dropped_attempt:
                     # A silently dropped attempt has no completed TCP connect
                     # by construction; the pktmon send records plus the drop

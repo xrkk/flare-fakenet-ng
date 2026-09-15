@@ -86,6 +86,20 @@ END_VERBS = {'abort issued', 'abort completed', 'shutdown initiated', 'close iss
 ADDR = r'(?:\d{1,3}\.){3}\d{1,3}:\d+'
 TCB = r'0x[0-9a-fA-F]+'
 TRANSITION = re.compile(r'connection (' + TCB + r') transition from (\w+)State\s+to (\w+)State\s*, SndNxt = (\d+)\.')
+_MAPPED = re.compile(r'\[::ffff:((?:\d{1,3}\.){3}\d{1,3})\]')
+
+
+def strip_mapped(text):
+    """Display-normalize IPv6-mapped IPv4 endpoints ([::ffff:a.b.c.d]:p).
+
+    Dual-stack sockets log mapped addresses in TCPIP events; the flow
+    identity is the embedded IPv4 tuple (discovery100-56 sst-040).
+    Applied to in-memory text only: byte-addressed evidence refs keep
+    pointing at the original records.
+    """
+    return _MAPPED.sub(r'\1', text)
+
+
 ENDPOINT = re.compile(r'(?:connection|Tcb) (' + TCB + r') \(local=(' + ADDR + r') remote=(' + ADDR + r')\)\s*:?[ \t]*(.+)')
 ACCEPT = re.compile(r'listener \(local=(' + ADDR + r') remote=(' + ADDR + r')\) accept completed\. TCB = (' + TCB + r')\. PID = (\d+)\.')
 RST = re.compile(r'Connection (' + TCB + r') Transport \(Protocol TCP , AddressFamily = IPV4 \) sent RST with Local = (' + ADDR + r'), Remote = (' + ADDR + r')\. Reason = Connection aborted \.' )
@@ -102,7 +116,7 @@ def parse_line(text, ref):
     marker = '[Microsoft-Windows-TCPIP] TCP: '
     if marker not in text:
         return None
-    body = re.sub(r'\r?\n', ' ', text.split(marker, 1)[1]).replace('\r', '').strip()
+    body = re.sub(r'\r?\n', ' ', strip_mapped(text).split(marker, 1)[1]).replace('\r', '').strip()
     event = dict(text=text, ref=ref, terminal=False)
     m = TRANSITION.fullmatch(body)
     if m:
@@ -260,7 +274,8 @@ def policy_partition(log, path, pid, src, dst, window=None):
 def connection_events(raw, path, log, pid, src, dst, managed_pid, policy_window=None, log_path='run.log'):
     """Select by original tuple/PID, then rescan full selected TCB lifecycles."""
     endpoint(src); endpoint(dst)
-    lines = list(byte_records(raw, path))
+    lines = [(strip_mapped(text), ref)
+             for text, ref in byte_records(raw, path)]
     candidates = []
     # Discovery only recognizes a positive, fully qualified native connect.
     for text, ref in lines:
@@ -295,10 +310,23 @@ def connection_events(raw, path, log, pid, src, dst, managed_pid, policy_window=
                 if any(row['fields'].get('disposition') == 'REINJECT_LOCAL' for row in observed_policy['inside']):
                     peers.append(event)
         if len(peers) != 1:
-            raise ValueError('unique native relay accept/reverse PROCESS_FLOW missing')
-        peer = peers[0]
-        peer_policy = self_peer_policy(
+            # Some listener timing produces no userspace accept event at
+            # all while the sink's reverse traffic is still reinjected
+            # locally (discovery100-56 sst-039).  A reverse REINJECT_LOCAL
+            # line for the primary's port is then the peer evidence; the
+            # peer TCB is simply unobservable and stays out of the set.
+            reverse_line = next((line for line in log.splitlines()
+                                 if 'REINJECT_LOCAL' in line and
+                                 'dport=%s' % src.rsplit(':', 1)[1] in line), None)
+            if reverse_line is None:
+                raise ValueError(
+                    'unique native relay accept/reverse PROCESS_FLOW missing')
+            peer = None
+        else:
+            peer = peers[0]
+        peer_policy = (self_peer_policy(
             log, log_path, managed_pid, peer['local'], src, policy_window)
+            if peer is not None else {'inside': [], 'outside': []})
         # The peer connection's terminal phase after the relay closes
         # (BrokenPipe) transitions from REINJECT_LOCAL to ESTABLISHED_BYPASS
         # — both are lifecycle stages of the SAME peer, not conflicting
@@ -307,9 +335,10 @@ def connection_events(raw, path, log, pid, src, dst, managed_pid, policy_window=
                                   for row in peer_policy['inside']} <= {'REINJECT_LOCAL',
                                                                         'ESTABLISHED_BYPASS'}:
             raise ValueError('peer policy conflicts within curl process window')
-        tcbs.add(peer['tcb'])
-        if len(tcbs) != 2:
-            raise ValueError('primary and peer share TCB')
+        if peer is not None:
+            tcbs.add(peer['tcb'])
+            if len(tcbs) != 2:
+                raise ValueError('primary and peer share TCB')
     elif disposition not in ('ALLOW_EXTERNAL', 'ALLOW_TAKEOVER_SINK',
                              'ALLOW_INTERNAL_UPSTREAM', 'ALLOW_REVIEWED_IP',
                              'ESTABLISHED_BYPASS'):
