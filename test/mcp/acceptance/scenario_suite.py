@@ -1767,7 +1767,10 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
     @staticmethod
     def _log_fields(line: str) -> dict[str, str]:
         """Extract structured egress fields without assuming logger ordering."""
-        return {key: value for key, value in re.findall(r'\b([A-Za-z_]+)=([^\s]+)', line)}
+        # Field keys may carry digits (source_ipv4, original_port): the
+        # character class must include them or the mapping vocabulary never
+        # parses (discovery100-71 sst-041/043).
+        return {key: value for key, value in re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)', line)}
 
     def _fault_primary_observation(self, run: dict[str, Any], event: dict[str, Any],
                                    nonce: str) -> dict[str, Any] | None:
