@@ -433,7 +433,7 @@ def test_application_consumer_applies_null_terminal_uncertainty(tmp_path, time, 
     runner.root = tmp_path
     runner.identity = type('Identity', (), {'candidate_id': judge.CANDIDATE})()
     if late_flow:
-        with (tmp_path/'run.log').open('a') as stream:
+        with (tmp_path/'run.log').open('a', newline='') as stream:
             stream.write(flow().splitlines()[1 if late_flow == 'peer' else 0].replace('55,201', '55,790')+'\n')
     records = [suite.file_record(path, tmp_path) for path in tmp_path.iterdir()]
     run = {'run_id': 'r', 'capture': {'files': records}, 'originals': {'files': []}}
@@ -522,9 +522,9 @@ def test_application_curl_window_preserves_context_from_full_originals(tmp_path)
     rows[1].update(event='curl_started', creation_ticks=rows[0]['utc_ticks'],
                    dns_before_ticks=rows[0]['utc_ticks']-1, dns_ipv4=['119.188.175.46'])
     rows[2].update(event='curl_completed', exit_code=0, http_code='401')
-    (tmp_path/'probe.jsonl').write_text('\n'.join(json.dumps(x) for x in rows)+'\n')
+    (tmp_path/'probe.jsonl').write_text('\n'.join(json.dumps(x) for x in rows)+'\n', newline='')
     late = flow().splitlines()[0].replace('55,201','57,201').replace('REDIRECT_TLS_RELAY','DIVERT_FAKE')+'\n'
-    with (tmp_path/'run.log').open('a') as stream: stream.write(late)
+    with (tmp_path/'run.log').open('a', newline='') as stream: stream.write(late)
     runner = suite.Suite.__new__(suite.Suite); runner.root = tmp_path
     runner.identity = type('Identity', (), {'candidate_id': judge.CANDIDATE})()
     run = {'run_id':'r','capture':{'files':[suite.file_record(p,tmp_path) for p in tmp_path.iterdir()]},'originals':{'files':[]}}
