@@ -2055,12 +2055,14 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                        item.get('seq') == 1]
         elif len(primary) > 1 and profile['probe_target'].get(
                 'expectation') in ('deny', 'relay_allow', 'ordinary_path',
-                                   'local_fake'):
+                                   'local_fake', 'reviewed_allow'):
             # Reconnections are part of the contract: a denied primary is
             # sinkholed and closed (RawListener timeout) and the probe
             # retries; a relay-allowed primary can equally be closed by the
             # real remote server (keepalive/idle policy, discovery100-48
-            # sst-004) and the client reconnects through a fresh mapping.
+            # sst-004) and the client reconnects through a fresh mapping;
+            # a reviewed-allowed direct upstream closes on fast cadence the
+            # same way (discovery100-73 sst-020/022).
             # Prefer the first origin the product actually observed: a
             # connection established in the before-start/restart gap that
             # died before capture is environmental preamble (discovery100-49
