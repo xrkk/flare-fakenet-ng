@@ -3444,6 +3444,13 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # (discovery100-68 sst-051..053).
                     first_run['expected_refusal'] = refusal
                     evidence.write(first_label + '-expected-refusal.json', refusal)
+                    # Complete the benign interface plan tail so semantics
+                    # stay a strict prefix check: the plan's healthy window
+                    # samples get_status three times and always ends with a
+                    # stop (idempotent on the already-stopped service).
+                    call('get_status')
+                    call('get_status')
+                    call('stop', {}, mutation=True)
             final = self._status()
             evidence.write('final-status.json', final)
             if final.get('state') != 'stopped':
@@ -3524,6 +3531,10 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             for run in runs:
                 run_id = run.get('run_id')
                 if not run_id:
+                    if run.get('expected_refusal'):
+                        # The product refused this start by design; no run
+                        # existed, so there are no run originals to export.
+                        continue
                     raise SuiteError('run has no immutable run_id')
                 original_root = root / run['label'] / 'originals'
                 run['originals'] = self._export_run_originals(run_id, original_root, evidence)

@@ -407,8 +407,13 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
             $process.WaitForExit(10000) | Out-Null
         }
-        $closeTicks = if ($closed) { $closeParts[1] } else { '0' }
-        $closeMono = if ($closed) { $closeParts[2] } else { '0' }
+        # A force-ended child leaves no CLOSE record: anchor the synthetic
+        # terminal at the wrapper's own kill-time clock instead of zero --
+        # a zero timestamp collapses the host-side lifetime window
+        # (discovery100-69 sst-041..044: utc_ticks=0 made probe_end
+        # negative and the lifetime check unsatisfiable).
+        $closeTicks = if ($closed) { $closeParts[1] } else { [string][ScenarioProbeClock]::UtcTicks() }
+        $closeMono = if ($closed) { $closeParts[2] } else { [string][Diagnostics.Stopwatch]::GetTimestamp() }
         $closeFreq = if ($closed) { $closeParts[3] } else { [Diagnostics.Stopwatch]::Frequency }
         Write-NativeJsonLine $Path @{ event = 'close'; nonce = $Token; connection_id = "$Token-b3"; pid = $process.Id; worker = 1; seq = 1; child_pid = $process.Id; exit_code = $process.ExitCode; src = $local; actual_dst = $remote; stdout = $stdout; native_close = $closed } ([Int64]$closeTicks) ([Int64]$closeMono) ([Int64]$closeFreq)
         Write-JsonLine $Path @{ event = 'finished'; nonce = $Token }
