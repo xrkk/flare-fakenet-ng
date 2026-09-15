@@ -1617,7 +1617,8 @@ class Diverter(DiverterBase, WinUtilMixin):
 
             handled_by_base = False
             if (not redirected and
-                    self.egress_policy.non_allowed_action == 'divert'):
+                    (self.egress_policy.non_allowed_action == 'divert' or
+                     self._is_external_dns_query(pkt))):
                 if self._is_midstream_tcp_flow(pkt):
                     # Startup-race flow established before capture: the
                     # divert path rewrites its destination mid-stream and
@@ -2156,6 +2157,20 @@ class Diverter(DiverterBase, WinUtilMixin):
                 return Verdict.DIVERT_FAKE
             return Verdict.REINJECT_LOCAL
         return Verdict.DROP_EXTERNAL
+
+    def _is_external_dns_query(self, pkt):
+        """A resolver query is always sinkholed by the local DNS listener.
+
+        Under ``ExternalNonAllowedAction: Drop`` the query would otherwise
+        be silently dropped and name resolution breaks entirely: answering
+        resolver queries locally is the product's core premise regardless
+        of the non-allowed action (discovery100-52 sst-058: svchost
+        queries to the external resolver were dropped, so every hostname
+        lookup failed and the positive curl could never run).
+        """
+        return (pkt.proto in ('UDP', 'TCP') and
+                pkt.dport == 53 and
+                str(pkt.dst_ip0) == self.egress_policy.external_dns_server)
 
     def _send_packet(self, pkt):
         fix = getattr(pkt, 'tso_length_fix', None)
