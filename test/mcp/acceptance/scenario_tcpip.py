@@ -307,6 +307,17 @@ def connection_events(raw, path, log, pid, src, dst, managed_pid, policy_window=
     peer_policy = {'inside': [], 'outside': []}
     dispositions = {f.get('disposition') for f in matching}
     if len(dispositions) != 1:
+        # A long-held connection can be re-audited as ESTABLISHED_BYPASS
+        # during the stop phase; that is a lifecycle stage of the SAME flow
+        # (mirrors the peer terminal-phase rule).  The establishment-time
+        # disposition is authoritative (discovery100-74 sst-026).
+        anchored = [f for f in matching
+                    if f.get('disposition') != 'ESTABLISHED_BYPASS']
+        if (anchored and
+                len({f.get('disposition') for f in anchored}) == 1):
+            matching = anchored
+            dispositions = {anchored[0].get('disposition')}
+    if len(dispositions) != 1:
         raise ValueError('same-run exact PROCESS_FLOW missing/ambiguous')
     disposition = next(iter(dispositions))
     tcbs = {connected['tcb']}
