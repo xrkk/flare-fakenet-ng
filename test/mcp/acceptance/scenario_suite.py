@@ -1969,16 +1969,34 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                        item.get('seq') == 1]
         elif len(primary) > 1 and profile['probe_target'].get(
                 'expectation') in ('deny', 'relay_allow'):
-            # A denied primary connection is sinkholed by the local listener
-            # and then closed (RawListener timeout), after which the probe's
-            # retry loop reconnects; every reconnection is itself denied.
-            # A relay-allowed primary can equally be closed by the real
-            # remote server (server-side keepalive/idle policy, e.g.
-            # discovery100-48 sst-004: RST after ~11s of drip cadence); the
-            # relay propagates the close and the client reconnects through a
-            # fresh mapping. The first established origin is the primary;
-            # later ones are additional evidence, not a contract violation.
-            primary = primary[:1]
+            # Reconnections are part of the contract: a denied primary is
+            # sinkholed and closed (RawListener timeout) and the probe
+            # retries; a relay-allowed primary can equally be closed by the
+            # real remote server (keepalive/idle policy, discovery100-48
+            # sst-004) and the client reconnects through a fresh mapping.
+            # Prefer the first origin the product actually observed: a
+            # connection established in the before-start/restart gap that
+            # died before capture is environmental preamble (discovery100-49
+            # sst-005 run-02: the first origin had no policy line at all,
+            # the reconnect was ESTABLISHED_BYPASS-bound).
+            bound_keys = set()
+            for line in run_log.splitlines():
+                if 'PROCESS_FLOW ' in line or 'ESTABLISHED_BYPASS' in line:
+                    fields = self._log_fields(line)
+                    bound_keys.add((fields.get('pid'), fields.get('src'),
+                                    fields.get('sport'), fields.get('dst'),
+                                    fields.get('dport')))
+            def policy_bound(row):
+                source = numeric_endpoint(row.get('src'))
+                target = (numeric_endpoint(row.get('dst')) or
+                          numeric_endpoint(row.get('actual_dst')))
+                if not source or not target:
+                    return False
+                return (str(row.get('pid')), source[0], source[1],
+                        target[0], target[1]) in bound_keys
+            primary = (next((row for row in primary if policy_bound(row)),
+                            primary[0]),)
+            primary = list(primary)
         if len(primary) != 1:
             return {'passed': False, 'reason': 'expected exactly one primary connection origin',
                     'primary_count': len(primary)}
@@ -2116,6 +2134,24 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             branch_ok = bool(flow and branch_log and not nic_original_packets)
         else:
             return {'passed': False, 'reason': 'unknown traffic expectation: ' + str(expectation)}
+        if not branch_ok:
+            # A primary established before the diverter opened (before-start
+            # release, during-start race, or the restart gap between runs)
+            # is passed through untouched by design: its SYN was never seen,
+            # so no deny/relay disposition can exist for it.  The diverter's
+            # own ESTABLISHED_BYPASS record for this exact tuple+pid is the
+            # policy observation for such a flow, and its original tuple on
+            # the NIC is the bypass passthrough, not a leak (discovery100-49
+            # sst-005 run-01: 580 pre-stop packets of a before-start relay
+            # primary that connected ~34s before EGRESS_CONTROL_READY).
+            bypass_line = log_event('ESTABLISHED_BYPASS',
+                                    original_ip=target_ip,
+                                    original_port=target_port,
+                                    src=address, sport=port,
+                                    pid=str(event.get('pid')))
+            if bypass_line:
+                branch_log = bypass_line
+                branch_ok = True
         planned_cases = list(profile.get('negative_cases', ())) + list(profile.get('probe_cases', ()))
         releases = [row for row in events if row.get('event') == 'cases_released' and row.get('nonce') == nonce]
         case_results: list[dict[str, Any]] = []
