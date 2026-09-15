@@ -2230,6 +2230,23 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 # the attempt evidence (discovery100-54 sst-058/063 case-2).
                 first = next((row for row in case_events if row.get('event') ==
                               'case_connect_attempt' and row.get('src')), None)
+                if (first is not None and
+                        str(first.get('src', '')).startswith('0.0.0.0:')):
+                    # The pre-connect bind records Any:port; the routing
+                    # decision fills the real source IP only in the stack.
+                    # The diverter's PROCESS_FLOW line for the same
+                    # pid+sport+destination carries the real src.
+                    attempt_port = str(first.get('src', '')).split(':', 1)[1]
+                    for line in run_log.splitlines():
+                        if 'PROCESS_FLOW ' not in line:
+                            continue
+                        fields = self._log_fields(line)
+                        if (fields.get('pid') == str(first.get('pid')) and
+                                fields.get('sport') == attempt_port and
+                                fields.get('proto') == 'TCP'):
+                            first = dict(first, src='%s:%s' % (
+                                fields.get('src'), attempt_port))
+                            break
             source = numeric_endpoint(first.get('src')) if first else None
             target = (numeric_endpoint('%s:%s' % (planned['host'], planned['port']))
                       if re.fullmatch(r'(?:\d{1,3}\.){3}\d{1,3}', str(planned['host'])) else

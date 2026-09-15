@@ -86,7 +86,7 @@ END_VERBS = {'abort issued', 'abort completed', 'shutdown initiated', 'close iss
 ADDR = r'(?:\d{1,3}\.){3}\d{1,3}:\d+'
 TCB = r'0x[0-9a-fA-F]+'
 TRANSITION = re.compile(r'connection (' + TCB + r') transition from (\w+)State\s+to (\w+)State\s*, SndNxt = (\d+)\.')
-ENDPOINT = re.compile(r'(?:connection|Tcb) (' + TCB + r') \(local=(' + ADDR + r') remote=(' + ADDR + r')\) (.+)')
+ENDPOINT = re.compile(r'(?:connection|Tcb) (' + TCB + r') \(local=(' + ADDR + r') remote=(' + ADDR + r')\)\s*:?[ \t]*(.+)')
 ACCEPT = re.compile(r'listener \(local=(' + ADDR + r') remote=(' + ADDR + r')\) accept completed\. TCB = (' + TCB + r')\. PID = (\d+)\.')
 RST = re.compile(r'Connection (' + TCB + r') Transport \(Protocol TCP , AddressFamily = IPV4 \) sent RST with Local = (' + ADDR + r'), Remote = (' + ADDR + r')\. Reason = Connection aborted \.' )
 
@@ -159,6 +159,9 @@ def parse_line(text, ref):
         # Generic normalization: the specific shutdown reason (timeout, abort,
         # local termination, reset, localized message, future variant like
         # I/O request cancelled) does not change the terminal semantics.
+        # Some TCPIP providers put a colon directly after the endpoint
+        # bracket: "(local=... remote=...): initiating SYN/RST validation."
+        tail = re.sub(r'^:\s*', '', tail)
         tail = re.sub(r'shutdown initiated \([^)]*\)\.', 'shutdown initiated.', tail)
         if tail == 'terminating: retransmission timeout expired.':
             tail = 'connection terminated.'
