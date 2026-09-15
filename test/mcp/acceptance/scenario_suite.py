@@ -1946,7 +1946,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 raise SuiteError('application peer precedes managed creation')
             uncertainty = 15625000 - 1
             policy_upper = max(fault.time_bounds(row['text'])[1] for row in observed['policy_inside']
-                               if policy_window or tcpip.flow_matches(row['fields'], origin['pid'], src, dst))
+                               if policy_window or tcpip.flow_matches(row['fields'], origin['pid'], src, dst)
+                               or row['fields'].get('disposition') == 'LEGACY_SINKHOLE')
             begin = max(fault.time_bounds(observed['connect']['text'])[1],
                         fault.time_bounds(origin)[1], policy_upper) + uncertainty
             terminal = min(fault.time_bounds(e['text'])[0] for e in observed['termination'] + observed['tuple_terminals']) - uncertainty
