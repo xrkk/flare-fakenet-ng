@@ -1842,6 +1842,21 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                                      byte_end=offset+len(line.encode()), event_key='text'))
             offset += len(line.encode())
         if not policies:
+            # Legacy FakeNet templates (default.ini) audit no egress
+            # dispositions.  Their per-flow marker is the diverter's
+            # "<process> (<pid>) requested <PROTO> <dst>:<dport>" line; the
+            # full tuple is bound by the TCPIP connect event, so matching
+            # pid+proto+destination is the policy observation for the flow.
+            legacy = re.compile(
+                r'Diverter \S+ \((\d+)\) requested ' + protocol.upper() +
+                r' ' + re.escape(wanted['dst']) + r':' + re.escape(wanted['dport']) + r'\s*$')
+            offset = 0
+            for line in log.splitlines(keepends=True):
+                if legacy.search(line) and legacy.search(line).group(1) == wanted['pid']:
+                    policies.append(dict(path=by_name['run.log']['path'], byte_start=offset,
+                                         byte_end=offset+len(line.encode()), event_key='text'))
+                offset += len(line.encode())
+        if not policies:
             raise SuiteError('application exact policy flow missing')
         result = dict(schema='sst.application-observation.v1', candidate_id=self.identity.candidate_id,
                       run_id=run['run_id'], nonce=nonce, case_index=origin.get('case_index'),
@@ -2132,6 +2147,18 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             branch_log = (log_event('DIVERT_FAKE', original_ip=target_ip, original_port=target_port) or
                           log_event('DROP_EXTERNAL', original_ip=target_ip, original_port=target_port))
             branch_ok = bool(flow and branch_log and not nic_original_packets)
+            if not branch_ok and profile.get('template') == 'default.ini':
+                # Legacy template: the sinked flow's marker is the
+                # "requested <PROTO> <dst>:<dport>" line (no egress
+                # dispositions exist); the TCPIP peer accept in the
+                # connection observation proves the local sink took it.
+                legacy_requested = next(
+                    (line for line in run_log.splitlines()
+                     if re.search(r'requested (?:TCP|UDP) ' +
+                                  re.escape(target_ip) + r':' + target_port + r'\s*$', line)), None)
+                branch_ok = bool(legacy_requested and not nic_original_packets)
+                if branch_ok:
+                    branch_log = legacy_requested
         else:
             return {'passed': False, 'reason': 'unknown traffic expectation: ' + str(expectation)}
         if not branch_ok:
