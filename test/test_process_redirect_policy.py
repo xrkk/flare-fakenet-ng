@@ -261,6 +261,41 @@ class ProcessRedirectEngineTests(unittest.TestCase):
         self.assertEqual(1, len(self.resolver.resolve_calls))
         self.assertEqual(1, len(self.resolver.revalidate_calls))
 
+    def test_non_target_flow_data_passes_after_syn_owner_resolution(self):
+        # discovery100-49 sst-038: the SYN of a non-target process passes to
+        # the egress policy (DIVERT_FAKE sink), but the same flow's data was
+        # dropped as unmapped_a_flow, black-holing the half-sunk connection.
+        other = ProcessOwnerIdentity(
+            pid=5678, creation_time=99,
+            final_path=r'c:\other\powershell.exe', volume_serial=7,
+            file_id=13)
+        self.resolver.resolution = OwnerResolution(
+            OwnerResolutionStatus.RESOLVED, other)
+
+        syn = self.engine.prepare(self.packet())
+        self.assertEqual(ProcessRedirectAction.PASS_UNCHANGED,
+                         syn.decision.action)
+        self.assertEqual('resolved_non_target_process', syn.decision.reason)
+
+        data = self.engine.prepare(self.packet(flags=0x18))
+        self.assertEqual(ProcessRedirectAction.PASS_UNCHANGED,
+                         data.decision.action)
+        self.assertEqual('non_target_flow', data.decision.reason)
+
+        # Long-lived flows keep passing while data flows refresh the entry.
+        self.clock.value += 240
+        more = self.engine.prepare(self.packet(flags=0x10))
+        self.assertEqual(ProcessRedirectAction.PASS_UNCHANGED,
+                         more.decision.action)
+        self.assertEqual(1, len(self.resolver.resolve_calls))
+
+        # An idle pass entry expires and unknown data drops again.
+        self.clock.value += self.engine.A_PASS_IDLE_SECONDS + 1
+        stale = self.engine.prepare(self.packet(flags=0x10))
+        self.assertEqual(ProcessRedirectAction.DROP,
+                         stale.decision.action)
+        self.assertEqual('unmapped_a_flow', stale.decision.reason)
+
     def test_failed_injection_creates_short_tombstone_and_token_is_exactly_once(self):
         prepared = self.engine.prepare(self.packet())
 

@@ -476,6 +476,18 @@ def test_curl_policy_window_keeps_outside_same_tuple_as_context():
     assert result['connect']['pid'] == 7948
 
 
+def test_spurious_rto_detection_is_transport_context():
+    # discovery100-49 sst-057: spurious-RTO probes are transport context on
+    # a live TCB, not terminal events.
+    for body in ('spurious RTO detection initiated at 739152423.',
+                 'spurious RTO detection terminated at 739153883.'):
+        parsed = tcp.parse_line(
+            line('55.100000000', 'connection 0xFFFFC386FF876260 ' + body),
+            dict(path='pktmon.txt', byte_start=0, byte_end=1))
+        assert parsed is not None and parsed['kind'] == 'retransmit context'
+        assert parsed['terminal'] is False
+
+
 def test_synrcvd_to_closed_is_a_terminal_transition():
     # discovery100-48 sst-096: the relay's accepted TCB for a denied TLS
     # client is reset during handshake and closes straight from SYN-received.

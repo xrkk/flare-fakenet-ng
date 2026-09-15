@@ -117,6 +117,7 @@ def parse_line(text, ref):
         event.update(tcb=m[3].upper(), kind='accept completed', local=m[1], remote=m[2], pid=int(m[4]))
         return event
     m = re.fullmatch(r'connection ('+TCB+r'): (?:Send Retransmit round with SndUna = \d+, Round = \d+, SRTT = \d+, RTO = \d+\.|Leaving loss recovery phase with SndUna = \d+ and SndMax = \d+\.|retransmitting connect attempt, RexmitCount = \d+\.)', body)
+    m = m or re.fullmatch(r'connection ('+TCB+r') spurious RTO detection (?:initiated|terminated) at \d+\.', body)
     if m:
         event.update(tcb=m[1].upper(), kind='retransmit context')
         return event

@@ -166,6 +166,8 @@ class ProcessRedirectEngine(object):
     _TH_RST = 0x04
     _TH_ACK = 0x10
 
+    A_PASS_IDLE_SECONDS = 300
+
     def __init__(self, rule, owner_resolver, route_guard, clock=None):
         self.rule = rule
         self._owner_resolver = owner_resolver
@@ -186,6 +188,13 @@ class ProcessRedirectEngine(object):
         self._query_tokens = 16.0
         self._query_refill_at = self._clock()
         self._syn_query_cache = {}
+        # Outbound flows whose SYN was owner-resolved to a non-target
+        # process.  Their later packets must keep passing to the egress
+        # policy: dropping only the data after the SYN passed leaves the
+        # flow half-sunk (handshake against the local fake listener
+        # completes, then the connection black-holes) — see the
+        # unmapped_a_flow asymmetry (discovery100-49 sst-038).
+        self._a_pass = {}
         self._audit = Counter()
         self._audit_started_at = self._clock()
         self._last_audit_drain = self._audit_started_at
@@ -263,6 +272,10 @@ class ProcessRedirectEngine(object):
         return None
 
     def _cleanup_locked(self, now):
+        if self._a_pass:
+            self._a_pass = {
+                key: expires for key, expires in self._a_pass.items()
+                if expires > now}
         self._purge_tombstones_locked(now)
         for key, item in list(self._syn_query_cache.items()):
             if item[0] <= now:
@@ -325,7 +338,8 @@ class ProcessRedirectEngine(object):
         key = self._forward_key(packet)
         cached_resolution = None
         with self._lock:
-            self._cleanup_locked(self._clock())
+            now = self._clock()
+            self._cleanup_locked(now)
             if self._closed or self._suspended:
                 return self._drop('process_redirect_unavailable')
             tombstone = self._tombstones.get(key)
@@ -346,6 +360,10 @@ class ProcessRedirectEngine(object):
                 packet.tcp_flags & self._TH_SYN and
                 not packet.tcp_flags & self._TH_ACK)
             if not new_syn:
+                pass_expiry = self._a_pass.get(key)
+                if pass_expiry is not None and pass_expiry > now:
+                    self._a_pass[key] = now + self.A_PASS_IDLE_SECONDS
+                    return self._pass('non_target_flow')
                 return self._drop('unmapped_a_flow')
             if key in self._reservations:
                 return self._drop('owner_query_pending')
@@ -385,6 +403,8 @@ class ProcessRedirectEngine(object):
             if not self._owner_matches_rule(resolution.identity):
                 with self._lock:
                     self._audit['non_target_compatibility_pass'] += 1
+                    self._a_pass[key] = (
+                        self._clock() + self.A_PASS_IDLE_SECONDS)
                 return self._pass('resolved_non_target_process')
             with self._lock:
                 self._audit['owner_resolved_target'] += 1
@@ -527,6 +547,7 @@ class ProcessRedirectEngine(object):
             self._client.clear()
             self._tombstones.clear()
             self._syn_query_cache.clear()
+            self._a_pass.clear()
             self._audit['engine_closed'] += 1
 
     def suspend(self, reason):
