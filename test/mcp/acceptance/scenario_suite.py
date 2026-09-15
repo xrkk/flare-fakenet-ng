@@ -1967,13 +1967,16 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
     _QUIESCENCE_REFUSAL_MARKER = ('reviewed process image is already '
                                   'running before READY')
 
+    def _is_quiescence_refusal_family(self, profile: dict[str, Any]) -> bool:
+        target = profile.get('probe_target', {})
+        return (profile.get('bucket') == 'B3' and
+                target.get('process_mode') == 'match' and
+                profile.get('interleave') == 'before-start')
+
     def _expected_quiescence_refusal(self, started: dict[str, Any],
                                      profile: dict[str, Any]) -> dict[str, Any] | None:
         """Return the recorded refusal when it is this family's exact outcome."""
-        target = profile.get('probe_target', {})
-        if (profile.get('bucket') != 'B3' or
-                target.get('process_mode') != 'match' or
-                profile.get('interleave') != 'before-start'):
+        if not self._is_quiescence_refusal_family(profile):
             return None
         status = self._status()
         reason = str(status.get('failure_reason') or '')
@@ -2099,6 +2102,18 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             return {'passed': False, 'reason': 'same connection has no terminal probe event'}
         flow = []
         for line in run_log.splitlines():
+            if 'PROCESS_REDIRECT_MAPPING_CREATED' in line:
+                # The product audits process-redirect matched flows under
+                # this vocabulary only; no PROCESS_FLOW line exists for
+                # them (discovery100-70 sst-041/042/044).
+                fields = self._log_fields(line)
+                if (fields.get('pid') == str(event.get('pid')) and
+                        fields.get('source_ipv4') == address and
+                        fields.get('source_port') == port and
+                        fields.get('original_ipv4') == target_tuple[0] and
+                        fields.get('original_port') == target_tuple[1]):
+                    flow.append(line)
+                continue
             if 'PROCESS_FLOW ' not in line:
                 continue
             fields = self._log_fields(line)
@@ -3428,7 +3443,17 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             else:
                 # Start-injection faults use their receipt run id; no healthy
                 # publication is manufactured by the test runner.
-                call('get_status')
+                benign_refusal = (not fault and self._is_quiescence_refusal_family(
+                    runtime_profile))
+                if benign_refusal:
+                    # The refusal family's benign plan tail is sampled in
+                    # order: get_status x3, then get_events, list_artifacts,
+                    # stop (strict prefix semantics).
+                    call('get_status')
+                    call('get_status')
+                    call('get_status')
+                else:
+                    call('get_status')
                 call('get_events', {'limit': 100})
                 call('list_artifacts')
                 finish_capture(first_label, first_run)
@@ -3444,12 +3469,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # (discovery100-68 sst-051..053).
                     first_run['expected_refusal'] = refusal
                     evidence.write(first_label + '-expected-refusal.json', refusal)
-                    # Complete the benign interface plan tail so semantics
-                    # stay a strict prefix check: the plan's healthy window
-                    # samples get_status three times and always ends with a
-                    # stop (idempotent on the already-stopped service).
-                    call('get_status')
-                    call('get_status')
+                    # The stop is idempotent on the already-stopped service.
                     call('stop', {}, mutation=True)
             final = self._status()
             evidence.write('final-status.json', final)
