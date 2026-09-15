@@ -1838,7 +1838,12 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         if not end_refs or origin.get('nonce') != nonce or any(row.get('pid') != origin['pid'] or row.get('nonce') != nonce for row in ends):
             raise SuiteError('application terminal/nonce identity missing')
         if creation_ticks is None:
-            ready = [row for row in rows if row.get('event') == 'ready' and row.get('nonce') == nonce and row.get('pid') == origin['pid']]
+            # B3 process-redirect profiles originate from a native child: its
+            # creation marker is process_ready (same creation_ticks payload),
+            # while the launcher's ready row carries the launcher pid
+            # (discovery100-65 sst-041..044).
+            ready = [row for row in rows if row.get('event') in ('ready', 'process_ready')
+                     and row.get('nonce') == nonce and row.get('pid') == origin['pid']]
             if len(ready) != 1:
                 raise SuiteError('application native probe creation missing')
             creation_ticks = ready[0]['creation_ticks']
