@@ -2007,7 +2007,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             primary = [item for item in primary if item.get('connection_id') == nonce + '-udp-1' and
                        item.get('seq') == 1]
         elif len(primary) > 1 and profile['probe_target'].get(
-                'expectation') in ('deny', 'relay_allow'):
+                'expectation') in ('deny', 'relay_allow', 'ordinary_path',
+                                   'local_fake'):
             # Reconnections are part of the contract: a denied primary is
             # sinkholed and closed (RawListener timeout) and the probe
             # retries; a relay-allowed primary can equally be closed by the
