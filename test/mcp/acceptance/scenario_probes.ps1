@@ -399,6 +399,14 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
         $sendCount = 0
         if (Test-Path $stdout) { foreach ($send in @(Get-Content $stdout | Where-Object { $_ -like 'SEND|*' })) { $sendParts = $send -split '\|', 5; if ($sendParts.Count -ne 5) { throw 'B3 child supplied malformed native SEND' }; $sendCount++; Write-NativeJsonLine $Path @{ event = 'send'; nonce = $Token; connection_id = "$Token-b3"; pid = $process.Id; worker = 1; seq = 1; child_pid = $process.Id; ordinal = $sendCount; cadence_ms = $Cadence; src = $local; actual_dst = $remote } ([Int64]$sendParts[2]) ([Int64]$sendParts[3]) ([Int64]$sendParts[4]) } }
         if ($sendCount -eq 0) { throw 'B3 native client supplied no cadence-controlled send record' }
+        if (-not $process.HasExited) {
+            # The reviewed image must not outlive the scenario: the product's
+            # start quiescence correctly refuses while it runs
+            # (discovery100-67 sst-051: next start failed with 'reviewed
+            # process image is already running before READY').
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            $process.WaitForExit(10000) | Out-Null
+        }
         $closeTicks = if ($closed) { $closeParts[1] } else { '0' }
         $closeMono = if ($closed) { $closeParts[2] } else { '0' }
         $closeFreq = if ($closed) { $closeParts[3] } else { [Diagnostics.Stopwatch]::Frequency }

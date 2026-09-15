@@ -218,7 +218,14 @@ def flow_matches(row, pid, src, dst):
     wanted = dict(proto='TCP', src=a[0], sport=a[1], dst=b[0], dport=b[1])
     if pid is not None:
         wanted['pid'] = str(pid)
-    return all(row.get(k) == v for k, v in wanted.items())
+    if all(row.get(k) == v for k, v in wanted.items()):
+        return True
+    # B3 process-redirect audit vocabulary (discovery100-67 sst-042..044).
+    redirect = dict(proto='TCP', source_ipv4=a[0], source_port=a[1],
+                    original_ipv4=b[0], original_port=b[1])
+    if pid is not None:
+        redirect['pid'] = str(pid)
+    return all(row.get(k) == v for k, v in redirect.items())
 
 
 def policy_scope(line, window):
@@ -267,7 +274,12 @@ def policy_partition(log, path, pid, src, dst, window=None):
         # ESTABLISHED_BYPASS is the diverter's mid-stream disposition for
         # flows established before capture; it carries the same tuple fields
         # as PROCESS_FLOW after the P4 field enrichment.
-        if (('PROCESS_FLOW ' in line or 'ESTABLISHED_BYPASS' in line)
+        if 'PROCESS_REDIRECT_MAPPING_CREATED' in line and row.get('disposition') is None:
+            # The mapping line carries no disposition field; synthesize the
+            # redirect class so downstream disposition checks work.
+            row = dict(row, disposition='PROCESS_REDIRECT')
+        if (('PROCESS_FLOW ' in line or 'ESTABLISHED_BYPASS' in line or
+             'PROCESS_REDIRECT_MAPPING_CREATED' in line)
                 and flow_matches(row, pid, src, dst)):
             result[policy_scope(line, window)].append(dict(text=line, ref=ref, fields=row))
     return result
@@ -298,7 +310,7 @@ def connection_events(raw, path, log, pid, src, dst, managed_pid, policy_window=
     disposition = next(iter(dispositions))
     tcbs = {connected['tcb']}
     peer = None
-    if disposition.startswith('REDIRECT') or disposition in ('DIVERT_FAKE', 'REINJECT_LOCAL'):
+    if disposition in ('DIVERT_FAKE', 'REINJECT_LOCAL') or disposition.startswith('REDIRECT'):
         peers = []
         for text, ref in lines:
             if '[Microsoft-Windows-TCPIP] TCP: listener ' not in text or ' accept completed.' not in text:
@@ -343,7 +355,7 @@ def connection_events(raw, path, log, pid, src, dst, managed_pid, policy_window=
                 raise ValueError('primary and peer share TCB')
     elif disposition not in ('ALLOW_EXTERNAL', 'ALLOW_TAKEOVER_SINK',
                              'ALLOW_INTERNAL_UPSTREAM', 'ALLOW_REVIEWED_IP',
-                             'ESTABLISHED_BYPASS'):
+                             'ESTABLISHED_BYPASS', 'PROCESS_REDIRECT'):
         raise ValueError('unsupported direct disposition: ' + str(disposition))
     # ALLOW_REVIEWED_IP is a reviewed-rule direct upstream: the reviewed
     # egress path relays without a local FakeNet peer, like ALLOW_EXTERNAL.
