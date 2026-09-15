@@ -201,7 +201,13 @@ function Invoke-AdditionalTargets([object[]]$Targets, [string]$Path, [string]$To
         }
         $client = [Net.Sockets.TcpClient]::new()
         try {
-            Write-JsonLine $Path @{ event = 'case_connect_attempt'; nonce = $Token; connection_id = $connection; case_index = $index; expectation = $expectation; dst = "$caseHost`:$port"; protocol = $protocol }
+            # Bind eagerly so the local endpoint is known even when the
+            # connect never completes: a silently dropped SYN (Drop policy)
+            # leaves no established event, and the tuple is the only way the
+            # host can bind the attempt to the policy drop line.
+            if (-not $client.Client.Connected) { $client.Client.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)) }
+            $attemptLocal = $client.Client.LocalEndPoint.ToString()
+            Write-JsonLine $Path @{ event = 'case_connect_attempt'; nonce = $Token; connection_id = $connection; case_index = $index; expectation = $expectation; src = $attemptLocal; dst = "$caseHost`:$port"; protocol = $protocol }
             $async = $client.BeginConnect($caseHost, $port, $null, $null)
             if (-not $async.AsyncWaitHandle.WaitOne(5000)) { throw [TimeoutException]::new('additional target connect timeout') }
             $client.EndConnect($async)

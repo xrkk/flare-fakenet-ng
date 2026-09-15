@@ -1667,6 +1667,24 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
     _STOP_DIVERTER_RE = re.compile(
         r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3})\s+INFO FakeNet '
         r'STOP_PHASE_BEGIN phase=diverter\b')
+    _EGRESS_READY_RE = re.compile(
+        r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3})\s+INFO Diverter '
+        r'EGRESS_CONTROL_READY\b')
+
+    @classmethod
+    def _egress_ready_boundary(cls, run_log: str) -> str | None:
+        """Local-time instant when the diverter began filtering, or None.
+
+        During-start and before-start releases can put probe traffic on the
+        wire before the product exists; those packets are environmental
+        preamble, not leaks (discovery100-54 sst-058: 31 cadence payloads
+        before EGRESS_CONTROL_READY reached the NIC).
+        """
+        for line in run_log.splitlines():
+            match = cls._EGRESS_READY_RE.match(line)
+            if match:
+                return '%s.%s' % (match.group(1), match.group(2))
+        return None
 
     @classmethod
     def _diverter_stop_boundary(cls, run_log: str) -> str | None:
@@ -1684,7 +1702,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
 
     def _pktmon_observations(self, capture: dict[str, Any], src: str, dst: str,
                              protocol: str,
-                             not_after_local: str | None = None
+                             not_after_local: str | None = None,
+                             not_before_local: str | None = None
                              ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         """Return all-stack and verified-NIC observations for one tuple.
 
@@ -1710,12 +1729,17 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         binding = pktmon_nic_binding(metadata)
         decoder = _pktmon_module()
         records = decoder.parse_packets(raw)
-        if not_after_local is not None:
+        if not_after_local is not None or not_before_local is not None:
             # A record without a parseable local timestamp stays counted:
-            # excusing evidence requires proof that it is post-stop.
+            # excusing evidence requires proof that it is outside the
+            # product's active interval (before EGRESS_CONTROL_READY or
+            # after diverter teardown began).
             records = [packet for packet in records
-                       if packet.get('timestamp_local') is None or
-                       packet['timestamp_local'] <= not_after_local]
+                       if (packet.get('timestamp_local') is None or
+                           ((not_after_local is None or
+                             packet['timestamp_local'] <= not_after_local) and
+                            (not_before_local is None or
+                             packet['timestamp_local'] >= not_before_local)))]
         try:
             all_components = decoder.select_packets(records, src, dst, protocol, direction='Tx')
             nic_components = decoder.select_packets(
@@ -2043,9 +2067,11 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 flow.append(line)
         protocol = 'UDP' if profile['probe_target']['protocol'] == 'udp' else 'TCP'
         stop_boundary = self._diverter_stop_boundary(run_log)
+        ready_boundary = self._egress_ready_boundary(run_log)
         try:
             packet_records, nic_original_packets, binding = self._pktmon_observations(
-                capture, src, dst, protocol, not_after_local=stop_boundary)
+                capture, src, dst, protocol, not_after_local=stop_boundary,
+                not_before_local=ready_boundary)
         except (OSError, ValueError, SuiteError) as exc:
             return {'passed': False, 'reason': 'pktmon evidence unavailable: %r' % (exc,)}
         try:
@@ -2149,7 +2175,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 # (discovery100-53 sst-059: 54/54 fast denies yet the branch
                 # had no DIVERT_FAKE/DROP line to bind).
                 redirect_line = log_event('REDIRECT_TLS_RELAY',
-                                          original_ip=target_ip, sport=port)
+                                          original_ip=target_ip)
                 sni_deny_line = log_event('TLS_SNI_DENY')
                 if redirect_line and sni_deny_line:
                     branch_log = sni_deny_line
@@ -2198,6 +2224,12 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                            row.get('case_index') == index]
             first = next((row for row in case_events if row.get('event') in
                           ('case_established', 'case_udp_sent')), None)
+            if first is None and planned['expectation'] == 'deny':
+                # A silently dropped SYN (Drop policy) never establishes;
+                # the recorded attempt tuple plus the terminal timeout is
+                # the attempt evidence (discovery100-54 sst-058/063 case-2).
+                first = next((row for row in case_events if row.get('event') ==
+                              'case_connect_attempt' and row.get('src')), None)
             source = numeric_endpoint(first.get('src')) if first else None
             target = (numeric_endpoint('%s:%s' % (planned['host'], planned['port']))
                       if re.fullmatch(r'(?:\d{1,3}\.){3}\d{1,3}', str(planned['host'])) else
@@ -2208,6 +2240,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                        row.get('connection_id') == first.get('connection_id') and
                        row.get('event') in ('case_send', 'case_request_sent',
                                             'case_tls_handshake_attempt', 'case_udp_sent')]
+            terminal = [row for row in case_events if first and
+                        row.get('event') == 'case_error' and
+                        row.get('connection_id') == first.get('connection_id')]
             case_flow: list[str] = []
             case_packets: list[dict[str, Any]] = []
             case_nic: list[dict[str, Any]] = []
@@ -2215,7 +2250,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             case_receipt: dict[str, Any] | None = None
             case_observation = None
             case_observation_error = None
-            case_ok = bool(first and source and target and close and payload)
+            dropped_attempt = bool(first and first.get('event') == 'case_connect_attempt')
+            case_ok = bool(first and source and target and close and
+                           (payload if not dropped_attempt else terminal))
             if case_ok and first and source and target:
                 case_protocol = 'UDP' if planned['protocol'] == 'udp' else 'TCP'
                 case_flow = [line for line in run_log.splitlines() if 'PROCESS_FLOW ' in line and
@@ -2229,7 +2266,10 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                         not_after_local=stop_boundary)
                 except (OSError, ValueError, SuiteError):
                     case_ok = False
-                if capture.get('observation_contract') == 'con008':
+                if capture.get('observation_contract') == 'con008' and not dropped_attempt:
+                    # A silently dropped attempt has no completed TCP connect
+                    # by construction; the pktmon send records plus the drop
+                    # policy line are its whole evidence.
                     try:
                         terminals=[row for row in case_events if row.get('connection_id')==first.get('connection_id') and row.get('event') in ('case_error','case_eof','case_close')]
                         case_observation=self._application_observation(run,first,terminals,nonce,':'.join(source),':'.join(target),case_protocol)

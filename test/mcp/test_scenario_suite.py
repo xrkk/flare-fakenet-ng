@@ -309,7 +309,7 @@ def test_b2_traffic_oracle_requires_each_released_case_flow_and_fnpr_receipt():
                'DIVERT_FAKE original_ip=10.20.30.41 original_port=1337\n')
         (root / 'run.log').write_text(log, encoding='utf-8')
 
-        def packets(capture, src, dst, protocol, not_after_local=None):
+        def packets(capture, src, dst, protocol, not_after_local=None, not_before_local=None):
             nic = [{'component': 9}] if dst in ('60.28.220.199:443', '192.168.204.1:443') else []
             return ([{'src': src, 'dst': dst, 'protocol': protocol}], nic, {'component_ids': [9]})
 
@@ -376,7 +376,7 @@ def test_positive_curl_branch_binds_its_pid_flow_and_outer_nic_tuple():
                'ALLOW_INTERNAL_UPSTREAM ip=60.28.220.199 kind=tls_relay port=443 sport=38900\n')
         (root / 'run.log').write_text(log, encoding='utf-8')
 
-        def packets(capture, src, dst, protocol, not_after_local=None):
+        def packets(capture, src, dst, protocol, not_after_local=None, not_before_local=None):
             nic = ([{'component': 9}] if src.endswith(':38900') or src.endswith(':5000') or
                    src.endswith(':5001') else [])
             return ([{'src': src, 'dst': dst, 'protocol': protocol}], nic, {'component_ids': [9]})
