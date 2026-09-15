@@ -380,6 +380,17 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
             if ($lateParts.Count -eq 6) {
                 $local = $lateParts[1]; $remote = $lateParts[2]
                 Write-NativeJsonLine $Path @{ event = 'established'; nonce = $Token; connection_id = "$Token-b3"; pid = $process.Id; worker = 1; seq = 1; src = $local; dst = "$($endpoint.host):$($endpoint.port)"; actual_dst = $remote; child_pid = $process.Id } ([Int64]$lateParts[3]) ([Int64]$lateParts[4]) ([Int64]$lateParts[5])
+            } else {
+                # Diagnostic companion: SEND records prove a live connection,
+                # so a missing ESTABLISHED record with SENDs present means
+                # the line exists but does not match the pattern -- capture
+                # the raw first bytes for offline root-causing.
+                $sendCount0 = @((Get-Content $stdout) | Where-Object { $_ -like 'SEND|*' }).Count
+                if ($sendCount0 -gt 0) {
+                    $firstRaw = @((Get-Content $stdout) | Select-Object -First 1)
+                    $firstText = if ($firstRaw.Count) { $firstRaw[0].Substring(0, [Math]::Min(60, $firstRaw[0].Length)) } else { '' }
+                    Write-JsonLine $Path @{ event = 'b3_established_parse_anomaly'; nonce = $Token; sends = $sendCount0; first_line = $firstText }
+                }
             }
         }
         $closeLine = if (Test-Path $stdout) { @(Get-Content $stdout | Where-Object { $_ -like 'CLOSE|*' } | Select-Object -First 1) } else { @() }

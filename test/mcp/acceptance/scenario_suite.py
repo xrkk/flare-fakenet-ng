@@ -1431,6 +1431,8 @@ class Suite:
             "$conversion=@{exit_code=$conversionExit;argv=@('pktmon','etl2txt'," + quote_ps(capture['etl']) + ",'--out'," + quote_ps(str(capture['etl']).replace('.etl', '.txt')) + ");etl_sha256=(Get-FileHash -LiteralPath " + quote_ps(capture['etl']) + " -Algorithm SHA256).Hash.ToLower();text_sha256=(Get-FileHash -LiteralPath " + quote_ps(str(capture['etl']).replace('.etl', '.txt')) + " -Algorithm SHA256).Hash.ToLower()};$nic|Add-Member -NotePropertyName conversion -NotePropertyValue $conversion -Force;$nic|ConvertTo-Json -Depth 8|Set-Content -LiteralPath " + quote_ps(capture['pktmon_nic']) + " -Encoding UTF8;"
             "$files=@(" + quote_ps(capture['probe']) + ',' + quote_ps(capture['etl']) + ',' +
             quote_ps(str(capture['etl']).replace('.etl', '.txt')) + ',' + quote_ps(capture['pktmon_nic']) + ',' + quote_ps(capture['stdout']) + ',' + quote_ps(capture['stderr']) + ");"
+            "$clientOut=" + quote_ps(str(PureWindowsPath(capture['probe']).parent / 'probe-client.stdout')) + ";"
+            "if(Test-Path $clientOut){$files=@($files+$clientOut)};"
             "@{files=@($files|ForEach-Object {$i=Get-Item $_ -ErrorAction Stop;@{path=$i.FullName;bytes=$i.Length;sha256=(Get-FileHash $i.FullName -Algorithm SHA256).Hash.ToLower()}})}|ConvertTo-Json -Depth 4 -Compress")
         primary_error = None
         try:
