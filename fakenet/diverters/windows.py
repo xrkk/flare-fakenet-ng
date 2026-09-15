@@ -1633,7 +1633,10 @@ class Diverter(DiverterBase, WinUtilMixin):
                         src=pkt.src_ip0, sport=pkt.sport0,
                         pid=(pid if pid is not None else 'unknown'),
                         process=(str(comm).replace(' ', '_') if comm else 'unknown'))
-                    self._timed_write_pcap(pkt)
+                    # The handler-entry capture already wrote this packet;
+                    # the bypass passes it through unmodified, and writing it
+                    # again would record a duplicate initial observation for
+                    # one logical packet (discovery100-51 sst-038).
                     self._send_packet(pkt)
                     return
                 cb3, cb4 = self._callbacks()

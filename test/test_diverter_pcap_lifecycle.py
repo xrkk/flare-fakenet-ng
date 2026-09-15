@@ -85,6 +85,36 @@ class DiverterPcapLifecycleTests(unittest.TestCase):
         diverter.generate_html_report = lambda: diverter.events.append('html-report')
         return diverter
 
+    def test_identical_unmangled_rewrite_is_idempotent(self):
+        # discovery100-51 sst-038: a packet that reaches a second capture
+        # hook unmodified (ESTABLISHED_BYPASS passthrough) must not produce
+        # a duplicate initial observation for one logical packet.
+        diverter = self._diverter()
+        written = []
+
+        class CountingCapture(object):
+            last_record_ordinal = None
+            last_timestamp = None
+
+            def write_ip_packet(self, raw):
+                written.append(raw)
+                self.last_record_ordinal = len(written)
+                self.last_timestamp = 1.0
+                return True
+
+        diverter.dual_pcap = CountingCapture()
+        packet = Packet()
+        self.assertTrue(diverter._write_pcap_locked(packet))
+        self.assertTrue(diverter._write_pcap_locked(packet))
+        self.assertEqual(1, len(written))
+        self.assertEqual(1, len(diverter._capture_observation_index))
+        # A mangled rewrite of the same packet is still a distinct final
+        # observation and must be written.
+        packet.mangled = True
+        packet.octets = b'\x45\x00\x01'
+        self.assertTrue(diverter._write_pcap_locked(packet))
+        self.assertEqual(2, len(written))
+
     def test_capture_failure_is_recorded_once_and_signals_stopping(self):
         diverter = self._diverter()
         failure = PcapWriteError('injected')

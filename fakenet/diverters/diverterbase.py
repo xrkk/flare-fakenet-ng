@@ -1,5 +1,6 @@
 # Copyright 2026 Google LLC
 
+import hashlib
 import os
 import abc
 import sys
@@ -1471,6 +1472,18 @@ class DiverterBase(fnconfig.Config):
                 self._capture_observation_index.new_logical_packet_id())
             pkt._capture_logical_packet_id = logical_packet_id
         observation_role = ('final' if pkt.mangled else 'initial')
+        previous_entry = getattr(pkt, '_capture_observation', None)
+        if (previous_entry is not None and
+                previous_entry.get('observation_role') == observation_role and
+                previous_entry.get('length') == len(raw_bytes) and
+                previous_entry.get('sha256') ==
+                hashlib.sha256(raw_bytes).hexdigest()):
+            # Identical re-observation of the same packet object at a second
+            # capture hook without any rewrite: writing it again would give
+            # one logical packet two same-role observations and fail
+            # payload-report verification at stop (discovery100-51 sst-038:
+            # "logical packet ... has duplicate initial observations").
+            return True
         direction = getattr(pkt, '_capture_direction', 'unknown')
         timestamp = time.time()
         flow_id = self._capture_flow_registry.observe_packet(

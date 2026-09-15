@@ -194,7 +194,10 @@ def fields(line):
 
 def flow_matches(row, pid, src, dst):
     a, b = endpoint(src), endpoint(dst)
-    return all(row.get(k) == v for k, v in dict(pid=str(pid), proto='TCP', src=a[0], sport=a[1], dst=b[0], dport=b[1]).items())
+    wanted = dict(proto='TCP', src=a[0], sport=a[1], dst=b[0], dport=b[1])
+    if pid is not None:
+        wanted['pid'] = str(pid)
+    return all(row.get(k) == v for k, v in wanted.items())
 
 
 def policy_scope(line, window):
@@ -218,6 +221,22 @@ def policy_scope(line, window):
     if start > window[1]:
         return 'inside' if start - window[1] <= tolerance else 'outside'
     return 'inside'
+
+
+def self_peer_policy(log, path, managed_pid, local, src, policy_window):
+    """Peer reverse-flow policy, tolerating pid=unknown attribution.
+
+    The diverter's reverse-flow audit can miss the loopback owner for
+    reinjected listener replies (``pid=unknown``); the exact
+    listener->client tuple is unique to this peer connection, and the
+    TCPIP accept event already carries the authoritative managed pid
+    (discovery100-51 sst-038).
+    """
+    strict = policy_partition(log, path, managed_pid, local, src, policy_window)
+    if any(row['fields'].get('disposition') == 'REINJECT_LOCAL'
+           for row in strict['inside']):
+        return strict
+    return policy_partition(log, path, None, local, src, policy_window)
 
 
 def policy_partition(log, path, pid, src, dst, window=None):
@@ -266,13 +285,15 @@ def connection_events(raw, path, log, pid, src, dst, managed_pid, policy_window=
                 continue
             event = parse_line(text, ref)
             if event['remote'] == src and event['pid'] == managed_pid:
-                observed_policy = policy_partition(log, log_path, managed_pid, event['local'], src, policy_window)
+                observed_policy = self_peer_policy(
+                    log, log_path, managed_pid, event['local'], src, policy_window)
                 if any(row['fields'].get('disposition') == 'REINJECT_LOCAL' for row in observed_policy['inside']):
                     peers.append(event)
         if len(peers) != 1:
             raise ValueError('unique native relay accept/reverse PROCESS_FLOW missing')
         peer = peers[0]
-        peer_policy = policy_partition(log, log_path, managed_pid, peer['local'], src, policy_window)
+        peer_policy = self_peer_policy(
+            log, log_path, managed_pid, peer['local'], src, policy_window)
         # The peer connection's terminal phase after the relay closes
         # (BrokenPipe) transitions from REINJECT_LOCAL to ESTABLISHED_BYPASS
         # — both are lifecycle stages of the SAME peer, not conflicting
