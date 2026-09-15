@@ -42,6 +42,9 @@ class ChunkSocket(object):
     def settimeout(self, value):
         self.timeouts.append(value)
 
+    def shutdown(self, how):
+        self.events.append(('shutdown', self.name))
+
     def setblocking(self, value):
         return None
 
@@ -202,6 +205,33 @@ class DomainEgressRelayTests(unittest.TestCase):
         callbacks.logEgressEvent.assert_not_called()
         callbacks.closeRelayMapping.assert_called_once_with(9)
         self.assertTrue(client.closed)
+
+    def test_deny_closes_client_socket_before_revoking_mapping(self):
+        # The client FIN must be emitted while the diverter rewrite is still
+        # in place; revoking the mapping first strands the peer TCB until
+        # its read timeout (discovery100-45 sst-096).
+        events = []
+        client = ChunkSocket(
+            chunks=[client_hello('example.com')], events=events, name='client')
+        mapping = types.SimpleNamespace(
+            generation=11, domain='api.deepseek.com',
+            server_ip='93.184.216.34', server_port=443)
+        callbacks = mock.Mock()
+        callbacks.closeRelayMapping.side_effect = lambda generation: (
+            events.append(('close_mapping', generation)))
+        self.relay.callbacks = callbacks
+        self.relay._promote_active = mock.Mock(return_value=True)
+        self.relay._release_active = mock.Mock()
+
+        self.relay._handle_client(client, ('10.0.0.5', 50003), mapping)
+
+        names = [entry[0] for entry in events]
+        self.assertIn(('shutdown', 'client'), events)
+        self.assertIn(('close', 'client'), events)
+        self.assertLess(names.index('close'), names.index('close_mapping'))
+        callbacks.logEgressEvent.assert_called_once()
+        reason = callbacks.logEgressEvent.call_args[1]
+        self.assertEqual(reason.get('reason'), 'ClientHelloError')
 
 
 if __name__ == '__main__':

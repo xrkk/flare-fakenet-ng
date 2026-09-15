@@ -353,15 +353,25 @@ class DomainEgressRelay(object):
                 self._release_active(source)
             if token:
                 self.callbacks.revokeControlFlow(token)
-            self.callbacks.closeRelayMapping(mapping.generation)
+            # Close both sockets before revoking the diverter mapping: the
+            # client's FIN/RST must be emitted while the packet rewrite is
+            # still in place, and close_relay_mapping() additionally retains
+            # the rewrite for a short teardown grace so the client's final
+            # ACK exchange stays translated. Revoking first leaves the peer
+            # TCB half-open until its read timeout.
             for connection in (client, upstream):
                 if connection:
                     with self._connections_lock:
                         self._connections.discard(connection)
                     try:
+                        connection.shutdown(socket.SHUT_RDWR)
+                    except (OSError, AttributeError):
+                        pass
+                    try:
                         connection.close()
                     except OSError:
                         pass
+            self.callbacks.closeRelayMapping(mapping.generation)
             with self._workers_lock:
                 self._workers.discard(threading.current_thread())
 

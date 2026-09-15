@@ -126,7 +126,10 @@ class EvidenceOracleTests(unittest.TestCase):
             files.append(dict(path=name, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
             return dict(path=name, byte_start=0, byte_end=len(raw), event_key='text' if isinstance(obj, str) else 'json:')
         receipt = put('fault-triggered.json', dict(fault=fault, nonce='nonce'))
-        start = put('ipc.json', dict(event='response', time=1789212555.055, frame=dict(run_id='run', seq=1, result=detail)))
+        request = json.dumps(dict(event='request', frame=dict(run_id='run', seq=1, kind='start'))) + '\n'
+        response = json.dumps(dict(event='response', time=1789212555.055, frame=dict(run_id='run', seq=1, result=detail)))
+        start = put('ipc.json', request + response)
+        start.update(byte_start=len(request.encode()), event_key='json:')
         put('run.log', '2026-09-12 19:29:15,000 INFO managed normal\n')
         return root, dict(schema='sst.fault-evidence.case.v1', synthetic=True, case_id='synthetic',
                           candidate_id=sst.CANDIDATE, run_id='run', fault=fault, nonce='nonce',
@@ -165,10 +168,12 @@ class EvidenceOracleTests(unittest.TestCase):
         self.assertTrue(observe()['trigger_success'])
         self.assertTrue(observe()['start_attribution'])
         # A main receiver exit stops the policy relay before the start reply.
-        ipc = json.loads((root/'ipc.json').read_text())
+        ipc = json.loads((root/'ipc.json').read_text().splitlines()[-1])
         ipc['frame']['result']['listeners'] = [dict(name='RawTCPListener', alive=True),
             dict(name='DomainEgressRelay', provider='DomainEgressRelay', alive=False, handles=[-1])]
         def update_file(name, raw):
+            if name == 'ipc.json':
+                raw = (root/name).read_bytes().splitlines(keepends=True)[0] + raw
             (root/name).write_bytes(raw)
             case['files'] = [f for f in case['files'] if f['path'] != name]
             case['files'].append(dict(path=name, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
@@ -269,3 +274,21 @@ class EvidenceOracleTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_localized_native_recovery_keeps_data_and_multiplicity():
+    before = dict(routes='Interface List\nIPv4 Route Table\nActive Routes:\nNetwork Destination Netmask Gateway Interface Metric\n127.0.0.0 255.0.0.0 On-link 127.0.0.1 331',
+                  listen_ports='Active Connections\nProto Local Address Foreign Address State PID\nUDP 0.0.0.0:123 *:* 10',
+                  dns_servers='[]',windivert_processes='[]',services='[]')
+    after = dict(before, routes='接口列表\nIPv4 路由表\n活动路由:\n网络目标 网络掩码 网关 接口 跃点数\n127.0.0.0 255.0.0.0 在链路上 127.0.0.1 331',
+                 listen_ports='活动连接\n协议 本地地址 外部地址 状态 PID\nUDP 0.0.0.0:123 *:* 20')
+    import importlib.util
+    spec=importlib.util.spec_from_file_location('locale_judge',Path(__file__).parent/'acceptance/sst_fault_evidence.py')
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    assert module.native_section_compare(before,after)=={}
+    for section,changed in [('listen_ports',after['listen_ports']+'\nUDP 0.0.0.0:123 *:* 21'),
+                            ('listen_ports',after['listen_ports']+'\nTCP 0.0.0.0:4444 0.0.0.0:0 LISTENING 30'),
+                            ('routes',after['routes'].replace('331','332')),
+                            ('routes',after['routes'].replace('在链路上','192.168.204.2')),
+                            ('routes',after['routes']+'\n未知状态')]:
+        assert section in module.native_section_compare(before,dict(after,**{section:changed}))

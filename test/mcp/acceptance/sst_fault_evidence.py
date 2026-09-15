@@ -12,6 +12,9 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import scenario_tcpip as tcpip
 
 FAULTS = ('listener_stop', 'diverter_stop', 'child_hang', 'policy_pause', 'cleanup_error')
 CANDIDATE = 'mcp-c6090f816-93d4b3cf2252'
@@ -27,6 +30,45 @@ REQUIRED = {'case_id', 'candidate_id', 'run_id', 'fault', 'nonce', 'clock',
 
 class EvidenceError(ValueError):
     pass
+
+
+def native_section_compare(before, after):
+    """Compare unchanged native data across the two observed console languages."""
+    from fakenet.mcp.baseline import audit_compare
+    def presentation(sections):
+        if not isinstance(sections, dict):
+            return sections
+        result = dict(sections)
+        titles = {'接口列表': 'Interface List', 'IPv4 路由表': 'IPv4 Route Table',
+                  '活动路由:': 'Active Routes:', '永久路由:': 'Persistent Routes:',
+                  '网络目标 网络掩码 网关 接口 跃点数': 'Network Destination Netmask Gateway Interface Metric',
+                  '网络地址 网络掩码 网关地址 跃点数': 'Network Address Netmask Gateway Address Metric'}
+        for key in ('routes', 'listen_ports'):
+            if not isinstance(result.get(key), str):
+                continue
+            lines = []
+            for line in result[key].splitlines():
+                words = line.split()
+                compact = ' '.join(words)
+                if key == 'routes':
+                    compact = titles.get(compact, compact)
+                    if len(words) == 5 and words[2] == '在链路上' and words[4].isdigit():
+                        import ipaddress
+                        try:
+                            for index in (0, 1, 3): ipaddress.IPv4Address(words[index])
+                        except ValueError:
+                            pass
+                        else:
+                            words[2] = 'On-link'
+                            compact = ' '.join(words)
+                elif compact == '活动连接':
+                    compact = 'Active Connections'
+                elif compact == '协议 本地地址 外部地址 状态 PID':
+                    compact = 'Proto Local Address Foreign Address State PID'
+                lines.append(compact)
+            result[key] = '\n'.join(lines)
+        return result
+    return audit_compare(presentation(before), presentation(after))
 
 
 def packet_matches_session(packet, src, dst):
@@ -197,7 +239,7 @@ def contains_session(begin_upper, trigger_lower, trigger_upper, end_lower):
 
 
 def assess(case, root, expected_candidate=CANDIDATE):
-    if case.get('schema') != 'sst.fault-evidence.case.v1' or not REQUIRED <= case.keys():
+    if case.get('schema') not in ('sst.fault-evidence.case.v1', 'sst.fault-evidence.case.v2') or not REQUIRED <= case.keys():
         raise EvidenceError('invalid/missing case schema fields')
     if case['fault'] not in FAULTS:
         raise EvidenceError('unknown fault')
@@ -254,10 +296,22 @@ def assess(case, root, expected_candidate=CANDIDATE):
                              'receipt proves only consumption identity'), [case['receipt_ref']])
 
     def start_frame():
-        original = read(case['start_response_ref'])
-        if (original.get('frame', {}).get('run_id') != run or original.get('event') != 'response'
-                or original['frame'].get('seq') != 1):
-            raise EvidenceError('start IPC response does not identify this run')
+        reference = case['start_response_ref']
+        raw = evidence.data[reference['path']]
+        offset = 0
+        rows, refs = [], []
+        for line in raw.splitlines(keepends=True):
+            rows.append(json.loads(line))
+            refs.append(dict(path=reference['path'], byte_start=offset,
+                             byte_end=offset + len(line), event_key='json:'))
+            offset += len(line)
+        _, index = tcpip.pair_ipc(rows, run, 'start')
+        if reference != refs[index]:
+            raise EvidenceError('start reference is not paired same-run start response')
+        if any(r.get('event') == 'request' and r.get('frame', {}).get('kind') == 'ready'
+               and r['frame'].get('run_id') == run for r in rows):
+            tcpip.managed_identity(rows, run)
+        original = rows[index]
         return original['frame']
 
     def start_trajectory():
@@ -418,24 +472,75 @@ def assess(case, root, expected_candidate=CANDIDATE):
         # PROCESS_FLOW is extracted from the actual run log, not a caller flag.
         if not isinstance(managed, str) or 'PROCESS_FLOW ' not in managed:
             raise EvidenceError('missing native PROCESS_FLOW mapping')
-        address, port = established['src'].rsplit(':', 1)
-        if not all(token in managed for token in (f'pid={session["probe_pid"]} ', f'sport={port} ', f'src={address}')):
-            raise EvidenceError('managed flow is not this VM outbound probe')
+        if not tcpip.flow_matches(tcpip.fields(managed), session['probe_pid'],
+                                   established['src'], connection_destination(established)):
+            raise EvidenceError('managed flow does not match exact outbound tuple/PID/protocol')
+        full_log = evidence.data[session['managed_ref']['path']].decode('utf-8-sig')
+        matching_flows = [line for line in full_log.splitlines() if 'PROCESS_FLOW ' in line and
+                          tcpip.flow_matches(tcpip.fields(line), session['probe_pid'],
+                                             established['src'], connection_destination(established))]
+        if not matching_flows or bounds(managed)[1] != max(bounds(line)[1] for line in matching_flows):
+            raise EvidenceError('managed flow reference does not conservatively bound full matching set')
         if connection_destination(established) != session['dst'] or established['src'] != session['src']:
             raise EvidenceError('connection tuple mismatch')
-        if not session['packet_refs']:
-            raise EvidenceError('independent packet capture is missing')
-        packet_ends = []
-        for ref in session['packet_refs']:
-            packet = read(ref)
-            if not packet_matches_session(packet, session['src'], session['dst']):
-                raise EvidenceError('packet tuple cannot be linked')
-            if re.search(r'Flags \[[^\]]*[FR]', packet):
-                packet_ends.append(bounds(packet)[0])
-        if not packet_ends:
-            raise EvidenceError('independent capture has no connection termination')
+        if case['schema'] == 'sst.fault-evidence.case.v2' and session.get('observation_kind') not in ('packet', 'tcpip_etw'):
+            raise EvidenceError('v2 requires explicit connection observation kind')
+        kind = session.get('observation_kind', 'packet')
+        if case['schema'] == 'sst.fault-evidence.case.v1' and kind != 'packet':
+            raise EvidenceError('v1 cannot contain ETW observations')
         begin = max(bounds(established)[1], bounds(managed)[1])
-        finish = min([bounds(end)[0]] + packet_ends)
+        if kind == 'tcpip_etw':
+            if session.get('packet_refs') or not session.get('connection_event_refs'):
+                raise EvidenceError('mixed/empty ETW observation type')
+            capture = session['connection_capture']
+            text_raw = evidence.data[capture['text_path']]
+            trace_lo, trace_hi = tcpip.validate_capture(text_raw, evidence.data[capture['etl_path']],
+                                                       read(capture['metadata_ref']), case['clock']['resolution_ns'])
+            rows = [json.loads(l) for l in evidence.data[case['start_response_ref']['path']].splitlines()]
+            managed_pid, managed_created = tcpip.managed_identity(rows, run)
+            log_path = session['managed_ref']['path']
+            observed = tcpip.connection_events(text_raw, capture['text_path'],
+                evidence.data[log_path].decode('utf-8-sig'), session['probe_pid'],
+                session['src'], session['dst'], managed_pid)
+            if observed['tuple_terminals']:
+                tcpip.validate_tuple_probe(probe_events, established, session['src'], session['dst'])
+            if session.get('tuple_terminal_refs', []) != [e['ref'] for e in observed['tuple_terminals']]:
+                raise EvidenceError('incomplete/reordered unattributed tuple terminal reference set')
+            expected = [e['ref'] for e in observed['events']]
+            if session.get('generation_manifest') != observed['generation_manifest']:
+                raise EvidenceError('incomplete/changed TCPIP generation manifest')
+            if session['connection_event_refs'] != expected:
+                raise EvidenceError('incomplete/reordered TCPIP lifecycle reference set')
+            for event in observed['events'] + observed['tuple_terminals']:
+                lo_e, hi_e = time_bounds(event['text'])
+                if not trace_lo <= lo_e <= hi_e <= trace_hi + 99:
+                    raise EvidenceError('TCPIP event outside trace header')
+            connect = observed['connect']['text']
+            if time_bounds(connect)[0] < (session['probe_creation'] - 621355968000000000) * 100:
+                raise EvidenceError('TCPIP connect precedes native probe creation')
+            if observed['peer'] and time_bounds(observed['peer']['text'])[0] < (managed_created - 116444736000000000) * 100:
+                raise EvidenceError('TCPIP accept precedes managed creation')
+            begin = max(begin, bounds(connect)[1])
+            finish = min([bounds(end)[0]] + [bounds(e['text'])[0] for e in observed['termination'] + observed['tuple_terminals']])
+            if not trace_lo <= bounds(lower)[0] <= bounds(upper)[1] <= trace_hi:
+                raise EvidenceError('action outside complete trace window')
+        elif kind == 'packet':
+            if session.get('connection_event_refs') or session.get('connection_capture') or session.get('tuple_terminal_refs'):
+                raise EvidenceError('mixed packet/ETW observation type')
+            if not session['packet_refs']:
+                raise EvidenceError('independent packet capture is missing')
+            packet_ends = []
+            for ref in session['packet_refs']:
+                packet = read(ref)
+                if not packet_matches_session(packet, session['src'], session['dst']):
+                    raise EvidenceError('packet tuple cannot be linked')
+                if re.search(r'Flags \[[^\]]*[FR]', packet):
+                    packet_ends.append(bounds(packet)[0])
+            if not packet_ends:
+                raise EvidenceError('independent capture has no connection termination')
+            finish = min([bounds(end)[0]] + packet_ends)
+        else:
+            raise EvidenceError('unknown connection observation kind')
         lo, hi = bounds(lower)[0], bounds(upper)[1]
         result['intervals_ns'] = {'session_begin_upper': begin, 'trigger_lower': lo,
                                   'trigger_upper': hi, 'session_end_lower': finish}
@@ -469,8 +574,7 @@ def assess(case, root, expected_candidate=CANDIDATE):
         # Reuse the product's comparison semantics, not an acceptance-only exemption.
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-        from fakenet.mcp.baseline import audit_compare
-        difference = audit_compare(snapshots[0], snapshots[1])
+        difference = native_section_compare(snapshots[0], snapshots[1])
         stops = [read(ref) for ref in case['stop_refs']]
         terminal = any(isinstance(x, dict) and x.get('state') == 'stopped'
                        and x.get('last_run_outcome') == 'failed'

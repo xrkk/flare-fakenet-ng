@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 
@@ -93,7 +94,7 @@ def test_result_integrity_rechecks_bound_evidence_bytes():
         sections = {key: '' for key in ('dns_servers', 'routes', 'listen_ports', 'windivert_processes', 'services')}
         result = {
             'schema': suite.SCENARIO_SCHEMA, 'scenario_id': 'sst-001', 'state': 'pass',
-            'scenario': {'fault_class': None}, 'interface_calls': calls,
+            'scenario': {'fault_class': None, 'config_profile': suite.profile_for_bucket('default', 0)}, 'interface_calls': calls,
             'traffic_evidence': {'capture_views': [{
                 'path': 'evidence.json', 'size': evidence.stat().st_size,
                 'sha256': hashlib.sha256(evidence.read_bytes()).hexdigest(),
@@ -194,6 +195,62 @@ def test_pktmon_nic_binding_uses_current_component_catalogue_and_rejects_loss():
         'pktmon exported trace reports lost ETW events/buffers']
 
 
+def test_pktmon_window_ends_at_diverter_stop_boundary(tmp_path):
+    run_log = (
+        '2026-09-15 08:36:24,045 INFO FakeNet STOP_PHASE_BEGIN phase=complete\n'
+        '2026-09-15 08:36:24,045 INFO FakeNet STOP_PHASE_BEGIN phase=policy_suspend\n'
+        '2026-09-15 08:36:26,624 INFO FakeNet STOP_PHASE_BEGIN phase=diverter\n'
+        '2026-09-15 08:36:26,726 INFO FakeNet STOP_PHASE_END phase=diverter elapsed_ms=108 healthy=True\n')
+    assert suite.Suite._diverter_stop_boundary(run_log) == '2026-09-15 08:36:26.624'
+    # A wedged stop (injected policy_pause) never reaches the diverter phase
+    # and keeps whole-capture accounting.
+    assert suite.Suite._diverter_stop_boundary(
+        '2026-09-15 08:36:24,045 INFO FakeNet STOP_PHASE_BEGIN phase=complete\n') is None
+    assert suite.Suite._diverter_stop_boundary('') is None
+
+    header = ('[00]2070.1620::%s [Microsoft-Windows-PktMon] PktGroupId 42351，'
+              'PktNumber 1，出现 8，方向 Tx ，类型 以太网 ，组件 %d，边缘 1，筛选器 0，'
+              'OriginalSize 97，LoggedSize 97 \n'
+              '\t00-0C-29-C1-CA-49 > 00-50-56-E7-FE-AA, ethertype IPv4 (0x0800), '
+              'length 97: 192.168.204.233.57605 > 123.125.246.121.443: UDP, length 55\n')
+    text = ('MSNT_SystemTrace Header\r\nEventsLost: 0\r\nBuffersLost: 0\r\n' +
+            header % ('2026-09-15 08:36:10.0000000', 20) +
+            header % ('2026-09-15 08:36:26.6230000', 9) +
+            header % ('2026-09-15 08:36:26.6582542', 9) +
+            header % ('2026-09-15 08:37:11.6032347', 9))
+    (tmp_path / 'pktmon.txt').write_bytes(text.encode('utf-16'))
+    metadata = {
+        'schema': suite.NIC_CAPTURE_SCHEMA,
+        'pktmon_list': '网络适配器:\n 9 00-0C-29-C1-CA-49 Intel(R) 82574L Gigabit Network Connection\n',
+        'adapters': [{'ifIndex': 11, 'Name': 'Ethernet0',
+                      'InterfaceDescription': 'Intel(R) 82574L Gigabit Network Connection',
+                      'MacAddress': '00-0C-29-C1-CA-49', 'Status': 'Up'}],
+        'pktmon_status_after': '数据包监视器没有运行。',
+        'pktmon_counters_after': 'ETW Events Lost: 0\nPolicy Dropped: 8\n',
+    }
+    (tmp_path / 'pktmon-nic.json').write_text(json.dumps(metadata))
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.root = tmp_path
+    capture = {'pktmon_path': 'pktmon.txt', 'pktmon_nic_path': 'pktmon-nic.json'}
+    flow = ('192.168.204.233:57605', '123.125.246.121:443', 'UDP')
+    all_packets, nic_packets, binding = runner._pktmon_observations(capture, *flow)
+    assert len(all_packets) == 4
+    assert len(nic_packets) == 3
+    unbounded_nic_trace = [p['timestamp_local'] for p in nic_packets]
+    windowed_all, windowed_nic, _ = runner._pktmon_observations(
+        capture, *flow, not_after_local='2026-09-15 08:36:26.624')
+    # Post-stop stragglers stop being leak evidence once the product can no
+    # longer filter; pre-teardown observations (including the last instant
+    # before the boundary, and any NIC hit among them) stay counted.
+    assert [p['timestamp_local'] for p in windowed_all] == [
+        '2026-09-15 08:36:10.0000000', '2026-09-15 08:36:26.6230000']
+    assert [p['timestamp_local'] for p in windowed_nic] == [
+        '2026-09-15 08:36:26.6230000']
+    assert unbounded_nic_trace == [
+        '2026-09-15 08:36:26.6230000', '2026-09-15 08:36:26.6582542',
+        '2026-09-15 08:37:11.6032347']
+
+
 def test_process_flow_matching_uses_structured_fields_not_logger_order():
     line = ('PROCESS_FLOW disposition=DIVERT_FAKE domain=- dport=1337 dst=198.51.100.77 '
             'pid=1316 process=powershell.exe proto=TCP sport=65425 src=192.168.204.233')
@@ -252,7 +309,7 @@ def test_b2_traffic_oracle_requires_each_released_case_flow_and_fnpr_receipt():
                'DIVERT_FAKE original_ip=10.20.30.41 original_port=1337\n')
         (root / 'run.log').write_text(log, encoding='utf-8')
 
-        def packets(capture, src, dst, protocol):
+        def packets(capture, src, dst, protocol, not_after_local=None):
             nic = [{'component': 9}] if dst in ('60.28.220.199:443', '192.168.204.1:443') else []
             return ([{'src': src, 'dst': dst, 'protocol': protocol}], nic, {'component_ids': [9]})
 
@@ -319,7 +376,7 @@ def test_positive_curl_branch_binds_its_pid_flow_and_outer_nic_tuple():
                'ALLOW_INTERNAL_UPSTREAM ip=60.28.220.199 kind=tls_relay port=443 sport=38900\n')
         (root / 'run.log').write_text(log, encoding='utf-8')
 
-        def packets(capture, src, dst, protocol):
+        def packets(capture, src, dst, protocol, not_after_local=None):
             nic = ([{'component': 9}] if src.endswith(':38900') or src.endswith(':5000') or
                    src.endswith(':5001') else [])
             return ([{'src': src, 'dst': dst, 'protocol': protocol}], nic, {'component_ids': [9]})
@@ -602,3 +659,493 @@ def test_fault_packet_refs_require_the_full_directional_tuple():
             encoding='utf-8')
         refs = adapter._packet_refs(pktmon, root, '192.168.204.233:51234', '198.51.100.77:1337')
         assert len(refs) == 2
+
+
+def test_acceptance_profiles_preserve_conditional_product_pcap():
+    for bucket in ('B1', 'B2', 'B3', 'B4', 'default'):
+        profile = suite.profile_for_bucket(bucket, 0)
+        identity = dict(path=r'C:\probe.exe', sha256='a'*64, public_ipv4='192.168.204.1', private_ipv4='192.168.204.1')
+        rendered = suite.profile_content(profile, '192.168.204.1', identity, '119.188.175.46')
+        expected = 'Yes' if bucket in ('B3', 'default') else 'No'
+        assert re.findall(r'(?im)^DumpPackets\s*:\s*(\w+)', rendered) == [expected]
+        assert suite.runtime_pcap_required(profile) == (expected == 'Yes')
+
+
+@pytest.mark.parametrize('field', ['tuple_terminal_refs', 'policy_context_refs'])
+@pytest.mark.parametrize('slot', ['primary', 'case', 'curl'])
+@pytest.mark.parametrize('bad', ['omit', 'duplicate', 'reorder', 'generation'])
+def test_raw_recheck_rejects_stored_application_reference_tampering(slot, bad, field):
+    import copy
+    runner = suite.Suite.__new__(suite.Suite)
+    obs = {'tuple_terminal_refs': [{'byte_start': 1}, {'byte_start': 2}], 'generation_manifest': [], 'policy_context_refs': [{'byte_start': 3}, {'byte_start': 4}]}
+    verdict = {'passed': True, 'connection_observation': copy.deepcopy(obs),
+               'cases': [{'connection_observation': copy.deepcopy(obs)}],
+               'curl': {'connection_observation': copy.deepcopy(obs)}}
+    saved = copy.deepcopy(verdict)
+    target = (saved['connection_observation'] if slot == 'primary' else
+              saved['cases'][0]['connection_observation'] if slot == 'case' else saved['curl']['connection_observation'])
+    runner._traffic_oracle = lambda *args: verdict
+    result = {'traffic_evidence': {'nonce': 'n', 'runtime_profile': {}},
+              'run_chain': [{'start_response': {'state': 'healthy'},
+                             'capture': {'observation_contract': 'con008'}, 'traffic_oracle': saved}]}
+    assert runner._traffic_recheck_issues(result, {}) == []
+    if bad == 'omit': target[field].pop(0)
+    if bad == 'duplicate': target[field].append(target[field][0])
+    if bad == 'reorder': target[field].reverse()
+    if bad == 'generation': target['generation_manifest'].append(target[field][0])
+    assert runner._traffic_recheck_issues(result, {}) == ['stored application observations differ from full raw reconstruction']
+
+
+def test_restart_baseline_requires_verified_restoration_and_keeps_real_differences():
+    runner = suite.Suite.__new__(suite.Suite)
+    baseline = {'dns_servers': '192.168.204.2', 'routes': '', 'listen_ports': '',
+                'windivert_processes': '', 'services': ''}
+    first = {'run_id': 'previous-run', 'five_sections_before': baseline,
+             'five_sections_after': dict(baseline), 'recovery_audit': {'files': [{'path': 'audit.jsonl'}]}}
+    restored = runner._restart_baseline(first)
+    assert runner._section_difference(restored, baseline) == {}
+    active = dict(baseline, dns_servers='192.168.204.233')
+    assert 'dns_servers' in runner._section_difference(restored, active)
+    first['five_sections_after'] = active
+    with pytest.raises(suite.SuiteError, match='recovery difference'):
+        runner._restart_baseline(first)
+
+
+def test_ipc_evidence_mode_arms_only_environment_and_restores_exactly():
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.vm = object()
+    commands = []
+
+    def fake_vm_json(command, timeout):
+        commands.append(command)
+        armed = 'FAKENETNG_MCP_FAULT_INJECTION=1' in command and 'enabled=$true' in command
+        if armed:
+            value = {'enabled': True, 'backup': 'b', 'state': 'Running'}
+        else:
+            value = {'enabled': False, 'backup': 'b',
+                     'environment_restored': True, 'state': 'Running'}
+        return value, 'raw-' + str(len(commands))
+
+    runner._vm_json = fake_vm_json
+    runner._status = lambda timeout=30: {'state': 'stopped', 'run_id': None, 'controller': None}
+
+    enabled = runner._ipc_evidence_mode(True)
+    assert enabled['enabled'] is True
+    assert 'New-ItemProperty $key -Name Environment -PropertyType MultiString' in commands[-1]
+    assert 'FAKENETNG_MCP_FAULT_INJECTION=1' in commands[-1]
+    # Unlike fault mode, IPC evidence arming must not touch service.json or
+    # the stop grace: benign acceptance conditions stay byte-identical.
+    assert 'stop_grace_seconds' not in commands[-1]
+    assert 'fault-mode-original' not in commands[-1]
+    assert runner._ipc_evidence_mode(False)['enabled'] is False
+    restore = commands[-1]
+    assert 'Compare-Object @($saved.values) $current' in restore
+    assert 'stop_grace_seconds' not in restore
+
+
+def test_ipc_evidence_mode_rejects_drifted_service_or_failed_restoration():
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.vm = object()
+    idle = {'state': 'stopped', 'run_id': None, 'controller': None}
+
+    def fake_vm_json(command, timeout):
+        armed = 'FAKENETNG_MCP_FAULT_INJECTION=1' in command and 'enabled=$true' in command
+        return ({'enabled': True, 'backup': 'b', 'state': 'Running'} if armed else
+                {'enabled': False, 'backup': 'b', 'environment_restored': False,
+                 'state': 'Running'}), 'raw'
+    runner._vm_json = fake_vm_json
+    runner._status = lambda timeout=30: idle
+    with pytest.raises(suite.SuiteError, match='exact restoration failed'):
+        runner._ipc_evidence_mode(False)
+
+    def service_stuck(timeout=30):
+        return {'state': 'failed', 'run_id': None, 'controller': None}
+    runner._status = service_stuck
+    with pytest.raises(suite.SuiteError, match='endpoint unexpected state'):
+        runner._ipc_evidence_mode(True)
+
+
+def test_run_and_resume_arm_ipc_evidence_around_every_scenario(tmp_path, monkeypatch):
+    for command in ('run', 'resume'):
+        runner = suite.Suite.__new__(suite.Suite)
+        runner.root = tmp_path / (command + '-root')
+        runner.root.mkdir()
+        runner.args = type('Args', (), {'stop_on_first_failure': False})()
+        runner.manifest = lambda: {'scenarios': [
+            {'scenario_id': 'sst-a', 'fault_class': None},
+            {'scenario_id': 'sst-b', 'fault_class': None}]}
+        runner.require_clients = lambda: None
+        runner._require_preflight = lambda: None
+        runner._require_fault_spike = lambda: None
+        runner._continuation_gate = lambda: {'vm': {}}
+        runner._result_path = lambda sid: runner.root / ('result-' + sid + '.json')
+
+        def state_path(sid):
+            path = runner.root / ('state-' + sid + '.json')
+            if not path.exists():
+                suite.replace_json(path, {'phase': 'pending', 'attempt': 0})
+            return path
+        runner._state_path = state_path
+        order = []
+
+        def fake_run_one(scenario, attempt):
+            order.append(('scenario', scenario['scenario_id']))
+            if scenario['scenario_id'] == 'sst-a' and command == 'run':
+                raise suite.Blocked('continuation gate rejected the scene')
+            path = runner._result_path(scenario['scenario_id'])
+            suite.write_new_json(path, {'scenario_id': scenario['scenario_id'], 'state': 'pass'})
+            return {'scenario_id': scenario['scenario_id'], 'state': 'pass'}
+        runner._run_one = fake_run_one
+
+        def fake_mode(enabled):
+            order.append(('arm' if enabled else 'restore',))
+            return {'enabled': enabled, 'recorded': True}
+        monkeypatch.setattr(runner, '_ipc_evidence_mode', fake_mode)
+
+        if command == 'run':
+            with pytest.raises(suite.Blocked):
+                runner.run('benign')
+            enabled_name, disabled_name = ('ipc-evidence-benign-enabled.json',
+                                           'ipc-evidence-benign-disabled.json')
+        else:
+            runner.resume()
+            enabled_name, disabled_name = ('ipc-evidence-resume-enabled.json',
+                                           'ipc-evidence-resume-disabled.json')
+        assert order[0] == ('arm',)
+        assert order[-1] == ('restore',)
+        assert order.count(('restore',)) == 1
+        assert ('scenario', 'sst-a') in order
+        assert (runner.root / enabled_name).is_file()
+        assert (runner.root / disabled_name).is_file()
+
+
+def test_fnpr_sentinel_falls_back_to_container_on_privileged_port_denial(tmp_path, monkeypatch):
+    spawned = []
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            self.command = command
+            self.pid = 4242 + len(spawned)
+            self._alive = True
+            spawned.append(self)
+            log = Path(command[command.index('--log') + 1])
+            if command[0] != 'docker':
+                log.write_text(json.dumps({'event': 'start_failed', 'reason': 'PermissionError',
+                                           'bind': '192.168.204.1', 'port': 443}) + '\n')
+            else:
+                with log.open('a') as stream:
+                    stream.write(json.dumps({'event': 'ready', 'bind': '192.168.204.1',
+                                             'port': 443}) + '\n')
+
+        def poll(self):
+            return None if self._alive else 0
+
+        def terminate(self):
+            self._alive = False
+
+        def wait(self, timeout=None):
+            return 0
+
+    docker_calls = []
+
+    def fake_run(command, capture_output=True, text=True, **kwargs):
+        docker_calls.append(list(command))
+        if command[:2] == ['docker', 'inspect'] and len(command) > 2 and command[2] == '-f':
+            return subprocess.CompletedProcess(command, 0, stdout='running\n', stderr='')
+        if command[:2] == ['docker', 'inspect']:
+            return subprocess.CompletedProcess(command, 1, stdout='',
+                                               stderr='Error: No such object: ' + command[2])
+        return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+    monkeypatch.setattr(suite.subprocess, 'Popen', FakePopen)
+    monkeypatch.setattr(suite.subprocess, 'run', fake_run)
+
+    sentinel = suite.FnprSentinel(tmp_path)
+    assert sentinel.mode == 'container'
+    assert [p.command[0] for p in spawned] == [sys.executable, 'docker']
+    docker_command = spawned[1].command
+    assert '--network' in docker_command and 'host' in docker_command
+    assert '--rm' in docker_command and '-d' in docker_command
+    assert suite.FNPR_SENTINEL_IMAGE in docker_command
+    assert any('readonly' in part for part in docker_command if 'type=bind' in part)
+    stopped = sentinel.stop()
+    assert stopped['mode'] == 'container' and stopped['returncode'] == 0
+    assert stopped['container'] == sentinel.container
+    assert stopped['removal'] == 'confirmed'
+    assert any(cmd[:2] == ['docker', 'stop'] for cmd in docker_calls)
+
+
+def test_fnpr_sentinel_container_respawns_after_transient_death(tmp_path, monkeypatch):
+    spawned = []
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            self.command = command
+            self.pid = 5000 + len(spawned)
+            spawned.append(self)
+            log = Path(command[command.index('--log') + 1])
+            if command[0] != 'docker':
+                log.write_text(json.dumps({'event': 'start_failed', 'reason': 'PermissionError',
+                                           'bind': '192.168.204.1', 'port': 443}) + '\n')
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    inspect_results = ['exited\n', 'running\n']
+
+    def fake_run(command, capture_output=True, text=True, **kwargs):
+        if command[:2] == ['docker', 'inspect'] and len(command) > 2 and command[2] == '-f':
+            return subprocess.CompletedProcess(command, 0, stdout=inspect_results.pop(0), stderr='')
+        if command[:2] == ['docker', 'inspect']:
+            return subprocess.CompletedProcess(command, 1, stdout='',
+                                               stderr='Error: No such object: ' + command[2])
+        return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+    monkeypatch.setattr(suite.subprocess, 'Popen', FakePopen)
+    monkeypatch.setattr(suite.subprocess, 'run', fake_run)
+    monkeypatch.setattr(suite.time, 'sleep', lambda seconds: None)
+
+    # The second (respawned) container writes the ready row on construction;
+    # the first container is observed as exited once, then replaced.
+    original_init = FakePopen.__init__
+
+    def staged_init(self, command, **kwargs):
+        original_init(self, command, **kwargs)
+        if command[0] == 'docker' and len(spawned) == 3:
+            log = Path(command[command.index('--log') + 1])
+            with log.open('a') as stream:
+                stream.write(json.dumps({'event': 'ready', 'bind': '192.168.204.1',
+                                         'port': 443}) + '\n')
+    monkeypatch.setattr(FakePopen, '__init__', staged_init)
+
+    sentinel = suite.FnprSentinel(tmp_path)
+    assert sentinel.mode == 'container'
+    assert sum(1 for p in spawned if p.command[0] == 'docker') == 2
+
+
+def test_fnpr_sentinel_daemon_blip_is_not_container_death(tmp_path, monkeypatch):
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            self.pid = 99
+            self.command = command
+            log = Path(command[command.index('--log') + 1])
+            if command[0] != 'docker':
+                log.write_text(json.dumps({'event': 'start_failed', 'reason': 'PermissionError',
+                                           'bind': '192.168.204.1', 'port': 443}) + '\n')
+            else:
+                with log.open('a') as stream:
+                    stream.write(json.dumps({'event': 'ready', 'bind': '192.168.204.1',
+                                             'port': 443}) + '\n')
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_run(command, capture_output=True, text=True, **kwargs):
+        if command[:2] == ['docker', 'inspect'] and len(command) > 2 and command[2] == '-f':
+            # First liveness probe hits daemon contention, the second confirms.
+            if not hasattr(fake_run, 'blips'):
+                fake_run.blips = 0
+            fake_run.blips += 1
+            if fake_run.blips == 1:
+                return subprocess.CompletedProcess(command, 1, stdout='',
+                                                   stderr='Cannot connect to the Docker daemon')
+            return subprocess.CompletedProcess(command, 0, stdout='running\n', stderr='')
+        if command[:2] == ['docker', 'inspect']:
+            return subprocess.CompletedProcess(command, 1, stdout='',
+                                               stderr='Error: No such object: ' + command[2])
+        return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+    monkeypatch.setattr(suite.subprocess, 'Popen', FakePopen)
+    monkeypatch.setattr(suite.subprocess, 'run', fake_run)
+    sentinel = suite.FnprSentinel(tmp_path)
+    assert sentinel.mode == 'container'
+
+
+def test_fnpr_sentinel_keeps_local_mode_and_fails_closed_on_other_errors(tmp_path, monkeypatch):
+    class FakePopen:
+        returncode = 0
+
+        def __init__(self, command, **kwargs):
+            self.pid = 777
+            self.command = command
+            log = Path(command[command.index('--log') + 1])
+            log.write_text(json.dumps({'event': 'start_failed', 'reason': 'AddressInUse',
+                                       'bind': '192.168.204.1', 'port': 443}) + '\n')
+
+        def poll(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+    monkeypatch.setattr(suite.subprocess, 'Popen', FakePopen)
+    with pytest.raises(suite.SuiteError, match='did not become ready'):
+        suite.FnprSentinel(tmp_path)
+
+
+def test_listen_endpoint_set_parses_netstat_lines_including_ipv6():
+    sections = {'listen_ports':
+                'TCP 0.0.0.0:135 0.0.0.0:0 LISTENING\n'
+                'TCP [::]:135 [::]:0 LISTENING\n'
+                'UDP 192.168.204.233:55346 *:*\n'
+                'garbage line\n'}
+    parsed = suite.Suite._listen_endpoint_set(sections)
+    assert ('TCP', '0.0.0.0:135') in parsed
+    assert ('TCP', ':::135') in parsed
+    assert ('UDP', '192.168.204.233:55346') in parsed
+    assert len(parsed) == 3
+
+
+def test_section_difference_attribution_separates_residue_from_external():
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.vm = object()
+    before = {'listen_ports': 'TCP 0.0.0.0:135 0.0.0.0:0 LISTENING\n'}
+    after = {'listen_ports': ('TCP 0.0.0.0:135 0.0.0.0:0 LISTENING\n'
+                              'UDP 192.168.204.233:55346 *:*\n'
+                              'UDP 192.168.204.233:53601 *:*\n'
+                              'TCP 192.168.204.233:55999 0.0.0.0:0 LISTENING\n')}
+    table = [
+        {'proto': 'UDP', 'local': '192.168.204.233:55346', 'pid': 11,
+         'name': 'fakenetng-mcp-managed.exe', 'command': r'C:\x\fakenetng-mcp-managed.exe'},
+        {'proto': 'UDP', 'local': '192.168.204.233:53601', 'pid': 12,
+         'name': 'powershell.exe',
+         'command': r'powershell.exe -File C:\ProgramData\FakeNet-NG-MCP\logs\scenario-suite-20260912\scenario_probes.ps1'},
+        {'proto': 'TCP', 'local': '192.168.204.233:55998', 'pid': 13,
+         'name': 'svchost.exe', 'command': 'C:\\Windows\\svchost.exe -k netsvcs'},
+    ]
+    runner._listening_endpoint_owners = lambda: table
+
+    result = runner._attribute_section_difference(before, after)
+    # 55999 vanished (table lists 55998), 55346 is product residue, 53601 is
+    # probe residue; only vanished/external may be non-blocking.
+    assert [row['local'] for row in result['residue']] == ['192.168.204.233:53601',
+                                                           '192.168.204.233:55346']
+    assert [row['local'] for row in result['vanished']] == ['192.168.204.233:55999']
+    assert result['external'] == []
+
+    table_external = [{'proto': 'UDP', 'local': '192.168.204.233:53601', 'pid': 77,
+                       'name': 'msedge.exe', 'command': r'C:\Program Files\msedge.exe'}]
+    runner._listening_endpoint_owners = lambda: table_external
+    result = runner._attribute_section_difference(before, after)
+    assert result['residue'] == []
+    assert {row['local'] for row in result['external']} == {'192.168.204.233:53601'}
+    assert {row['local'] for row in result['vanished']} == {
+        '192.168.204.233:55346', '192.168.204.233:55999'}
+
+
+def test_section_difference_attribution_fails_closed_on_query_error():
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.vm = object()
+    before = {'listen_ports': ''}
+    after = {'listen_ports': 'UDP 192.168.204.233:55346 *:*\n'}
+
+    def failing_query():
+        raise suite.SuiteError('listening endpoint ownership query failed')
+    runner._listening_endpoint_owners = failing_query
+    result = runner._attribute_section_difference(before, after)
+    assert result['residue'] == [['UDP', '192.168.204.233:55346']]
+    assert 'attribution_error' in result
+
+
+def test_kernel_capture_stop_tolerates_absent_session():
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.vm = object()
+    captured = {}
+
+    def fake_vm_json(command, timeout):
+        captured['command'] = command
+        files = [{'path': r'C:\x\kernel-network.etl', 'bytes': 1, 'sha256': 'a' * 64}]
+        return {'files': files}, 'raw'
+    runner._vm_json = fake_vm_json
+    result = runner._stop_kernel_capture({
+        'metadata': r'C:\x\m.json', 'session_name': 'sst-kernel-session'})
+    assert result['files']
+    command = captured['command']
+    # An already-ended session (WMI GUID error from logman stop) must be
+    # detected by query instead of failing the whole capture cleanup.
+    assert 'logman query $m.session_name -ets' in command
+    assert command.index('logman query $m.session_name') < command.index('logman stop $m.session_name')
+    assert 'session_present_at_stop' in command
+
+
+def test_restart_baseline_uses_attribution_for_vanished_endpoints():
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.vm = object()
+    before = {'dns_servers': '192.168.204.2', 'routes': '', 'listen_ports': 'TCP 0.0.0.0:135 0.0.0.0:0 LISTENING\n',
+              'windivert_processes': '', 'services': ''}
+    after = dict(before, listen_ports=before['listen_ports'] +
+                 'TCP 192.168.204.233:17858 0.0.0.0:0 LISTENING\n')
+    first = {'run_id': 'r', 'five_sections_before': before, 'five_sections_after': after,
+             'recovery_audit': {'files': [{'path': 'a.jsonl'}]}}
+    runner._listening_endpoint_owners = lambda: []
+    vanished = runner._restart_baseline(first)
+    assert vanished == after
+    product_owned = [{'proto': 'TCP', 'local': '192.168.204.233:17858', 'pid': 9,
+                      'name': 'fakenetng-mcp-managed.exe', 'command': 'C:\\x\\managed.exe'}]
+    runner._listening_endpoint_owners = lambda: product_owned
+    with pytest.raises(suite.SuiteError, match='restart run-01 five-section recovery difference'):
+        runner._restart_baseline(first)
+
+
+def test_runtime_pcap_candidates_require_complete_hash(tmp_path):
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.vm = object()
+    fake = {'calls': []}
+
+    class FakeReceive:
+        def __call__(self, vm, chosen, destination):
+            fake['calls'].append(chosen)
+            return {'sha256': chosen['sha256'], 'path': str(destination)}
+
+    import types
+    transfer_mod = types.ModuleType('artifact_transfer')
+    transfer_mod.receive_artifact = FakeReceive()
+    import sys as _sys
+    _sys.modules['artifact_transfer'] = transfer_mod
+    artifacts = {'artifacts': [
+        {'path': r'C:\a\r1\x.pcapng', 'type': 'pcap', 'sha256': None, 'size': 10},
+        {'path': r'C:\a\r1\x.pcapng', 'type': 'pcap', 'sha256': 'b' * 64, 'size': 10},
+    ]}
+    result = runner._transfer_runtime_pcap(artifacts, 'r1', tmp_path / 'x.pcap')
+    assert result['sha256'] == 'b' * 64
+    assert fake['calls'][0]['sha256'] == 'b' * 64
+
+
+def test_vm_footprint_prune_removes_exported_benign_runs_only(tmp_path):
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.vm = object()
+    commands = []
+
+    def fake_vm_json(command, timeout):
+        commands.append(command)
+        return {'pruned_runs': [], 'guest_removed': False}, 'raw'
+    runner._vm_json = fake_vm_json
+    runner._status = lambda timeout=30: {'state': 'stopped', 'run_id': None, 'controller': None}
+    runs = [{'run_id': 'r-1', 'originals': {'files': []}},
+            {'run_id': 'r-2', 'originals': None}]
+    result = runner._prune_scenario_vm_footprint(runs, r'C:\g\sst-x', None)
+    assert result['raw'] == 'raw'
+    command = commands[0]
+    assert 'r-1' in command and 'r-2' not in command
+    assert r'C:\g\sst-x'.replace('\\', '\\\\') in command or 'sst-x' in command
+    # fault 场景保留 VM 侧 incident 证据，仅清探针目录
+    commands.clear()
+    runner._prune_scenario_vm_footprint(runs, r'C:\g\sst-x', 'listener_stop')
+    assert 'r-1' not in commands[0] and 'sst-x' in commands[0]
+    # 服务未释放 run（failed/恢复责任未清）时不动 artifacts，防止破坏恢复证据
+    commands.clear()
+    runner._status = lambda timeout=30: {'state': 'failed', 'run_id': 'r-1', 'controller': 'c'}
+    skipped = runner._prune_scenario_vm_footprint(runs, r'C:\g\sst-x', None)
+    assert skipped['service_released_runs'] is False
+    assert 'r-1' not in commands[0]

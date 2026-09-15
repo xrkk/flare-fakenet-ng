@@ -25,7 +25,7 @@ import importlib.util
 import ipaddress
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import subprocess
@@ -40,6 +40,13 @@ from typing import Any, Iterable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+# Stdlib-only FNPR sentinel container used only when this host cannot bind
+# privileged port 443 directly (non-root Linux runner).
+FNPR_SENTINEL_IMAGE = 'python:3.12-alpine'
+# Direct-file CLI execution starts sys.path at test/mcp/acceptance, not
+# the repository root. Baseline capture imports the shared product module.
+sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 DEFAULT_SUITE_ROOT = REPO_ROOT / 'Logs' / 'fakenetng-mcp' / 'scenario-suite-20260912'
 SCHEMA = 'fakenetng.mcp-scenario-suite.v1'
 SCENARIO_SCHEMA = 'fakenetng.mcp-scenario.v1'
@@ -55,7 +62,9 @@ TOOLS = ('get_status', 'get_events', 'list_configs', 'validate_config',
 BUCKET_COUNTS = {'B1': 25, 'B2': 20, 'B3': 20, 'B4': 20, 'default': 15}
 FAULT_BUCKETS = ('B1', 'B2', 'B3', 'B4')
 EXIT_PASS, EXIT_USAGE, EXIT_FAIL, EXIT_BLOCKED = 0, 2, 3, 4
-MAX_GUEST_TRANSFER = 64 * 1024 * 1024
+# 192 MiB bounds a single guest evidence transfer: a B3 pktmon text export
+# legitimately reaches ~70 MiB (discovery100-10 sst-038) from a 5 MiB ETL.
+MAX_GUEST_TRANSFER = 192 * 1024 * 1024
 GUEST_ROOT = r'C:\ProgramData\FakeNet-NG-MCP\logs'
 PKTMON_MODULE = Path(__file__).with_name('scenario_pktmon.py')
 NIC_CAPTURE_SCHEMA = 'fakenetng.mcp-scenario-pktmon-nic.v1'
@@ -468,7 +477,7 @@ def build_manifest(seed: int, count: int = 100) -> dict[str, Any]:
             'fault_class': fault,
             'interface_call_plan': plan_for(index, fault),
         })
-    manifest = {'schema': SCHEMA, 'seed': seed, 'count': count,
+    manifest = {'schema': SCHEMA, 'application_observation_contract': 'con008', 'seed': seed, 'count': count,
                 'created_by': 'scenario_suite.py', 'scenarios': scenarios}
     problems = manifest_issues(manifest)
     if problems:
@@ -481,6 +490,8 @@ def manifest_issues(manifest: dict[str, Any]) -> list[str]:
     scenarios = manifest.get('scenarios')
     if manifest.get('schema') != SCHEMA or not isinstance(scenarios, list):
         return ['invalid manifest schema']
+    if manifest.get('application_observation_contract') != 'con008':
+        failures.append('manifest lacks current application observation contract')
     if len(scenarios) != 100:
         failures.append('scenario count is not 100')
     ids = [row.get('scenario_id') for row in scenarios]
@@ -747,6 +758,15 @@ class Evidence:
         return path
 
 
+def runtime_pcap_required(profile: dict[str, Any]) -> bool:
+    """Extra product PCAP exists only when the unchanged template enables it."""
+    content = (REPO_ROOT / 'fakenet/configs' / profile['template']).read_text(encoding='utf-8')
+    values = re.findall(r'(?im)^DumpPackets[ \t]*:[ \t]*(Yes|No)[ \t]*$', content)
+    if len(values) != 1:
+        raise SuiteError('template must declare one DumpPackets setting')
+    return values[0].lower() == 'yes'
+
+
 def profile_content(profile: dict[str, Any], external_dns_server: str,
                     process_image: dict[str, str] | None = None,
                     reviewed_ipv4: str | None = None) -> str:
@@ -784,6 +804,12 @@ def profile_content(profile: dict[str, Any], external_dns_server: str,
         elif variant == 'domain-boundary':
             content = content.replace('ExternalAllowedDomains: api.deepseek.com',
                                       'ExternalAllowedDomains: api.deepseek.com,example.net')
+    if bucket == 'default':
+        # The stock profile deliberately carries inert redirect placeholders.
+        # Omit only those disabled optional fields; never enable redirect.
+        if not re.search(r'(?im)^ExternalProcessRedirectEnabled:\s*No\s*$', content):
+            raise Blocked('default redirect must remain disabled')
+        content = re.sub(r'(?m)^ExternalProcessRedirect(?:ImagePath|ImageSHA256|OriginalIPv4|TargetIPv4):[^\n]*\n', '', content)
     if '__' in content:
         unresolved = sorted(set(re.findall(r'__[A-Z0-9_]+__', content)))
         if unresolved:
@@ -801,28 +827,84 @@ def materialize_probe_profile(profile: dict[str, Any], api_ipv4: str) -> dict[st
 
 
 class FnprSentinel:
-    """One bounded host-only receiver, owned by a single scenario attempt."""
+    """One bounded host-only receiver, owned by a single scenario attempt.
+
+    Port 443 on the host-only address is privileged on Linux.  When this
+    runner is not root the direct local bind is denied; the identical
+    stdlib-only script is then relaunched in a pinned detached container with
+    host networking, whose root may bind the same 192.168.204.1:443.  Both
+    modes append to the same on-disk JSONL so the evidence stays byte-bound.
+    """
 
     def __init__(self, root: Path):
-        self.root = root
-        self.log = root / 'fnpr-sentinel.jsonl'
-        self.stdout = root / 'fnpr-sentinel.stdout'
+        self.root = Path(root).resolve()
+        self.log = self.root / 'fnpr-sentinel.jsonl'
+        self.stdout = self.root / 'fnpr-sentinel.stdout'
         self._stream = self.stdout.open('xb')
-        command = [sys.executable, str(REPO_ROOT / 'fnpr_sentinel.py'), '--log', str(self.log)]
-        self.process = subprocess.Popen(command, stdout=self._stream, stderr=subprocess.STDOUT,
-                                        cwd=str(REPO_ROOT))
+        self.mode = 'local'
+        self.container: str | None = None
+        self.process = self._spawn_local()
         deadline = time.monotonic() + 15
+        respawns = 3
         while time.monotonic() < deadline:
             if self.log.is_file():
                 rows = self.rows()
                 if any(row.get('event') == 'ready' and row.get('bind') == '192.168.204.1' and
                        row.get('port') == 443 for row in rows):
                     return
-            if self.process.poll() is not None:
+                denial = next((row for row in rows if row.get('event') == 'start_failed' and
+                               row.get('reason') == 'PermissionError'), None)
+                if denial is not None and self.mode == 'local':
+                    self.process.terminate()
+                    self.process.wait(timeout=5)
+                    self.mode = 'container'
+                    self.container = 'fnpr-sentinel-' + uuid.uuid4().hex[:12]
+                    self.process = self._spawn_container()
+                    deadline = time.monotonic() + 30
+                    continue
+            exited = self._exited()
+            if exited and self.mode == 'local':
+                break
+            if exited and self.mode == 'container':
+                # Rapid docker create/stop/remove cycles transiently report a
+                # live container as gone, or fail its start outright.  Retry a
+                # bounded number of times before declaring the sentinel dead.
+                if respawns:
+                    respawns -= 1
+                    time.sleep(2)
+                    self.container = 'fnpr-sentinel-' + uuid.uuid4().hex[:12]
+                    self.process = self._spawn_container()
+                    deadline = time.monotonic() + 30
+                    continue
                 break
             time.sleep(0.1)
         self.stop()
         raise SuiteError('controlled FNPR sentinel did not become ready on 192.168.204.1:443')
+
+    def _spawn_local(self) -> subprocess.Popen:
+        command = [sys.executable, str(REPO_ROOT / 'fnpr_sentinel.py'), '--log', str(self.log)]
+        return subprocess.Popen(command, stdout=self._stream, stderr=subprocess.STDOUT,
+                                cwd=str(REPO_ROOT))
+
+    def _spawn_container(self) -> subprocess.Popen:
+        command = ['docker', 'run', '--rm', '-d', '--name', self.container,
+                   '--network', 'host',
+                   '--mount', 'type=bind,source=%s,target=%s,readonly' % (REPO_ROOT, REPO_ROOT),
+                   '--mount', 'type=bind,source=%s,target=%s' % (self.root, self.root),
+                   FNPR_SENTINEL_IMAGE, 'python3', str(REPO_ROOT / 'fnpr_sentinel.py'),
+                   '--log', str(self.log)]
+        return subprocess.Popen(command, stdout=self._stream, stderr=subprocess.STDOUT)
+
+    def _exited(self) -> bool:
+        if self.mode == 'local':
+            return self.process.poll() is not None
+        probe = subprocess.run(['docker', 'inspect', '-f', '{{.State.Status}}', self.container],
+                               capture_output=True, text=True)
+        if probe.returncode == 0:
+            return probe.stdout.strip() not in ('running', 'paused', 'restarting', 'created')
+        # A removed container is confirmed dead; any other failure (daemon
+        # contention, CLI error) must not be mistaken for container death.
+        return 'No such object' in (probe.stderr or '')
 
     def rows(self) -> list[dict[str, Any]]:
         if not self.log.is_file():
@@ -841,6 +923,25 @@ class FnprSentinel:
         return matches[-1] if matches else None
 
     def stop(self) -> dict[str, Any]:
+        if self.container is not None:
+            stopped = subprocess.run(['docker', 'stop', '-t', '10', self.container],
+                                     capture_output=True, text=True)
+            removal = 'unconfirmed'
+            for _ in range(10):
+                gone = subprocess.run(['docker', 'inspect', self.container],
+                                      capture_output=True, text=True)
+                if gone.returncode != 0:
+                    removal = 'confirmed'
+                    break
+                subprocess.run(['docker', 'rm', '-f', self.container],
+                               capture_output=True, text=True)
+                time.sleep(0.5)
+            self._stream.close()
+            return {'mode': self.mode, 'container': self.container,
+                    'returncode': 0 if (stopped.returncode == 0 and removal == 'confirmed') else 1,
+                    'removal': removal,
+                    'rows': self.rows(), 'log': file_record(self.log, self.root) if self.log.is_file() else None,
+                    'stdout': file_record(self.stdout, self.root) if self.stdout.is_file() else None}
         if self.process.poll() is None:
             self.process.terminate()
             try:
@@ -849,7 +950,7 @@ class FnprSentinel:
                 self.process.kill()
                 self.process.wait(timeout=5)
         self._stream.close()
-        return {'pid': self.process.pid, 'returncode': self.process.returncode,
+        return {'mode': self.mode, 'pid': self.process.pid, 'returncode': self.process.returncode,
                 'rows': self.rows(), 'log': file_record(self.log, self.root) if self.log.is_file() else None,
                 'stdout': file_record(self.stdout, self.root) if self.stdout.is_file() else None}
 
@@ -919,9 +1020,9 @@ class Suite:
             raise SuiteError('expected VM JSON object')
         return value, raw
 
-    def _status(self) -> dict[str, Any]:
+    def _status(self, timeout: float = 120) -> dict[str, Any]:
         assert self.service
-        return self.service.tool('get_status')
+        return self.service.tool('get_status', timeout=timeout)
 
     def _identity_material(self) -> dict[str, Any]:
         """Bind the local package and the recorded remote switch to one candidate.
@@ -1153,42 +1254,105 @@ class Suite:
         return {'status': status, 'vm': value, 'raw': raw}
 
     def _guest_scenario_root(self, scenario_id: str, attempt: int) -> str:
-        return GUEST_ROOT + '\\scenario-suite-20260912\\' + scenario_id + ('-a%d' % attempt)
+        scope = hashlib.sha256(str(self.root.resolve()).encode()).hexdigest()[:12]
+        return GUEST_ROOT + '\\scenario-suite-20260912\\' + scope + '-' + scenario_id + ('-a%d' % attempt)
+
+    def _start_kernel_capture(self, run_root: str) -> dict[str, Any]:
+        session = 'SST-Kernel-' + str(uuid.uuid4())
+        command = (
+            "$ErrorActionPreference='Stop';$r=" + quote_ps(run_root) + ";"
+            "New-Item -ItemType Directory -Path $r -Force|Out-Null;$s=" + quote_ps(session) + ";"
+            "$etl=Join-Path $r 'kernel-network.etl';if(Test-Path $etl){throw 'kernel capture collision'};"
+            "$clock=@{utc_ticks=[DateTime]::UtcNow.Ticks;mono=[Diagnostics.Stopwatch]::GetTimestamp();stopwatch_frequency=[Diagnostics.Stopwatch]::Frequency;offset_minutes=[int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalMinutes};"
+            "$meta=@{capture_mode='kernel-network-ipv4';session_name=$s;etl_path=$etl;events_path=(Join-Path $r 'kernel-network.events.jsonl');header_path=(Join-Path $r 'kernel-network.header.xml');summary_path=(Join-Path $r 'kernel-network.summary.txt');clock_before=$clock};"
+            "$mp=Join-Path $r 'kernel-network.metadata.json';$meta|ConvertTo-Json -Depth 8|Set-Content $mp -Encoding UTF8;"
+            "$start=(& logman start $s -ets -o $etl -p Microsoft-Windows-Kernel-Network 0x10 4|Out-String);"
+            "if($LASTEXITCODE -ne 0){$query=(& logman query $s -ets|Out-String);if($LASTEXITCODE -eq 0){& logman stop $s -ets|Out-Null};throw ('kernel trace start failed: '+$start)};"
+            "@{session_name=$s;metadata=$mp;guest=$r;start_output=$start}|ConvertTo-Json -Compress")
+        try:
+            value, raw = self._vm_json(command, 60)
+        except Exception as original:
+            cleanup = "$s=" + quote_ps(session) + ";$q=(& logman query $s -ets|Out-String);if($LASTEXITCODE -eq 0){& logman stop $s -ets|Out-Null;if($LASTEXITCODE -ne 0){throw 'owned kernel session could not stop'}};@{session=$s;query=$q}|ConvertTo-Json -Compress"
+            try:
+                self._vm_json(cleanup,60)
+            except Exception as secondary:
+                raise SuiteError('kernel capture start failed: %r; cleanup failed: %r' % (original,secondary)) from original
+            raise
+        value['raw'] = raw
+        return value
+
+    def _stop_kernel_capture(self, capture: dict[str, Any]) -> dict[str, Any]:
+        command = (
+            "$ErrorActionPreference='Stop';$mp=" + quote_ps(capture['metadata']) + ";$m=Get-Content $mp -Raw|ConvertFrom-Json;"
+            "if($m.session_name -ne " + quote_ps(capture['session_name']) + "){throw 'kernel capture identity mismatch'};"
+            "$q=(& logman query $m.session_name -ets|Out-String);$session_present=($LASTEXITCODE -eq 0);$stop='';"
+            "if($session_present){$stop=(& logman stop $m.session_name -ets|Out-String);if($LASTEXITCODE -ne 0){throw ('kernel trace stop failed: '+$stop)}};"
+            "$m|Add-Member -NotePropertyName session_present_at_stop -NotePropertyValue $session_present -Force;"
+            "$clock=@{utc_ticks=[DateTime]::UtcNow.Ticks;mono=[Diagnostics.Stopwatch]::GetTimestamp();stopwatch_frequency=[Diagnostics.Stopwatch]::Frequency;offset_minutes=[int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalMinutes};"
+            "$m|Add-Member -NotePropertyName clock_after -NotePropertyValue $clock -Force;$m|ConvertTo-Json -Depth 8|Set-Content $mp -Encoding UTF8;"
+            "if(Test-Path $m.events_path){throw 'kernel conversion collision'};$writer=[IO.StreamWriter]::new($m.events_path,$false,[Text.UTF8Encoding]::new($false));"
+            "$ordinal=0;try{Get-WinEvent -Path $m.etl_path -Oldest -ErrorAction Stop|ForEach-Object {$writer.WriteLine((@{ordinal=$ordinal;xml=$_.ToXml()}|ConvertTo-Json -Compress -Depth 4));$ordinal++}}finally{$writer.Dispose()};"
+            "& tracerpt $m.etl_path -o $m.header_path -of XML -summary $m.summary_path -y|Out-Null;$exit=$LASTEXITCODE;"
+            "$c=@{event_reader=('Get-WinEvent -Path '+$m.etl_path+' -Oldest | ForEach-Object { $_.ToXml() }');event_reader_exit_code=0;tracerpt_argv=@('tracerpt',$m.etl_path,'-o',$m.header_path,'-of','XML','-summary',$m.summary_path,'-y');tracerpt_exit_code=$exit};"
+            "function Hash-Shared([string]$p){for($i=0;$i -lt 10;$i++){try{return (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLower()}catch{Start-Sleep -Milliseconds 500}};throw ('file remained shared: '+$p)};"
+            "foreach($pair in @(@('etl',$m.etl_path),@('events',$m.events_path),@('header',$m.header_path),@('summary',$m.summary_path))){$c[($pair[0]+'_sha256')]=Hash-Shared $pair[1]};"
+            "$m|Add-Member -NotePropertyName conversion -NotePropertyValue $c -Force;$m|ConvertTo-Json -Depth 8|Set-Content $mp -Encoding UTF8;if($exit -ne 0){throw 'kernel tracerpt failed'};"
+            "@{files=@(@($m.etl_path,$m.events_path,$m.header_path,$m.summary_path,$mp)|ForEach-Object {$f=Get-Item $_;@{path=$f.FullName;bytes=$f.Length;sha256=(Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()}})}|ConvertTo-Json -Depth 5 -Compress")
+        value, raw = self._vm_json(command, 120)
+        return dict(files=value['files'], raw=raw)
 
     def _start_capture_and_probe(self, guest: str, profile: dict[str, Any], nonce: str,
                                  run_label: str) -> dict[str, Any]:
         """Start one independent pktmon/probe chain for exactly one run."""
         assert self.vm
         script = GUEST_ROOT + r'\scenario-suite-20260912\scenario_probes.ps1'
+        run_root = guest + '\\' + run_label
+        params = dict(Action='traffic', Profile=profile['bucket'], Nonce=nonce,
+            Output=run_root + r'\probe.jsonl', StopFile=run_root + r'\probe.stop',
+            StartFile=run_root + r'\probe.start', CaseFile=run_root + r'\probe.cases',
+            Tempo=profile['tempo'], Variant=profile['variant'], Interleave=profile['interleave'],
+            CadenceMilliseconds=int(profile['cadence_ms']), HoldSeconds=int(profile['connection_window_seconds']),
+            TargetHost=profile['probe_target']['host'], TargetPort=int(profile['probe_target']['port']),
+            TargetProtocol=profile['probe_target']['protocol'],
+            ProcessMode=profile['probe_target'].get('process_mode', 'match'),
+            TlsServerName=profile['probe_target'].get('tls_server_name', ''),
+            FnprRole=profile['probe_target'].get('fnpr_role', ''),
+            AdditionalTargetsJson=json.dumps(list(profile.get('negative_cases', ())) + list(profile.get('probe_cases', ())), separators=(',', ':')),
+            StartupRetrySeconds=int(profile.get('startup_retry_seconds', 70)))
+        splat = ';'.join(key + '=' + (str(value) if isinstance(value, int) else quote_ps(value)) for key, value in params.items())
+        child = "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';$parameters=@{" + splat + "};try{& " + quote_ps(script) + " @parameters 1> " + quote_ps(run_root + r'\probe.stdout') + " 2> " + quote_ps(run_root + r'\probe.stderr') + "}catch{$_|Out-File -LiteralPath " + quote_ps(run_root + r'\probe.stderr') + ";exit 1}"
+        encoded_child = base64.b64encode(child.encode('utf-16le')).decode('ascii')
         command = (
-            "$ErrorActionPreference='Stop';$g=" + quote_ps(guest) + ";$r=Join-Path $g " + quote_ps(run_label) +
+            "$ErrorActionPreference='Stop';$captureStarted=$false;$p=$null;try{$g=" + quote_ps(guest) + ";$r=Join-Path $g " + quote_ps(run_label) +
             ";New-Item -ItemType Directory -Path $r -Force|Out-Null;"
             "$etl=Join-Path $r 'pktmon.etl';$nic=Join-Path $r 'pktmon-nic.json';"
             "$list=(& pktmon list|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon list failed'};"
             "$adapters=@(Get-NetAdapter|Select-Object ifIndex,Name,InterfaceDescription,MacAddress,Status);"
             "$before=(& pktmon counters|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon counters before start failed'};"
-            "@{schema='" + NIC_CAPTURE_SCHEMA + "';captured_utc=[DateTime]::UtcNow.ToString('o');pktmon_list=$list;adapters=$adapters;pktmon_counters_before=$before}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $nic -Encoding UTF8;"
-            "& pktmon start --capture --comp all --pkt-size 0 --flags 0x1f --trace -p Microsoft-Windows-TCPIP -k 0xFF -l 4 --file-name $etl --file-size 128;"
-            "if($LASTEXITCODE -ne 0){throw 'pktmon start failed'};"
+            "$clockBefore=@{utc_ticks=[DateTime]::UtcNow.Ticks;mono=[Diagnostics.Stopwatch]::GetTimestamp();stopwatch_frequency=[Diagnostics.Stopwatch]::Frequency;offset_minutes=[int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalMinutes;utc=[DateTime]::UtcNow.ToString('o')};@{capture_mode='all-components-tcpip';clock_before=$clockBefore;schema='" + NIC_CAPTURE_SCHEMA + "';captured_utc=[DateTime]::UtcNow.ToString('o');pktmon_list=$list;adapters=$adapters;pktmon_counters_before=$before}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $nic -Encoding UTF8;"
+            "$pktmonStart=(& pktmon start --capture --comp all --pkt-size 0 --flags 0x1f --trace -p Microsoft-Windows-TCPIP -k 0xFF -l 4 --file-name $etl --file-size 128|Out-String);"
+            "if($LASTEXITCODE -ne 0){throw 'pktmon start failed'};$captureStarted=$true;"
             "$out=Join-Path $r 'probe.jsonl';$start=Join-Path $r 'probe.start';$cases=Join-Path $r 'probe.cases';$stop=Join-Path $r 'probe.stop';$script=" + quote_ps(script) + ";"
-            "$args=@('-NoProfile','-ExecutionPolicy','Bypass','-File',$script,'-Action','traffic','-Profile'," + quote_ps(profile['bucket']) +
-            ",' -Nonce'.Substring(1)," + quote_ps(nonce) + ",' -Output'.Substring(1),$out,'-StopFile',$stop,'-Tempo'," + quote_ps(profile['tempo']) +
-            ",' -Variant'.Substring(1)," + quote_ps(profile['variant']) + ",' -Interleave'.Substring(1)," + quote_ps(profile['interleave']) +
-            ",'-StartFile',$start,'-CadenceMilliseconds'," + str(int(profile['cadence_ms'])) +
-            ",'-HoldSeconds'.Substring(1)," + str(int(profile['connection_window_seconds'])) +
-            ",'-TargetHost'," + quote_ps(profile['probe_target']['host']) + ",'-TargetPort'," + str(int(profile['probe_target']['port'])) +
-            ",'-TargetProtocol'," + quote_ps(profile['probe_target']['protocol']) +
-            ",'-ProcessMode'," + quote_ps(profile['probe_target'].get('process_mode', 'match')) +
-            ",'-TlsServerName'," + quote_ps(profile['probe_target'].get('tls_server_name', '')) +
-            ",'-FnprRole'," + quote_ps(profile['probe_target'].get('fnpr_role', '')) +
-            ",'-AdditionalTargetsJson'," + quote_ps(json.dumps(
-                list(profile.get('negative_cases', ())) + list(profile.get('probe_cases', ())), separators=(',', ':'))) +
-            ",'-CaseFile',$cases,'-StartupRetrySeconds'," + str(int(profile.get('startup_retry_seconds', 70))) + ");$p=Start-Process powershell.exe -ArgumentList $args -PassThru -WindowStyle Hidden;"
-            "$deadline=[DateTime]::UtcNow.AddSeconds(20);while(!(Test-Path $out) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 100};"
-            "if(!(Test-Path $out)){throw 'probe did not become ready'};"
-            "@{guest=$r;run_label=" + quote_ps(run_label) + ";pid=$p.Id;etl=$etl;probe=$out;start=$start;case=$cases;stop=$stop;pktmon_nic=$nic;capture_scope='all-components';tempo=" + quote_ps(profile['tempo']) + ";cadence_ms=" + str(int(profile['cadence_ms'])) + ";startup_retry_seconds=" + str(int(profile.get('startup_retry_seconds', 70))) + ";variant=" + quote_ps(profile['variant']) + ";probe_target=" + quote_ps(json.dumps(profile['probe_target'], separators=(',', ':'))) + ";interleave=" + quote_ps(profile['interleave']) + ";started=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress")
-        value, raw = self._vm_json(command, 60)
+            "$encoded=" + quote_ps(encoded_child) + ";"
+            "$stdout=Join-Path $r 'probe.stdout';$stderr=Join-Path $r 'probe.stderr';"
+            "$created=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=('powershell.exe -NoProfile -EncodedCommand '+$encoded);CurrentDirectory=$r};if($created.ReturnValue -ne 0){throw 'probe process creation failed'};$p=Get-Process -Id $created.ProcessId -ErrorAction Stop;"
+            "$deadline=[DateTime]::UtcNow.AddSeconds(20);while(!(Test-Path $out) -and -not $p.HasExited -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 100};"
+            "if(!(Test-Path $out) -or $p.HasExited){throw ('probe did not become ready: '+(Get-Content $stderr -Raw -ErrorAction SilentlyContinue))};"
+            "$ready=Get-Content $out -TotalCount 1|ConvertFrom-Json;if($ready.event -ne 'ready' -or [int]$ready.pid -ne $p.Id -or [long]$ready.creation_ticks -ne $p.StartTime.ToUniversalTime().Ticks){throw 'probe ready identity mismatch'};"
+            "@{guest=$r;run_label=" + quote_ps(run_label) + ";pid=$p.Id;etl=$etl;probe=$out;start=$start;case=$cases;stop=$stop;pktmon_nic=$nic;probe_creation_ticks=$ready.creation_ticks;stdout=$stdout;stderr=$stderr;capture_scope='all-components';tempo=" + quote_ps(profile['tempo']) + ";cadence_ms=" + str(int(profile['cadence_ms'])) + ";startup_retry_seconds=" + str(int(profile.get('startup_retry_seconds', 70))) + ";variant=" + quote_ps(profile['variant']) + ";probe_target=" + quote_ps(json.dumps(profile['probe_target'], separators=(',', ':'))) + ";interleave=" + quote_ps(profile['interleave']) + ";started=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress}catch{$failure=[string]$_;$cleanup=@();if($p -and -not $p.HasExited){try{Stop-Process -Id $p.Id -ErrorAction Stop}catch{$cleanup+=[string]$_}};if($captureStarted){$captureStop=(& pktmon stop|Out-String);if($LASTEXITCODE -ne 0){$cleanup+='pktmon stop failed'}};@{startup_failed=$true;error=$failure;cleanup_errors=$cleanup;capture_started=$captureStarted;guest=$r}|ConvertTo-Json -Compress}")
+        kernel = self._start_kernel_capture(run_root)
+        try:
+            value, raw = self._vm_json(command, 60)
+            if value.get('startup_failed'):
+                raise SuiteError('capture/probe startup failed: %r' % dict(value, raw=raw))
+        except BaseException as original:
+            try:
+                self._stop_kernel_capture(kernel)
+            except Exception as secondary:
+                raise SuiteError('probe capture start failed: %r; kernel cleanup failed: %r' % (original,secondary)) from original
+            raise
         value['raw'] = raw
+        value['kernel_capture'] = kernel
         return value
 
     def _release_probe(self, capture: dict[str, Any], phase: str) -> dict[str, Any]:
@@ -1260,23 +1424,37 @@ class Suite:
         command = (
             "$ErrorActionPreference='Stop';if(!(Test-Path " + quote_ps(capture['stop']) + ")){[IO.File]::WriteAllText(" + quote_ps(capture['stop']) + ", 'stop')};"
             "$p=Get-Process -Id " + str(int(capture['pid'])) + " -ErrorAction SilentlyContinue;if($p){$null=$p.WaitForExit(30000);if(!$p.HasExited){Stop-Process -Id $p.Id -Force;$p.WaitForExit()}};"
-            "& pktmon stop | Out-Null;$after=(& pktmon counters|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon counters after stop failed'};$status=(& pktmon status|Out-String);"
-            "$nic=Get-Content -LiteralPath " + quote_ps(capture['pktmon_nic']) + " -Raw|ConvertFrom-Json;$nic|Add-Member -NotePropertyName pktmon_counters_after -NotePropertyValue $after -Force;$nic|Add-Member -NotePropertyName pktmon_status_after -NotePropertyValue $status -Force;$nic|ConvertTo-Json -Depth 8|Set-Content -LiteralPath " + quote_ps(capture['pktmon_nic']) + " -Encoding UTF8;"
+            "& pktmon stop | Out-Null;if($LASTEXITCODE -ne 0){throw 'pktmon stop failed'};$clockAfter=@{utc_ticks=[DateTime]::UtcNow.Ticks;mono=[Diagnostics.Stopwatch]::GetTimestamp();stopwatch_frequency=[Diagnostics.Stopwatch]::Frequency;offset_minutes=[int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalMinutes;utc=[DateTime]::UtcNow.ToString('o')};$after=(& pktmon counters|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon counters after stop failed'};$status=(& pktmon status|Out-String);"
+            "$nic=Get-Content -LiteralPath " + quote_ps(capture['pktmon_nic']) + " -Raw|ConvertFrom-Json;$nic|Add-Member -NotePropertyName clock_after -NotePropertyValue $clockAfter -Force;$nic|Add-Member -NotePropertyName pktmon_counters_after -NotePropertyValue $after -Force;$nic|Add-Member -NotePropertyName pktmon_status_after -NotePropertyValue $status -Force;$nic|ConvertTo-Json -Depth 8|Set-Content -LiteralPath " + quote_ps(capture['pktmon_nic']) + " -Encoding UTF8;"
             "& pktmon etl2txt " + quote_ps(capture['etl']) +
-            " --out " + quote_ps(str(capture['etl']).replace('.etl', '.txt')) + " | Out-Null;"
+            " --out " + quote_ps(str(capture['etl']).replace('.etl', '.txt')) + " | Out-Null;$conversionExit=$LASTEXITCODE;"
+            "$conversion=@{exit_code=$conversionExit;argv=@('pktmon','etl2txt'," + quote_ps(capture['etl']) + ",'--out'," + quote_ps(str(capture['etl']).replace('.etl', '.txt')) + ");etl_sha256=(Get-FileHash -LiteralPath " + quote_ps(capture['etl']) + " -Algorithm SHA256).Hash.ToLower();text_sha256=(Get-FileHash -LiteralPath " + quote_ps(str(capture['etl']).replace('.etl', '.txt')) + " -Algorithm SHA256).Hash.ToLower()};$nic|Add-Member -NotePropertyName conversion -NotePropertyValue $conversion -Force;$nic|ConvertTo-Json -Depth 8|Set-Content -LiteralPath " + quote_ps(capture['pktmon_nic']) + " -Encoding UTF8;"
             "$files=@(" + quote_ps(capture['probe']) + ',' + quote_ps(capture['etl']) + ',' +
-            quote_ps(str(capture['etl']).replace('.etl', '.txt')) + ',' + quote_ps(capture['pktmon_nic']) + ");"
-            "@($files|ForEach-Object {$i=Get-Item $_ -ErrorAction Stop;@{path=$i.FullName;bytes=$i.Length;sha256=(Get-FileHash $i.FullName -Algorithm SHA256).Hash.ToLower()}})|ConvertTo-Json -Compress")
-        value, raw = self._vm_json(command, 120)
-        if not isinstance(value, list):
-            raise SuiteError('capture metadata not an array')
-        return {'files': value, 'raw': raw, 'run_label': capture['run_label']}
+            quote_ps(str(capture['etl']).replace('.etl', '.txt')) + ',' + quote_ps(capture['pktmon_nic']) + ',' + quote_ps(capture['stdout']) + ',' + quote_ps(capture['stderr']) + ");"
+            "@{files=@($files|ForEach-Object {$i=Get-Item $_ -ErrorAction Stop;@{path=$i.FullName;bytes=$i.Length;sha256=(Get-FileHash $i.FullName -Algorithm SHA256).Hash.ToLower()}})}|ConvertTo-Json -Depth 4 -Compress")
+        primary_error = None
+        try:
+            value, raw = self._vm_json(command, 120)
+        except Exception as exc:
+            primary_error = exc
+        try:
+            kernel = self._stop_kernel_capture(capture['kernel_capture'])
+        except Exception as secondary:
+            if primary_error is not None:
+                raise SuiteError('packet capture stop failed: %r; kernel stop failed: %r' % (primary_error,secondary)) from primary_error
+            raise
+        if primary_error is not None:
+            raise primary_error
+        if not isinstance(value.get('files'), list):
+            raise SuiteError('capture metadata files not an array')
+        return {'files': value['files'] + kernel['files'], 'raw': raw,
+                'kernel_raw': kernel['raw'], 'run_label': capture['run_label']}
 
 
     def _transfer_guest_file(self, guest_path: str, size: int, sha256: str,
                              destination: Path) -> dict[str, Any]:
         assert self.vm
-        if not 0 < int(size) <= MAX_GUEST_TRANSFER:
+        if not 0 <= int(size) <= MAX_GUEST_TRANSFER:
             raise SuiteError('guest evidence outside transfer bound: ' + guest_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         actual = hashlib.sha256()
@@ -1317,7 +1495,7 @@ $saved=Import-Clixml $envbackup;$values=@($saved.values|Where-Object {$_ -and $_
             body = """$g=""" + quote_ps(guest) + """;$key='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\fakenetng-mcp';$cfg='C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json';$backup=Join-Path $g 'fault-mode-original-service.json';$envbackup=Join-Path $g 'fault-mode-original-environment.xml';
 if(!(Test-Path $backup) -or !(Test-Path $envbackup)){throw 'fault-mode original snapshot is absent'};& 'C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe' stop;if($LASTEXITCODE -ne 0){throw 'controlled stop failed'};
 [IO.File]::WriteAllBytes($cfg,[IO.File]::ReadAllBytes($backup));$saved=Import-Clixml $envbackup;if($saved.present){New-ItemProperty $key -Name Environment -PropertyType MultiString -Value @($saved.values) -Force|Out-Null}else{Remove-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue};Start-Service fakenetng-mcp;
-$current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue).Environment);$same=if($saved.present){@(Compare-Object @($saved.values) $current).Count -eq 0}else{$current.Count -eq 0};@{enabled=$false;backup=$backup;config_bytes_restored=((Get-FileHash $cfg -Algorithm SHA256).Hash -eq (Get-FileHash $backup -Algorithm SHA256).Hash);environment_restored=$same;original_grace=(([Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($backup))|ConvertFrom-Json).stop_grace_seconds);current_grace=(([Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($cfg))|ConvertFrom-Json).stop_grace_seconds);state=(Get-Service fakenetng-mcp).Status.ToString()}|ConvertTo-Json -Compress"""
+$currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue;$current=@($currentProperty.Environment);$currentPresent=$null -ne $currentProperty -and $null -ne $currentProperty.Environment;$same=if($saved.present){$currentPresent -and @(Compare-Object @($saved.values) $current).Count -eq 0}else{-not $currentPresent};@{enabled=$false;backup=$backup;config_bytes_restored=((Get-FileHash $cfg -Algorithm SHA256).Hash -eq (Get-FileHash $backup -Algorithm SHA256).Hash);environment_restored=$same;original_grace=(([Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($backup))|ConvertFrom-Json).stop_grace_seconds);current_grace=(([Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($cfg))|ConvertFrom-Json).stop_grace_seconds);state=(Get-Service fakenetng-mcp).Status.ToString()}|ConvertTo-Json -Compress"""
         value, raw = self._vm_json("$ErrorActionPreference='Stop';" + body, 180)
         if enabled and value.get('state') != 'Running':
             raise SuiteError('fault-mode service did not restart')
@@ -1327,7 +1505,79 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
             raise SuiteError('fault-mode exact restoration failed')
         value['raw'] = raw
         value['enabled'] = enabled
-        return value
+        # SCM Running precedes HTTP startup and supervisor recovery. Do not
+        # dispatch scenarios (or declare restoration) until both have settled.
+        deadline = time.monotonic() + 60
+        observations = []
+        while time.monotonic() < deadline:
+            try:
+                status = self._status(timeout=max(0.01, deadline - time.monotonic()))
+                observations.append(status)
+                if (status.get('state') == 'stopped' and
+                        not status.get('run_id') and not status.get('controller')):
+                    value['endpoint_status'] = status
+                    value['endpoint_observations'] = observations
+                    return value
+                if status.get('state') != 'recovering':
+                    raise SuiteError('fault-mode endpoint unexpected state: %r' % status)
+            except urllib.error.URLError as exc:
+                observations.append({'transport_error': repr(exc)})
+            time.sleep(0.25)
+        raise SuiteError('fault-mode endpoint readiness deadline: %r' % observations)
+
+    def _ipc_evidence_mode(self, enabled: bool) -> dict[str, Any]:
+        """Arm only the service IPC-evidence environment for one matrix pass.
+
+        The product records the ipc-parent/ipc-child run originals only while
+        the service process carries FAKENETNG_MCP_FAULT_INJECTION=1; every
+        fault hook additionally requires an explicitly armed fault file, so
+        this environment alone cannot alter benign run behaviour.  Unlike
+        _fault_mode this never modifies service.json or its stop grace.  The
+        original Environment value is backed up once and restored exactly, so
+        a fault scenario's own _fault_mode(False) snapshot keeps this armed
+        state until the matrix pass ends.
+        """
+        assert self.vm
+        guest = GUEST_ROOT + r'\scenario-suite-20260912'
+        backup = guest + r'\ipc-evidence-original-environment.xml'
+        if enabled:
+            body = """$g=""" + quote_ps(guest) + """;$key='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\fakenetng-mcp';$envbackup=""" + quote_ps(backup) + """;
+New-Item -ItemType Directory -Path $g -Force|Out-Null;& 'C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe' stop;if($LASTEXITCODE -ne 0){throw 'controlled stop failed'};
+if(!(Test-Path $envbackup)){$v=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue;$present=$null -ne $v -and $null -ne $v.Environment;[pscustomobject]@{present=$present;values=@($v.Environment)}|Export-Clixml $envbackup};
+$saved=Import-Clixml $envbackup;$values=@($saved.values|Where-Object {$_ -and $_ -notlike 'FAKENETNG_MCP_FAULT_INJECTION=*'});New-ItemProperty $key -Name Environment -PropertyType MultiString -Value @($values+'FAKENETNG_MCP_FAULT_INJECTION=1') -Force|Out-Null;Start-Service fakenetng-mcp;
+@{enabled=$true;backup=$envbackup;state=(Get-Service fakenetng-mcp).Status.ToString()}|ConvertTo-Json -Compress"""
+        else:
+            body = """$g=""" + quote_ps(guest) + """;$key='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\fakenetng-mcp';$envbackup=""" + quote_ps(backup) + """;
+if(!(Test-Path $envbackup)){throw 'ipc-evidence original snapshot is absent'};$stopPath='controlled';
+& 'C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe' stop;if($LASTEXITCODE -ne 0){$stopPath='scm-forced';Stop-Service -Name fakenetng-mcp -Force -ErrorAction Stop};
+$saved=Import-Clixml $envbackup;if($saved.present){New-ItemProperty $key -Name Environment -PropertyType MultiString -Value @($saved.values) -Force|Out-Null}else{Remove-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue};Start-Service fakenetng-mcp;
+$currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue;$current=@($currentProperty.Environment);$currentPresent=$null -ne $currentProperty -and $null -ne $currentProperty.Environment;$same=if($saved.present){$currentPresent -and @(Compare-Object @($saved.values) $current).Count -eq 0}else{-not $currentPresent};@{enabled=$false;backup=$envbackup;environment_restored=$same;stop_path=$stopPath;state=(Get-Service fakenetng-mcp).Status.ToString()}|ConvertTo-Json -Compress"""
+        value, raw = self._vm_json("$ErrorActionPreference='Stop';" + body, 180)
+        if value.get('state') != 'Running':
+            raise SuiteError('ipc-evidence service did not restart')
+        if not enabled and not value.get('environment_restored'):
+            raise SuiteError('ipc-evidence exact restoration failed')
+        value['raw'] = raw
+        value['enabled'] = enabled
+        # SCM Running precedes HTTP startup and supervisor recovery; mirror
+        # _fault_mode so no scenario observes a half-recovered endpoint.
+        deadline = time.monotonic() + 60
+        observations = []
+        while time.monotonic() < deadline:
+            try:
+                status = self._status(timeout=max(0.01, deadline - time.monotonic()))
+                observations.append(status)
+                if (status.get('state') == 'stopped' and
+                        not status.get('run_id') and not status.get('controller')):
+                    value['endpoint_status'] = status
+                    value['endpoint_observations'] = observations
+                    return value
+                if status.get('state') != 'recovering':
+                    raise SuiteError('ipc-evidence endpoint unexpected state: %r' % status)
+            except urllib.error.URLError as exc:
+                observations.append({'transport_error': repr(exc)})
+            time.sleep(0.25)
+        raise SuiteError('ipc-evidence endpoint readiness deadline: %r' % observations)
 
     def _arm_fault(self, fault: str, nonce: str) -> dict[str, Any]:
         assert self.vm
@@ -1366,8 +1616,38 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
         return self._vm_json(command, 90)
 
     def _section_difference(self, before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
-        from fakenet.mcp.baseline import audit_compare
-        return audit_compare(before, after)
+        from sst_fault_evidence import native_section_compare
+        return native_section_compare(before, after)
+
+    @staticmethod
+    def _difference_is_residue(difference: dict[str, Any],
+                               attribution: dict[str, Any] | None) -> bool:
+        """Non-listen differences are always residue; listen-only ones use
+        the endpoint-owner attribution (empty/failed attribution blocks)."""
+        if not difference:
+            return False
+        if set(difference) - {'listen_ports'}:
+            return True
+        if difference.get('listen_ports') is not None:
+            return not attribution or bool(attribution.get('residue'))
+        return False
+
+    def _restart_baseline(self, previous_run: dict[str, Any],
+                          attribution: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Use the verified restored state between restart's stop and start."""
+        if not previous_run.get('recovery_audit', {}).get('files'):
+            raise SuiteError('restart baseline lacks same-run recovery evidence')
+        restored = previous_run['five_sections_after']
+        difference = self._section_difference(previous_run['five_sections_before'], restored)
+        if difference:
+            # Same five-section difference attribution as the body check: a
+            # vanished or foreign-owned endpoint change is environmental.
+            if attribution is None:
+                attribution = self._attribute_section_difference(
+                    previous_run['five_sections_before'], restored)
+            if self._difference_is_residue(difference, attribution):
+                raise SuiteError('restart run-01 five-section recovery difference: ' + repr(difference))
+        return dict(restored)
 
     @staticmethod
     def _read_probe_events(path: Path) -> list[dict[str, Any]]:
@@ -1384,13 +1664,39 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
         except UnicodeDecodeError as exc:
             raise SuiteError('pktmon export is not decodable: %s' % (exc,)) from exc
 
+    _STOP_DIVERTER_RE = re.compile(
+        r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3})\s+INFO FakeNet '
+        r'STOP_PHASE_BEGIN phase=diverter\b')
+
+    @classmethod
+    def _diverter_stop_boundary(cls, run_log: str) -> str | None:
+        """Local-time instant when diverter teardown began, or None.
+
+        From this log instant the product can no longer filter packets.
+        Scenarios whose stop wedges before the diverter phase (e.g. injected
+        policy_pause) get no boundary and keep whole-capture accounting.
+        """
+        for line in run_log.splitlines():
+            match = cls._STOP_DIVERTER_RE.match(line)
+            if match:
+                return '%s.%s' % (match.group(1), match.group(2))
+        return None
+
     def _pktmon_observations(self, capture: dict[str, Any], src: str, dst: str,
-                             protocol: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+                             protocol: str,
+                             not_after_local: str | None = None
+                             ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         """Return all-stack and verified-NIC observations for one tuple.
 
         An all-components hit proves that the capture saw the application
         send.  It cannot prove an external leak: only the current, explicitly
         bound physical-NIC component list carries that meaning.
+
+        ``not_after_local`` bounds the observation to the product's active
+        interval.  In stop-window interleave the probe intentionally keeps
+        sending while the service stops; once diverter teardown has begun
+        the product can no longer filter, so packets observed after that
+        boundary are neither positive evidence nor leaks.
         """
         path = self.root / str(capture.get('pktmon_path', ''))
         nic_path = self.root / str(capture.get('pktmon_nic_path', ''))
@@ -1404,18 +1710,200 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
         binding = pktmon_nic_binding(metadata)
         decoder = _pktmon_module()
         records = decoder.parse_packets(raw)
+        if not_after_local is not None:
+            # A record without a parseable local timestamp stays counted:
+            # excusing evidence requires proof that it is post-stop.
+            records = [packet for packet in records
+                       if packet.get('timestamp_local') is None or
+                       packet['timestamp_local'] <= not_after_local]
         try:
             all_components = decoder.select_packets(records, src, dst, protocol, direction='Tx')
             nic_components = decoder.select_packets(
                 records, src, dst, protocol, component_ids=binding['component_ids'], direction='Tx')
         except decoder.PacketEvidenceError as exc:
             raise SuiteError('pktmon tuple evidence is ambiguous/incomplete: %s' % (exc,)) from exc
+        # A zero-length bare RST is TCP teardown signaling, not payload:
+        # a half-open application TCB whose retransmission timer expires
+        # after the deny decision emits exactly one such packet from the
+        # local stack. It carries no data and is not a policy leak
+        # (discovery100-30 sst-089 case-4: 19s after TLS_SNI_DENY).
+        def is_bare_rst(packet):
+            flags = str(packet.get('flags') or '').upper()
+            size = packet.get('original_size') or packet.get('logged_size')
+            # A bare RST (TCP teardown, no payload) is ≤ 60 bytes including
+            # Ethernet/IP/TCP headers. The old size == 0 check never matched
+            # because original_size includes protocol headers (typically 40+
+            # bytes for IP+TCP alone).
+            return 'R' in flags and size is not None and size <= 60
+        nic_components = [p for p in nic_components if not is_bare_rst(p)]
         return all_components, nic_components, binding
 
     @staticmethod
     def _log_fields(line: str) -> dict[str, str]:
         """Extract structured egress fields without assuming logger ordering."""
         return {key: value for key, value in re.findall(r'\b([A-Za-z_]+)=([^\s]+)', line)}
+
+    def _fault_primary_observation(self, run: dict[str, Any], event: dict[str, Any],
+                                   nonce: str) -> dict[str, Any] | None:
+        """Rejudge only the fault's exact primary session, never auxiliary flows."""
+        record = run.get('fault_connection_case')
+        if not record:
+            return None
+        path = (self.root / record['path']).resolve()
+        if not path.is_relative_to(self.root.resolve()) or file_record(path, self.root) != record:
+            raise SuiteError('fault primary case identity/hash mismatch')
+        case = read_json(path)
+        session = case.get('session', {})
+        if (case.get('schema') != 'sst.fault-evidence.case.v2' or case.get('synthetic') is not False or
+                case.get('run_id') != run.get('run_id') or case.get('nonce') != nonce or
+                case.get('candidate_id') != self.identity.candidate_id or
+                session.get('observation_kind') != 'tcpip_etw' or
+                session.get('probe_pid') != event.get('pid') or
+                session.get('connection_id') != '%s-%s-%s' % (event.get('pid'), event.get('worker'), event.get('seq')) or
+                session.get('src') != event.get('src') or
+                session.get('dst') != (event.get('actual_dst') or event.get('dst'))):
+            raise SuiteError('ETW primary case is not this same-run target connection')
+        spec = importlib.util.spec_from_file_location('sst_primary_rejudge', Path(__file__).with_name('sst_fault_evidence.py'))
+        oracle = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(oracle)
+        verdict = oracle.assess(case, self.root, expected_candidate=self.identity.candidate_id)
+        if not verdict.get('passed') or verdict.get('synthetic'):
+            raise SuiteError('ETW primary raw re-adjudication failed')
+        return {'kind': 'tcpip_etw', 'case': record, 'connection_id': session['connection_id'],
+                'event_count': len(session['connection_event_refs'])}
+
+    def _application_observation(self, run, origin, ends, nonce, src, dst, protocol,
+                                 creation_ticks=None):
+        """Rebuild one observation from hash-bound originals, online or on replay."""
+        import scenario_tcpip as tcpip
+        import scenario_kernel_network as kernel
+        import sst_fault_evidence as fault
+        capture = run['capture']
+        records = capture['files'] + run['originals']['files']
+        by_name = {}
+        for record in records:
+            name = Path(record['path']).name
+            if name in by_name:
+                raise SuiteError('ambiguous application original ' + name)
+            by_name[name] = record
+        def read(name):
+            record = by_name[name]
+            path = (self.root / record['path']).resolve()
+            path.relative_to(self.root.resolve())
+            raw = path.read_bytes()
+            if len(raw) != record['size'] or hashlib.sha256(raw).hexdigest() != record['sha256']:
+                raise SuiteError('application original hash mismatch: ' + name)
+            return raw
+        probe_raw = read('probe.jsonl')
+        rows = [json.loads(line) for line in probe_raw.splitlines()]
+        def probe_ref(row):
+            matches = []
+            offset = 0
+            for raw in probe_raw.splitlines(keepends=True):
+                if json.loads(raw) == row:
+                    matches.append(dict(path=by_name['probe.jsonl']['path'], byte_start=offset,
+                                        byte_end=offset+len(raw), event_key='json:'))
+                offset += len(raw)
+            if len(matches) != 1:
+                raise SuiteError('application probe row missing/ambiguous')
+            return matches[0]
+        origin_ref = probe_ref(origin)
+        end_refs = [probe_ref(row) for row in ends]
+        if not end_refs or origin.get('nonce') != nonce or any(row.get('pid') != origin['pid'] or row.get('nonce') != nonce for row in ends):
+            raise SuiteError('application terminal/nonce identity missing')
+        if creation_ticks is None:
+            ready = [row for row in rows if row.get('event') == 'ready' and row.get('nonce') == nonce and row.get('pid') == origin['pid']]
+            if len(ready) != 1:
+                raise SuiteError('application native probe creation missing')
+            creation_ticks = ready[0]['creation_ticks']
+        log = read('run.log').decode('utf-8-sig')
+        policy_window = None
+        if origin.get('event') == 'curl_started':
+            if (len(ends) != 1 or ends[0].get('event') != 'curl_completed' or
+                    origin.get('creation_ticks') != creation_ticks or
+                    tcpip.curl_tuple(log, origin) != (src, dst)):
+                raise SuiteError('curl native process/tuple window is not unique')
+            policy_window = ((creation_ticks-621355968000000000)*100 + 15624999,
+                             fault.time_bounds(ends[0])[0] - 15624999)
+            if policy_window[0] >= policy_window[1]:
+                raise SuiteError('curl process window is not ordered')
+        wanted = dict(pid=str(origin['pid']), proto=protocol, src=src.rsplit(':',1)[0],
+                      sport=src.rsplit(':',1)[1], dst=dst.rsplit(':',1)[0], dport=dst.rsplit(':',1)[1])
+        policies = []
+        offset = 0
+        for line in log.splitlines(keepends=True):
+            # ESTABLISHED_BYPASS is the diverter's mid-stream flow
+            # disposition: a during-start connection established before
+            # capture has no PROCESS_FLOW, but its bypass is the policy
+            # observation for that flow (P1 fix, discovery100-20 sst-006).
+            if (('PROCESS_FLOW ' in line or 'ESTABLISHED_BYPASS' in line) and
+                    all(tcpip.fields(line).get(k) == v for k,v in wanted.items())):
+                policies.append(dict(path=by_name['run.log']['path'], byte_start=offset,
+                                     byte_end=offset+len(line.encode()), event_key='text'))
+            offset += len(line.encode())
+        if not policies:
+            raise SuiteError('application exact policy flow missing')
+        result = dict(schema='sst.application-observation.v1', candidate_id=self.identity.candidate_id,
+                      run_id=run['run_id'], nonce=nonce, case_index=origin.get('case_index'),
+                      connection_id=origin.get('connection_id', 'curl'), pid=origin['pid'],
+                      creation_ticks=creation_ticks, src=src, dst=dst, protocol=protocol,
+                      probe_ref=origin_ref, end_refs=end_refs, policy_refs=policies)
+        if protocol == 'UDP':
+            meta = json.loads(read('kernel-network.metadata.json'))
+            observed = kernel.validate_capture(read('kernel-network.events.jsonl'), read('kernel-network.etl'),
+                read('kernel-network.header.xml'), read('kernel-network.summary.txt'), meta,
+                by_name['kernel-network.events.jsonl']['path'])
+            sends = [row for row in rows if row.get('nonce') == nonce and row.get('pid') == origin['pid'] and
+                     row.get('connection_id') == origin.get('connection_id') and
+                     row.get('event') in ('udp_sent', 'case_udp_sent')]
+            refs = [kernel.match_send(observed['events'], row, creation_ticks)['ref'] for row in sends]
+            if not refs or len({(x['byte_start'],x['byte_end']) for x in refs}) != len(refs):
+                raise SuiteError('UDP sends reuse an independent event')
+            result.update(observation_kind='kernel_udp_etw', connection_refs=refs)
+        else:
+            raw = read('pktmon.txt')
+            lo, hi = tcpip.validate_capture(raw, read('pktmon.etl'), json.loads(read('pktmon-nic.json')),50000000)
+            ipc = [json.loads(line) for line in read('ipc-parent.jsonl').splitlines()]
+            managed_pid, managed_created = tcpip.managed_identity(ipc, run['run_id'])
+            observed = tcpip.connection_events(raw, by_name['pktmon.txt']['path'], log,
+                                               origin['pid'], src, dst, managed_pid,
+                                               policy_window=policy_window, log_path=by_name['run.log']['path'])
+            if policy_window:
+                result['policy_refs'] = [row['ref'] for row in observed['policy_inside']]
+                result['policy_context_refs'] = [row['ref'] for row in observed['policy_outside']]
+            if observed['tuple_terminals']:
+                tcpip.validate_tuple_probe(rows, origin, src, dst)
+            for event in observed['events'] + observed['tuple_terminals']:
+                event_lo, event_hi = fault.time_bounds(event['text'])
+                if not lo <= event_lo <= event_hi <= hi + 99:
+                    raise SuiteError('application event outside capture')
+            connected = fault.time_bounds(observed['connect']['text'])[0]
+            if connected < (creation_ticks-621355968000000000)*100:
+                raise SuiteError('application connect precedes native creation')
+            if observed['peer'] and fault.time_bounds(observed['peer']['text'])[0] < (managed_created-116444736000000000)*100:
+                raise SuiteError('application peer precedes managed creation')
+            uncertainty = 15625000 - 1
+            policy_upper = max(fault.time_bounds(row['text'])[1] for row in observed['policy_inside']
+                               if policy_window or tcpip.flow_matches(row['fields'], origin['pid'], src, dst))
+            begin = max(fault.time_bounds(observed['connect']['text'])[1],
+                        fault.time_bounds(origin)[1], policy_upper) + uncertainty
+            terminal = min(fault.time_bounds(e['text'])[0] for e in observed['termination'] + observed['tuple_terminals']) - uncertainty
+            probe_end = min((row['utc_ticks']-621355968000000000)*100 for row in ends) - uncertainty
+            if not lo <= connected <= min(terminal,probe_end) + uncertainty <= hi:
+                raise SuiteError('application lifetime outside native/probe capture')
+            # Application observations prove a complete connection, not the
+            # fault-action overlap contract. Only the new unattributed negative
+            # constraints add CON009's conservative pre-establishment rejection.
+            if observed['tuple_terminals'] and min(fault.time_bounds(e['text'])[0]
+                    for e in observed['tuple_terminals']) - uncertainty < begin:
+                raise SuiteError('application lifetime constrained before establishment')
+            result.update(observation_kind='tcpip_etw', connection_refs=[e['ref'] for e in observed['events']],
+                          generation_manifest=observed['generation_manifest'],
+                          tuple_terminal_refs=[e['ref'] for e in observed['tuple_terminals']],
+                          end_lower_ns=min(terminal,probe_end))
+        result['capture_refs'] = [record for name,record in by_name.items()
+                                  if name.startswith(('pktmon.', 'kernel-network.'))]
+        return result
 
     def _traffic_oracle(self, run: dict[str, Any], profile: dict[str, Any], nonce: str,
                         sentinel: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1427,6 +1915,7 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
         tuple.  Positive relay profiles also require a TLS request event and
         the egress-control ready record from the native log.
         """
+        import scenario_tcpip as tcpip
         capture = run.get('capture') or {}
         probe_path = self.root / str(capture.get('probe_path', ''))
         pktmon_path = self.root / str(capture.get('pktmon_path', ''))
@@ -1478,6 +1967,14 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
         if udp_primary:
             primary = [item for item in primary if item.get('connection_id') == nonce + '-udp-1' and
                        item.get('seq') == 1]
+        elif (len(primary) > 1 and
+              profile['probe_target'].get('expectation') == 'deny'):
+            # A denied primary connection is sinkholed by the local listener
+            # and then closed (RawListener timeout), after which the probe's
+            # retry loop reconnects; every reconnection is itself denied.
+            # The first established origin is the primary; later ones are
+            # additional deny evidence, not a contract violation.
+            primary = primary[:1]
         if len(primary) != 1:
             return {'passed': False, 'reason': 'expected exactly one primary connection origin',
                     'primary_count': len(primary)}
@@ -1508,11 +2005,17 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                     fields.get('proto') == ('UDP' if udp_primary else 'TCP')):
                 flow.append(line)
         protocol = 'UDP' if profile['probe_target']['protocol'] == 'udp' else 'TCP'
+        stop_boundary = self._diverter_stop_boundary(run_log)
         try:
             packet_records, nic_original_packets, binding = self._pktmon_observations(
-                capture, src, dst, protocol)
+                capture, src, dst, protocol, not_after_local=stop_boundary)
         except (OSError, ValueError, SuiteError) as exc:
             return {'passed': False, 'reason': 'pktmon evidence unavailable: %r' % (exc,)}
+        try:
+            connection_observation = (self._application_observation(run,event,ends,nonce,src,dst,protocol)
+                if capture.get('observation_contract') == 'con008' else self._fault_primary_observation(run,event,nonce))
+        except (KeyError, OSError, ValueError, SuiteError) as exc:
+            return {'passed': False, 'reason': 'fault primary binding failed: ' + str(exc)}
         expectation = profile['probe_target']['expectation']
         tls_request = any(row.get('event') == 'request_sent' and row.get('nonce') == nonce for row in events)
         payloads = [row for row in events if row.get('event') in
@@ -1533,14 +2036,8 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
         egress_ready = 'EGRESS_CONTROL_READY' in run_log
         target_ip, target_port = dst.rsplit(':', 1)
 
-        def log_event(name: str, **wanted: str) -> str | None:
-            for line in run_log.splitlines():
-                if name + ' ' not in line and not line.rstrip().endswith(name):
-                    continue
-                fields = self._log_fields(line)
-                if all(fields.get(key) == str(value) for key, value in wanted.items()):
-                    return line
-            return None
+        def log_event(name: str, window=None, unique_fields=None, **wanted: str) -> str | None:
+            return tcpip.scoped_log_event(run_log, name, wanted, window, unique_fields)
 
         sentinel_rows = sentinel.get('rows', []) if isinstance(sentinel, dict) else []
         def sentinel_receipt(peer: str, role: str) -> dict[str, Any] | None:
@@ -1568,7 +2065,8 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                 outer_dst = upstream_ip + ':' + upstream_port
                 try:
                     _, branch_packets, _ = self._pktmon_observations(
-                        capture, outer_src, outer_dst, 'TCP')
+                        capture, outer_src, outer_dst, 'TCP',
+                        not_after_local=stop_boundary)
                 except (OSError, ValueError, SuiteError):
                     branch_packets = []
                 relay = {'allow_log': allowed, 'upstream_log': upstream, 'outer_src': outer_src,
@@ -1593,7 +2091,8 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                                    target_ipv4='192.168.204.1', target_port='443')
             try:
                 _, branch_packets, _ = self._pktmon_observations(
-                    capture, src, '192.168.204.1:443', 'TCP')
+                    capture, src, '192.168.204.1:443', 'TCP',
+                    not_after_local=stop_boundary)
             except (OSError, ValueError, SuiteError):
                 branch_packets = []
             branch_ok = bool(flow and branch_log and branch_packets and primary_receipt and not nic_original_packets)
@@ -1636,6 +2135,8 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
             case_nic: list[dict[str, Any]] = []
             case_log: str | None = None
             case_receipt: dict[str, Any] | None = None
+            case_observation = None
+            case_observation_error = None
             case_ok = bool(first and source and target and close and payload)
             if case_ok and first and source and target:
                 case_protocol = 'UDP' if planned['protocol'] == 'udp' else 'TCP'
@@ -1646,13 +2147,22 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                               fields.get('proto') == case_protocol)(self._log_fields(line))]
                 try:
                     case_packets, case_nic, _ = self._pktmon_observations(
-                        capture, ':'.join(source), ':'.join(target), case_protocol)
+                        capture, ':'.join(source), ':'.join(target), case_protocol,
+                        not_after_local=stop_boundary)
                 except (OSError, ValueError, SuiteError):
                     case_ok = False
+                if capture.get('observation_contract') == 'con008':
+                    try:
+                        terminals=[row for row in case_events if row.get('connection_id')==first.get('connection_id') and row.get('event') in ('case_error','case_eof','case_close')]
+                        case_observation=self._application_observation(run,first,terminals,nonce,':'.join(source),':'.join(target),case_protocol)
+                    except (KeyError,OSError,ValueError,SuiteError) as exc:
+                        case_ok=False
+                        case_observation_error=str(exc)
+                        case_log='application evidence failed: '+str(exc)
                 if planned['expectation'] == 'deny':
                     case_log = (log_event('DIVERT_FAKE', original_ip=target[0], original_port=target[1]) or
                                 log_event('DROP_EXTERNAL', original_ip=target[0], original_port=target[1]))
-                    case_ok = bool(case_ok and case_flow and case_packets and case_log and not case_nic)
+                    case_ok = bool(case_ok and case_flow and (case_packets or case_observation) and case_log and not case_nic)
                 elif planned['expectation'] == 'takeover_allow':
                     case_log = log_event('ALLOW_TAKEOVER_SINK', ip=target[0], sport=source[1],
                                          dport=target[1])
@@ -1660,13 +2170,13 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                     response = next((row for row in case_events if row.get('event') == 'case_response' and
                                      row.get('connection_id') == first.get('connection_id') and
                                      row.get('response') == 'FNPR/1|%s|OK\n' % nonce), None)
-                    case_ok = bool(case_ok and case_flow and case_packets and case_log and case_receipt and
+                    case_ok = bool(case_ok and case_flow and (case_packets or case_observation) and case_log and case_receipt and
                                    response and case_nic)
                 else:
                     case_ok = False
             case_results.append({'index': index, 'expectation': planned['expectation'], 'passed': case_ok,
                                  'process_flow': case_flow[-1] if case_flow else None,
-                                 'packet_record_count': len(case_packets), 'nic_packet_count': len(case_nic),
+                                 'observation_error': case_observation_error, 'packet_record_count': len(case_packets), 'connection_observation': case_observation, 'nic_packet_count': len(case_nic),
                                  'branch_log': case_log, 'sentinel_receipt': case_receipt})
         cases_ok = not planned_cases or (len(releases) == 1 and all(row['passed'] for row in case_results))
         curl: dict[str, Any] | None = None
@@ -1681,6 +2191,10 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
             curl_packets: list[dict[str, Any]] = []
             curl_nic: list[dict[str, Any]] = []
             curl_outer: list[dict[str, Any]] = []
+            curl_observation = None
+            curl_observation_error = None
+            curl_positive_flow = None
+            curl_allowed = curl_upstream = None
             if curl_ok:
                 started, completed = curl_started[0], curl_completed[0]
                 curl_ok = (started.get('pid') == completed.get('pid') and completed.get('exit_code') == 0 and
@@ -1689,8 +2203,19 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                              (lambda fields: fields.get('pid') == str(started.get('pid')) and
                               fields.get('proto') == 'TCP' and fields.get('dport') == '443')(
                                   self._log_fields(line))]
-                if len(curl_flow) == 1:
-                    fields = self._log_fields(curl_flow[0])
+                selected_flow = curl_flow[0] if len(curl_flow) == 1 else None
+                if capture.get('observation_contract') == 'con008':
+                    try:
+                        app_tuple = tcpip.curl_tuple(run_log, started)
+                        selected_flow = next(line for line in curl_flow
+                            if (self._log_fields(line)['src']+':'+self._log_fields(line)['sport'],
+                                self._log_fields(line)['dst']+':'+self._log_fields(line)['dport']) == app_tuple)
+                    except (KeyError,ValueError,StopIteration) as exc:
+                        selected_flow = None
+                        curl_observation_error = str(exc)
+                if selected_flow is not None:
+                    fields = self._log_fields(selected_flow)
+                    curl_positive_flow = selected_flow
                     curl_src, curl_sport, curl_dst = (fields.get('src'), fields.get('sport'),
                                                        fields.get('dst'))
                     if curl_src and curl_sport and curl_dst and fields.get('dport'):
@@ -1698,39 +2223,60 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                         app_dst = curl_dst + ':' + fields['dport']
                         try:
                             curl_packets, curl_nic, _ = self._pktmon_observations(
-                                capture, app_src, app_dst, 'TCP')
+                                capture, app_src, app_dst, 'TCP',
+                                not_after_local=stop_boundary)
                         except (OSError, ValueError, SuiteError):
                             curl_ok = False
-                        allowed = log_event('TLS_SNI_ALLOW', domain='api.deepseek.com', original_ip=curl_dst)
-                        upstream = log_event('ALLOW_INTERNAL_UPSTREAM', kind='tls_relay', ip=curl_dst,
+                        if capture.get('observation_contract') == 'con008':
+                            try:
+                                if curl_dst not in started['dns_ipv4'] or started['dns_before_ticks'] > started['creation_ticks']:
+                                    raise SuiteError('curl destination not in prior native DNS set')
+                                curl_observation=self._application_observation(run,started,[completed],nonce,app_src,app_dst,'TCP',started['creation_ticks'])
+                                raw_log = log_path.read_bytes()
+                                positive = [raw_log[ref['byte_start']:ref['byte_end']].decode('utf-8').strip()
+                                            for ref in curl_observation['policy_refs']]
+                                curl_positive_flow = next(line for line in positive if tcpip.flow_matches(
+                                    tcpip.fields(line), started['pid'], app_src, app_dst))
+                            except (KeyError,OSError,ValueError,SuiteError) as exc:
+                                curl_ok=False
+                                curl_observation_error=str(exc)
+                        curl_window = None
+                        if capture.get('observation_contract') == 'con008':
+                            curl_window = ((started['creation_ticks']-621355968000000000)*100+15624999,
+                                           (completed['utc_ticks']-621355968000000000)*100-15624999)
+                        allowed = log_event('TLS_SNI_ALLOW', window=curl_window, domain='api.deepseek.com', original_ip=curl_dst)
+                        upstream = log_event('ALLOW_INTERNAL_UPSTREAM', window=curl_window, unique_fields=('ip','port','sport','kind'), kind='tls_relay', ip=curl_dst,
                                              port=fields['dport'])
+                        curl_allowed, curl_upstream = allowed, upstream
                         if upstream:
                             upstream_fields = self._log_fields(upstream)
                             upstream_sport = upstream_fields.get('sport')
                             if upstream_sport:
                                 try:
                                     _, curl_outer, _ = self._pktmon_observations(
-                                        capture, curl_src + ':' + upstream_sport, app_dst, 'TCP')
+                                        capture, curl_src + ':' + upstream_sport, app_dst, 'TCP',
+                                        not_after_local=stop_boundary)
                                 except (OSError, ValueError, SuiteError):
                                     curl_outer = []
-                        curl_ok = bool(curl_ok and curl_packets and not curl_nic and allowed and upstream and curl_outer)
+                        curl_ok = bool(curl_ok and (curl_packets or curl_observation) and not curl_nic and allowed and upstream and curl_outer)
                     else:
                         curl_ok = False
                 else:
                     curl_ok = False
             curl = {'passed': curl_ok, 'started': curl_started, 'completed': curl_completed,
-                    'process_flow': curl_flow[-1] if curl_flow else None,
-                    'application_packet_count': len(curl_packets),
+                    'process_flow': curl_positive_flow, 'allow_log': curl_allowed, 'upstream_log': curl_upstream,
+                    'observation_error': curl_observation_error, 'application_packet_count': len(curl_packets), 'connection_observation': curl_observation,
                     'application_nic_packet_count': len(curl_nic),
                     'outer_nic_packet_count': len(curl_outer)}
         # A local stack observation establishes that the application attempted
         # the named flow; it never upgrades an all-components observation into
         # proof of physical egress.  Authorised direct/takeover paths are the
         # only branches which require that exact tuple on the verified NIC.
-        passed = bool(packet_records and payloads and cadence_ok and branch_ok and cases_ok and curl_ok)
+        passed = bool((packet_records or connection_observation) and payloads and cadence_ok and branch_ok and cases_ok and curl_ok)
         return {'passed': passed, 'connection_id': '%s-%s-%s' % (event.get('pid'), event.get('worker'), event.get('seq')),
                 'src': src, 'dst': dst, 'process_flow': flow[-1] if flow else None,
-                'packet_record_count': len(packet_records), 'nic_original_packet_count': len(nic_original_packets),
+                'packet_record_count': len(packet_records), 'connection_observation': connection_observation,
+                'nic_original_packet_count': len(nic_original_packets),
                 'nic_binding': binding, 'terminal_event': ends[0].get('event'),
                 'tls_request_sent': tls_request, 'cadence': {'expected_ms': expected_cadence,
                                                               'payload_count': len(cadence_payloads),
@@ -1814,6 +2360,7 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
             'receipt': names['fault-triggered.json'],
             'receipt_metadata': str(originals.get('metadata', {}).get('path', '')),
             'ipc': names['ipc-parent.jsonl'], 'run_log': names['run.log'], 'probe': probe, 'pktmon': pktmon,
+            'pktmon_etl': capture.get('pktmon_etl_path'), 'pktmon_metadata': capture.get('pktmon_nic_path'),
             'baseline': str(baseline.relative_to(self.root)),
             'recovery_audit': str(recovery_audit[-1]['path']),
             'recovery_healthy': str(recovery.relative_to(self.root)),
@@ -1830,7 +2377,7 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
             raise SuiteError('fault adapter raw descriptor has an unavailable required observation')
         descriptor = {'scenario_id': scenario['scenario_id'], 'case_id': 'scenario-' + scenario['scenario_id'],
                       'candidate_id': self.identity.candidate_id, 'run_id': run['run_id'], 'fault': fault,
-                      'nonce': nonce, 'clock_resolution_ns': 15625000, 'raw': raw}
+                      'nonce': nonce, 'clock_resolution_ns': 15625000, 'observation_kind': 'tcpip_etw', 'raw': raw}
         descriptor_path = root / 'fault-capture-descriptor.json'
         if not descriptor_path.exists():
             write_new_json(descriptor_path, descriptor)
@@ -1879,7 +2426,10 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
         for item in artifacts.get('artifacts', []):
             path = str(item.get('path', '')).replace('\\', '/')
             if (item.get('type') == 'pcap' or path.lower().endswith('.pcap')) and run_id in path:
-                candidates.append(item)
+                # A pcap still being written lists without a completion hash;
+                # the bounded wait retries instead of failing on a None field.
+                if item.get('sha256'):
+                    candidates.append(item)
         if not candidates:
             raise SuiteError('same-run runtime PCAP is absent from list_artifacts')
         sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1888,6 +2438,29 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
         transferred = receive_artifact(self.vm, chosen, destination)  # type: ignore[arg-type]
         if transferred['sha256'].lower() != str(chosen['sha256']).lower():
             raise SuiteError('runtime PCAP transfer hash differs from list_artifacts')
+        return transferred
+
+    def _transfer_runtime_pcap_direct(self, run_id: str, destination: Path) -> dict[str, Any]:
+        """Transfer the run's pcap by hashing it directly when listing lagged.
+
+        Registration flips an artifact's listing entry complete only after the
+        stop-side diagnostic finishes; a wait deadline can expire while the
+        bytes are already final on disk.  Stat and hash the file directly and
+        transfer byte-bound, so evidence stays verifiable either way.
+        """
+        assert self.vm
+        command = (
+            "$ErrorActionPreference='Stop';$d='C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs\\" + run_id + "';"
+            "if(!(Test-Path -LiteralPath $d)){throw 'run directory absent'};"
+            "$f=@(Get-ChildItem -LiteralPath $d -File -Filter '*.pcap' | Sort-Object Name | Select-Object -First 1);"
+            "if(-not $f){throw 'no pcap in run directory'};"
+            "@{path=$f[0].FullName;bytes=[int64]$f[0].Length;"
+            "sha256=(Get-FileHash -LiteralPath $f[0].FullName -Algorithm SHA256).Hash.ToLower()}|ConvertTo-Json -Compress")
+        value, raw = self._vm_json(command, 120)
+        transferred = self._transfer_guest_file(str(value['path']), int(value['bytes']),
+                                                str(value['sha256']), destination)
+        transferred['direct'] = True
+        transferred['vm_raw'] = raw
         return transferred
 
     def _wait_runtime_pcap(self, run_id: str, destination: Path) -> dict[str, Any]:
@@ -1899,16 +2472,70 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
         """
         deadline = time.monotonic() + 30
         last: Exception | None = None
+        last_run_entries: list[dict[str, Any]] = []
         while time.monotonic() < deadline:
             try:
                 artifacts = self.service.tool('list_artifacts')  # type: ignore[union-attr]
+                last_run_entries = [item for item in (artifacts or {}).get('artifacts', [])
+                                    if isinstance(item, dict) and run_id in str(item.get('path', ''))
+                                    and str(item.get('path', '')).lower().endswith('.pcap')]
                 result = self._transfer_runtime_pcap(artifacts, run_id, destination)
                 result['list_artifacts'] = artifacts
                 return result
             except Exception as exc:  # noqa: BLE001
                 last = exc
                 time.sleep(1)
-        raise SuiteError('same-run runtime PCAP was not published: %s' % (last,))
+        if last_run_entries:
+            # Evidence for the publication-timing diagnosis; never silent.
+            self._last_pcap_listing = last_run_entries
+        try:
+            return self._transfer_runtime_pcap_direct(run_id, destination)
+        except Exception as direct_exc:  # noqa: BLE001
+            last = last or direct_exc
+        if last is not None:
+            raise SuiteError('same-run runtime PCAP was not published: %s' % (last,))
+        raise SuiteError('same-run runtime PCAP was not published: '
+                         'no complete listing entry; last run entries: %r' % (last_run_entries[-3:],))
+
+    def _prune_scenario_vm_footprint(self, runs: list[dict[str, Any]], guest: str,
+                                     fault: str | None) -> dict[str, Any]:
+        """Remove this scenario's redundant VM artifacts after host export.
+
+        Every run's originals are already byte-bound on the host before this
+        runs; the VM copies are working data.  Benign runs are pruned from
+        artifacts/runs entirely; fault runs keep their incident evidence
+        VM-side.  The guest probe directory is always transient.  Without
+        this, repeated acceptance scenarios exhaust the VM disk
+        (discovery100-11: pktmon stop failed on a full disk).
+        """
+        assert self.vm
+        # A run still bound by the service (failed/recovering stop) keeps its
+        # VM artifacts: the product recovery needs the run's endpoint
+        # observation evidence, and deleting it wedges recovery forever
+        # (discovery100-13 sst-080).
+        status = self._status()
+        released = (status.get('state') == 'stopped' and
+                    not status.get('run_id') and not status.get('controller'))
+        pruned_runs = []
+        if not fault and released:
+            for run in runs:
+                run_id = run.get('run_id')
+                if run_id and run.get('originals'):
+                    pruned_runs.append(run_id)
+        command = (
+            "$ErrorActionPreference='Stop';$removed=@();"
+            "$runs='C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs';"
+            + ''.join(
+                "if(Test-Path -LiteralPath (Join-Path $runs " + repr_id + "))"
+                "{Remove-Item -LiteralPath (Join-Path $runs " + repr_id + ") -Recurse -Force;$removed+=" + repr_id + "};" for repr_id in
+                ["'%s'" % run_id for run_id in pruned_runs]) +
+            "$guest=" + quote_ps(guest) + ";"
+            "if(Test-Path -LiteralPath $guest){Remove-Item -LiteralPath $guest -Recurse -Force};"
+            "@{pruned_runs=$removed;guest_removed=(Test-Path -LiteralPath $guest)}|ConvertTo-Json -Compress")
+        value, raw = self._vm_json(command, 120)
+        value['raw'] = raw
+        value['service_released_runs'] = released
+        return value
 
     def _export_run_originals(self, run_id: str, destination: Path,
                               evidence: Evidence) -> dict[str, Any]:
@@ -1963,8 +2590,88 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
         metadata_path = destination / 'vm-file-metadata.json'
         write_new_json(metadata_path, metadata)
         evidence.add(metadata_path)
-        return {'run_id': run_id, 'files': transfers, 'metadata': file_record(metadata_path, evidence.root),
+        return {'run_id': run_id, 'files': transfers, 'metadata': file_record(metadata_path, self.root),
                 'vm_raw': raw}
+
+    _PRODUCT_ENDPOINT_OWNERS = frozenset((
+        'fakenetng-mcp.exe', 'fakenetng-mcp-managed.exe',
+        'fakenetng-mcp-exit-monitor.exe'))
+
+    @staticmethod
+    def _listen_endpoint_set(sections: dict[str, Any]) -> set[tuple[str, str]]:
+        result: set[tuple[str, str]] = set()
+        for line in str(sections.get('listen_ports') or '').splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] in ('TCP', 'UDP'):
+                result.add((parts[0], parts[1].replace('[', '').replace(']', '')))
+        return result
+
+    def _listening_endpoint_owners(self) -> list[dict[str, Any]]:
+        """One read-only ownership table for every current listening endpoint."""
+        assert self.vm
+        command = (
+            "$ErrorActionPreference='Stop';"
+            "$eps=@();"
+            "foreach($e in @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)){$eps+=,[pscustomobject]@{proto='TCP';local=('{0}:{1}' -f $e.LocalAddress,$e.LocalPort);pid=$e.OwningProcess}};"
+            "foreach($e in @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue)){$eps+=,[pscustomobject]@{proto='UDP';local=('{0}:{1}' -f $e.LocalAddress,$e.LocalPort);pid=$e.OwningProcess}};"
+            "$pids=@($eps|Select-Object -ExpandProperty pid -Unique);"
+            "$procs=@{};foreach($p in $pids){$procs[[int]$p]=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$p) -ErrorAction SilentlyContinue)};"
+            "$rows=@(foreach($e in $eps){$cmd=$procs[[int]$e.pid];[pscustomobject]@{proto=$e.proto;local=$e.local;pid=$e.pid;name=if($cmd){$cmd.Name};command=if($cmd){$cmd.CommandLine};created_dmtf=if($cmd){$cmd.CreationDate}}});"
+            "@{endpoints=$rows}|ConvertTo-Json -Depth 4 -Compress")
+        value, raw = self._vm_json(command, 90)
+        rows = value.get('endpoints')
+        if isinstance(rows, dict):
+            rows = [rows]
+        if not isinstance(rows, list):
+            raise SuiteError('listening endpoint ownership query failed')
+        return rows
+
+    def _attribute_section_difference(self, before: dict[str, Any],
+                                      after: dict[str, Any]) -> dict[str, Any]:
+        """Split a listen-ports difference into residue versus external change.
+
+        A fresh endpoint is product/test residue only while a live ownership
+        query still sees it owned by the service tree or the suite probe.
+        Endpoints that already vanished, or belong to unrelated processes,
+        are recorded as external environment evidence and must not fail
+        product recovery.  Any attribution failure keeps the difference
+        blocking; this never widens an exemption by string matching on the
+        difference itself.
+        """
+        fresh = sorted(self._listen_endpoint_set(after) -
+                       self._listen_endpoint_set(before))
+        if not fresh:
+            return {'fresh_endpoints': [], 'residue': [], 'external': [], 'vanished': []}
+        try:
+            owners = self._listening_endpoint_owners()
+        except Exception as exc:  # noqa: BLE001
+            return {'fresh_endpoints': [list(item) for item in fresh],
+                    'residue': [list(item) for item in fresh],
+                    'external': [], 'vanished': [], 'attribution_error': repr(exc)}
+        table: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in owners:
+            if not isinstance(row, dict):
+                continue
+            local = str(row.get('local', '')).replace('[', '').replace(']', '')
+            table[(str(row.get('proto', '')), local)] = row
+        residue: list[dict[str, Any]] = []
+        external: list[dict[str, Any]] = []
+        vanished: list[dict[str, Any]] = []
+        for proto, local in fresh:
+            owner = table.get((proto, local))
+            if owner is None:
+                vanished.append({'proto': proto, 'local': local})
+                continue
+            name = str(owner.get('name') or '').lower()
+            command = str(owner.get('command') or '')
+            if (name in self._PRODUCT_ENDPOINT_OWNERS or
+                    'scenario-suite-20260912' in command or
+                    name.startswith('scenario-probe-client')):
+                residue.append({'proto': proto, 'local': local, 'owner': owner})
+            else:
+                external.append({'proto': proto, 'local': local, 'owner': owner})
+        return {'fresh_endpoints': [list(item) for item in fresh], 'residue': residue,
+                'external': external, 'vanished': vanished}
 
     def _export_recovery_audit(self, run_id: str, destination: Path,
                                evidence: Evidence) -> dict[str, Any]:
@@ -2138,7 +2845,7 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
             "$probe=" + quote_ps(capture['probe']) + ";$launcher=" + str(int(capture['pid'])) + ";$started=[DateTimeOffset]::UtcNow;$deadline=[DateTime]::UtcNow.AddSeconds(60);"
             "$answer=[ordered]@{fault=" + quote_ps(fault) + ";nonce=" + quote_ps(nonce) + ";ready=$false;launcher_pid=$launcher;probe_pid=$null;run_id=$null;established=$null;process_flow=$null;ready_published_utc=$null;child=$null;child_parent=$null;observer_started_utc=$started.ToString('o');observer_deadline_utc=[DateTimeOffset]::UtcNow.AddSeconds(60).ToString('o')};"
             "while([DateTime]::UtcNow -lt $deadline){$est=$null;if(Test-Path $probe){foreach($line in @(Get-Content $probe -Tail 200 -ErrorAction SilentlyContinue)){try{$x=$line|ConvertFrom-Json;if($x.event -eq 'established' -and $x.nonce -eq " + quote_ps(nonce) + "){$est=$x;break}}catch{}}};"
-            "if($est){$probePid=[int]$est.pid;$answer.probe_pid=$probePid;$port=($est.src -split ':')[-1];$source=($est.src -split ':')[0];foreach($run in @(Get-ChildItem 'C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs' -Directory|Sort-Object CreationTimeUtc -Descending|Select-Object -First 8)){$log=Join-Path $run.FullName 'run.log';$flow=@(Select-String -Path $log -SimpleMatch -Pattern 'PROCESS_FLOW ' -ErrorAction SilentlyContinue|Where-Object {$line=$_.Line;($line -match ('(?:^|\\s)pid='+[regex]::Escape([string]$probePid)+'(?:\\s|$)')) -and ($line -match ('(?:^|\\s)sport='+[regex]::Escape($port)+'(?:\\s|$)')) -and ($line -match ('(?:^|\\s)src='+[regex]::Escape($source)+'(?:\\s|$)'))}|Select-Object -Last 1);if($flow.Count){$payload=[ordered]@{fault=" + quote_ps(fault) + ";nonce=" + quote_ps(nonce) + ";run_id=$run.Name};$temporary=Join-Path $logs ('.fault-injection-ready-'+[guid]::NewGuid().ToString('N')+'.json');[IO.File]::WriteAllText($temporary,($payload|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false));[IO.File]::Move($temporary,$ready);$answer.ready=$true;$answer.run_id=$run.Name;$answer.established=$est;$answer.process_flow=$flow[0].Line;$answer.ready_published_utc=[DateTimeOffset]::UtcNow.ToString('o');if(" + quote_ps(fault) + " -eq 'child_hang'){$parent=@(Get-CimInstance Win32_Process|Where-Object {$_.Name -eq 'fakenetng-mcp-managed.exe' -and $_.CommandLine -match ('managed-child '+[regex]::Escape($run.Name))}|Select-Object -First 1);if($parent.Count){$child=@(Get-CimInstance Win32_Process|Where-Object {$_.Name -eq 'fakenetng-mcp.exe' -and $_.CommandLine -match 'managed-fault-hang' -and $_.ParentProcessId -eq $parent[0].ProcessId}|Select-Object ProcessId,ParentProcessId,CreationDate,Name,CommandLine -First 1);if($child.Count){$answer.child=$child[0];$answer.child_parent=$parent[0]|Select-Object ProcessId,ParentProcessId,CreationDate,Name,CommandLine}}};break}}};if($answer.ready){break};Start-Sleep -Milliseconds 10};"
+            "if($est){$probePid=[int]$est.pid;$answer.probe_pid=$probePid;$port=($est.src -split ':')[-1];$source=($est.src -split ':')[0];foreach($run in @(Get-ChildItem 'C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs' -Directory|Sort-Object CreationTimeUtc -Descending|Select-Object -First 8)){$log=Join-Path $run.FullName 'run.log';$flow=@(Select-String -Path $log -SimpleMatch -Pattern 'PROCESS_FLOW ' -ErrorAction SilentlyContinue|Where-Object {$line=$_.Line;($line -match ('(?:^|\\s)pid='+[regex]::Escape([string]$probePid)+'(?:\\s|$)')) -and ($line -match ('(?:^|\\s)sport='+[regex]::Escape($port)+'(?:\\s|$)')) -and ($line -match ('(?:^|\\s)src='+[regex]::Escape($source)+'(?:\\s|$)'))}|Select-Object -Last 1);if($flow.Count){$payload=[ordered]@{fault=" + quote_ps(fault) + ";nonce=" + quote_ps(nonce) + ";run_id=$run.Name};$temporary=Join-Path $logs ('.fault-injection-ready-'+[guid]::NewGuid().ToString('N')+'.json');[IO.File]::WriteAllText($temporary,($payload|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false));[IO.File]::Move($temporary,$ready);$answer.ready=$true;$answer.run_id=$run.Name;$answer.established=$est;$answer.process_flow=$flow[0].Line;$answer.ready_published_utc=[DateTimeOffset]::UtcNow.ToString('o');if(" + quote_ps(fault) + " -eq 'child_hang'){$parent=@(Get-CimInstance Win32_Process|Where-Object {$_.Name -eq 'fakenetng-mcp-managed.exe' -and $_.CommandLine -match ('managed-child '+[regex]::Escape($run.Name))}|Select-Object -First 1);if($parent.Count){$child=@(Get-CimInstance Win32_Process|Where-Object {$_.Name -eq 'fakenetng-mcp.exe' -and $_.CommandLine -match 'managed-fault-hang' -and $_.ParentProcessId -eq $parent[0].ProcessId}|Select-Object ProcessId,ParentProcessId,@{Name='CreationDate';Expression={$_.CreationDate.ToUniversalTime().ToString('o')}},Name,CommandLine -First 1);if($child.Count){$answer.child=$child[0];$answer.child_parent=$parent[0]|Select-Object ProcessId,ParentProcessId,@{Name='CreationDate';Expression={$_.CreationDate.ToUniversalTime().ToString('o')}},Name,CommandLine}}};break}}};if($answer.ready){break};Start-Sleep -Milliseconds 10};"
             "$answer.finished_utc=[DateTimeOffset]::UtcNow.ToString('o');$answer|ConvertTo-Json -Depth 8 -Compress")
         value, raw = self._vm_json(command, 75)
         value['raw'] = raw
@@ -2208,6 +2915,7 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
         sentinel_evidence: dict[str, Any] | None = None
         sentinel_record: dict[str, Any] | None = None
         fault_evidence: dict[str, Any] = {}
+        fault_mode_attempted = False
         before_sections: dict[str, Any] | None = None
         after_sections: dict[str, Any] | None = None
         failure: str | None = None
@@ -2281,17 +2989,17 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
             evidence.write('%s-capture-stop.json' % label, stopped)
             transfers = []
             for item in stopped['files']:
-                local = root / label / Path(item['path']).name
+                local = root / label / PureWindowsPath(item['path']).name
                 transfers.append(self._transfer_guest_file(item['path'], item['bytes'], item['sha256'], local))
                 evidence.add(local)
             evidence.write('%s-capture-transfer.json' % label, {'files': transfers})
             nic_record = next((item for item in transfers
-                               if Path(str(item['path'])).name == 'pktmon-nic.json'), None)
+                               if PureWindowsPath(str(item['path'])).name == 'pktmon-nic.json'), None)
             if not nic_record:
                 raise SuiteError('pktmon NIC metadata was not transferred')
             nic_path = self.root / str(nic_record['path'])
             pktmon_record = next((item for item in transfers
-                                  if Path(str(item['path'])).name == 'pktmon.txt'), None)
+                                  if PureWindowsPath(str(item['path'])).name == 'pktmon.txt'), None)
             if not pktmon_record:
                 raise SuiteError('pktmon text export was not transferred')
             pktmon_path = self.root / str(pktmon_record['path'])
@@ -2305,10 +3013,11 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                 'metadata': nic_record, 'passed': not nic_issues, 'issues': nic_issues,
                 'binding': binding,
             })
-            run['capture'] = {'label': label, 'files': transfers, 'all_components': True,
+            run['capture'] = {'observation_contract': 'con008', 'label': label, 'files': transfers, 'all_components': True,
                               'probe_launcher_pid': capture['pid'],
                               'probe_path': next((x['path'] for x in transfers if x['path'].endswith('probe.jsonl')), None),
                               'pktmon_path': pktmon_record['path'],
+                              'pktmon_etl_path': next((x['path'] for x in transfers if x['path'].endswith('pktmon.etl')), None),
                               'pktmon_nic_path': nic_record['path'], 'pktmon_binding': binding,
                               'pktmon_capture_issues': nic_issues}
             run['capture_stopped_at'] = utc_now()
@@ -2327,9 +3036,12 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                 sentinel = FnprSentinel(root)
                 evidence.write('fnpr-sentinel-start.json', {
                     'pid': sentinel.process.pid, 'bind': '192.168.204.1', 'port': 443,
+                    'mode': sentinel.mode, 'container': sentinel.container,
                     'ready_rows': sentinel.rows(),
                 })
             if fault:
+                # Own restoration before entry: enable can mutate then raise.
+                fault_mode_attempted = True
                 fault_evidence['mode_enabled'] = self._fault_mode(True)
                 evidence.write('fault-mode-enabled.json', fault_evidence['mode_enabled'])
             call('list_configs')
@@ -2418,22 +3130,25 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                 if interleave in ('after-healthy', 'restart-window'):
                     first_run['probe_release'] = self._release_probe(
                         captures[first_label], interleave)
-                self._run_auxiliary_cases(first_run, captures[first_label], runtime_profile)
+                if interleave != 'stop-window':
+                    self._run_auxiliary_cases(first_run, captures[first_label], runtime_profile)
                 if scenario.get('lifecycle_chain') == 'restart':
                     # Bind the first run before restart changes current-run
                     # identity.  Its probe/ETL is independent of run-02.
                     first_run['events'] = call('get_events', {'limit': 100})
                     first_run['artifacts'] = call('list_artifacts')
-                    first_run['runtime_pcap'] = self._wait_runtime_pcap(
-                        run_id, root / first_label / 'runtime.pcap')
-                    evidence.add(root / first_label / 'runtime.pcap')
+                    if runtime_pcap_required(runtime_profile):
+                        first_run['runtime_pcap'] = self._wait_runtime_pcap(
+                            run_id, root / first_label / 'runtime.pcap')
+                        evidence.add(root / first_label / 'runtime.pcap')
                     finish_capture(first_label, first_run)
                     second_label = 'run-02'
                     captures[second_label] = self._start_capture_and_probe(guest, runtime_profile, nonce, second_label)
                     evidence.write(second_label + '-capture-start.json', captures[second_label])
-                    second_before, second_before_raw = self._capture_sections()
-                    evidence.write(second_label + '-five-sections-before.json',
-                                   {'sections': second_before, 'raw': second_before_raw})
+                    restart_context, restart_context_raw = self._capture_sections()
+                    evidence.write(second_label + '-pre-restart-context.json',
+                                   {'sections': restart_context, 'raw': restart_context_raw,
+                                    'role': 'active-run-context-not-recovery-baseline'})
                     # The second session is released immediately before the
                     # restart mutation; its record proves the restart window,
                     # rather than merely carrying that label in the manifest.
@@ -2443,11 +3158,21 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                         first_run['run_id'], root / first_label / 'recovery-audits', evidence)
                     restart_difference = self._section_difference(first_run['five_sections_before'],
                                                                    first_run['five_sections_after'])
+                    restart_attribution = (
+                        self._attribute_section_difference(first_run['five_sections_before'],
+                                                           first_run['five_sections_after'])
+                        if restart_difference else None)
                     evidence.write(first_label + '-five-sections-product-after.json', {
                         'sections': first_run['five_sections_after'], 'difference': restart_difference,
+                        'difference_attribution': restart_attribution,
                         'recovery_audit': first_run['recovery_audit']})
-                    if restart_difference:
+                    if self._difference_is_residue(restart_difference, restart_attribution):
                         raise SuiteError('restart run-01 five-section recovery difference: ' + repr(restart_difference))
+                    second_before = self._restart_baseline(first_run, restart_attribution)
+                    evidence.write(second_label + '-five-sections-before.json', {
+                        'sections': second_before, 'source_run_id': first_run['run_id'],
+                        'source_recovery_audit': first_run['recovery_audit'],
+                        'role': 'verified-restored-state-before-restart-start'})
                     run_id = restarted.get('run_id')
                     active_run = {'run_id': run_id, 'label': second_label, 'start_response': restarted,
                                   'started_at': utc_now(), 'five_sections_before': second_before,
@@ -2472,14 +3197,10 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                 artifacts = call('list_artifacts')
                 active_run['events'] = events
                 active_run['artifacts'] = artifacts
-                # Runtime PCAP is independent from the all-components pktmon
-                # trace; both must bind to this exact run.
-                active_run['runtime_pcap'] = self._wait_runtime_pcap(
-                    run_id, root / active_run['label'] / 'runtime.pcap')
-                evidence.add(root / active_run['label'] / 'runtime.pcap')
                 if interleave == 'stop-window':
                     active_run['probe_release'] = self._release_probe(
                         captures[active_run['label']], 'stop-window')
+                    self._run_auxiliary_cases(active_run, captures[active_run['label']], runtime_profile)
                     # Give the independently-launched client an observable
                     # connection interval before stop begins.
                     time.sleep(1)
@@ -2487,13 +3208,25 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                 active_run['stop_response'] = stopped
                 if stopped.get('state') != 'stopped':
                     raise SuiteError('stop did not converge')
+                # Runtime PCAP is independent from the all-components pktmon
+                # trace; both must bind to this exact run.  The dual pcap
+                # writers hold the file open for the whole run, so its
+                # publication only completes after the stop; waiting during
+                # the healthy window always timed out (discovery100-10/13).
+                if runtime_pcap_required(runtime_profile):
+                    active_run['runtime_pcap'] = self._wait_runtime_pcap(
+                        run_id, root / active_run['label'] / 'runtime.pcap')
+                    evidence.add(root / active_run['label'] / 'runtime.pcap')
                 finish_capture(active_run['label'], active_run)
                 run_after, run_after_raw = self._capture_sections()
                 active_run['five_sections_after'] = run_after
                 run_difference = self._section_difference(active_run['five_sections_before'], run_after)
+                run_attribution = (self._attribute_section_difference(
+                    active_run['five_sections_before'], run_after) if run_difference else None)
                 evidence.write(active_run['label'] + '-five-sections-after.json', {
-                    'sections': run_after, 'raw': run_after_raw, 'difference': run_difference})
-                if run_difference:
+                    'sections': run_after, 'raw': run_after_raw, 'difference': run_difference,
+                    'difference_attribution': run_attribution})
+                if self._difference_is_residue(run_difference, run_attribution):
                     raise SuiteError('%s five-section recovery difference: %r' %
                                      (active_run['label'], run_difference))
             else:
@@ -2540,7 +3273,12 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                                              {'name': name, 'expected_sha256': value['sha256']})
                     except Exception as exc:  # noqa: BLE001
                         cleanup_errors.append('config %s: %r' % (name, exc))
-                if fault:
+                if fault_mode_attempted:
+                    try:
+                        fault_evidence['terminal_status'] = self._status()
+                        evidence.write('fault-terminal-primary.json', fault_evidence['terminal_status'])
+                    except Exception as exc:
+                        cleanup_errors.append('primary fault terminal capture: %r' % (exc,))
                     try:
                         fault_evidence['mode_disabled'] = self._fault_mode(False)
                         evidence.write('fault-mode-disabled.json', fault_evidence['mode_disabled'])
@@ -2549,8 +3287,12 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                 try:
                     after_sections, after_raw = self._capture_sections()
                     diff = self._section_difference(before_sections or {}, after_sections)
-                    evidence.write('five-sections-after.json', {'sections': after_sections, 'raw': after_raw, 'difference': diff})
-                    if diff:
+                    attribution = (self._attribute_section_difference(before_sections or {}, after_sections)
+                                   if diff else None)
+                    evidence.write('five-sections-after.json', {
+                        'sections': after_sections, 'raw': after_raw, 'difference': diff,
+                        'difference_attribution': attribution})
+                    if self._difference_is_residue(diff, attribution):
                         cleanup_errors.append('five-section environment difference: ' + repr(diff))
                 except Exception as exc:  # noqa: BLE001
                     cleanup_errors.append('five-section recovery capture: %r' % (exc,))
@@ -2581,15 +3323,13 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                 run['originals'] = self._export_run_originals(run_id, original_root, evidence)
                 if 'five_sections_after' not in run:
                     run['five_sections_after'] = after_sections
-                if run.get('start_response', {}).get('state') == 'healthy':
+                if not fault and run.get('start_response', {}).get('state') == 'healthy':
                     run['traffic_oracle'] = self._traffic_oracle(
                         run, runtime_profile, nonce, sentinel_evidence)
                     if not fault:
                         run['log_clean_issues'] = self._benign_log_issues(run, self.root)
             if fault and not operation_unsettled:
                 primary = runs[0]
-                fault_evidence['terminal_status'] = final_status
-                evidence.write('fault-terminal-primary.json', final_status)
                 fault_evidence['recovery_audit'], primary['five_sections_after'] = self._run_recovery_sections(
                     primary['run_id'], root / 'recovery-audits', evidence)
                 fault_evidence['recovery_cycle'] = self._fault_recovery_cycle(scenario_id, attempt)
@@ -2600,6 +3340,9 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                 evidence.write('fault-cleanup-native.json', cleanup_native)
                 fault_evidence['adjudication'] = self._adjudicate_fault(
                     scenario, primary, nonce, root, evidence, fault_evidence)
+                primary['fault_connection_case'] = fault_evidence['adjudication'].get('case')
+                if primary.get('start_response', {}).get('state') == 'healthy':
+                    primary['traffic_oracle'] = self._traffic_oracle(primary, runtime_profile, nonce, sentinel_evidence)
         except Exception as exc:  # noqa: BLE001
             if failure is None:
                 failure = repr(exc)
@@ -2608,10 +3351,10 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                    'stale_lock_rejection': any(item.get('expect') == 'reject_state_conflict' and
                                                item.get('rejection_oracle', {}).get('side_effect_free')
                                                for item in calls),
-                   'continuous_health': (not fault and len(status_samples) == 3 and
-                                         all(item['status'].get('state') == 'healthy' for item in status_samples)),
+                   'continuous_health': (bool(fault) or (len(status_samples) == 3 and
+                                         all(item['status'].get('state') == 'healthy' for item in status_samples))),
                    'per_run_dual_capture': bool(runs) and all(item.get('capture', {}).get('all_components') and
-                                                               item.get('runtime_pcap') for item in runs if
+                                                               (not runtime_pcap_required(runtime_profile) or item.get('runtime_pcap')) for item in runs if
                                                                item.get('start_response', {}).get('state') == 'healthy'),
                    'five_section_recovery': not cleanup_errors and after_sections is not None,
                    'traffic_oracle': bool(runs) and all(
@@ -2634,6 +3377,11 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                                          len(recovery.get('health_samples', [])) == 3 and
                                          recovery.get('stopped', {}).get('state') == 'stopped')
             verdict['fault_oracle'] = bool(fault_evidence.get('adjudication', {}).get('passed'))
+        try:
+            vm_footprint = self._prune_scenario_vm_footprint(runs, guest, fault)
+            evidence.write('vm-footprint-prune.json', vm_footprint)
+        except Exception as exc:  # noqa: BLE001
+            evidence.write('vm-footprint-prune.json', {'error': repr(exc)})
         scenario_state = 'pass' if failure is None and all(verdict.values()) else 'fail'
         if failure is None and scenario_state != 'pass':
             failure = 'scenario verdict false: ' + repr([key for key, value in verdict.items() if not value])
@@ -2645,7 +3393,8 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
                   'cleanup_calls': cleanup_calls,
                   'traffic_evidence': {'nonce': nonce, 'runtime_profile': runtime_profile,
                                        'fnpr_sentinel_record': sentinel_record,
-                                       'capture_views': evidence.items},
+                                       'capture_views': [file_record(root / item['path'], self.root)
+                                           for item in evidence.items]},
                   'health_trace': {'window': 'W-traffic', 'samples': status_samples,
                                    'all_healthy': bool(status_samples) and all(x['status'].get('state') == 'healthy' for x in status_samples)},
                   'five_section_audit': {'before': before_sections, 'after': after_sections},
@@ -2791,26 +3540,39 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
         self._require_preflight()
         selected = [row for row in manifest['scenarios'] if
                     (row['fault_class'] is None if filter_name == 'benign' else row['fault_class'] is not None)]
+        # Every scenario exports ipc-parent.jsonl, but only fault scenarios
+        # arm the evidence environment themselves; arm it for the whole pass.
+        ipc_evidence: dict[str, Any] = {'enabled': self._ipc_evidence_mode(True)}
+        replace_json(self.root / ('ipc-evidence-%s-enabled.json' % filter_name), ipc_evidence['enabled'])
         results = []
-        for scenario in selected:
-            result_path = self._result_path(scenario['scenario_id'])
-            if result_path.exists():
-                result = read_json(result_path)
-                if result.get('state') in ('pass', 'fail'):
-                    results.append(result)
-                    if result.get('state') != 'pass' and getattr(self.args, 'stop_on_first_failure', False):
+        try:
+            for scenario in selected:
+                result_path = self._result_path(scenario['scenario_id'])
+                if result_path.exists():
+                    result = read_json(result_path)
+                    if result.get('state') in ('pass', 'fail'):
+                        results.append(result)
+                        if result.get('state') != 'pass' and getattr(self.args, 'stop_on_first_failure', False):
+                            break
+                        continue
+                results.append(self._run_one(scenario, 1))
+                if results[-1]['state'] != 'pass':
+                    if getattr(self.args, 'stop_on_first_failure', False):
                         break
-                    continue
-            results.append(self._run_one(scenario, 1))
-            if results[-1]['state'] != 'pass':
-                if getattr(self.args, 'stop_on_first_failure', False):
-                    break
-                # Preserve this failure and enforce the continuation gate before
-                # any following scenario.  A failed gate exits blocked, not pass.
-                self._continuation_gate()
+                    # Preserve this failure and enforce the continuation gate before
+                    # any following scenario.  A failed gate exits blocked, not pass.
+                    self._continuation_gate()
+        finally:
+            try:
+                ipc_evidence['disabled'] = self._ipc_evidence_mode(False)
+            except Exception as exc:  # noqa: BLE001
+                ipc_evidence['disabled'] = {'error': repr(exc)}
+            replace_json(self.root / ('ipc-evidence-%s-disabled.json' % filter_name),
+                         ipc_evidence['disabled'])
         passed = all(row.get('state') == 'pass' for row in results)
         return {'output_dir': str(self.root), 'filter': filter_name, 'count': len(results),
-                'passed': passed, 'states': {row['scenario_id']: row['state'] for row in results}}
+                'passed': passed, 'ipc_evidence': ipc_evidence,
+                'states': {row['scenario_id']: row['state'] for row in results}}
 
     def resume(self) -> dict[str, Any]:
         manifest = self.manifest()
@@ -2822,18 +3584,28 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
             self._require_fault_spike()
         self.require_clients()
         self._require_preflight()
+        ipc_evidence: dict[str, Any] = {'enabled': self._ipc_evidence_mode(True)}
+        replace_json(self.root / 'ipc-evidence-resume-enabled.json', ipc_evidence['enabled'])
         rerun = []
-        for scenario in manifest['scenarios']:
-            path = self._state_path(scenario['scenario_id'])
-            if not path.exists():
-                continue
-            state = read_json(path)
-            if state.get('phase') in ('pending', 'blocked', 'running'):
-                self._continuation_gate()
-                rerun.append(self._run_one(scenario, int(state.get('attempt', 0)) + 1))
-                if rerun[-1].get('state') != 'pass' and getattr(self.args, 'stop_on_first_failure', False):
-                    break
+        try:
+            for scenario in manifest['scenarios']:
+                path = self._state_path(scenario['scenario_id'])
+                if not path.exists():
+                    continue
+                state = read_json(path)
+                if state.get('phase') in ('pending', 'blocked', 'running'):
+                    self._continuation_gate()
+                    rerun.append(self._run_one(scenario, int(state.get('attempt', 0)) + 1))
+                    if rerun[-1].get('state') != 'pass' and getattr(self.args, 'stop_on_first_failure', False):
+                        break
+        finally:
+            try:
+                ipc_evidence['disabled'] = self._ipc_evidence_mode(False)
+            except Exception as exc:  # noqa: BLE001
+                ipc_evidence['disabled'] = {'error': repr(exc)}
+            replace_json(self.root / 'ipc-evidence-resume-disabled.json', ipc_evidence['disabled'])
         return {'output_dir': str(self.root), 'resumed': len(rerun),
+                'ipc_evidence': ipc_evidence,
                 'passed': all(row.get('state') == 'pass' for row in rerun)}
 
     def _traffic_recheck_issues(self, result: dict[str, Any], expected: dict[str, Any]) -> list[str]:
@@ -2874,9 +3646,20 @@ $current=@((Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinu
         for run in result.get('run_chain') or []:
             if run.get('start_response', {}).get('state') != 'healthy':
                 continue
+            if run.get('capture', {}).get('observation_contract') != 'con008':
+                issues.append('current execution cannot downgrade application observation contract')
+                continue
             verdict = self._traffic_oracle(run, runtime, nonce, sentinel)
             if not verdict.get('passed'):
                 issues.append('traffic raw re-adjudication failed: ' + str(verdict.get('reason')))
+            def observations(value):
+                return dict(primary=value.get('connection_observation'),
+                            cases=[row.get('connection_observation') for row in value.get('cases', [])],
+                            curl=(value.get('curl') or {}).get('connection_observation'),
+                            curl_policy={key:(value.get('curl') or {}).get(key)
+                                         for key in ('process_flow','allow_log','upstream_log')})
+            if observations(run.get('traffic_oracle') or {}) != observations(verdict):
+                issues.append('stored application observations differ from full raw reconstruction')
         return issues
 
     def verify(self, replay: str | None = None) -> dict[str, Any]:
@@ -3035,6 +3818,11 @@ def result_issues(result: dict[str, Any], root: Path) -> list[str]:
     runs = result.get('run_chain') or []
     if not runs:
         failures.append('run chain missing')
+    try:
+        product_pcap = runtime_pcap_required(result['scenario']['config_profile'])
+    except (KeyError, OSError, ValueError, SuiteError):
+        failures.append('cannot derive product PCAP requirement from configuration')
+        product_pcap = True
     for run in runs:
         capture = run.get('capture') or {}
         if (not capture.get('all_components') or not capture.get('probe_path') or
@@ -3049,7 +3837,8 @@ def result_issues(result: dict[str, Any], root: Path) -> list[str]:
             if issue:
                 failures.append(issue)
                 break
-        if run.get('start_response', {}).get('state') == 'healthy' and not run.get('runtime_pcap'):
+        if (run.get('start_response', {}).get('state') == 'healthy' and
+                product_pcap and not run.get('runtime_pcap')):
             failures.append('healthy run lacks second runtime PCAP view')
             break
         if run.get('runtime_pcap'):

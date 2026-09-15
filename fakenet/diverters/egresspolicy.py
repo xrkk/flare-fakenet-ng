@@ -410,6 +410,13 @@ class EgressPolicy(object):
     """Thread-safe state for EgressControl mode."""
 
     RELAY_TOMBSTONE_SECONDS = 120
+    # After the relay closes a connection the client's FIN/ACK exchange and
+    # any immediate retransmission must still be rewritten between the
+    # original server tuple and the relay. Revoking the rewrite the instant
+    # the decision is made strands the client TCB: its teardown packets stop
+    # matching the NAT, the client sees no peer close, and delayed stack
+    # retransmissions later escape with the original tuple.
+    RELAY_TEARDOWN_GRACE_SECONDS = 5.0
 
     def __init__(self, config, local_ipv4, local_ipv6, external_dns_server,
                  clock=None, process_rule_reviewer=None, platform_name=None):
@@ -1017,11 +1024,44 @@ class EgressPolicy(object):
             mapping.expires_at = self._now() + self.relay_idle_timeout + 30
             return True
 
-    def close_relay_mapping(self, generation):
+    def close_relay_mapping(self, generation, grace_seconds=None):
         with self._lock:
             mapping = self._nat_generation.get(int(generation))
-            if mapping:
-                self._remove_mapping_locked(mapping, self._now())
+            if not mapping:
+                return
+            now = self._now()
+            if grace_seconds is None:
+                grace_seconds = self.RELAY_TEARDOWN_GRACE_SECONDS
+            if grace_seconds > 0:
+                self._retain_mapping_for_teardown_locked(
+                    mapping, now, grace_seconds)
+            else:
+                self._remove_mapping_locked(mapping, now)
+
+    def _retain_mapping_for_teardown_locked(self, mapping, now,
+                                            grace_seconds):
+        """Release identity/quota now, keep the packet rewrite briefly.
+
+        The forward and reverse NAT entries stay matchable (but never
+        refreshed) so the client's post-close FIN/ACK/RST and the relay's
+        final teardown keep their translated tuples until the grace expires.
+        """
+        if mapping.active:
+            if self._nat_active_by_source[mapping.sample_ip]:
+                self._nat_active -= 1
+                self._nat_active_by_source[mapping.sample_ip] -= 1
+                if not self._nat_active_by_source[mapping.sample_ip]:
+                    del self._nat_active_by_source[mapping.sample_ip]
+        else:
+            self._release_pending_mapping_locked(mapping)
+        mapping.active = False
+        mapping.expires_at = now + grace_seconds
+        self._nat_generation.pop(mapping.generation, None)
+        self._nat_client.pop(mapping.client_key, None)
+        self._tombstones[mapping.forward_key] = (
+            now + self.RELAY_TOMBSTONE_SECONDS)
+        self._client_tombstones[mapping.client_key] = (
+            now + self.RELAY_TOMBSTONE_SECONDS)
 
     def _remove_mapping_locked(self, mapping, now):
         if mapping.active:
@@ -1072,6 +1112,12 @@ class EgressPolicy(object):
         for mapping in list(self._nat_generation.values()):
             if mapping.expires_at <= now:
                 self._remove_mapping_locked(mapping, now)
+        # Teardown-grace mappings are already gone from the generation table;
+        # expire their retained rewrite entries directly.
+        for table in (self._nat_forward, self._nat_reverse):
+            for key, mapping in list(table.items()):
+                if mapping.expires_at <= now:
+                    table.pop(key, None)
         self._tombstones = {
             key: expires for key, expires in self._tombstones.items()
             if expires > now

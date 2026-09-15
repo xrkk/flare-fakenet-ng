@@ -203,17 +203,61 @@ class EgressPolicyTests(unittest.TestCase):
             '10.0.0.5', 50000))
         self.assertTrue(self.policy.activate_relay_mapping(mapping.generation))
         self.policy.close_relay_mapping(mapping.generation)
-        self.assertIsNone(self.policy.match_relay_forward(
+        # Teardown grace: the rewrite stays matchable (never refreshed) so
+        # the client's post-close FIN/ACK keeps its translated tuple, while
+        # identity tables are released immediately.
+        self.assertIs(mapping, self.policy.match_relay_forward(
             'TCP', '10.0.0.5', 50000, '93.184.216.34', 443))
+        self.assertIs(mapping, self.policy.match_relay_reverse(
+            'TCP', '10.0.0.5', 38927, '10.0.0.5', 50000))
+        self.assertIsNone(self.policy.consume_relay_target('10.0.0.5', 50000))
+        self.assertFalse(self.policy.activate_relay_mapping(
+            mapping.generation))
         with self.assertRaises(ValueError):
             self.policy.create_relay_mapping(
                 '10.0.0.5', 50000, '93.184.216.34', 443,
                 '10.0.0.5', 38927)
+        self.clock.value += self.policy.RELAY_TEARDOWN_GRACE_SECONDS + 1
+        self.assertIsNone(self.policy.match_relay_forward(
+            'TCP', '10.0.0.5', 50000, '93.184.216.34', 443))
+        self.assertIsNone(self.policy.match_relay_reverse(
+            'TCP', '10.0.0.5', 38927, '10.0.0.5', 50000))
         self.clock.value += self.policy.RELAY_TOMBSTONE_SECONDS + 1
         replacement = self.policy.create_relay_mapping(
             '10.0.0.5', 50000, '93.184.216.34', 443,
             '10.0.0.5', 38927)
         self.assertGreater(replacement.generation, mapping.generation)
+
+    def test_close_relay_mapping_without_grace_removes_rewrite(self):
+        self.policy.replace_leases(
+            'api.deepseek.com', [('93.184.216.34', 300)])
+        mapping = self.policy.create_relay_mapping(
+            '10.0.0.5', 50010, '93.184.216.34', 443,
+            '10.0.0.5', 38927)
+        self.assertIs(mapping, self.policy.consume_relay_target(
+            '10.0.0.5', 50010))
+        self.policy.close_relay_mapping(mapping.generation, grace_seconds=0)
+        self.assertIsNone(self.policy.match_relay_forward(
+            'TCP', '10.0.0.5', 50010, '93.184.216.34', 443))
+        self.assertIsNone(self.policy.match_relay_reverse(
+            'TCP', '10.0.0.5', 38927, '10.0.0.5', 50010))
+
+    def test_close_relay_mapping_grace_does_not_refresh(self):
+        self.policy.replace_leases(
+            'api.deepseek.com', [('93.184.216.34', 300)])
+        mapping = self.policy.create_relay_mapping(
+            '10.0.0.5', 50020, '93.184.216.34', 443,
+            '10.0.0.5', 38927)
+        self.assertIs(mapping, self.policy.consume_relay_target(
+            '10.0.0.5', 50020))
+        self.policy.close_relay_mapping(mapping.generation)
+        # Repeated matches during the grace window must not extend it.
+        self.clock.value += self.policy.RELAY_TEARDOWN_GRACE_SECONDS - 0.5
+        self.assertIs(mapping, self.policy.match_relay_forward(
+            'TCP', '10.0.0.5', 50020, '93.184.216.34', 443))
+        self.clock.value += 1
+        self.assertIsNone(self.policy.match_relay_forward(
+            'TCP', '10.0.0.5', 50020, '93.184.216.34', 443))
 
     def test_existing_mapping_survives_dns_ttl_for_sni_completion(self):
         self.policy.replace_leases(

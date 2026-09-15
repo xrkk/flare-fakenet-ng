@@ -35,14 +35,32 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Use one native UTC sample for both JSON representations. WinPS5 DateTime.UtcNow
+# can remain unchanged across a complete short connection.
+if (-not ('ScenarioProbeClock' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class ScenarioProbeClock {
+    [DllImport("kernel32.dll")]
+    private static extern void GetSystemTimePreciseAsFileTime(out long value);
+    public static long UtcTicks() {
+        long value; GetSystemTimePreciseAsFileTime(out value);
+        return value + 504911232000000000L;
+    }
+}
+'@
+}
+
 function Write-JsonLine([string]$Path, [hashtable]$Value) {
-    $Value.utc = [DateTime]::UtcNow.ToString('o')
-    $Value.utc_ticks = [DateTime]::UtcNow.Ticks
+    $ticks = [ScenarioProbeClock]::UtcTicks()
+    $Value.utc = [DateTime]::new($ticks, [DateTimeKind]::Utc).ToString('o')
+    $Value.utc_ticks = $ticks
     $Value.mono = [Diagnostics.Stopwatch]::GetTimestamp()
     if (-not $Value.ContainsKey('pid')) { $Value.pid = $PID }
     if (-not $Value.ContainsKey('worker')) { $Value.worker = 1 }
     if (-not $Value.ContainsKey('seq')) { $Value.seq = 0 }
-    [IO.File]::AppendAllText($Path, (($Value | ConvertTo-Json -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+    [IO.File]::AppendAllText($Path, (($Value | ConvertTo-Json -Depth 12 -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
 }
 
 function Write-NativeJsonLine([string]$Path, [hashtable]$Value, [Int64]$UtcTicks, [Int64]$Mono, [Int64]$Frequency) {
@@ -54,7 +72,7 @@ function Write-NativeJsonLine([string]$Path, [hashtable]$Value, [Int64]$UtcTicks
     $Value.stopwatch_frequency = $Frequency
     if (-not $Value.ContainsKey('worker')) { $Value.worker = 1 }
     if (-not $Value.ContainsKey('seq')) { $Value.seq = 0 }
-    [IO.File]::AppendAllText($Path, (($Value | ConvertTo-Json -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+    [IO.File]::AppendAllText($Path, (($Value | ConvertTo-Json -Depth 12 -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
 }
 
 function Ensure-Output([string]$Path) {
@@ -63,8 +81,8 @@ function Ensure-Output([string]$Path) {
     if (Test-Path $Path) { throw "refusing to overwrite evidence $Path" }
 }
 
-function Get-Endpoint([string]$Bucket, [string]$Host, [int]$Port, [string]$Protocol) {
-    if ($Host -and $Port -gt 0) { return @{ host = $Host; port = $Port; protocol = $Protocol } }
+function Get-Endpoint([string]$Bucket, [string]$EndpointHost, [int]$Port, [string]$Protocol) {
+    if ($EndpointHost -and $Port -gt 0) { return @{ host = $EndpointHost; port = $Port; protocol = $Protocol } }
     switch ($Bucket) {
         'B1' { return @{ host = 'api.deepseek.com'; port = 443; protocol = 'tls' } }
         'B4' { return @{ host = 'api.deepseek.com'; port = 443; protocol = 'tls' } }
@@ -87,29 +105,35 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 public static class ScenarioProbeClient {
+  [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+  private static extern void GetSystemTimePreciseAsFileTime(out long value);
+  private static long UtcTicks() {
+    long value; GetSystemTimePreciseAsFileTime(out value);
+    return value + 504911232000000000L;
+  }
   public static int Main(string[] a) {
     if (a.Length != 6) return 2;
     var retrySeconds = Int32.Parse(a[5]);
     if (retrySeconds < 20 || retrySeconds > 120) return 2;
     var retryDeadline = DateTime.UtcNow.AddSeconds(retrySeconds); var attempt = 0;
     while (!File.Exists(a[2]) && DateTime.UtcNow < retryDeadline) {
-      attempt++; Console.WriteLine("CONNECT_ATTEMPT|" + attempt + "|" + DateTime.UtcNow.Ticks + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency);
+      attempt++; Console.WriteLine("CONNECT_ATTEMPT|" + attempt + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency);
       TcpClient c = null;
       try { c = new TcpClient();
         var ar = c.BeginConnect(a[0], Int32.Parse(a[1]), null, null);
         if (!ar.AsyncWaitHandle.WaitOne(1500)) throw new TimeoutException("connect timeout");
-        c.EndConnect(ar); Console.WriteLine("ESTABLISHED|" + c.Client.LocalEndPoint + "|" + c.Client.RemoteEndPoint + "|" + DateTime.UtcNow.Ticks + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency);
+        c.EndConnect(ar); Console.WriteLine("ESTABLISHED|" + c.Client.LocalEndPoint + "|" + c.Client.RemoteEndPoint + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency);
         var every = Math.Max(1, Int32.Parse(a[3]));
         var request = Encoding.ASCII.GetBytes("FNPR/1|" + a[4] + "|target\n");
         var stream = c.GetStream(); var next = DateTime.UtcNow; var count = 0;
         while (!File.Exists(a[2])) {
           if (DateTime.UtcNow >= next) { stream.Write(request, 0, request.Length); stream.Flush(); count++;
-            Console.WriteLine("SEND|" + count + "|" + DateTime.UtcNow.Ticks + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); next = DateTime.UtcNow.AddMilliseconds(every); }
+            Console.WriteLine("SEND|" + count + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); next = DateTime.UtcNow.AddMilliseconds(every); }
           Thread.Sleep(Math.Min(25, every));
         }
-        c.Close(); Console.WriteLine("CLOSE|" + DateTime.UtcNow.Ticks + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); return 0;
+        c.Close(); Console.WriteLine("CLOSE|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); return 0;
       } catch (Exception ex) {
-        Console.WriteLine("ERROR|" + attempt + "|" + ex.GetType().Name + "|" + DateTime.UtcNow.Ticks + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency);
+        Console.WriteLine("ERROR|" + attempt + "|" + ex.GetType().Name + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency);
         if (c != null) c.Close(); Thread.Sleep(250);
       }
     }
@@ -162,8 +186,10 @@ function Invoke-AdditionalTargets([object[]]$Targets, [string]$Path, [string]$To
                 $local = $udp.Client.LocalEndPoint.ToString()
                 $remote = $udp.Client.RemoteEndPoint.ToString()
                 $payload = [Text.Encoding]::ASCII.GetBytes("SST-$Token-case-$index")
+                $sendBefore = [ScenarioProbeClock]::UtcTicks()
                 $count = $udp.Send($payload, $payload.Length)
-                Write-JsonLine $Path @{ event = 'case_udp_sent'; nonce = $Token; connection_id = $connection; case_index = $index; expectation = $expectation; src = $local; dst = "$caseHost`:$port"; actual_dst = $remote; protocol = 'udp'; bytes = $count; cadence_ms = $Cadence }
+                $sendAfter = [ScenarioProbeClock]::UtcTicks()
+                Write-JsonLine $Path @{ event = 'case_udp_sent'; nonce = $Token; connection_id = $connection; case_index = $index; expectation = $expectation; src = $local; dst = "$caseHost`:$port"; actual_dst = $remote; protocol = 'udp'; bytes = $count; byte_count = $count; send_before_ticks = $sendBefore; send_after_ticks = $sendAfter; cadence_ms = $Cadence }
             } catch {
                 Write-JsonLine $Path @{ event = 'case_error'; nonce = $Token; connection_id = $connection; case_index = $index; expectation = $expectation; protocol = 'udp'; error_type = $_.Exception.GetType().Name; message = $_.Exception.Message }
             } finally {
@@ -186,6 +212,7 @@ function Invoke-AdditionalTargets([object[]]$Targets, [string]$Path, [string]$To
                 $stream = [Net.Security.SslStream]::new($client.GetStream(), $false)
                 $serverName = if ($sni) { $sni } else { $caseHost }
                 Write-JsonLine $Path @{ event = 'case_tls_handshake_attempt'; nonce = $Token; connection_id = $connection; case_index = $index; expectation = $expectation; sni = $serverName; cadence_ms = $Cadence }
+                $stream.ReadTimeout = 5000; $stream.WriteTimeout = 5000
                 $stream.AuthenticateAsClient($serverName)
                 $bytes = [Text.Encoding]::ASCII.GetBytes("GET /$Token/case/$index HTTP/1.1`r`nHost: $caseHost`r`nConnection: close`r`n`r`n")
                 $stream.Write($bytes, 0, $bytes.Length);$stream.Flush()
@@ -219,13 +246,18 @@ function Invoke-PositiveCurl([string]$Path, [string]$Token) {
     $stderr = Join-Path $root 'positive-curl.stderr'
     if ((Test-Path $stdout) -or (Test-Path $stderr)) { throw 'positive curl output already exists' }
     $uri = "https://api.deepseek.com/$Token"
+    $dnsBefore = [ScenarioProbeClock]::UtcTicks()
+    $dnsIPv4 = @([Net.Dns]::GetHostAddresses('api.deepseek.com') | Where-Object {$_.AddressFamily -eq 'InterNetwork'} | ForEach-Object {$_.ToString()} | Sort-Object -Unique)
+    if (-not $dnsIPv4.Count) { throw 'curl DNS IPv4 set is empty' }
     $process = Start-Process -FilePath 'curl.exe' -ArgumentList @('--noproxy','*','-sS','-o','NUL','-w','%{http_code}','--connect-timeout','10','--max-time','30',$uri) -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -WindowStyle Hidden
-    $creation = (Get-Process -Id $process.Id -ErrorAction Stop).StartTime.ToUniversalTime().Ticks
-    Write-JsonLine $Path @{ event = 'curl_started'; nonce = $Token; pid = $process.Id; creation_ticks = $creation; url = $uri; command = 'curl.exe --noproxy * -sS -o NUL -w %{http_code} --connect-timeout 10 --max-time 30' }
+    # Retain the native handle before exit; WinPS5 otherwise loses ExitCode.
+    $nativeHandle = $process.Handle
+    $creation = $process.StartTime.ToUniversalTime().Ticks
+    Write-JsonLine $Path @{ event = 'curl_started'; nonce = $Token; pid = $process.Id; creation_ticks = $creation; dns_before_ticks = $dnsBefore; dns_ipv4 = $dnsIPv4; url = $uri; command = 'curl.exe --noproxy * -sS -o NUL -w %{http_code} --connect-timeout 10 --max-time 30' }
     if (-not $process.WaitForExit(45000)) { Stop-Process -Id $process.Id -Force; throw 'positive curl exceeded 45 seconds' }
     $out = if (Test-Path $stdout) { Get-Content -LiteralPath $stdout -Raw } else { '' }
     $err = if (Test-Path $stderr) { Get-Content -LiteralPath $stderr -Raw } else { '' }
-    Write-JsonLine $Path @{ event = 'curl_completed'; nonce = $Token; pid = $process.Id; exit_code = $process.ExitCode; http_code = $out.Trim(); stderr = $err.Trim(); url = $uri }
+    Write-JsonLine $Path @{ event = 'curl_completed'; nonce = $Token; pid = $process.Id; exit_code = $process.ExitCode; http_code = "$out".Trim(); stderr = "$err".Trim(); url = $uri }
 }
 
 function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]$Stop, [string]$Start, [int]$Seconds, [string]$Tempo, [string]$Variant, [string]$Interleave, [int]$Cadence, [string]$TargetHost, [int]$TargetPort, [string]$TargetProtocol, [string]$ProcessMode, [string]$TlsServerName, [string]$FnprRole, [string]$AdditionalTargetsJson, [string]$CaseFile, [int]$StartupRetrySeconds) {
@@ -239,7 +271,7 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
     # The launcher is deliberately live before the lifecycle operation but it
     # must not make a socket until the runner releases this recorded gate.
     # This makes before/during/after/restart/stop windows observable facts.
-    try { $additionalTargets = @($AdditionalTargetsJson | ConvertFrom-Json) } catch { throw 'AdditionalTargetsJson is not a JSON array' }
+    try { $parsedTargets = ConvertFrom-Json -InputObject $AdditionalTargetsJson; $additionalTargets = @(foreach ($target in $parsedTargets) { $target }) } catch { throw 'AdditionalTargetsJson is not a JSON array' }
     if ($additionalTargets.Count -gt 8) { throw 'AdditionalTargetsJson exceeds bounded case count' }
     if ($StartupRetrySeconds -lt 20 -or $StartupRetrySeconds -gt 120) { throw 'StartupRetrySeconds is outside the bounded range' }
     Write-JsonLine $Path @{ event = 'ready'; nonce = $Token; pid = $PID; profile = $Bucket; variant = $Variant; tempo = $Tempo; interleave = $Interleave; cadence_ms = $Cadence; target_host = $endpoint.host; target_port = $endpoint.port; target_protocol = $endpoint.protocol; process_mode = $ProcessMode; fnpr_role = $FnprRole; additional_targets = $additionalTargets; startup_retry_seconds = $StartupRetrySeconds; creation_ticks = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks; stopwatch_frequency = [Diagnostics.Stopwatch]::Frequency }
@@ -254,10 +286,11 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
         $release = Get-Content -LiteralPath $CaseFile -Raw -ErrorAction Stop
         if ($release.Trim() -ne 'after-healthy') { throw 'case release has an invalid lifecycle phase' }
         Write-JsonLine $Path @{ event = 'cases_released'; nonce = $Token; phase = $release.Trim(); count = $additionalTargets.Count }
+        $casesInvoked.Value = $true
         Invoke-AdditionalTargets $additionalTargets $Path $Token $cadenceMs
         if (($Bucket -eq 'B1' -or $Bucket -eq 'B4') -and -not $curlInvoked.Value) {
-            Invoke-PositiveCurl $Path $Token
             $curlInvoked.Value = $true
+            Invoke-PositiveCurl $Path $Token
         }
         $casesInvoked.Value = $true
     }
@@ -323,8 +356,10 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
                 Invoke-ReleasedCases
                 $sequence++
                 $payload = [Text.Encoding]::ASCII.GetBytes("SST-$Token-udp-$sequence")
+                $sendBefore = [ScenarioProbeClock]::UtcTicks()
                 $count = $udp.Send($payload, $payload.Length)
-                Write-JsonLine $Path @{ event = 'udp_sent'; nonce = $Token; connection_id = $connection; seq = $sequence; src = $local; dst = "$($endpoint.host):$($endpoint.port)"; actual_dst = $remote; protocol = 'udp'; bytes = $count; cadence_ms = $cadenceMs }
+                $sendAfter = [ScenarioProbeClock]::UtcTicks()
+                Write-JsonLine $Path @{ event = 'udp_sent'; nonce = $Token; connection_id = $connection; seq = $sequence; src = $local; dst = "$($endpoint.host):$($endpoint.port)"; actual_dst = $remote; protocol = 'udp'; bytes = $count; byte_count = $count; send_before_ticks = $sendBefore; send_after_ticks = $sendAfter; cadence_ms = $cadenceMs }
                 Start-Sleep -Milliseconds $cadenceMs
             }
         } catch {
@@ -360,6 +395,7 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
                 # as a separately correlated probe action; the host still
                 # requires all-component send evidence and no NIC leakage.
                 Write-JsonLine $Path @{ event = 'tls_handshake_attempt'; nonce = $Token; connection_id = $connection; seq = $sequence; cadence_ms = $cadenceMs; sni = $sni; bytes = 0 }
+                $ssl.ReadTimeout = 5000; $ssl.WriteTimeout = 5000
                 $ssl.AuthenticateAsClient($sni)
                 $requestOrdinal = 0
                 while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path $Stop)) {

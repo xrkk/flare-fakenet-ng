@@ -21,6 +21,8 @@ from typing import Any, Iterator
 
 HERE = Path(__file__).resolve().parent
 ADJUDICATOR = HERE / 'sst_fault_evidence.py'
+sys.path.insert(0, str(HERE))
+import scenario_tcpip as tcpip
 
 
 def record(path: Path, root: Path) -> dict[str, Any]:
@@ -134,10 +136,8 @@ def build_case(root: Path, capture: dict[str, Any]) -> dict[str, Any]:
                 'baseline', 'recovery_audit', 'recovery_healthy', 'cleanup', 'terminal')
     files = {name: _relative(root, raw, name) for name in required}
     ipc = list(json_lines(files['ipc'], root))
-    start = next(((event, item) for event, item in ipc
-                  if event.get('event') == 'response' and event.get('frame', {}).get('seq') == 1), None)
-    if start is None:
-        raise ValueError('start IPC response seq=1 missing')
+    _request, response = tcpip.pair_ipc([row for row, _ in ipc], run_id, 'start')
+    start = ipc[response]
     receipt_meta = json.loads(files['receipt_metadata'].read_text(encoding='utf-8-sig'))
     if not isinstance(receipt_meta, list):
         raise ValueError('receipt metadata must be an array')
@@ -200,12 +200,12 @@ def build_case(root: Path, capture: dict[str, Any]) -> dict[str, Any]:
                 all(row.get(k) == event.get(k) for k in ('pid', 'worker', 'seq', 'nonce'))), None)
     if end is None:
         raise ValueError('probe termination event missing')
-    port = event['src'].rsplit(':', 1)[1]
-    flow = next((item for text, item in text_lines(files['run_log'], root)
-                 if 'PROCESS_FLOW ' in text and 'pid=%s ' % event['pid'] in text and
-                 ('sport=%s ' % port in text or 'sport=%s\n' % port in text)), None)
-    if flow is None:
-        raise ValueError('run.log PROCESS_FLOW for probe missing')
+    matching_flows = [item for text, item in text_lines(files['run_log'], root)
+                      if 'PROCESS_FLOW ' in text and tcpip.flow_matches(tcpip.fields(text),
+                      event['pid'], event['src'], event.get('actual_dst') or event['dst'])]
+    if not matching_flows:
+        raise ValueError('run.log exact PROCESS_FLOW for probe missing')
+    flow = _latest_raw_ref(root, matching_flows)
     baseline = json.loads(files['baseline'].read_text(encoding='utf-8-sig'))
     if isinstance(baseline, list):
         baseline_index = next((i for i, item in enumerate(baseline) if item.get('run_id') == run_id), None)
@@ -219,7 +219,7 @@ def build_case(root: Path, capture: dict[str, Any]) -> dict[str, Any]:
         raise ValueError('recovery audit empty')
     audit_ref = dict(audits[-1][1]); audit_ref['event_key'] = 'json:/current'
     named = list(files.values()) + extras
-    return {
+    case = {
         'schema': 'sst.fault-evidence.case.v1', 'synthetic': False,
         'case_id': str(capture.get('case_id') or ('scenario-' + capture['scenario_id'])),
         'candidate_id': candidate, 'run_id': run_id, 'fault': fault, 'nonce': nonce,
@@ -238,13 +238,47 @@ def build_case(root: Path, capture: dict[str, Any]) -> dict[str, Any]:
         'recovery_refs': [baseline_ref, audit_ref, ref(files['recovery_healthy'], root, key='json:/health/0'), ref(files['cleanup'], root)],
         'exception_refs': blocks, 'files': [record(path, root) for path in named],
     }
+    kind = capture.get('observation_kind', 'packet')
+    if kind not in ('packet', 'tcpip_etw'):
+        raise ValueError('unknown connection observation kind')
+    if kind == 'tcpip_etw':
+        etl = _relative(root, raw, 'pktmon_etl')
+        metadata = _relative(root, raw, 'pktmon_metadata')
+        managed_pid, _ = tcpip.managed_identity([row for row, _ in ipc], run_id)
+        observed = tcpip.connection_events(files['pktmon'].read_bytes(), str(files['pktmon'].relative_to(root)),
+            files['run_log'].read_text(encoding='utf-8-sig'), event['pid'], event['src'],
+            event.get('actual_dst') or event['dst'], managed_pid)
+        if observed['tuple_terminals']:
+            tcpip.validate_tuple_probe([row for row, _ in events], event, event['src'], event.get('actual_dst') or event['dst'])
+        case['schema'] = 'sst.fault-evidence.case.v2'
+        case['session'].update(observation_kind=kind, packet_refs=[],
+            connection_event_refs=[e['ref'] for e in observed['events']],
+            generation_manifest=observed['generation_manifest'],
+            tuple_terminal_refs=[e['ref'] for e in observed['tuple_terminals']],
+            connection_capture=dict(etl_path=str(etl.relative_to(root)),
+                text_path=str(files['pktmon'].relative_to(root)), metadata_ref=ref(metadata, root)))
+        case['files'].extend(record(path, root) for path in (etl, metadata))
+    return case
+
 
 
 def adjudicate(root: Path, capture: dict[str, Any], output: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-    case = build_case(root, capture)
     case_path = output.with_suffix('.case.json')
     if case_path.exists() or output.exists():
         raise FileExistsError('case/result already exists')
+    try:
+        case = build_case(root, capture)
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        # An unsupported original is an explicit failure, not a missing result
+        # and never an invented case with partial/filtered evidence references.
+        result = {'schema': 'sst.fault-evidence.result.v1', 'case_id': capture.get('case_id'),
+                  'passed': False, 'synthetic': bool(capture.get('synthetic')),
+                  'checks': [{'id': 'case_construction', 'passed': False,
+                              'reason': str(exc), 'evidence_refs': []}],
+                  'unsupported_observations': [str(exc)]}
+        with output.open('x', encoding='utf-8') as stream:
+            stream.write(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
+        return {}, result
     case_path.write_text(json.dumps(case, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     process = subprocess.run([sys.executable, str(ADJUDICATOR), '--expected-candidate', case['candidate_id'],
                               '--input', str(case_path), '--evidence-root', str(root), '--output', str(output)],
