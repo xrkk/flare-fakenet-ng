@@ -317,6 +317,20 @@ def connection_events(raw, path, log, pid, src, dst, managed_pid, policy_window=
         for line in log.splitlines():
             m = legacy.search(line)
             if m and (pid is None or m.group(1) == str(pid)):
+                # Anchor the synthesized row to the requested line's real
+                # bytes so downstream time-window math has a record.
+                offset = 0
+                anchor = None
+                for candidate in log.splitlines(keepends=True):
+                    if candidate.rstrip('\r\n') == line:
+                        anchor = candidate
+                        break
+                    offset += len(candidate.encode())
+                ref = dict(path=log_path, byte_start=offset,
+                           byte_end=offset + len(anchor.encode()) if anchor else offset)
+                primary_policy['inside'].append(
+                    dict(text=line, ref=ref,
+                         fields=dict(disposition='LEGACY_SINKHOLE')))
                 matching = [dict(disposition='LEGACY_SINKHOLE')]
                 break
     dispositions = {f.get('disposition') for f in matching}
