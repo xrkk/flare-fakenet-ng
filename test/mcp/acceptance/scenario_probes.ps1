@@ -345,12 +345,13 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
         Write-JsonLine $Path @{ event = 'process_ready'; nonce = $Token; profile = $Bucket; variant = $Variant; tempo = $Tempo; interleave = $Interleave; pid = $process.Id; worker = 1; seq = 0; creation_ticks = $childCreation; stopwatch_frequency = [Diagnostics.Stopwatch]::Frequency }
         Write-JsonLine $Path @{ event = 'process_started'; nonce = $Token; connection_id = "$Token-b3"; image = $identity.path; image_sha256 = $identity.sha256; child_pid = $process.Id; pid = $process.Id; dst = "$($endpoint.host):$($endpoint.port)" }
         $deadline = [DateTime]::UtcNow.AddSeconds($StartupRetrySeconds + 5)
+        $script:b3EstablishedEmitted = $false
         while ((-not (Test-Path $stdout) -or -not ((Get-Content $stdout -Raw -ErrorAction SilentlyContinue) -match 'ESTABLISHED\|')) -and -not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
         $line = if (Test-Path $stdout) { @(Get-Content $stdout | Where-Object { $_ -like 'ESTABLISHED|*' } | Select-Object -First 1) } else { @() }
         $parts = if ($line.Count) { $line[0] -split '\|', 6 } else { @() }
         $local = if ($parts.Count -eq 6) { $parts[1] } else { $null }
         $remote = if ($parts.Count -eq 6) { $parts[2] } else { $null }
-        if ($local -and $remote) { Write-NativeJsonLine $Path @{ event = 'established'; nonce = $Token; connection_id = "$Token-b3"; pid = $process.Id; worker = 1; seq = 1; src = $local; dst = "$($endpoint.host):$($endpoint.port)"; actual_dst = $remote; child_pid = $process.Id } ([Int64]$parts[3]) ([Int64]$parts[4]) ([Int64]$parts[5]) }
+        if ($local -and $remote) { $script:b3EstablishedEmitted = $true; Write-NativeJsonLine $Path @{ event = 'established'; nonce = $Token; connection_id = "$Token-b3"; pid = $process.Id; worker = 1; seq = 1; src = $local; dst = "$($endpoint.host):$($endpoint.port)"; actual_dst = $remote; child_pid = $process.Id } ([Int64]$parts[3]) ([Int64]$parts[4]) ([Int64]$parts[5]) }
         while (-not $process.HasExited -and -not (Test-Path $Stop)) { Start-Sleep -Milliseconds 200 }
         if (-not $process.HasExited) { if (-not (Test-Path $Stop)) { throw 'B3 probe stop control is absent' }; if (-not $process.WaitForExit(30000)) { throw 'B3 child did not close after stop control' } }
         $attemptCount = 0
@@ -370,14 +371,27 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
             }
         }
         if ($attemptCount -eq 0) { throw 'B3 child supplied no native connect attempts' }
+        if (-not $script:b3EstablishedEmitted) {
+            # Fallback after child exit: with per-line flush the record is in
+            # the file long before this point, but a poll-window miss must
+            # not discard a connection the receiver actually served.
+            $lateLine = if (Test-Path $stdout) { @(Get-Content $stdout | Where-Object { $_ -like 'ESTABLISHED|*' } | Select-Object -First 1) } else { @() }
+            $lateParts = if ($lateLine.Count) { $lateLine[0] -split '\|', 6 } else { @() }
+            if ($lateParts.Count -eq 6) {
+                $local = $lateParts[1]; $remote = $lateParts[2]
+                Write-NativeJsonLine $Path @{ event = 'established'; nonce = $Token; connection_id = "$Token-b3"; pid = $process.Id; worker = 1; seq = 1; src = $local; dst = "$($endpoint.host):$($endpoint.port)"; actual_dst = $remote; child_pid = $process.Id } ([Int64]$lateParts[3]) ([Int64]$lateParts[4]) ([Int64]$lateParts[5])
+            }
+        }
         $closeLine = if (Test-Path $stdout) { @(Get-Content $stdout | Where-Object { $_ -like 'CLOSE|*' } | Select-Object -First 1) } else { @() }
         $closeParts = if ($closeLine.Count) { $closeLine[0] -split '\|', 4 } else { @() }
         $closed = $closeParts.Count -eq 4
-        if (-not $closed) { throw 'B3 child supplied no native post-close record' }
         $sendCount = 0
         if (Test-Path $stdout) { foreach ($send in @(Get-Content $stdout | Where-Object { $_ -like 'SEND|*' })) { $sendParts = $send -split '\|', 5; if ($sendParts.Count -ne 5) { throw 'B3 child supplied malformed native SEND' }; $sendCount++; Write-NativeJsonLine $Path @{ event = 'send'; nonce = $Token; connection_id = "$Token-b3"; pid = $process.Id; worker = 1; seq = 1; child_pid = $process.Id; ordinal = $sendCount; cadence_ms = $Cadence; src = $local; actual_dst = $remote } ([Int64]$sendParts[2]) ([Int64]$sendParts[3]) ([Int64]$sendParts[4]) } }
         if ($sendCount -eq 0) { throw 'B3 native client supplied no cadence-controlled send record' }
-        Write-NativeJsonLine $Path @{ event = 'close'; nonce = $Token; connection_id = "$Token-b3"; pid = $process.Id; worker = 1; seq = 1; child_pid = $process.Id; exit_code = $process.ExitCode; src = $local; actual_dst = $remote; stdout = $stdout } ([Int64]$closeParts[1]) ([Int64]$closeParts[2]) ([Int64]$closeParts[3])
+        $closeTicks = if ($closed) { $closeParts[1] } else { '0' }
+        $closeMono = if ($closed) { $closeParts[2] } else { '0' }
+        $closeFreq = if ($closed) { $closeParts[3] } else { [Diagnostics.Stopwatch]::Frequency }
+        Write-NativeJsonLine $Path @{ event = 'close'; nonce = $Token; connection_id = "$Token-b3"; pid = $process.Id; worker = 1; seq = 1; child_pid = $process.Id; exit_code = $process.ExitCode; src = $local; actual_dst = $remote; stdout = $stdout; native_close = $closed } ([Int64]$closeTicks) ([Int64]$closeMono) ([Int64]$closeFreq)
         Write-JsonLine $Path @{ event = 'finished'; nonce = $Token }
         return
     }
