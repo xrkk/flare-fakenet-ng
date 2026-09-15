@@ -140,18 +140,18 @@ public static class ScenarioProbeClient {
       try { c = new TcpClient();
         var ar = c.BeginConnect(a[0], Int32.Parse(a[1]), null, null);
         if (!ar.AsyncWaitHandle.WaitOne(1500)) throw new TimeoutException("connect timeout");
-        c.EndConnect(ar); Console.WriteLine("ESTABLISHED|" + c.Client.LocalEndPoint + "|" + c.Client.RemoteEndPoint + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency);
+        c.EndConnect(ar); Console.WriteLine("ESTABLISHED|" + c.Client.LocalEndPoint + "|" + c.Client.RemoteEndPoint + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush();
         var every = Math.Max(1, Int32.Parse(a[3]));
         var request = Encoding.ASCII.GetBytes("FNPR/1|" + a[4] + "|target\n");
         var stream = c.GetStream(); var next = DateTime.UtcNow; var count = 0;
         while (!File.Exists(a[2])) {
           if (DateTime.UtcNow >= next) { stream.Write(request, 0, request.Length); stream.Flush(); count++;
-            Console.WriteLine("SEND|" + count + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); next = DateTime.UtcNow.AddMilliseconds(every); }
+            Console.WriteLine("SEND|" + count + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush(); next = DateTime.UtcNow.AddMilliseconds(every); }
           Thread.Sleep(Math.Min(25, every));
         }
-        c.Close(); Console.WriteLine("CLOSE|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); return 0;
+        c.Close(); Console.WriteLine("CLOSE|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush(); return 0;
       } catch (Exception ex) {
-        Console.WriteLine("ERROR|" + attempt + "|" + ex.GetType().Name + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency);
+        Console.WriteLine("ERROR|" + attempt + "|" + ex.GetType().Name + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush();
         if (c != null) c.Close(); Thread.Sleep(250);
       }
     }

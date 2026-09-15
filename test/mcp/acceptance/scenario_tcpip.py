@@ -132,6 +132,7 @@ def parse_line(text, ref):
         return event
     m = re.fullmatch(r'connection ('+TCB+r'): (?:Send Retransmit round with SndUna = \d+, Round = \d+, SRTT = \d+, RTO = \d+\.|Leaving loss recovery phase with SndUna = \d+ and SndMax = \d+\.|retransmitting connect attempt, RexmitCount = \d+\.)', body)
     m = m or re.fullmatch(r'connection ('+TCB+r') spurious RTO detection (?:initiated|terminated) at \d+\.', body)
+    m = m or re.fullmatch(r'connection ('+TCB+r') (?:send: )?Beginning zero-window probing with SndUna = \d+\.', body)
     if m:
         event.update(tcb=m[1].upper(), kind='retransmit context')
         return event
