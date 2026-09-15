@@ -348,7 +348,7 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
         $script:b3EstablishedEmitted = $false
         while ((-not (Test-Path $stdout) -or -not ((Get-Content $stdout -Raw -ErrorAction SilentlyContinue) -match 'ESTABLISHED\|')) -and -not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
         $line = if (Test-Path $stdout) { @(Get-Content $stdout | Where-Object { $_ -like 'ESTABLISHED|*' } | Select-Object -First 1) } else { @() }
-        $parts = if ($line.Count) { $line[0] -split '\|', 6 } else { @() }
+        $parts = if (@($line).Count) { @($line)[0] -split '\|', 6 } else { @() }
         $local = if ($parts.Count -eq 6) { $parts[1] } else { $null }
         $remote = if ($parts.Count -eq 6) { $parts[2] } else { $null }
         if ($local -and $remote) { $script:b3EstablishedEmitted = $true; Write-NativeJsonLine $Path @{ event = 'established'; nonce = $Token; connection_id = "$Token-b3"; pid = $process.Id; worker = 1; seq = 1; src = $local; dst = "$($endpoint.host):$($endpoint.port)"; actual_dst = $remote; child_pid = $process.Id } ([Int64]$parts[3]) ([Int64]$parts[4]) ([Int64]$parts[5]) }
@@ -376,7 +376,7 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
             # the file long before this point, but a poll-window miss must
             # not discard a connection the receiver actually served.
             $lateLine = if (Test-Path $stdout) { @(Get-Content $stdout | Where-Object { $_ -like 'ESTABLISHED|*' } | Select-Object -First 1) } else { @() }
-            $lateParts = if ($lateLine.Count) { $lateLine[0] -split '\|', 6 } else { @() }
+            $lateParts = if (@($lateLine).Count) { @($lateLine)[0] -split '\|', 6 } else { @() }
             if ($lateParts.Count -eq 6) {
                 $local = $lateParts[1]; $remote = $lateParts[2]
                 Write-NativeJsonLine $Path @{ event = 'established'; nonce = $Token; connection_id = "$Token-b3"; pid = $process.Id; worker = 1; seq = 1; src = $local; dst = "$($endpoint.host):$($endpoint.port)"; actual_dst = $remote; child_pid = $process.Id } ([Int64]$lateParts[3]) ([Int64]$lateParts[4]) ([Int64]$lateParts[5])
@@ -388,13 +388,13 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
                 $sendCount0 = @((Get-Content $stdout) | Where-Object { $_ -like 'SEND|*' }).Count
                 if ($sendCount0 -gt 0) {
                     $firstRaw = @((Get-Content $stdout) | Select-Object -First 1)
-                    $firstText = if ($firstRaw.Count) { $firstRaw[0].Substring(0, [Math]::Min(60, $firstRaw[0].Length)) } else { '' }
+                    $firstText = if (@($firstRaw).Count) { @($firstRaw)[0].Substring(0, [Math]::Min(60, @($firstRaw)[0].Length)) } else { '' }
                     Write-JsonLine $Path @{ event = 'b3_established_parse_anomaly'; nonce = $Token; sends = $sendCount0; first_line = $firstText }
                 }
             }
         }
         $closeLine = if (Test-Path $stdout) { @(Get-Content $stdout | Where-Object { $_ -like 'CLOSE|*' } | Select-Object -First 1) } else { @() }
-        $closeParts = if ($closeLine.Count) { $closeLine[0] -split '\|', 4 } else { @() }
+        $closeParts = if (@($closeLine).Count) { @($closeLine)[0] -split '\|', 4 } else { @() }
         $closed = $closeParts.Count -eq 4
         $sendCount = 0
         if (Test-Path $stdout) { foreach ($send in @(Get-Content $stdout | Where-Object { $_ -like 'SEND|*' })) { $sendParts = $send -split '\|', 5; if ($sendParts.Count -ne 5) { throw 'B3 child supplied malformed native SEND' }; $sendCount++; Write-NativeJsonLine $Path @{ event = 'send'; nonce = $Token; connection_id = "$Token-b3"; pid = $process.Id; worker = 1; seq = 1; child_pid = $process.Id; ordinal = $sendCount; cadence_ms = $Cadence; src = $local; actual_dst = $remote } ([Int64]$sendParts[2]) ([Int64]$sendParts[3]) ([Int64]$sendParts[4]) } }
