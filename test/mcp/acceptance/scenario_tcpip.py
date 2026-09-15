@@ -367,7 +367,8 @@ def connection_events(raw, path, log, pid, src, dst, managed_pid, policy_window=
                 raise ValueError('primary and peer share TCB')
     elif disposition not in ('ALLOW_EXTERNAL', 'ALLOW_TAKEOVER_SINK',
                              'ALLOW_INTERNAL_UPSTREAM', 'ALLOW_REVIEWED_IP',
-                             'ESTABLISHED_BYPASS', 'PROCESS_REDIRECT'):
+                             'ESTABLISHED_BYPASS', 'PROCESS_REDIRECT',
+                             'LEGACY_SINKHOLE'):
         raise ValueError('unsupported direct disposition: ' + str(disposition))
     # ALLOW_REVIEWED_IP is a reviewed-rule direct upstream: the reviewed
     # egress path relays without a local FakeNet peer, like ALLOW_EXTERNAL.
