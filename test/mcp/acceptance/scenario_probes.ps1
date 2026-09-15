@@ -147,8 +147,22 @@ public static class ScenarioProbeClient {
         $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
         if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
         if (-not (Test-Path $csc)) { throw 'C# compiler unavailable for B3 probe executable' }
-        & $csc /nologo /target:exe ("/out:$exe") $source
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) { throw 'B3 probe executable compilation failed' }
+        # A freshly written source or a just-recreated output is routinely
+        # held for a moment by antivirus filters; retry across that window
+        # instead of failing the scenario, and keep the compiler diagnostics
+        # in the failure when retries are exhausted (discovery100-58
+        # sst-041/042/043: three identical compilation failures with the
+        # wrapper message only).
+        $compiled = $false
+        $attempts = @()
+        $lastOutput = ''
+        for ($attempt = 1; $attempt -le 5 -and -not $compiled; $attempt++) {
+            $lastOutput = (& $csc /nologo /target:exe ("/out:$exe") $source 2>&1 | Out-String)
+            $compiled = ($LASTEXITCODE -eq 0) -and (Test-Path $exe)
+            $attempts += "attempt=$attempt exit=$LASTEXITCODE exe=$(Test-Path $exe)"
+            if (-not $compiled) { Start-Sleep -Seconds 2 }
+        }
+        if (-not $compiled) { throw ('B3 probe executable compilation failed: ' + ($attempts -join '; ') + ' csc said: ' + $lastOutput) }
     }
     $row = @{ path = $exe; sha256 = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower(); public_ipv4 = '198.51.100.77'; private_ipv4 = '192.168.204.1' }
     [IO.File]::WriteAllText($ResultPath, ($row | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
