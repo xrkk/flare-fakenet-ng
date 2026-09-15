@@ -1871,6 +1871,19 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     all(tcpip.fields(line).get(k) == v for k,v in wanted.items())):
                 policies.append(dict(path=by_name['run.log']['path'], byte_start=offset,
                                      byte_end=offset+len(line.encode()), event_key='text'))
+            elif 'PROCESS_REDIRECT_MAPPING_CREATED' in line:
+                # B3 process-redirect flows are audited under their own
+                # field names (source_ipv4/source_port, original_ipv4/
+                # original_port) instead of PROCESS_FLOW's tuple keys
+                # (discovery100-66 sst-041..044).
+                fields = tcpip.fields(line)
+                if (fields.get('pid') == wanted['pid'] and
+                        fields.get('source_ipv4') == wanted['src'] and
+                        fields.get('source_port') == wanted['sport'] and
+                        fields.get('original_ipv4') == wanted['dst'] and
+                        fields.get('original_port') == wanted['dport']):
+                    policies.append(dict(path=by_name['run.log']['path'], byte_start=offset,
+                                         byte_end=offset+len(line.encode()), event_key='text'))
             offset += len(line.encode())
         if not policies:
             # Legacy FakeNet templates (default.ini) audit no egress
