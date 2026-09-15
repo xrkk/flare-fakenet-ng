@@ -95,8 +95,26 @@ function Get-Endpoint([string]$Bucket, [string]$EndpointHost, [int]$Port, [strin
 function Ensure-ProbeClient([string]$ResultPath) {
     $root = Split-Path -Parent $ResultPath
     New-Item -ItemType Directory -Path $root -Force | Out-Null
-    $exe = Join-Path $root 'scenario-probe-client.exe'
-    $source = Join-Path $root 'scenario-probe-client.cs'
+    # Reuse a live previous build when its image still exists: recompiling
+    # into the SAME exe path requires overwriting an image that antivirus
+    # routinely holds for many minutes after first execution
+    # (CS0016, discovery100-59 sst-041..045: locked across a whole batch).
+    if (Test-Path -LiteralPath $ResultPath) {
+        try {
+            $prior = Get-Content -LiteralPath $ResultPath -Raw | ConvertFrom-Json
+            if ($prior -and $prior.path -and (Test-Path -LiteralPath $prior.path)) {
+                return $prior
+            }
+        } catch { }
+    }
+    # Each build writes under a unique name so csc never overwrites a file
+    # any scanner may hold; stale builds are swept best-effort.
+    Get-ChildItem -LiteralPath $root -Filter 'scenario-probe-client-*.exe' -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTimeUtc -lt [DateTime]::UtcNow.AddHours(-1) } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    $buildId = [Guid]::NewGuid().ToString('N')
+    $exe = Join-Path $root ("scenario-probe-client-$buildId.exe")
+    $source = Join-Path $root ("scenario-probe-client-$buildId.cs")
     $clientSource = @'
 using System;
 using System.Diagnostics;
@@ -141,7 +159,7 @@ public static class ScenarioProbeClient {
   }
 }
 '@
-    $needsBuild = (-not (Test-Path $exe)) -or (-not (Test-Path $source)) -or ((Get-Content $source -Raw) -ne $clientSource)
+    $needsBuild = $true
     if ($needsBuild) {
         $clientSource | Set-Content -LiteralPath $source -Encoding UTF8
         $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
