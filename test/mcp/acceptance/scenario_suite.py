@@ -2142,6 +2142,17 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         elif expectation == 'deny':
             branch_log = (log_event('DIVERT_FAKE', original_ip=target_ip, original_port=target_port) or
                           log_event('DROP_EXTERNAL', original_ip=target_ip, original_port=target_port))
+            if not branch_log:
+                # An SNI-based deny primary reaches the TLS relay first: the
+                # diverter logs REDIRECT_TLS_RELAY for its tuple and the
+                # relay's TLS_SNI_DENY is the deny decision itself
+                # (discovery100-53 sst-059: 54/54 fast denies yet the branch
+                # had no DIVERT_FAKE/DROP line to bind).
+                redirect_line = log_event('REDIRECT_TLS_RELAY',
+                                          original_ip=target_ip, sport=port)
+                sni_deny_line = log_event('TLS_SNI_DENY')
+                if redirect_line and sni_deny_line:
+                    branch_log = sni_deny_line
             branch_ok = bool(flow and branch_log and not nic_original_packets)
         elif expectation == 'local_fake':
             branch_log = (log_event('DIVERT_FAKE', original_ip=target_ip, original_port=target_port) or

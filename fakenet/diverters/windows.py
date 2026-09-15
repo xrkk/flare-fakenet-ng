@@ -1618,7 +1618,8 @@ class Diverter(DiverterBase, WinUtilMixin):
             handled_by_base = False
             if (not redirected and
                     (self.egress_policy.non_allowed_action == 'divert' or
-                     self._is_external_dns_query(pkt))):
+                     self._is_external_dns_query(pkt) or
+                     self._is_local_dns_sink_reply(pkt))):
                 if self._is_midstream_tcp_flow(pkt):
                     # Startup-race flow established before capture: the
                     # divert path rewrites its destination mid-stream and
@@ -2157,6 +2158,20 @@ class Diverter(DiverterBase, WinUtilMixin):
                 return Verdict.DIVERT_FAKE
             return Verdict.REINJECT_LOCAL
         return Verdict.DROP_EXTERNAL
+
+    def _is_local_dns_sink_reply(self, pkt):
+        """A sink DNS answer to a local client needs the base reverse NAT.
+
+        The listener replies from its own local ``:53`` socket, but the
+        client asked the *original* resolver address; without the base
+        divert NAT rewriting the source back, the kernel drops the answer
+        as an unsolicited datagram from the wrong address (discovery100-53
+        sst-058/063: five query rounds, only the first even produced a
+        REINJECT_LOCAL record and resolution never completed).
+        """
+        return (pkt.proto in ('UDP', 'TCP') and
+                pkt.sport0 == 53 and
+                self.egress_policy.is_exact_local_ipv4(pkt.dst_ip0))
 
     def _is_external_dns_query(self, pkt):
         """A resolver query is always sinkholed by the local DNS listener.
