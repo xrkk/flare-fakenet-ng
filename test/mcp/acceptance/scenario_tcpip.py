@@ -221,7 +221,8 @@ def flow_matches(row, pid, src, dst):
     if all(row.get(k) == v for k, v in wanted.items()):
         return True
     # B3 process-redirect audit vocabulary (discovery100-67 sst-042..044).
-    redirect = dict(proto='TCP', source_ipv4=a[0], source_port=a[1],
+    # The mapping line spells the transport key "protocol", not "proto".
+    redirect = dict(protocol='TCP', source_ipv4=a[0], source_port=a[1],
                     original_ipv4=b[0], original_port=b[1])
     if pid is not None:
         redirect['pid'] = str(pid)

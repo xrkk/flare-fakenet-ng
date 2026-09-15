@@ -1964,6 +1964,27 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                                   if name.startswith(('pktmon.', 'kernel-network.'))]
         return result
 
+    _QUIESCENCE_REFUSAL_MARKER = ('reviewed process image is already '
+                                  'running before READY')
+
+    def _expected_quiescence_refusal(self, started: dict[str, Any],
+                                     profile: dict[str, Any]) -> dict[str, Any] | None:
+        """Return the recorded refusal when it is this family's exact outcome."""
+        target = profile.get('probe_target', {})
+        if (profile.get('bucket') != 'B3' or
+                target.get('process_mode') != 'match' or
+                profile.get('interleave') != 'before-start'):
+            return None
+        status = self._status()
+        reason = str(status.get('failure_reason') or '')
+        if (started.get('state') != 'healthy' and
+                self._QUIESCENCE_REFUSAL_MARKER in reason):
+            return {'reason': reason,
+                    'state': status.get('state'),
+                    'run_id': status.get('run_id'),
+                    'marker': self._QUIESCENCE_REFUSAL_MARKER}
+        return None
+
     def _traffic_oracle(self, run: dict[str, Any], profile: dict[str, Any], nonce: str,
                         sentinel: dict[str, Any] | None = None) -> dict[str, Any]:
         """Check the same-run probe → PROCESS_FLOW → pktmon chain.
@@ -3412,7 +3433,17 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 call('list_artifacts')
                 finish_capture(first_label, first_run)
                 if not fault:
-                    raise SuiteError('benign scenario did not publish healthy')
+                    refusal = self._expected_quiescence_refusal(
+                        started, runtime_profile)
+                    if refusal is None:
+                        raise SuiteError('benign scenario did not publish healthy')
+                    # A B3 match image released before start is BY DESIGN
+                    # already running when the product validates quiescence;
+                    # the refusal is the correct product outcome for this
+                    # interleave and the scenario verifies exactly it
+                    # (discovery100-68 sst-051..053).
+                    first_run['expected_refusal'] = refusal
+                    evidence.write(first_label + '-expected-refusal.json', refusal)
             final = self._status()
             evidence.write('final-status.json', final)
             if final.get('state') != 'stopped':
@@ -3521,12 +3552,16 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         except Exception as exc:  # noqa: BLE001
             if failure is None:
                 failure = repr(exc)
-        verdict = {'interface_semantics': [item['tool'] for item in calls] ==
-                   [item['tool'] for item in scenario['interface_call_plan']],
+        refusal_recorded = any(item.get('expected_refusal') for item in runs)
+        plan_tools = [item['tool'] for item in scenario['interface_call_plan']]
+        call_tools = [item['tool'] for item in calls]
+        verdict = {'interface_semantics': (call_tools == plan_tools or
+                   (bool(refusal_recorded) and plan_tools[:len(call_tools)] == call_tools)),
                    'stale_lock_rejection': any(item.get('expect') == 'reject_state_conflict' and
                                                item.get('rejection_oracle', {}).get('side_effect_free')
                                                for item in calls),
-                   'continuous_health': (bool(fault) or (len(status_samples) == 3 and
+                   'continuous_health': (bool(fault) or bool(refusal_recorded) or
+                                         (len(status_samples) == 3 and
                                          all(item['status'].get('state') == 'healthy' for item in status_samples))),
                    'per_run_dual_capture': bool(runs) and all(item.get('capture', {}).get('all_components') and
                                                                (not runtime_pcap_required(runtime_profile) or item.get('runtime_pcap')) for item in runs if
