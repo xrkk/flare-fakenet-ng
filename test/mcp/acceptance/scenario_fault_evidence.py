@@ -242,7 +242,8 @@ def build_case(root: Path, capture: dict[str, Any]) -> dict[str, Any]:
         'recovery_refs': ([baseline_ref, audit_ref,
                            ref(files['recovery_healthy'], root, key='json:/health/0'),
                            ref(files['cleanup'], root)] +
-                          ([_relative(root, {'recovery_attribution': attribution_path}, 'recovery_attribution')]
+                          ([ref(_relative(root, {'recovery_attribution': attribution_path},
+                                               'recovery_attribution'), root, key='json:')]
                            if attribution is not None else [])),
         'exception_refs': blocks, 'files': [record(path, root) for path in named],
     }

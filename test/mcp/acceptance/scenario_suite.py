@@ -2570,7 +2570,10 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         attribution_path = root / 'recovery-attribution.json'
         if not attribution_path.exists():
             try:
-                audit_value = read_json(self.root / str(recovery_audit[-1]['path']))
+                audit_rows = [json.loads(line) for line in
+                              (self.root / str(recovery_audit[-1]['path'])).read_text(
+                                  encoding='utf-8-sig').splitlines() if line.strip()]
+                audit_value = audit_rows[-1] if audit_rows else {}
                 sections = audit_value.get('sections', audit_value)
                 base_sections = run.get('five_sections_before') or read_json(baseline).get('sections')
                 difference = self._section_difference(base_sections, sections)
