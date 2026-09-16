@@ -37,6 +37,14 @@ def child_main(run_id, ready_handle):
         except FileNotFoundError:
             time.sleep(0.02)
             continue
+        except (OSError, ValueError):
+            # The owner republishes target.json with an atomic rename over
+            # the previous probe's record; a reader in that instant can see
+            # a transient access error. Retry inside the bounded deadline
+            # instead of dying with an unhandled exception (discovery100-116
+            # and -119 sst-034: the probe child self-exited 1 twice).
+            time.sleep(0.02)
+            continue
         if (record.get('run_id') == run_id and record.get('pid') == os.getpid()
                 and record.get('command_line') == actual_command):
             kernel.ExitProcess.argtypes = [w.UINT]

@@ -437,3 +437,17 @@ def test_full_audit_attributes_the_final_settle_sample(tmp_path, monkeypatch):
     # Both samples stay in the record: the refusal of the first is evidence.
     assert decision['foreign_owner_samples'][0]['accepted'] is False
     assert decision['foreign_owner_samples'][-1]['accepted'] is True
+
+
+def test_exit_capability_poll_tolerates_transient_target_read_errors():
+    import inspect
+
+    from fakenet.mcp import exit_capability
+    source = inspect.getsource(exit_capability.child_main)
+    # The poll loop must treat transient read failures (atomic rename over
+    # the previous record) as retryable inside its bounded deadline, not as
+    # a fatal exception (discovery100-116/-119 sst-034 self_exit twice).
+    assert 'except (OSError, ValueError):' in source
+    assert source.index('except FileNotFoundError:') < source.index('except (OSError, ValueError):')
+    tail = source.split('except (OSError, ValueError):')[1]
+    assert 'continue' in tail[:700] and 'time.sleep' in tail[:700]
