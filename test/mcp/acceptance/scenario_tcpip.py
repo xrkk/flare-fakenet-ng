@@ -427,8 +427,13 @@ def connection_events(raw, path, log, pid, src, dst, managed_pid, policy_window=
         expected = connected if tcb == connected['tcb'] else peer
         groups = reconstruct_generations([e for e in all_events if e['tcb'] == tcb])
         matches = [g for g in groups if any(e['ref'] == expected['ref'] for e in g['events'])]
-        if len(matches) != 1 or matches[0]['left_censored']:
+        if len(matches) != 1:
             raise ValueError('connection has no unique complete native generation')
+        # A generation born from a kernel TCB-address split is left-censored
+        # (no observed Closed->SynSent birth), but when it holds the
+        # expected establishment event itself its origin is exactly known.
+        # Left-censoring is only fatal when the generation's own beginning
+        # would be unattributable (discovery100-90 sst-080).
         chosen = matches[0]
         if chosen['identity'] != dict(local=expected['local'], remote=expected['remote'], pid=expected['pid']):
             raise ValueError('generation identity mismatch')
@@ -487,8 +492,12 @@ def reconstruct_generations(events):
                     # itself is the allocation boundary: start a new,
                     # left-censored generation instead of rejecting
                     # (discovery100-89 sst-077/079/080).
+                    # A fresh allocation must not inherit the prior
+                    # generation's closed boundary: it would poison the
+                    # establishment check for this generation's own
+                    # connect/accept event.
                     groups.append(dict(ordinal=len(groups), left_censored=True,
-                                       birth_ref=None, closed_ref=group['closed_ref'],
+                                       birth_ref=None, closed_ref=None,
                                        identity=None, events=[]))
                     group = groups[-1]
                     group['identity'] = dict(local=event['local'], remote=event['remote'], pid=event.get('pid'))

@@ -258,6 +258,20 @@ def reused_capture():
     return ('\ufeff'+''.join(old)+capture().decode('utf-16-le').lstrip('\ufeff')).encode('utf-16-le')
 
 
+def test_missing_birth_now_splits_on_tuple_change():
+    # discovery100-90 sst-080: a kernel TCB address reused without an
+    # observed birth is bounded by the tuple change itself; the new
+    # left-censored generation holds the connect event and is attributable.
+    raw = reused_capture().decode('utf-16-le')
+    raw = ''.join(x for x in raw.splitlines(True) if '55.100000000' not in x)
+    result = reconstruct(raw.encode('utf-16-le'))
+    split = next(g for g in result['generation_manifest']
+                 if g['generation_ordinal'] == result['connect']['generation_ordinal']
+                 and g['tcb'] == result['connect']['tcb'])
+    assert split['left_censored'] is True
+    assert result['connect']['generation_ordinal'] == 1
+
+
 def test_proven_reuse_keeps_boundary_manifest_not_old_termination():
     result = reconstruct(reused_capture())
     assert result['generation_manifest'][0]['left_censored'] is True
@@ -266,7 +280,7 @@ def test_proven_reuse_keeps_boundary_manifest_not_old_termination():
     assert result['termination'][0]['transition'] == ('Established', 'FinWait1')
 
 
-@pytest.mark.parametrize('bad',['missing_closed','missing_birth','wrong_old_identity'])
+@pytest.mark.parametrize('bad',['missing_closed','wrong_old_identity'])
 def test_generation_cannot_be_guessed(bad):
     raw=reused_capture().decode('utf-16-le')
     if bad=='missing_closed':raw=''.join(x for x in raw.splitlines(True) if '54.100000000' not in x)
