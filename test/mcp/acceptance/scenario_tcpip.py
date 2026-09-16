@@ -184,8 +184,12 @@ def parse_line(text, ref):
             tail = 'connection terminated.'
         # Generic connect-failure normalization: any localized status text
         # (I/O request cancelled, connection refused, timeout, etc.) is a
-        # terminal connect failure regardless of the specific reason.
+        # terminal connect failure regardless of the specific reason. The
+        # provider also spells it "connect failed: <reason>" without a
+        # trailing period (discovery100-115 sst-034: a foreign route-lookup
+        # failure on 0.0.0.0:1688 crashed case construction).
         tail = re.sub(r'connect attempt failed with status = .*\.', 'abort issued.', tail)
+        tail = re.sub(r'connect failed: .*', 'abort issued.', tail)
         valid = re.fullmatch(r'(requested to connect|connect proceeding|connect completed|abort issued|abort completed|shutdown initiated|close issued|disconnect completed|connection terminated|initiating SYN/RST validation|(?:send: )?Beginning zero-window probing with SndUna = \d+)\.(?: PID = (\d+)\.)?', tail)
         if not valid:
             raise ValueError('unsupported TCP lifecycle: ' + body)

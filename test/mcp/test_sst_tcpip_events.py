@@ -648,3 +648,14 @@ def test_tcp_bh_generic_matches_all_diagnostic_variants():
         event = tcp.parse_line(line('57.000000000', body), {})
         assert event['kind'] == 'transport context' and event.get('bh') is True
         assert not event.get('terminal')
+
+
+def test_connect_failed_route_lookup_variant_is_terminal_abort():
+    # discovery100-115 sst-034: a foreign lifecycle row spelled the failure
+    # "connect failed: route lookup status = <localized text>" and crashed
+    # case construction; the generic terminal normalization must cover it.
+    event = tcp.parse_line(line('57.000000000',
+        'connection 0xFFFF9B8BBFED7050 (local=0.0.0.0:5707 remote=0.0.0.0:1688) '
+        'connect failed: route lookup status = 传输拒绝指定的无效网络地址。.'), {})
+    assert event['kind'] == 'abort issued'
+    assert event['terminal'] is True

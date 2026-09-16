@@ -424,10 +424,15 @@ def plan_for(index: int, fault: str | None) -> list[dict[str, str]]:
         # Stopping the diverter during the start rendezvous fails the start
         # itself, so no health sampling and no trailing stop exist (sst-002).
         suffix = ('get_status', 'get_events', 'list_artifacts')
-    elif fault in ('listener_stop', 'child_hang'):
-        # The fault acts after the start rendezvous completes: the run
-        # reaches healthy (a hung fault child does not fail the start,
-        # discovery100-109 sst-016), so the driver samples health and stops.
+    elif fault == 'listener_stop':
+        # The fault stops the listener providers before the start reply's
+        # own probe, so the start itself fails (discovery100-115 sst-035
+        # actual flow) and no health sampling or trailing stop exists.
+        suffix = ('get_status', 'get_events', 'list_artifacts')
+    elif fault == 'child_hang':
+        # A hung fault child does not fail the start: the run reaches
+        # healthy (discovery100-109 sst-016, -114/-115 sst-003), so the
+        # driver samples health and stops.
         suffix = ('get_status', 'get_status', 'get_status', 'get_events', 'list_artifacts', 'stop')
     else:
         suffix = ('get_status', 'get_status', 'get_status', 'get_events', 'list_artifacts', 'stop')
