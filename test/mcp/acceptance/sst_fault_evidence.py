@@ -287,7 +287,13 @@ def assess(case, root, expected_candidate=CANDIDATE):
                           - (e['mono'] - ready['mono']) / frequency) for e in events]
             worst = max(deltas)
             result['clock_max_wall_vs_monotonic_seconds'] = worst
-            if worst > clock['resolution_ns'] / 1e9:
+            # The two native clocks are read sequentially; scheduler delay
+            # between the reads easily exceeds the 15.625 ms timer resolution
+            # under fault load (discovery100-114 sst-003 measured 20.7 ms on
+            # a healthy run). Keep the check about tampering, not jitter:
+            # bound the drift at the coarser of resolution and 100 ms.
+            bound = max(clock['resolution_ns'] / 1e9, 0.1)
+            if worst > bound:
                 return False, 'wall/monotonic drift exceeds conservative clock bound'
         return True, 'VM UTC with native precision and wall/monotonic cross-check where captured'
 
@@ -469,14 +475,19 @@ def assess(case, root, expected_candidate=CANDIDATE):
             raise EvidenceError('end is not the first termination of this connection')
         if established['nonce'] != case['nonce'] or established['pid'] != session['probe_pid']:
             raise EvidenceError('probe nonce/PID mismatch')
-        # PROCESS_FLOW is extracted from the actual run log, not a caller flag.
-        if not isinstance(managed, str) or 'PROCESS_FLOW ' not in managed:
-            raise EvidenceError('missing native PROCESS_FLOW mapping')
+        # The flow line is extracted from the actual run log, not a caller
+        # flag. B3 process-redirect rows are recorded as mapping-created
+        # lines whose field names differ (protocol/source_ipv4/source_port).
+        if not isinstance(managed, str) or not ('PROCESS_FLOW ' in managed or
+                                                'PROCESS_REDIRECT_MAPPING_CREATED' in managed):
+            raise EvidenceError('missing native flow mapping')
         if not tcpip.flow_matches(tcpip.fields(managed), session['probe_pid'],
                                    established['src'], connection_destination(established)):
             raise EvidenceError('managed flow does not match exact outbound tuple/PID/protocol')
         full_log = evidence.data[session['managed_ref']['path']].decode('utf-8-sig')
-        matching_flows = [line for line in full_log.splitlines() if 'PROCESS_FLOW ' in line and
+        matching_flows = [line for line in full_log.splitlines()
+                          if ('PROCESS_FLOW ' in line or
+                              'PROCESS_REDIRECT_MAPPING_CREATED' in line) and
                           tcpip.flow_matches(tcpip.fields(line), session['probe_pid'],
                                              established['src'], connection_destination(established))]
         if not matching_flows or bounds(managed)[1] != max(bounds(line)[1] for line in matching_flows):
@@ -559,6 +570,15 @@ def assess(case, root, expected_candidate=CANDIDATE):
         lo, hi = bounds(lower)[0], bounds(upper)[1]
         result['intervals_ns'] = {'session_begin_upper': begin, 'trigger_lower': lo,
                                   'trigger_upper': hi, 'session_end_lower': finish}
+        if fault == 'diverter_stop':
+            # Stopping the diverter ceases forwarding before the native
+            # handle-close observation, so the killed connection can end
+            # shortly before the conservative action interval
+            # (discovery100-114 sst-036: 165 ms). The session must still
+            # begin before the action and end at the action moment.
+            tolerance = 300 * 10**6
+            ended_at_action = begin <= lo and lo - tolerance <= finish <= hi + tolerance
+            return ended_at_action, 'diverter_stop terminates the live session at the action moment'
         return contains_session(begin, lo, hi, finish), 'single managed outbound connection must contain entire conservative action interval'
 
     check('overlap', overlap)

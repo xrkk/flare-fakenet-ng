@@ -166,7 +166,11 @@ def test_gate_command_never_assigns_powershell_automatic_pid_variable():
     # surfacing a terminating path error (discovery100-109 sst-003). The
     # guard is a statement: Windows PowerShell 5.1 parses `@(if(...){...})`
     # as a ParserError, which killed the whole observer (discovery100-111).
-    assert "$flow=@();if(Test-Path -LiteralPath $log){$flow=@(Select-String -LiteralPath $log -SimpleMatch -Pattern 'PROCESS_FLOW '" in seen['command']
+    assert "$flow=@();if(Test-Path -LiteralPath $log){$flow=@(Select-String -LiteralPath $log -SimpleMatch -Pattern @('PROCESS_FLOW ','PROCESS_REDIRECT_MAPPING_CREATED') " in seen['command']
+    # B3 mapping rows spell the tuple source_ipv4/source_port; the observer
+    # must require the pid on both field families (discovery100-114 sst-035).
+    assert "source_port='+[regex]::Escape($port)" in seen['command']
+    assert "source_ipv4='+[regex]::Escape($source)" in seen['command']
     assert '@(if(' not in seen['command']
     assert '(?:^|\\s)pid=' in seen['command']
     assert '(?:^|\\s)sport=' in seen['command']

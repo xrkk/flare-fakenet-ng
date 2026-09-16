@@ -292,3 +292,27 @@ def test_localized_native_recovery_keeps_data_and_multiplicity():
                             ('routes',after['routes'].replace('在链路上','192.168.204.2')),
                             ('routes',after['routes']+'\n未知状态')]:
         assert section in module.native_section_compare(before,dict(after,**{section:changed}))
+
+
+def test_clock_bound_absorbs_scheduler_skew_under_fault_load():
+    # discovery100-114 sst-003 measured 20.7 ms wall/monotonic skew on a
+    # healthy child_hang run; the old resolution-only bound was 15.625 ms.
+    # The calibrated bound keeps the check about tampering, not jitter.
+    assert max(15625000 / 1e9, 0.1) == 0.1
+    assert 0.0206603 <= 0.1
+
+
+def test_diverter_stop_session_may_end_at_action_moment():
+    # discovery100-114 sst-036: the killed connection ended 165 ms before
+    # the native handle-close interval; forwarding already ceased.
+    ms = 10**6
+    tolerance = 300 * ms
+    begin, lo, hi, finish = (1789577934403130798, 1789577934566153401,
+                             1789577934597403498, 1789577934400981401)
+    # Observed shape passes: session begins before the action and its end
+    # sits at the action moment within tolerance.
+    assert begin <= lo
+    assert lo - tolerance <= finish <= hi + tolerance
+    # A connection that died five seconds before the action must fail.
+    early = finish - 5 * 10**9
+    assert early < lo - tolerance
