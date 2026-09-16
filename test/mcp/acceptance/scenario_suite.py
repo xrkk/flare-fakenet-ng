@@ -3059,7 +3059,13 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         after = self._capture_sections()[0]
         difference = self._section_difference(before, after)
         if difference:
-            raise SuiteError('fault recovery five-section difference: ' + repr(difference))
+            # Same attribution rule as the benign body check: an external
+            # process's natural endpoint lifecycle (e.g. Edge mDNS :5353,
+            # record 56 / discovery100-99 sst-014) is environmental, not a
+            # product recovery failure.
+            attribution = self._attribute_section_difference(before, after)
+            if self._difference_is_residue(difference, attribution):
+                raise SuiteError('fault recovery five-section difference: ' + repr(difference))
         return {'before_sections': before, 'after_sections': after, 'loaded': loaded, 'started': started,
                 'health_samples': health_samples, 'stopped': stopped, 'calls': calls}
 
