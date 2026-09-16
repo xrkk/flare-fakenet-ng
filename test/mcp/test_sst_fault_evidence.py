@@ -302,6 +302,21 @@ def test_clock_bound_absorbs_scheduler_skew_under_fault_load():
     assert 0.0206603 <= 0.1
 
 
+def test_session_killing_faults_end_at_action_moment():
+    # discovery100-116: sst-054 (listener_stop) ended 297 ms before the
+    # action lower bound; sst-055 (diverter_stop, B4 transport) ended
+    # 303 ms after the upper bound. Both stay inside the 500 ms band.
+    ms = 10**6
+    tolerance = 500 * ms
+    begin, lo, hi = 0, 318 * ms, 361 * ms
+    finish = 20 * ms  # sst-054: session ended 297 ms before the action
+    assert begin <= lo and lo - tolerance <= finish <= hi + tolerance
+    lo2, hi2, finish2 = 407 * ms, 438 * ms, 741 * ms
+    assert lo2 - tolerance <= finish2 <= hi2 + tolerance
+    # Minutes-away terminations still fail.
+    assert finish2 - 30 * 1000 * ms < lo2 - tolerance
+
+
 def test_diverter_stop_session_may_end_at_action_moment():
     # discovery100-114 sst-036: the killed connection ended 165 ms before
     # the native handle-close interval; forwarding already ceased.
