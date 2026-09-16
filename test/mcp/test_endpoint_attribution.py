@@ -403,3 +403,37 @@ def test_runtime_baseline_refuses_route_table_without_default_route(tmp_path, mo
     else:
         raise AssertionError('dip snapshot was accepted')
     assert store.load('run-guard-2') is None
+
+
+def test_full_audit_attributes_the_final_settle_sample(tmp_path, monkeypatch):
+    """A mid-settle first sample must not veto an attributed final state."""
+    from types import SimpleNamespace
+    from fakenet.mcp import baseline as module
+    baseline, sample, proof = foreign_case()
+    # Same-owner rebind shape for both samples; the first still carries a
+    # transient TCP row that only the second sample has settled away from.
+    settled_ports = ('UDP 192.168.204.233:52496 *:* 1624\n'
+                     'TCP 192.168.204.233:139 0.0.0.0:0 LISTENING 4')
+    settled = dict(sample['current'], listen_ports='')
+    first = dict(sample['current'], listen_ports=settled_ports)
+    sections = module.CapturedSections(baseline['sections'])
+    sections.windows = baseline['observation_windows']
+    store = module.BaselineStore(tmp_path / 'baselines')
+    store.save(baseline['run_id'], sections)
+    provided = iter([first, settled])
+    clock = {'now': 1000.0}
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock['now'])
+
+    def paced_capture(deadline=None):
+        clock['now'] += 0.012  # two captures exactly fill the settle window
+        return next(provided)
+    monkeypatch.setattr(module, 'capture', paced_capture)
+    monkeypatch.setattr(module.time, 'sleep', lambda seconds: None)
+    observed = SimpleNamespace(audit_proof=lambda deadline: proof)
+    result = store.full_audit_diff(baseline['run_id'], settle_seconds=0.02, observation=observed)
+    assert result == {}
+    decision = json.loads(next((tmp_path/'logs').glob('*.attribution.json')).read_text())
+    assert decision['accepted'] is True
+    # Both samples stay in the record: the refusal of the first is evidence.
+    assert decision['foreign_owner_samples'][0]['accepted'] is False
+    assert decision['foreign_owner_samples'][-1]['accepted'] is True

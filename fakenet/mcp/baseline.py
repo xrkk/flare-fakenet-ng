@@ -405,7 +405,12 @@ class BaselineStore:
                 try:
                     proof = observation.audit_proof(deadline)
                     decisions = [closed_udp_changes(baseline, sample, proof) for sample in samples]
-                    accepted = all(row['accepted'] for row in decisions)
+                    # The recovery verdict describes the final observed
+                    # environment: a mid-settle earlier sample must not veto
+                    # an attributed final state (discovery100-13 5b8be3ae:
+                    # sample 1 still carried a rebinding TCP row while
+                    # sample 2 attributed cleanly).
+                    accepted = decisions[-1]['accepted']
                     decision = {'run_id': run_id, 'raw_audit': str(log),
                                 'accepted': accepted, 'samples': decisions}
                 except Exception as exc:
@@ -433,7 +438,7 @@ class BaselineStore:
                     try:
                         foreign = [foreign_udp_owner_changes(baseline, sample, proof)
                                    for sample in samples]
-                        accepted = all(row['accepted'] for row in foreign)
+                        accepted = foreign[-1]['accepted']
                         decision['foreign_owner_samples'] = foreign
                         decision['accepted'] = accepted
                     except Exception as exc:
@@ -450,7 +455,7 @@ class BaselineStore:
                             restarted_service_udp_changes)
                         restarted = [restarted_service_udp_changes(baseline, sample, proof)
                                      for sample in samples]
-                        accepted = all(row['accepted'] for row in restarted)
+                        accepted = restarted[-1]['accepted']
                         decision['restarted_service_samples'] = restarted
                         decision['accepted'] = accepted
                     except Exception as exc:
