@@ -8,6 +8,7 @@ section and it never authorizes a route, adapter, DNS, or service change.
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 
@@ -80,9 +81,37 @@ def observe_native_prerequisites(probe=None):
     )
 
 
-def persist_and_assert(run_dir, probe=None):
-    """Preserve one immutable snapshot, then enforce no new requirement."""
-    record = observe_native_prerequisites(probe)
+def _prerequisites_met(record):
+    addresses = record['get_adapters_addresses']
+    infos = record['get_adapters_info']
+    return (addresses.get('result') in (0, None) and
+            bool(record['active_ethernet']) and
+            infos.get('result') in (0, None) and
+            bool(record['nonzero_ipv4']))
+
+
+def persist_and_assert(run_dir, probe=None, deadline=None):
+    """Preserve one immutable snapshot, then enforce no new requirement.
+
+    The adapter list can transiently report no active Ethernet for tens of
+    seconds while the previous run's DNS restore reconfigures the interface
+    (discovery100-107/112/113 preflight). Poll the same native predicates
+    until the bounded deadline, persist the accepted (or final failed)
+    observation, and keep the rejection itself fail-closed.
+    """
+    budget_end = (None if deadline is None else
+                  min(deadline, time.monotonic() + 25.0))
+    record = None
+    attempts = 0
+    while True:
+        attempts += 1
+        record = observe_native_prerequisites(probe)
+        if _prerequisites_met(record):
+            break
+        if budget_end is None or time.monotonic() + 2.0 > budget_end:
+            break
+        time.sleep(2.0)
+    record = dict(record, prerequisite_attempts=attempts)
     path = Path(run_dir) / 'pre-start-native-network.json'
     raw = (json.dumps(record, ensure_ascii=False, sort_keys=True, indent=2) + '\n').encode('utf-8')
     with path.open('xb') as stream:

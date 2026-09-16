@@ -95,7 +95,7 @@ def test_diagnostic_task_writes_only_the_fixed_run_directory(tmp_path, monkeypat
     monkeypatch.setattr(paths, 'data_directories',
                         lambda: {'artifacts': tmp_path / 'artifacts'})
     monkeypatch.setattr(startup_network, 'persist_and_assert',
-                        lambda path: observed.append(path) or {'ready': True})
+                        lambda path, deadline=None: observed.append(path) or {'ready': True})
     result = diagnostic_tasks.execute(
         'pre-start-native-network', {'run_id': run_id},
         time.monotonic() + 5)

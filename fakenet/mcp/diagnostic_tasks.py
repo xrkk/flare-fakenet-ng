@@ -111,7 +111,7 @@ def execute(operation, payload, deadline, watchdog=None):
         run_dir = (artifacts / 'runs' / run_id).resolve()
         if not run_dir.is_dir() or run_dir.parent != (artifacts / 'runs').resolve():
             raise ValueError('pre-start network run directory unavailable')
-        return persist_and_assert(run_dir)
+        return persist_and_assert(run_dir, deadline=deadline)
     raise ValueError('unknown diagnostic operation')
 
 

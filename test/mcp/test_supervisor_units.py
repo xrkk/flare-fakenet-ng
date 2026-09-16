@@ -255,3 +255,37 @@ def test_baseline_waits_for_dead_owned_socket_rows(monkeypatch):
     monkeypatch.setattr(jobobject, 'process_alive', lambda pid: pid == 7636)
     baseline.settle_dead_socket_rows(deadline=__import__('time').monotonic() + 5)
     assert calls['netstat'] >= 2
+
+
+def test_startup_network_prerequisite_polls_transient_adapter_gap(tmp_path, monkeypatch):
+    import json as json_module
+
+    import pytest
+
+    from fakenet.mcp import startup_network as module
+    good = {'get_adapters_addresses': {'result': 0},
+            'get_adapters_info': {'result': 0},
+            'active_ethernet': [{'if_index': 11}], 'nonzero_ipv4': ['192.168.204.233']}
+    dipped = dict(good, active_ethernet=[])
+
+    clock = {'now': 1000.0}
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock['now'])
+    monkeypatch.setattr(module.time, 'sleep',
+                        lambda seconds: clock.__setitem__('now', clock['now'] + seconds))
+
+    states = iter([dipped, dipped, good])
+    monkeypatch.setattr(module, 'observe_native_prerequisites', lambda probe=None: next(states))
+    record = module.persist_and_assert(tmp_path, deadline=clock['now'] + 30)
+    assert record['prerequisite_attempts'] == 3
+    assert record['active_ethernet']
+
+    monkeypatch.setattr(module, 'observe_native_prerequisites', lambda probe=None: dipped)
+    (tmp_path / 'x').mkdir()
+    with pytest.raises(module.StartupNetworkError) as caught:
+        module.persist_and_assert(tmp_path / 'x', deadline=clock['now'] + 30)
+    assert 'no active Ethernet' in str(caught.value)
+    # The final failed observation is still persisted for the record and the
+    # poll stayed bounded (25s cap with 2s spacing).
+    saved = json_module.loads(
+        (tmp_path / 'x' / 'pre-start-native-network.json').read_text())
+    assert saved['prerequisite_attempts'] == 13 and not saved['active_ethernet']
