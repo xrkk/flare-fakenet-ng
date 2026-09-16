@@ -480,7 +480,18 @@ def reconstruct_generations(events):
                 group['identity'] = dict(local=event['local'], remote=event['remote'], pid=event.get('pid'))
             else:
                 if (event['local'], event['remote']) != (identity['local'], identity['remote']):
-                    raise ValueError('TCB tuple changed within generation')
+                    # A kernel TCB address is routinely reused without an
+                    # observed Closed boundary when the prior owner was an
+                    # unrelated listener connection (28787/28788) whose
+                    # teardown fell outside the capture.  The tuple change
+                    # itself is the allocation boundary: start a new,
+                    # left-censored generation instead of rejecting
+                    # (discovery100-89 sst-077/079/080).
+                    groups.append(dict(ordinal=len(groups), left_censored=True,
+                                       birth_ref=None, closed_ref=group['closed_ref'],
+                                       identity=None, events=[]))
+                    group = groups[-1]
+                    group['identity'] = dict(local=event['local'], remote=event['remote'], pid=event.get('pid'))
                 if event.get('pid') is not None:
                     if identity['pid'] is not None and event['pid'] != identity['pid']:
                         raise ValueError('TCB PID identity changed within generation')
