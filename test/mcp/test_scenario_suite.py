@@ -163,8 +163,11 @@ def test_gate_command_never_assigns_powershell_automatic_pid_variable():
     assert '$probePid=[int]$est.pid' in seen['command']
     assert '$pid=[int]$est.pid' not in seen['command']
     # The observer must skip runs whose run.log is not yet created instead of
-    # surfacing a terminating path error (discovery100-109 sst-003).
-    assert "if(Test-Path -LiteralPath $log){Select-String -LiteralPath $log -SimpleMatch -Pattern 'PROCESS_FLOW '" in seen['command']
+    # surfacing a terminating path error (discovery100-109 sst-003). The
+    # guard is a statement: Windows PowerShell 5.1 parses `@(if(...){...})`
+    # as a ParserError, which killed the whole observer (discovery100-111).
+    assert "$flow=@();if(Test-Path -LiteralPath $log){$flow=@(Select-String -LiteralPath $log -SimpleMatch -Pattern 'PROCESS_FLOW '" in seen['command']
+    assert '@(if(' not in seen['command']
     assert '(?:^|\\s)pid=' in seen['command']
     assert '(?:^|\\s)sport=' in seen['command']
     assert '(?:^|\\s)src=' in seen['command']

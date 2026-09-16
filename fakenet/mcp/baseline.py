@@ -304,6 +304,19 @@ class BaselineStore:
         if any(field not in sections or sections[field] in (None, COLLECTION_FAILED)
                for field in BASELINE_FIELDS):
             raise RuntimeError('pre-start baseline collection incomplete')
+        if runtime_capture:
+            # A route table without an IPv4 default route is a mid-reset
+            # snapshot: the third unsatisfiable-baseline wedge
+            # (discovery100-111 run da285df4) saved a baseline whose whole
+            # route table was absent while the adapter reconfigured, and the
+            # restoration audit could then never converge. Refuse the
+            # snapshot so the start fails honestly before any recovery
+            # responsibility exists; the operator retries into a fresh run.
+            if not re.search(r'(?m)^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+\S',
+                             str(sections['routes'])):
+                raise RuntimeError(
+                    'pre-start baseline network snapshot incomplete: '
+                    'no default route')
         firewall = None
         if runtime_capture:
             firewall = _run(['netsh', 'advfirewall', 'firewall', 'show',

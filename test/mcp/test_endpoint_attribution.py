@@ -383,3 +383,23 @@ def test_diagnostic_result_frame_accommodates_full_matrix_artifacts():
     # Hundreds of acceptance runs with per-file metadata must stay within
     # one diagnostic frame (discovery100-09 exceeded the previous 1 MiB).
     assert MAX_FRAME >= 8 * 1024 * 1024
+
+
+def test_runtime_baseline_refuses_route_table_without_default_route(tmp_path, monkeypatch):
+    from fakenet.mcp import baseline as module
+    monkeypatch.setattr(module, '_run', lambda command, timeout=None: 'evidence')
+    store = module.BaselineStore(tmp_path / 'baselines')
+    good = {field: 'x' for field in module.BASELINE_FIELDS}
+    good['routes'] = 'active routes:\n 0.0.0.0  0.0.0.0  192.168.204.2  192.168.204.233  26\n'
+    monkeypatch.setattr(module, 'capture', lambda deadline=None: module.CapturedSections(good))
+    store.save('run-guard-1')  # runtime capture accepts a routable snapshot
+
+    dipped = dict(good, routes='active routes:\n 127.0.0.1  127.0.0.1  on-link  331\n')
+    monkeypatch.setattr(module, 'capture', lambda deadline=None: module.CapturedSections(dipped))
+    try:
+        store.save('run-guard-2')
+    except RuntimeError as exc:
+        assert 'no default route' in str(exc)
+    else:
+        raise AssertionError('dip snapshot was accepted')
+    assert store.load('run-guard-2') is None
