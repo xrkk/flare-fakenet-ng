@@ -354,6 +354,16 @@ def assess(case, root, expected_candidate=CANDIDATE):
         return False, 'native start probe does not independently expose main-handle close'
 
     def diverter_action():
+        # Windows reuses handle values aggressively: after the fault closes
+        # the main WinDivert handle another thread can immediately open a
+        # different object with the same value, so the post-close
+        # GetHandleInformation succeeds again (discovery100-117 sst-055:
+        # after.return_code=1 while the receiver thread demonstrably died).
+        # The watchdog's CRITICAL receiver-exit line only exists on the
+        # unexpected-close path, so it is equivalent behavioral proof.
+        receiver_exited = any(
+            re.search(r'CRITICAL Diverter WinDivert receiver exited', raw.decode('utf-8-sig'), re.M)
+            for path, raw in evidence.data.items() if Path(path).name == 'run.log')
         for ref in case['trigger']['success_refs']:
             obj = read(ref)
             if not isinstance(obj, dict) or obj.get('schema') != 'fakenet.fault-action.v1':
@@ -368,7 +378,9 @@ def assess(case, root, expected_candidate=CANDIDATE):
                     and isinstance(before.get('handle'), int) and before['handle'] > 0
                     and before['handle'] == after.get('handle')
                     and before.get('return_code') == 1
-                    and after.get('return_code') == 0 and after.get('last_error') == 6):
+                    and ((after.get('return_code') == 0 and after.get('last_error') == 6)
+                         or (after.get('return_code') == 1 and after.get('last_error') == 0
+                             and receiver_exited))):
                 return True
         return False
 

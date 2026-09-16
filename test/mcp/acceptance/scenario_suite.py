@@ -1255,7 +1255,10 @@ class Suite:
         status = self._status()
         for name in leftovers:
             try:
-                if status.get('config_identity', {}).get('name') == name:
+                # The service publishes config_identity as an explicit null
+                # while no config is loaded; an absent-or-dict default would
+                # still surface None.get (discovery100-117 sst-002).
+                if (status.get('config_identity') or {}).get('name') == name:
                     self.service.tool('load_config', {
                         'name': 'default.ini',
                         'command_id': 'prune-rebind-' + uuid.uuid4().hex[:8],
