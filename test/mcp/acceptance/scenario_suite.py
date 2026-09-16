@@ -1672,6 +1672,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
     _EGRESS_READY_RE = re.compile(
         r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3})\s+INFO Diverter '
         r'EGRESS_CONTROL_READY\b')
+    _LEGACY_READY_RE = re.compile(
+        r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3})\s+INFO Diverter '
+        r'\S+ \(\d+\) requested (?:TCP|UDP) ')
 
     @classmethod
     def _egress_ready_boundary(cls, run_log: str) -> str | None:
@@ -1684,6 +1687,12 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         """
         for line in run_log.splitlines():
             match = cls._EGRESS_READY_RE.match(line)
+            if match:
+                return '%s.%s' % (match.group(1), match.group(2))
+        # Legacy templates never log EGRESS_CONTROL_READY; the diverter's
+        # first intercepted flow marker is the equivalent readiness point.
+        for line in run_log.splitlines():
+            match = cls._LEGACY_READY_RE.match(line)
             if match:
                 return '%s.%s' % (match.group(1), match.group(2))
         return None
