@@ -2563,6 +2563,27 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         recovery_audit = fault_evidence.get('recovery_audit', {}).get('files', [])
         if not recovery_audit:
             raise SuiteError('fault run has no product recovery audit')
+        # An offline adjudicator cannot query endpoint owners; capture the
+        # live attribution now when the recovery audit differs from the
+        # baseline, so external lifecycle residue (Edge mDNS :5353, record
+        # 56 / discovery100-99 sst-014) is provable from evidence alone.
+        attribution_path = root / 'recovery-attribution.json'
+        if not attribution_path.exists():
+            try:
+                audit_value = read_json(self.root / str(recovery_audit[-1]['path']))
+                sections = audit_value.get('sections', audit_value)
+                base_sections = run.get('five_sections_before') or read_json(baseline).get('sections')
+                difference = self._section_difference(base_sections, sections)
+                attribution = (self._attribute_section_difference(base_sections, sections)
+                               if difference else None)
+                write_new_json(attribution_path, {
+                    'difference': difference, 'attribution': attribution,
+                    'residue': bool(difference) and self._difference_is_residue(difference, attribution)})
+                evidence.add(attribution_path)
+            except Exception as exc:  # noqa: BLE001
+                write_new_json(attribution_path, {'difference': None, 'attribution': None,
+                                                  'residue': False, 'capture_error': repr(exc)})
+                evidence.add(attribution_path)
         source_path: Path | None = None
         if fault == 'policy_pause':
             source_path = root / 'faultinject-source.py'
@@ -2591,6 +2612,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             'recovery_audit': str(recovery_audit[-1]['path']),
             'recovery_healthy': str(recovery.relative_to(self.root)),
             'cleanup': str(cleanup.relative_to(self.root)), 'terminal': str(terminal.relative_to(self.root)),
+            'recovery_attribution': str(attribution_path.relative_to(self.root)),
         }
         if fault == 'diverter_stop':
             raw['fault_action'] = names.get('fault-action.json')
