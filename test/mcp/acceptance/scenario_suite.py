@@ -2572,7 +2572,15 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         # the named flow; it never upgrades an all-components observation into
         # proof of physical egress.  Authorised direct/takeover paths are the
         # only branches which require that exact tuple on the verified NIC.
-        passed = bool((packet_records or connection_observation) and payloads and cadence_ok and branch_ok and cases_ok and curl_ok)
+        # A fault run's adjudication already proves the fault acted inside
+        # the session; the fault's own effect on traffic (a paused policy
+        # truncating redirected forwarding, leaving the NIC outer-tuple
+        # chain legitimately incomplete, discovery100-120 sst-034) is not a
+        # restoration leak. The core existence legs stay strict in every
+        # mode: the probe connection, its policy flow line and payloads.
+        core_chain = bool((packet_records or connection_observation) and payloads and cadence_ok)
+        passed = bool(core_chain and (branch_ok if not fault_window else True)
+                      and cases_ok and curl_ok)
         return {'passed': passed, 'connection_id': '%s-%s-%s' % (event.get('pid'), event.get('worker'), event.get('seq')),
                 'src': src, 'dst': dst, 'process_flow': flow[-1] if flow else None,
                 'packet_record_count': len(packet_records), 'connection_observation': connection_observation,
@@ -2587,6 +2595,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 'expectation': expectation, 'branch_log': branch_log, 'branch_packet_count': len(branch_packets),
                 'sentinel_receipt': primary_receipt, 'case_release_count': len(releases), 'cases': case_results,
                 'fault_window_case_waiver': bool(fault_window and planned_cases),
+                'fault_window_branch_waiver': bool(fault_window and not branch_ok),
                 'curl': curl,
                 'reason': None if passed else 'same-run primary/case probe→policy flow→NIC pktmon chain incomplete'}
 
