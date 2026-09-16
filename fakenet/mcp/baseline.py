@@ -45,7 +45,8 @@ def is_control_client(process, service_command):
     command = re.match(pattern, process.get('CommandLine') or '')
     if not service or not command or service.group(3) != 'run':
         return False
-    if command.group(3) not in ('stop', 'uninstall', 'install'):
+    if command.group(3) not in ('stop', 'uninstall', 'install',
+                                'diagnostic-task'):
         return False
     image = ntpath.normcase(service.group(1) or service.group(2))
     return (ntpath.normcase(command.group(1) or command.group(2)) == image and
