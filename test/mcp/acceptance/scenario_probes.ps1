@@ -100,25 +100,40 @@ function Wait-EngineReadiness([string]$Path, [string]$Token, [string]$Bucket, [s
     # passed (sst-035: PolicyConfigError). Connect only after the CURRENT
     # run's own run.log publishes its engine-ready line; runs older than
     # this launcher never satisfy the wait.
-    $marker = if ($Bucket -eq 'B3' -and $ProcessMode -eq 'match') { 'PROCESS_REDIRECT_RULE_READY' } else { 'EGRESS_CONTROL_READY' }
+    # Readiness markers are the lines the diverter logs AFTER the WinDivert
+    # handle opens (interception active). B2 relay configs publish
+    # DOMAIN_TAKEOVER_READY instead of EGRESS_CONTROL_READY
+    # (discovery100-112 sst-016); IP_ALLOW_READY is deliberately excluded
+    # because it precedes the handle. B3 waits for the post-quiescence rule
+    # line so the reviewed image launches only after the product accepts it.
+    $isB3 = ($Bucket -eq 'B3' -and $ProcessMode -eq 'match')
+    $markerPattern = if ($isB3) { 'PROCESS_REDIRECT_RULE_READY' } else { 'EGRESS_CONTROL_READY|DOMAIN_TAKEOVER_READY' }
     $deadline = [DateTime]::UtcNow.AddSeconds($BudgetSeconds)
     $observed = $null
+    $matched = $null
     while ([DateTime]::UtcNow -lt $deadline) {
         $runs = Get-ChildItem 'C:\ProgramData\FakeNet-NG-MCP\artifacts\runs' -Directory -ErrorAction SilentlyContinue |
             Where-Object { $_.CreationTimeUtc -gt $LauncherStartUtc } |
             Sort-Object CreationTimeUtc -Descending | Select-Object -First 4
         foreach ($run in $runs) {
             $log = Join-Path $run.FullName 'run.log'
-            if ((Test-Path -LiteralPath $log) -and @(Select-String -LiteralPath $log -SimpleMatch -Pattern $marker -ErrorAction SilentlyContinue).Count) {
-                $observed = $run.Name
-                break
+            if (Test-Path -LiteralPath $log) {
+                $hit = @(Select-String -LiteralPath $log -Pattern $markerPattern -ErrorAction SilentlyContinue | Select-Object -First 1)
+                if ($hit.Count) {
+                    $observed = $run.Name
+                    if ($hit[0].Line -match '(EGRESS_CONTROL_READY|DOMAIN_TAKEOVER_READY|PROCESS_REDIRECT_RULE_READY)') { $matched = $Matches[1] }
+                    break
+                }
             }
         }
         if ($observed) { break }
         Start-Sleep -Milliseconds 50
     }
-    if (-not $observed) { throw ("engine readiness marker not observed within $BudgetSeconds seconds: $marker") }
-    Write-JsonLine $Path @{ event = 'engine_ready_observed'; nonce = $Token; profile = $Bucket; process_mode = $ProcessMode; marker = $marker; run_id = $observed }
+    if (-not $observed) { throw ("engine readiness marker not observed within $BudgetSeconds seconds: $markerPattern") }
+    # The marker can precede the last listener bind by a moment; a short
+    # settle keeps the single connection attempt inside the served window.
+    Start-Sleep -Milliseconds 1000
+    Write-JsonLine $Path @{ event = 'engine_ready_observed'; nonce = $Token; profile = $Bucket; process_mode = $ProcessMode; marker = $matched; run_id = $observed }
 }
 
 function Ensure-ProbeClient([string]$ResultPath) {

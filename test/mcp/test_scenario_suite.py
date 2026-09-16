@@ -1154,3 +1154,48 @@ def test_vm_footprint_prune_removes_exported_benign_runs_only(tmp_path):
     skipped = runner._prune_scenario_vm_footprint(runs, r'C:\g\sst-x', None)
     assert skipped['service_released_runs'] is False
     assert 'r-1' not in commands[0]
+
+
+def test_prune_scenario_configs_deletes_only_own_leftovers_and_rebinds_active():
+    runner = object.__new__(suite.Suite)
+    status = {'state': 'stopped', 'state_version': 7,
+              'config_identity': {'name': 'sst-003-active-a1.ini'}}
+    reads = {'sst-003-active-a1.ini': {'sha256': 'aa'},
+             'sst-003-import-a1.ini': {'sha256': 'cc'},
+             'sst-016-scratch-a2.ini': {'sha256': 'bb'}}
+
+    class FakeService:
+        def tool(self, name, args=None, timeout=None):
+            calls.append((name, dict(args or {})))
+            if name == 'list_configs':
+                return {'configs': [
+                    {'name': 'default.ini'}, {'name': 'sst-003-active-a1.ini'},
+                    {'name': 'sst-003-import-a1.ini'}, {'name': 'sst-016-scratch-a2.ini'}]}
+            if name == 'read_config':
+                return reads.get(args['name'], {'error': 'missing'})
+            if name == 'load_config':
+                status['config_identity'] = {'name': args['name']}
+                status['state_version'] += 1
+                return dict(status)
+            if name == 'delete_config':
+                removed.append(args['name'])
+                status['state_version'] += 1
+                return dict(status)
+            raise AssertionError('unexpected tool ' + name)
+
+    calls = []
+    removed = []
+    runner.service = FakeService()
+    runner._status = lambda timeout=60: dict(status)
+    record = runner._prune_scenario_configs('sst-003')
+    assert sorted(record['deleted']) == ['sst-003-active-a1.ini', 'sst-003-import-a1.ini']
+    assert record['rebound'] == 'default.ini'
+    assert not record['failures']
+    # The other scenario's config and the builtin stay untouched.
+    assert 'sst-016-scratch-a2.ini' not in removed
+    assert 'default.ini' not in removed
+    # Active leftover must be rebound before its delete.
+    load_index = next(i for i, (n, _) in enumerate(calls) if n == 'load_config')
+    delete_active = next(i for i, (n, a) in enumerate(calls)
+                         if n == 'delete_config' and a['name'] == 'sst-003-active-a1.ini')
+    assert load_index < delete_active

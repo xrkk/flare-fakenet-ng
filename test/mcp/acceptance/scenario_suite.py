@@ -1228,6 +1228,49 @@ class Suite:
                 self._mutate(scenario_id, attempt, 15, 'delete_config',
                              {'name': name, 'expected_sha256': current['sha256']})
 
+    def _prune_scenario_configs(self, scenario_id: str) -> dict[str, Any]:
+        """Delete this scenario's own leftover configs from aborted attempts.
+
+        Retry roots re-derive identical scratch/active/import names; an
+        attempt that aborted between rename and scenario end leaves the
+        active name behind and turns this attempt's rename into a name
+        conflict (discovery100-112 sst-003). The prune touches only names
+        carrying this scenario's id prefix, never the loaded builtin, and is
+        recorded as evidence rather than as interface calls so the call-plan
+        contract stays the same.
+        """
+        assert self.service
+        listing = self.service.tool('list_configs', timeout=60)
+        leftovers = [str(row['name']) for row in listing.get('configs', [])
+                     if str(row['name']).startswith(scenario_id + '-')]
+        record = {'prefix': scenario_id + '-', 'leftovers': leftovers,
+                  'deleted': [], 'rebound': None, 'failures': []}
+        if not leftovers:
+            return record
+        status = self._status()
+        for name in leftovers:
+            try:
+                if status.get('config_identity', {}).get('name') == name:
+                    self.service.tool('load_config', {
+                        'name': 'default.ini',
+                        'command_id': 'prune-rebind-' + uuid.uuid4().hex[:8],
+                        'expected_state_version': status['state_version']}, timeout=60)
+                    record['rebound'] = 'default.ini'
+                    status = self._status()
+                current = self.service.tool('read_config', {'name': name}, timeout=60)
+                sha = current.get('sha256')
+                if not sha:
+                    raise ValueError('leftover config read returned no sha256')
+                self.service.tool('delete_config', {
+                    'name': name, 'expected_sha256': sha,
+                    'command_id': 'prune-delete-' + uuid.uuid4().hex[:8],
+                    'expected_state_version': status['state_version']}, timeout=60)
+                record['deleted'].append(name)
+                status = self._status()
+            except Exception as exc:  # noqa: BLE001
+                record['failures'].append({'name': name, 'error': repr(exc)})
+        return record
+
     def _require_preflight(self) -> dict[str, Any]:
         if not self.preflight_path.is_file():
             raise Blocked('preflight.json absent')
@@ -3315,6 +3358,11 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 fault_mode_attempted = True
                 fault_evidence['mode_enabled'] = self._fault_mode(True)
                 evidence.write('fault-mode-enabled.json', fault_evidence['mode_enabled'])
+            try:
+                pruned = self._prune_scenario_configs(scenario_id)
+                evidence.write('scenario-config-prune.json', pruned)
+            except Exception as exc:  # noqa: BLE001
+                evidence.write('scenario-config-prune.json', {'error': repr(exc)})
             call('list_configs')
             call('validate_config', {'content': content})
             stale_version = self._status()['state_version']
