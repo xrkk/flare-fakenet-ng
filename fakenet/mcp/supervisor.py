@@ -526,13 +526,16 @@ class RealSupervisor:
             self._health_cache = {'process_alive': False, 'init_evidence': False, 'probe': False}
             self._baseline_store.compensate(marker['run_id'], deadline)
             # Restoring the adapter DNS configuration (netsh restore plus the
-            # Dnscache restart) makes NetBT/DHCPv6/Dnscache endpoints rebind;
-            # on the acceptance family that storm can outlast 30 seconds. The
-            # settle window only bounds how long the audit waits for two
-            # identical samples, so clean stops still return after the first
-            # two while a mid-rebind audit waits for the system to settle.
+            # Dnscache restart) makes NetBT/DHCPv6/Dnscache endpoints rebind,
+            # and the recovery's own stop re-triggers that storm before the
+            # audit samples it: NetBT returns 60..120 seconds after the churn
+            # begins on the acceptance family (discovery100-113 5b8be3ae
+            # outlasted both 30- and 90-second windows). The settle window
+            # only bounds how long the audit waits for two identical samples,
+            # so clean stops still return after the first two while a
+            # mid-rebind audit waits for the system to actually settle.
             differences = self._baseline_store.full_audit_diff(marker['run_id'], deadline=deadline,
-                                                              settle_seconds=90,
+                                                              settle_seconds=150,
                                                               observation=self._endpoint_observation)
             if not self._finish_endpoint_observation(deadline):
                 return self._result('failed', 'endpoint observation cleanup unverified')
