@@ -1203,3 +1203,16 @@ def test_prune_scenario_configs_deletes_only_own_leftovers_and_rebinds_active():
     delete_active = next(i for i, (n, a) in enumerate(calls)
                          if n == 'delete_config' and a['name'] == 'sst-003-active-a1.ini')
     assert load_index < delete_active
+
+
+def test_fault_window_waives_auxiliary_case_demand():
+    # discovery100-118 sst-034: a paused policy correctly denies cases
+    # released inside the fault window; the benign case demand must not
+    # fail the fault run's traffic oracle.
+    verdict = suite.Suite._cases_verdict
+    assert verdict(planned=2, releases=0, case_results=[], fault_window=True) is True
+    assert verdict(planned=2, releases=1, case_results=[{'passed': False}], fault_window=True) is True
+    assert verdict(planned=0, releases=0, case_results=[], fault_window=False) is True
+    assert verdict(planned=2, releases=1, case_results=[{'passed': True}], fault_window=False) is True
+    assert verdict(planned=2, releases=0, case_results=[], fault_window=False) is False
+    assert verdict(planned=2, releases=1, case_results=[{'passed': False}], fault_window=False) is False

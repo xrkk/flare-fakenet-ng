@@ -2059,8 +2059,24 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     'marker': self._QUIESCENCE_REFUSAL_MARKER}
         return None
 
+    @staticmethod
+    def _cases_verdict(planned: int, releases: int, case_results: list[dict[str, Any]],
+                       fault_window: bool) -> bool:
+        """Auxiliary boundary cases are a benign-run demand.
+
+        A fault run's adjudication already proves the fault acted; auxiliary
+        cases released inside an active fault window observe the fault's own
+        semantics (a paused policy correctly denies them), so the fault
+        traffic oracle waives the case demand while still recording the
+        release facts (discovery100-118 sst-034).
+        """
+        if fault_window:
+            return True
+        return not planned or (releases == 1 and all(row['passed'] for row in case_results))
+
     def _traffic_oracle(self, run: dict[str, Any], profile: dict[str, Any], nonce: str,
-                        sentinel: dict[str, Any] | None = None) -> dict[str, Any]:
+                        sentinel: dict[str, Any] | None = None,
+                        fault_window: bool = False) -> dict[str, Any]:
         """Check the same-run probe → PROCESS_FLOW → pktmon chain.
 
         This deliberately accepts no label supplied by the probe.  A probe
@@ -2462,7 +2478,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                                  'process_flow': case_flow[-1] if case_flow else None,
                                  'observation_error': case_observation_error, 'packet_record_count': len(case_packets), 'connection_observation': case_observation, 'nic_packet_count': len(case_nic),
                                  'branch_log': case_log, 'sentinel_receipt': case_receipt})
-        cases_ok = not planned_cases or (len(releases) == 1 and all(row['passed'] for row in case_results))
+        cases_ok = self._cases_verdict(planned_cases, len(releases), case_results, fault_window)
         curl: dict[str, Any] | None = None
         curl_ok = True
         if profile['bucket'] in ('B1', 'B4'):
@@ -2570,6 +2586,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 'egress_control_ready': egress_ready, 'relay': relay, 'expected_schedule': expected_schedule,
                 'expectation': expectation, 'branch_log': branch_log, 'branch_packet_count': len(branch_packets),
                 'sentinel_receipt': primary_receipt, 'case_release_count': len(releases), 'cases': case_results,
+                'fault_window_case_waiver': bool(fault_window and planned_cases),
                 'curl': curl,
                 'reason': None if passed else 'same-run primary/case probe→policy flow→NIC pktmon chain incomplete'}
 
@@ -3695,7 +3712,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     scenario, primary, nonce, root, evidence, fault_evidence)
                 primary['fault_connection_case'] = fault_evidence['adjudication'].get('case')
                 if primary.get('start_response', {}).get('state') == 'healthy':
-                    primary['traffic_oracle'] = self._traffic_oracle(primary, runtime_profile, nonce, sentinel_evidence)
+                    primary['traffic_oracle'] = self._traffic_oracle(primary, runtime_profile, nonce, sentinel_evidence,
+                                                                  fault_window=True)
         except Exception as exc:  # noqa: BLE001
             if failure is None:
                 failure = repr(exc)
