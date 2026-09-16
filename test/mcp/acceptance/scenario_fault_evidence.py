@@ -135,6 +135,9 @@ def build_case(root: Path, capture: dict[str, Any]) -> dict[str, Any]:
     required = ('receipt', 'receipt_metadata', 'ipc', 'run_log', 'probe', 'pktmon',
                 'baseline', 'recovery_audit', 'recovery_healthy', 'cleanup', 'terminal')
     files = {name: _relative(root, raw, name) for name in required}
+    if attribution is not None:
+        files['recovery_attribution'] = _relative(
+            root, {'recovery_attribution': attribution_path}, 'recovery_attribution')
     attribution_path = raw.get('recovery_attribution')
     attribution = None
     if isinstance(attribution_path, str) and attribution_path and (root / attribution_path).is_file():

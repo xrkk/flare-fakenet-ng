@@ -2574,7 +2574,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                               (self.root / str(recovery_audit[-1]['path'])).read_text(
                                   encoding='utf-8-sig').splitlines() if line.strip()]
                 audit_value = audit_rows[-1] if audit_rows else {}
-                sections = audit_value.get('sections', audit_value)
+                sections = (audit_value.get('sections') or
+                            audit_value.get('current') or audit_value)
                 base_sections = run.get('five_sections_before') or read_json(baseline).get('sections')
                 difference = self._section_difference(base_sections, sections)
                 attribution = (self._attribute_section_difference(base_sections, sections)
