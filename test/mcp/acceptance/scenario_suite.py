@@ -2582,11 +2582,12 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                                if difference else None)
                 write_new_json(attribution_path, {
                     'difference': difference, 'attribution': attribution,
-                    'residue': bool(difference) and self._difference_is_residue(difference, attribution)})
+                    'blocking': bool(difference) and self._difference_is_residue(
+                        difference, attribution)})
                 evidence.add(attribution_path)
             except Exception as exc:  # noqa: BLE001
                 write_new_json(attribution_path, {'difference': None, 'attribution': None,
-                                                  'residue': False, 'capture_error': repr(exc)})
+                                                  'blocking': True, 'capture_error': repr(exc)})
                 evidence.add(attribution_path)
         source_path: Path | None = None
         if fault == 'policy_pause':
@@ -2855,6 +2856,11 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         for line in str(sections.get('listen_ports') or '').splitlines():
             parts = line.split()
             if len(parts) >= 2 and parts[0] in ('TCP', 'UDP'):
+                # The section difference compares listening sockets only;
+                # transient ESTABLISHED/TIME_WAIT rows are lifecycle noise
+                # and must not enter the ownership attribution.
+                if parts[0] == 'TCP' and 'LISTENING' not in line:
+                    continue
                 result.add((parts[0], parts[1].replace('[', '').replace(']', '')))
         return result
 

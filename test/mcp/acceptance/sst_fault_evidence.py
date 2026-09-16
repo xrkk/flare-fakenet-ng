@@ -591,13 +591,15 @@ def assess(case, root, expected_candidate=CANDIDATE):
         sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
         difference = native_section_compare(snapshots[0], snapshots[1])
         attribution = next((x for x in raw if isinstance(x, dict) and
-                            x.get('residue') is True and x.get('difference')), None)
+                            x.get('difference') and 'blocking' in x), None)
         if difference and attribution:
             # The suite captured live endpoint-owner attribution at scenario
-            # time; a difference proven to be external lifecycle residue
-            # (e.g. Edge mDNS :5353) is environmental, not a product
-            # recovery failure (record 56 / discovery100-99 sst-014).
-            if attribution.get('difference') == difference:
+            # time; a listen difference actively proven non-blocking (all
+            # owners external, e.g. Edge mDNS :5353 lifecycle) is
+            # environmental, not a product recovery failure (record 56 /
+            # discovery100-99..103 sst-014).
+            if (attribution.get('difference') == difference and
+                    attribution.get('blocking') is False):
                 difference = {}
         stops = [read(ref) for ref in case['stop_refs']]
         terminal = any(isinstance(x, dict) and x.get('state') == 'stopped'
