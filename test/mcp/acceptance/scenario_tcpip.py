@@ -492,6 +492,7 @@ def reconstruct_generations(events):
                                        identity=None, events=[]))
                     group = groups[-1]
                     group['identity'] = dict(local=event['local'], remote=event['remote'], pid=event.get('pid'))
+                    identity = group['identity']
                 if event.get('pid') is not None:
                     if identity['pid'] is not None and event['pid'] != identity['pid']:
                         raise ValueError('TCB PID identity changed within generation')
