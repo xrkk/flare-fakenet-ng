@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from fakenet.mcp.endpoint_attribution import (closed_udp_changes, event_ns,
-                                              foreign_udp_owner_changes)
+                                              foreign_udp_owner_changes,
+                                              restarted_service_udp_changes)
 from fakenet.mcp.baseline import BASELINE_FIELDS
 
 
@@ -261,6 +262,109 @@ def test_full_audit_uses_start_only_proof_when_audit_proof_fails(tmp_path, monke
     decision = json.loads(next((tmp_path/'logs').glob('*.attribution.json')).read_text())
     assert decision['proof_mode'] == 'start-only'
     assert decision['accepted'] is True
+
+
+def rehost_case():
+    """A Dnscache service-host rebind across a run (discovery100 evidence shape)."""
+    run = 'run-rehost-1'
+    sections = {k: 'unchanged' for k in BASELINE_FIELDS}
+    sections.update(
+        listen_ports=('UDP 127.0.0.1:63445 *:* 8464\n'
+                      'UDP 192.168.204.233:63444 *:* 8464\n'
+                      'UDP [::1]:63443 *:* 8464\n'
+                      'UDP [fe80::9787:5bf7:10b3:bec8%11]:63442 *:* 8464'),
+        windivert_processes=json.dumps({'managed': []}))
+    base = event_ns('2026-09-16T20:56:00.0000000Z')
+    ns = lambda second: base + int(float(second) * 10**9)
+    baseline = {'run_id': run, 'sections': sections,
+                'observation_windows': {'listen_ports': {'start_ns': ns('06.0000000'), 'end_ns': ns('18.0000000')}}}
+    sample = {'run_id': run,
+              'current': dict(sections,
+                              listen_ports=('UDP 127.0.0.1:51383 *:* 2336\n'
+                                            'UDP 192.168.204.233:51382 *:* 2336\n'
+                                            'UDP [::1]:51381 *:* 2336\n'
+                                            'UDP [fe80::9787:5bf7:10b3:bec8%11]:51380 *:* 2336')),
+              'observation_windows': {'listen_ports': {'start_ns': ns('31.0000000'), 'end_ns': ns('43.0000000')}}}
+    identities = [{'ProcessId': 8464, 'CreationTime': '134340356119962930'}]
+    proof = {'run_id': run,
+             'start': {'run_id': run, 'time_ns': ns('04.0000000'), 'processes': identities},
+             'end': {'run_id': run, 'time_ns': ns('60.0000000'), 'complete': True,
+                     'absent': True, 'processes': identities}}
+    return baseline, sample, proof
+
+
+def test_restarted_service_rebind_with_new_host_pid_is_accepted():
+    baseline, sample, proof = rehost_case()
+    result = restarted_service_udp_changes(baseline, sample, proof,
+                                           service_identity=lambda: (2336, True))
+    assert result['accepted'], result
+    assert result['attributed'][0]['service'] == 'Dnscache'
+    assert result['attributed'][0]['previous_host_pid'] == 8464
+    assert result['attributed'][0]['current_host_pid'] == 2336
+    assert len(result['attributed']) == 8
+
+
+@pytest.mark.parametrize('problem', ['not_the_service', 'service_stopped',
+    'old_host_not_at_start', 'managed_old_owner', 'managed_new_owner',
+    'address_set_mismatch', 'non_udp_row', 'other_section', 'removed_only',
+    'mixed_new_owners', 'same_host'])
+def test_restarted_service_attribution_fails_closed(problem):
+    baseline, sample, proof = rehost_case()
+    identity = lambda: (2336, True)
+    if problem == 'not_the_service':
+        identity = lambda: (4242, True)
+    elif problem == 'service_stopped':
+        identity = lambda: (2336, False)
+    elif problem == 'old_host_not_at_start':
+        proof['start']['processes'] = [{'ProcessId': 2336, 'CreationTime': '134340356119962930'}]
+    elif problem == 'managed_old_owner':
+        baseline['sections']['windivert_processes'] = json.dumps({'managed': [{'Id': 8464}]})
+    elif problem == 'managed_new_owner':
+        baseline['sections']['windivert_processes'] = json.dumps({'managed': [{'Id': 2336}]})
+    elif problem == 'address_set_mismatch':
+        sample['current']['listen_ports'] = sample['current']['listen_ports'].replace(
+            '[fe80::9787:5bf7:10b3:bec8%11]:51380', '[fe80::1]:51380')
+    elif problem == 'non_udp_row':
+        sample['current']['listen_ports'] = ('TCP 192.168.204.233:139 0.0.0.0:0 LISTENING 4\n' +
+                                             sample['current']['listen_ports'])
+    elif problem == 'other_section':
+        sample['current']['routes'] = 'changed'
+    elif problem == 'removed_only':
+        sample['current']['listen_ports'] = ''
+    elif problem == 'mixed_new_owners':
+        sample['current']['listen_ports'] = sample['current']['listen_ports'].replace(
+            'UDP [::1]:51381 *:* 2336', 'UDP [::1]:51381 *:* 4242')
+    elif problem == 'same_host':
+        # Same-host rebind keeps a pre-existing owner; the foreign-owner rule
+        # owns that decision and this rule must not double-cover it.
+        sample['current']['listen_ports'] = sample['current']['listen_ports'].replace('2336', '8464')
+    result = restarted_service_udp_changes(baseline, sample, proof,
+                                           service_identity=identity)
+    assert not result['accepted'], result
+
+
+def test_full_audit_accepts_restarted_service_rebind(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from fakenet.mcp import baseline as module
+    from fakenet.mcp import endpoint_attribution
+    baseline, sample, proof = rehost_case()
+    sections = module.CapturedSections(baseline['sections'])
+    sections.windows = baseline['observation_windows']
+    store = module.BaselineStore(tmp_path / 'baselines')
+    store.save(baseline['run_id'], sections)
+    current = module.CapturedSections(sample['current'])
+    current.windows = sample['observation_windows']
+    monkeypatch.setattr(module, 'capture', lambda deadline: current)
+    monkeypatch.setattr(module.time, 'sleep', lambda seconds: None)
+    monkeypatch.setattr(endpoint_attribution, 'dnscache_host_pid',
+                        lambda: (2336, True))
+    observed = SimpleNamespace(audit_proof=lambda deadline: proof)
+    result = store.full_audit_diff(baseline['run_id'], settle_seconds=0.02, observation=observed)
+    assert result == {}
+    decision = json.loads(next((tmp_path/'logs').glob('*.attribution.json')).read_text())
+    assert decision['accepted'] is True
+    assert decision['restarted_service_samples']
+    assert all(row['accepted'] for row in decision['restarted_service_samples'])
 
 
 def test_rfc5737_documentation_targets_are_valid_original_redirects():

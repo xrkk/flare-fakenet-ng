@@ -153,6 +153,158 @@ def _managed_process_ids(section):
     return ids
 
 
+def dnscache_host_pid():
+    """Live SCM identity of the Dnscache service host as (pid, running).
+
+    The product's own restore path is the only component that restarts this
+    service (StopDNSService teardown plus baseline compensation), so the
+    service control manager is the authoritative owner of a rebind.
+    """
+    import ctypes
+    import os
+    if os.name != 'nt':
+        raise OSError('service identity requires Windows')
+    from ctypes import wintypes
+
+    class SERVICE_STATUS_PROCESS(ctypes.Structure):
+        _fields_ = [(name, wintypes.DWORD) for name in (
+            'dwServiceType', 'dwCurrentState', 'dwControlsAccepted',
+            'dwWin32ExitCode', 'dwServiceSpecificExitCode', 'dwCheckPoint',
+            'dwWaitHint', 'dwProcessId', 'dwServiceFlags')]
+
+    advapi32 = ctypes.WinDLL('advapi32', use_last_error=True)
+    sc_manager = advapi32.OpenSCManagerW(None, None, 0x0001)
+    if not sc_manager:
+        raise OSError('OpenSCManager failed')
+    try:
+        service = advapi32.OpenServiceW(sc_manager, 'Dnscache', 0x0004)
+        if not service:
+            raise OSError('OpenService(Dnscache) failed')
+        try:
+            status = SERVICE_STATUS_PROCESS()
+            needed = wintypes.DWORD()
+            if not advapi32.QueryServiceStatusEx(
+                    service, 0, ctypes.byref(status),
+                    ctypes.sizeof(status), ctypes.byref(needed)):
+                raise OSError('QueryServiceStatusEx failed')
+            return int(status.dwProcessId), int(status.dwCurrentState) == 4
+        finally:
+            advapi32.CloseServiceHandle(service)
+    finally:
+        advapi32.CloseServiceHandle(sc_manager)
+
+
+def restarted_service_udp_changes(baseline, sample, proof,
+                                  service_identity=None):
+    """Accept an isolated UDP rebind performed by a restarted Dnscache host.
+
+    Stopping and restarting the DNS cache service is part of this product's
+    own restoration design (StopDNSService teardown and baseline service
+    compensation).  A restart rebinds the service's per-interface sockets to
+    new ephemeral ports, and on service-host replacement the new sockets
+    belong to a process that was born during the run, so the pre-existing
+    owner rule must refuse them.  The difference is environmental exactly
+    when the service control manager identifies the current Dnscache host as
+    the sole owner of every added row, every removed row belonged to one
+    pre-existing unmanaged process, and the two sides bind the identical
+    address set.  Anything mixed, partial or non-UDP refuses; no port range
+    or process-name waiver exists.
+    """
+    from fakenet.mcp.baseline import audit_compare
+    result = {'accepted': False, 'attributed': [], 'refused': []}
+    try:
+        run = baseline['run_id']
+        if (sample['run_id'] != run or proof['run_id'] != run or
+                proof['start'].get('run_id') != run):
+            raise ValueError('run identity or start coverage unavailable')
+        if 'end' in proof and (proof['end'].get('run_id') != run or
+                               proof['end'].get('complete') is not True or
+                               proof['end'].get('absent') is not True):
+            raise ValueError('end coverage marker is not complete')
+        diff = audit_compare(baseline['sections'], sample['current'])
+        if not diff:
+            return dict(result, accepted=True, raw_equal=True)
+        if set(diff) != {'listen_ports'} or diff['listen_ports'].get('collection_failed'):
+            raise ValueError('not an isolated endpoint difference')
+        before_window = baseline['observation_windows']['listen_ports']
+        if proof['start']['time_ns'] > before_window['start_ns']:
+            raise ValueError('baseline sampling predates observation start')
+        normalized = diff['listen_ports']
+        norm_removed = Counter(str(normalized['before']).splitlines()) - Counter(str(normalized['after']).splitlines())
+        norm_added = Counter(str(normalized['after']).splitlines()) - Counter(str(normalized['before']).splitlines())
+        changed = ([('removed', line) for line in norm_removed.elements()] +
+                   [('added', line) for line in norm_added.elements()])
+        if not changed or not norm_removed or not norm_added:
+            raise ValueError('rebind requires both sides of the change')
+        for _direction, line in changed:
+            parts = line.split()
+            if len(parts) != 3 or parts[0].upper() != 'UDP':
+                raise ValueError('non-UDP row remains in difference')
+
+        def raw_owner(text, address_port):
+            for raw in str(text).splitlines():
+                parts = raw.split()
+                if (len(parts) == 4 and parts[0].upper() == 'UDP' and
+                        parts[1] == address_port and parts[2] == '*:*' and
+                        parts[3].isdigit()):
+                    return int(parts[3])
+            raise ValueError('raw owner row unavailable for %s' % address_port)
+
+        removed_rows = {}
+        added_rows = {}
+        for direction, line in changed:
+            address_port = line.split()[1]
+            owner = raw_owner(baseline['sections']['listen_ports'] if direction == 'removed'
+                              else sample['current']['listen_ports'], address_port)
+            (removed_rows if direction == 'removed' else added_rows)[address_port] = owner
+        old_owners = set(removed_rows.values())
+        new_owners = set(added_rows.values())
+        if len(old_owners) != 1 or len(new_owners) != 1:
+            result['refused'].append({'reason': 'mixed owners',
+                                      'old_owners': sorted(old_owners),
+                                      'new_owners': sorted(new_owners)})
+            raise ValueError('refused: mixed owners')
+        old_owner = old_owners.pop()
+        new_owner = new_owners.pop()
+        # A rebind preserves the bound address set and replaces only the
+        # ephemeral ports, so the comparison excludes the port column.
+        if ({host.rsplit(':', 1)[0] for host in removed_rows} !=
+                {host.rsplit(':', 1)[0] for host in added_rows}):
+            raise ValueError('rebind address sets differ')
+        if old_owner == new_owner:
+            # A same-host rebind keeps a pre-existing owner; the
+            # pre-existing-owner rule owns that decision.
+            raise ValueError('service host did not change')
+        managed = _managed_process_ids(baseline['sections'].get('windivert_processes'))
+        if old_owner in managed or new_owner in managed:
+            raise ValueError('managed process owns the change')
+        start_ids = {int(row['ProcessId']): str(row['CreationTime'])
+                     for row in proof['start']['processes']}
+        if len(start_ids) != len(proof['start']['processes']):
+            raise ValueError('ambiguous process identity')
+        if old_owner not in start_ids:
+            raise ValueError('previous service host predates neither trace nor run')
+        identity = service_identity() if service_identity is not None else dnscache_host_pid()
+        service_pid, service_running = identity
+        if not service_running or service_pid != new_owner:
+            result['refused'].append({'reason': 'added owner is not the running service host',
+                                      'service_pid': service_pid,
+                                      'service_running': service_running,
+                                      'new_owner': new_owner})
+            raise ValueError('refused: added owner is not the service host')
+        for direction, row in (('removed', removed_rows), ('added', added_rows)):
+            for address_port, owner in sorted(row.items()):
+                result['attributed'].append({
+                    'direction': direction, 'row': 'UDP %s *:*' % address_port,
+                    'pid': owner, 'service': 'Dnscache',
+                    'previous_host_pid': old_owner, 'current_host_pid': new_owner})
+        result['accepted'] = True
+    except Exception as exc:
+        result['accepted'] = False
+        result['failure'] = str(exc)
+    return result
+
+
 def foreign_udp_owner_changes(baseline, sample, proof):
     """Accept isolated UDP endpoint changes owned by pre-existing processes.
 

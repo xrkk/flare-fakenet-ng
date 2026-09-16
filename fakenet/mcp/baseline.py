@@ -426,6 +426,23 @@ class BaselineStore:
                     except Exception as exc:
                         decision['foreign_owner_samples'] = [{'accepted': False,
                                                               'failure': repr(exc)}]
+                if not accepted and proof is not None:
+                    # The product's own restore path restarts the DNS cache
+                    # service; on service-host replacement the rebound sockets
+                    # belong to a process born during the run. The service
+                    # control manager decides whether the added rows are that
+                    # host, so the rebind is attributed instead of waived.
+                    try:
+                        from fakenet.mcp.endpoint_attribution import (
+                            restarted_service_udp_changes)
+                        restarted = [restarted_service_udp_changes(baseline, sample, proof)
+                                     for sample in samples]
+                        accepted = all(row['accepted'] for row in restarted)
+                        decision['restarted_service_samples'] = restarted
+                        decision['accepted'] = accepted
+                    except Exception as exc:
+                        decision['restarted_service_samples'] = [{'accepted': False,
+                                                                   'failure': repr(exc)}]
                 write_evidence(log.with_suffix('.attribution.json'), decision)
                 if accepted:
                     return {}
