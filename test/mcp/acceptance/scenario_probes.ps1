@@ -92,6 +92,35 @@ function Get-Endpoint([string]$Bucket, [string]$EndpointHost, [int]$Port, [strin
     }
 }
 
+function Wait-EngineReadiness([string]$Path, [string]$Token, [string]$Bucket, [string]$ProcessMode, [int]$BudgetSeconds, [datetime]$LauncherStartUtc) {
+    # A during-start probe released before the managed engine is armed
+    # reaches the real internet (divert absent) and its one connection never
+    # traverses the product (discovery100-109 sst-003). B3 additionally must
+    # not launch its reviewed image before the product's quiescence check
+    # passed (sst-035: PolicyConfigError). Connect only after the CURRENT
+    # run's own run.log publishes its engine-ready line; runs older than
+    # this launcher never satisfy the wait.
+    $marker = if ($Bucket -eq 'B3' -and $ProcessMode -eq 'match') { 'PROCESS_REDIRECT_RULE_READY' } else { 'EGRESS_CONTROL_READY' }
+    $deadline = [DateTime]::UtcNow.AddSeconds($BudgetSeconds)
+    $observed = $null
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $runs = Get-ChildItem 'C:\ProgramData\FakeNet-NG-MCP\artifacts\runs' -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.CreationTimeUtc -gt $LauncherStartUtc } |
+            Sort-Object CreationTimeUtc -Descending | Select-Object -First 4
+        foreach ($run in $runs) {
+            $log = Join-Path $run.FullName 'run.log'
+            if ((Test-Path -LiteralPath $log) -and @(Select-String -LiteralPath $log -SimpleMatch -Pattern $marker -ErrorAction SilentlyContinue).Count) {
+                $observed = $run.Name
+                break
+            }
+        }
+        if ($observed) { break }
+        Start-Sleep -Milliseconds 50
+    }
+    if (-not $observed) { throw ("engine readiness marker not observed within $BudgetSeconds seconds: $marker") }
+    Write-JsonLine $Path @{ event = 'engine_ready_observed'; nonce = $Token; profile = $Bucket; process_mode = $ProcessMode; marker = $marker; run_id = $observed }
+}
+
 function Ensure-ProbeClient([string]$ResultPath) {
     $root = Split-Path -Parent $ResultPath
     New-Item -ItemType Directory -Path $root -Force | Out-Null
@@ -317,6 +346,11 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
     while (-not (Test-Path $Start) -and -not (Test-Path $Stop) -and [DateTime]::UtcNow -lt $releaseDeadline) { Start-Sleep -Milliseconds 20 }
     if (-not (Test-Path $Start)) { throw 'probe start control was not released' }
     Write-JsonLine $Path @{ event = 'released'; nonce = $Token; profile = $Bucket; interleave = $Interleave }
+    # Only the during-start interleave races the engine; every other
+    # interleave is released after the engine is already proven up.
+    if ($Interleave -eq 'during-start') {
+        Wait-EngineReadiness -Path $Path -Token $Token -Bucket $Bucket -ProcessMode $ProcessMode -BudgetSeconds $StartupRetrySeconds -LauncherStartUtc ([Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime() + [TimeSpan]::FromSeconds(-2))
+    }
     $casesInvoked = [ref]$false
     $curlInvoked = [ref]$false
     function Invoke-ReleasedCases {

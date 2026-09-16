@@ -207,10 +207,12 @@ def build_case(root: Path, capture: dict[str, Any]) -> dict[str, Any]:
     if end is None:
         raise ValueError('probe termination event missing')
     matching_flows = [item for text, item in text_lines(files['run_log'], root)
-                      if 'PROCESS_FLOW ' in text and tcpip.flow_matches(tcpip.fields(text),
+                      if ('PROCESS_FLOW ' in text or
+                          'PROCESS_REDIRECT_MAPPING_CREATED' in text) and
+                      tcpip.flow_matches(tcpip.fields(text),
                       event['pid'], event['src'], event.get('actual_dst') or event['dst'])]
     if not matching_flows:
-        raise ValueError('run.log exact PROCESS_FLOW for probe missing')
+        raise ValueError('run.log exact flow line for probe missing')
     flow = _latest_raw_ref(root, matching_flows)
     baseline = json.loads(files['baseline'].read_text(encoding='utf-8-sig'))
     if isinstance(baseline, list):
