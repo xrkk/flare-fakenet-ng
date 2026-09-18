@@ -9,11 +9,11 @@
     "implementation": "主会话"
   },
   "phase": "IMPLEMENT",
-  "phase_step": "验证",
+  "phase_step": "执行",
   "plan": {
     "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-06-修复方案-FakeNet-NG统一问题修复.md",
-    "version": "v0.4",
-    "blob": "e352087e003f989fa9a1934edc0da36334eefa0e",
+    "version": "v0.10",
+    "blob": "207aef0aa98305304e39d424535f13b886879f87",
     "status": "已审核, 可以实施"
   },
   "investigation": {
@@ -30,14 +30,14 @@
   },
   "authorization": {
     "new_fix_chain": "进行中；最新指令授权所有发现的问题在一个方案中分阶段修复，首次审核引入后实施",
-    "previous_scenario_loop": "仍停止",
-    "current_failure": "用户同意按16思路继续；下一正式验收首失败仍停"
+    "previous_scenario_loop": "由当前持续修复循环替换；不再适用旧首次失败总停止",
+    "current_failure": "用户明确替换失败停止边界：持续子智能体找错+主会话修复；Spike主会话执行修复；实际100由Terra/xhigh"
   },
   "branch": "process-redirect-v23",
-  "head": "25a0501af47e1c753c74ec776cfeb93a0afa5073",
-  "checkpoint": "listener_stop两个问题已按17补证修复，本地51pass/1skip；准备新源码正式构建",
+  "head": "7ec8eff106a722122b93b1a1d0e50a7b8d1599c6",
+  "checkpoint": "交接：restart基线修复实机通过；discovery100-03导出run01缺ipc-parent.jsonl，根因未查；distinct2/100，98未执行",
   "blockers": [],
-  "updated_at": "2026-09-13T11:57:36.030608+08:00",
+  "updated_at": "2026-09-13T19:15:22.531182+08:00",
   "scope_record": {
     "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-03-范围确认-统一问题修复.md",
     "blob": "ccc914f71d0c3fdb5fa1f62d5531443160a1591e"
@@ -60,7 +60,7 @@
     "admission": "通过"
   },
   "review_agent": {
-    "task": "/root/unified_repair_targeted",
+    "task": "/root/native_context_targeted",
     "model": "gpt-6-astra",
     "reasoning": "medium",
     "fork_turns": "none"
@@ -96,31 +96,108 @@
     "review_required": false
   },
   "build": {
-    "source_commit": "25a0501af47e1c753c74ec776cfeb93a0afa5073",
-    "tree": "030102e960f3cb5449783115e1f7c5350b4c0dad",
+    "source_commit": "7ec8eff106a722122b93b1a1d0e50a7b8d1599c6",
+    "tree": "3914d93f77a718d2c2c55edaf8dc8e86eebbb817",
     "status": "passed",
-    "candidate_id": "mcp-c25a0501a-3a4340750d43",
-    "zip_sha256": "3a4340750d43e023201315ff65992e1b2f69060dde6ccca7af9b31888226b2ef",
-    "output": "dist/mcp-unified-repair-20260913-02",
-    "log_root": "Logs/fakenetng-mcp/builds/25a0501a-b5g54i84"
+    "candidate_id": "mcp-c7ec8eff1-611c036301c8",
+    "zip_sha256": "611c036301c86659bcc3b81c512eba06135314bb5c7a6d5e0508a72d5f5d9e85",
+    "output": "dist/mcp-unified-repair-20260913-03",
+    "log_root": "Logs/fakenetng-mcp/builds/7ec8eff1-lk9ic5x7"
   },
   "acceptance": {
-    "status": "stopped_after_first_failure",
+    "status": "continuous-repair-loop",
     "acc": "ACC-005",
-    "evidence": "Logs/fakenetng-mcp/unified-repair-20260913/25a0501/failure-export",
+    "evidence": "Logs/fakenetng-mcp/unified-repair-20260913/7ec8eff-loop/five-class-spike-07",
     "executed_packaged_cases": 40,
     "required_packaged_cases": 40,
     "actual_100_executed": 0,
     "resume_requires_user_instruction": false,
     "normal_p05": "5/5 pass",
+    "preflight": "P1–P7 pass",
     "readiness": "40/40 pass",
-    "failed_run_id": "4d191cdf-394d-4290-835c-4951c5973067",
-    "p05_fault": "policy_pause pass; listener_stop fail; remaining 3 not executed"
+    "fault_p05": "5/5 pass",
+    "final_p05": "pass",
+    "summary": "pass; unchanged formal mode_summary with fresh writer, original tool-error preserved",
+    "offline_summary": "pass; original CLI tool-error preserved",
+    "offline_summary_evidence": "Logs/fakenetng-mcp/unified-repair-20260913/7ec8eff/offline-analysis/result.json",
+    "spike": "Spike07 preflight running; Spike06 failed traffic only and preserved",
+    "summary_evidence": "Logs/fakenetng-mcp/unified-repair-20260913/7ec8eff-loop/p05-summary-02/result.json"
   },
   "acceptance_agent": {
-    "task": "/root/terra_repair100_v2",
+    "task": "/root/terra_repair100_v3",
     "model": "gpt-5.6-terra",
     "reasoning": "xhigh",
-    "status": "offline preparation only; actual execution 0"
+    "status": "offline preparation only; stopped; actual execution 0"
+  },
+  "etw_audit": {
+    "path": "PLAN/2026.09/2026.09.13/2026.09.13-25-复审-FakeNet-NG独立连接证据.md",
+    "blob": "1e8faad346e574358abc3518356ac38a6dda973f",
+    "conclusion": "存在不同意见"
+  },
+  "etw_handling": {
+    "path": "PLAN/2026.09/2026.09.13/2026.09.13-26-复审处理-FakeNet-NG独立连接证据.md",
+    "blob": "c4b7d396b92e92c24b96a9b90d39fe92b4ad9af2",
+    "review_required": true,
+    "review_mode": "定向"
+  },
+  "etw_targeted_audit": {
+    "path": "PLAN/2026.09/2026.09.13/2026.09.13-27-复审-FakeNet-NG独立连接证据.md",
+    "blob": "c5cdf1877da2d0584be0400de92919906921c85e",
+    "conclusion": "审计通过"
+  },
+  "etw_targeted_handling": {
+    "path": "PLAN/2026.09/2026.09.13/2026.09.13-28-复审处理-FakeNet-NG独立连接证据.md",
+    "blob": "4d9e2c1c39f8f7c49dec5a7e624e5f5e852f0cdc",
+    "review_required": false
+  },
+  "connection_evidence_decision": {
+    "path": "PLAN/2026.09/2026.09.13/2026.09.13-30-决策记录-应用侧观察与连接生命周期.md",
+    "blob": "a8cf237da9c4ccd988fac6047e9b360f46448c97",
+    "authorized": true
+  },
+  "plan_version": "v0.10",
+  "plan_blob": "207aef0aa98305304e39d424535f13b886879f87",
+  "null_tcb_review": {
+    "path": "PLAN/2026.09/2026.09.13/2026.09.13-40-复审-无身份RST负向约束.md",
+    "blob": "b34a75755cbd060e1bb529690a7039266ff5477f",
+    "conclusion": "审计通过",
+    "handling_path": "PLAN/2026.09/2026.09.13/2026.09.13-41-复审处理-无身份RST负向约束.md",
+    "handling_blob": "f3379772e24abcc408e9b2e31e60869f04443706",
+    "review_required": false
+  },
+  "native_context_change": {
+    "path": "PLAN/2026.09/2026.09.13/2026.09.13-44-方案变更-原生上下文与curl窗口.md",
+    "blob": "1c5346c7b04c5064d0c9422ca3245cfb0883234a",
+    "review_required": true,
+    "review_mode": "定向"
+  },
+  "native_context_review": {
+    "path": "PLAN/2026.09/2026.09.13/2026.09.13-46-复审-原生上下文与curl窗口.md",
+    "blob": "ac7dcf520d85b9ae9aa3dcd58018ae36f6c3dc25",
+    "conclusion": "审计通过",
+    "handling_path": "PLAN/2026.09/2026.09.13/2026.09.13-47-复审处理-原生上下文与curl窗口.md",
+    "handling_blob": "f803e22134ff830ad775d3e0e6405454ff1b5ac7",
+    "review_required": false
+  },
+  "ur006": {
+    "plan_blob": "207aef0aa98305304e39d424535f13b886879f87",
+    "self_review": "PLAN/2026.09/2026.09.13/2026.09.13-52-自评-精确成功状态关闭事件.md",
+    "implementation": "PLAN/2026.09/2026.09.13/2026.09.13-53-实施验证-精确关闭与探针时钟.md",
+    "review_required": false,
+    "reason": "局部精确终止原因，按阶段5首次审核后作者自评闭环"
+  },
+  "discovery100": {
+    "agent": "/root/terra_discovery100",
+    "model": "gpt-5.6-terra",
+    "reasoning": "xhigh",
+    "fork_turns": "none",
+    "root": "Logs/fakenetng-mcp/unified-repair-20260913/7ec8eff-loop/discovery100-01",
+    "formal_acceptance": false,
+    "execution_record": "PLAN/2026.09/2026.09.13/2026.09.13-55-执行调整-优先100场景找错.md"
+  },
+  "handoff": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.13/2026.09.13-58-任务交接-FakeNet100场景找错与修复.md",
+    "blob": "c1b7e2f28694f8bc46b25d5669e37251286f115c",
+    "created_at": "2026-09-13T19:15:22.531182+08:00"
   }
 }
