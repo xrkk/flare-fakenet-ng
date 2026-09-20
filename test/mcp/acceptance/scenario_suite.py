@@ -307,11 +307,14 @@ def pktmon_capture_issues(value: dict[str, Any], packet_export: bytes | str | No
     return problems
 
 
-def profile_for_bucket(bucket: str, ordinal: int) -> dict[str, Any]:
+def profile_for_bucket(bucket: str, ordinal: int, in_bucket: int | None = None) -> dict[str, Any]:
     """Return a material profile: traffic cadence and boundary vary by ordinal.
 
     The manifest retains all parameters which select real probe behaviour, so a
     changed ``scenario_id`` alone can never manufacture a distinct scenario.
+    ``in_bucket`` is the row's bucket-relative position; the default bucket
+    rotates its four application case kinds on it (a global ordinal modulo
+    would skip kinds because the bucket's slots are seed-rotated).
     """
     tempos = ('hold', 'burst', 'stagger', 'drip', 'overlap')
     interleaves = ('before-start', 'during-start', 'after-healthy', 'restart-window', 'stop-window')
@@ -333,13 +336,15 @@ def profile_for_bucket(bucket: str, ordinal: int) -> dict[str, Any]:
               'startup_retry_seconds': 70}
     def target(host: str, port: int, protocol: str, expectation: str,
                process_mode: str = 'match', tls_server_name: str | None = None,
-               fnpr_role: str | None = None) -> dict[str, Any]:
+               fnpr_role: str | None = None, application: str | None = None) -> dict[str, Any]:
         value = {'host': host, 'port': port, 'protocol': protocol,
                  'expectation': expectation, 'process_mode': process_mode}
         if tls_server_name:
             value['tls_server_name'] = tls_server_name
         if fnpr_role:
             value['fnpr_role'] = fnpr_role
+        if application:
+            value['application'] = application
         return value
     if bucket == 'B1':
         modes = (
@@ -403,9 +408,18 @@ def profile_for_bucket(bucket: str, ordinal: int) -> dict[str, Any]:
                         target('198.51.100.77', 1337, 'tcp', 'deny'),
                     ))
     if bucket == 'default':
+        import scenario_application as applications
+        kinds = applications.APPLICATION_KINDS
+        position = in_bucket if in_bucket is not None else ordinal
+        kind = kinds[position % len(kinds)]
         return dict(common, template='default.ini',
                     variant='full-takeover-%s' % common['tempo'], traffic_profile='default_takeover',
-                    probe_target=target('198.51.100.77', 1337, 'tcp', 'local_fake'))
+                    probe_target=target('198.51.100.77', 1337, 'tcp', 'local_fake'),
+                    application_kind=kind,
+                    probe_cases=(target(applications.DEFAULT_SINK,
+                                        applications.APPLICATION_PORTS[kind],
+                                        applications.APPLICATION_PROTOCOLS[kind],
+                                        'local_fake', application=kind),))
     raise ValueError('unknown bucket: ' + bucket)
 
 
@@ -470,10 +484,13 @@ def build_manifest(seed: int, count: int = 100) -> dict[str, Any]:
         assigned_faults[candidate] = fault
     scenarios: list[dict[str, Any]] = []
     benign_ordinals: dict[str, int] = {}
+    bucket_ordinals: dict[str, int] = {}
     for index, bucket in enumerate(slots):
         fault = assigned_faults.get(index)
         sid = 'sst-%03d' % (index + 1)
-        profile = profile_for_bucket(bucket, index)
+        bucket_ordinal = bucket_ordinals.get(bucket, 0)
+        bucket_ordinals[bucket] = bucket_ordinal + 1
+        profile = profile_for_bucket(bucket, index, in_bucket=bucket_ordinal)
         # A start-injection receipt is valid only when its one target session
         # spans engine preparation and the product rendezvous.  The remaining
         # fault classes act after health or at stop, respectively.
@@ -2492,6 +2509,39 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                                      row.get('response') == 'FNPR/1|%s|OK\n' % nonce), None)
                     case_ok = bool(case_ok and case_flow and (case_packets or case_observation) and case_log and case_receipt and
                                    response and case_nic)
+                elif planned['expectation'] == 'local_fake' and planned.get('application'):
+                    # Default-bucket application cases: one real wire exchange
+                    # (echo/HTTP/DNS against the taken-over sink) verified
+                    # from its recorded raw bytes, the con008 connection or
+                    # UDP-send observation, the pid-bound traditional
+                    # "requested <PROTO> <dst>:<dport>" log line (the legacy
+                    # default template audits no PROCESS_FLOW) and no
+                    # original-target packet on the physical NIC.
+                    import scenario_application as applications
+                    exchange = [row for row in case_events if
+                                row.get('event') == 'case_application_exchange' and
+                                row.get('connection_id') == first.get('connection_id')]
+                    verified = None
+                    if len(exchange) == 1:
+                        try:
+                            verified = applications.verify_exchange(
+                                str(planned['application']),
+                                applications.unb64(exchange[0].get('request_b64', '')),
+                                applications.unb64(exchange[0].get('response_b64', '')),
+                                nonce, index,
+                                REPO_ROOT / 'fakenet' / 'defaultFiles' / 'FakeNet.html')
+                        except (ValueError, KeyError, TypeError) as exc:
+                            case_log = 'application exchange rejected: %s' % exc
+                    else:
+                        case_log = 'application exchange record missing or ambiguous'
+                    legacy_case = re.search(
+                        r'Diverter \S+ \(' + re.escape(str(first.get('pid'))) + r'\) requested ' +
+                        case_protocol + r' ' + re.escape(target[0]) + r':' + re.escape(target[1]) + r'\s*$',
+                        run_log, re.M)
+                    if verified and not legacy_case:
+                        case_log = 'application case requested-line missing for exact target'
+                    case_ok = bool(case_ok and verified and case_observation and
+                                   legacy_case and not case_nic)
                 else:
                     case_ok = False
             case_results.append({'index': index, 'expectation': planned['expectation'], 'passed': case_ok,

@@ -247,6 +247,103 @@ function Invoke-PreflightB1([string]$Token) {
     @{ exit_code = $code; http_code = "$text"; url = $url; nonce = $Token } | ConvertTo-Json -Compress
 }
 
+function New-ApplicationRequest([string]$Kind, [string]$Token, [int]$Index) {
+    # The request bytes are frozen by contract; the host oracle re-derives and
+    # byte-compares them from the nonce, so nothing here is trusted as evidence.
+    if ($Kind -in @('tcp-echo','udp-echo')) {
+        return [Text.Encoding]::ASCII.GetBytes("SSTAPP-$Token-case-$Index")
+    }
+    if ($Kind -eq 'http-tcp') {
+        return [Text.Encoding]::ASCII.GetBytes("GET /sst-$Token.html HTTP/1.1`r`nHost: $Token.invalid`r`nConnection: close`r`n`r`n")
+    }
+    if ($Kind -eq 'dns-udp') {
+        $hash = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::ASCII.GetBytes("dns-$Token-case-$Index"))
+        $bytes = New-Object System.Collections.Generic.List[byte]
+        $bytes.Add($hash[0]); $bytes.Add($hash[1])   # transaction id
+        $bytes.Add(1); $bytes.Add(0)                 # recursion desired
+        $bytes.Add(0); $bytes.Add(1)                 # qdcount
+        $bytes.Add(0); $bytes.Add(0); $bytes.Add(0); $bytes.Add(0); $bytes.Add(0); $bytes.Add(0)
+        foreach ($label in "$Token.invalid".Split('.')) {
+            $labelBytes = [Text.Encoding]::ASCII.GetBytes($label)
+            $bytes.Add($labelBytes.Length); $bytes.AddRange($labelBytes)
+        }
+        $bytes.Add(0)                                # root label
+        $bytes.Add(0); $bytes.Add(1)                 # qtype A
+        $bytes.Add(0); $bytes.Add(1)                 # qclass IN
+        return $bytes.ToArray()
+    }
+    throw "unknown application kind: $Kind"
+}
+
+function Read-TcpResponse([Net.Sockets.NetworkStream]$Stream, [Net.Sockets.TcpClient]$Client) {
+    # One total 10-second budget for the whole exchange; each segment read
+    # only shortens the remaining budget.  EOF is Poll-read-ready with no
+    # available bytes (peer FIN); 64 KiB is the hard response cap.
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    $chunks = New-Object System.Collections.Generic.List[byte]
+    $buffer = New-Object byte[] 8192
+    $eof = $false; $timedOut = $false; $truncated = $false; $octets = 0
+    while ($octets -lt 65536) {
+        $remainingMs = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+        if ($remainingMs -le 0) { $timedOut = $true; break }
+        if (-not $Client.Client.Poll($remainingMs * 1000, [Net.Sockets.SelectMode]::SelectRead)) { $timedOut = $true; break }
+        if ($Client.Available -eq 0) { $eof = $true; break }
+        $take = [Math]::Min($buffer.Length, $Client.Available)
+        if ($octets + $take -gt 65536) { $take = 65536 - $octets; $truncated = $true }
+        $read = $Stream.Read($buffer, 0, $take)
+        if ($read -le 0) { $eof = $true; break }
+        for ($i = 0; $i -lt $read; $i++) { $chunks.Add($buffer[$i]) }
+        $octets += $read
+        if ($truncated) { break }
+    }
+    @{ data = $chunks.ToArray(); octets = $octets; eof = $eof; timed_out = $timedOut; truncated = $truncated }
+}
+
+function Invoke-ApplicationCase([string]$Kind, [string]$CaseHost, [int]$Port, [string]$Path,
+                                [string]$Token, [int]$Index, [string]$Connection, [string]$Expectation) {
+    $request = New-ApplicationRequest $Kind $Token $Index
+    $protocol = if ($Kind -in @('udp-echo','dns-udp')) { 'udp' } else { 'tcp' }
+    if ($protocol -eq 'udp') {
+        $udp = [Net.Sockets.UdpClient]::new([Net.Sockets.AddressFamily]::InterNetwork)
+        try {
+            $udp.Client.ReceiveTimeout = 10000
+            $udp.Connect($CaseHost, $Port)
+            $local = $udp.Client.LocalEndPoint.ToString()
+            $remote = $udp.Client.RemoteEndPoint.ToString()
+            $sendBefore = [ScenarioProbeClock]::UtcTicks()
+            $sent = $udp.Send($request, $request.Length)
+            $sendAfter = [ScenarioProbeClock]::UtcTicks()
+            Write-JsonLine $Path @{ event = 'case_udp_sent'; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; src = $local; dst = "$CaseHost`:$Port"; actual_dst = $remote; protocol = 'udp'; bytes = $sent; byte_count = $sent; send_before_ticks = $sendBefore; send_after_ticks = $sendAfter; application = $Kind }
+            $peer = [Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)
+            $response = $udp.Receive([ref]$peer)
+            Write-JsonLine $Path @{ event = 'case_application_exchange'; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; application = $Kind; protocol = 'udp'; src = $local; dst = "$CaseHost`:$Port"; actual_dst = $remote; peer = $peer.ToString(); pid = $PID; request_b64 = [Convert]::ToBase64String($request); response_b64 = [Convert]::ToBase64String($response); response_octets = $response.Length; eof = $true; timed_out = $false; truncated = $false; exchange_budget_seconds = 10; send_before_ticks = $sendBefore; send_after_ticks = $sendAfter; receive_after_ticks = [ScenarioProbeClock]::UtcTicks() }
+            return
+        } finally { $udp.Dispose() }
+    }
+    $client = [Net.Sockets.TcpClient]::new()
+    try {
+        if (-not $client.Client.Connected) { $client.Client.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)) }
+        $attemptLocal = $client.Client.LocalEndPoint.ToString()
+        Write-JsonLine $Path @{ event = 'case_connect_attempt'; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; src = $attemptLocal; dst = "$CaseHost`:$Port"; protocol = 'tcp'; application = $Kind }
+        $async = $client.BeginConnect($CaseHost, $Port, $null, $null)
+        if (-not $async.AsyncWaitHandle.WaitOne(10000)) { throw [TimeoutException]::new('application case connect timeout') }
+        $client.EndConnect($async)
+        $local = $client.Client.LocalEndPoint.ToString()
+        $remote = $client.Client.RemoteEndPoint.ToString()
+        Write-JsonLine $Path @{ event = 'case_established'; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; src = $local; dst = "$CaseHost`:$Port"; actual_dst = $remote; protocol = 'tcp'; application = $Kind }
+        $stream = $client.GetStream()
+        $sendBefore = [ScenarioProbeClock]::UtcTicks()
+        $stream.Write($request, 0, $request.Length); $stream.Flush()
+        $sendAfter = [ScenarioProbeClock]::UtcTicks()
+        $requestEvent = if ($Kind -eq 'http-tcp') { 'case_request_sent' } else { 'case_send' }
+        Write-JsonLine $Path @{ event = $requestEvent; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; bytes = $request.Length; byte_count = $request.Length; cadence_ms = 0; application = $Kind; send_before_ticks = $sendBefore; send_after_ticks = $sendAfter }
+        $received = Read-TcpResponse $stream $client
+        if ($received.timed_out) { throw [TimeoutException]::new("application $Kind response timed out within the 10 second budget") }
+        if ($received.truncated) { throw [InvalidDataException]::new("application $Kind response exceeded the 64 KiB cap") }
+        Write-JsonLine $Path @{ event = 'case_application_exchange'; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; application = $Kind; protocol = 'tcp'; src = $local; dst = "$CaseHost`:$Port"; actual_dst = $remote; peer = $remote; pid = $PID; request_b64 = [Convert]::ToBase64String($request); response_b64 = [Convert]::ToBase64String($received.data); response_octets = $received.octets; eof = [bool]$received.eof; timed_out = [bool]$received.timed_out; truncated = [bool]$received.truncated; exchange_budget_seconds = 10; send_before_ticks = $sendBefore; send_after_ticks = $sendAfter; receive_after_ticks = [ScenarioProbeClock]::UtcTicks() }
+    } finally { $client.Dispose() }
+}
+
 function Invoke-AdditionalTargets([object[]]$Targets, [string]$Path, [string]$Token, [int]$Cadence) {
     $index = 0
     foreach ($case in $Targets) {
@@ -257,8 +354,24 @@ function Invoke-AdditionalTargets([object[]]$Targets, [string]$Path, [string]$To
         $expectation = [string]$case.expectation
         $sni = [string]$case.tls_server_name
         $fnprRole = [string]$case.fnpr_role
+        $application = [string]$case.application
         if (-not $caseHost -or $port -lt 1 -or $port -gt 65535 -or $protocol -notin @('tcp','tls','udp')) {
             throw "additional target $index is invalid"
+        }
+        if ($application) {
+            # Real application exchange cases carry their own full request/
+            # response byte recording; an error fails the scenario (the host
+            # oracle additionally re-verifies the bytes from the JSONL).
+            $connection = "$Token-case-$index"
+            try {
+                Invoke-ApplicationCase $application $caseHost $port $Path $Token $index $connection $expectation
+            } catch {
+                Write-JsonLine $Path @{ event = 'case_error'; nonce = $Token; connection_id = $connection; case_index = $index; expectation = $expectation; protocol = $protocol; application = $application; error_type = $_.Exception.GetType().Name; message = $_.Exception.Message }
+            } finally {
+                Write-JsonLine $Path @{ event = 'case_close'; nonce = $Token; connection_id = $connection; case_index = $index; expectation = $expectation; protocol = $protocol; application = $application }
+            }
+            Start-Sleep -Milliseconds $Cadence
+            continue
         }
         $connection = "$Token-case-$index"
         if ($protocol -eq 'udp') {
