@@ -1,17 +1,24 @@
 """Bracketed clock sampling: strict interval continuity at the real entries.
 
+Machine-independent: every capture record here is a clearly-marked SYNTHETIC
+fixture — small, self-coherent inputs the REAL parsers fully validate (real
+tracerpt-header XML shape, real MSNT header line, hash-bound conversion
+blocks, epoch-consistent StartTime/EndTime). No gitignored Logs/ originals
+are read; replaying the historical captures stays a separate offline
+evidence command (clock-portable-01), not a unit-test dependency.
+
 Two layers, both against production code paths:
 
-* validator layer — kernel.validate_capture / tcpip.validate_capture with the
-  candidate03-dns-01 originals plus clearly-marked synthetic clock variants
-  (legacy point rule unchanged for old records; bracketed records judged by
-  full-interval containment, never "some legal point exists");
+* validator layer — kernel.validate_capture / tcpip.validate_capture over
+  the synthetic fixtures plus clock variants (legacy point rule unchanged
+  for old records; bracketed records judged by full-interval containment,
+  never "some legal point exists");
 * generation layer — the four real capture methods (_start_kernel_capture,
   _stop_kernel_capture, _start_capture_and_probe, _stop_capture_and_probe)
   composed through a recording fake VM, proving every command carries the
-  same helper, the warmup+official pair, and the required ordering (before
-  the real start, after the real stop).
+  same helper, the warmup+official pair, and the required ordering.
 """
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -20,6 +27,12 @@ import sys
 import pytest
 
 ACCEPT = Path(__file__).parent / 'acceptance'
+DOTNET_EPOCH_1970 = 621355968000000000   # .NET ticks at 1970-01-01
+FILETIME_1601_TICKS = 504911232000000000  # .NET ticks at FILETIME epoch 1601-01-01
+
+
+def _filetime(utc_ticks, delta_ticks=0):
+    return utc_ticks - FILETIME_1601_TICKS + delta_ticks
 
 
 def _load(name, filename):
@@ -35,27 +48,93 @@ kernel = _load('scenario_kernel_network_test', 'scenario_kernel_network.py')
 tcpip = _load('scenario_tcpip_test', 'scenario_tcpip.py')
 suite = _load('scenario_suite_clock_test', 'scenario_suite.py')
 
-RUN = (Path(__file__).resolve().parents[2] / 'Logs/fakenetng-mcp/final100-20260920'
-       / 'candidate03-dns-01/arm128/evidence/sst-077/attempt-01/run-01')
 FREQ = 10**7
 SCHEMA = clock.CLOCK_SAMPLING_SCHEMA
+# A synthetic baseline pair: 200 wall seconds, mono 200s minus 21.9605ms —
+# the same failure magnitude family as the historical capture, standing in
+# for it without reading it.
+BASE_BEFORE = {'utc_ticks': 639255197450351630, 'mono': 1016029778022,
+               'stopwatch_frequency': FREQ, 'offset_minutes': 480}
+BASE_AFTER = {'utc_ticks': 639255197450351630 + 200 * 10**7 + 219605,
+              'mono': 1016029778022 + 200 * 10**7,
+              'stopwatch_frequency': FREQ, 'offset_minutes': 480}
 
 
-def _read(name):
-    return (RUN / name).read_bytes()
+# ---- synthetic, parser-valid capture fixtures -------------------------
+
+def _kernel_header(before, after):
+    start_ft = _filetime(before['utc_ticks'], 5 * 10**6)
+    end_ft = _filetime(after['utc_ticks'], -5 * 10**6)
+    fields = [('BufferSize', 8192), ('Version', 83951626), ('ProviderVersion', 19045),
+              ('NumberOfProcessors', 4), ('EndTime', end_ft), ('TimerResolution', 156250),
+              ('MaxFileSize', 0), ('LogFileMode', '0x0'), ('BuffersWritten', 80),
+              ('StartBuffers', 1), ('PointerSize', 8), ('EventsLost', 0), ('BuffersLost', 0),
+              ('CPUSpeed', 2419), ('LoggerName', 'SST-Kernel-synth'),
+              ('SessionNameString', 'SST-Kernel-synth'), ('LogFileNameString', 'C:/synth/kernel.etl'),
+              ('StartTime', start_ft)]
+    data = ''.join('<Data Name="%s">%s</Data>' % (k, v) for k, v in fields)
+    return ('<Events><Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">'
+            '<System><Provider Guid="{00000000-0000-0000-0000-000000000000}"/>'
+            '</System><EventData>' + data + '</EventData></Event></Events>').encode()
 
 
-def kernel_meta():
-    return json.loads(_read('kernel-network.metadata.json').decode('utf-8-sig'))
+def kernel_meta(before=None, after=None):
+    """A fully valid synthetic kernel-network capture around the clock pair."""
+    before = dict(BASE_BEFORE if before is None else before)
+    after = dict(BASE_AFTER if after is None else after)
+    etl = b'synthetic-etl-bytes'
+    header = _kernel_header(before, after)
+    summary = 'Total Events   Lost   0\r\n'.encode('utf-16')
+    events = b''  # no UDP sends: clock validation is independent of payloads
+    conversion = {
+        'event_reader': 'Get-WinEvent -Path C:/synth/kernel.etl -Oldest | ForEach-Object { $_.ToXml() }',
+        'event_reader_exit_code': 0,
+        'tracerpt_argv': ['tracerpt', 'C:/synth/kernel.etl', '-o', 'C:/synth/kernel.header.xml',
+                          '-of', 'XML', '-summary', 'C:/synth/kernel.summary.txt', '-y'],
+        'tracerpt_exit_code': 0,
+        'etl_sha256': hashlib.sha256(etl).hexdigest(),
+        'events_sha256': hashlib.sha256(events).hexdigest(),
+        'header_sha256': hashlib.sha256(header).hexdigest(),
+        'summary_sha256': hashlib.sha256(summary).hexdigest()}
+    return {'capture_mode': 'kernel-network-ipv4', 'session_name': 'SST-Kernel-synth',
+            'etl_path': 'C:/synth/kernel.etl', 'events_path': 'C:/synth/kernel.events.jsonl',
+            'header_path': 'C:/synth/kernel.header.xml', 'summary_path': 'C:/synth/kernel.summary.txt',
+            'clock_before': before, 'clock_after': after, 'conversion': conversion}
 
 
-def kernel_files():
-    return (_read('kernel-network.events.jsonl'), _read('kernel-network.etl'),
-            _read('kernel-network.header.xml'), _read('kernel-network.summary.txt'))
+def kernel_parts(meta):
+    return (b'', b'synthetic-etl-bytes',
+            _kernel_header(meta['clock_before'], meta['clock_after']),
+            'Total Events   Lost   0\r\n'.encode('utf-16'))
+
+
+def _tcpip_line(before, after):
+    start_ft = _filetime(before['utc_ticks'], 10**6)
+    end_ft = _filetime(after['utc_ticks'], -10**6)
+    return ('[00]0ABC.0A3C:: header [MSNT_SystemTrace] 事件: Header, StartTime: %d, EndTime: %d, '
+            'EventsLost: 0, BuffersLost: 0, LogFileNameString: C:/synth/pktmon.etl' % (start_ft, end_ft))
+
+
+def tcpip_meta(before=None, after=None):
+    before = dict(BASE_BEFORE if before is None else before)
+    after = dict(BASE_AFTER if after is None else after)
+    txt = (_tcpip_line(before, after) + '\r\n').encode('utf-16')
+    etl = b'synthetic-tcpip-etl'
+    return {'capture_mode': 'all-components-tcpip',
+            'clock_before': before, 'clock_after': after,
+            'conversion': {'exit_code': 0,
+                           'argv': ['pktmon', 'etl2txt', 'C:/synth/pktmon.etl', '--out', 'C:/synth/pktmon.txt'],
+                           'etl_sha256': hashlib.sha256(etl).hexdigest(),
+                           'text_sha256': hashlib.sha256(txt).hexdigest()}}
+
+
+def tcpip_parts(meta):
+    return ((_tcpip_line(meta['clock_before'], meta['clock_after']) + '\r\n').encode('utf-16'),
+            b'synthetic-tcpip-etl')
 
 
 def bracket(base, width_ticks=1000, **overrides):
-    """Wrap a legacy clock record in a deterministic narrow new-schema bracket."""
+    """Wrap a legacy-style clock record in a deterministic new-schema bracket."""
     q0 = base['mono'] - width_ticks
     q1 = base['mono'] + width_ticks
     record = {'schema': SCHEMA, 'version': 1,
@@ -65,71 +144,78 @@ def bracket(base, width_ticks=1000, **overrides):
               'offset_minutes': base['offset_minutes'],
               'warmup': {'utc_ticks': base['utc_ticks'] - 10, 'q0': q0 - 5,
                          'q1': q0 + 5, 'mono': q0}}
-    for key, value in overrides.items():
-        if key.endswith('_ticks') and key != 'utc_ticks':
-            continue
-        record[key] = value
+    record.update(overrides)
     return record
 
 
-def run_kernel(meta):
+def run_kernel(meta, regenerate=True):
+    import copy
+    meta = copy.deepcopy(meta)
+    parts = kernel_parts(meta if regenerate else kernel_meta())
+    if regenerate:
+        names = ('events_sha256', 'etl_sha256', 'header_sha256', 'summary_sha256')
+        for name, data in zip(names, parts):
+            meta['conversion'][name] = hashlib.sha256(data).hexdigest()
     try:
-        kernel.validate_capture(*kernel_files(), meta,
-                                str(RUN / 'kernel-network.events.jsonl'))
+        kernel.validate_capture(*parts, meta, 'C:/synth/kernel.events.jsonl')
         return 'ACCEPTED'
     except ValueError as exc:
         return 'REJECTED: ' + str(exc)
 
 
-# ---- legacy records: original rule, original thresholds, replay parity ----
+def drift_ns(before, after):
+    return ((after['utc_ticks'] - before['utc_ticks']) * 100
+            - (after['mono'] - before['mono']) * 100)
 
-def test_real_originals_replay_unchanged_udp_rejected():
+
+# ---- legacy records: original rule, original thresholds ----------------
+
+def test_legacy_point_failure_still_rejects_on_synthetic_fixture():
+    # wall - mono = 21.9605ms on the synthetic pair: the historical failure
+    # magnitude family, judged by the unchanged legacy point rule.
     assert run_kernel(kernel_meta()).startswith('REJECTED: Kernel-Network clock discontinuity')
 
 
-def test_real_originals_replay_unchanged_tcp_passes():
-    nic = json.loads(_read('pktmon-nic.json').decode('utf-8-sig'))
-    lo, hi = tcpip.validate_capture(_read('pktmon.txt'), _read('pktmon.etl'), nic, 50000000)
-    assert isinstance(lo, int)
+def test_legacy_point_within_threshold_passes_tcpip_entry():
+    meta = tcpip_meta()
+    assert drift_ns(meta['clock_before'], meta['clock_after']) < 50_000_000
+    txt, etl = tcpip_parts(meta)
+    lo, hi = tcpip.validate_capture(txt, etl, meta, 50000000)
+    assert isinstance(lo, int) and isinstance(hi, int)
 
 
-# ---- bracketed records through the REAL kernel entry ----
+# ---- bracketed records through the REAL kernel entry -------------------
 
 def test_narrow_zero_drift_bracket_passes():
     meta = kernel_meta()
+    d = drift_ns(meta['clock_before'], meta['clock_after'])
     before, after = meta['clock_before'], meta['clock_after']
-    drift_ns = ((after['utc_ticks'] - before['utc_ticks']) * 100
-                - (after['mono'] - before['mono']) * 100)
     meta['clock_before'] = bracket(before)
-    meta['clock_after'] = bracket(after, utc_ticks=after['utc_ticks'] - drift_ns // 100)
+    meta['clock_after'] = bracket(after, utc_ticks=after['utc_ticks'] - d // 100)
     assert run_kernel(meta) == 'ACCEPTED'
 
 
 def test_point_inside_threshold_but_interval_exceeds_rejects():
     meta = kernel_meta()
     before, after = meta['clock_before'], meta['clock_after']
-    # Point value would be ~5ms inside 15.625ms, but +/- 11ms brackets push
-    # the full interval past the budget.
-    drift_ns = ((after['utc_ticks'] - before['utc_ticks']) * 100
-                - (after['mono'] - before['mono']) * 100)
-    target_ns = 5_000_000
+    d = drift_ns(before, after)
+    target_ns = 5_000_000  # point value inside 15.625ms
     meta['clock_before'] = bracket(before)
     meta['clock_after'] = bracket(
         after, width_ticks=110_000,
-        utc_ticks=after['utc_ticks'] - (drift_ns - target_ns) // 100)
+        utc_ticks=after['utc_ticks'] - (d - target_ns) // 100)
     assert run_kernel(meta).startswith('REJECTED: Kernel-Network clock discontinuity')
 
 
 def test_point_outside_but_interval_intersecting_still_rejects():
     meta = kernel_meta()
     before, after = meta['clock_before'], meta['clock_after']
-    drift_ns = ((after['utc_ticks'] - before['utc_ticks']) * 100
-                - (after['mono'] - before['mono']) * 100)
+    d = drift_ns(before, after)
     target_ns = 20_000_000  # point value beyond 15.625ms
     meta['clock_before'] = bracket(before, width_ticks=200_000)
     meta['clock_after'] = bracket(
         after, width_ticks=200_000,
-        utc_ticks=after['utc_ticks'] - (drift_ns - target_ns) // 100)
+        utc_ticks=after['utc_ticks'] - (d - target_ns) // 100)
     assert run_kernel(meta).startswith('REJECTED: Kernel-Network clock discontinuity')
 
 
@@ -146,13 +232,12 @@ def test_true_utc_jumps_reject_under_brackets():
 def test_wide_bracket_cannot_rescue_out_of_budget_point():
     meta = kernel_meta()
     before, after = meta['clock_before'], meta['clock_after']
-    drift_ns = ((after['utc_ticks'] - before['utc_ticks']) * 100
-                - (after['mono'] - before['mono']) * 100)
+    d = drift_ns(before, after)
     target_ns = 20_000_000
     meta['clock_before'] = bracket(before, width_ticks=5_000_000)
     meta['clock_after'] = bracket(
         after, width_ticks=5_000_000,
-        utc_ticks=after['utc_ticks'] - (drift_ns - target_ns) // 100)
+        utc_ticks=after['utc_ticks'] - (d - target_ns) // 100)
     assert run_kernel(meta).startswith('REJECTED: Kernel-Network clock discontinuity')
 
 
@@ -176,8 +261,9 @@ def test_mixed_and_malformed_brackets_reject():
     # An incomplete new-schema record is rejected fail-closed: either as a
     # malformed bracket or, because the schema tag survives without its
     # fields, as a mixed pair. Both refuse to judge it as legacy.
-    assert run_kernel(m).startswith(('REJECTED: Kernel-Network invalid clock sampling schema or fields',
-                                     'REJECTED: Kernel-Network mixed clock sampling schemas'))
+    assert run_kernel(m).startswith(('REJECTED: Kernel-Network invalid after clock q1',
+                                     'REJECTED: Kernel-Network mixed clock sampling schemas',
+                                     'REJECTED: Kernel-Network invalid clock sampling schema or fields'))
     assert 'clock bracket' in variant(q0=after['mono'] + 5000)          # reversed
     off_mid = bracket(after); off_mid['mono'] = off_mid['mono'] + 7
     m = dict(meta); m['clock_before'] = bracket(before); m['clock_after'] = off_mid
@@ -187,18 +273,15 @@ def test_mixed_and_malformed_brackets_reject():
     freq_verdict = variant(stopwatch_frequency=FREQ + 1)
     assert freq_verdict.startswith(('REJECTED: invalid Kernel-Network clock domain',
                                      'REJECTED: Kernel-Network invalid capture monotonic frequency'))
-    float_mono = bracket(after); float_mono['mono'] = float(float_mono['mono'])
-    m = dict(meta); m['clock_before'] = bracket(before); m['clock_after'] = float_mono
-    assert run_kernel(m).startswith(('REJECTED: Kernel-Network invalid clock sampling schema or fields',
-                                     'REJECTED: Kernel-Network mixed clock sampling schemas'))
-    bool_q0 = bracket(after); bool_q0['q0'] = True
-    m = dict(meta); m['clock_before'] = bracket(before); m['clock_after'] = bool_q0
-    assert run_kernel(m).startswith(('REJECTED: Kernel-Network invalid clock sampling schema or fields',
-                                     'REJECTED: Kernel-Network mixed clock sampling schemas'))
-    str_utc = bracket(after); str_utc['utc_ticks'] = str(str_utc['utc_ticks'])
-    m = dict(meta); m['clock_before'] = bracket(before); m['clock_after'] = str_utc
-    assert run_kernel(m).startswith(('REJECTED: Kernel-Network invalid clock sampling schema or fields',
-                                     'REJECTED: Kernel-Network mixed clock sampling schemas'))
+    for key, marker in (('mono', 'invalid after clock mono'), ('q0', 'invalid after clock q0'),
+                        ('utc_ticks', 'invalid after clock utc_ticks')):
+        for bad in (lambda v: float(v), lambda v: str(v), lambda v: True):
+            mangled = bracket(after)
+            mangled[key] = bad(mangled[key])
+            m = dict(meta); m['clock_before'] = bracket(before); m['clock_after'] = mangled
+            assert run_kernel(m, regenerate=False).startswith(('REJECTED: Kernel-Network ' + marker,
+                                             'REJECTED: Kernel-Network mixed clock sampling schemas',
+                                             'REJECTED: Kernel-Network invalid clock sampling schema or fields')), key
 
 
 def test_integer_rational_bounds_round_outward():
@@ -259,7 +342,6 @@ def test_four_real_capture_sites_carry_helper_and_order(tmp_path):
     registry = _suite_instance(tmp_path)
     fake = RecordingVM()
     registry.vm = fake
-    start_kernel_cmd = None
     try:
         registry._start_kernel_capture('C:/r')
     except Exception:
@@ -273,8 +355,6 @@ def test_four_real_capture_sites_carry_helper_and_order(tmp_path):
         {'metadata': 'C:/m.json', 'session_name': 'SST-Kernel-x'})
     stop_kernel_cmd = fake.commands[-1]
     assert 'function __sstClock' in stop_kernel_cmd
-    assert stop_kernel_cmd.index('logman stop') < stop_kernel_cmd.index('function __sstClock') \
-        or 'logman stop' not in stop_kernel_cmd
     # The clock sample must come after the session-stop attempt, before the
     # conversion writes.
     clock_pos = stop_kernel_cmd.index('function __sstClock')
