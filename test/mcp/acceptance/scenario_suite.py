@@ -1600,13 +1600,10 @@ class Suite:
         # step cannot skip an earlier responsibility.
         command = ("$ErrorActionPreference='Stop';" + clock_after +
                    "$coop=" + quote_ps(coop_cmd) + ";"
-                   "$coopJson=Invoke-Expression $coop;"
+                   "$coopJson=& { Invoke-Expression $coop };"
                    "$coopValue=$coopJson|ConvertFrom-Json;"
-                   + nic_update + nic_write + conversion + nic_write + files_list +
-                   "@{coop=$coopValue;files=$filesValue}|ConvertTo-Json -Depth 6 -Compress")
-        # simpler: build files value inline (avoid nested $filesValue)
-        command = command.replace("@{coop=$coopValue;files=$filesValue}|ConvertTo-Json -Depth 6 -Compress",
-                                  "@{coop=$coopValue}|ConvertTo-Json -Depth 6 -Compress")
+                   + nic_update + nic_write + conversion + nic_write +
+                   "@{coop=$coopValue}|ConvertTo-Json -Depth 6 -Compress")
         primary_error = None
         value = None
         raw = None
