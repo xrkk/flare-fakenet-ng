@@ -125,6 +125,23 @@ def test_capture_provenance_rejects_incomplete_or_changed(bad):
     with pytest.raises((ValueError, KeyError)): tcp.validate_capture(raw, b'fixture ETL', meta, 15625000)
 
 
+@pytest.mark.parametrize('drift_ticks,ok', [(0, True), (156249, True), (156250, True),
+                                            (156251, False), (165194, False), (2500000, False)])
+def test_capture_clock_strict_resolution_bound(drift_ticks, ok):
+    # Plan v0.10 IMP-007 supplement clause 6: the capture window wall/monotonic
+    # difference may not exceed clock.resolution_ns.  discovery100-117 sst-034
+    # measured 16.5194 ms across the whole-run capture window; that is a
+    # rejection, not a tolerated jitter value.  A seconds-large step (the
+    # clock_step case above) stays rejected a fortiori.
+    raw, meta = clocks_and_header(capture())
+    meta['clock_after']['utc_ticks'] += drift_ticks
+    if ok:
+        tcp.validate_capture(raw, b'fixture ETL', meta, 15625000)
+    else:
+        with pytest.raises(ValueError, match='capture clock discontinuity'):
+            tcp.validate_capture(raw, b'fixture ETL', meta, 15625000)
+
+
 def oracle_case(tmp_path, native=None):
     import hashlib
     spec = importlib.util.spec_from_file_location('sst_etw_test', Path(__file__).parent/'acceptance/sst_fault_evidence.py')

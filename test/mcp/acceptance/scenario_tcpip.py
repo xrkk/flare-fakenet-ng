@@ -532,12 +532,7 @@ def validate_capture(raw, etl, metadata, resolution_ns):
         raise ValueError('invalid capture monotonic frequency')
     wall = (after['utc_ticks'] - before['utc_ticks']) * 100
     mono = (after['mono'] - before['mono']) * 10**9 // freq
-    # The capture window spans the whole run; scheduler and clock-adjustment
-    # jitter between the two sequential native reads easily exceeds the
-    # 15.625 ms timer resolution under fault load (discovery100-117
-    # sst-034). Bound drift at the coarser of resolution and 250 ms —
-    # a real discontinuity (suspend/resume, clock set) is seconds large.
-    if wall < 0 or mono < 0 or abs(wall - mono) > max(resolution_ns, 250 * 10**6):
+    if wall < 0 or mono < 0 or abs(wall - mono) > resolution_ns:
         raise ValueError('capture clock discontinuity')
     conversion = metadata['conversion']
     args = conversion['argv']

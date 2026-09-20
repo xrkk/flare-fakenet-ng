@@ -216,6 +216,71 @@ class EvidenceOracleTests(unittest.TestCase):
         checks = {x['id']: x['passed'] for x in sst.assess(case, root)['checks']}
         self.assertTrue(checks['clock'])
 
+    def _run_probe_clock_case(self, drift_ticks, resolution_ns=15625000):
+        # Real sst.assess entry: the clock check reads the referenced probe
+        # JSONL and cross-checks wall vs monotonic per event.  Both clocks use
+        # 100 ns units (stopwatch_frequency 10 MHz), so drift is expressed in
+        # exact ticks.
+        root, case = self.minimal_case('child_hang', dict(init_evidence=True, probe=True))
+        case['clock'] = dict(domain='vm-utc', resolution_ns=resolution_ns, discontinuities=[])
+        rows = [{'event': 'ready', 'utc_ticks': 10000000, 'mono': 0, 'stopwatch_frequency': 10000000},
+                {'event': 'established', 'utc_ticks': 60000000 + drift_ticks, 'mono': 50000000}]
+        raw = ('\n'.join(json.dumps(row) for row in rows) + '\n').encode()
+        (root / 'probe.jsonl').write_bytes(raw)
+        case['files'].append(dict(path='probe.jsonl', bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
+        case['session']['established_ref'] = dict(path='probe.jsonl', byte_start=0,
+                                                 byte_end=len(raw), event_key='json:')
+        result = sst.assess(case, root)
+        return {x['id']: x['passed'] for x in result['checks']}
+
+    def test_probe_clock_strict_resolution_bound(self):
+        # Plan v0.10 IMP-007 supplement clause 6: wall/monotonic drift is
+        # bounded by the declared clock resolution only.  discovery100-114
+        # sst-003 measured 20.6603 ms on a healthy run; that is a rejection,
+        # not a tolerated jitter value.
+        for drift_ticks, expected in [(0, True), (156249, True), (156250, True),
+                                      (156251, False), (206603, False), (1000000, False)]:
+            with self.subTest(drift_ticks=drift_ticks):
+                self.assertEqual(self._run_probe_clock_case(drift_ticks)['clock'], expected)
+
+    def test_diverter_handle_value_reuse_with_critical_log_is_rejected(self):
+        # discovery100-117 sst-055: after WinDivertClose the same handle
+        # value stayed valid (reuse).  Even the exact watchdog CRITICAL
+        # receiver-exit line in the same run cannot substitute the native
+        # ERROR_INVALID_HANDLE proof; both checks must stay failed.  The
+        # relay teardown line itself remains legitimate auxiliary attribution
+        # only when the native action proof already holds.
+        root, case = self.minimal_case('diverter_stop', dict(init_evidence=True, probe=False,
+                     capture_error=None, listeners=[dict(alive=True)]))
+        critical = b'2026-09-12 19:29:15,000 CRITICAL Diverter WinDivert receiver exited; closing capture and restoring network\n'
+        (root / 'run.log').write_bytes(b'2026-09-12 19:29:14,000 INFO managed normal\n' + critical)
+        for entry in case['files']:
+            if entry['path'] == 'run.log':
+                raw = (root / 'run.log').read_bytes()
+                entry.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+        reused = dict(schema='fakenet.fault-action.v1', run_id='run', nonce='nonce', fault='diverter_stop',
+                      action='WinDivertClose', pid=123, start_time_ns=10, end_time_ns=20,
+                      before=dict(api='GetHandleInformation', supported=True, handle=100, return_code=1, last_error=0),
+                      after=dict(api='GetHandleInformation', supported=True, handle=100, return_code=1, last_error=0))
+        native = dict(reused, after=dict(reused['after'], return_code=0, last_error=6))
+        def observe(action):
+            raw = json.dumps(action).encode()
+            (root / 'action.json').write_bytes(raw)
+            case['files'] = [f for f in case['files'] if f['path'] != 'action.json']
+            case['files'].append(dict(path='action.json', bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
+            case['trigger']['success_refs'] = [dict(path='action.json', byte_start=0, byte_end=len(raw), event_key='json:')]
+            return {x['id']: x['passed'] for x in sst.assess(case, root)['checks']}
+        checks = observe(reused)
+        self.assertFalse(checks['trigger_success'])
+        self.assertFalse(checks['start_attribution'])
+        checks = observe(native)
+        self.assertTrue(checks['trigger_success'])
+        self.assertTrue(checks['start_attribution'])
+        checks = observe(dict(reused, after=dict(reused['after'], handle=101)))
+        self.assertFalse(checks['trigger_success'])
+        checks = observe(dict(reused, run_id='other'))
+        self.assertFalse(checks['trigger_success'])
+
     def test_child_upper_cannot_be_earlier_healthy_start_response(self):
         root, case = self.minimal_case('child_hang', dict(init_evidence=True, probe=True))
         creation = '2026-09-12T19:29:16.123456+08:00'
@@ -294,12 +359,14 @@ def test_localized_native_recovery_keeps_data_and_multiplicity():
         assert section in module.native_section_compare(before,dict(after,**{section:changed}))
 
 
-def test_clock_bound_absorbs_scheduler_skew_under_fault_load():
+def test_probe_clock_bound_is_the_declared_resolution_only():
     # discovery100-114 sst-003 measured 20.7 ms wall/monotonic skew on a
-    # healthy child_hang run; the old resolution-only bound was 15.625 ms.
-    # The calibrated bound keeps the check about tampering, not jitter.
-    assert max(15625000 / 1e9, 0.1) == 0.1
-    assert 0.0206603 <= 0.1
+    # healthy child_hang run.  Plan v0.10 bounds the drift at the declared
+    # clock resolution (15.625 ms there), so that measurement is a rejection;
+    # scheduler jitter is not a sanctioned widening.  Real-entry boundary
+    # coverage lives in test_probe_clock_strict_resolution_bound.
+    assert 15625000 / 1e9 == 0.015625
+    assert 0.0206603 > 15625000 / 1e9
 
 
 def test_session_killing_faults_still_require_full_action_containment():
