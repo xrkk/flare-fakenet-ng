@@ -1626,7 +1626,7 @@ $saved=Import-Clixml $envbackup;$values=@($saved.values|Where-Object {$_ -and $_
         else:
             body = """$g=""" + quote_ps(guest) + """;$key='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\fakenetng-mcp';$envbackup=""" + quote_ps(backup) + """;
 if(!(Test-Path $envbackup)){throw 'ipc-evidence original snapshot is absent'};$stopPath='controlled';
-& 'C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe' stop;if($LASTEXITCODE -ne 0){$stopPath='scm-forced';Stop-Service -Name fakenetng-mcp -Force -ErrorAction Stop};
+& 'C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe' stop;if($LASTEXITCODE -ne 0){throw 'ipc-evidence controlled stop failed'};
 $saved=Import-Clixml $envbackup;if($saved.present){New-ItemProperty $key -Name Environment -PropertyType MultiString -Value @($saved.values) -Force|Out-Null}else{Remove-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue};Start-Service fakenetng-mcp;
 $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue;$current=@($currentProperty.Environment);$currentPresent=$null -ne $currentProperty -and $null -ne $currentProperty.Environment;$same=if($saved.present){$currentPresent -and @(Compare-Object @($saved.values) $current).Count -eq 0}else{-not $currentPresent};@{enabled=$false;backup=$envbackup;environment_restored=$same;stop_path=$stopPath;state=(Get-Service fakenetng-mcp).Status.ToString()}|ConvertTo-Json -Compress"""
         value, raw = self._vm_json("$ErrorActionPreference='Stop';" + body, 180)
@@ -3954,6 +3954,54 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         write_new_json(output, report)
         return report
 
+    def _ipc_evidence_pass(self, enabled_name: str, disabled_name: str, body):
+        """Execute body() under the matrix-pass IPC evidence responsibility.
+
+        The responsibility starts before the arming call itself: once enable
+        is attempted, every exit path — including a partially applied arming
+        or an unwritable enabled record — attempts exactly one controlled
+        disable and independently records the recovery outcome.  Scenarios
+        run only after the arming and its record both succeeded; a raised
+        body exception propagates unchanged after the cleanup, and the
+        recovery error never replaces the original one.
+        """
+        ipc_evidence: dict[str, Any] = {'attempted': True}
+        outcome = None
+        try:
+            try:
+                ipc_evidence['enabled'] = self._ipc_evidence_mode(True)
+            except Exception as exc:  # noqa: BLE001
+                ipc_evidence['enabled'] = {'error': repr(exc)}
+            else:
+                try:
+                    replace_json(self.root / enabled_name, ipc_evidence['enabled'])
+                except Exception as exc:  # noqa: BLE001
+                    ipc_evidence['enabled_write_error'] = repr(exc)
+            if (isinstance(ipc_evidence.get('enabled'), dict)
+                    and 'error' not in ipc_evidence['enabled']
+                    and 'enabled_write_error' not in ipc_evidence):
+                outcome = body()
+        finally:
+            try:
+                ipc_evidence['disabled'] = self._ipc_evidence_mode(False)
+            except Exception as exc:  # noqa: BLE001
+                ipc_evidence['disabled'] = {'error': repr(exc)}
+            try:
+                replace_json(self.root / disabled_name, ipc_evidence['disabled'])
+            except Exception as exc:  # noqa: BLE001
+                ipc_evidence['disabled_write_error'] = repr(exc)
+        return outcome, ipc_evidence
+
+    @staticmethod
+    def _ipc_evidence_recovered(ipc_evidence: dict[str, Any]) -> bool:
+        enabled = ipc_evidence.get('enabled')
+        disabled = ipc_evidence.get('disabled')
+        return (isinstance(enabled, dict) and 'error' not in enabled
+                and 'enabled_write_error' not in ipc_evidence
+                and isinstance(disabled, dict) and 'error' not in disabled
+                and disabled.get('enabled') is False
+                and 'disabled_write_error' not in ipc_evidence)
+
     def run(self, filter_name: str) -> dict[str, Any]:
         manifest = self.manifest()
         if filter_name == 'fault':
@@ -3962,12 +4010,11 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         self._require_preflight()
         selected = [row for row in manifest['scenarios'] if
                     (row['fault_class'] is None if filter_name == 'benign' else row['fault_class'] is not None)]
-        # Every scenario exports ipc-parent.jsonl, but only fault scenarios
-        # arm the evidence environment themselves; arm it for the whole pass.
-        ipc_evidence: dict[str, Any] = {'enabled': self._ipc_evidence_mode(True)}
-        replace_json(self.root / ('ipc-evidence-%s-enabled.json' % filter_name), ipc_evidence['enabled'])
-        results = []
-        try:
+
+        def execute() -> list[dict[str, Any]]:
+            # Every scenario exports ipc-parent.jsonl, but only fault scenarios
+            # arm the evidence environment themselves; arm it for the whole pass.
+            results = []
             for scenario in selected:
                 result_path = self._result_path(scenario['scenario_id'])
                 if result_path.exists():
@@ -3984,14 +4031,14 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # Preserve this failure and enforce the continuation gate before
                     # any following scenario.  A failed gate exits blocked, not pass.
                     self._continuation_gate()
-        finally:
-            try:
-                ipc_evidence['disabled'] = self._ipc_evidence_mode(False)
-            except Exception as exc:  # noqa: BLE001
-                ipc_evidence['disabled'] = {'error': repr(exc)}
-            replace_json(self.root / ('ipc-evidence-%s-disabled.json' % filter_name),
-                         ipc_evidence['disabled'])
-        passed = all(row.get('state') == 'pass' for row in results)
+            return results
+
+        results, ipc_evidence = self._ipc_evidence_pass(
+            'ipc-evidence-%s-enabled.json' % filter_name,
+            'ipc-evidence-%s-disabled.json' % filter_name, execute)
+        results = results if results is not None else []
+        passed = (self._ipc_evidence_recovered(ipc_evidence)
+                  and all(row.get('state') == 'pass' for row in results))
         return {'output_dir': str(self.root), 'filter': filter_name, 'count': len(results),
                 'passed': passed, 'ipc_evidence': ipc_evidence,
                 'states': {row['scenario_id']: row['state'] for row in results}}
@@ -4006,10 +4053,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             self._require_fault_spike()
         self.require_clients()
         self._require_preflight()
-        ipc_evidence: dict[str, Any] = {'enabled': self._ipc_evidence_mode(True)}
-        replace_json(self.root / 'ipc-evidence-resume-enabled.json', ipc_evidence['enabled'])
-        rerun = []
-        try:
+
+        def execute() -> list[dict[str, Any]]:
+            rerun = []
             for scenario in manifest['scenarios']:
                 path = self._state_path(scenario['scenario_id'])
                 if not path.exists():
@@ -4020,15 +4066,15 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     rerun.append(self._run_one(scenario, int(state.get('attempt', 0)) + 1))
                     if rerun[-1].get('state') != 'pass' and getattr(self.args, 'stop_on_first_failure', False):
                         break
-        finally:
-            try:
-                ipc_evidence['disabled'] = self._ipc_evidence_mode(False)
-            except Exception as exc:  # noqa: BLE001
-                ipc_evidence['disabled'] = {'error': repr(exc)}
-            replace_json(self.root / 'ipc-evidence-resume-disabled.json', ipc_evidence['disabled'])
+            return rerun
+
+        rerun, ipc_evidence = self._ipc_evidence_pass(
+            'ipc-evidence-resume-enabled.json', 'ipc-evidence-resume-disabled.json', execute)
+        rerun = rerun if rerun is not None else []
         return {'output_dir': str(self.root), 'resumed': len(rerun),
                 'ipc_evidence': ipc_evidence,
-                'passed': all(row.get('state') == 'pass' for row in rerun)}
+                'passed': (self._ipc_evidence_recovered(ipc_evidence)
+                           and all(row.get('state') == 'pass' for row in rerun))}
 
     def _traffic_recheck_issues(self, result: dict[str, Any], expected: dict[str, Any]) -> list[str]:
         """Re-adjudicate healthy-run traffic from the byte-bound originals."""
