@@ -312,8 +312,14 @@ class BaselineStore:
             # restoration audit could then never converge. Refuse the
             # snapshot so the start fails honestly before any recovery
             # responsibility exists; the operator retries into a fresh run.
-            if not re.search(r'(?m)^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+\S',
-                             str(sections['routes'])):
+            # Active IPv4 routes have destination, mask, gateway, interface
+            # and metric. Persistent defaults have only four columns and do
+            # not establish that any interface currently has a usable route.
+            # Horizontal whitespace avoids consuming a following row.
+            if not re.search(
+                    r'(?m)^[ \t]*0\.0\.0\.0[ \t]+0\.0\.0\.0[ \t]+'
+                    r'\S+[ \t]+(?:[0-9]{1,3}\.){3}[0-9]{1,3}[ \t]+'
+                    r'[0-9]+[ \t]*\r?$', str(sections['routes'])):
                 raise RuntimeError(
                     'pre-start baseline network snapshot incomplete: '
                     'no default route')

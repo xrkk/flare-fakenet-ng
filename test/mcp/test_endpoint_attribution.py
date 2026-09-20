@@ -451,3 +451,18 @@ def test_exit_capability_poll_tolerates_transient_target_read_errors():
     assert source.index('except FileNotFoundError:') < source.index('except (OSError, ValueError):')
     tail = source.split('except (OSError, ValueError):')[1]
     assert 'continue' in tail[:700] and 'time.sleep' in tail[:700]
+
+
+def test_runtime_baseline_rejects_persistent_default_without_active_interface(tmp_path, monkeypatch):
+    from fakenet.mcp import baseline as module
+    monkeypatch.setattr(module, '_run', lambda command, timeout=None: 'evidence')
+    sections = {field: 'x' for field in module.BASELINE_FIELDS}
+    sections['routes'] = ('Active Routes:\n'
+                          '127.0.0.0 255.0.0.0 On-link 127.0.0.1 331\n'
+                          'Persistent Routes:\n'
+                          '0.0.0.0 0.0.0.0 192.168.204.2 1\n')
+    monkeypatch.setattr(module, 'capture', lambda deadline=None: module.CapturedSections(sections))
+    store = module.BaselineStore(tmp_path / 'baselines')
+    with pytest.raises(RuntimeError, match='no default route'):
+        store.save('persistent-only')
+    assert store.load('persistent-only') is None
