@@ -33,6 +33,7 @@ def build_start_command():
     failure cleanup path is exercised and its command captured."""
     runner = suite.Suite.__new__(suite.Suite)
     runner.vm = object()
+    runner.pktmon_file_size_mib = 128  # field a validated __init__ provides
     captured = []
 
     def fake_vm_json(command, timeout=120):
@@ -91,6 +92,7 @@ class StartCleanupTests(unittest.TestCase):
 def make_stop_runner(coop_value=None, coop_exc=None, files_value=None, files_exc=None, kernel_exc=None, order=None):
     runner = suite.Suite.__new__(suite.Suite)
     runner.vm = object()
+    runner.pktmon_file_size_mib = 128  # field a validated __init__ provides
     state = {'kernel_calls': 0}
 
     def fake_vm_json(command, timeout=120):

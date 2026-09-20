@@ -1004,8 +1004,20 @@ class FnprSentinel:
 
 
 class Suite:
+    # The two pktmon file-size values already exercised by the master's
+    # capacity contrast.  Validated here so directly-constructed Namespace
+    # objects (offline callers) also obey the same contract; the default
+    # keeps existing behavior.  Nothing VM-facing runs before this check.
+    PKTMON_FILE_SIZE_MIB_CHOICES = (128, 1024)
+
     def __init__(self, args: argparse.Namespace):
+        file_size = getattr(args, 'pktmon_file_size_mib', 128)
+        if (isinstance(file_size, bool) or not isinstance(file_size, int)
+                or file_size not in self.PKTMON_FILE_SIZE_MIB_CHOICES):
+            raise SuiteError('pktmon file size must be one of %r, got %r'
+                             % (self.PKTMON_FILE_SIZE_MIB_CHOICES, file_size))
         self.args = args
+        self.pktmon_file_size_mib = file_size
         self.root = Path(args.suite_root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.identity = Identity(args.candidate_id, args.source_commit,
@@ -1425,7 +1437,8 @@ class Suite:
             "$before=(& pktmon counters|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon counters before start failed'};" +
             _sst_clock.clock_sample_ps('clockBefore') +
             "@{capture_mode='all-components-tcpip';clock_before=$clockBefore;schema='" + NIC_CAPTURE_SCHEMA + "';captured_utc=[DateTime]::UtcNow.ToString('o');pktmon_list=$list;adapters=$adapters;pktmon_counters_before=$before}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $nic -Encoding UTF8;"
-            "$pktmonStart=(& pktmon start --capture --comp all --pkt-size 0 --flags 0x1f --trace -p Microsoft-Windows-TCPIP -k 0xFF -l 4 --file-name $etl --file-size 128|Out-String);"
+            "$pktmonStart=(& pktmon start --capture --comp all --pkt-size 0 --flags 0x1f --trace -p Microsoft-Windows-TCPIP -k 0xFF -l 4 --file-name $etl --file-size "
+            + str(self.pktmon_file_size_mib) + "|Out-String);"
             "if($LASTEXITCODE -ne 0){throw 'pktmon start failed'};$captureStarted=$true;"
             "$out=Join-Path $r 'probe.jsonl';$start=Join-Path $r 'probe.start';$cases=Join-Path $r 'probe.cases';$stop=Join-Path $r 'probe.stop';$script=" + quote_ps(script) + ";"
             "$encoded=" + quote_ps(encoded_child) + ";"
@@ -1434,7 +1447,8 @@ class Suite:
             "$deadline=[DateTime]::UtcNow.AddSeconds(20);while(!(Test-Path $out) -and -not $p.HasExited -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 100};"
             "if(!(Test-Path $out) -or $p.HasExited){throw ('probe did not become ready: '+(Get-Content $stderr -Raw -ErrorAction SilentlyContinue))};"
             "$ready=Get-Content $out -TotalCount 1|ConvertFrom-Json;if($ready.event -ne 'ready' -or [int]$ready.pid -ne $p.Id -or [long]$ready.creation_ticks -ne $p.StartTime.ToUniversalTime().Ticks){throw 'probe ready identity mismatch'};"
-            "@{guest=$r;run_label=" + quote_ps(run_label) + ";pid=$p.Id;etl=$etl;probe=$out;start=$start;case=$cases;stop=$stop;pktmon_nic=$nic;probe_creation_ticks=$ready.creation_ticks;stdout=$stdout;stderr=$stderr;capture_scope='all-components';tempo=" + quote_ps(profile['tempo']) + ";cadence_ms=" + str(int(profile['cadence_ms'])) + ";startup_retry_seconds=" + str(int(profile.get('startup_retry_seconds', 70))) + ";variant=" + quote_ps(profile['variant']) + ";probe_target=" + quote_ps(json.dumps(profile['probe_target'], separators=(',', ':'))) + ";interleave=" + quote_ps(profile['interleave']) + ";started=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress}catch{$failure=[string]$_;$cleanup=@();$coop=$null;$err2=@();$launchPidOut=$launchPid;$launchCreationOut=$launchCreation;if($stop){try{if(-not (Test-Path $stop)){[IO.File]::WriteAllText($stop,'stop',[Text.UTF8Encoding]::new($false))}}catch{$err2+=('stopfile: '+[string]$_)}};$procInfo=$null;try{$procInfo=Get-Process -Id $launchPidOut -ErrorAction SilentlyContinue}catch{$err2+=('query: '+[string]$_)};$actualCreation=$null;try{if($null -ne $procInfo){$actualCreation=$procInfo.StartTime.ToUniversalTime().Ticks}}catch{$err2+=('identity-read: '+[string]$_)};if($null -eq $procInfo){$coop='exited'}elseif(-not $launchCreationOut -or $launchCreationOut -le 0){$coop='identity-unknown';$err2+=('identity-unknown: no launch creation recorded')}elseif($null -eq $actualCreation){$coop='identity-unknown';$err2+=('identity-unknown: process present but creation unreadable')}elseif($actualCreation -ne $launchCreationOut){$coop='identity-mismatch(new process not touched)'}else{try{$deadlineW=[Diagnostics.Stopwatch]::StartNew();while(-not $procInfo.HasExited -and $deadlineW.ElapsedMilliseconds -lt 30000){Start-Sleep -Milliseconds 200};if($procInfo.HasExited){$coop='exited'}else{$coop='timeout'}}catch{$err2+=('wait: '+[string]$_);if(-not $coop){$coop='wait-error'}}};if($captureStarted){try{$captureStop=(& pktmon stop|Out-String);if($LASTEXITCODE -ne 0){$cleanup+='pktmon stop exit '+$LASTEXITCODE}}catch{$cleanup+='pktmon stop error: '+[string]$_}}else{$cleanup+='pktmon not started; no capture cleanup owed'};@{startup_failed=$true;error=$failure;cleanup_errors=$cleanup;cooperative_errors=$err2;capture_started=$captureStarted;guest=$r;cooperative_exit=$coop;probe_pid=$launchPidOut;probe_creation_ticks=$launchCreationOut}|ConvertTo-Json -Compress}")
+            "@{guest=$r;run_label=" + quote_ps(run_label) + ";pid=$p.Id;etl=$etl;probe=$out;start=$start;case=$cases;stop=$stop;pktmon_nic=$nic;probe_creation_ticks=$ready.creation_ticks;stdout=$stdout;stderr=$stderr;capture_scope='all-components';requested_file_size_mib="
+            + str(self.pktmon_file_size_mib) + ";tempo=" + quote_ps(profile['tempo']) + ";cadence_ms=" + str(int(profile['cadence_ms'])) + ";startup_retry_seconds=" + str(int(profile.get('startup_retry_seconds', 70))) + ";variant=" + quote_ps(profile['variant']) + ";probe_target=" + quote_ps(json.dumps(profile['probe_target'], separators=(',', ':'))) + ";interleave=" + quote_ps(profile['interleave']) + ";started=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress}catch{$failure=[string]$_;$cleanup=@();$coop=$null;$err2=@();$launchPidOut=$launchPid;$launchCreationOut=$launchCreation;if($stop){try{if(-not (Test-Path $stop)){[IO.File]::WriteAllText($stop,'stop',[Text.UTF8Encoding]::new($false))}}catch{$err2+=('stopfile: '+[string]$_)}};$procInfo=$null;try{$procInfo=Get-Process -Id $launchPidOut -ErrorAction SilentlyContinue}catch{$err2+=('query: '+[string]$_)};$actualCreation=$null;try{if($null -ne $procInfo){$actualCreation=$procInfo.StartTime.ToUniversalTime().Ticks}}catch{$err2+=('identity-read: '+[string]$_)};if($null -eq $procInfo){$coop='exited'}elseif(-not $launchCreationOut -or $launchCreationOut -le 0){$coop='identity-unknown';$err2+=('identity-unknown: no launch creation recorded')}elseif($null -eq $actualCreation){$coop='identity-unknown';$err2+=('identity-unknown: process present but creation unreadable')}elseif($actualCreation -ne $launchCreationOut){$coop='identity-mismatch(new process not touched)'}else{try{$deadlineW=[Diagnostics.Stopwatch]::StartNew();while(-not $procInfo.HasExited -and $deadlineW.ElapsedMilliseconds -lt 30000){Start-Sleep -Milliseconds 200};if($procInfo.HasExited){$coop='exited'}else{$coop='timeout'}}catch{$err2+=('wait: '+[string]$_);if(-not $coop){$coop='wait-error'}}};if($captureStarted){try{$captureStop=(& pktmon stop|Out-String);if($LASTEXITCODE -ne 0){$cleanup+='pktmon stop exit '+$LASTEXITCODE}}catch{$cleanup+='pktmon stop error: '+[string]$_}}else{$cleanup+='pktmon not started; no capture cleanup owed'};@{startup_failed=$true;error=$failure;cleanup_errors=$cleanup;cooperative_errors=$err2;capture_started=$captureStarted;guest=$r;cooperative_exit=$coop;probe_pid=$launchPidOut;probe_creation_ticks=$launchCreationOut}|ConvertTo-Json -Compress}")
         kernel = self._start_kernel_capture(run_root)
         try:
             value, raw = self._vm_json(command, 60)
@@ -3608,6 +3622,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 'binding': binding,
             })
             run['capture'] = {'observation_contract': 'con008', 'label': label, 'files': transfers, 'all_components': True,
+                              'requested_file_size_mib': capture.get('requested_file_size_mib'),
                               'probe_launcher_pid': capture['pid'],
                               'probe_path': next((x['path'] for x in transfers if x['path'].endswith('probe.jsonl')), None),
                               'pktmon_path': pktmon_record['path'],
@@ -4705,6 +4720,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--count', type=int, default=100)
     parser.add_argument('--regen-check', action='store_true')
     parser.add_argument('--preflight-through', choices=('P4', 'P7'), default='P7')
+    # Capture capacity setting only (not a scenario dimension): the two
+    # values already exercised by the master's capacity contrast runs.
+    parser.add_argument('--pktmon-file-size-mib', type=int, choices=(128, 1024),
+                        default=128)
     parser.add_argument('--filter', choices=('benign', 'fault'))
     parser.add_argument('--fault-spike-result')
     parser.add_argument('--stop-on-first-failure', action='store_true')
