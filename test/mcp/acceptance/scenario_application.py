@@ -98,20 +98,29 @@ def verify_http(request: bytes, response: bytes, body_sha256: str) -> dict:
     body = response[split + 4:]
     lines = head.split('\r\n')
     status = lines[0].split(' ')
-    if len(status) < 2 or status[0][:5] != 'HTTP/' or status[1] != '200':
-        raise ApplicationError('http status line is not 200: %r' % lines[0])
-    headers = {}
+    if (len(status) < 2 or status[0] not in ('HTTP/1.0', 'HTTP/1.1')
+            or status[1] != '200'):
+        raise ApplicationError('http status line is not HTTP/1.0|1.1 200: %r' % lines[0])
+    seen: dict[str, int] = {}
     for line in lines[1:]:
         name, sep, value = line.partition(':')
-        if not sep or not name.strip():
+        if not sep or not name.strip() or not value.strip():
             raise ApplicationError('malformed http header line: %r' % line)
-        headers[name.strip().lower()] = value.strip()
-    if 'content-length' not in headers:
+        key = name.strip().lower()
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] > 1:
+            # a repeated header is an ambiguous frame; a later value must not
+            # silently override the earlier one.
+            raise ApplicationError('duplicate http header rejected: %r' % key)
+    if 'transfer-encoding' in seen:
+        raise ApplicationError('http transfer-encoding frame is ambiguous and rejected')
+    if 'content-length' not in seen:
         raise ApplicationError('http response lacks content-length')
-    try:
-        declared = int(headers['content-length'])
-    except ValueError as exc:
-        raise ApplicationError('http content-length is not an integer') from exc
+    declared_text = [line.split(':', 1)[1].strip() for line in lines[1:]
+                     if line.split(':', 1)[0].strip().lower() == 'content-length'][0]
+    if not declared_text.isdigit():
+        raise ApplicationError('http content-length is not an integer')
+    declared = int(declared_text)
     if declared != len(body):
         raise ApplicationError('http body length %d does not match content-length %d'
                                % (len(body), declared))
@@ -146,6 +155,11 @@ def verify_dns(request: bytes, response: bytes) -> dict:
         raise ApplicationError('dns question qtype mismatch')
     if [q.qclass for q in answer.questions] != [q.qclass for q in query.questions]:
         raise ApplicationError('dns question qclass mismatch')
+    wanted_owner = str(query.questions[0].qname)
+    owners = {str(rr.rname) for rr in answer.rr}
+    if any(owner != wanted_owner for owner in owners):
+        # An A record for an unrelated owner does not answer the question.
+        raise ApplicationError('dns answer owner does not match the query name')
     addresses = [str(rr.rdata) for rr in answer.rr
                  if rr.rtype == 1 and rr.rclass == 1]
     if not addresses:
@@ -186,3 +200,69 @@ def b64(raw: bytes) -> str:
 
 def unb64(text: str) -> bytes:
     return base64.b64decode(text.encode('ascii'), validate=True)
+
+
+def validate_exchange_record(row, first, payload_row, close_row, planned,
+                             nonce, case_index) -> dict:
+    """Validate the exchange event's own fields against this run's facts.
+
+    Nothing is trusted because the row was selected by connection_id: the
+    PID, nonce, case index, application, protocol and tuples must match the
+    run's first/send/close rows and the frozen planned input, the response
+    must belong to this run's send/close window, the recorded octets must
+    equal the decoded bytes, timeout/truncation must be explicit false, a
+    native monotonic budget of at most ten seconds must be present, and a
+    UDP peer must be the expected original-target tuple.
+    """
+    def fail(message):
+        raise ApplicationError('exchange record rejected: ' + message)
+
+    if row.get('nonce') != nonce:
+        fail('nonce mismatch')
+    if row.get('case_index') != case_index:
+        fail('case index mismatch')
+    if row.get('connection_id') != first.get('connection_id'):
+        fail('connection id does not match the first case fact')
+    if row.get('pid') != first.get('pid'):
+        fail('pid does not match the first case fact')
+    if row.get('application') != planned.get('application'):
+        fail('application kind does not match the frozen planned input')
+    if str(row.get('protocol', '')).lower() != str(planned.get('protocol', '')).lower():
+        fail('protocol does not match the frozen planned input')
+    if row.get('src') != first.get('src') or row.get('dst') != first.get('dst'):
+        fail('source/destination tuple does not match the first case fact')
+    if row.get('actual_dst') != first.get('actual_dst'):
+        fail('actual destination does not match the first case fact')
+    if planned.get('protocol') == 'udp':
+        expected_peer = '%s:%s' % (planned.get('host'), planned.get('port'))
+        if row.get('peer') != expected_peer:
+            fail('udp peer %r is not the expected original target %r'
+                 % (row.get('peer'), expected_peer))
+    if row.get('timed_out') is not False or row.get('truncated') is not False:
+        fail('timeout/truncation flags must be explicit false')
+    if not isinstance(row.get('eof'), bool):
+        fail('eof terminal must be an explicit boolean')
+    request = unb64(row.get('request_b64', ''))
+    response = unb64(row.get('response_b64', ''))
+    if row.get('response_octets') != len(response):
+        fail('response_octets %r does not equal %d decoded bytes'
+             % (row.get('response_octets'), len(response)))
+    window_start = payload_row.get('send_before_ticks')
+    window_end = close_row.get('utc_ticks')
+    if not (isinstance(window_start, int) and isinstance(window_end, int)):
+        fail('case send/close window facts are missing')
+    for name in ('utc_ticks', 'receive_after_ticks'):
+        value = row.get(name)
+        if not isinstance(value, int) or not window_start <= value <= window_end:
+            fail('%s %r is outside this run send/close window' % (name, value))
+    started = row.get('exchange_started_mono')
+    finished = row.get('exchange_finished_mono')
+    frequency = row.get('stopwatch_frequency')
+    if not (isinstance(started, int) and isinstance(finished, int)
+            and isinstance(frequency, int) and frequency > 0):
+        fail('native monotonic exchange bounds are missing')
+    if not 0 <= finished - started <= EXCHANGE_BUDGET_SECONDS * frequency:
+        fail('native monotonic exchange budget of %d seconds exceeded'
+             % ((finished - started) / frequency))
+    return {'octets': len(response), 'request_octets': len(request),
+            'budget_seconds': (finished - started) / frequency}

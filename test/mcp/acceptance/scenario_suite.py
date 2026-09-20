@@ -2521,9 +2521,22 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     exchange = [row for row in case_events if
                                 row.get('event') == 'case_application_exchange' and
                                 row.get('connection_id') == first.get('connection_id')]
+                    request_rows = [row for row in case_events if
+                                    row.get('connection_id') == first.get('connection_id') and
+                                    row.get('event') in ('case_send', 'case_request_sent',
+                                                         'case_udp_sent')]
+                    error_rows = [row for row in case_events if
+                                  row.get('event') == 'case_error' and
+                                  row.get('connection_id') == first.get('connection_id')]
                     verified = None
-                    if len(exchange) == 1:
+                    if error_rows:
+                        case_log = ('application case error recorded: %s'
+                                    % error_rows[0].get('error_type'))
+                    elif len(exchange) == 1 and len(request_rows) == 1 and close:
                         try:
+                            applications.validate_exchange_record(
+                                exchange[0], first, request_rows[0], close[0],
+                                planned, nonce, index)
                             verified = applications.verify_exchange(
                                 str(planned['application']),
                                 applications.unb64(exchange[0].get('request_b64', '')),

@@ -202,7 +202,9 @@ def probe_rows(profile, kind, request, response, send_before, send_after):
                      response_octets=len(response), eof=True, timed_out=False,
                      truncated=False, exchange_budget_seconds=10,
                      send_before_ticks=send_before, send_after_ticks=send_after,
-                     receive_after_ticks=send_after, worker=1, seq=0))
+                     receive_after_ticks=send_after, worker=1, seq=0,
+                     exchange_started_mono=600000, exchange_finished_mono=700000,
+                     stopwatch_frequency=10000000))
     rows.append(dict(event='case_close', utc_ticks=send_after + 1000000, mono=800000, nonce=NONCE,
                      connection_id=connection, case_index=1, expectation='local_fake',
                      protocol=protocol, application=kind, pid=LAUNCHER_PID, worker=1, seq=0))
@@ -398,3 +400,149 @@ def test_default_application_restart_rows_carry_independent_cases():
             # echo payloads and DNS transactions also bind the case index;
             # the frozen HTTP request carries the nonce only.
             assert request != apps.build_request(kind, NONCE, 2)
+
+
+# --------------------------------------------------------------------------- R02
+def _tamper_exchange(tmp_path, kind, **fields):
+    runner, run, profile = build_fixture(tmp_path, kind)
+    text = (Path(runner.root) / 'probe.jsonl').read_text()
+    rows = [json.loads(line) for line in text.splitlines()]
+    hit = 0
+    for row in rows:
+        if row.get('event') == 'case_application_exchange':
+            row.update(fields)
+            hit += 1
+    assert hit == 1
+    (Path(runner.root) / 'probe.jsonl').write_text(
+        '\n'.join(json.dumps(row) for row in rows) + '\n', encoding='utf-8')
+    raw = (Path(runner.root) / 'probe.jsonl').read_bytes()
+    for record in run['capture']['files']:
+        if record['path'] == 'probe.jsonl':
+            record.update(size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    return oracle(runner, run, profile)
+
+
+@pytest.mark.parametrize('kind', ALL_KINDS)
+def test_r02_exchange_pid_tamper_rejected(tmp_path, kind):
+    assert not _tamper_exchange(tmp_path, kind, pid=888)['passed']
+
+
+@pytest.mark.parametrize('kind', ALL_KINDS)
+def test_r02_exchange_timeout_flag_rejected(tmp_path, kind):
+    assert not _tamper_exchange(tmp_path, kind, timed_out=True)['passed']
+
+
+@pytest.mark.parametrize('kind', ALL_KINDS)
+def test_r02_exchange_truncated_flag_rejected(tmp_path, kind):
+    assert not _tamper_exchange(tmp_path, kind, truncated=True)['passed']
+
+
+@pytest.mark.parametrize('kind', ['udp-echo', 'dns-udp'])
+def test_r02_exchange_foreign_peer_rejected(tmp_path, kind):
+    assert not _tamper_exchange(tmp_path, kind, peer='203.0.113.9:53')['passed']
+
+
+@pytest.mark.parametrize('kind', ALL_KINDS)
+def test_r02_exchange_octets_mismatch_rejected(tmp_path, kind):
+    assert not _tamper_exchange(tmp_path, kind, response_octets=1)['passed']
+
+
+@pytest.mark.parametrize('kind', ALL_KINDS)
+def test_r02_exchange_missing_time_fields_rejected(tmp_path, kind):
+    runner, run, profile = build_fixture(tmp_path, kind)
+    text = (Path(runner.root) / 'probe.jsonl').read_text()
+    rows = [json.loads(line) for line in text.splitlines()]
+    for row in rows:
+        if row.get('event') == 'case_application_exchange':
+            del row['exchange_started_mono']
+            del row['exchange_finished_mono']
+    (Path(runner.root) / 'probe.jsonl').write_text(
+        '\n'.join(json.dumps(row) for row in rows) + '\n', encoding='utf-8')
+    raw = (Path(runner.root) / 'probe.jsonl').read_bytes()
+    for record in run['capture']['files']:
+        if record['path'] == 'probe.jsonl':
+            record.update(size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    assert not oracle(runner, run, profile)['passed']
+
+
+@pytest.mark.parametrize('kind', ALL_KINDS)
+def test_r02_exchange_budget_exceeded_rejected(tmp_path, kind):
+    assert not _tamper_exchange(
+        tmp_path, kind, exchange_started_mono=0,
+        exchange_finished_mono=11 * 10000000)['passed']
+
+
+@pytest.mark.parametrize('kind', ALL_KINDS)
+def test_r02_exchange_outside_run_window_rejected(tmp_path, kind):
+    late = T_READY + 400_000_000  # far beyond this run's case window
+    assert not _tamper_exchange(tmp_path, kind, utc_ticks=late,
+                                receive_after_ticks=late,
+                                send_before_ticks=late,
+                                send_after_ticks=late + 1000)['passed']
+
+
+@pytest.mark.parametrize('kind', ALL_KINDS)
+def test_r02_case_error_alongside_bytes_rejected(tmp_path, kind):
+    runner, run, profile = build_fixture(tmp_path, kind)
+    text = (Path(runner.root) / 'probe.jsonl').read_text()
+    rows = [json.loads(line) for line in text.splitlines()]
+    connection = '%s-case-1' % NONCE
+    rows.append(dict(event='case_error', utc_ticks=T_READY + 6000000, mono=650000,
+                     nonce=NONCE, connection_id=connection, case_index=1,
+                     expectation='local_fake', protocol='tcp',
+                     application=kind, pid=LAUNCHER_PID, worker=1, seq=0,
+                     error_type='TimeoutException', message='late error'))
+    (Path(runner.root) / 'probe.jsonl').write_text(
+        '\n'.join(json.dumps(row) for row in rows) + '\n', encoding='utf-8')
+    raw = (Path(runner.root) / 'probe.jsonl').read_bytes()
+    for record in run['capture']['files']:
+        if record['path'] == 'probe.jsonl':
+            record.update(size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    assert not oracle(runner, run, profile)['passed']
+
+
+def _run_two_runs(tmp_path, kind):
+    """Two independent run fixtures sharing nonce and case_index."""
+    run1_root = Path(tmp_path) / 'run1'
+    run2_root = Path(tmp_path) / 'run2'
+    run1_root.mkdir(parents=True, exist_ok=True)
+    run2_root.mkdir(parents=True, exist_ok=True)
+    one = build_fixture(run1_root, kind)
+    two = build_fixture(run2_root, kind)
+    return one, two
+
+
+@pytest.mark.parametrize('kind', ALL_KINDS)
+def test_r02_two_runs_same_nonce_each_passes(tmp_path, kind):
+    one, two = _run_two_runs(tmp_path, kind)
+    assert oracle(*one)['passed']
+    assert oracle(*two)['passed']
+
+
+@pytest.mark.parametrize('kind', ALL_KINDS)
+def test_r02_run1_response_transplanted_into_run2_rejected(tmp_path, kind):
+    one, two = _run_two_runs(tmp_path, kind)
+    runner2, run2, profile2 = two
+    source = [json.loads(line) for line in (Path(one[0].root) / 'probe.jsonl').read_text().splitlines()]
+    donor = next(row for row in source if row.get('event') == 'case_application_exchange')
+    # Shift run2's timeline one hour later at build time is not available here,
+    # so shift the donor one hour EARLIER instead: still a foreign run window.
+    donor = dict(donor)
+    donor['utc_ticks'] -= 3600 * 10_000_000
+    donor['receive_after_ticks'] -= 3600 * 10_000_000
+    donor['send_before_ticks'] -= 3600 * 10_000_000
+    donor['send_after_ticks'] -= 3600 * 10_000_000
+    rows = [json.loads(line) for line in (Path(runner2.root) / 'probe.jsonl').read_text().splitlines()]
+    out = []
+    for row in rows:
+        if row.get('event') == 'case_application_exchange':
+            out.append(donor)
+        else:
+            out.append(row)
+    (Path(runner2.root) / 'probe.jsonl').write_text(
+        '\n'.join(json.dumps(row) for row in out) + '\n', encoding='utf-8')
+    raw = (Path(runner2.root) / 'probe.jsonl').read_bytes()
+    for record in run2['capture']['files']:
+        if record['path'] == 'probe.jsonl':
+            record.update(size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    assert not oracle(runner2, run2, profile2)['passed']

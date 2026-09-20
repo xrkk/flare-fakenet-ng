@@ -94,7 +94,7 @@ def test_http_wrong_body_is_rejected():
 def test_http_non_200_is_rejected():
     request = apps.build_request('http-tcp', NONCE, 1)
     response = http_response(HTML.read_bytes(), status='404 Not Found')
-    with pytest.raises(apps.ApplicationError, match='not 200'):
+    with pytest.raises(apps.ApplicationError, match='200'):
         apps.verify_http(request, response, apps.fakenet_html_sha256(HTML))
 
 
@@ -180,3 +180,66 @@ def test_verify_exchange_caps_response_size():
     with pytest.raises(apps.ApplicationError, match='exceeds'):
         apps.verify_exchange('tcp-echo', request, b'x' * (apps.MAX_RESPONSE_BYTES + 1),
                              NONCE, 1, HTML)
+
+
+# --------------------------------------------------------------------------- R02
+def dns_response_foreign_owner():
+    from dnslib import A, DNSHeader, DNSQuestion, DNSRecord, RR, QTYPE
+    txn = apps._dns_transaction_id(NONCE, 1)
+    record = DNSRecord(DNSHeader(id=txn, qr=1, aa=1, ra=1, rc=0))
+    record.add_question(DNSQuestion('%s.invalid' % NONCE, QTYPE.A))
+    record.add_answer(RR('unrelated.invalid', ttl=60, rdata=A(apps.DNS_EXPECTED_IPV4)))
+    return record.pack()
+
+
+def test_r02_dns_answer_owner_mismatch_is_rejected():
+    request = apps.build_request('dns-udp', NONCE, 1)
+    with pytest.raises(apps.ApplicationError, match='owner'):
+        apps.verify_dns(request, dns_response_foreign_owner())
+
+
+def test_r02_http_duplicate_content_length_is_rejected():
+    request = apps.build_request('http-tcp', NONCE, 1)
+    body = HTML.read_bytes()
+    response = (('HTTP/1.1 200 OK\r\nContent-Length: %d\r\nContent-Length: %d\r\n'
+                 'Connection: close\r\n\r\n' % (len(body), len(body))).encode() + body)
+    with pytest.raises(apps.ApplicationError, match='duplicate http header'):
+        apps.verify_http(request, response, apps.fakenet_html_sha256(HTML))
+
+
+def test_r02_http_conflicting_content_length_is_rejected():
+    request = apps.build_request('http-tcp', NONCE, 1)
+    body = HTML.read_bytes()
+    response = (('HTTP/1.1 200 OK\r\nContent-Length: %d\r\nContent-Length: 0\r\n'
+                 'Connection: close\r\n\r\n' % len(body)).encode() + body)
+    with pytest.raises(apps.ApplicationError, match='duplicate http header'):
+        apps.verify_http(request, response, apps.fakenet_html_sha256(HTML))
+
+
+def test_r02_http_transfer_encoding_is_rejected():
+    request = apps.build_request('http-tcp', NONCE, 1)
+    body = HTML.read_bytes()
+    response = (('HTTP/1.1 200 OK\r\nContent-Length: %d\r\nTransfer-Encoding: chunked\r\n'
+                 'Connection: close\r\n\r\n' % len(body)).encode() + body)
+    with pytest.raises(apps.ApplicationError, match='transfer-encoding'):
+        apps.verify_http(request, response, apps.fakenet_html_sha256(HTML))
+
+
+def test_r02_http_unknown_protocol_version_is_rejected():
+    request = apps.build_request('http-tcp', NONCE, 1)
+    body = HTML.read_bytes()
+    head = ('HTTP/2.0 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n'
+            % len(body)).encode()
+    with pytest.raises(apps.ApplicationError, match=r'HTTP/1\.0[|]1\.1'):
+        apps.verify_http(request, head + body, apps.fakenet_html_sha256(HTML))
+
+
+def test_r02_echo_extra_bytes_are_rejected_not_trimmed():
+    request = apps.build_request('tcp-echo', NONCE, 1)
+    with pytest.raises(apps.ApplicationError, match='echo bytes differ'):
+        apps.verify_echo(request, request + b'EXTRA')
+
+
+def test_r02_max_budget_is_shared_constant():
+    assert apps.EXCHANGE_BUDGET_SECONDS == 10
+    assert apps.MAX_RESPONSE_BYTES == 64 * 1024
