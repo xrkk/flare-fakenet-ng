@@ -7,6 +7,16 @@ import json
 import re
 import xml.etree.ElementTree as ET
 
+try:  # loaded as a sibling module by the suite (acceptance dir on sys.path)
+    import scenario_clock as clock
+except ImportError:  # loaded by file location without that path entry
+    import importlib.util as _ilu
+    from pathlib import Path as _Path
+    _spec = _ilu.spec_from_file_location(
+        'scenario_clock', _Path(__file__).with_name('scenario_clock.py'))
+    clock = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(clock)
+
 NS = {'e': 'http://schemas.microsoft.com/win/2004/08/events/event'}
 GUID = '{7dd42a49-5329-4832-8dfd-43d979153a88}'
 EPOCH_TICKS = 621355968000000000
@@ -74,10 +84,8 @@ def validate_capture(raw, etl, header_raw, summary_raw, metadata, path, resoluti
     if (before['offset_minutes'] != 480 or after['offset_minutes'] != 480 or
             not isinstance(freq, int) or freq <= 0 or after['stopwatch_frequency'] != freq):
         raise ValueError('invalid Kernel-Network clock domain')
-    wall = (after['utc_ticks'] - before['utc_ticks']) * 100
-    mono = (after['mono'] - before['mono']) * 10**9 // freq
-    if min(wall, mono) < 0 or abs(wall-mono) > resolution_ns:
-        raise ValueError('Kernel-Network clock discontinuity')
+    clock.check_continuity(before, after, resolution_ns,
+                           lambda detail: 'Kernel-Network ' + detail)
     conversion = metadata['conversion']
     argv = conversion['tracerpt_argv']
     guest = metadata['etl_path']

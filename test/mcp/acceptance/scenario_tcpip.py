@@ -9,6 +9,16 @@ import ipaddress
 import json
 import re
 
+try:  # loaded as a sibling module by the suite (acceptance dir on sys.path)
+    import scenario_clock as clock
+except ImportError:  # loaded by file location without that path entry
+    import importlib.util as _ilu
+    from pathlib import Path as _Path
+    _spec = _ilu.spec_from_file_location(
+        'scenario_clock', _Path(__file__).with_name('scenario_clock.py'))
+    clock = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(clock)
+
 
 def pair_ipc(rows, run, kind):
     requests = [(i, r) for i, r in enumerate(rows) if r.get('event') == 'request'
@@ -530,10 +540,8 @@ def validate_capture(raw, etl, metadata, resolution_ns):
     freq = before['stopwatch_frequency']
     if not isinstance(freq, int) or freq <= 0 or after['stopwatch_frequency'] != freq:
         raise ValueError('invalid capture monotonic frequency')
-    wall = (after['utc_ticks'] - before['utc_ticks']) * 100
-    mono = (after['mono'] - before['mono']) * 10**9 // freq
-    if wall < 0 or mono < 0 or abs(wall - mono) > resolution_ns:
-        raise ValueError('capture clock discontinuity')
+    clock.check_continuity(before, after, resolution_ns,
+                           lambda detail: 'capture ' + detail)
     conversion = metadata['conversion']
     args = conversion['argv']
     if (conversion.get('exit_code') != 0 or len(args) != 5 or

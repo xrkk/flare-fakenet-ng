@@ -47,6 +47,8 @@ FNPR_SENTINEL_IMAGE = 'python:3.12-alpine'
 # the repository root. Baseline capture imports the shared product module.
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import scenario_clock as _sst_clock
 DEFAULT_SUITE_ROOT = REPO_ROOT / 'Logs' / 'fakenetng-mcp' / 'scenario-suite-20260912'
 SCHEMA = 'fakenetng.mcp-scenario-suite.v1'
 SCENARIO_SCHEMA = 'fakenetng.mcp-scenario.v1'
@@ -1354,8 +1356,8 @@ class Suite:
         command = (
             "$ErrorActionPreference='Stop';$r=" + quote_ps(run_root) + ";"
             "New-Item -ItemType Directory -Path $r -Force|Out-Null;$s=" + quote_ps(session) + ";"
-            "$etl=Join-Path $r 'kernel-network.etl';if(Test-Path $etl){throw 'kernel capture collision'};"
-            "$clock=@{utc_ticks=[DateTime]::UtcNow.Ticks;mono=[Diagnostics.Stopwatch]::GetTimestamp();stopwatch_frequency=[Diagnostics.Stopwatch]::Frequency;offset_minutes=[int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalMinutes};"
+            "$etl=Join-Path $r 'kernel-network.etl';if(Test-Path $etl){throw 'kernel capture collision'};" +
+            _sst_clock.clock_sample_ps('clock') +
             "$meta=@{capture_mode='kernel-network-ipv4';session_name=$s;etl_path=$etl;events_path=(Join-Path $r 'kernel-network.events.jsonl');header_path=(Join-Path $r 'kernel-network.header.xml');summary_path=(Join-Path $r 'kernel-network.summary.txt');clock_before=$clock};"
             "$mp=Join-Path $r 'kernel-network.metadata.json';$meta|ConvertTo-Json -Depth 8|Set-Content $mp -Encoding UTF8;"
             "$start=(& logman start $s -ets -o $etl -p Microsoft-Windows-Kernel-Network 0x10 4|Out-String);"
@@ -1379,8 +1381,8 @@ class Suite:
             "if($m.session_name -ne " + quote_ps(capture['session_name']) + "){throw 'kernel capture identity mismatch'};"
             "$q=(& logman query $m.session_name -ets|Out-String);$session_present=($LASTEXITCODE -eq 0);$stop='';"
             "if($session_present){$stop=(& logman stop $m.session_name -ets|Out-String);if($LASTEXITCODE -ne 0){throw ('kernel trace stop failed: '+$stop)}};"
-            "$m|Add-Member -NotePropertyName session_present_at_stop -NotePropertyValue $session_present -Force;"
-            "$clock=@{utc_ticks=[DateTime]::UtcNow.Ticks;mono=[Diagnostics.Stopwatch]::GetTimestamp();stopwatch_frequency=[Diagnostics.Stopwatch]::Frequency;offset_minutes=[int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalMinutes};"
+            "$m|Add-Member -NotePropertyName session_present_at_stop -NotePropertyValue $session_present -Force;" +
+            _sst_clock.clock_sample_ps('clock') +
             "$m|Add-Member -NotePropertyName clock_after -NotePropertyValue $clock -Force;$m|ConvertTo-Json -Depth 8|Set-Content $mp -Encoding UTF8;"
             "if(Test-Path $m.events_path){throw 'kernel conversion collision'};$writer=[IO.StreamWriter]::new($m.events_path,$false,[Text.UTF8Encoding]::new($false));"
             "$ordinal=0;try{Get-WinEvent -Path $m.etl_path -Oldest -ErrorAction Stop|ForEach-Object {$writer.WriteLine((@{ordinal=$ordinal;xml=$_.ToXml()}|ConvertTo-Json -Compress -Depth 4));$ordinal++}}finally{$writer.Dispose()};"
@@ -1420,8 +1422,9 @@ class Suite:
             "$etl=Join-Path $r 'pktmon.etl';$nic=Join-Path $r 'pktmon-nic.json';"
             "$list=(& pktmon list|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon list failed'};"
             "$adapters=@(Get-NetAdapter|Select-Object ifIndex,Name,InterfaceDescription,MacAddress,Status);"
-            "$before=(& pktmon counters|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon counters before start failed'};"
-            "$clockBefore=@{utc_ticks=[DateTime]::UtcNow.Ticks;mono=[Diagnostics.Stopwatch]::GetTimestamp();stopwatch_frequency=[Diagnostics.Stopwatch]::Frequency;offset_minutes=[int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalMinutes;utc=[DateTime]::UtcNow.ToString('o')};@{capture_mode='all-components-tcpip';clock_before=$clockBefore;schema='" + NIC_CAPTURE_SCHEMA + "';captured_utc=[DateTime]::UtcNow.ToString('o');pktmon_list=$list;adapters=$adapters;pktmon_counters_before=$before}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $nic -Encoding UTF8;"
+            "$before=(& pktmon counters|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon counters before start failed'};" +
+            _sst_clock.clock_sample_ps('clockBefore') +
+            "@{capture_mode='all-components-tcpip';clock_before=$clockBefore;schema='" + NIC_CAPTURE_SCHEMA + "';captured_utc=[DateTime]::UtcNow.ToString('o');pktmon_list=$list;adapters=$adapters;pktmon_counters_before=$before}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $nic -Encoding UTF8;"
             "$pktmonStart=(& pktmon start --capture --comp all --pkt-size 0 --flags 0x1f --trace -p Microsoft-Windows-TCPIP -k 0xFF -l 4 --file-name $etl --file-size 128|Out-String);"
             "if($LASTEXITCODE -ne 0){throw 'pktmon start failed'};$captureStarted=$true;"
             "$out=Join-Path $r 'probe.jsonl';$start=Join-Path $r 'probe.start';$cases=Join-Path $r 'probe.cases';$stop=Join-Path $r 'probe.stop';$script=" + quote_ps(script) + ";"
@@ -1577,8 +1580,7 @@ class Suite:
         coop_cmd = self._probe_cooperative_cleanup_command(
             capture['pid'], capture.get('probe_creation_ticks'), capture['stop'],
             status_path, 'pktmon stop', wait_seconds=30)
-        clock_after = ("$clockAfter=@{utc_ticks=[DateTime]::UtcNow.Ticks;mono=[Diagnostics.Stopwatch]::GetTimestamp();"
-                       "stopwatch_frequency=[Diagnostics.Stopwatch]::Frequency;offset_minutes=[int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalMinutes;utc=[DateTime]::UtcNow.ToString('o')};")
+        clock_after = _sst_clock.clock_sample_ps('clockAfter')
         nic_update = (
             "$nic=Get-Content -LiteralPath " + quote_ps(capture['pktmon_nic']) + " -Raw|ConvertFrom-Json;"
             "$nic|Add-Member -NotePropertyName clock_after -NotePropertyValue $clockAfter -Force;"
