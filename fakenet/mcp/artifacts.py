@@ -9,6 +9,7 @@ exposes ONLY normalized path/type/size/complete/sha256 — never content.
 import hashlib
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
 import time
@@ -28,6 +29,13 @@ RUN_EVIDENCE_FILES = ('active-config.ini', 'creation.jsonl', 'ipc-parent.jsonl',
 # Published files are re-hashed on every metadata request; large captures
 # stream through one bounded chunk instead of one whole-file bytes object.
 HASH_CHUNK_BYTES = 1024 * 1024
+# Larger collections verify file content with a bounded pool so reads of one
+# capture overlap another; small ones stay serial because pool startup would
+# dominate. The pool lives for one request only and at most one unconsumed
+# submission per worker exists at any moment (executor.map pre-submits
+# without bound on Python 3.11 and is not used).
+HASH_WORKER_LIMIT = 4
+SERIAL_FILE_THRESHOLD = 16
 
 
 def is_published(name):
@@ -191,14 +199,32 @@ class ArtifactRegistry:
                 except OSError:
                     continue
 
+    def _row_context(self, path, entry, publications):
+        """Per-file row facts composed on the main thread only.
+
+        Workers receive plain (path, publication entry, deadline) tuples and
+        verify bytes; the type map, the publication cache and the row shape
+        never cross threads.
+        """
+        suffix = path.suffix.lstrip('.').lower()
+        item_type = {'pcap': 'pcap', 'log': 'log', 'html': 'report',
+                     'dmp': 'userdump', 'ini': 'config'}.get(
+                         suffix, suffix or 'file')
+        if path.parent not in publications:
+            publications[path.parent] = publication_record(path.parent)
+        return (str(path), item_type,
+                entry.stat(follow_symlinks=False).st_size,
+                publications[path.parent].get(path.name))
+
     def metadata(self, deadline=None):
         """All registered artifacts as metadata-only entries.
 
         Enumeration is bounded: when ``deadline`` (monotonic) is supplied and
         the walk cannot finish inside it, the query fails structurally instead
         of blocking its caller past the fixed budget. The deadline is checked
-        while walking directories and between hash chunks of large files, so
-        one huge capture cannot run far past the budget before failing.
+        while walking directories, before every pool submission and result
+        consumption, and between hash chunks of large files, so one huge
+        capture cannot run far past the budget before failing.
         """
         items = []
         if not self.root.is_dir():
@@ -207,22 +233,58 @@ class ArtifactRegistry:
         # artifact still has its current bytes hashed on every API request.
         publications = {}
         ordered = sorted(self._enumeration_entries(deadline), key=lambda pair: pair[0])
-        for path, entry in ordered:
-            if deadline is not None and time.monotonic() >= deadline:
-                raise TimeoutError('artifact enumeration deadline exceeded')
-            suffix = path.suffix.lstrip('.').lower()
-            item_type = {'pcap': 'pcap', 'log': 'log', 'html': 'report',
-                         'dmp': 'userdump', 'ini': 'config'}.get(
-                             suffix, suffix or 'file')
-            if path.parent not in publications:
-                publications[path.parent] = publication_record(path.parent)
-            digest = _completion_from_entry(
-                path, publications[path.parent].get(path.name), deadline)
-            items.append({
-                'path': str(path),
-                'type': item_type,
-                'size': entry.stat(follow_symlinks=False).st_size,
-                'complete': digest is not None,
-                'sha256': digest,
-            })
+        if len(ordered) < SERIAL_FILE_THRESHOLD:
+            for path, entry in ordered:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError('artifact enumeration deadline exceeded')
+                path_text, item_type, size, published = self._row_context(
+                    path, entry, publications)
+                digest = _completion_from_entry(path, published, deadline)
+                items.append({'path': path_text, 'type': item_type,
+                              'size': size, 'complete': digest is not None,
+                              'sha256': digest})
+            return items
+        return self._metadata_bounded(ordered, publications, deadline)
+
+    def _metadata_bounded(self, ordered, publications, deadline):
+        """Verify ordered rows through at most HASH_WORKER_LIMIT workers.
+
+        Submission and consumption follow the sorted(Path) order: results are
+        appended in consumption order, so the row order is exactly the serial
+        contract. At most one unconsumed future per worker exists at any
+        moment. A deadline stop or a worker failure raises the first observed
+        error only after every started worker has been joined; a query never
+        returns a partial list, and a worker's TimeoutError surfaces as the
+        query's TimeoutError instead of an incomplete-file row.
+        """
+        items = []
+        total = len(ordered)
+        index = 0
+        executor = ThreadPoolExecutor(max_workers=HASH_WORKER_LIMIT)
+        window = []  # [(row facts, future, Path)] in submission order
+        try:
+            while True:
+                while (len(window) < HASH_WORKER_LIMIT and index < total
+                       and (deadline is None or time.monotonic() < deadline)):
+                    path, entry = ordered[index]
+                    context = self._row_context(path, entry, publications)
+                    future = executor.submit(
+                        _completion_from_entry, path, context[3], deadline)
+                    window.append((context, future, path))
+                    index += 1
+                if not window:
+                    break
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError('artifact enumeration deadline exceeded')
+                context, future, path = window.pop(0)
+                digest = future.result()
+                items.append({'path': context[0], 'type': context[1],
+                              'size': context[2], 'complete': digest is not None,
+                              'sha256': digest})
+        finally:
+            # Pending submissions are cancelled, running workers are waited
+            # for: a native read cannot be lied about, and no thread outlives
+            # this query. The original error (deadline or worker failure) is
+            # re-raised after the join.
+            executor.shutdown(wait=True, cancel_futures=True)
         return items
