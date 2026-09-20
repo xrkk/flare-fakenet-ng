@@ -1405,3 +1405,41 @@ def test_full_positive_fault_evidence_adjudicates_identically_online_and_offline
         assert online['passed'] and offline['passed']
         assert online == offline
         assert online['reason'] is None
+
+
+def test_every_bucket_has_real_restart_and_start_stop_coverage():
+    for seed in (20260912, 20260913, 0, 99):
+        manifest = suite.build_manifest(seed)
+        for bucket in suite.BUCKET_COUNTS:
+            rows = [r for r in manifest['scenarios']
+                    if r['config_profile']['bucket'] == bucket and not r['fault_class']]
+            assert {r['lifecycle_chain'] for r in rows} == {'restart', 'start-stop'}
+        for row in manifest['scenarios']:
+            restart = row['lifecycle_chain'] == 'restart'
+            names = [item['tool'] for item in row['interface_call_plan']]
+            assert ('restart' in names) == restart
+            if row['config_profile']['interleave'] == 'restart-window':
+                assert restart
+
+
+def test_manifest_rejects_restart_label_without_restart_operation():
+    manifest = suite.build_manifest(20260912)
+    row = next(r for r in manifest['scenarios'] if not r['fault_class'])
+    row['config_profile']['interleave'] = 'restart-window'
+    row['lifecycle_chain'] = 'start-stop'
+    row['interface_call_plan'] = [i for i in row['interface_call_plan'] if i['tool'] != 'restart']
+    assert any('restart' in issue for issue in suite.manifest_issues(manifest))
+
+
+def test_policy_boundaries_are_not_tied_to_one_timing_axis():
+    profiles = [suite.profile_for_bucket('B1', i) for i in range(25)]
+    for expectation in {(p['probe_target']['host'], p['probe_target']['protocol'],
+                         p['probe_target'].get('tls_server_name')) for p in profiles}:
+        rows = [p for p in profiles if (p['probe_target']['host'], p['probe_target']['protocol'],
+                                       p['probe_target'].get('tls_server_name')) == expectation]
+        assert len({p['interleave'] for p in rows}) == 5
+    profiles = [suite.profile_for_bucket('B4', i) for i in range(20)]
+    for variant in {p['variant'] for p in profiles}:
+        rows = [p for p in profiles if p['variant'] == variant]
+        assert len({p['tempo'] for p in rows}) == 4
+        assert len({p['interleave'] for p in rows}) == 4

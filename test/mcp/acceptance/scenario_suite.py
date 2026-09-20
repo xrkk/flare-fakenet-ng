@@ -315,9 +315,12 @@ def profile_for_bucket(bucket: str, ordinal: int) -> dict[str, Any]:
     """
     tempos = ('hold', 'burst', 'stagger', 'drip', 'overlap')
     interleaves = ('before-start', 'during-start', 'after-healthy', 'restart-window', 'stop-window')
-    tempo = tempos[ordinal % len(tempos)]
+    group, position = divmod(ordinal, len(tempos))
+    # Rotate cadence across B4 policy variants instead of fixing allow to
+    # burst and UDP deny to stagger for every occurrence.
+    tempo = tempos[(position + group) % len(tempos)] if bucket == 'B4' else tempos[position]
     common = {'bucket': bucket, 'ordinal': ordinal, 'tempo': tempo,
-              'interleave': interleaves[(ordinal // len(tempos)) % len(interleaves)],
+              'interleave': interleaves[(group + position) % len(interleaves)],
               # These fields are passed into the guest probe and retained in
               # its raw JSONL.  They are behaviour, not labels used to pad a
               # scenario count.  B3 additionally consumes cadence in its
@@ -406,14 +409,15 @@ def profile_for_bucket(bucket: str, ordinal: int) -> dict[str, Any]:
     raise ValueError('unknown bucket: ' + bucket)
 
 
-def plan_for(index: int, fault: str | None) -> list[dict[str, str]]:
+def plan_for(index: int, fault: str | None, *, restart: bool | None = None) -> list[dict[str, str]]:
     """Full call contract, including one deliberately stale mutation."""
     prefix = ('list_configs', 'validate_config', 'create_config', 'create_config',
               'read_config', 'edit_config', 'read_config', 'rename_config',
               'import_config', 'read_config', 'delete_config', 'load_config', 'start')
     entries = [{'tool': name, 'expect': ('reject_state_conflict' if pos == 3 else 'success')}
                for pos, name in enumerate(prefix)]
-    restart = fault is None and index < 20
+    if restart is None:
+        restart = fault is None and index < 20
     if restart:
         # The first run's artifact writer can lag a restart.  Query and bind
         # its exact PCAP while its run id is still current, then restart.
@@ -465,6 +469,7 @@ def build_manifest(seed: int, count: int = 100) -> dict[str, Any]:
         used.add(candidate)
         assigned_faults[candidate] = fault
     scenarios: list[dict[str, Any]] = []
+    benign_ordinals: dict[str, int] = {}
     for index, bucket in enumerate(slots):
         fault = assigned_faults.get(index)
         sid = 'sst-%03d' % (index + 1)
@@ -478,16 +483,23 @@ def build_manifest(seed: int, count: int = 100) -> dict[str, Any]:
             profile['interleave'] = 'after-healthy'
         elif fault == 'cleanup_error':
             profile['interleave'] = 'stop-window'
+        # Allocate real restarts within each bucket, not only the first
+        # twenty global IDs. Every restart-window label schedules restart.
+        benign_ordinal = benign_ordinals.get(bucket, 0)
+        restart = fault is None and (profile['interleave'] == 'restart-window'
+                                     or benign_ordinal % 5 == 0)
+        if fault is None:
+            benign_ordinals[bucket] = benign_ordinal + 1
         scenarios.append({
             'scenario_id': sid,
             'seed': seed,
             'config_profile': profile,
-            'lifecycle_chain': 'restart' if fault is None and index < 20 else 'start-stop',
+            'lifecycle_chain': 'restart' if restart else 'start-stop',
             'traffic_profile': profile['traffic_profile'],
             'interleave_pattern': ('fault-' + fault if fault else
-                                   ('contract-restart' if index < 20 else 'serial')),
+                                   ('contract-restart' if restart else 'serial')),
             'fault_class': fault,
-            'interface_call_plan': plan_for(index, fault),
+            'interface_call_plan': plan_for(index, fault, restart=restart),
         })
     manifest = {'schema': SCHEMA, 'application_observation_contract': 'con008', 'seed': seed, 'count': count,
                 'created_by': 'scenario_suite.py', 'scenarios': scenarios}
@@ -528,6 +540,11 @@ def manifest_issues(manifest: dict[str, Any]) -> list[str]:
                 failures.append('fault assigned outside B1-B4: ' + str(sid))
         planned = row.get('interface_call_plan') or []
         names = [item.get('tool') for item in planned if isinstance(item, dict)]
+        restart = row.get('lifecycle_chain') == 'restart'
+        if restart != ('restart' in names):
+            failures.append('restart lifecycle/call mismatch: ' + str(sid))
+        if profile.get('interleave') == 'restart-window' and not restart:
+            failures.append('restart-window without restart operation: ' + str(sid))
         if len(set(names)) < 10:
             failures.append('fewer than 10 distinct tools: ' + str(sid))
         for tool in set(names):
