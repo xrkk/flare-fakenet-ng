@@ -275,97 +275,119 @@ function New-ApplicationRequest([string]$Kind, [string]$Token, [int]$Index) {
     throw "unknown application kind: $Kind"
 }
 
-function Read-TcpResponse([Net.Sockets.NetworkStream]$Stream, [Net.Sockets.TcpClient]$Client,
-                             [System.Diagnostics.Stopwatch]$Budget, [int]$FrameTarget) {
-    # One total 10-second budget for the whole exchange, shared with connect
-    # and write; every blocking poll asks for the remaining time only.  A
-    # complete frame (echo request length, or HTTP head + Content-Length
-    # body) finishes the read without waiting for the server EOF; extra
-    # bytes already read are kept as evidence, never trimmed to fake
-    # equality.  EOF is Poll-read-ready with no available bytes (peer FIN).
-    $chunks = New-Object System.Collections.Generic.List[byte]
-    $buffer = New-Object byte[] 8192
-    $eof = $false; $timedOut = $false; $truncated = $false; $octets = 0
-    $headEnd = -1; $declared = -1
-    while ($octets -lt 65536) {
-        $remainingMs = [int](10000 - $Budget.ElapsedMilliseconds)
-        if ($remainingMs -le 0) { $timedOut = $true; break }
-        if (-not $Client.Client.Poll([Math]::Max($remainingMs,1) * 1000, [Net.Sockets.SelectMode]::SelectRead)) { $timedOut = $true; break }
-        if ($Client.Available -eq 0) { $eof = $true; break }
-        $take = [Math]::Min($buffer.Length, $Client.Available)
-        if ($octets + $take -gt 65536) { $take = 65536 - $octets; $truncated = $true }
-        $read = $Stream.Read($buffer, 0, $take)
-        if ($read -le 0) { $eof = $true; break }
-        for ($i = 0; $i -lt $read; $i++) { $chunks.Add($buffer[$i]) }
-        $octets += $read
-        if ($truncated) { break }
-        if ($FrameTarget -gt 0 -and $octets -ge $FrameTarget) {
-            # Frame complete.  One short evidence probe keeps any extra
-            # already-queued bytes in the record instead of silently
-            # trimming them; it never extends the shared budget.
-            if ($Client.Available -gt 0) {
-                $take2 = [Math]::Min($Client.Available, 65536 - $octets)
-                if ($take2 -gt 0) {
-                    $read2 = $Stream.Read($buffer, 0, $take2)
-                    for ($i = 0; $i -lt $read2; $i++) { $chunks.Add($buffer[$i]) }
-                    $octets += $read2
-                }
-            }
-            break
-        }
-    }
-    @{ data = $chunks.ToArray(); octets = $octets; eof = $eof; timed_out = $timedOut; truncated = $truncated }
-}
-
-function Get-HttpFrameTarget([byte[]]$Data, [int]$Length) {
-    # -1: head still incomplete; otherwise head+separator+declared body size.
-    for ($i = 0; $i -le $Length - 5; $i++) {
-        if ($Data[$i] -eq 13 -and $Data[$i+1] -eq 10 -and $Data[$i+2] -eq 13 -and $Data[$i+3] -eq 10) {
-            $head = [Text.Encoding]::ASCII.GetString($Data, 0, $i)
+function Get-HttpFrameTarget([System.Collections.Generic.List[byte]]$Chunks, [int]$Length) {
+    # Returns the complete-frame byte count once the head terminated with
+    # CRLFCRLF is fully received (Content-Length may legitimately be 0), -1
+    # while the head is still incomplete, and -2 for a head that can never
+    # frame legally (Transfer-Encoding, duplicate or invalid Content-Length):
+    # the caller ends with an explicit protocol-error terminal instead of
+    # waiting out the budget on a frame that must not be forged.
+    for ($i = 0; $i -le $Length - 4; $i++) {
+        if ($Chunks[$i] -eq 13 -and $Chunks[$i+1] -eq 10 -and $Chunks[$i+2] -eq 13 -and $Chunks[$i+3] -eq 10) {
+            $head = [Text.Encoding]::ASCII.GetString($Chunks.ToArray(), 0, $i)
+            $lengths = @()
             foreach ($line in ($head -split "`r`n")) {
                 $parts = $line -split ':', 2
-                if ($parts.Count -eq 2 -and $parts[0].Trim().ToLower() -eq 'content-length') {
-                    $v = 0
-                    if ([int]::TryParse($parts[1].Trim(), [ref]$v)) { return $i + 4 + $v }
-                }
+                if ($parts.Count -ne 2) { continue }
+                $name = $parts[0].Trim().ToLower()
+                if ($name -eq 'transfer-encoding') { return -2 }
+                if ($name -eq 'content-length') { $lengths += $parts[1].Trim() }
             }
-            return $i + 4
+            if ($lengths.Count -ne 1) { return -2 }
+            $value = 0
+            if (-not [int]::TryParse($lengths[0], [System.Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$value)) { return -2 }
+            if ($value -lt 0) { return -2 }
+            return $i + 4 + $value
         }
     }
     return -1
 }
 
+function Read-TcpResponse([Net.Sockets.NetworkStream]$Stream, [Net.Sockets.TcpClient]$Client,
+                          [System.Diagnostics.Stopwatch]$Budget, [int]$FrameTarget) {
+    # One accumulating loop shared by every application TCP read.  FrameTarget
+    # greater than zero is a fixed byte count (the echo request length); zero
+    # parses the HTTP Content-Length inside this same loop after every
+    # accumulation, so a complete frame returns immediately without waiting
+    # for the peer EOF.  Every read is bounded by both the 8 KiB scratch
+    # buffer and the remaining 64 KiB response cap.  Already-received bytes
+    # survive every exit path - timeout, EOF, cap, or exception - together
+    # with explicit eof/timed_out/truncated/error terminals.
+    $chunks = New-Object System.Collections.Generic.List[byte]
+    $buffer = New-Object byte[] 8192
+    $eof = $false; $timedOut = $false; $truncated = $false; $octets = 0
+    $error = $null
+    try {
+        while ($true) {
+            if ($FrameTarget -gt 0 -and $octets -ge $FrameTarget) { break }
+            if ($FrameTarget -eq 0) {
+                $target = Get-HttpFrameTarget $chunks $octets
+                if ($target -eq -2) { $error = 'http head cannot frame legally'; break }
+                if ($target -gt 0 -and $octets -ge $target) { break }
+            }
+            if ($octets -ge 65536) { $truncated = $true; break }
+            $remainingMs = [int](10000 - $Budget.ElapsedMilliseconds)
+            if ($remainingMs -le 0) { $timedOut = $true; break }
+            if (-not $Client.Client.Poll([Math]::Max($remainingMs, 1) * 1000, [Net.Sockets.SelectMode]::SelectRead)) { $timedOut = $true; break }
+            if ($Client.Available -eq 0) { $eof = $true; break }
+            $take = [Math]::Min([Math]::Min($buffer.Length, $Client.Available), 65536 - $octets)
+            if ($take -le 0) { $truncated = $true; break }
+            $read = $Stream.Read($buffer, 0, $take)
+            if ($read -le 0) { $eof = $true; break }
+            for ($i = 0; $i -lt $read; $i++) { $chunks.Add($buffer[$i]) }
+            $octets += $read
+        }
+        if (-not $eof -and $null -eq $error -and $Budget.ElapsedMilliseconds -ge 10000) {
+            # An operation that returned past the shared deadline is a late
+            # success: the native flag says timed out, no new tolerance.
+            $timedOut = $true
+        }
+    } catch {
+        $error = $_.Exception.Message
+    }
+    @{ data = $chunks.ToArray(); octets = $octets; eof = $eof; timed_out = $timedOut; truncated = $truncated; error = $error }
+}
+
 function Invoke-ApplicationCase([string]$Kind, [string]$CaseHost, [int]$Port, [string]$Path,
                                 [string]$Token, [int]$Index, [string]$Connection, [string]$Expectation) {
-    # Single monotonic budget: the stopwatch starts before any connect/UDP
-    # preparation and every blocking call consumes its remaining time.  The
-    # exchange event is always recorded - with partial bytes and terminal
-    # flags on failure - so an error never reduces the evidence to a label.
+    # One Stopwatch budget spans connect/UDP preparation through response
+    # completion; every blocking call consumes only the remaining time and a
+    # return past the deadline is a timeout.  The exchange event is always
+    # recorded - partial bytes and terminal flags included - so an error
+    # never reduces the evidence to a label.
     $request = New-ApplicationRequest $Kind $Token $Index
     $protocol = if ($Kind -in @('udp-echo','dns-udp')) { 'udp' } else { 'tcp' }
     $budget = [System.Diagnostics.Stopwatch]::StartNew()
     $startedMono = [Diagnostics.Stopwatch]::GetTimestamp()
     $frequency = [Diagnostics.Stopwatch]::Frequency
     $recorded = $false
-    $local = ''; $remote = ''; $attemptLocal = ''; $sendBefore = 0; $sendAfter = 0
+    $local = ''; $remote = ''; $sendBefore = 0; $sendAfter = 0
     $response = $null; $eof = $false; $timedOut = $false; $truncated = $false
+    $failure = $null
     try {
         if ($protocol -eq 'udp') {
             $udp = [Net.Sockets.UdpClient]::new([Net.Sockets.AddressFamily]::InterNetwork)
             try {
-                $remaining = [int](10000 - $budget.ElapsedMilliseconds)
-                if ($remaining -le 0) { throw [TimeoutException]::new('application budget exhausted before UDP send') }
-                $udp.Client.ReceiveTimeout = $remaining
-                $udp.Connect($CaseHost, $Port)
+                # The destination is a frozen numeric sink address; parsing it
+                # directly avoids any ambient DNS dependency.
+                $udp.Connect([Net.IPAddress]::Parse($CaseHost), $Port)
                 $local = $udp.Client.LocalEndPoint.ToString()
                 $remote = $udp.Client.RemoteEndPoint.ToString()
+                $remaining = [int](10000 - $budget.ElapsedMilliseconds)
+                if ($remaining -le 0) { throw [TimeoutException]::New('application budget exhausted before UDP send') }
+                $udp.Client.SendTimeout = $remaining
                 $sendBefore = [ScenarioProbeClock]::UtcTicks()
                 $sent = $udp.Send($request, $request.Length)
                 $sendAfter = [ScenarioProbeClock]::UtcTicks()
+                if ($budget.ElapsedMilliseconds -ge 10000) { $timedOut = $true; throw [TimeoutException]::New('UDP send returned after the budget') }
                 Write-JsonLine $Path @{ event = 'case_udp_sent'; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; src = $local; dst = "$CaseHost`:$Port"; actual_dst = $remote; protocol = 'udp'; bytes = $sent; byte_count = $sent; send_before_ticks = $sendBefore; send_after_ticks = $sendAfter; application = $Kind }
+                $remaining = [int](10000 - $budget.ElapsedMilliseconds)
+                if ($remaining -le 0) { $timedOut = $true; throw [TimeoutException]::New('application budget exhausted before UDP receive') }
+                $udp.Client.ReceiveTimeout = $remaining
                 $peer = [Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)
                 $response = $udp.Receive([ref]$peer)
                 $eof = $true
+                if ($budget.ElapsedMilliseconds -ge 10000) { $timedOut = $true; throw [TimeoutException]::New('UDP receive returned after the budget') }
                 Write-JsonLine $Path @{ event = 'case_application_exchange'; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; application = $Kind; protocol = 'udp'; src = $local; dst = "$CaseHost`:$Port"; actual_dst = $remote; peer = $peer.ToString(); pid = $PID; request_b64 = [Convert]::ToBase64String($request); response_b64 = [Convert]::ToBase64String($response); response_octets = $response.Length; eof = $true; timed_out = $false; truncated = $false; exchange_budget_seconds = 10; send_before_ticks = $sendBefore; send_after_ticks = $sendAfter; receive_after_ticks = [ScenarioProbeClock]::UtcTicks(); exchange_started_mono = $startedMono; exchange_finished_mono = [Diagnostics.Stopwatch]::GetTimestamp(); stopwatch_frequency = $frequency }
                 $recorded = $true
                 return
@@ -377,46 +399,41 @@ function Invoke-ApplicationCase([string]$Kind, [string]$CaseHost, [int]$Port, [s
             $attemptLocal = $client.Client.LocalEndPoint.ToString()
             Write-JsonLine $Path @{ event = 'case_connect_attempt'; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; src = $attemptLocal; dst = "$CaseHost`:$Port"; protocol = 'tcp'; application = $Kind }
             $remaining = [int](10000 - $budget.ElapsedMilliseconds)
-            if ($remaining -le 0) { throw [TimeoutException]::new('application budget exhausted before connect') }
-            $async = $client.BeginConnect($CaseHost, $Port, $null, $null)
-            if (-not $async.AsyncWaitHandle.WaitOne($remaining)) { throw [TimeoutException]::New('application case connect exceeded remaining budget') }
-            if ($budget.ElapsedMilliseconds -ge 10000) { throw [TimeoutException]::New('application connect finished after the budget') }
-            $client.EndConnect($async)
+            if ($remaining -le 0) { $timedOut = $true; throw [TimeoutException]::New('application budget exhausted before connect') }
+            $async = $client.BeginConnect([Net.IPAddress]::Parse($CaseHost), $Port, $null, $null)
+            try {
+                if (-not $async.AsyncWaitHandle.WaitOne($remaining)) { $timedOut = $true; throw [TimeoutException]::New('application case connect exceeded the remaining budget') }
+                $client.EndConnect($async)
+            } finally {
+                $async.AsyncWaitHandle.Close()
+            }
+            if ($budget.ElapsedMilliseconds -ge 10000) { $timedOut = $true; throw [TimeoutException]::New('application connect returned after the budget') }
             $local = $client.Client.LocalEndPoint.ToString()
             $remote = $client.Client.RemoteEndPoint.ToString()
             Write-JsonLine $Path @{ event = 'case_established'; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; src = $local; dst = "$CaseHost`:$Port"; actual_dst = $remote; protocol = 'tcp'; application = $Kind }
             $stream = $client.GetStream()
+            $remaining = [int](10000 - $budget.ElapsedMilliseconds)
+            if ($remaining -le 0) { $timedOut = $true; throw [TimeoutException]::New('application budget exhausted before write') }
+            $stream.WriteTimeout = $remaining
             $sendBefore = [ScenarioProbeClock]::UtcTicks()
             $stream.Write($request, 0, $request.Length); $stream.Flush()
             $sendAfter = [ScenarioProbeClock]::UtcTicks()
+            if ($budget.ElapsedMilliseconds -ge 10000) { $timedOut = $true; throw [TimeoutException]::New('application write returned after the budget') }
             $requestEvent = if ($Kind -eq 'http-tcp') { 'case_request_sent' } else { 'case_send' }
             Write-JsonLine $Path @{ event = $requestEvent; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; bytes = $request.Length; byte_count = $request.Length; cadence_ms = 0; application = $Kind; send_before_ticks = $sendBefore; send_after_ticks = $sendAfter }
             $frameTarget = $request.Length
             if ($Kind -eq 'http-tcp') { $frameTarget = 0 }
             $received = Read-TcpResponse $stream $client $budget $frameTarget
             $response = $received.data
+            $octets = $received.octets
             $eof = [bool]$received.eof; $timedOut = [bool]$received.timed_out; $truncated = [bool]$received.truncated
-            if ($Kind -eq 'http-tcp') {
-                # The frame target needs the head first; keep reading within
-                # the same shared budget until the declared body is complete.
-                while (-not $timedOut -and -not $eof) {
-                    $target2 = Get-HttpFrameTarget $response $received.octets
-                    if ($target2 -gt 0 -and $received.octets -ge $target2) { break }
-                    $more = Read-TcpResponse $stream $client $budget $target2
-                    if ($more.octets -eq 0) { $eof = [bool]$more.eof; $timedOut = [bool]$more.timed_out; $truncated = [bool]($truncated -or $more.truncated); break }
-                    $merged = New-Object byte[] ($received.octets + $more.octets)
-                    [Array]::Copy($received.data, 0, $merged, 0, $received.octets)
-                    [Array]::Copy($more.data, 0, $merged, $received.octets, $more.octets)
-                    $received = @{ data = $merged; octets = $merged.Length; eof = $more.eof; timed_out = $more.timed_out; truncated = ($truncated -or $more.truncated) }
-                    $response = $merged
-                    $eof = [bool]$received.eof; $timedOut = [bool]$received.timed_out; $truncated = [bool]$received.truncated
-                    $target2 = Get-HttpFrameTarget $response $received.octets
-                    if ($target2 -gt 0 -and $received.octets -ge $target2) { break }
-                }
+            if ($received.error) {
+                $failure = [InvalidDataException]::New("application $Kind protocol terminal: $($received.error)")
+                throw $failure
             }
             if ($timedOut) { throw [TimeoutException]::New("application $Kind response exceeded the shared 10 second budget") }
             if ($truncated) { throw [InvalidDataException]::New("application $Kind response exceeded the 64 KiB cap") }
-            Write-JsonLine $Path @{ event = 'case_application_exchange'; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; application = $Kind; protocol = 'tcp'; src = $local; dst = "$CaseHost`:$Port"; actual_dst = $remote; peer = $remote; pid = $PID; request_b64 = [Convert]::ToBase64String($request); response_b64 = [Convert]::ToBase64String($response); response_octets = $received.octets; eof = [bool]$eof; timed_out = [bool]$timedOut; truncated = [bool]$truncated; exchange_budget_seconds = 10; send_before_ticks = $sendBefore; send_after_ticks = $sendAfter; receive_after_ticks = [ScenarioProbeClock]::UtcTicks(); exchange_started_mono = $startedMono; exchange_finished_mono = [Diagnostics.Stopwatch]::GetTimestamp(); stopwatch_frequency = $frequency }
+            Write-JsonLine $Path @{ event = 'case_application_exchange'; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; application = $Kind; protocol = 'tcp'; src = $local; dst = "$CaseHost`:$Port"; actual_dst = $remote; peer = $remote; pid = $PID; request_b64 = [Convert]::ToBase64String($request); response_b64 = [Convert]::ToBase64String($response); response_octets = $octets; eof = [bool]$eof; timed_out = [bool]$timedOut; truncated = [bool]$truncated; exchange_budget_seconds = 10; send_before_ticks = $sendBefore; send_after_ticks = $sendAfter; receive_after_ticks = [ScenarioProbeClock]::UtcTicks(); exchange_started_mono = $startedMono; exchange_finished_mono = [Diagnostics.Stopwatch]::GetTimestamp(); stopwatch_frequency = $frequency }
             $recorded = $true
         } finally { $client.Dispose() }
     } finally {
@@ -425,7 +442,8 @@ function Invoke-ApplicationCase([string]$Kind, [string]$CaseHost, [int]$Port, [s
             # of the record; the thrown error still reaches case_error.
             $partial = if ($null -ne $response) { [Convert]::ToBase64String($response) } else { '' }
             $partialOctets = if ($null -ne $response) { $response.Length } else { 0 }
-            Write-JsonLine $Path @{ event = 'case_application_exchange'; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; application = $Kind; protocol = $protocol; src = $local; dst = "$CaseHost`:$Port"; actual_dst = $remote; pid = $PID; request_b64 = [Convert]::ToBase64String($request); response_b64 = $partial; response_octets = $partialOctets; eof = [bool]$eof; timed_out = [bool]$timedOut; truncated = [bool]$truncated; exchange_budget_seconds = 10; send_before_ticks = $sendBefore; send_after_ticks = $sendAfter; receive_after_ticks = [ScenarioProbeClock]::UtcTicks(); exchange_started_mono = $startedMono; exchange_finished_mono = [Diagnostics.Stopwatch]::GetTimestamp(); stopwatch_frequency = $frequency; error_terminal = $true }
+            $errorMessage = if ($null -ne $failure) { $failure.Message } else { 'application case failed before a complete exchange' }
+            Write-JsonLine $Path @{ event = 'case_application_exchange'; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; application = $Kind; protocol = $protocol; src = $local; dst = "$CaseHost`:$Port"; actual_dst = $remote; pid = $PID; request_b64 = [Convert]::ToBase64String($request); response_b64 = $partial; response_octets = $partialOctets; eof = [bool]$eof; timed_out = [bool]$timedOut; truncated = [bool]$truncated; exchange_budget_seconds = 10; send_before_ticks = $sendBefore; send_after_ticks = $sendAfter; receive_after_ticks = [ScenarioProbeClock]::UtcTicks(); exchange_started_mono = $startedMono; exchange_finished_mono = [Diagnostics.Stopwatch]::GetTimestamp(); stopwatch_frequency = $frequency; error_terminal = $true; error_message = $errorMessage }
         }
     }
 }

@@ -240,6 +240,9 @@ def validate_exchange_record(row, first, payload_row, close_row, planned,
                  % (row.get('peer'), expected_peer))
     if row.get('timed_out') is not False or row.get('truncated') is not False:
         fail('timeout/truncation flags must be explicit false')
+    if row.get('error_terminal'):
+        # A protocol or budget terminal cannot be covered by complete bytes.
+        fail('exchange carries an error terminal')
     if not isinstance(row.get('eof'), bool):
         fail('eof terminal must be an explicit boolean')
     request = unb64(row.get('request_b64', ''))

@@ -546,3 +546,9 @@ def test_r02_run1_response_transplanted_into_run2_rejected(tmp_path, kind):
         if record['path'] == 'probe.jsonl':
             record.update(size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
     assert not oracle(runner2, run2, profile2)['passed']
+
+
+@pytest.mark.parametrize('kind', ALL_KINDS)
+def test_r03_exchange_error_terminal_with_bytes_rejected(tmp_path, kind):
+    assert not _tamper_exchange(tmp_path, kind, error_terminal=True,
+                                error_message='late protocol failure')['passed']
