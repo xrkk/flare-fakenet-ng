@@ -345,7 +345,6 @@ function Invoke-PositiveCurl([string]$Path, [string]$Token) {
 function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]$Stop, [string]$Start, [int]$Seconds, [string]$Tempo, [string]$Variant, [string]$Interleave, [int]$Cadence, [string]$TargetHost, [int]$TargetPort, [string]$TargetProtocol, [string]$ProcessMode, [string]$TlsServerName, [string]$FnprRole, [string]$AdditionalTargetsJson, [string]$CaseFile, [int]$StartupRetrySeconds) {
     Ensure-Output $Path
     $endpoint = Get-Endpoint $Bucket $TargetHost $TargetPort $TargetProtocol
-    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
     $sequence = 0
     # These axes change packet timing/lifetime, not merely manifest labels.
     $cadenceMs = $Cadence
@@ -366,6 +365,9 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
     if ($Interleave -eq 'during-start') {
         Wait-EngineReadiness -Path $Path -Token $Token -Bucket $Bucket -ProcessMode $ProcessMode -BudgetSeconds $StartupRetrySeconds -LauncherStartUtc ([Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime() + [TimeSpan]::FromSeconds(-2))
     }
+    # Startup/release waiting has its own bounded budgets. The traffic
+    # window starts only when this probe is allowed and ready to connect.
+    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
     $casesInvoked = [ref]$false
     $curlInvoked = [ref]$false
     function Invoke-ReleasedCases {
