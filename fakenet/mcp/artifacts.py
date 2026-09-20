@@ -264,10 +264,15 @@ class ArtifactRegistry:
         window = []  # [(row facts, future, Path)] in submission order
         try:
             while True:
-                while (len(window) < HASH_WORKER_LIMIT and index < total
-                       and (deadline is None or time.monotonic() < deadline)):
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError('artifact enumeration deadline exceeded')
+                while len(window) < HASH_WORKER_LIMIT and index < total:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise TimeoutError('artifact enumeration deadline exceeded')
                     path, entry = ordered[index]
                     context = self._row_context(path, entry, publications)
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise TimeoutError('artifact enumeration deadline exceeded')
                     future = executor.submit(
                         _completion_from_entry, path, context[3], deadline)
                     window.append((context, future, path))

@@ -276,3 +276,18 @@ def test_small_collection_stays_serial(tmp_path, monkeypatch):
     rows = artifacts.ArtifactRegistry(tmp_path).metadata()
     assert len(rows) == artifacts.SERIAL_FILE_THRESHOLD - 1
     assert calls and len(set(calls)) == 1  # one thread, no pool startup
+
+
+def test_deadline_before_pool_submission_never_returns_empty_success(tmp_path, monkeypatch):
+    _build(tmp_path)
+    registry = artifacts.ArtifactRegistry(tmp_path)
+    real_pool = registry._metadata_bounded
+
+    def expired_pool(ordered, publications, deadline):
+        monkeypatch.setattr(artifacts.time, 'monotonic', lambda: 2.0)
+        return real_pool(ordered, publications, deadline)
+
+    monkeypatch.setattr(artifacts.time, 'monotonic', lambda: 0.0)
+    monkeypatch.setattr(registry, '_metadata_bounded', expired_pool)
+    with pytest.raises(TimeoutError):
+        registry.metadata(deadline=1.0)
