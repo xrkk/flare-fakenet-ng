@@ -51,6 +51,12 @@ class PoolProbe:
         probe = self
 
         def gated_completion(path, entry, deadline=None):
+            # Deterministic scheduling lag on the fourth worker: it enters
+            # late (short sleep BEFORE its entry is counted), proving the
+            # test's synchronization waits for real execution rather than
+            # asserting on the submission instant.
+            if str(path).endswith('f-003.log'):
+                time.sleep(0.25)
             with probe.lock:
                 probe.active += 1
                 probe.entered += 1
@@ -76,10 +82,25 @@ class PoolProbe:
                             counting_context)
 
     def wait_contexts(self, expected, timeout=10.0):
+        return self.wait_until(lambda: self.contexts_built >= expected, timeout)
+
+    def wait_entered(self, expected, timeout=10.0):
+        """Bounded wait for real worker entries.
+
+        Submission (contexts_built, main thread) legitimately precedes
+        execution (entered, worker threads) by a scheduling gap; asserting
+        entered == limit the instant contexts hit the limit raced Wine's
+        slower thread startup (build-05 attempt 2: 3 == 4).  The wait keeps
+        the assertion strict - the workers must genuinely enter - while
+        tolerating that gap deterministically.
+        """
+        return self.wait_until(lambda: self.entered >= expected, timeout)
+
+    def wait_until(self, predicate, timeout=10.0):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with self.lock:
-                if self.contexts_built >= expected:
+                if predicate():
                     return True
             time.sleep(0.01)
         return False
@@ -119,6 +140,10 @@ def test_pool_window_bounded_and_consumption_drives_submission(tmp_path, monkeyp
         # unbounded pre-submitter (executor.map) would build all FILE_COUNT.
         assert probe.wait_contexts(artifacts.HASH_WORKER_LIMIT), \
             'submission window did not stop at the worker limit'
+        # Workers must genuinely enter (bounded wait across the legitimate
+        # submit-to-execute scheduling gap, incl. the f-003 lag above).
+        assert probe.wait_entered(artifacts.HASH_WORKER_LIMIT), \
+            'workers did not enter within the bounded wait'
         with probe.lock:
             assert probe.contexts_built == artifacts.HASH_WORKER_LIMIT
             assert probe.entered == artifacts.HASH_WORKER_LIMIT
