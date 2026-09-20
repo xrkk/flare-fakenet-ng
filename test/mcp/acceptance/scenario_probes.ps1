@@ -100,7 +100,7 @@ function Get-Endpoint([string]$Bucket, [string]$EndpointHost, [int]$Port, [strin
     }
 }
 
-function Wait-EngineReadiness([string]$Path, [string]$Token, [string]$Bucket, [string]$ProcessMode, [int]$BudgetSeconds, [datetime]$LauncherStartUtc) {
+function Wait-EngineReadiness([string]$Path, [string]$Token, [string]$Bucket, [string]$ProcessMode, [int]$BudgetSeconds, [datetime]$LauncherStartUtc, [string]$RunsRoot = 'C:\ProgramData\FakeNet-NG-MCP\artifacts\runs') {
     # A during-start probe released before the managed engine is armed
     # reaches the real internet (divert absent) and its one connection never
     # traverses the product (discovery100-109 sst-003). B3 additionally must
@@ -115,12 +115,25 @@ function Wait-EngineReadiness([string]$Path, [string]$Token, [string]$Bucket, [s
     # because it precedes the handle. B3 waits for the post-quiescence rule
     # line so the reviewed image launches only after the product accepts it.
     $isB3 = ($Bucket -eq 'B3' -and $ProcessMode -eq 'match')
-    $markerPattern = if ($isB3) { 'PROCESS_REDIRECT_RULE_READY' } else { 'EGRESS_CONTROL_READY|DOMAIN_TAKEOVER_READY' }
+    # The legacy default template never publishes the egress-control or
+    # domain-takeover readiness lines.  Its interception-active fact is the
+    # diverter's per-flow "requested TCP|UDP" record, logged from handle_pkt
+    # only after the packet was received and parsed (diverterbase.py ~1641),
+    # never as startup configuration output.  The anchor is as strict as the
+    # host oracle's _LEGACY_READY_RE: timestamped INFO Diverter line with a
+    # pid and a TCP or UDP request.  Only the default bucket may satisfy its
+    # wait with it; B1/B2/B4 keep their two ready markers and B3 match keeps
+    # the post-quiescence rule line.
+    $isLegacyDefault = ($Bucket -eq 'default')
+    $markerPattern = if ($isB3) { 'PROCESS_REDIRECT_RULE_READY' }
+                     elseif ($isLegacyDefault) { '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}\s+INFO Diverter \S+ \(\d+\) requested (TCP|UDP) ' }
+                     else { 'EGRESS_CONTROL_READY|DOMAIN_TAKEOVER_READY' }
     $deadline = [DateTime]::UtcNow.AddSeconds($BudgetSeconds)
     $observed = $null
     $matched = $null
+    $matchedLine = $null
     while ([DateTime]::UtcNow -lt $deadline) {
-        $runs = Get-ChildItem 'C:\ProgramData\FakeNet-NG-MCP\artifacts\runs' -Directory -ErrorAction SilentlyContinue |
+        $runs = Get-ChildItem -LiteralPath $RunsRoot -Directory -ErrorAction SilentlyContinue |
             Where-Object { $_.CreationTimeUtc -gt $LauncherStartUtc } |
             Sort-Object CreationTimeUtc -Descending | Select-Object -First 4
         foreach ($run in $runs) {
@@ -129,7 +142,9 @@ function Wait-EngineReadiness([string]$Path, [string]$Token, [string]$Bucket, [s
                 $hit = @(Select-String -LiteralPath $log -Pattern $markerPattern -ErrorAction SilentlyContinue | Select-Object -First 1)
                 if ($hit.Count) {
                     $observed = $run.Name
-                    if ($hit[0].Line -match '(EGRESS_CONTROL_READY|DOMAIN_TAKEOVER_READY|PROCESS_REDIRECT_RULE_READY)') { $matched = $Matches[1] }
+                    $matchedLine = $hit[0].Line
+                    if ($matchedLine -match '(EGRESS_CONTROL_READY|DOMAIN_TAKEOVER_READY|PROCESS_REDIRECT_RULE_READY)') { $matched = $Matches[1] }
+                    elseif ($matchedLine -match 'requested (TCP|UDP)') { $matched = 'LEGACY_REQUESTED_' + $Matches[1] }
                     break
                 }
             }
@@ -141,7 +156,7 @@ function Wait-EngineReadiness([string]$Path, [string]$Token, [string]$Bucket, [s
     # The marker can precede the last listener bind by a moment; a short
     # settle keeps the single connection attempt inside the served window.
     Start-Sleep -Milliseconds 1000
-    Write-JsonLine $Path @{ event = 'engine_ready_observed'; nonce = $Token; profile = $Bucket; process_mode = $ProcessMode; marker = $matched; run_id = $observed }
+    Write-JsonLine $Path @{ event = 'engine_ready_observed'; nonce = $Token; profile = $Bucket; process_mode = $ProcessMode; marker = $matched; marker_line = $matchedLine; run_id = $observed }
 }
 
 function Ensure-ProbeClient([string]$ResultPath) {
