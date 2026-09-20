@@ -512,9 +512,16 @@ class PidCommDest():
         when a foreign-destined packet was redirected to localhost or to an IP
         occupied by an adapter local to the system to be able to suppress
         output of these near-duplicates.
+
+        The transport protocol is part of the identity: the same PID and
+        destination over TCP and over UDP are two different requests and each
+        must get its own 'requested <PROTO>' line (candidate05-restart-01
+        sst-075: after 'requested TCP 198.51.100.77:1337' the same-process
+        UDP case to the same destination was silently suppressed).
         """
         return ((not prev) or (self.pid != prev.pid) or
-                (self.comm != prev.comm) or (self.port != prev.port) or
+                (self.comm != prev.comm) or (self.proto != prev.proto) or
+                (self.port != prev.port) or
                 ((self.ip != prev.ip) and (self.ip not in bound_ips)))
 
     def __str__(self):
