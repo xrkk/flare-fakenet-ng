@@ -329,11 +329,11 @@ function Read-TcpResponse([Net.Sockets.NetworkStream]$Stream, [Net.Sockets.TcpCl
             $remainingMs = [int](10000 - $Budget.ElapsedMilliseconds)
             if ($remainingMs -le 0) { $timedOut = $true; break }
             if (-not $Client.Client.Poll([Math]::Max($remainingMs, 1) * 1000, [Net.Sockets.SelectMode]::SelectRead)) { $timedOut = $true; break }
-            if ($Client.Available -eq 0) { $eof = $true; break }
+            if ($Client.Available -eq 0) { $eof = $true; $truncated = $true; break }
             $take = [Math]::Min([Math]::Min($buffer.Length, $Client.Available), 65536 - $octets)
             if ($take -le 0) { $truncated = $true; break }
             $read = $Stream.Read($buffer, 0, $take)
-            if ($read -le 0) { $eof = $true; break }
+            if ($read -le 0) { $eof = $true; $truncated = $true; break }
             for ($i = 0; $i -lt $read; $i++) { $chunks.Add($buffer[$i]) }
             $octets += $read
         }
@@ -428,14 +428,29 @@ function Invoke-ApplicationCase([string]$Kind, [string]$CaseHost, [int]$Port, [s
             $octets = $received.octets
             $eof = [bool]$received.eof; $timedOut = [bool]$received.timed_out; $truncated = [bool]$received.truncated
             if ($received.error) {
-                $failure = [InvalidDataException]::New("application $Kind protocol terminal: $($received.error)")
+                $failure = [IO.InvalidDataException]::New("application $Kind protocol terminal: $($received.error)")
                 throw $failure
             }
             if ($timedOut) { throw [TimeoutException]::New("application $Kind response exceeded the shared 10 second budget") }
-            if ($truncated) { throw [InvalidDataException]::New("application $Kind response exceeded the 64 KiB cap") }
+            if ($truncated) { throw [IO.InvalidDataException]::New("application $Kind response is incomplete at EOF or exceeds the 64 KiB cap") }
             Write-JsonLine $Path @{ event = 'case_application_exchange'; nonce = $Token; connection_id = $Connection; case_index = $Index; expectation = $Expectation; application = $Kind; protocol = 'tcp'; src = $local; dst = "$CaseHost`:$Port"; actual_dst = $remote; peer = $remote; pid = $PID; request_b64 = [Convert]::ToBase64String($request); response_b64 = [Convert]::ToBase64String($response); response_octets = $octets; eof = [bool]$eof; timed_out = [bool]$timedOut; truncated = [bool]$truncated; exchange_budget_seconds = 10; send_before_ticks = $sendBefore; send_after_ticks = $sendAfter; receive_after_ticks = [ScenarioProbeClock]::UtcTicks(); exchange_started_mono = $startedMono; exchange_finished_mono = [Diagnostics.Stopwatch]::GetTimestamp(); stopwatch_frequency = $frequency }
             $recorded = $true
         } finally { $client.Dispose() }
+    } catch {
+        $failure = $_.Exception
+        # PowerShell wraps socket exceptions; retain their actual timeout
+        # terminal instead of only reporting a generic application failure.
+        $cause = $failure
+        while ($null -ne $cause) {
+            if ($cause -is [TimeoutException] -or
+                ($cause -is [Net.Sockets.SocketException] -and
+                 $cause.SocketErrorCode -eq [Net.Sockets.SocketError]::TimedOut)) {
+                $timedOut = $true
+            }
+            $cause = $cause.InnerException
+        }
+        if ($budget.ElapsedMilliseconds -ge 10000) { $timedOut = $true }
+        throw
     } finally {
         if (-not $recorded) {
             # Failure evidence: the partial bytes and terminal flags are part
