@@ -202,10 +202,14 @@ def test_worker_error_joins_all_workers_before_raising(tmp_path, monkeypatch):
 
 
 def test_deadline_stop_submits_no_more_and_raises(tmp_path, monkeypatch):
-    _build(tmp_path)
+    directory, paths = _build(tmp_path)
     probe = PoolProbe()
-    for index in range(FILE_COUNT):
-        probe.gates['%s/run/f-%03d.log' % (tmp_path, index)] = threading.Event()
+    # Gate keys must be str(path) of the real files: on Windows str(Path)
+    # uses backslashes, and a forward-slash key never matches, leaving the
+    # gates open so the query finishes before the deadline trips (first seen
+    # as the Wine gate failure recorded in build-03).
+    for path in paths:
+        probe.gates[str(path)] = threading.Event()
     probe.install(monkeypatch)
     # The blocked consume cannot see the deadline, so release on a timer.
     timer = threading.Timer(0.5, probe.open_all)
