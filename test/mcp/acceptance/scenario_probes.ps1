@@ -48,15 +48,23 @@ public static class ScenarioProbeClock {
         long value; GetSystemTimePreciseAsFileTime(out value);
         return value + 504911232000000000L;
     }
+    public static long[] Sample() {
+        // Pair the clocks before returning to PowerShell. Formatting and
+        // dynamic dispatch must not sit between the two observations.
+        long utc = UtcTicks();
+        long mono = System.Diagnostics.Stopwatch.GetTimestamp();
+        return new long[] { utc, mono };
+    }
 }
 '@
 }
 
 function Write-JsonLine([string]$Path, [hashtable]$Value) {
-    $ticks = [ScenarioProbeClock]::UtcTicks()
+    $sample = [ScenarioProbeClock]::Sample()
+    $ticks = $sample[0]
     $Value.utc = [DateTime]::new($ticks, [DateTimeKind]::Utc).ToString('o')
     $Value.utc_ticks = $ticks
-    $Value.mono = [Diagnostics.Stopwatch]::GetTimestamp()
+    $Value.mono = $sample[1]
     if (-not $Value.ContainsKey('pid')) { $Value.pid = $PID }
     if (-not $Value.ContainsKey('worker')) { $Value.worker = 1 }
     if (-not $Value.ContainsKey('seq')) { $Value.seq = 0 }
