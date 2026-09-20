@@ -1603,11 +1603,11 @@ class Suite:
         # pktmon stop + status write) always completes its own cleanup; only
         # then do the nic/conversion/files steps run, each wrapped so a later
         # step cannot skip an earlier responsibility.
-        command = ("$ErrorActionPreference='Stop';" + clock_after +
+        command = ("$ErrorActionPreference='Stop';" +
                    "$coop=" + quote_ps(coop_cmd) + ";"
                    "$coopJson=& { Invoke-Expression $coop };"
                    "$coopValue=$coopJson|ConvertFrom-Json;"
-                   + nic_update + nic_write + conversion + nic_write +
+                   + clock_after + nic_update + nic_write + conversion + nic_write +
                    "@{coop=$coopValue}|ConvertTo-Json -Depth 6 -Compress")
         primary_error = None
         value = None

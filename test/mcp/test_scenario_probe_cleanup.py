@@ -214,6 +214,25 @@ class StopCleanupContractTests(unittest.TestCase):
         self.assertIn('identity-mismatch(new process not touched)', whole)
         self.assertIn('exit-status.json', whole)
 
+    def test_capture_end_clock_is_sampled_after_owned_capture_stop(self):
+        runner, _ = make_stop_runner(coop_value=self._coop('exited'))
+        commands = []
+        invoke = runner._vm_json
+
+        def record(command, timeout=180):
+            commands.append(command)
+            return invoke(command, timeout)
+
+        runner._vm_json = record
+        runner._stop_capture_and_probe(dict(CAPTURE))
+        command = commands[0]
+        # The synchronous helper stops pktmon. Sampling before it excludes
+        # the ETL flush interval from the independently captured clock window.
+        self.assertLess(command.index('$coopJson=& { Invoke-Expression $coop };'),
+                        command.index('$clockAfter=@{'))
+        self.assertLess(command.index('$clockAfter=@{'),
+                        command.index('-NotePropertyName clock_after'))
+
 
 class StartCleanupContractTests(unittest.TestCase):
     def setUp(self):
