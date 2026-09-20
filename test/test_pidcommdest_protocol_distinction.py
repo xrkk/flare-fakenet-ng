@@ -203,23 +203,25 @@ class ProtocolDistinctionTests(unittest.TestCase):
         self.assertIn('powershell.exe (3016) requested UDP 192.168.204.233:1337',
                       records)
 
-    def test_different_pid_and_destination_keep_behavior(self):
-        diverter = StubDiverter((3016, 'powershell.exe'))
-        other = FakePkt('TCP', '192.168.204.233', 51004, '203.0.113.9', 443)
-        records = run_packets(diverter, [tcp_pkt(), other])
-        self.assertEqual(len([r for r in records if 'requested' in r]), 2)
+    def test_independent_identity_changes_keep_behavior(self):
+        original = PidCommDest(3016, 'powershell.exe', 'TCP',
+                               '198.51.100.77', 1337)
+        for args in ((3017, 'powershell.exe', 'TCP', '198.51.100.77', 1337),
+                     (3016, 'other.exe', 'TCP', '198.51.100.77', 1337),
+                     (3016, 'powershell.exe', 'TCP', '203.0.113.9', 1337),
+                     (3016, 'powershell.exe', 'TCP', '198.51.100.77', 443)):
+            with self.subTest(args=args):
+                self.assertTrue(PidCommDest(*args).isDistinct(original, set()))
 
     def test_blacklist_still_logs_at_debug_not_info(self):
         diverter = StubDiverter((3016, 'powershell.exe'))
         with unittest.mock.patch.object(
                 diverter, 'isProcessBlackListed', return_value=(True, [], [])):
-            handler = CaptureHandler()
-            diverter.logger.addHandler(handler)
-            try:
+            with self.assertLogs(diverter.logger, level=logging.DEBUG) as logs:
                 diverter.handle_pkt(udp_pkt(), [], [])
-            finally:
-                diverter.logger.removeHandler(handler)
-        self.assertEqual(handler.records, [])
+        requested = [r for r in logs.records if 'requested UDP' in r.getMessage()]
+        self.assertEqual(len(requested), 1)
+        self.assertEqual(requested[0].levelno, logging.DEBUG)
 
 
 class PidCommDestUnitTests(unittest.TestCase):
