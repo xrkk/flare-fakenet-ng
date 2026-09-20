@@ -96,7 +96,17 @@ def test_legacy_requested_lines_stay_parseable_for_historical_originals():
     assert not default_re.match(NON_DEFAULT_LINES[2])
 
 
-def test_egress_boundary_prefers_explicit_marker_over_background_flow():
+def test_egress_boundary_policy_first_then_explicit_default_then_legacy():
+    # Policy boundary keeps first priority even when an explicit default
+    # marker or a background flow appears earlier in the same log.
+    all_three = (
+        '2026-09-21 02:05:28,860 INFO Diverter svchost.exe (3164) requested TCP 198.51.100.77:1337\n'
+        '2026-09-21 02:05:29,000 INFO FakeNet DEFAULT_INTERCEPTION_READY\n'
+        '2026-09-21 02:05:30,000 INFO Diverter EGRESS_CONTROL_READY\n')
+    assert suite.Suite._egress_ready_boundary(
+        all_three) == '2026-09-21 02:05:30.000'
+    # Without policy, the explicit default marker beats a later background
+    # flow regardless of order in the log.
     mixed = (
         '2026-09-21 02:05:28,860 INFO Diverter svchost.exe (3164) requested TCP 198.51.100.77:1337\n'
         '2026-09-21 02:06:10,000 INFO FakeNet DEFAULT_INTERCEPTION_READY\n')
@@ -107,7 +117,7 @@ def test_egress_boundary_prefers_explicit_marker_over_background_flow():
     assert suite.Suite._egress_ready_boundary(marker_first) == '2026-09-21 02:06:10.000'
     # Historical original with only a background flow still resolves.
     assert suite.Suite._egress_ready_boundary(LEGACY_LINES[0] + '\n') == '2026-09-20 18:28:34.293'
-    # Policy logs keep their own boundary untouched.
+    # Policy-only log keeps its own boundary untouched.
     policy = '2026-09-21 02:06:10,000 INFO Diverter EGRESS_CONTROL_READY\n'
     assert suite.Suite._egress_ready_boundary(policy) == '2026-09-21 02:06:10.000'
 

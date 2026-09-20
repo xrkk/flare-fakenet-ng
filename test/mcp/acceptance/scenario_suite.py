@@ -1884,11 +1884,15 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         before EGRESS_CONTROL_READY reached the NIC).
         """
         for line in run_log.splitlines():
-            match = cls._DEFAULT_READY_RE.match(line)
+            match = cls._EGRESS_READY_RE.match(line)
             if match:
                 return '%s.%s' % (match.group(1), match.group(2))
+        # Policy boundary semantics stay first-priority.  Without a policy
+        # marker, the product's explicit completion-of-startup line wins over
+        # any background flow, so the responsibility boundary never slides to
+        # a later first packet.
         for line in run_log.splitlines():
-            match = cls._EGRESS_READY_RE.match(line)
+            match = cls._DEFAULT_READY_RE.match(line)
             if match:
                 return '%s.%s' % (match.group(1), match.group(2))
         # Legacy templates never log EGRESS_CONTROL_READY; the diverter's
