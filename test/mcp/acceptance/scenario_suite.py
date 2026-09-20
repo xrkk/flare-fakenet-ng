@@ -1427,11 +1427,11 @@ class Suite:
             "$out=Join-Path $r 'probe.jsonl';$start=Join-Path $r 'probe.start';$cases=Join-Path $r 'probe.cases';$stop=Join-Path $r 'probe.stop';$script=" + quote_ps(script) + ";"
             "$encoded=" + quote_ps(encoded_child) + ";"
             "$stdout=Join-Path $r 'probe.stdout';$stderr=Join-Path $r 'probe.stderr';"
-            "$created=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=('powershell.exe -NoProfile -EncodedCommand '+$encoded);CurrentDirectory=$r};if($created.ReturnValue -ne 0){throw 'probe process creation failed'};$p=Get-Process -Id $created.ProcessId -ErrorAction Stop;"
+            "$created=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=('powershell.exe -NoProfile -EncodedCommand '+$encoded);CurrentDirectory=$r};if($created.ReturnValue -ne 0){throw 'probe process creation failed'};$p=Get-Process -Id $created.ProcessId -ErrorAction Stop;$launchPid=$p.Id;$launchCreation=$p.StartTime.ToUniversalTime().Ticks;"
             "$deadline=[DateTime]::UtcNow.AddSeconds(20);while(!(Test-Path $out) -and -not $p.HasExited -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 100};"
             "if(!(Test-Path $out) -or $p.HasExited){throw ('probe did not become ready: '+(Get-Content $stderr -Raw -ErrorAction SilentlyContinue))};"
             "$ready=Get-Content $out -TotalCount 1|ConvertFrom-Json;if($ready.event -ne 'ready' -or [int]$ready.pid -ne $p.Id -or [long]$ready.creation_ticks -ne $p.StartTime.ToUniversalTime().Ticks){throw 'probe ready identity mismatch'};"
-            "@{guest=$r;run_label=" + quote_ps(run_label) + ";pid=$p.Id;etl=$etl;probe=$out;start=$start;case=$cases;stop=$stop;pktmon_nic=$nic;probe_creation_ticks=$ready.creation_ticks;stdout=$stdout;stderr=$stderr;capture_scope='all-components';tempo=" + quote_ps(profile['tempo']) + ";cadence_ms=" + str(int(profile['cadence_ms'])) + ";startup_retry_seconds=" + str(int(profile.get('startup_retry_seconds', 70))) + ";variant=" + quote_ps(profile['variant']) + ";probe_target=" + quote_ps(json.dumps(profile['probe_target'], separators=(',', ':'))) + ";interleave=" + quote_ps(profile['interleave']) + ";started=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress}catch{$failure=[string]$_;$cleanup=@();$coop='not-attempted';$startedTicks=$null;if($p){$startedTicks=$p.StartTime.ToUniversalTime().Ticks};if($stop){try{if(-not (Test-Path $stop)){[IO.File]::WriteAllText($stop,'stop',[Text.UTF8Encoding]::new($false))};$coop='requested';if($p){$deadline=[DateTime]::UtcNow.AddSeconds(30);while(-not $p.HasExited -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 200};if($p.HasExited){$coop='exited'}else{$coop='timeout'}}}catch{$coop='stopfile-error: '+[string]$_}};if($captureStarted){try{$captureStop=(& pktmon stop|Out-String);if($LASTEXITCODE -ne 0){$cleanup+='pktmon stop failed'}}catch{$cleanup+='pktmon stop error: '+[string]$_}};@{startup_failed=$true;error=$failure;cleanup_errors=$cleanup;capture_started=$captureStarted;guest=$r;cooperative_exit=$coop;probe_pid=$created.ProcessId;probe_creation_ticks=$startedTicks}|ConvertTo-Json -Compress}")
+            "@{guest=$r;run_label=" + quote_ps(run_label) + ";pid=$p.Id;etl=$etl;probe=$out;start=$start;case=$cases;stop=$stop;pktmon_nic=$nic;probe_creation_ticks=$ready.creation_ticks;stdout=$stdout;stderr=$stderr;capture_scope='all-components';tempo=" + quote_ps(profile['tempo']) + ";cadence_ms=" + str(int(profile['cadence_ms'])) + ";startup_retry_seconds=" + str(int(profile.get('startup_retry_seconds', 70))) + ";variant=" + quote_ps(profile['variant']) + ";probe_target=" + quote_ps(json.dumps(profile['probe_target'], separators=(',', ':'))) + ";interleave=" + quote_ps(profile['interleave']) + ";started=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress}catch{$failure=[string]$_;$cleanup=@();$coop=$null;$err2=@();$launchPidOut=$launchPid;$launchCreationOut=$launchCreation;if($stop){try{if(-not (Test-Path $stop)){[IO.File]::WriteAllText($stop,'stop',[Text.UTF8Encoding]::new($false))}}catch{$err2+=('stopfile: '+[string]$_)}};$procInfo=$null;try{$procInfo=Get-Process -Id $launchPidOut -ErrorAction SilentlyContinue}catch{$err2+=('query: '+[string]$_)};if($null -eq $procInfo){$coop='exited'}elseif(-not $launchCreationOut -or $launchCreationOut -le 0){$coop='identity-unknown';$err2+=('identity-unknown: no launch creation recorded')}elseif($procInfo.StartTime.ToUniversalTime().Ticks -ne $launchCreationOut){$coop='identity-mismatch(new process not touched)'}else{try{$deadline=[DateTime]::UtcNow.AddSeconds(30);while(-not $procInfo.HasExited -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 200};if($procInfo.HasExited){$coop='exited'}else{$coop='timeout'}}catch{$err2+=('wait: '+[string]$_);if(-not $coop){$coop='wait-error'}}};if($captureStarted){try{$captureStop=(& pktmon stop|Out-String);if($LASTEXITCODE -ne 0){$cleanup+='pktmon stop exit '+$LASTEXITCODE}}catch{$cleanup+='pktmon stop error: '+[string]$_}}else{$cleanup+='pktmon not started; no capture cleanup owed'};@{startup_failed=$true;error=$failure;cleanup_errors=$cleanup;cooperative_errors=$err2;capture_started=$captureStarted;guest=$r;cooperative_exit=$coop;probe_pid=$launchPidOut;probe_creation_ticks=$launchCreationOut}|ConvertTo-Json -Compress}")
         kernel = self._start_kernel_capture(run_root)
         try:
             value, raw = self._vm_json(command, 60)
@@ -1445,6 +1445,52 @@ class Suite:
             raise
         value['raw'] = raw
         value['kernel_capture'] = kernel
+        return value
+
+    def _probe_cooperative_cleanup_command(self, pid, creation_ticks, stop_path,
+                                            status_path, pktmon_stop_command,
+                                            wait_seconds=30):
+        """Production command body for bounded cooperative probe cleanup.
+
+        Identity-bound (pid + creation ticks captured at launch): PID reuse is
+        recorded, never acted on; a missing identity fails closed as
+        identity-unknown without waiting on or touching any process.  Every
+        failure is collected separately, the owned pktmon cleanup always runs
+        (in a finally), and the outcome JSON (with error list) is written to
+        status_path and echoed on stdout so Python can fail the call.  Only
+        the probe's own stop file is written; no process is ever killed.
+        """
+        return (
+            "$ErrorActionPreference='Continue';"
+            "$outcome=@{pid=" + str(int(pid)) + ";creation_ticks=" + str(int(creation_ticks or 0)) + ";cooperative_exit=$null;errors=@()}\n"
+            "try{if(-not (Test-Path " + quote_ps(stop_path) + ")){[IO.File]::WriteAllText(" + quote_ps(stop_path) + ",'stop')}}catch{$outcome.errors+=('stopfile: '+[string]$_)}\n"
+            "$p=$null;try{$p=Get-Process -Id " + str(int(pid)) + " -ErrorAction SilentlyContinue}catch{$outcome.errors+=('query: '+[string]$_)}\n"
+            "$expected=" + str(int(creation_ticks or 0)) + ";\n"
+            "if($null -eq $p){$outcome.cooperative_exit='exited'}\n"
+            "elseif($expected -le 0){$outcome.cooperative_exit='identity-unknown';$outcome.errors+=('identity-unknown: pid '+(" + str(int(pid)) + ")+' has no recorded creation')}\n"
+            "elseif($p.StartTime.ToUniversalTime().Ticks -ne $expected){$outcome.cooperative_exit='identity-mismatch(new process not touched)'}\n"
+            "else{try{$deadline=[DateTime]::UtcNow.AddSeconds(" + str(int(wait_seconds)) + ");while(-not $p.HasExited -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 200};if($p.HasExited){$outcome.cooperative_exit='exited'}else{$outcome.cooperative_exit='timeout'}}catch{$outcome.errors+=('wait: '+[string]$_);if(-not $outcome.cooperative_exit){$outcome.cooperative_exit='wait-error'}}}\n"
+            "try{$outcome.pktmon_stop=(& " + pktmon_stop_command + " 2>&1 | Out-String);$outcome.pktmon_exit=$LASTEXITCODE;if($LASTEXITCODE -ne 0){$outcome.errors+=('pktmon stop exit '+$LASTEXITCODE)}}catch{$outcome.pktmon_exit=-1;$outcome.errors+=('pktmon: '+[string]$_)}\n"
+            "try{$prevEap=$ErrorActionPreference;$ErrorActionPreference='Stop';$outcome|ConvertTo-Json -Depth 4 -Compress|Set-Content -LiteralPath " + quote_ps(status_path) + " -Encoding UTF8}catch{$outcome.errors+=('status-write: '+[string]$_)}finally{if($prevEap){$ErrorActionPreference=$prevEap}}\n"
+            "$outcome|ConvertTo-Json -Depth 4 -Compress")
+
+    def _fail_closed_cooperative(self, value, capture_label):
+        """Fail the call unless cooperative cleanup provably closed the probe.
+
+        timeout, stopfile errors, identity-unknown/mismatch and any cleanup
+        error are responsibilities, not successes; the original failure is
+        never masked by a cleanup error.
+        """
+        if not isinstance(value, dict):
+            raise SuiteError('cooperative cleanup returned no structure: %r (%s)' % (value, capture_label))
+        status = value.get('cooperative_exit')
+        errors = value.get('errors') or []
+        if status != 'exited':
+            raise SuiteError('probe did not cooperatively exit (status=%r errors=%r pid=%r creation=%r stop=%r)'
+                             % (status, errors, value.get('pid'), value.get('creation_ticks'), capture_label))
+        if errors:
+            raise SuiteError('cooperative cleanup closed with errors (errors=%r pid=%r creation=%r stop=%r)'
+                             % (errors, value.get('pid'), value.get('creation_ticks'), capture_label))
         return value
 
     def _release_probe(self, capture: dict[str, Any], phase: str) -> dict[str, Any]:
@@ -1512,47 +1558,85 @@ class Suite:
             run['case_completion'] = self._await_probe_cases(capture, profile, len(cases))
 
     def _stop_capture_and_probe(self, capture: dict[str, Any]) -> dict[str, Any]:
+        """Cooperatively stop THIS probe, then stop the owned captures.
+
+        The probe stop runs through the shared cooperative helper: the stop
+        file write, the identity-bound bounded wait, the owned pktmon stop
+        and the status write all live in one guarded body whose JSON outcome
+        fails this call closed on timeout / stopfile error / identity
+        unknown / cleanup errors.  A probe that provably exited stays a
+        success; a reused PID is recorded, never waited on or touched.
+        """
         assert self.vm
-        command = (
-            "$ErrorActionPreference='Stop';if(!(Test-Path " + quote_ps(capture['stop']) + ")){[IO.File]::WriteAllText(" + quote_ps(capture['stop']) + ", 'stop')};"
-            # Cooperative exit only: wait for THIS probe (pid + creation_ticks
-            # identity) for a bounded 30s after requesting its stop file.  No
-            # Stop-Process/Terminate/kill fallback exists on any path; a PID
-            # reused by another process is recorded, never acted on.
-            "$expectedCreation=" + str(int(capture.get('probe_creation_ticks') or 0)) + ";"
-            "$p=Get-Process -Id " + str(int(capture['pid'])) + " -ErrorAction SilentlyContinue;"
-            "$probeExit='absent';"
-            "if($p -and $expectedCreation -gt 0 -and $p.StartTime.ToUniversalTime().Ticks -ne $expectedCreation){$probeExit='identity-mismatch(new process not touched)'}"
-            "elseif($p){$deadline=[DateTime]::UtcNow.AddSeconds(30);while(-not $p.HasExited -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 200};if($p.HasExited){$probeExit='exited'}else{$probeExit='timeout'}}"
-            "elseif($p -eq $null){$probeExit='exited-before-check'};"
-            "$probeExit|Set-Content -LiteralPath " + quote_ps(str(Path(capture['probe']).with_name('probe-exit-status.txt') if False else capture['probe'] + '.exit-status')) + " -Encoding UTF8;"
-            "& pktmon stop | Out-Null;if($LASTEXITCODE -ne 0){throw 'pktmon stop failed'};$clockAfter=@{utc_ticks=[DateTime]::UtcNow.Ticks;mono=[Diagnostics.Stopwatch]::GetTimestamp();stopwatch_frequency=[Diagnostics.Stopwatch]::Frequency;offset_minutes=[int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalMinutes;utc=[DateTime]::UtcNow.ToString('o')};$after=(& pktmon counters|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon counters after stop failed'};$status=(& pktmon status|Out-String);"
-            "$nic=Get-Content -LiteralPath " + quote_ps(capture['pktmon_nic']) + " -Raw|ConvertFrom-Json;$nic|Add-Member -NotePropertyName clock_after -NotePropertyValue $clockAfter -Force;$nic|Add-Member -NotePropertyName pktmon_counters_after -NotePropertyValue $after -Force;$nic|Add-Member -NotePropertyName pktmon_status_after -NotePropertyValue $status -Force;$nic|ConvertTo-Json -Depth 8|Set-Content -LiteralPath " + quote_ps(capture['pktmon_nic']) + " -Encoding UTF8;"
+        status_path = str(capture['probe']) + '.exit-status.json'
+        coop_cmd = self._probe_cooperative_cleanup_command(
+            capture['pid'], capture.get('probe_creation_ticks'), capture['stop'],
+            status_path, 'pktmon stop', wait_seconds=30)
+        clock_after = ("$clockAfter=@{utc_ticks=[DateTime]::UtcNow.Ticks;mono=[Diagnostics.Stopwatch]::GetTimestamp();"
+                       "stopwatch_frequency=[Diagnostics.Stopwatch]::Frequency;offset_minutes=[int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalMinutes;utc=[DateTime]::UtcNow.ToString('o')};")
+        nic_update = (
+            "$nic=Get-Content -LiteralPath " + quote_ps(capture['pktmon_nic']) + " -Raw|ConvertFrom-Json;"
+            "$nic|Add-Member -NotePropertyName clock_after -NotePropertyValue $clockAfter -Force;"
+            "$after=(& pktmon counters|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon counters after stop failed'};"
+            "$status=(& pktmon status|Out-String);"
+            "$nic|Add-Member -NotePropertyName pktmon_counters_after -NotePropertyValue $after -Force;"
+            "$nic|Add-Member -NotePropertyName pktmon_status_after -NotePropertyValue $status -Force;")
+        conversion = (
             "& pktmon etl2txt " + quote_ps(capture['etl']) +
             " --out " + quote_ps(str(capture['etl']).replace('.etl', '.txt')) + " | Out-Null;$conversionExit=$LASTEXITCODE;"
-            "$conversion=@{exit_code=$conversionExit;argv=@('pktmon','etl2txt'," + quote_ps(capture['etl']) + ",'--out'," + quote_ps(str(capture['etl']).replace('.etl', '.txt')) + ");etl_sha256=(Get-FileHash -LiteralPath " + quote_ps(capture['etl']) + " -Algorithm SHA256).Hash.ToLower();text_sha256=(Get-FileHash -LiteralPath " + quote_ps(str(capture['etl']).replace('.etl', '.txt')) + " -Algorithm SHA256).Hash.ToLower()};$nic|Add-Member -NotePropertyName conversion -NotePropertyValue $conversion -Force;$nic|ConvertTo-Json -Depth 8|Set-Content -LiteralPath " + quote_ps(capture['pktmon_nic']) + " -Encoding UTF8;"
+            "$conversion=@{exit_code=$conversionExit;argv=@('pktmon','etl2txt'," + quote_ps(capture['etl']) + ",'--out'," + quote_ps(str(capture['etl']).replace('.etl', '.txt')) + ");etl_sha256=(Get-FileHash -LiteralPath " + quote_ps(capture['etl']) + " -Algorithm SHA256).Hash.ToLower();text_sha256=(Get-FileHash -LiteralPath " + quote_ps(str(capture['etl']).replace('.etl', '.txt')) + " -Algorithm SHA256).Hash.ToLower()};"
+            "$nic|Add-Member -NotePropertyName conversion -NotePropertyValue $conversion -Force;")
+        nic_write = "$nic|ConvertTo-Json -Depth 8|Set-Content -LiteralPath " + quote_ps(capture['pktmon_nic']) + " -Encoding UTF8;"
+        files_list = (
             "$files=@(" + quote_ps(capture['probe']) + ',' + quote_ps(capture['etl']) + ',' +
-            quote_ps(str(capture['etl']).replace('.etl', '.txt')) + ',' + quote_ps(capture['pktmon_nic']) + ',' + quote_ps(capture['stdout']) + ',' + quote_ps(capture['stderr']) + ");"
+            quote_ps(str(capture['etl']).replace('.etl', '.txt')) + ',' + quote_ps(capture['pktmon_nic']) + ',' +
+            quote_ps(capture['stdout']) + ',' + quote_ps(capture['stderr']) + ',' + quote_ps(status_path) + ");"
             "$clientOut=" + quote_ps(str(PureWindowsPath(capture['probe']).parent / 'probe-client.stdout')) + ";"
             "if(Test-Path $clientOut){$files=@($files+$clientOut)};"
             "@{files=@($files|ForEach-Object {$i=Get-Item $_ -ErrorAction Stop;@{path=$i.FullName;bytes=$i.Length;sha256=(Get-FileHash $i.FullName -Algorithm SHA256).Hash.ToLower()}})}|ConvertTo-Json -Depth 4 -Compress")
+        # Guarded order: the cooperative body (stop file + bounded wait + owned
+        # pktmon stop + status write) always completes its own cleanup; only
+        # then do the nic/conversion/files steps run, each wrapped so a later
+        # step cannot skip an earlier responsibility.
+        command = ("$ErrorActionPreference='Stop';" + clock_after +
+                   "$coop=" + quote_ps(coop_cmd) + ";"
+                   "$coopJson=Invoke-Expression $coop;"
+                   "$coopValue=$coopJson|ConvertFrom-Json;"
+                   + nic_update + nic_write + conversion + nic_write + files_list +
+                   "@{coop=$coopValue;files=$filesValue}|ConvertTo-Json -Depth 6 -Compress")
+        # simpler: build files value inline (avoid nested $filesValue)
+        command = command.replace("@{coop=$coopValue;files=$filesValue}|ConvertTo-Json -Depth 6 -Compress",
+                                  "@{coop=$coopValue}|ConvertTo-Json -Depth 6 -Compress")
         primary_error = None
+        value = None
+        raw = None
         try:
-            value, raw = self._vm_json(command, 120)
-        except Exception as exc:
+            value, raw = self._vm_json(command, 180)
+            coop = value.get('coop') if isinstance(value, dict) else None
+            self._fail_closed_cooperative(coop, capture['stop'])
+        except Exception as exc:  # noqa: BLE001
             primary_error = exc
         try:
             kernel = self._stop_kernel_capture(capture['kernel_capture'])
         except Exception as secondary:
             if primary_error is not None:
-                raise SuiteError('packet capture stop failed: %r; kernel stop failed: %r' % (primary_error,secondary)) from primary_error
+                raise SuiteError('packet capture stop failed: %r; kernel stop failed: %r' % (primary_error, secondary)) from primary_error
             raise
         if primary_error is not None:
             raise primary_error
-        if not isinstance(value.get('files'), list):
+        # files export runs only after cooperative closure succeeded; its own
+        # failure is a new responsibility, raised after kernel cleanup.
+        try:
+            files_cmd = ("$ErrorActionPreference='Stop';" + files_list)
+            files_value, files_raw = self._vm_json(files_cmd, 120)
+        except Exception as exc:  # noqa: BLE001
+            raise SuiteError('capture file export failed after cleanup: %r' % (exc,))
+        if not isinstance(files_value.get('files'), list):
             raise SuiteError('capture metadata files not an array')
-        return {'files': value['files'] + kernel['files'], 'raw': raw,
-                'kernel_raw': kernel['raw'], 'run_label': capture['run_label']}
+        return {'files': files_value['files'] + kernel['files'], 'raw': raw,
+                'kernel_raw': kernel['raw'], 'run_label': capture['run_label'],
+                'cooperative_exit': value.get('coop', {}).get('cooperative_exit'),
+                'exit_status_path': status_path}
 
 
     def _transfer_guest_file(self, guest_path: str, size: int, sha256: str,

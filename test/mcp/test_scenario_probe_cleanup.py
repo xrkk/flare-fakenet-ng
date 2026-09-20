@@ -80,88 +80,157 @@ class StartCleanupTests(unittest.TestCase):
 
     def test_records_cooperative_status_and_identity(self):
         self.assertIn('cooperative_exit=$coop', self.catch)
-        self.assertIn('probe_pid=$created.ProcessId', self.catch)
-        self.assertIn('probe_creation_ticks=$startedTicks', self.catch)
+        self.assertIn('probe_pid=$launchPidOut', self.catch)
+        self.assertIn('probe_creation_ticks=$launchCreationOut', self.catch)
 
     def test_pktmon_cleanup_survives_probe_error(self):
         self.assertIn("if($captureStarted)", self.catch)
         self.assertIn('pktmon stop', self.catch)
 
 
-def build_stop_command():
+def make_stop_runner(coop_value=None, coop_exc=None, files_value=None, files_exc=None, kernel_exc=None, order=None):
     runner = suite.Suite.__new__(suite.Suite)
     runner.vm = object()
-    captured = {}
+    state = {'kernel_calls': 0}
 
     def fake_vm_json(command, timeout=120):
-        captured['cmd'] = command
-        value = {'files': [{'path': r'G:\r\probe.jsonl', 'bytes': 1, 'sha256': '0' * 64}]}
-        return value, {'output': 'ok'}
+        if order is not None:
+            order.append('vm:' + command[:40])
+        # the files export command starts with $files=@(; the MAIN stop
+        # command merely embeds the conversion section later on.
+        if '$files=@(' in command[:80]:
+            if files_exc:
+                raise files_exc
+            return (files_value or {'files': [{'path': r'G:\r\probe.jsonl', 'bytes': 1, 'sha256': '0' * 64}]}), {'output': 'ok'}
+        # main stop command
+        if coop_exc:
+            raise coop_exc
+        return {'coop': coop_value}, {'output': 'ok'}
+
+    def fake_kernel(capture):
+        state['kernel_calls'] += 1
+        if order is not None:
+            order.append('kernel')
+        if kernel_exc:
+            raise kernel_exc
+        return {'files': [], 'raw': 'ok'}
 
     runner._vm_json = fake_vm_json
-    runner._stop_kernel_capture = lambda capture: {'files': [], 'raw': 'ok'}
-    capture = {'run_label': 'run-01', 'stop': r'G:\r\probe.stop', 'pid': 777, 'probe': r'G:\r\probe.jsonl',
-               'probe_creation_ticks': 639000000000000000, 'etl': r'G:\r\pktmon.etl',
-               'pktmon_nic': r'G:\r\pktmon-nic.json', 'stdout': r'G:\r\probe.stdout',
-               'stderr': r'G:\r\probe.stderr', 'kernel_capture': {}}
-    value = runner._stop_capture_and_probe(capture)
-    assert value['files'], value
-    return captured['cmd']
+    runner._stop_kernel_capture = fake_kernel
+    return runner, state
 
 
-class StopCleanupTests(unittest.TestCase):
+CAPTURE = {'run_label': 'run-01', 'stop': r'G:\r\probe.stop', 'pid': 777,
+           'probe': r'G:\r\probe.jsonl', 'probe_creation_ticks': 639000000000000000,
+           'etl': r'G:\r\pktmon.etl', 'pktmon_nic': r'G:\r\pktmon-nic.json',
+           'stdout': r'G:\r\probe.stdout', 'stderr': r'G:\r\probe.stderr',
+           'kernel_capture': {}}
+
+
+class StopCleanupContractTests(unittest.TestCase):
+    """F1: timeout/identity-unknown/stopfile-error MUST fail closed; the
+    kernel cleanup still runs; both errors survive when both fail."""
+
+    def _coop(self, status, errors=None):
+        return {'pid': 777, 'creation_ticks': 639000000000000000,
+                'cooperative_exit': status, 'errors': errors or [],
+                'pktmon_exit': 0}
+
+    def test_success_returns_and_exports_status(self):
+        runner, state = make_stop_runner(coop_value=self._coop('exited'))
+        value = runner._stop_capture_and_probe(dict(CAPTURE))
+        self.assertEqual(value['cooperative_exit'], 'exited')
+        self.assertTrue(value['exit_status_path'].endswith('.exit-status.json'))
+        self.assertEqual(state['kernel_calls'], 1)
+        self.assertTrue(value['files'])
+
+    def test_timeout_fails_closed_and_kernel_still_runs(self):
+        runner, state = make_stop_runner(coop_value=self._coop('timeout'))
+        with self.assertRaises(suite.SuiteError) as ctx:
+            runner._stop_capture_and_probe(dict(CAPTURE))
+        self.assertIn('did not cooperatively exit', str(ctx.exception))
+        self.assertIn('timeout', str(ctx.exception))
+        self.assertEqual(state['kernel_calls'], 1)
+
+    def test_stopfile_error_fails_closed(self):
+        runner, state = make_stop_runner(coop_value=self._coop('wait-error', ['stopfile: denied']))
+        with self.assertRaises(suite.SuiteError):
+            runner._stop_capture_and_probe(dict(CAPTURE))
+        self.assertEqual(state['kernel_calls'], 1)
+
+    def test_identity_unknown_fails_closed_without_wait(self):
+        runner, state = make_stop_runner(coop_value=self._coop('identity-unknown'))
+        with self.assertRaises(suite.SuiteError) as ctx:
+            runner._stop_capture_and_probe(dict(CAPTURE))
+        self.assertIn('identity-unknown', str(ctx.exception))
+        self.assertEqual(state['kernel_calls'], 1)
+
+    def test_identity_mismatch_fails_closed(self):
+        runner, state = make_stop_runner(coop_value=self._coop('identity-mismatch(new process not touched)'))
+        with self.assertRaises(suite.SuiteError) as ctx:
+            runner._stop_capture_and_probe(dict(CAPTURE))
+        self.assertIn('identity-mismatch', str(ctx.exception))
+
+    def test_cleanup_errors_fail_even_after_exit(self):
+        runner, state = make_stop_runner(coop_value=self._coop('exited', ['pktmon stop exit 1']))
+        with self.assertRaises(suite.SuiteError) as ctx:
+            runner._stop_capture_and_probe(dict(CAPTURE))
+        self.assertIn('closed with errors', str(ctx.exception))
+        self.assertEqual(state['kernel_calls'], 1)
+
+    def test_dual_failure_preserves_both(self):
+        runner, state = make_stop_runner(coop_value=self._coop('timeout'),
+                                          kernel_exc=suite.SuiteError('kernel session stop failed'))
+        with self.assertRaises(suite.SuiteError) as ctx:
+            runner._stop_capture_and_probe(dict(CAPTURE))
+        self.assertIn('kernel stop failed', str(ctx.exception))
+        self.assertIn('did not cooperatively exit', str(ctx.exception))
+
+    def test_files_export_failure_raises_after_cleanup(self):
+        runner, state = make_stop_runner(coop_value=self._coop('exited'),
+                                          files_exc=suite.SuiteError('disk gone'))
+        with self.assertRaises(suite.SuiteError) as ctx:
+            runner._stop_capture_and_probe(dict(CAPTURE))
+        self.assertIn('file export failed', str(ctx.exception))
+        self.assertEqual(state['kernel_calls'], 1)
+
+    def test_no_forbidden_tokens_in_generated_body(self):
+        runner, _ = make_stop_runner(coop_value=self._coop('exited'))
+        cmd = {}
+
+        def cap(command, timeout=180):
+            if '$files=@(' in command[:80]:
+                return {'files': [{'path': r'G:\r\probe.jsonl', 'bytes': 1, 'sha256': '0' * 64}]}, {'output': 'ok'}
+            cmd['main'] = command
+            return {'coop': self._coop('exited')}, {'output': 'ok'}
+        runner._vm_json = cap
+        runner._stop_capture_and_probe(dict(CAPTURE))
+        whole = cmd['main']
+        self.assertIsNone(FORBIDDEN.search(whole), FORBIDDEN.search(whole))
+        self.assertIn('AddSeconds(30)', whole)
+        self.assertIn('identity-unknown', whole)
+        self.assertIn('identity-mismatch(new process not touched)', whole)
+        self.assertIn('exit-status.json', whole)
+
+
+class StartCleanupContractTests(unittest.TestCase):
     def setUp(self):
-        self.cmd = build_stop_command()
+        self.cmd = build_start_command()
+        self.catch = self.cmd[self.cmd.index('}catch{'):]
+
+    def test_launch_identity_saved_before_use(self):
+        self.assertIn('$launchPid=$p.Id;$launchCreation=$p.StartTime.ToUniversalTime().Ticks', self.cmd)
+
+    def test_catch_never_dereferences_exited_process(self):
+        self.assertNotIn('$p.HasExited', self.catch)
+        self.assertIn('Get-Process -Id $launchPidOut', self.catch)
+        self.assertIn('identity-unknown', self.catch)
 
     def test_no_forbidden_force_tokens(self):
-        whole = self.cmd
-        self.assertIsNone(FORBIDDEN.search(whole), FORBIDDEN.search(whole))
+        self.assertIsNone(FORBIDDEN.search(self.catch), FORBIDDEN.search(self.catch))
 
-    def test_identity_bound_wait(self):
-        self.assertIn('$expectedCreation=', self.cmd)
-        self.assertIn("StartTime.ToUniversalTime().Ticks -ne $expectedCreation", self.cmd)
-        self.assertIn("identity-mismatch(new process not touched)", self.cmd)
-
-    def test_bounded_wait_and_status_recorded(self):
-        self.assertIn('AddSeconds(30)', self.cmd)
-        self.assertIn("$probeExit='exited'", self.cmd)
-        self.assertIn("$probeExit='timeout'", self.cmd)
-        self.assertIn('exit-status', self.cmd)
-
-    def test_pktmon_stop_runs_after_probe_wait_regardless(self):
-        probe_block_end = self.cmd.index('& pktmon stop')
-        self.assertLess(self.cmd.index('$probeExit'), probe_block_end)
-
-    def test_kernel_cleanup_preserved_on_primary_error(self):
-        # The python wrapper still stops the kernel when pktmon stop throws.
-        runner = suite.Suite.__new__(suite.Suite)
-        runner.vm = object()
-        order = []
-
-        def failing_json(command, timeout=120):
-            order.append('primary')
-            raise suite.SuiteError('pktmon stop failed')
-
-        runner._vm_json = failing_json
-        runner._stop_kernel_capture = lambda capture: order.append('kernel') or {'files': [], 'raw': 'ok'}
-        capture = {'run_label': 'run-01', 'stop': r'G:\r\probe.stop', 'pid': 1, 'probe': r'G:\r\p.jsonl',
-                   'probe_creation_ticks': 1, 'etl': r'G:\r\e.etl', 'pktmon_nic': r'G:\r\n.json',
-                   'stdout': r'G:\r\o', 'stderr': r'G:\r\e', 'kernel_capture': {}}
-        with self.assertRaises(suite.SuiteError) as ctx:
-            runner._stop_capture_and_probe(capture)
-        self.assertEqual(order, ['primary', 'kernel'])
-        self.assertIn('pktmon stop failed', str(ctx.exception))
-        # when the kernel stop also fails, both errors are preserved
-        order.clear()
-
-        def failing_kernel(capture):
-            order.append('kernel')
-            raise suite.SuiteError('kernel session stop failed')
-        runner._stop_kernel_capture = failing_kernel
-        with self.assertRaises(suite.SuiteError) as ctx2:
-            runner._stop_capture_and_probe(capture)
-        self.assertEqual(order, ['primary', 'kernel'])
-        self.assertIn('kernel stop failed', str(ctx2.exception))
+    def test_pktmon_cleanup_independent_of_coop_result(self):
+        self.assertIn("if($captureStarted)", self.catch)
 
 
 if __name__ == '__main__':
