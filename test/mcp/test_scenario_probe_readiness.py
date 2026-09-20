@@ -52,18 +52,64 @@ NON_LEGACY_LINES = [
 ]
 
 
-def test_default_anchor_matches_production_legacy_semantics():
+DEFAULT_READY_LINES = [
+    '2026-09-21 02:04:38,308 INFO FakeNet DEFAULT_INTERCEPTION_READY',
+    '2026-09-21 02:04:38,308 INFO FakeNet DEFAULT_INTERCEPTION_READY extra',
+]
+
+NON_DEFAULT_LINES = [
+    # Background-flow shape: a real historical legacy line, but the new
+    # default probe must never fall back to it again.
+    '2026-09-20 18:28:34,293 INFO Diverter svchost.exe (3164) requested TCP 198.51.100.77:1337',
+    # Wrong level / logger / missing milliseconds / arbitrary prose.
+    '2026-09-21 02:04:38,308 DEBUG FakeNet DEFAULT_INTERCEPTION_READY',
+    '2026-09-21 02:04:38,308 INFO Diverter DEFAULT_INTERCEPTION_READY',
+    '2026-09-21 02:04:38 INFO FakeNet DEFAULT_INTERCEPTION_READY',
+    'configuration mentioned DEFAULT_INTERCEPTION_READY during load',
+]
+
+
+def test_default_anchor_matches_production_marker_semantics():
     pattern = marker_pattern_for('default')
     dotnet_to_python = pattern.replace('\\d', r'\d').replace('\\s', r'\s')
     regex = re.compile(dotnet_to_python)
-    # Direct semantic check: exactly the host oracle's accepted lines match,
-    # with the same anchors (line start timestamp, INFO Diverter, pid).
+    for line in DEFAULT_READY_LINES:
+        assert regex.search(line), line
+    for line in NON_DEFAULT_LINES:
+        assert not regex.search(line), line
+    # Background traffic can no longer release the default wait, and a
+    # policy marker never satisfies it either.
+    assert not regex.search('EGRESS_CONTROL_READY')
+
+
+def test_legacy_requested_lines_stay_parseable_for_historical_originals():
+    # Historical originals recorded readiness only as background flows; the
+    # host oracle keeps parsing them (compat only, new probes never wait on
+    # them). The suite boundary prefers the explicit new marker over them.
     host = suite.Suite._LEGACY_READY_RE
     for line in LEGACY_LINES:
-        assert regex.search(line), line
         assert host.match(line), line
     for line in NON_LEGACY_LINES:
-        assert not regex.search(line), line
+        assert not host.match(line), line
+    default_re = suite.Suite._DEFAULT_READY_RE
+    assert default_re.match(DEFAULT_READY_LINES[0])
+    assert not default_re.match(NON_DEFAULT_LINES[2])
+
+
+def test_egress_boundary_prefers_explicit_marker_over_background_flow():
+    mixed = (
+        '2026-09-21 02:05:28,860 INFO Diverter svchost.exe (3164) requested TCP 198.51.100.77:1337\n'
+        '2026-09-21 02:06:10,000 INFO FakeNet DEFAULT_INTERCEPTION_READY\n')
+    assert suite.Suite._egress_ready_boundary(mixed) == '2026-09-21 02:06:10.000'
+    marker_first = (
+        '2026-09-21 02:06:10,000 INFO FakeNet DEFAULT_INTERCEPTION_READY\n'
+        '2026-09-21 02:07:28,860 INFO Diverter svchost.exe (3164) requested TCP 198.51.100.77:1337\n')
+    assert suite.Suite._egress_ready_boundary(marker_first) == '2026-09-21 02:06:10.000'
+    # Historical original with only a background flow still resolves.
+    assert suite.Suite._egress_ready_boundary(LEGACY_LINES[0] + '\n') == '2026-09-20 18:28:34.293'
+    # Policy logs keep their own boundary untouched.
+    policy = '2026-09-21 02:06:10,000 INFO Diverter EGRESS_CONTROL_READY\n'
+    assert suite.Suite._egress_ready_boundary(policy) == '2026-09-21 02:06:10.000'
 
 
 def test_default_and_standard_buckets_keep_disjoint_markers():
@@ -76,11 +122,13 @@ def test_default_and_standard_buckets_keep_disjoint_markers():
     assert standard == b2 == b4 == 'EGRESS_CONTROL_READY|DOMAIN_TAKEOVER_READY'
     assert b3 == 'PROCESS_REDIRECT_RULE_READY'
     regex = re.compile(default.replace('\\d', r'\d').replace('\\s', r'\s'))
-    # A standard ready line never satisfies the default wait and vice versa.
+    # A standard ready line never satisfies the default wait and vice versa;
+    # the same holds for the legacy background-flow shape.
     assert not regex.search('EGRESS_CONTROL_READY')
     standard_re = re.compile(standard)
     for line in LEGACY_LINES:
         assert not standard_re.search(line)
+        assert not regex.search(line), line
 
 
 def test_production_function_carries_runs_root_seam_and_trace_fields():

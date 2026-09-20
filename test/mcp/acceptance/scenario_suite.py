@@ -1865,6 +1865,14 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
     _LEGACY_READY_RE = re.compile(
         r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3})\s+INFO Diverter '
         r'\S+ \(\d+\) requested (?:TCP|UDP) ')
+    # The product's own completion-of-startup marker (FakeNet.start after a
+    # clean legacy diverter.start()): preferred over both the policy marker
+    # family ordering below and the old background-flow fallback, so a mixed
+    # log resolves to the explicit new marker instead of the later first
+    # background packet.
+    _DEFAULT_READY_RE = re.compile(
+        r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3})\s+INFO FakeNet '
+        r'DEFAULT_INTERCEPTION_READY\b')
 
     @classmethod
     def _egress_ready_boundary(cls, run_log: str) -> str | None:
@@ -1876,11 +1884,17 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         before EGRESS_CONTROL_READY reached the NIC).
         """
         for line in run_log.splitlines():
+            match = cls._DEFAULT_READY_RE.match(line)
+            if match:
+                return '%s.%s' % (match.group(1), match.group(2))
+        for line in run_log.splitlines():
             match = cls._EGRESS_READY_RE.match(line)
             if match:
                 return '%s.%s' % (match.group(1), match.group(2))
         # Legacy templates never log EGRESS_CONTROL_READY; the diverter's
-        # first intercepted flow marker is the equivalent readiness point.
+        # first intercepted flow marker is the equivalent readiness point
+        # (historical originals only: current probes wait for the explicit
+        # DEFAULT_INTERCEPTION_READY marker instead of background traffic).
         for line in run_log.splitlines():
             match = cls._LEGACY_READY_RE.match(line)
             if match:

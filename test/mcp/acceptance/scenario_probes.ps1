@@ -116,17 +116,21 @@ function Wait-EngineReadiness([string]$Path, [string]$Token, [string]$Bucket, [s
     # line so the reviewed image launches only after the product accepts it.
     $isB3 = ($Bucket -eq 'B3' -and $ProcessMode -eq 'match')
     # The legacy default template never publishes the egress-control or
-    # domain-takeover readiness lines.  Its interception-active fact is the
-    # diverter's per-flow "requested TCP|UDP" record, logged from handle_pkt
-    # only after the packet was received and parsed (diverterbase.py ~1641),
-    # never as startup configuration output.  The anchor is as strict as the
-    # host oracle's _LEGACY_READY_RE: timestamped INFO Diverter line with a
-    # pid and a TCP or UDP request.  Only the default bucket may satisfy its
-    # wait with it; B1/B2/B4 keep their two ready markers and B3 match keeps
-    # the post-quiescence rule line.
+    # domain-takeover readiness lines.  Its interception-active fact used to
+    # be the diverter's per-flow "requested TCP|UDP" record, which only
+    # appears once some background packet actually arrives (candidate04-dns-01:
+    # released 02:04:13, first background flow 02:05:28 - a 75s wait that no
+    # quiet network can satisfy).  The product now logs the completion of
+    # initialization/startup itself: FakeNet.start emits one timestamped INFO
+    # FakeNet DEFAULT_INTERCEPTION_READY line after diverter.start() returns
+    # cleanly (WinDivert handle open + receiver running).  The default wait
+    # accepts ONLY that marker - never a background flow again.  B1/B2/B4
+    # keep their two ready markers and B3 match keeps the post-quiescence
+    # rule line.  Historical LEGACY_REQUESTED lines stay parseable by the
+    # host oracle for old originals, but a new probe never falls back to them.
     $isLegacyDefault = ($Bucket -eq 'default')
     $markerPattern = if ($isB3) { 'PROCESS_REDIRECT_RULE_READY' }
-                     elseif ($isLegacyDefault) { '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}\s+INFO Diverter \S+ \(\d+\) requested (TCP|UDP) ' }
+                     elseif ($isLegacyDefault) { '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}\s+INFO FakeNet DEFAULT_INTERCEPTION_READY\b' }
                      else { 'EGRESS_CONTROL_READY|DOMAIN_TAKEOVER_READY' }
     $deadline = [DateTime]::UtcNow.AddSeconds($BudgetSeconds)
     $observed = $null
@@ -144,6 +148,7 @@ function Wait-EngineReadiness([string]$Path, [string]$Token, [string]$Bucket, [s
                     $observed = $run.Name
                     $matchedLine = $hit[0].Line
                     if ($matchedLine -match '(EGRESS_CONTROL_READY|DOMAIN_TAKEOVER_READY|PROCESS_REDIRECT_RULE_READY)') { $matched = $Matches[1] }
+                    elseif ($matchedLine -match 'DEFAULT_INTERCEPTION_READY') { $matched = 'DEFAULT_INTERCEPTION_READY' }
                     elseif ($matchedLine -match 'requested (TCP|UDP)') { $matched = 'LEGACY_REQUESTED_' + $Matches[1] }
                     break
                 }
