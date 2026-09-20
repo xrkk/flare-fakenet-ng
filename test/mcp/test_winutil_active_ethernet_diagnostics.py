@@ -32,7 +32,12 @@ import pytest
 # Import-time-only winreg stub for non-Windows runners (the module body
 # references registry constants by name). It is removed right after the
 # winutil import so no other test in the session ever sees a fake winreg.
-_WINREG_STUBBED = 'winreg' not in sys.modules
+try:
+    import winreg  # Use the real Windows module even if not imported yet.
+except ModuleNotFoundError:
+    _WINREG_STUBBED = True
+else:
+    _WINREG_STUBBED = False
 if _WINREG_STUBBED:
     _winreg_stub = types.ModuleType('winreg')
     for _name in ('KEY_READ', 'KEY_WRITE', 'KEY_ALL_ACCESS', 'KEY_QUERY_VALUE',
