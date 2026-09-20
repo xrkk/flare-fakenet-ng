@@ -128,7 +128,6 @@ class Fakenet(object):
         # Diverter used to intercept and redirect traffic
         self.diverter = None
         self.policy_mode = False
-        self._default_interception_ready = False
 
         # FakeNet options and parameters
         self.fakenet_config_dir = ''
@@ -445,17 +444,19 @@ class Fakenet(object):
                             self.logger.exception(
                                 'Listener rollback after diverter failure failed')
                 raise
-            if not self.policy_mode and not self._default_interception_ready:
-                # Legacy-only, once per start: the diverter's start() returned
-                # cleanly, which on every platform means the packet source is
-                # open and its receiver is running (Windows: _start_capture
-                # opened the WinDivert handle and startCallback launched the
-                # diverter thread and applied network settings, each step
-                # raising and rolling back on failure).  This marks the
-                # completion instant of initialization/startup only; it is
-                # not a health guarantee and does not replace any per-probe
+            if not self.policy_mode:
+                # Legacy-only, at the completion instant of one successful
+                # start: the diverter's start() returned cleanly, which on
+                # every platform means the packet source is open and its
+                # receiver is running (Windows: _start_capture opened the
+                # WinDivert handle and startCallback launched the diverter
+                # thread and applied network settings, each step raising and
+                # rolling back on failure).  This success location executes
+                # exactly once per start() call, so every actual successful
+                # start logs the marker exactly once; failed starts, missing
+                # diverters and policy mode never reach it.  It is not a
+                # health guarantee and does not replace any per-probe
                 # native/policy/NIC evidence.
-                self._default_interception_ready = True
                 self.logger.info('DEFAULT_INTERCEPTION_READY')
 
     def stop(self):

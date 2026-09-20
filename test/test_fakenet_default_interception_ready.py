@@ -52,6 +52,10 @@ class RecordingDiverter:
 
     started = 0
     fail_start = False
+    # Class-level interleave of platform starts and marker emissions: the
+    # handler appends ('marker',) at logging time, so the sequence proves
+    # the marker is emitted only AFTER diverter.start() has returned.
+    events = []
 
     def __init__(self, diverter_config, listeners_config, ip_addrs, level):
         self.start_calls = 0
@@ -60,6 +64,7 @@ class RecordingDiverter:
         RecordingDiverter.started += 1
         if RecordingDiverter.fail_start:
             raise RuntimeError('platform capture failed to open')
+        RecordingDiverter.events.append('diverter-start')
 
     # Policy-mode start touches these before diverter.start(); recording
     # no-ops keep the policy path fully driven without faking success.
@@ -68,6 +73,14 @@ class RecordingDiverter:
 
     def suspend_policy(self):
         pass
+
+
+class MarkerInterleaveHandler(logging.Handler):
+    """Records the marker INTO the diverter event stream at emit time."""
+
+    def emit(self, record):
+        if record.getMessage() == 'DEFAULT_INTERCEPTION_READY':
+            RecordingDiverter.events.append('marker')
 
 
 class DefaultInterceptionReadyTests(unittest.TestCase):
@@ -104,36 +117,62 @@ class DefaultInterceptionReadyTests(unittest.TestCase):
     def setUp(self):
         RecordingDiverter.started = 0
         RecordingDiverter.fail_start = False
+        RecordingDiverter.events = []
+
+    def _marker_observable(self, fakenet):
+        # INFO must pass the logger level so a buggy emission would be SEEN
+        # (failure tests assert absence - a filtered logger would fake it).
+        fakenet.logger.setLevel(logging.INFO)
+        handler = MarkerInterleaveHandler()
+        fakenet.logger.addHandler(handler)
+        return handler
 
 
     def test_quiet_network_successful_start_emits_marker_after_diverter(self):
         fakenet = self._fakenet()
-        fakenet.logger.setLevel(logging.INFO)
-        with self._diverter_patch():
-            with self.assertLogs('FakeNet', level='INFO') as captured:
+        handler = self._marker_observable(fakenet)
+        try:
+            with self._diverter_patch():
                 fakenet.start()
-        messages = [record.getMessage() for record in captured.records]
-        self.assertIn('DEFAULT_INTERCEPTION_READY', messages)
+        finally:
+            fakenet.logger.removeHandler(handler)
         # Zero traffic flowed: the only readiness fact is the startup marker,
-        # and the diverter really started exactly once before it.
+        # and the emission-order evidence shows it happened only after the
+        # diverter start returned (observed at logging time, not inferred
+        # from a post-hoc started counter).
+        self.assertEqual(RecordingDiverter.events,
+                         ['diverter-start', 'marker'])
         self.assertEqual(RecordingDiverter.started, 1)
-        self.assertEqual(messages.count('DEFAULT_INTERCEPTION_READY'), 1)
+
+    def test_each_successful_start_emits_exactly_one_marker_in_order(self):
+        fakenet = self._fakenet()
+        handler = self._marker_observable(fakenet)
+        try:
+            with self._diverter_patch():
+                fakenet.start()
+                fakenet.start()
+        finally:
+            fakenet.logger.removeHandler(handler)
+        # No cross-start guard state: two real successful starts emit two
+        # markers, each immediately after its own diverter start returned.
+        self.assertEqual(RecordingDiverter.events,
+                         ['diverter-start', 'marker',
+                          'diverter-start', 'marker'])
+        self.assertEqual(RecordingDiverter.started, 2)
 
     def test_diverter_start_failure_never_emits_marker(self):
         fakenet = self._fakenet()
         RecordingDiverter.fail_start = True
-        records = []
-        handler = logging.Handler()
-        handler.emit = records.append
-        fakenet.logger.addHandler(handler)
+        handler = self._marker_observable(fakenet)
         try:
             with self._diverter_patch():
                 with self.assertRaises(RuntimeError):
                     fakenet.start()
         finally:
             fakenet.logger.removeHandler(handler)
-        self.assertNotIn('DEFAULT_INTERCEPTION_READY',
-                         [r.getMessage() for r in records])
+        # The interleave stream shows the diverter failed before returning,
+        # so no marker exists at any point of the failure path.
+        self.assertEqual(RecordingDiverter.events, [])
         self.assertEqual(RecordingDiverter.started, 1)
 
     def test_policy_mode_never_emits_default_marker(self):
@@ -163,18 +202,35 @@ class DefaultInterceptionReadyTests(unittest.TestCase):
             'networkmode': 'singlehost',
         }
         fakenet.listeners_config = {}
-        fakenet.logger.setLevel(logging.INFO)
-        records = []
-        handler = logging.Handler()
-        handler.emit = records.append
-        fakenet.logger.addHandler(handler)
+        handler = self._marker_observable(fakenet)
         try:
             fakenet.start()
         finally:
             fakenet.logger.removeHandler(handler)
         self.assertIsNone(fakenet.diverter)
-        self.assertNotIn('DEFAULT_INTERCEPTION_READY',
-                         [r.getMessage() for r in records])
+        self.assertEqual(RecordingDiverter.events, [])
+
+
+    def test_legacy_unknown_listener_is_swallowed_and_still_marks_ready(self):
+        # CONTRACT FACT (kept as evidence, not changed here): a legacy config
+        # naming an unimplemented listener logs errors and CONTINUES to a
+        # normal start, so the marker reflects startup completion with the
+        # diverter running even though one configured listener never came up.
+        # An implemented listener whose start() raises DOES abort the start
+        # (RuntimeError) and never reaches the marker; that fail-closed path
+        # is separate (fakenet.py: 'listener %s failed to start').
+        fakenet = self._fakenet()
+        fakenet.listeners_config = {
+            'BogusListener': {'listener': 'NoSuchListener',
+                              'port': 1, 'protocol': 'TCP'}}
+        handler = self._marker_observable(fakenet)
+        try:
+            with self._diverter_patch():
+                fakenet.start()
+        finally:
+            fakenet.logger.removeHandler(handler)
+        self.assertEqual(RecordingDiverter.events,
+                         ['diverter-start', 'marker'])
 
 
 if __name__ == '__main__':
