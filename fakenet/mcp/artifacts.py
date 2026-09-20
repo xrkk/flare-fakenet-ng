@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 
 
 # Producers stage under these suffixes and publish with an atomic replace;
@@ -24,6 +25,9 @@ PUBLICATION_RECORD = 'published.json'
 RUN_EVIDENCE_FILES = ('active-config.ini', 'creation.jsonl', 'ipc-parent.jsonl',
                       'ipc-child.jsonl', 'stop-thread-stacks.txt',
                       'fault-child-stacks.txt', 'udp.etl')
+# Published files are re-hashed on every metadata request; large captures
+# stream through one bounded chunk instead of one whole-file bytes object.
+HASH_CHUNK_BYTES = 1024 * 1024
 
 
 def is_published(name):
@@ -80,17 +84,27 @@ def completion(path, directory):
     return _completion_from_entry(path, entry)
 
 
-def _completion_from_entry(path, entry):
+def _completion_from_entry(path, entry, deadline=None):
     if not isinstance(entry, dict):
         return None
+    digest = hashlib.sha256()
+    size = 0
     try:
-        raw = path.read_bytes()
+        with open(path, 'rb') as stream:
+            while True:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError('artifact enumeration deadline exceeded')
+                chunk = stream.read(HASH_CHUNK_BYTES)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                size += len(chunk)
     except OSError:
         return None
-    if len(raw) != entry.get('size'):
+    if size != entry.get('size'):
         return None
-    digest = hashlib.sha256(raw).hexdigest()
-    return digest if digest == entry.get('sha256') else None
+    hexdigest = digest.hexdigest()
+    return hexdigest if hexdigest == entry.get('sha256') else None
 
 
 class ArtifactRegistry:
@@ -142,24 +156,56 @@ class ArtifactRegistry:
                                        else source / p.name for p in copied])
         return copied
 
+    def _enumeration_entries(self, deadline):
+        """Every candidate file as (Path, DirEntry), unordered.
+
+        Same kept-set rule as the previous ``sorted(root.rglob('*'))`` walk:
+        regular non-symlink files only, publication records excluded, no
+        descent into symlinked directories. scandir supplies the type and
+        size attributes with the directory listing itself instead of one
+        native stat per is_file/is_symlink/stat call.
+        """
+        stack = [str(self.root)]
+        while stack:
+            directory = stack.pop()
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError('artifact enumeration deadline exceeded')
+            try:
+                with os.scandir(directory) as scan:
+                    entries = list(scan)
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+                    elif (entry.is_file(follow_symlinks=False)
+                          and entry.name != PUBLICATION_RECORD):
+                        yield Path(entry.path), entry
+                except OSError:
+                    continue
+
     def metadata(self, deadline=None):
         """All registered artifacts as metadata-only entries.
 
         Enumeration is bounded: when ``deadline`` (monotonic) is supplied and
         the walk cannot finish inside it, the query fails structurally instead
-        of blocking its caller past the fixed budget."""
-        import time as _time
+        of blocking its caller past the fixed budget. The deadline is checked
+        while walking directories and between hash chunks of large files, so
+        one huge capture cannot run far past the budget before failing.
+        """
         items = []
         if not self.root.is_dir():
             return items
         # Snapshot each producer index once for this enumeration only. Every
         # artifact still has its current bytes hashed on every API request.
         publications = {}
-        for path in sorted(self.root.rglob('*')):
-            if deadline is not None and _time.monotonic() >= deadline:
+        ordered = sorted(self._enumeration_entries(deadline), key=lambda pair: pair[0])
+        for path, entry in ordered:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError('artifact enumeration deadline exceeded')
-            if not path.is_file() or path.is_symlink() or path.name == PUBLICATION_RECORD:
-                continue
             suffix = path.suffix.lstrip('.').lower()
             item_type = {'pcap': 'pcap', 'log': 'log', 'html': 'report',
                          'dmp': 'userdump', 'ini': 'config'}.get(
@@ -167,11 +213,11 @@ class ArtifactRegistry:
             if path.parent not in publications:
                 publications[path.parent] = publication_record(path.parent)
             digest = _completion_from_entry(
-                path, publications[path.parent].get(path.name))
+                path, publications[path.parent].get(path.name), deadline)
             items.append({
                 'path': str(path),
                 'type': item_type,
-                'size': path.stat().st_size,
+                'size': entry.stat(follow_symlinks=False).st_size,
                 'complete': digest is not None,
                 'sha256': digest,
             })
