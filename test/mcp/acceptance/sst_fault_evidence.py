@@ -582,19 +582,6 @@ def assess(case, root, expected_candidate=CANDIDATE):
         lo, hi = bounds(lower)[0], bounds(upper)[1]
         result['intervals_ns'] = {'session_begin_upper': begin, 'trigger_lower': lo,
                                   'trigger_upper': hi, 'session_end_lower': finish}
-        if fault in ('diverter_stop', 'listener_stop'):
-            # Both faults terminate the live session: stopping the diverter
-            # ceases forwarding before the native handle-close observation,
-            # and stopping the listener providers breaks the connection
-            # before the action window's upper bound is observed. The killed
-            # session can therefore end shortly before or after the
-            # conservative action interval (sst-036: 165 ms before; sst-054:
-            # 297 ms before; sst-055: 303 ms after on the B4 transport). The
-            # session must still begin before the action and end at the
-            # action moment, never far away.
-            tolerance = 500 * 10**6
-            ended_at_action = begin <= lo and lo - tolerance <= finish <= hi + tolerance
-            return ended_at_action, 'fault terminates the live session at the action moment'
         return contains_session(begin, lo, hi, finish), 'single managed outbound connection must contain entire conservative action interval'
 
     check('overlap', overlap)
