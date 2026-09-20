@@ -33,9 +33,12 @@ def record(path: Path, root: Path) -> dict[str, Any]:
 
 def ref(path: Path, root: Path, start: int = 0, end: int | None = None,
         key: str = 'json:') -> dict[str, Any]:
-    raw = path.read_bytes()
+    # Line/packet scanners already know the byte end from the raw buffer.
+    # Do not reread the entire capture for every reference they emit.
+    if end is None:
+        end = len(path.read_bytes())
     return {'path': str(path.relative_to(root)), 'byte_start': start,
-            'byte_end': len(raw) if end is None else end, 'event_key': key}
+            'byte_end': end, 'event_key': key}
 
 
 def json_lines(path: Path, root: Path) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
