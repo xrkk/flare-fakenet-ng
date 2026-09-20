@@ -1205,14 +1205,203 @@ def test_prune_scenario_configs_deletes_only_own_leftovers_and_rebinds_active():
     assert load_index < delete_active
 
 
-def test_fault_window_waives_auxiliary_case_demand():
-    # discovery100-118 sst-034: a paused policy correctly denies cases
-    # released inside the fault window; the benign case demand must not
-    # fail the fault run's traffic oracle.
+def test_cases_verdict_applies_the_same_demand_inside_fault_windows():
+    """A fault label alone waives nothing (2026-09-20 VFY-003 rollback).
+
+    The former ``if fault_window: return True`` branch let any fault run
+    skip the auxiliary-case demand without one byte of window proof
+    (discovery100-118/121 sst-034 stored passes).  The demand is now
+    identical with and without the flag; ``fault_window`` is accepted for
+    call compatibility only and must never change the verdict.
+    """
     verdict = suite.Suite._cases_verdict
-    assert verdict(planned=2, releases=0, case_results=[], fault_window=True) is True
-    assert verdict(planned=2, releases=1, case_results=[{'passed': False}], fault_window=True) is True
-    assert verdict(planned=0, releases=0, case_results=[], fault_window=False) is True
-    assert verdict(planned=2, releases=1, case_results=[{'passed': True}], fault_window=False) is True
-    assert verdict(planned=2, releases=0, case_results=[], fault_window=False) is False
-    assert verdict(planned=2, releases=1, case_results=[{'passed': False}], fault_window=False) is False
+    assert verdict(planned=2, releases=1, case_results=[{'passed': True}], fault_window=True) is True
+    assert verdict(planned=0, releases=0, case_results=[], fault_window=True) is True
+    assert verdict(planned=2, releases=0, case_results=[], fault_window=True) is False
+    assert verdict(planned=2, releases=1, case_results=[{'passed': False}], fault_window=True) is False
+    for fault_window in (True, False):
+        assert verdict(planned=0, releases=0, case_results=[], fault_window=fault_window) is True
+        assert verdict(planned=2, releases=1, case_results=[{'passed': True}],
+                       fault_window=fault_window) is True
+        assert verdict(planned=2, releases=0, case_results=[], fault_window=fault_window) is False
+        assert verdict(planned=2, releases=1, case_results=[{'passed': False}],
+                       fault_window=fault_window) is False
+
+
+def _b3_redirect_allow_fixture(root: Path, nic_originals: list):
+    """One complete B3 redirect_allow run; NIC originals for the forbidden
+    original tuple are injected via ``nic_originals``."""
+    runner = object.__new__(suite.Suite)
+    runner.root = root
+    runner.identity = suite.Identity(candidate_id='mcp-fixture', source_commit='s',
+                                     package_sha256='0' * 64)
+    profile = suite.materialize_probe_profile(suite.profile_for_bucket('B3', 0), '192.168.204.1')
+    nonce = 'oracle-fault'
+    ready = {'event': 'ready', 'nonce': nonce, 'profile': profile['bucket'],
+             'variant': profile['variant'], 'tempo': profile['tempo'],
+             'interleave': profile['interleave'], 'cadence_ms': profile['cadence_ms'],
+             'target_host': profile['probe_target']['host'],
+             'target_port': profile['probe_target']['port'],
+             'target_protocol': profile['probe_target']['protocol'],
+             'process_mode': profile['probe_target']['process_mode'],
+             'fnpr_role': profile['probe_target']['fnpr_role'],
+             'startup_retry_seconds': profile['startup_retry_seconds'],
+             'additional_targets': []}
+    rows = [ready, {'event': 'released', 'nonce': nonce, 'interleave': profile['interleave']},
+            {'event': 'established', 'nonce': nonce, 'connection_id': 'main', 'pid': 777,
+             'worker': 'w', 'seq': 1, 'src': '192.168.204.233:5000',
+             'dst': '198.51.100.77:443', 'actual_dst': '198.51.100.77:443'},
+            {'event': 'send', 'nonce': nonce, 'connection_id': 'main', 'pid': 777,
+             'cadence_ms': profile['cadence_ms'], 'utc_ticks': 1_000_000_000},
+            {'event': 'send', 'nonce': nonce, 'connection_id': 'main', 'pid': 777,
+             'cadence_ms': profile['cadence_ms'],
+             'utc_ticks': 1_000_000_000 + profile['cadence_ms'] * 10_000},
+            {'event': 'close', 'nonce': nonce, 'connection_id': 'main', 'pid': 777}]
+    (root / 'probe.jsonl').write_text('\n'.join(json.dumps(row) for row in rows) + '\n',
+                                      encoding='utf-8')
+    (root / 'pktmon.txt').write_text('pktmon fixture\n', encoding='utf-8')
+    (root / 'run.log').write_text(
+        'EGRESS_CONTROL_READY\n'
+        'PROCESS_REDIRECT_MAPPING_CREATED original_ipv4=198.51.100.77 original_port=443 '
+        'pid=777 source_ipv4=192.168.204.233 source_port=5000 '
+        'target_ipv4=192.168.204.1 target_port=443\n', encoding='utf-8')
+
+    def packets(capture, src, dst, protocol, not_after_local=None, not_before_local=None):
+        if dst == '198.51.100.77:443':
+            # Primary original tuple: the all-stack record proves the send;
+            # the physical-NIC leg is exactly the injected leak counterexample.
+            return ([{'src': src, 'dst': dst, 'protocol': protocol}],
+                    list(nic_originals), {'component_ids': [9]})
+        if dst == '192.168.204.1:443':
+            return ([{'src': src, 'dst': dst, 'protocol': protocol}],
+                    [{'component': 9}], {'component_ids': [9]})
+        raise AssertionError('unexpected tuple observed: %s -> %s' % (src, dst))
+
+    runner._pktmon_observations = packets
+    run = {'capture': {'probe_path': 'probe.jsonl', 'pktmon_path': 'pktmon.txt'},
+           'originals': {'files': [{'path': 'run.log'}]}}
+    sentinel = {'rows': [{'event': 'probe_ok', 'nonce': nonce, 'role': 'target',
+                          'transport': 'tcp', 'peer': '192.168.204.233:5000'}]}
+    return runner, run, profile, nonce, sentinel
+
+
+def test_fault_window_does_not_waive_forbidden_nic_original_traffic():
+    """redirect_allow + a forbidden original-tuple NIC packet must fail.
+
+    discovery100-121 sst-034 stored a pass with
+    ``nic_original_packet_count=1`` and ``fault_window_branch_waiver=true``.
+    The branch leg (no original NIC packets, policy mapping, sentinel
+    receipt) applies identically inside a fault window; the fault label is
+    not proof that the packet belongs to the fault's own effect.
+    """
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        runner, run, profile, nonce, sentinel = _b3_redirect_allow_fixture(
+            root, nic_originals=[{'component': 9, 'timestamp_local': '2026-09-15 08:36:10.0000000'}])
+        fault = runner._traffic_oracle(run, profile, nonce, sentinel, fault_window=True)
+        offline = runner._traffic_oracle(run, profile, nonce, sentinel)
+        assert not fault['passed'] and not offline['passed']
+        assert fault['nic_original_packet_count'] == 1
+        # Same original evidence, same conclusion and the same reason — the
+        # online fault call and the offline recheck are one verdict path.
+        assert fault['reason'] == offline['reason']
+        assert 'branch' in fault['reason']
+        # The clean counterpart (no NIC originals) passes in both modes.
+        clean_root = root / 'clean'
+        clean_root.mkdir()
+        clean_runner, clean_run, clean_profile, clean_nonce, clean_sentinel = (
+            _b3_redirect_allow_fixture(clean_root, nic_originals=[]))
+        assert clean_runner._traffic_oracle(
+            clean_run, clean_profile, clean_nonce, clean_sentinel, fault_window=True)['passed']
+        assert clean_runner._traffic_oracle(
+            clean_run, clean_profile, clean_nonce, clean_sentinel)['passed']
+
+
+def test_fault_window_does_not_waive_missing_auxiliary_case_evidence():
+    """A fault label cannot replace the auxiliary-case demand (VFY-003).
+
+    Planned boundary cases with no release and no case events previously
+    passed via ``_cases_verdict(fault_window=True)``; the release facts and
+    the per-case verdicts are now demanded in every mode.
+    """
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        runner, run, profile, nonce, sentinel = _b3_redirect_allow_fixture(root, nic_originals=[])
+        # B3 plans no auxiliary cases; graft a planned pair onto the profile
+        # and onto the probe contract so the fixture exercises the demand.
+        profile = json.loads(json.dumps(profile))
+        profile['negative_cases'] = (
+            {'host': 'example.com', 'port': 443, 'protocol': 'tls', 'expectation': 'deny'},)
+        profile['probe_cases'] = (
+            {'host': '192.168.204.1', 'port': 443, 'protocol': 'tcp',
+             'expectation': 'takeover_allow', 'fnpr_role': 'target'},)
+        rows = [json.loads(line) for line in
+                (root / 'probe.jsonl').read_text(encoding='utf-8').splitlines()]
+        for row in rows:
+            if row.get('event') == 'ready':
+                row['additional_targets'] = list(profile['negative_cases']) + list(profile['probe_cases'])
+        (root / 'probe.jsonl').write_text(
+            '\n'.join(json.dumps(row) for row in rows) + '\n', encoding='utf-8')
+        # No 'cases_released' row and no case_* events exist: the demand is
+        # unmet and no fault label may excuse it.
+        missing = runner._traffic_oracle(run, profile, nonce, sentinel, fault_window=True)
+        offline = runner._traffic_oracle(run, profile, nonce, sentinel)
+        assert not missing['passed'] and not offline['passed']
+        assert missing['reason'] == offline['reason']
+        assert 'cases' in missing['reason']
+
+
+def test_fault_window_does_not_mask_wrong_run_identity():
+    """A same-run identity mismatch fails in fault mode too (VFY-003/004).
+
+    Two shapes: probe rows carrying another run's nonce (the schedule check
+    rejects them) and a fault primary case bound to a different run_id
+    (the identity check rejects it).  Neither may be excused by the fault
+    label.
+    """
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        runner, run, profile, nonce, sentinel = _b3_redirect_allow_fixture(root, nic_originals=[])
+        rows = [json.loads(line) for line in
+                (root / 'probe.jsonl').read_text(encoding='utf-8').splitlines()]
+        for row in rows:
+            if row.get('event') == 'ready':
+                row['nonce'] = 'nonce-of-another-run'
+        (root / 'probe.jsonl').write_text(
+            '\n'.join(json.dumps(row) for row in rows) + '\n', encoding='utf-8')
+        wrong_nonce = runner._traffic_oracle(run, profile, nonce, sentinel, fault_window=True)
+        assert not wrong_nonce['passed']
+        assert 'schedule' in wrong_nonce['reason']
+
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        runner, run, profile, nonce, sentinel = _b3_redirect_allow_fixture(root, nic_originals=[])
+        case_path = root / 'fault-case.json'
+        case_path.write_text(json.dumps({
+            'schema': 'sst.fault-evidence.case.v2', 'synthetic': False,
+            'run_id': 'a-different-run', 'nonce': nonce, 'candidate_id': 'mcp-fixture',
+            'session': {'observation_kind': 'tcpip_etw', 'probe_pid': 777,
+                        'connection_id': '777-w-1', 'src': '192.168.204.233:5000',
+                        'dst': '198.51.100.77:443'}}), encoding='utf-8')
+        run['fault_connection_case'] = suite.file_record(case_path, root)
+        wrong_case = runner._traffic_oracle(run, profile, nonce, sentinel, fault_window=True)
+        assert not wrong_case['passed']
+        assert 'fault primary binding failed' in wrong_case['reason']
+        assert 'same-run target connection' in wrong_case['reason']
+
+
+def test_full_positive_fault_evidence_adjudicates_identically_online_and_offline():
+    """Complete positive evidence passes in both modes with one verdict.
+
+    Online (fault healthy primary) and offline recheck share the same
+    originals, the same identity inputs and — after the waiver removal —
+    byte-identical oracle verdicts including the recorded reason.
+    """
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        runner, run, profile, nonce, sentinel = _b3_redirect_allow_fixture(root, nic_originals=[])
+        online = runner._traffic_oracle(run, profile, nonce, sentinel, fault_window=True)
+        offline = runner._traffic_oracle(run, profile, nonce, sentinel)
+        assert online['passed'] and offline['passed']
+        assert online == offline
+        assert online['reason'] is None

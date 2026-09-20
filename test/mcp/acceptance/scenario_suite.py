@@ -2062,16 +2062,15 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
     @staticmethod
     def _cases_verdict(planned: int, releases: int, case_results: list[dict[str, Any]],
                        fault_window: bool) -> bool:
-        """Auxiliary boundary cases are a benign-run demand.
+        """Auxiliary boundary cases are demanded in every mode.
 
-        A fault run's adjudication already proves the fault acted; auxiliary
-        cases released inside an active fault window observe the fault's own
-        semantics (a paused policy correctly denies them), so the fault
-        traffic oracle waives the case demand while still recording the
-        release facts (discovery100-118 sst-034).
+        A fault label alone proves nothing about auxiliary execution: the
+        same single-release and per-case verdict demand applies inside a
+        fault window (2026-09-20 VFY-003 rollback of the global waiver that
+        accepted discovery100-118/121 sst-034 without case proof).
+        ``fault_window`` stays in the signature for call compatibility and
+        must never change this verdict.
         """
-        if fault_window:
-            return True
         return not planned or (releases == 1 and all(row['passed'] for row in case_results))
 
     def _traffic_oracle(self, run: dict[str, Any], profile: dict[str, Any], nonce: str,
@@ -2084,6 +2083,10 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         its PID/source tuple, and pktmon must hold that exact directional
         tuple.  Positive relay profiles also require a TLS request event and
         the egress-control ready record from the native log.
+
+        ``fault_window`` is accepted for call compatibility and is inert:
+        the online fault call and the offline recheck share this one verdict
+        path and its identity inputs (2026-09-20 VFY-003/004 fix).
         """
         import scenario_tcpip as tcpip
         capture = run.get('capture') or {}
@@ -2572,15 +2575,32 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         # the named flow; it never upgrades an all-components observation into
         # proof of physical egress.  Authorised direct/takeover paths are the
         # only branches which require that exact tuple on the verified NIC.
-        # A fault run's adjudication already proves the fault acted inside
-        # the session; the fault's own effect on traffic (a paused policy
-        # truncating redirected forwarding, leaving the NIC outer-tuple
-        # chain legitimately incomplete, discovery100-120 sst-034) is not a
-        # restoration leak. The core existence legs stay strict in every
-        # mode: the probe connection, its policy flow line and payloads.
+        # There is no fault-window waiver: the branch legs (policy log event,
+        # branch packets, sentinel receipt, and above all "no original-tuple
+        # packets on the physical NIC") apply identically inside a fault run
+        # (2026-09-20 VFY-003 rollback; discovery100-121 sst-034 stored a
+        # pass over one forbidden NIC original).  The only tuple-precise
+        # exception remains ESTABLISHED_BYPASS above, which is proven per
+        # flow, not excused by a label.  A fault run whose own effect makes
+        # positive branch evidence genuinely absent fails honestly with the
+        # failed leg named below.
         core_chain = bool((packet_records or connection_observation) and payloads and cadence_ok)
-        passed = bool(core_chain and (branch_ok if not fault_window else True)
-                      and cases_ok and curl_ok)
+        passed = bool(core_chain and branch_ok and cases_ok and curl_ok)
+        if passed:
+            reason = None
+        else:
+            failed_legs = []
+            if not core_chain:
+                failed_legs.append('core probe/payload/cadence chain')
+            if not branch_ok:
+                failed_legs.append('branch criteria for %s (policy log, branch/NIC packets, '
+                                   'sentinel receipt)' % expectation)
+            if not cases_ok:
+                failed_legs.append('auxiliary cases (single release plus per-case verdicts)')
+            if not curl_ok:
+                failed_legs.append('curl observation')
+            reason = ('same-run primary/case probe→policy flow→NIC pktmon chain incomplete: '
+                      'failed legs: ' + '; '.join(failed_legs))
         return {'passed': passed, 'connection_id': '%s-%s-%s' % (event.get('pid'), event.get('worker'), event.get('seq')),
                 'src': src, 'dst': dst, 'process_flow': flow[-1] if flow else None,
                 'packet_record_count': len(packet_records), 'connection_observation': connection_observation,
@@ -2594,10 +2614,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 'egress_control_ready': egress_ready, 'relay': relay, 'expected_schedule': expected_schedule,
                 'expectation': expectation, 'branch_log': branch_log, 'branch_packet_count': len(branch_packets),
                 'sentinel_receipt': primary_receipt, 'case_release_count': len(releases), 'cases': case_results,
-                'fault_window_case_waiver': bool(fault_window and planned_cases),
-                'fault_window_branch_waiver': bool(fault_window and not branch_ok),
                 'curl': curl,
-                'reason': None if passed else 'same-run primary/case probe→policy flow→NIC pktmon chain incomplete'}
+                'reason': reason}
 
     @staticmethod
     def _benign_log_issues(run: dict[str, Any], root: Path) -> list[str]:
@@ -3721,8 +3739,11 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     scenario, primary, nonce, root, evidence, fault_evidence)
                 primary['fault_connection_case'] = fault_evidence['adjudication'].get('case')
                 if primary.get('start_response', {}).get('state') == 'healthy':
-                    primary['traffic_oracle'] = self._traffic_oracle(primary, runtime_profile, nonce, sentinel_evidence,
-                                                                  fault_window=True)
+                    # Same verdict path and identity inputs as the offline
+                    # _traffic_recheck_issues re-adjudication: no fault-window
+                    # waiver, no divergent parameters (2026-09-20 VFY-004 fix).
+                    primary['traffic_oracle'] = self._traffic_oracle(primary, runtime_profile,
+                                                                     nonce, sentinel_evidence)
         except Exception as exc:  # noqa: BLE001
             if failure is None:
                 failure = repr(exc)
