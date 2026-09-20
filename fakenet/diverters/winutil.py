@@ -1,6 +1,7 @@
 # Copyright 2025 Google LLC
 
 #!/usr/bin/env python
+import json
 import logging
 logging.basicConfig(format='%(asctime)s [%(name)18s] %(message)s',
                     datefmt='%m/%d/%y %I:%M:%S %p', level=logging.DEBUG)
@@ -1451,14 +1452,59 @@ class WinUtilMixin(diverterbase.DiverterPerOSDelegate):
             if adapter.IfType == MIB_IF_TYPE_ETHERNET and adapter.OperStatus == IFOPERSTATUSUP:
                 yield adapter
 
+    # One-line, machine-parseable record of the SAME enumeration that made
+    # check_active_ethernet_adapters fail.  Diagnostic only: it never feeds
+    # the True/False decision, recovery authorization or any bypass.
+    ACTIVE_ETHERNET_DIAGNOSTIC_SCHEMA = 'fakenet.diverters.active-ethernet-diagnostic.v1'
+    ACTIVE_ETHERNET_DIAGNOSTIC_MARKER = 'FAKENET_ACTIVE_ETHERNET_DIAGNOSTIC'
+
     def check_active_ethernet_adapters(self):
 
+        adapters = []
         for adapter in self.get_adapters_addresses():
-
+            # Copy the decision scalars while the generator still owns the
+            # ctypes backing buffer; structure views must not outlive it.
+            adapters.append({'IfIndex': int(adapter.IfIndex),
+                             'IfType': int(adapter.IfType),
+                             'OperStatus': int(adapter.OperStatus)})
             if adapter.IfType == MIB_IF_TYPE_ETHERNET and adapter.OperStatus == IFOPERSTATUSUP:
                 return True
         else:
+            self._log_active_ethernet_diagnostic(adapters)
             return False
+
+    def _log_active_ethernet_diagnostic(self, adapters):
+        """Emit one structured line for a same-call 'no active ethernet' fail.
+
+        Purely additive diagnostics: the predicate above is untouched, no
+        second IP Helper enumeration happens here, and fields absent from
+        the current call stay explicit nulls instead of inheriting any
+        earlier probe's metadata.
+        """
+        native = dict(getattr(self, '_last_get_adapters_addresses', None) or {})
+        result = native.get('result')
+        if result == 0:
+            classification = 'api-success-no-qualifying-adapter'
+        elif result is None:
+            classification = 'no-native-metadata'
+        else:
+            classification = 'native-error'
+        payload = {
+            'schema': self.ACTIVE_ETHERNET_DIAGNOSTIC_SCHEMA,
+            'marker': self.ACTIVE_ETHERNET_DIAGNOSTIC_MARKER,
+            'pid': os.getpid(),
+            'sampled_utc': time.time(),
+            'native_get_adapters_addresses': {
+                'sizing_result': native.get('sizing_result'),
+                'buffer_size': native.get('buffer_size'),
+                'result': result},
+            'classification': classification,
+            'adapters_seen': adapters,
+            'qualifying_adapters': 0,
+        }
+        logger = getattr(self, 'logger', None) or logging.getLogger(
+            'fakenet.diverters.winutil')
+        logger.error(self.ACTIVE_ETHERNET_DIAGNOSTIC_MARKER + ' ' + json.dumps(payload))
 
     def get_adapter_friendlyname(self, if_index):
 
