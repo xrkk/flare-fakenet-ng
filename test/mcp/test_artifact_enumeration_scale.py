@@ -18,6 +18,7 @@ Regression set for the scandir/streaming-hash metadata walk:
 import hashlib
 import os
 import time
+import pytest
 
 from fakenet.mcp import artifacts
 
@@ -224,3 +225,28 @@ def test_completion_public_api_unchanged(tmp_path):
     undeclared = run_b / 'undeclared.log'
     undeclared.write_bytes(b'x')
     assert artifacts.completion(undeclared, run_b) is None
+
+
+def test_deadline_during_last_file_hash_cannot_return_success(tmp_path, monkeypatch):
+    capture = tmp_path / 'last.pcap'
+    capture.write_bytes(b'abcdefgh')
+    _publish(tmp_path, [capture])
+    clock = [0.0]
+    real_sha256 = hashlib.sha256
+
+    class ExpiringHash:
+        def __init__(self):
+            self.digest = real_sha256()
+
+        def update(self, chunk):
+            self.digest.update(chunk)
+            clock[0] = 2.0
+
+        def hexdigest(self):
+            return self.digest.hexdigest()
+
+    monkeypatch.setattr(artifacts, 'HASH_CHUNK_BYTES', 4)
+    monkeypatch.setattr(artifacts.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(artifacts.hashlib, 'sha256', ExpiringHash)
+    with pytest.raises(TimeoutError, match='deadline exceeded'):
+        artifacts.ArtifactRegistry(tmp_path).metadata(deadline=1.0)

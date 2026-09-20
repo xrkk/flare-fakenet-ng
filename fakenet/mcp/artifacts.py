@@ -99,6 +99,10 @@ def _completion_from_entry(path, entry, deadline=None):
                     break
                 digest.update(chunk)
                 size += len(chunk)
+    except TimeoutError:
+        # TimeoutError is an OSError subclass. A query budget expiring is
+        # not evidence that this file is merely unpublished or unreadable.
+        raise
     except OSError:
         return None
     if size != entry.get('size'):
