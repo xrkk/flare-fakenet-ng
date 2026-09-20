@@ -176,7 +176,7 @@ def test_mixed_and_malformed_brackets_reject():
     # An incomplete new-schema record is rejected fail-closed: either as a
     # malformed bracket or, because the schema tag survives without its
     # fields, as a mixed pair. Both refuse to judge it as legacy.
-    assert run_kernel(m).startswith(('REJECTED: Kernel-Network invalid after clock q1',
+    assert run_kernel(m).startswith(('REJECTED: Kernel-Network invalid clock sampling schema or fields',
                                      'REJECTED: Kernel-Network mixed clock sampling schemas'))
     assert 'clock bracket' in variant(q0=after['mono'] + 5000)          # reversed
     off_mid = bracket(after); off_mid['mono'] = off_mid['mono'] + 7
@@ -189,15 +189,15 @@ def test_mixed_and_malformed_brackets_reject():
                                      'REJECTED: Kernel-Network invalid capture monotonic frequency'))
     float_mono = bracket(after); float_mono['mono'] = float(float_mono['mono'])
     m = dict(meta); m['clock_before'] = bracket(before); m['clock_after'] = float_mono
-    assert run_kernel(m).startswith(('REJECTED: Kernel-Network invalid after clock mono',
+    assert run_kernel(m).startswith(('REJECTED: Kernel-Network invalid clock sampling schema or fields',
                                      'REJECTED: Kernel-Network mixed clock sampling schemas'))
     bool_q0 = bracket(after); bool_q0['q0'] = True
     m = dict(meta); m['clock_before'] = bracket(before); m['clock_after'] = bool_q0
-    assert run_kernel(m).startswith(('REJECTED: Kernel-Network invalid after clock q0',
+    assert run_kernel(m).startswith(('REJECTED: Kernel-Network invalid clock sampling schema or fields',
                                      'REJECTED: Kernel-Network mixed clock sampling schemas'))
     str_utc = bracket(after); str_utc['utc_ticks'] = str(str_utc['utc_ticks'])
     m = dict(meta); m['clock_before'] = bracket(before); m['clock_after'] = str_utc
-    assert run_kernel(m).startswith(('REJECTED: Kernel-Network invalid after clock utc_ticks',
+    assert run_kernel(m).startswith(('REJECTED: Kernel-Network invalid clock sampling schema or fields',
                                      'REJECTED: Kernel-Network mixed clock sampling schemas'))
 
 

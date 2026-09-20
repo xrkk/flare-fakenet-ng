@@ -60,13 +60,16 @@ def is_bracketed(clock):
     """True when the record carries the new schema with complete brackets."""
     return (isinstance(clock, dict)
             and clock.get('schema') == CLOCK_SAMPLING_SCHEMA
+            and _strict_int(clock.get('version'))
             and clock.get('version') == CLOCK_SAMPLING_VERSION
             and all(_strict_int(clock.get(key)) for key in ('utc_ticks', 'q0', 'q1', 'mono')))
 
 
 def _require_clock_domain(before, after, error):
     freq = before.get('stopwatch_frequency')
-    if not _strict_int(freq) or freq <= 0 or after.get('stopwatch_frequency') != freq:
+    if (not _strict_int(freq) or freq <= 0
+            or not _strict_int(after.get('stopwatch_frequency'))
+            or after.get('stopwatch_frequency') != freq):
         raise ValueError(error('invalid capture monotonic frequency'))
     for end, name in ((before, 'before'), (after, 'after')):
         for key in ('utc_ticks', 'mono', 'q0', 'q1'):
@@ -85,6 +88,10 @@ def check_continuity(before, after, resolution_ns, error):
     uncertainty interval of wall-minus-mono to fit inside the same resolution
     budget.
     """
+    for end in (before, after):
+        marked = any(key in end for key in ('schema', 'version', 'q0', 'q1', 'warmup'))
+        if marked and not is_bracketed(end):
+            raise ValueError(error('invalid clock sampling schema or fields'))
     new_before, new_after = is_bracketed(before), is_bracketed(after)
     if new_before != new_after:
         raise ValueError(error('mixed clock sampling schemas'))
@@ -110,7 +117,7 @@ def check_continuity(before, after, resolution_ns, error):
     elapsed_hi = elapsed_hi_num // freq + ceil_correct
     lo = wall - elapsed_hi  # wall minus the largest possible elapsed
     hi = wall - elapsed_lo  # wall minus the smallest possible elapsed
-    if lo < -resolution_ns or hi > resolution_ns:
+    if wall < 0 or elapsed_lo_num < 0 or lo < -resolution_ns or hi > resolution_ns:
         raise ValueError(error('clock discontinuity'))
     return {'mode': 'interval', 'wall_ns': wall,
             'elapsed_lo_ns': elapsed_lo, 'elapsed_hi_ns': elapsed_hi,
