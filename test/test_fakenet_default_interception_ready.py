@@ -14,11 +14,27 @@ under test is never mocked): quiet network with zero traffic still emits the
 marker; every failure path stays silent; the marker follows the diverter
 start; one start logs it exactly once.
 """
+import contextlib
 import logging
+import os
 import sys
 import types
 import unittest
 import unittest.mock
+
+
+class ExitStackWithPatches:
+    def __init__(self, patches):
+        self._patches = patches
+
+    def __enter__(self):
+        self._stack = contextlib.ExitStack()
+        for patch in self._patches:
+            self._stack.enter_context(patch)
+        return self._stack
+
+    def __exit__(self, *exc):
+        return self._stack.__exit__(*exc)
 
 fake_netifaces = types.ModuleType('netifaces')
 fake_netifaces.AF_INET = 2
@@ -45,37 +61,55 @@ class RecordingDiverter:
         if RecordingDiverter.fail_start:
             raise RuntimeError('platform capture failed to open')
 
+    # Policy-mode start touches these before diverter.start(); recording
+    # no-ops keep the policy path fully driven without faking success.
+    def configure_policy_runtime(self, *args, **kwargs):
+        pass
+
+    def suspend_policy(self):
+        pass
+
 
 class DefaultInterceptionReadyTests(unittest.TestCase):
 
-    def _fakenet(self):
+    def _fakenet(self, policy=False):
         fakenet = Fakenet(logging.ERROR)
         fakenet.fakenet_config = {'diverttraffic': 'yes'}
         fakenet.diverter_config = {
-            'externalaccesspolicy': 'disabled',
-            'networkmode': 'multihost',
+            'externalaccesspolicy': 'egresscontrol' if policy else 'disabled',
+            'networkmode': 'multihost' if os.name == 'posix' else 'singlehost',
             'linuxrestrictinterface': 'off',
         }
         fakenet.listeners_config = {}
         return fakenet
 
+    def _diverter_patch(self, force_windows=False):
+        # Import-site seam for BOTH platforms: the current platform's branch
+        # resolves its own module name from sys.modules, so the recording
+        # stand-in replaces the platform Diverter without mocking the method
+        # under test. Policy runs are forced down the Windows branch because
+        # EgressControl exists only there.
+        stub = types.ModuleType('fakenet.diverters.linux')
+        stub.Diverter = RecordingDiverter
+        win = types.ModuleType('fakenet.diverters.windows')
+        win.Diverter = RecordingDiverter
+        patches = [unittest.mock.patch.dict(sys.modules, {
+            'fakenet.diverters.linux': stub,
+            'fakenet.diverters.windows': win})]
+        if force_windows:
+            patches.append(unittest.mock.patch.object(
+                fakenet_module.platform, 'system', return_value='Windows'))
+        return ExitStackWithPatches(patches)
+
     def setUp(self):
         RecordingDiverter.started = 0
         RecordingDiverter.fail_start = False
 
-    def _linux_diverter_patch(self):
-        # The real linux diverter module needs netfilterqueue; the import
-        # site inside start() only needs the Diverter attribute, so a stub
-        # module injected via patch.dict (auto-reverted) is the seam.
-        stub = types.ModuleType('fakenet.diverters.linux')
-        stub.Diverter = RecordingDiverter
-        return unittest.mock.patch.dict(sys.modules,
-                                        {'fakenet.diverters.linux': stub})
 
     def test_quiet_network_successful_start_emits_marker_after_diverter(self):
         fakenet = self._fakenet()
         fakenet.logger.setLevel(logging.INFO)
-        with self._linux_diverter_patch():
+        with self._diverter_patch():
             with self.assertLogs('FakeNet', level='INFO') as captured:
                 fakenet.start()
         messages = [record.getMessage() for record in captured.records]
@@ -93,7 +127,7 @@ class DefaultInterceptionReadyTests(unittest.TestCase):
         handler.emit = records.append
         fakenet.logger.addHandler(handler)
         try:
-            with self._linux_diverter_patch():
+            with self._diverter_patch():
                 with self.assertRaises(RuntimeError):
                     fakenet.start()
         finally:
@@ -103,21 +137,21 @@ class DefaultInterceptionReadyTests(unittest.TestCase):
         self.assertEqual(RecordingDiverter.started, 1)
 
     def test_policy_mode_never_emits_default_marker(self):
-        # A real policy start re-derives policy_mode from the config; on this
-        # runner it fails the Windows-only check before any diverter exists,
-        # and the default marker must stay absent from that failure path.
-        fakenet = self._fakenet()
-        fakenet.diverter_config['externalaccesspolicy'] = 'egresscontrol'
+        # Policy mode re-derives from the config and only exists on Windows;
+        # the start is forced down that branch with the recording stand-in,
+        # so a fully successful POLICY start still logs no default marker.
+        fakenet = self._fakenet(policy=True)
+        fakenet.running_listener_providers = []
         records = []
         handler = logging.Handler()
         handler.emit = records.append
         fakenet.logger.addHandler(handler)
         try:
-            with self.assertRaises(RuntimeError):
+            with self._diverter_patch(force_windows=True):
                 fakenet.start()
         finally:
             fakenet.logger.removeHandler(handler)
-        self.assertFalse(fakenet.policy_mode is False and fakenet.diverter is not None)
+        self.assertTrue(fakenet.policy_mode)
         self.assertNotIn('DEFAULT_INTERCEPTION_READY',
                          [r.getMessage() for r in records])
 
