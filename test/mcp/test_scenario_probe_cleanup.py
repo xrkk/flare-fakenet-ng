@@ -75,8 +75,8 @@ class StartCleanupTests(unittest.TestCase):
     def test_writes_own_stop_file_once_then_bounded_wait(self):
         self.assertIn("if(-not (Test-Path $stop))", self.catch)
         self.assertIn("[IO.File]::WriteAllText($stop,'stop'", self.catch)
-        self.assertIn('AddSeconds(30)', self.catch)
-        self.assertNotIn('AddSeconds(31)', self.catch)
+        self.assertIn('ElapsedMilliseconds -lt 30000', self.catch)
+        self.assertNotIn('UtcNow.AddSeconds(30)', self.catch)
 
     def test_records_cooperative_status_and_identity(self):
         self.assertIn('cooperative_exit=$coop', self.catch)
@@ -207,7 +207,9 @@ class StopCleanupContractTests(unittest.TestCase):
         runner._stop_capture_and_probe(dict(CAPTURE))
         whole = cmd['main']
         self.assertIsNone(FORBIDDEN.search(whole), FORBIDDEN.search(whole))
-        self.assertIn('AddSeconds(30)', whole)
+        self.assertIn('ElapsedMilliseconds -lt 30000', whole)
+        self.assertNotIn('UtcNow.AddSeconds(', whole)
+        self.assertIn('identity-read', whole)
         self.assertIn('identity-unknown', whole)
         self.assertIn('identity-mismatch(new process not touched)', whole)
         self.assertIn('exit-status.json', whole)
