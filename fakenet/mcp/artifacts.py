@@ -77,6 +77,10 @@ def completion(path, directory):
     """
     path = Path(path)
     entry = publication_record(directory).get(path.name)
+    return _completion_from_entry(path, entry)
+
+
+def _completion_from_entry(path, entry):
     if not isinstance(entry, dict):
         return None
     try:
@@ -148,6 +152,9 @@ class ArtifactRegistry:
         items = []
         if not self.root.is_dir():
             return items
+        # Snapshot each producer index once for this enumeration only. Every
+        # artifact still has its current bytes hashed on every API request.
+        publications = {}
         for path in sorted(self.root.rglob('*')):
             if deadline is not None and _time.monotonic() >= deadline:
                 raise TimeoutError('artifact enumeration deadline exceeded')
@@ -157,7 +164,10 @@ class ArtifactRegistry:
             item_type = {'pcap': 'pcap', 'log': 'log', 'html': 'report',
                          'dmp': 'userdump', 'ini': 'config'}.get(
                              suffix, suffix or 'file')
-            digest = completion(path, path.parent)
+            if path.parent not in publications:
+                publications[path.parent] = publication_record(path.parent)
+            digest = _completion_from_entry(
+                path, publications[path.parent].get(path.name))
             items.append({
                 'path': str(path),
                 'type': item_type,
