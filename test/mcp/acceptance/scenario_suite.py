@@ -2932,8 +2932,26 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         raise SuiteError('same-run runtime PCAP was not published: '
                          'no complete listing entry; last run entries: %r' % (last_run_entries[-3:],))
 
+    def _collect_runtime_pcaps(self, runs: list[dict[str, Any]], root: Path,
+                               evidence: Evidence, runtime_profile: dict[str, Any]) -> None:
+        """Collect each healthy run's runtime PCAP after the final stop.
+
+        Both pcap writers hold the file open for the whole run and only
+        publish after the stop, so this runs once the final stop converged;
+        every healthy run binds its own run id to its own label's pcap and a
+        later run's bytes never stand in for an earlier one.
+        """
+        if not runtime_pcap_required(runtime_profile):
+            return
+        for item in runs:
+            if item.get('start_response', {}).get('state') == 'healthy':
+                item['runtime_pcap'] = self._wait_runtime_pcap(
+                    item['run_id'], root / item['label'] / 'runtime.pcap')
+                evidence.add(root / item['label'] / 'runtime.pcap')
+
     def _prune_scenario_vm_footprint(self, runs: list[dict[str, Any]], guest: str,
-                                     fault: str | None) -> dict[str, Any]:
+                                     fault: str | None, *,
+                                     scenario_passed: bool = False) -> dict[str, Any]:
         """Remove this scenario's redundant VM artifacts after host export.
 
         Every run's originals are already byte-bound on the host before this
@@ -2942,6 +2960,14 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         VM-side.  The guest probe directory is always transient.  Without
         this, repeated acceptance scenarios exhaust the VM disk
         (discovery100-11: pktmon stop failed on a full disk).
+
+        Pruning is additionally gated on ``scenario_passed`` (default false):
+        a failed or exceptional scenario keeps its whole guest probe
+        directory and every run VM-side, because its originals are the only
+        failure evidence - an exported summary never replaces the actual
+        bytes (fakenet100 T005-R02: the R01 failure lost its PCAPs to this
+        prune).  A non-empty run.originals export is not by itself a
+        sufficient condition for deletion.
         """
         assert self.vm
         # A run still bound by the service (failed/recovering stop) keeps its
@@ -2951,6 +2977,12 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         status = self._status()
         released = (status.get('state') == 'stopped' and
                     not status.get('run_id') and not status.get('controller'))
+        if not scenario_passed:
+            return {'pruned_runs': [], 'guest_removed': False,
+                    'service_released_runs': released,
+                    'prune_skipped_reason': 'scenario not passed; failure originals kept',
+                    'kept_guest': guest,
+                    'kept_runs': [run.get('run_id') for run in runs]}
         pruned_runs = []
         if not fault and released:
             for run in runs:
@@ -3585,13 +3617,14 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     self._run_auxiliary_cases(first_run, captures[first_label], runtime_profile)
                 if scenario.get('lifecycle_chain') == 'restart':
                     # Bind the first run before restart changes current-run
-                    # identity.  Its probe/ETL is independent of run-02.
+                    # identity.  Its probe/ETL is independent of run-02.  The
+                    # runtime PCAP is NOT collected here: the pcap writers stay
+                    # open for the whole run and only publish after the stop,
+                    # so every healthy run's pcap is collected once after the
+                    # final stop converged (fakenet100 T005-R02 fix of the
+                    # restart-branch wait that read an unclosed file).
                     first_run['events'] = call('get_events', {'limit': 100})
                     first_run['artifacts'] = call('list_artifacts')
-                    if runtime_pcap_required(runtime_profile):
-                        first_run['runtime_pcap'] = self._wait_runtime_pcap(
-                            run_id, root / first_label / 'runtime.pcap')
-                        evidence.add(root / first_label / 'runtime.pcap')
                     finish_capture(first_label, first_run)
                     second_label = 'run-02'
                     captures[second_label] = self._start_capture_and_probe(guest, runtime_profile, nonce, second_label)
@@ -3664,10 +3697,10 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 # writers hold the file open for the whole run, so its
                 # publication only completes after the stop; waiting during
                 # the healthy window always timed out (discovery100-10/13).
-                if runtime_pcap_required(runtime_profile):
-                    active_run['runtime_pcap'] = self._wait_runtime_pcap(
-                        run_id, root / active_run['label'] / 'runtime.pcap')
-                    evidence.add(root / active_run['label'] / 'runtime.pcap')
+                # Every healthy run in this scenario collects its OWN pcap by
+                # its own run id after both writers closed; a later run's
+                # bytes never stand in for an earlier run.
+                self._collect_runtime_pcaps(runs, root, evidence, runtime_profile)
                 finish_capture(active_run['label'], active_run)
                 run_after, run_after_raw = self._capture_sections()
                 active_run['five_sections_after'] = run_after
@@ -3862,12 +3895,14 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                                          len(recovery.get('health_samples', [])) == 3 and
                                          recovery.get('stopped', {}).get('state') == 'stopped')
             verdict['fault_oracle'] = bool(fault_evidence.get('adjudication', {}).get('passed'))
+        scenario_passed = failure is None and all(verdict.values())
         try:
-            vm_footprint = self._prune_scenario_vm_footprint(runs, guest, fault)
+            vm_footprint = self._prune_scenario_vm_footprint(
+                runs, guest, fault, scenario_passed=scenario_passed)
             evidence.write('vm-footprint-prune.json', vm_footprint)
         except Exception as exc:  # noqa: BLE001
             evidence.write('vm-footprint-prune.json', {'error': repr(exc)})
-        scenario_state = 'pass' if failure is None and all(verdict.values()) else 'fail'
+        scenario_state = 'pass' if scenario_passed else 'fail'
         if failure is None and scenario_state != 'pass':
             failure = 'scenario verdict false: ' + repr([key for key, value in verdict.items() if not value])
         state.update({'phase': scenario_state, 'updated_at': utc_now()})

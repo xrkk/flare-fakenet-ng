@@ -1143,19 +1143,22 @@ def test_vm_footprint_prune_removes_exported_benign_runs_only(tmp_path):
     runner._status = lambda timeout=30: {'state': 'stopped', 'run_id': None, 'controller': None}
     runs = [{'run_id': 'r-1', 'originals': {'files': []}},
             {'run_id': 'r-2', 'originals': None}]
-    result = runner._prune_scenario_vm_footprint(runs, r'C:\g\sst-x', None)
+    result = runner._prune_scenario_vm_footprint(runs, r'C:\g\sst-x', None,
+                                                 scenario_passed=True)
     assert result['raw'] == 'raw'
     command = commands[0]
     assert 'r-1' in command and 'r-2' not in command
     assert r'C:\g\sst-x'.replace('\\', '\\\\') in command or 'sst-x' in command
     # fault 场景保留 VM 侧 incident 证据，仅清探针目录
     commands.clear()
-    runner._prune_scenario_vm_footprint(runs, r'C:\g\sst-x', 'listener_stop')
+    runner._prune_scenario_vm_footprint(runs, r'C:\g\sst-x', 'listener_stop',
+                                        scenario_passed=True)
     assert 'r-1' not in commands[0] and 'sst-x' in commands[0]
     # 服务未释放 run（failed/恢复责任未清）时不动 artifacts，防止破坏恢复证据
     commands.clear()
     runner._status = lambda timeout=30: {'state': 'failed', 'run_id': 'r-1', 'controller': 'c'}
-    skipped = runner._prune_scenario_vm_footprint(runs, r'C:\g\sst-x', None)
+    skipped = runner._prune_scenario_vm_footprint(runs, r'C:\g\sst-x', None,
+                                                   scenario_passed=True)
     assert skipped['service_released_runs'] is False
     assert 'r-1' not in commands[0]
 
@@ -1443,3 +1446,86 @@ def test_policy_boundaries_are_not_tied_to_one_timing_axis():
         rows = [p for p in profiles if p['variant'] == variant]
         assert len({p['tempo'] for p in rows}) == 4
         assert len({p['interleave'] for p in rows}) == 4
+
+
+def test_runtime_pcaps_collected_per_run_after_final_stop(tmp_path):
+    """T005-R02: each healthy run binds its own run id to its own pcap."""
+    runner = suite.Suite.__new__(suite.Suite)
+    calls = []
+
+    def wait(run_id, destination):
+        calls.append((run_id, destination))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b'pcap-' + run_id.encode())
+        return {'run_id': run_id, 'destination': str(destination)}
+
+    runner._wait_runtime_pcap = wait
+    profile = suite.profile_for_bucket('default', 0, in_bucket=0)
+    assert suite.runtime_pcap_required(profile)
+    evidence = suite.Evidence(tmp_path)
+    runs = [
+        {'label': 'run-01', 'run_id': 'r1', 'start_response': {'state': 'healthy'}},
+        {'label': 'run-02', 'run_id': 'r2', 'start_response': {'state': 'healthy'}},
+        {'label': 'run-03', 'run_id': 'r3', 'start_response': {'state': 'failed'}},
+    ]
+    runner._collect_runtime_pcaps(runs, tmp_path, evidence, profile)
+    assert calls == [(runs[0]['run_id'], tmp_path / 'run-01' / 'runtime.pcap'),
+                     (runs[1]['run_id'], tmp_path / 'run-02' / 'runtime.pcap')]
+    assert runs[0]['runtime_pcap']['run_id'] == 'r1'
+    assert runs[1]['runtime_pcap']['run_id'] == 'r2'
+    assert 'runtime_pcap' not in runs[2]
+    single = [{'label': 'run-01', 'run_id': 'only', 'start_response': {'state': 'healthy'}}]
+    calls.clear()
+    runner._collect_runtime_pcaps(single, tmp_path, evidence, profile)
+    assert calls == [('only', tmp_path / 'run-01' / 'runtime.pcap')]
+    # Non-pcap profiles collect nothing at all.
+    calls.clear()
+    runner._collect_runtime_pcaps(runs, tmp_path, evidence,
+                                  suite.profile_for_bucket('B2', 0))
+    assert calls == []
+
+
+def test_vm_footprint_prune_keeps_failed_scenario_originals(tmp_path):
+    """T005-R02: a failed scenario never deletes its VM-side evidence."""
+    for scenario_passed, expect_vm_command in ((False, False), (True, True)):
+        runner = suite.Suite.__new__(suite.Suite)
+        runner.vm = object()
+        released = {'state': 'stopped', 'run_id': None, 'controller': None}
+        runner._status = lambda: released
+        vm_commands = []
+
+        def vm_json(command, timeout):
+            vm_commands.append(command)
+            return {'pruned_runs': [], 'guest_removed': False}, 'raw'
+        runner._vm_json = vm_json
+        runs = [{'run_id': 'r1', 'originals': {'files': [{'path': 'run.log'}]}}]
+        result = runner._prune_scenario_vm_footprint(
+            runs, r'C:\guest\probe', None, scenario_passed=scenario_passed)
+        assert bool(vm_commands) is expect_vm_command
+        if not scenario_passed:
+            assert result['pruned_runs'] == [] and result['guest_removed'] is False
+            assert result['kept_guest'] == r'C:\guest\probe'
+            assert result['kept_runs'] == ['r1']
+            assert 'failure originals kept' in result['prune_skipped_reason']
+        else:
+            assert 'Remove-Item' in vm_commands[0]
+
+
+def test_vm_footprint_prune_keeps_runs_while_service_bound():
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.vm = object()
+    runner._status = lambda: {'state': 'recovering', 'run_id': 'x', 'controller': 'y'}
+    vm_commands = []
+
+    def vm_json(command, timeout):
+        vm_commands.append(command)
+        return {'pruned_runs': [], 'guest_removed': False}, 'raw'
+    runner._vm_json = vm_json
+    runs = [{'run_id': 'r1', 'originals': {'files': [{'path': 'run.log'}]}}]
+    result = runner._prune_scenario_vm_footprint(
+        runs, r'C:\guest\probe', None, scenario_passed=True)
+    assert result['pruned_runs'] == []
+    # The guest probe directory is transient even for a bound service, but no
+    # run artifacts are removed while the service still holds them.
+    assert 'runs' in vm_commands[0] and 'Remove-Item' in vm_commands[0]
+    assert "Join-Path $runs 'r1'" not in vm_commands[0]
