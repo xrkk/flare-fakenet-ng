@@ -451,12 +451,29 @@ def child_main(run_id, run_dir):
                 response['result'] = {'stacks': IncidentCollector._thread_stacks()}
             elif kind == 'stop':
                 if instance is not None:
-                    with capture_stop_stacks(directory):
-                        fault.before_listener_phase()
-                        # Inject at the resource-release entry, while the
-                        # managed session is still owned and recoverable.
-                        fault.on_stop_error()
-                        instance.stop()
+                    try:
+                        with capture_stop_stacks(directory):
+                            fault.before_listener_phase()
+                            # Inject at the resource-release entry, while the
+                            # managed session is still owned and recoverable.
+                            fault.on_stop_error()
+                            instance.stop()
+                    except BaseException:
+                        # The orderly listeners-then-diverter teardown did
+                        # not run.  Until the supervisor's Job termination
+                        # releases the filter, reset the redirected client
+                        # flows so their kernel TCBs cannot emit on the
+                        # original tuples after the filter is gone
+                        # (candidate10 sst-004 primary leak).  A quiesce
+                        # failure is diagnostic only and never masks the
+                        # original stop error.
+                        try:
+                            instance.quiesce_redirected_flows('managed_stop_failed')
+                        except BaseException:
+                            logging.getLogger('managed').exception(
+                                'redirected-flow quiesce after failed stop '
+                                'raised')
+                        raise
                 response['result'] = {'stopped': True}
                 exiting = True
             else:

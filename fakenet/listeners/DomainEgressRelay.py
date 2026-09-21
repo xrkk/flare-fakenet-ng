@@ -6,6 +6,7 @@ from collections import Counter, defaultdict, deque
 import logging
 import select
 import socket
+import struct
 import threading
 import time
 
@@ -14,6 +15,30 @@ from fakenet.diverters.egresspolicy import normalize_hostname
 
 class ClientHelloError(ValueError):
     pass
+
+
+_LINGER_ABORT = struct.pack('ii', 1, 0)
+
+
+def _abortive_close(connection):
+    """Close one socket so the kernel emits RST while a rewrite can translate.
+
+    A graceful shutdown leaves the peer TCB free to retransmit unacknowledged
+    data after the diverter filter closes (candidate10 sst-004: the probe's
+    141-byte request retransmitted onto the physical NIC 108ms after Job
+    termination because the relay socket abort happened after the WinDivert
+    handle was gone).  SO_LINGER(1, 0) makes close() abortive; callers must
+    invoke it only while the diverter mapping still holds its teardown grace.
+    """
+    try:
+        connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                              _LINGER_ABORT)
+    except OSError:
+        pass
+    try:
+        connection.close()
+    except OSError:
+        pass
 
 
 def _take(data, offset, count):
@@ -121,6 +146,7 @@ class DomainEgressRelay(object):
         self._listener = None
         self._accept_thread = None
         self._stop = threading.Event()
+        self._quiesce = threading.Event()
         self._quota_lock = threading.Lock()
         self._pending = 0
         self._pending_by_source = Counter()
@@ -194,6 +220,28 @@ class DomainEgressRelay(object):
         for worker in workers:
             worker.join(max(0, deadline - time.monotonic()))
 
+    def quiesce(self, reason='unspecified'):
+        """Fail-safe teardown of relayed client flows after a failed stop.
+
+        Called from the managed child when the orderly stop sequence failed
+        (e.g. an injected cleanup fault): the child stays alive until the
+        supervisor terminates its Job, and at that point kernel handle
+        cleanup aborts these sockets when the diverter filter can no longer
+        translate the abort RST.  Aborting here, while the mapping rewrite
+        is still in place, closes the client TCBs first so no original-tuple
+        retransmission can later bypass redirection.  New arrivals are
+        aborted the same way; the relay otherwise keeps serving its socket
+        so the supervisor's diagnostics and termination flow are unchanged.
+        """
+        self._quiesce.set()
+        with self._connections_lock:
+            connections = list(self._connections)
+        for connection in connections:
+            _abortive_close(connection)
+        if self.callbacks is not None:
+            self.callbacks.logEgressEvent(
+                'RELAY_QUIESCE', reason=reason, aborted_connections=len(connections))
+
     def _accept_loop(self):
         while not self._stop.is_set():
             try:
@@ -208,6 +256,28 @@ class DomainEgressRelay(object):
             if self._stop.is_set():
                 client.close()
                 return
+            if self._quiesce.is_set():
+                # A stop that failed must not leave a fresh redirected TCB
+                # alive past the supervisor's Job termination: abort the
+                # accepted socket (kernel RST, translated by the mapping's
+                # teardown grace) and retire the mapping the diverter
+                # created for this SYN.
+                source, sport = address[0], address[1]
+                mapping = None
+                if (self.callbacks.isLocalAddress(source) and
+                        self._allow_new_flow_rate(source)):
+                    mapping = self.callbacks.consumeRelayTarget(source, sport)
+                _abortive_close(client)
+                deny_fields = {
+                    'reason': 'relay_quiesced', 'reason_code': 'relay_quiesced',
+                    'source': source, 'src': source, 'sport': sport}
+                if mapping is not None:
+                    deny_fields.update(generation=mapping.generation,
+                                       original_ip=mapping.server_ip,
+                                       original_port=mapping.server_port)
+                    self.callbacks.closeRelayMapping(mapping.generation)
+                self.callbacks.logEgressEvent('RELAY_QUIESCE_RST', **deny_fields)
+                continue
             source = address[0]
             mapping = None
             if (self.callbacks.isLocalAddress(source) and
@@ -366,8 +436,10 @@ class DomainEgressRelay(object):
         except Exception as exc:
             # stop() deliberately closes every active socket.  A worker can
             # observe that close between select() and recv()/send(); it is an
-            # expected shutdown path, not a failed SNI decision.
-            if not self._stop.is_set():
+            # expected shutdown path, not a failed SNI decision.  The same
+            # holds for quiesce(): the abortive close is the product's own
+            # teardown decision, not a deny verdict on this client.
+            if not self._stop.is_set() and not self._quiesce.is_set():
                 reason_code = self._deny_reason_code(exc, hello_sni)
                 deny_fields = {
                     'domain': mapping.domain, 'reason': type(exc).__name__,

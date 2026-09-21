@@ -459,6 +459,36 @@ class Fakenet(object):
                 # native/policy/NIC evidence.
                 self.logger.info('DEFAULT_INTERCEPTION_READY')
 
+    def quiesce_redirected_flows(self, reason='unspecified'):
+        """Fail-safe teardown of redirected client flows after failed stop.
+
+        The orderly stop() tears listeners down before the diverter, so relay
+        socket teardown is address-translated while the filter is open.  When
+        that sequence fails before it begins (candidate10 sst-004: an
+        injected cleanup error), the supervisor later terminates the child's
+        Job and kernel handle cleanup aborts relay sockets only after the
+        WinDivert handle is gone, leaving client TCBs that retransmit on the
+        original tuples straight onto the physical NIC.  Callers invoke this
+        from the failed-stop path while the diverter is still filtering.
+        """
+        results = {}
+        for provider in self.running_listener_providers:
+            quiesce = getattr(provider, 'quiesce', None)
+            if not callable(quiesce):
+                continue
+            provider_name = getattr(provider, 'name', type(provider).__name__)
+            try:
+                quiesce(reason)
+                results[provider_name] = True
+            except Exception:
+                results[provider_name] = False
+                self.logger.exception(
+                    'Listener failed during redirected-flow quiesce: %s',
+                    provider_name)
+        self.logger.info(
+            'REDIRECTED_FLOW_QUIESCE reason=%s providers=%s', reason, results)
+        return results
+
     def stop(self):
         with self._stop_lock:
             if self._stop_started:
