@@ -227,7 +227,12 @@ class DomainEgressRelayTests(unittest.TestCase):
         self.relay._handle_client(client, ('10.0.0.5', 50003), mapping)
 
         names = [entry[0] for entry in events]
-        self.assertIn(('shutdown', 'client'), events)
+        # A denied client is closed abortively (lingering RST through the
+        # still-live mapping rewrite), never shut down gracefully: the FIN
+        # left the client TCB half-open until its own retransmission timeout
+        # (candidate10 sst-004 case-2).  Ordering keeps the mapping alive
+        # until after the client close.
+        self.assertNotIn(('shutdown', 'client'), events)
         self.assertIn(('close', 'client'), events)
         self.assertLess(names.index('close'), names.index('close_mapping'))
         callbacks.logEgressEvent.assert_called_once()

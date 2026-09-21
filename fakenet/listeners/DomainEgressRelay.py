@@ -33,11 +33,12 @@ def _abortive_close(connection):
     handle was gone).  SO_LINGER(1, 0) makes close() abortive; callers must
     invoke it only while the diverter mapping still holds its teardown grace.
     """
-    try:
-        connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
-                              _LINGER_ABORT)
-    except OSError:
-        pass
+    setsockopt = getattr(connection, 'setsockopt', None)
+    if setsockopt is not None:
+        try:
+            setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, _LINGER_ABORT)
+        except OSError:
+            pass
     try:
         connection.close()
     except OSError:
@@ -394,6 +395,8 @@ class DomainEgressRelay(object):
         Diagnostic only: a failed record never disturbs the connection path.
         """
         try:
+            if not (Path.cwd() / 'creation.jsonl').exists():
+                return  # not a managed run directory
             from fakenet.mcp.native_clock import native_clock_sample
             record = {
                 'schema': 'fakenetng.relay-native-terminal.v1',
