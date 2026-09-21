@@ -1,6 +1,7 @@
 """Actual gate rendezvous and native handle observations for fault evidence."""
 import json
 import os
+from pathlib import Path
 import threading
 import time
 
@@ -165,3 +166,54 @@ def test_native_precise_clock_records_ordered_raw_samples():
     assert first['filetime_100ns'] > 0 and second['filetime_100ns'] > 0
     assert first['pid'] == second['pid'] == os.getpid()
     assert first['thread_id'] == second['thread_id'] == threading.get_native_id()
+
+
+def test_in_child_gate_waits_for_probe_flow_and_own_log(tmp_path, monkeypatch):
+    """diverter_stop: the gate with a probe key waits in-child (no ready file)."""
+    injector, logs, arm = setup_gate(tmp_path, monkeypatch)
+    faultinject._fault_file().unlink()
+    (logs / 'fault-injection-gate.json').unlink(missing_ok=True)
+    injector.arm('diverter_stop')
+    arm = json.loads(faultinject._fault_file().read_text())
+    probe = tmp_path / 'probe.jsonl'
+    (logs / 'fault-injection-gate.json').write_text(
+        json.dumps(dict(arm, probe=str(probe))))
+    (Path('run.log')).write_text(
+        'PROCESS_FLOW disposition=REDIRECT_TLS_RELAY domain=d dport=443 '
+        'dst=198.51.100.77 pid=4242 process=powershell.exe proto=TCP '
+        'sport=50444 src=192.168.204.233\n')
+    probe.write_text(json.dumps({'event': 'ready', 'nonce': arm['nonce']}) + '\n')
+    with pytest.raises(TimeoutError, match='probe-traffic'):
+        injector.wait_for_start_gate(timeout=.05)  # no established yet
+    probe.write_text(
+        json.dumps({'event': 'established', 'nonce': arm['nonce'],
+                    'pid': 4242, 'src': '192.168.204.233:50444'}) + '\n')
+    assert injector.wait_for_start_gate(timeout=.3) is True
+    assert not (logs / 'fault-injection-ready.json').exists()
+
+
+def test_in_child_gate_rejects_unmapped_flow(tmp_path, monkeypatch):
+    injector, logs, arm = setup_gate(tmp_path, monkeypatch)
+    faultinject._fault_file().unlink()
+    (logs / 'fault-injection-gate.json').unlink(missing_ok=True)
+    injector.arm('diverter_stop')
+    arm = json.loads(faultinject._fault_file().read_text())
+    probe = tmp_path / 'probe.jsonl'
+    (logs / 'fault-injection-gate.json').write_text(
+        json.dumps(dict(arm, probe=str(probe))))
+    (Path('run.log')).write_text('PROCESS_FLOW pid=9999 sport=1 src=1.2.3.4\n')
+    probe.write_text(json.dumps({'event': 'established', 'nonce': arm['nonce'],
+                                 'pid': 4242, 'src': '192.168.204.233:50444'}) + '\n')
+    with pytest.raises(TimeoutError, match='probe-traffic'):
+        injector.wait_for_start_gate(timeout=.05)
+
+
+def test_in_child_gate_identity_mismatch_raises(tmp_path, monkeypatch):
+    injector, logs, arm = setup_gate(tmp_path, monkeypatch)
+    faultinject._fault_file().unlink()
+    (logs / 'fault-injection-gate.json').unlink(missing_ok=True)
+    injector.arm('diverter_stop')
+    (logs / 'fault-injection-gate.json').write_text(
+        json.dumps({'fault': 'diverter_stop', 'nonce': 'other', 'probe': 'x'}))
+    with pytest.raises(ValueError, match='identity'):
+        injector.wait_for_start_gate(timeout=.05)

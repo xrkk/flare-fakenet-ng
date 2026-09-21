@@ -268,6 +268,17 @@ class FaultInjector:
         The external test owns readiness evidence. A gate only schedules the
         action; it is never action-success or traffic evidence. Legacy fault
         runs without a gate retain their immediate injection behavior.
+
+        When the gate names a probe file, listener_stop/diverter_stop wait
+        in-process on the same two conditions the external observer used
+        (an established probe connection for this nonce plus a PROCESS_FLOW
+        mapping for its pid/tuple in this run's own log). The in-child poll
+        has no RPC or shell-session cold-start latency, so the injected
+        action lands within milliseconds of the conditions becoming true
+        (candidate13 sst-002: the observer's ~200ms publish latency raced
+        the server-closed session and the conservative action interval
+        could not sit inside it). child_hang keeps the ready-file
+        rendezvous.
         """
         if not enabled() or armed_fault() not in ('listener_stop', 'diverter_stop', 'child_hang'):
             return False
@@ -276,8 +287,17 @@ class FaultInjector:
         if not gate.exists():
             return False
         arm = json.loads(_fault_file().read_text(encoding='utf-8'))
-        if json.loads(gate.read_text(encoding='utf-8')) != arm:
+        gate_data = json.loads(gate.read_text(encoding='utf-8'))
+        if (not isinstance(gate_data, dict) or
+                gate_data.get('fault') != arm.get('fault') or
+                gate_data.get('nonce') != arm.get('nonce')):
             raise ValueError('fault start gate identity mismatch')
+        probe_path = gate_data.get('probe')
+        if (isinstance(probe_path, str) and probe_path and
+                armed_fault() in ('listener_stop', 'diverter_stop')):
+            if self._wait_for_probe_traffic(probe_path, arm.get('nonce'), timeout):
+                return True
+            raise TimeoutError('fault start probe-traffic deadline exceeded')
         expected = dict(arm, run_id=Path.cwd().name)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -294,6 +314,59 @@ class FaultInjector:
                 return True
             time.sleep(.01)
         raise TimeoutError('fault start gate readiness deadline exceeded')
+
+    def _wait_for_probe_traffic(self, probe_path, nonce, timeout):
+        """In-child gate wait: established probe flow mapped in own run.log."""
+        import re as _re
+        deadline = time.monotonic() + timeout
+        seen = 0
+        established = None
+        while time.monotonic() < deadline:
+            try:
+                with open(probe_path, encoding='utf-8', errors='replace') as handle:
+                    lines = handle.read().splitlines()
+            except OSError:
+                lines = []
+            for line in lines[seen:]:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if (isinstance(row, dict) and row.get('event') == 'established'
+                        and row.get('nonce') == nonce):
+                    established = row
+                    break
+            seen = len(lines)
+            if established is not None and self._own_log_maps_flow(established, _re):
+                return True
+            time.sleep(.01)
+        return False
+
+    @staticmethod
+    def _own_log_maps_flow(established, re_module):
+        source, _, port = str(established.get('src', '')).rpartition(':')
+        pid = str(established.get('pid', ''))
+        if not source or not port or not pid:
+            return False
+        try:
+            text = (Path.cwd() / 'run.log').read_text(encoding='utf-8',
+                                                      errors='replace')
+        except OSError:
+            return False
+        for line in text.splitlines():
+            if ('PROCESS_FLOW ' not in line and
+                    'PROCESS_REDIRECT_MAPPING_CREATED' not in line):
+                continue
+            fields = dict(re_module.findall(
+                r'\b([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)', line))
+            if fields.get('pid') != pid:
+                continue
+            if fields.get('sport') == port and fields.get('src') == source:
+                return True
+            if (fields.get('source_port') == port and
+                    fields.get('source_ipv4') == source):
+                return True
+        return False
 
 
 def native_clock_observation():
