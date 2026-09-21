@@ -2627,8 +2627,15 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                         case_observation_error=str(exc)
                         case_log='application evidence failed: '+str(exc)
                 if planned['expectation'] == 'deny':
-                    case_log = (log_event('DIVERT_FAKE', original_ip=target[0], original_port=target[1]) or
-                                log_event('DROP_EXTERNAL', original_ip=target[0], original_port=target[1]))
+                    # A destination-only marker may belong to another
+                    # protocol or client. The exact PID/tuple/protocol flow
+                    # must independently select that same deny disposition.
+                    dispositions = {self._log_fields(line).get('disposition')
+                                    for line in case_flow}
+                    case_log = None
+                    if dispositions in ({'DIVERT_FAKE'}, {'DROP_EXTERNAL'}):
+                        case_log = log_event(next(iter(dispositions)),
+                                             original_ip=target[0], original_port=target[1])
                     case_ok = bool(case_ok and case_flow and (case_packets or case_observation) and case_log and not case_nic)
                 elif planned['expectation'] == 'takeover_allow':
                     case_log = log_event('ALLOW_TAKEOVER_SINK', ip=target[0], sport=source[1],

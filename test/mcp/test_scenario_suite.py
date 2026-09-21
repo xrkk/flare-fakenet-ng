@@ -328,6 +328,15 @@ def test_b2_traffic_oracle_requires_each_released_case_flow_and_fnpr_receipt():
         sentinel = {'rows': [{'event': 'probe_ok', 'nonce': nonce, 'role': 'target',
                               'transport': 'tcp', 'peer': '192.168.204.233:5001'}]}
         assert runner._traffic_oracle(run, profile, nonce, sentinel)['passed']
+        # A UDP deny for the same destination must not prove a TCP relay
+        # connection was diverted (candidate08 sst-004 auxiliary case 4).
+        unrelated_deny = log.replace(
+            'PROCESS_FLOW disposition=DIVERT_FAKE dport=1337 dst=10.20.30.41 pid=777 proto=TCP sport=5002',
+            'PROCESS_FLOW disposition=REDIRECT_TLS_RELAY dport=1337 dst=10.20.30.41 pid=777 proto=TCP sport=5002')
+        unrelated_deny += ('PROCESS_FLOW disposition=DIVERT_FAKE dport=1337 dst=10.20.30.41 '
+                          'pid=777 proto=UDP sport=5009 src=192.168.204.233\n')
+        (root / 'run.log').write_text(unrelated_deny, encoding='utf-8')
+        assert not runner._traffic_oracle(run, profile, nonce, sentinel)['cases'][1]['passed']
         (root / 'run.log').write_text(log.replace('ALLOW_TAKEOVER_SINK dport=443 ip=192.168.204.1 sport=5001\n', ''),
                                       encoding='utf-8')
         assert not runner._traffic_oracle(run, profile, nonce, sentinel)['passed']
