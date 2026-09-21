@@ -217,9 +217,19 @@ class DomainEgressRelay(object):
                 if mapping is not None:
                     self.callbacks.closeRelayMapping(mapping.generation)
                 client.close()
-                self.callbacks.logEgressEvent(
-                    'TLS_SNI_DENY', reason='mapping_or_pending_quota',
-                    source=source)
+                # Bind the rejection to the client identity actually seen;
+                # target fields appear only when a mapping was really held
+                # (a quota rejection after consumeRelayTarget) and are never
+                # fabricated for a mapping-less arrival.
+                deny_fields = {
+                    'reason': 'mapping_or_pending_quota',
+                    'reason_code': 'mapping_or_pending_quota',
+                    'source': source, 'src': source, 'sport': address[1]}
+                if mapping is not None:
+                    deny_fields.update(generation=mapping.generation,
+                                       original_ip=mapping.server_ip,
+                                       original_port=mapping.server_port)
+                self.callbacks.logEgressEvent('TLS_SNI_DENY', **deny_fields)
                 continue
             worker = threading.Thread(
                 target=self._handle_client,
@@ -287,12 +297,27 @@ class DomainEgressRelay(object):
                 if not self._active_by_source[source]:
                     del self._active_by_source[source]
 
+    @staticmethod
+    def _deny_reason_code(exc, hello_sni):
+        """Stable deny category for structured log binding.
+
+        The legacy ``reason`` field keeps the exception class.  ``sni_mismatch``
+        requires a successfully parsed ClientHello whose SNI differed from the
+        mapped domain; parse/read failures stay ``clienthello_error`` and can
+        never carry a fabricated ``sni``.  Everything else is one stable
+        ``relay_error`` bucket — no arbitrary exception text is structured.
+        """
+        if not isinstance(exc, ClientHelloError):
+            return 'relay_error'
+        return 'sni_mismatch' if hello_sni is not None else 'clienthello_error'
+
     def _handle_client(self, client, address, mapping):
         source = address[0]
         upstream = None
         token = None
         pending = True
         active = False
+        hello_sni = None
         with self._connections_lock:
             self._connections.add(client)
         try:
@@ -300,6 +325,7 @@ class DomainEgressRelay(object):
                 raise RuntimeError('relay is stopping')
             client.settimeout(self._settings['hello_timeout'])
             buffered, sni = self._read_client_hello(client)
+            hello_sni = sni
             if sni != mapping.domain:
                 raise ClientHelloError('SNI does not match mapped domain')
             if self._stop.is_set():
@@ -342,9 +368,17 @@ class DomainEgressRelay(object):
             # observe that close between select() and recv()/send(); it is an
             # expected shutdown path, not a failed SNI decision.
             if not self._stop.is_set():
+                reason_code = self._deny_reason_code(exc, hello_sni)
+                deny_fields = {
+                    'domain': mapping.domain, 'reason': type(exc).__name__,
+                    'reason_code': reason_code, 'src': source,
+                    'sport': address[1], 'generation': mapping.generation,
+                    'original_ip': mapping.server_ip,
+                    'original_port': mapping.server_port}
+                if reason_code == 'sni_mismatch':
+                    deny_fields['sni'] = hello_sni
                 self.callbacks.logEgressEvent(
-                    'TLS_SNI_DENY', domain=mapping.domain,
-                    reason=type(exc).__name__)
+                    'TLS_SNI_DENY', **deny_fields)
                 self.logger.debug('TLS relay denied/closed: %s', exc)
         finally:
             if pending:

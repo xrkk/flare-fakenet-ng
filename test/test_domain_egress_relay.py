@@ -1,4 +1,5 @@
 import socket
+import threading
 import types
 import unittest
 from unittest import mock
@@ -232,6 +233,158 @@ class DomainEgressRelayTests(unittest.TestCase):
         callbacks.logEgressEvent.assert_called_once()
         reason = callbacks.logEgressEvent.call_args[1]
         self.assertEqual(reason.get('reason'), 'ClientHelloError')
+
+
+    def _deny_call(self, chunks, mapping, address=('10.0.0.5', 50003)):
+        client = ChunkSocket(chunks=chunks, name='client')
+        callbacks = mock.Mock()
+        self.relay.callbacks = callbacks
+        self.relay._promote_active = mock.Mock(return_value=True)
+        self.relay._release_active = mock.Mock()
+        self.relay._handle_client(client, address, mapping)
+        callbacks.logEgressEvent.assert_called_once()
+        event_name, fields = callbacks.logEgressEvent.call_args
+        return event_name[0], fields
+
+    def test_parsed_sni_mismatch_deny_is_structurally_bindable(self):
+        # discovery100-115 sst-004 case-4: the deny line carried only the
+        # domain and the exception class, so a parse failure and a reviewed
+        # mismatch decision could not be told apart and the rejecting
+        # connection could not be bound to its tuple/generation.
+        mapping = types.SimpleNamespace(
+            generation=21, domain='api.deepseek.com',
+            server_ip='119.188.175.46', server_port=443)
+        event_name, fields = self._deny_call(
+            [client_hello('example.com')], mapping, ('10.0.0.5', 50114))
+        self.assertEqual('TLS_SNI_DENY', event_name)
+        self.assertEqual('ClientHelloError', fields.get('reason'))
+        self.assertEqual('api.deepseek.com', fields.get('domain'))
+        self.assertEqual('sni_mismatch', fields.get('reason_code'))
+        self.assertEqual('example.com', fields.get('sni'))
+        self.assertEqual('10.0.0.5', fields.get('src'))
+        self.assertEqual(50114, fields.get('sport'))
+        self.assertEqual(21, fields.get('generation'))
+        self.assertEqual('119.188.175.46', fields.get('original_ip'))
+        self.assertEqual(443, fields.get('original_port'))
+
+    def test_bad_client_hello_cannot_masquerade_as_mismatch(self):
+        mapping = types.SimpleNamespace(
+            generation=22, domain='api.deepseek.com',
+            server_ip='93.184.216.34', server_port=443)
+        for chunks in ([b'\x00' * 64], [b'not a tls record at all']):
+            event_name, fields = self._deny_call(chunks, mapping)
+            self.assertEqual('TLS_SNI_DENY', event_name)
+            self.assertEqual('clienthello_error', fields.get('reason_code'))
+            self.assertNotIn('sni', fields)
+            self.assertEqual('10.0.0.5', fields.get('src'))
+            self.assertEqual(50003, fields.get('sport'))
+            self.assertEqual(22, fields.get('generation'))
+
+    def test_eof_before_hello_is_clienthello_error_without_sni(self):
+        mapping = types.SimpleNamespace(
+            generation=23, domain='api.deepseek.com',
+            server_ip='93.184.216.34', server_port=443)
+        event_name, fields = self._deny_call([], mapping)
+        self.assertEqual('TLS_SNI_DENY', event_name)
+        self.assertEqual('clienthello_error', fields.get('reason_code'))
+        self.assertNotIn('sni', fields)
+        self.assertEqual('ClientHelloError', fields.get('reason'))
+
+    def test_same_domain_denies_bind_by_sport_and_generation(self):
+        mapping_one = types.SimpleNamespace(
+            generation=31, domain='api.deepseek.com',
+            server_ip='119.188.175.46', server_port=443)
+        mapping_two = types.SimpleNamespace(
+            generation=32, domain='api.deepseek.com',
+            server_ip='221.204.163.76', server_port=443)
+        _, first = self._deny_call(
+            [client_hello('example.com')], mapping_one, ('10.0.0.5', 50112))
+        _, second = self._deny_call(
+            [client_hello('example.org')], mapping_two, ('10.0.0.5', 50114))
+        self.assertNotEqual(first['sport'], second['sport'])
+        self.assertNotEqual(first['generation'], second['generation'])
+        self.assertNotEqual(first['original_ip'], second['original_ip'])
+        self.assertEqual('sni_mismatch', first['reason_code'])
+        self.assertEqual('sni_mismatch', second['reason_code'])
+        self.assertNotEqual(first['sni'], second['sni'])
+
+    def test_accept_deny_without_mapping_keeps_client_identity_only(self):
+        client = ChunkSocket(name='client')
+        relay_callbacks = mock.Mock()
+        relay_callbacks.isLocalAddress.return_value = True
+        relay_callbacks.consumeRelayTarget.return_value = None
+        self.relay.callbacks = relay_callbacks
+        self.relay._allow_new_flow_rate = mock.Mock(return_value=True)
+        self.relay._stop = threading.Event()
+
+        def stop_after_first_accept():
+            self.relay._stop.set()
+            raise OSError('listener gone')
+
+        def accept_dispatch():
+            if not accept_dispatch.served:
+                accept_dispatch.served = True
+                return client, ('10.0.0.5', 50010)
+            stop_after_first_accept()
+
+        accept_dispatch.served = False
+        listener = mock.Mock()
+        listener.accept.side_effect = accept_dispatch
+        self.relay._listener = listener
+        self.relay._accept_loop()
+
+        relay_callbacks.logEgressEvent.assert_called_once()
+        event_name, fields = relay_callbacks.logEgressEvent.call_args
+        self.assertEqual('TLS_SNI_DENY', event_name[0])
+        self.assertEqual('mapping_or_pending_quota', fields.get('reason'))
+        self.assertEqual('mapping_or_pending_quota', fields.get('reason_code'))
+        self.assertEqual('10.0.0.5', fields.get('src'))
+        self.assertEqual(50010, fields.get('sport'))
+        self.assertNotIn('generation', fields)
+        self.assertNotIn('original_ip', fields)
+        self.assertNotIn('original_port', fields)
+        relay_callbacks.closeRelayMapping.assert_not_called()
+        self.assertTrue(client.closed)
+
+    def test_accept_quota_deny_with_mapping_logs_full_binding(self):
+        client = ChunkSocket(name='client')
+        relay_callbacks = mock.Mock()
+        relay_callbacks.isLocalAddress.return_value = True
+        mapping = types.SimpleNamespace(
+            generation=41, domain='api.deepseek.com',
+            server_ip='119.188.175.46', server_port=443)
+        relay_callbacks.consumeRelayTarget.return_value = mapping
+        self.relay.callbacks = relay_callbacks
+        self.relay._allow_new_flow_rate = mock.Mock(return_value=True)
+        self.relay._acquire_pending = mock.Mock(return_value=False)
+        self.relay._stop = threading.Event()
+
+        def stop_after_first_accept():
+            self.relay._stop.set()
+            raise OSError('listener gone')
+
+        def accept_dispatch():
+            if not accept_dispatch.served:
+                accept_dispatch.served = True
+                return client, ('10.0.0.5', 50011)
+            stop_after_first_accept()
+
+        accept_dispatch.served = False
+        listener = mock.Mock()
+        listener.accept.side_effect = accept_dispatch
+        self.relay._listener = listener
+        self.relay._accept_loop()
+
+        relay_callbacks.logEgressEvent.assert_called_once()
+        event_name, fields = relay_callbacks.logEgressEvent.call_args
+        self.assertEqual('TLS_SNI_DENY', event_name[0])
+        self.assertEqual('10.0.0.5', fields.get('src'))
+        self.assertEqual(50011, fields.get('sport'))
+        self.assertEqual(41, fields.get('generation'))
+        self.assertEqual('119.188.175.46', fields.get('original_ip'))
+        self.assertEqual(443, fields.get('original_port'))
+        relay_callbacks.closeRelayMapping.assert_called_once_with(41)
+        self.assertTrue(client.closed)
 
 
 if __name__ == '__main__':
