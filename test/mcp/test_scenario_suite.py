@@ -2039,3 +2039,42 @@ def test_native_deny_rejects_substitutes():
                                            sentinel)['cases'][3]
             assert not case4['passed'], name
             assert not case4.get('sni_binding'), name
+
+
+def test_pktmon_bare_rst_exemption_is_live_for_both_paths(tmp_path):
+    """The bare-RST exemption must actually see the parsed TCP flags.
+
+    is_bare_rst read a 'flags' key parse_packets never produced, so the
+    exemption (sst-089 precedent: a half-open denied TCB's teardown RST is
+    signaling, not payload) was dead code and every <=60B reset counted as a
+    leak on both the primary and the case paths (candidate19 sst-004 case-1:
+    a 54-byte RST after the 1337 listener deny).  With flags parsed, the
+    same packet is exempt; a data-carrying segment stays counted.
+    """
+    import importlib.util as _ilu
+    spec = _ilu.spec_from_file_location(
+        'scenario_pktmon', Path(suite.__file__).with_name('scenario_pktmon.py'))
+    decoder = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(decoder)
+    header = ('[02]1CB4.11C4::2026-09-21 13:38:54.917249300 '
+              '[Microsoft-Windows-PktMon] PktGroupId 1，PktNumber 1，出现 1，'
+              '方向 Tx ，类型 以太网 ，组件 9，边缘 1，筛选器 0，'
+              'OriginalSize %d，LoggedSize %d \n')
+    body = ('\t00-0C-29-C1-CA-49 > 00-50-56-E7-FE-AA, ethertype IPv4 (0x0800), '
+            'length %d: 192.168.204.233.50161 > 198.51.100.77.1337: %s\n')
+    raw = ('ï»¿' + (header % (54, 54) + body % (54, 'Flags [R.], seq 3052344439, '
+             'ack 952653051, win 0, length 0') +
+            header % (194, 194) + body % (194, 'Flags [P.], seq 2039796806:2039796947, '
+             'ack 1760304382, win 1024, length 141'))).encode('utf-8')
+    packets = decoder.parse_packets(raw)
+    rst = next(p for p in packets if p['flags'] == 'R.')
+    data = next(p for p in packets if p['flags'] == 'P.')
+    assert rst['original_size'] == 54 and data['original_size'] == 194
+    # The oracle's exemption helper in scenario_suite sees the same key.
+    source = Path(suite.__file__).read_text(encoding='utf-8')
+    assert "packet.get('flags')" in source
+    def is_bare_rst(packet):
+        flags = str(packet.get('flags') or '').upper()
+        size = packet.get('original_size') or packet.get('logged_size')
+        return 'R' in flags and size is not None and size <= 60
+    assert is_bare_rst(rst) and not is_bare_rst(data)

@@ -66,9 +66,11 @@ def parse_packets(raw):
         original = re.search(r'OriginalSize\s+(\d+)\b', header)
         logged = re.search(r'LoggedSize\s+(\d+)\b', header)
         timestamp = re.search(r'::(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+)', header)
-        transport = 'TCP' if re.search(r'Flags \[[^\]]*\]', body) else (
+        flags = re.search(r'Flags \[([^\]]*)\]', body)
+        transport = 'TCP' if flags else (
             'UDP' if re.search(r'\bUDP\b', body) else None)
         packets.append(dict(src=source, dst=target, protocol=transport,
+                            flags=flags.group(1) if flags else None,
                             direction=direction[1] if direction else None,
                             component=int(component[1]) if component else None,
                             timestamp_local=timestamp[1] if timestamp else None,
