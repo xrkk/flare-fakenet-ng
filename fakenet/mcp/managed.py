@@ -464,7 +464,12 @@ def child_main(run_id, run_dir):
                     fault.set_start_gate_liveness(
                         lambda row: _policy.relay_client_mapping_active(
                             *str(row.get('src', '')).rsplit(':', 1)))
-                fault.wait_for_start_gate()
+                # The runner-side rendezvous allows the probe 60s; the
+                # in-child wait must be at least as patient or late probe
+                # traffic (B2 reviewed-private DNS + route setup exceeded the
+                # old 10s default: candidate20 fault-spike sst-015) fails the
+                # start instead of releasing the fault.
+                fault.wait_for_start_gate(timeout=70)
                 fault.install_listener_exception_hook(instance.running_listener_providers)
                 fault.install_capture_exception_hook(instance.diverter)
                 fault.inject_listener_stop(instance.running_listener_providers)
