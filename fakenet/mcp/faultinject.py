@@ -211,6 +211,7 @@ class FaultInjector:
             return False
         raw_handle = getattr(handle, '_handle', None)
         before = native_handle_observation(raw_handle)
+        clock_before = native_clock_observation()
         began = time.time_ns()
         try:
             # Use the same close boundary as normal teardown: PyDivert 2.1.0
@@ -218,11 +219,13 @@ class FaultInjector:
             diverter._close_windivert_handle()
             after = native_handle_observation(raw_handle)
             ended = time.time_ns()
+            clock_after = native_clock_observation()
             receipt = json.loads((Path.cwd() / 'fault-triggered.json').read_text(encoding='utf-8'))
             with (Path.cwd() / 'fault-action.json').open('x', encoding='utf-8') as stream:
                 json.dump(dict(schema='fakenet.fault-action.v1',
                     run_id=Path.cwd().name, pid=os.getpid(), **receipt,
                     action='WinDivertClose', start_time_ns=began, end_time_ns=ended,
+                    clock_observations=dict(before=clock_before, after=clock_after),
                     before=before, after=after), stream)
         finally:
             diverter.handle = None
@@ -291,6 +294,45 @@ class FaultInjector:
                 return True
             time.sleep(.01)
         raise TimeoutError('fault start gate readiness deadline exceeded')
+
+
+def native_clock_observation():
+    """Supplemental raw clock evidence; never a replacement acceptance bound.
+
+    Bracket the precise FILETIME read with QPC so a later consumer can retain
+    sampling latency instead of treating displayed nanoseconds as accuracy.
+    Unavailable instrumentation must not prevent the armed fault or cleanup.
+    """
+    if os.name != 'nt':
+        return dict(supported=False, reason='native Windows required')
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        precise = kernel.GetSystemTimePreciseAsFileTime
+        precise.argtypes = [ctypes.POINTER(wintypes.FILETIME)]
+        precise.restype = None
+        counter = kernel.QueryPerformanceCounter
+        frequency = kernel.QueryPerformanceFrequency
+        for query in (counter, frequency):
+            query.argtypes = [ctypes.POINTER(ctypes.c_longlong)]
+            query.restype = wintypes.BOOL
+        hz, lo, hi = (ctypes.c_longlong() for _ in range(3))
+        stamp = wintypes.FILETIME()
+        if not frequency(ctypes.byref(hz)) or hz.value <= 0:
+            raise OSError('QueryPerformanceFrequency unavailable')
+        if not counter(ctypes.byref(lo)):
+            raise OSError('QueryPerformanceCounter before failed')
+        precise(ctypes.byref(stamp))
+        if not counter(ctypes.byref(hi)) or hi.value < lo.value:
+            raise OSError('QueryPerformanceCounter after invalid')
+        return dict(supported=True, api='GetSystemTimePreciseAsFileTime',
+                    filetime_100ns=(stamp.dwHighDateTime << 32) | stamp.dwLowDateTime,
+                    qpc_before=lo.value, qpc_after=hi.value,
+                    qpc_frequency=hz.value, pid=os.getpid(),
+                    thread_id=threading.get_native_id())
+    except Exception as exc:
+        return dict(supported=False, reason=type(exc).__name__ + ': ' + str(exc))
 
 
 def native_handle_observation(handle):

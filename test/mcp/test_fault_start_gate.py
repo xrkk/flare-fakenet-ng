@@ -121,3 +121,47 @@ def test_diverter_fault_clears_stale_error_and_preserves_action(tmp_path, monkey
     assert action['after']['last_error'] == 6
     assert action['fault'] == 'diverter_stop'
     assert action['start_time_ns'] <= action['end_time_ns']
+
+
+@pytest.mark.parametrize('supported', [True, False])
+def test_action_clock_samples_bracket_close_without_replacing_utc(tmp_path, monkeypatch, supported):
+    injector, _, _ = setup_gate(tmp_path, monkeypatch)
+    faultinject._fault_file().unlink()
+    injector.arm('diverter_stop')
+    order = []
+
+    class Handle:
+        _handle = 123
+
+    class Diverter:
+        handle = Handle()
+
+        def _close_windivert_handle(self):
+            order.append('close')
+
+    def observe_clock():
+        order.append('clock')
+        return dict(supported=supported, sample=len(order))
+
+    monkeypatch.setattr(faultinject, 'native_handle_observation', lambda _: {})
+    monkeypatch.setattr(faultinject, 'native_clock_observation', observe_clock)
+    assert injector.inject_diverter_stop(Diverter())
+    action = json.loads((tmp_path / 'run-identity' / 'fault-action.json').read_text())
+    assert order == ['clock', 'close', 'clock']
+    assert action['clock_observations'] == {
+        'before': dict(supported=supported, sample=1),
+        'after': dict(supported=supported, sample=3)}
+    assert action['start_time_ns'] <= action['end_time_ns']
+    assert action['schema'] == 'fakenet.fault-action.v1'
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='native Windows clock APIs required')
+def test_native_precise_clock_records_ordered_raw_samples():
+    first = faultinject.native_clock_observation()
+    second = faultinject.native_clock_observation()
+    assert first['supported'] and second['supported']
+    assert first['qpc_before'] <= first['qpc_after'] <= second['qpc_before'] <= second['qpc_after']
+    assert first['qpc_frequency'] == second['qpc_frequency'] > 0
+    assert first['filetime_100ns'] > 0 and second['filetime_100ns'] > 0
+    assert first['pid'] == second['pid'] == os.getpid()
+    assert first['thread_id'] == second['thread_id'] == threading.get_native_id()

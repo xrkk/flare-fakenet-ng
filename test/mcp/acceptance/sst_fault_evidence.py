@@ -397,7 +397,8 @@ def assess(case, root, expected_candidate=CANDIDATE):
                 hashlib.sha256(x.encode('utf-8')).hexdigest() in {
                     'd22e2c7b174090e52d4cac96b2ade8ae0da57e4b9a244720d868e897fc249f60',
                     'ce18c70836af10f7c721070fff01cc38dcba41fdb946d5fe74fe73ad9d6fd2c2',
-                    '567bcd10e579558de287ebc403bd90618048fe120a1f2d2178889462dff18f7d'}
+                    '567bcd10e579558de287ebc403bd90618048fe120a1f2d2178889462dff18f7d',
+                    'd06fdd0c1f0a6051e018b956fbfb549aa92f4de687291ecdbf179f95405adb10'}
                 and x.splitlines()[126].strip() == 'time.sleep(3600)'
                 for x in observations)
             matched = any(isinstance(x, str) and 'LIVE STOP STACKS timestamp=' in x
