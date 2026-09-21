@@ -1423,7 +1423,16 @@ class Diverter(DiverterBase, WinUtilMixin):
                 if loop_top - self._hp_last_flush >= 10.0:
                     self._hp_last_flush = loop_top
                     self._hp_flush()
-                wdpkt = self.handle.recv()
+                handle = self.handle
+                if handle is None:
+                    # Abrupt handle removal (injected handle loss or a
+                    # concurrent close): exit through the same clean path as
+                    # recv() on a closed handle.  Raising AttributeError here
+                    # instead races the watchdog teardown with a spurious
+                    # capture failure (candidate12 sst-002 rerun: three
+                    # run.log tracebacks and a failed stop cascade).
+                    return
+                wdpkt = handle.recv()
                 prev_recv_return = time.monotonic()
 
                 if wdpkt is None:
