@@ -150,6 +150,31 @@ def parse_line(text, ref):
     if m:
         event.update(tcb=(m[1] or m[2]).upper(), kind='connect context')
         return event
+    # Observed Win10 invalid-address inspection failure (candidate07 sst-002).
+    # Retain it as negative evidence, including when a selected TCB address is
+    # reused after Closed. It cannot establish identity, birth or a Closed
+    # boundary. Unreviewed status strings still fall through to rejection.
+    invalid_address = re.escape('传输拒绝指定的无效网络地址。')
+    m = re.fullmatch(r'Inspect Connect has been completed on Tcb (' + TCB +
+                     r') with status = ' + invalid_address + r'\.', body)
+    if m:
+        event.update(tcb=m[1].upper(), kind='inspect connect rejected', terminal=True)
+        return event
+    m = re.fullmatch(r'connection (' + TCB +
+                     r') \(local= remote=\) shutdown initiated \(' +
+                     invalid_address + r'\)\. PID = ([1-9][0-9]*)\.', body)
+    if m:
+        event.update(tcb=m[1].upper(), kind='shutdown initiated',
+                     pid=int(m[2]), terminal=True)
+        return event
+    m = re.fullmatch(r'connection (' + TCB + r') \(local= remote=(' + ADDR +
+                     r')\) connect attempt failed with status = ' +
+                     invalid_address + r'\.', body)
+    if m:
+        endpoint(m[2])
+        event.update(tcb=m[1].upper(), kind='abort issued', terminal=True,
+                     observed_remote=m[2])
+        return event
     m = re.fullmatch(r'(?:connection (' + TCB + r') send keep-alive at SndUna = \d+\.|SWS avoidance began on connection (' + TCB + r')\. Timer set for \d+ ms\. BytesToSend = 0x[0-9a-fA-F]+, SendAvailable = \d+, Cwnd = \d+, MaxSndWnd = 0x[0-9a-fA-F]+\.)', body)
     if m:
         event.update(tcb=(m[1] or m[2]).upper(), kind='transport context')

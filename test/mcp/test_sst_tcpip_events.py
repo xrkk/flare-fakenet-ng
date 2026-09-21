@@ -676,3 +676,51 @@ def test_connect_failed_route_lookup_variant_is_terminal_abort():
         'connect failed: route lookup status = 传输拒绝指定的无效网络地址。.'), {})
     assert event['kind'] == 'abort issued'
     assert event['terminal'] is True
+
+
+INSPECT_INVALID_ADDRESS = '传输拒绝指定的无效网络地址。'
+
+
+def test_failed_inspect_in_closed_peer_reuse_cannot_poison_selected_generation():
+    original = capture().decode('utf-16-le')
+    extra = ''.join([
+        line('57.100000000', 'connection 0xBBB transition from FinWait1State to ClosedState , SndNxt = 3.'),
+        line('58.000000000', 'connection 0xBBB transition from ClosedState to SynSentState , SndNxt = 0.'),
+        line('58.000000100', 'connection 0xBBB (local=0.0.0.0:50067 remote=0.0.0.0:1688) connect failed: route lookup status = ' + INSPECT_INVALID_ADDRESS),
+        line('58.000000200', 'Inspect Connect has been completed on Tcb 0xBBB with status = ' + INSPECT_INVALID_ADDRESS + '.'),
+        line('58.000000300', 'connection 0xBBB (local= remote=) shutdown initiated (' + INSPECT_INVALID_ADDRESS + '). PID = 6524.'),
+        line('58.000000400', 'connection 0xBBB transition from SynSentState to ClosedState , SndNxt = 0.'),
+    ])
+    result = reconstruct((original + extra).encode('utf-16-le'))
+    assert result['termination'][0]['text'] == reconstruct()['termination'][0]['text']
+    assert not any('Inspect Connect' in row['text'] for row in result['events'])
+    later = [g for g in result['generation_manifest'] if g['tcb'] == '0XBBB' and g['generation_ordinal'] == 1]
+    assert len(later) == 1 and len(later[0]['record_refs']) == 5
+    broken = (original + extra).replace('transition from FinWait1State to ClosedState', 'transition from FinWait1State to FinWait2State')
+    with pytest.raises(ValueError, match='before prior generation reached Closed'):
+        reconstruct(broken.encode('utf-16-le'))
+
+
+def test_failed_inspect_on_selected_peer_is_negative_terminal_evidence():
+    raw = capture().decode('utf-16-le')
+    error = line('55.500000000', 'Inspect Connect has been completed on Tcb 0xBBB with status = ' + INSPECT_INVALID_ADDRESS + '.')
+    raw = raw.replace(line('56.000000000', 'connection 0xBBB transition from EstablishedState  to FinWait1State , SndNxt = 3.'), error + line('56.000000000', 'connection 0xBBB transition from EstablishedState  to FinWait1State , SndNxt = 3.'))
+    result = reconstruct(raw.encode('utf-16-le'))
+    assert result['termination'][0]['kind'] == 'inspect connect rejected'
+    assert result['termination'][0]['terminal'] is True
+
+
+@pytest.mark.parametrize('status', ['UNKNOWN_STATUS', 'STATUS_PENDING', '传输拒绝指定的无效网络地址。 trailing'])
+def test_unreviewed_inspect_status_still_rejected(status):
+    with pytest.raises(ValueError, match='unsupported TCP lifecycle'):
+        tcp.parse_line(line('55.500000000', 'Inspect Connect has been completed on Tcb 0xBBB with status = ' + status + '.'), {})
+
+
+def test_invalid_address_failure_with_no_local_endpoint_is_negative_only():
+    body = 'connection 0xBBB (local= remote=0.0.0.0:1688) connect attempt failed with status = ' + INSPECT_INVALID_ADDRESS + '.'
+    event = tcp.parse_line(line('55.500000000', body), {})
+    assert event['terminal'] and event['kind'] == 'abort issued'
+    assert 'local' not in event and 'remote' not in event
+    assert event['observed_remote'] == '0.0.0.0:1688'
+    with pytest.raises(ValueError):
+        tcp.parse_line(line('55.500000000', body.replace(INSPECT_INVALID_ADDRESS, 'STATUS_UNKNOWN')), {})
