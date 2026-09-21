@@ -504,11 +504,26 @@ class DomainEgressRelay(object):
             # the rewrite for a short teardown grace so the client's final
             # ACK exchange stays translated. Revoking first leaves the peer
             # TCB half-open until its read timeout.
+            infrastructure_failure = deny_reason_code == 'relay_error'
+            if (infrastructure_failure and not self._stop.is_set()
+                    and not self._quiesce.is_set()):
+                # An upstream/infrastructure failure is not a policy deny:
+                # resetting the client turns it into one and ends the
+                # session within milliseconds (candidate17 sst-002: upstream
+                # ConnectionResetError 7ms after the injected handle close
+                # bounded the session inside the action's own conservative
+                # margin pair).  Hold the client socket for one bounded
+                # hello timeout so the session ends by its own lifecycle;
+                # policy denies below still reset immediately.
+                try:
+                    time.sleep(self._settings.get('hello_timeout', 5))
+                except Exception:  # noqa: BLE001 - teardown must continue
+                    pass
             for connection in (client, upstream):
                 if connection:
                     with self._connections_lock:
                         self._connections.discard(connection)
-                    if connection is client and deny_reason_code:
+                    if connection is client and deny_reason_code and not infrastructure_failure:
                         # A denied client must receive its reset while the
                         # mapping rewrite still translates it: the graceful
                         # FIN leaves the client TCB half-open until its own
