@@ -1024,6 +1024,19 @@ class EgressPolicy(object):
             mapping.expires_at = self._now() + self.relay_idle_timeout + 30
             return True
 
+    def relay_client_mapping_active(self, sample_ip, sample_port):
+        """Whether the client tuple's relay mapping is currently active.
+
+        The fault-start gate uses this as the session-liveness signal: the
+        relay worker activates its mapping only after the SNI decision and
+        closes it in the worker teardown, so an active mapping means the
+        product-side session is genuinely serving this tuple right now.
+        """
+        now = self._now()
+        with self._lock:
+            mapping = self._nat_client.get((str(sample_ip), int(sample_port)))
+            return bool(mapping and mapping.active and mapping.expires_at > now)
+
     def close_relay_mapping(self, generation, grace_seconds=None):
         with self._lock:
             mapping = self._nat_generation.get(int(generation))

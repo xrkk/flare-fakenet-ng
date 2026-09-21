@@ -82,6 +82,7 @@ class FaultInjector:
         self._held_sockets = []
         self._child = None
         self._ipc_fault = None
+        self._start_gate_liveness = None
 
     def ipc_response(self, request, response):
         """Alter only actual health responses on the private child pipe.
@@ -282,6 +283,8 @@ class FaultInjector:
         """
         if not enabled() or armed_fault() not in ('listener_stop', 'diverter_stop', 'child_hang'):
             return False
+        still_live = self._start_gate_liveness
+        self._start_gate_liveness = None
         gate = _fault_file().with_name('fault-injection-gate.json')
         ready = _fault_file().with_name('fault-injection-ready.json')
         if not gate.exists():
@@ -295,7 +298,8 @@ class FaultInjector:
         probe_path = gate_data.get('probe')
         if (isinstance(probe_path, str) and probe_path and
                 armed_fault() in ('listener_stop', 'diverter_stop')):
-            if self._wait_for_probe_traffic(probe_path, arm.get('nonce'), timeout):
+            if self._wait_for_probe_traffic(probe_path, arm.get('nonce'), timeout,
+                                             still_live):
                 # The rendezvous files must not outlive the release: a stale
                 # gate blocks the next scenario's arm.
                 gate.unlink(missing_ok=True)
@@ -319,7 +323,19 @@ class FaultInjector:
             time.sleep(.01)
         raise TimeoutError('fault start gate readiness deadline exceeded')
 
-    def _wait_for_probe_traffic(self, probe_path, nonce, timeout):
+    def set_start_gate_liveness(self, check):
+        """Provide the session-liveness callable for the next gate wait.
+
+        The runner-side conditions (established plus a mapped flow) can hold
+        while the relay worker has already torn the session down (worker
+        error, upstream refusal); an injected action released then lands
+        after the session's own end.  The callable receives the established
+        row and must return True only while the product-side session is
+        still serving that tuple.
+        """
+        self._start_gate_liveness = check
+
+    def _wait_for_probe_traffic(self, probe_path, nonce, timeout, still_live=None):
         """In-child gate wait: established probe flow mapped in own run.log."""
         import re as _re
         deadline = time.monotonic() + timeout
@@ -341,7 +357,9 @@ class FaultInjector:
                     established = row
                     break
             seen = len(lines)
-            if established is not None and self._own_log_maps_flow(established, _re):
+            if (established is not None
+                    and self._own_log_maps_flow(established, _re)
+                    and (still_live is None or still_live(established))):
                 return True
             time.sleep(.01)
         return False

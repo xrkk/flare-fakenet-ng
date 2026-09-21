@@ -458,6 +458,12 @@ def child_main(run_id, run_dir):
                 instance.diverter_config.update(payload['diverter_config'])
                 fault.install_initialization_hook(instance)
                 instance.start()
+                _policy = getattr(instance.diverter, 'egress_policy', None)
+                if _policy is not None and hasattr(
+                        _policy, 'relay_client_mapping_active'):
+                    fault.set_start_gate_liveness(
+                        lambda row: _policy.relay_client_mapping_active(
+                            *str(row.get('src', '')).rsplit(':', 1)))
                 fault.wait_for_start_gate()
                 fault.install_listener_exception_hook(instance.running_listener_providers)
                 fault.install_capture_exception_hook(instance.diverter)

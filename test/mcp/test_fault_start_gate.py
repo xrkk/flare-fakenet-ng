@@ -219,3 +219,33 @@ def test_in_child_gate_identity_mismatch_raises(tmp_path, monkeypatch):
         json.dumps({'fault': 'diverter_stop', 'nonce': 'other', 'probe': 'x'}))
     with pytest.raises(ValueError, match='identity'):
         injector.wait_for_start_gate(timeout=.05)
+
+
+def test_in_child_gate_requires_session_liveness(tmp_path, monkeypatch):
+    """The release waits until the product-side session is still active.
+
+    candidate15 sst-002: the relay worker tore the session down before the
+    probe's established event, so the injected action (its native record
+    write included) landed after the session's own end.  The liveness
+    callable must hold the release until the mapping serves the tuple.
+    """
+    injector, logs, arm = setup_gate(tmp_path, monkeypatch)
+    faultinject._fault_file().unlink()
+    (logs / 'fault-injection-gate.json').unlink(missing_ok=True)
+    injector.arm('diverter_stop')
+    arm = json.loads(faultinject._fault_file().read_text())
+    probe = tmp_path / 'probe.jsonl'
+    (logs / 'fault-injection-gate.json').write_text(
+        json.dumps(dict(arm, probe=str(probe))))
+    (Path('run.log')).write_text(
+        'PROCESS_FLOW disposition=REDIRECT_TLS_RELAY pid=4242 sport=50444 '
+        'src=192.168.204.233\n')
+    probe.write_text(json.dumps({'event': 'established', 'nonce': arm['nonce'],
+                                 'pid': 4242, 'src': '192.168.204.233:50444'}) + '\n')
+    state = {'live': False}
+    injector.set_start_gate_liveness(lambda row: state['live'])
+    with pytest.raises(TimeoutError, match='probe-traffic'):
+        injector.wait_for_start_gate(timeout=.08)  # dead session never releases
+    state['live'] = True
+    assert injector.wait_for_start_gate(timeout=.3) is True
+    assert not (logs / 'fault-injection-gate.json').exists()
