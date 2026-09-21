@@ -2006,7 +2006,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
     def _sni_mismatch_deny_binding(self, run_log: str, log_path: Path, log_rel_path: str,
                                    case_events: list[dict[str, Any]], first: dict[str, Any],
                                    source: tuple[str, str], target: tuple[str, str],
-                                   planned: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
+                                   planned: dict[str, Any],
+                                   case_observation: dict[str, Any] | None,
+                                   ) -> tuple[str | None, dict[str, Any] | None]:
         """Strictly bind one planned TLS SNI-deny case to its relay record.
 
         Master evidence contract (candidate08 sst-004 case 4): a planned
@@ -2015,27 +2017,45 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         can pass only through this case's own sni_mismatch record.  Binding
         requirements, all enforced here from the sealed originals:
 
-        1. a valid con008 application observation must exist for the case
-           (packet-only or older contracts never substitute);
+        1. a valid con008 application observation for this exact case
+           (identity checked per field) must exist; packet-only or older
+           contracts never substitute;
         2. planned SNI == the case handshake's actual SNI == the record's
            parsed SNI, and that SNI differs from the mapped domain;
         3. exactly one TLS_SNI_DENY whose src/sport/original_ip/original_port
            equal this case, with a positive integer generation, reason
            ClientHelloError AND reason_code sni_mismatch, and the domain of
            this case's actual relay policy;
-        4. no contradictory same-scope ALLOW and no second ambiguous deny;
-        5. the record's timestamp classified inside this case's probe-row
-           activity window under the existing clock contract (integer tick
-           bounds with the resolution margin, the same policy_scope rule the
-           curl allow line uses) -- never zero-error by default;
+        4. no contradictory ALLOW and no second ambiguous deny.  The relay's
+           TLS_SNI_ALLOW carries no client identity (real product format):
+           a relevant record (same original destination) is only excluded
+           when its conservative interval is provably disjoint from this
+           case's own connection bounds; overlapping or boundary-uncertain
+           records stay ambiguous rejections;
+        5. the record's timestamp, under the frozen capture clock resolution
+           (integer conservative interval, the same 15,625,000ns uncertainty
+           the application observation uses), must fit entirely after the
+           probe-established conservative bound and before the observation's
+           native/probe earliest-termination lower bound ``end_lower_ns`` --
+           probe min/max never widen that bound;
         6. the byte range of the record inside the sealed run.log is
-           returned for independent offline comparison.
+           returned with an explicit contract version for sealed comparison.
 
         Anything less leaves the case failing; no verdict is relaxed.
         """
         planned_sni = planned.get('tls_server_name')
-        if (not planned_sni or planned.get('protocol') != 'tls'
-                or not isinstance(planned_sni, str)):
+        if (not isinstance(planned_sni, str) or planned.get('protocol') != 'tls'
+                or not isinstance(case_observation, dict)):
+            return None, None
+        if not (case_observation.get('schema') == 'sst.application-observation.v1'
+                and case_observation.get('nonce') == first.get('nonce')
+                and case_observation.get('pid') == first.get('pid')
+                and case_observation.get('case_index') == first.get('case_index')
+                and case_observation.get('connection_id') == first.get('connection_id')
+                and case_observation.get('src') == ':'.join(source)
+                and case_observation.get('dst') == ':'.join(target)
+                and case_observation.get('protocol') == 'TCP'
+                and isinstance(case_observation.get('end_lower_ns'), int)):
             return None, None
         rows = [row for row in case_events
                 if row.get('connection_id') == first.get('connection_id')
@@ -2044,13 +2064,50 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                           if row.get('event') == 'case_tls_handshake_attempt'), None)
         if not rows or not handshake or handshake.get('sni') != planned_sni:
             return None, None
-        # Integer activity window from this case's own probe rows; each row
-        # is the 100ns instant plus the established +99ns display window.
-        window = ((min(row['utc_ticks'] for row in rows) - 621355968000000000) * 100,
-                  (max(row['utc_ticks'] for row in rows) - 621355968000000000) * 100 + 99)
+        # Frozen conservative clock rule shared with the application
+        # observation: resolution 15,625,000ns, uncertainty resolution-1.
+        uncertainty = 15625000 - 1
+        established_ns = min(row['utc_ticks'] for row in rows) - 621355968000000000
+        established_ns *= 100
+        case_upper_ns = max(row['utc_ticks'] for row in rows) - 621355968000000000
+        case_upper_ns *= 100
+        begin_bound = established_ns - uncertainty
+        end_bound = case_observation['end_lower_ns']
+
+        def line_ns(line):
+            stamp = re.match(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),(\d{3}) ', line)
+            if not stamp:
+                return None
+            base = dt.datetime.strptime(stamp[1], '%Y-%m-%d %H:%M:%S') - dt.timedelta(hours=8)
+            delta = base - dt.datetime(1970, 1, 1)
+            return (delta.days * 86400 + delta.seconds) * 10**9 + int(stamp[2]) * 10**6
+
+        # Real product TLS_SNI_ALLOW rows carry no client identity.  A
+        # relevant record (same original destination) can only be excluded
+        # when its conservative interval is provably disjoint from this
+        # case's own connection bounds; otherwise the attribution stays
+        # ambiguous and the case fails.
+        for line in run_log.splitlines():
+            if 'TLS_SNI_ALLOW ' not in line:
+                continue
+            fields = self._log_fields(line)
+            if fields.get('src') and fields.get('sport'):
+                if fields.get('src') == source[0] and fields.get('sport') == source[1]:
+                    return None, None
+                continue
+            if fields.get('original_ip') != target[0]:
+                continue
+            moment = line_ns(line)
+            if moment is None:
+                return None, None
+            if (moment - uncertainty > case_upper_ns + uncertainty
+                    or moment + uncertainty < begin_bound):
+                continue
+            return None, None
+
         matched: tuple[str, dict[str, str], int] | None = None
         for line in run_log.splitlines():
-            if 'TLS_SNI_DENY ' not in line and 'TLS_SNI_ALLOW ' not in line:
+            if 'TLS_SNI_DENY ' not in line:
                 continue
             fields = self._log_fields(line)
             # Same connection scope only: the relay record must carry this
@@ -2058,8 +2115,6 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             # candidates) are not attributable and never lend evidence.
             if (fields.get('sport') != source[1] or fields.get('src') != source[0]):
                 continue
-            if 'TLS_SNI_ALLOW ' in line:
-                return None, None
             try:
                 generation = int(fields.get('generation', ''))
             except ValueError:
@@ -2076,19 +2131,11 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     or fields.get('domain') != planned.get('host')
                     or fields.get('domain') == planned_sni):
                 return None, None
-            # The guest log timestamp carries millisecond precision: the
-            # record's true instant lies in [t, t+1ms).  Full containment in
-            # the probe-provable activity window is required -- boundary
-            # intersection or ambiguous attribution rejects, never a
-            # zero-error assumption and never a snap tolerance.
-            stamp = re.match(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),(\d{3}) ', line)
-            if not stamp:
+            moment = line_ns(line)
+            if moment is None:
                 return None, None
-            base = dt.datetime.strptime(stamp[1], '%Y-%m-%d %H:%M:%S') - dt.timedelta(hours=8)
-            delta = base - dt.datetime(1970, 1, 1)
-            record_lo = (delta.days * 86400 + delta.seconds) * 10**9 + int(stamp[2]) * 10**6
-            record_hi = record_lo + 10**6
-            if not (window[0] <= record_lo and record_hi <= window[1]):
+            if not (begin_bound <= moment - uncertainty
+                    and moment + uncertainty <= end_bound):
                 return None, None
             if matched is not None:
                 return None, None
@@ -2102,6 +2149,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         if offset < 0 or raw.find(needle, offset + 1) >= 0:
             return None, None
         binding = {'schema': 'sst.sni-mismatch-binding.v1',
+                   'contract_version': 1,
                    'deny_log': line,
                    'deny_log_ref': {'path': log_rel_path,
                                     'byte_start': offset,
@@ -2109,33 +2157,81 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                    'sni': planned_sni,
                    'domain': fields['domain'],
                    'generation': generation,
-                   'window_ns': window,
+                   'begin_bound_ns': begin_bound,
+                   'end_bound_ns': end_bound,
                    'handshake_sni': handshake.get('sni')}
         return line, binding
+
+    SNI_BINDING_FIELDS = ('schema', 'contract_version', 'deny_log', 'deny_log_ref',
+                           'sni', 'domain', 'generation', 'begin_bound_ns',
+                           'end_bound_ns', 'handshake_sni')
+
+    @staticmethod
+    def _binding_normalized(value):
+        if isinstance(value, tuple):
+            return [Suite._binding_normalized(item) for item in value]
+        if isinstance(value, list):
+            return [Suite._binding_normalized(item) for item in value]
+        if isinstance(value, dict):
+            return {key: Suite._binding_normalized(item) for key, item in value.items()}
+        return value
 
     @staticmethod
     def _stored_binding_issues(stored_cases: list[dict[str, Any]],
                                recomputed_cases: list[dict[str, Any]]) -> list[str]:
         """Reject stored SNI-deny bindings that the originals disprove.
 
-        Results written by older adjudicators carry no binding and stay
-        comparable (no issue); a stored binding whose record text or byte
-        reference differs from the independent recomputation is tampering.
+        New-version results carry ``contract_version`` 1 bindings.  Every
+        binding field is compared against the independent recomputation
+        (JSON-normalized so list/tuple spellings agree); a required case
+        that is missing, a duplicated case index, a binding that is absent,
+        null or scalar, an unknown contract version, an sni_mismatch branch
+        row without its sealed binding, and any tampered field or moved byte
+        reference are all rejected.  Results written before the contract
+        carry no binding and stay comparable as legacy -- they are never
+        treated as a new-version verified pass.
         """
         issues: list[str] = []
+        indexes = [row.get('index') for row in stored_cases if isinstance(row, dict)]
+        for index in sorted({item for item in indexes if indexes.count(item) > 1}):
+            issues.append('duplicate stored case index %s' % index)
         for stored in stored_cases:
-            binding = stored.get('sni_binding') if isinstance(stored, dict) else None
-            if not isinstance(binding, dict):
+            if not isinstance(stored, dict):
                 continue
             index = stored.get('index')
-            current = next((row for row in recomputed_cases
-                            if row.get('index') == index), None)
-            recomputed = current.get('sni_binding') if isinstance(current, dict) else None
+            binding = stored.get('sni_binding')
+            branch = stored.get('branch_log')
+            if binding is not None and not isinstance(binding, dict):
+                issues.append('stored SNI deny binding is not a record (case %s)' % index)
+                continue
+            if isinstance(binding, dict):
+                if binding.get('contract_version') != 1:
+                    issues.append('stored SNI deny binding contract version missing/unknown (case %s)' % index)
+                    continue
+                current = next((row for row in recomputed_cases
+                                if row.get('index') == index), None)
+                recomputed = current.get('sni_binding') if isinstance(current, dict) else None
+                if not isinstance(recomputed, dict) or recomputed.get('contract_version') != 1:
+                    issues.append('stored SNI deny binding has no recomputed counterpart (case %s)' % index)
+                    continue
+                for field in Suite.SNI_BINDING_FIELDS:
+                    if (Suite._binding_normalized(binding.get(field)) !=
+                            Suite._binding_normalized(recomputed.get(field))):
+                        issues.append('stored SNI deny binding field %s differs (case %s)' % (field, index))
+            elif (isinstance(branch, str) and 'TLS_SNI_DENY ' in branch
+                    and 'reason_code=sni_mismatch' in branch):
+                # A new-version adjudicator always seals the binding next to
+                # such a branch row; deleting it strips the sealed evidence.
+                issues.append('stored sni_mismatch branch lacks its sealed binding (case %s)' % index)
+        for recomputed in recomputed_cases:
             if not isinstance(recomputed, dict):
-                issues.append('stored SNI deny binding has no recomputed counterpart (case %s)' % index)
-            elif (binding.get('deny_log') != recomputed.get('deny_log')
-                  or binding.get('deny_log_ref') != recomputed.get('deny_log_ref')):
-                issues.append('stored SNI deny binding differs from recomputed evidence (case %s)' % index)
+                continue
+            binding = recomputed.get('sni_binding')
+            if (isinstance(binding, dict) and binding.get('contract_version') == 1
+                    and not any(row.get('index') == recomputed.get('index')
+                                for row in stored_cases if isinstance(row, dict))):
+                issues.append('recomputed SNI deny case missing from stored rows (case %s)'
+                              % recomputed.get('index'))
         return issues
 
     def _fault_primary_observation(self, run: dict[str, Any], event: dict[str, Any],
@@ -2783,7 +2879,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                         # markers, ambiguity or contradiction are rejected.
                         case_log, case_sni_binding = self._sni_mismatch_deny_binding(
                             run_log, log_path, str(log_record['path']), case_events,
-                            first, source, target, planned)
+                            first, source, target, planned, case_observation)
                     case_ok = bool(case_ok and case_flow and (case_packets or case_observation) and case_log and not case_nic)
                 elif planned['expectation'] == 'takeover_allow':
                     case_log = log_event('ALLOW_TAKEOVER_SINK', ip=target[0], sport=source[1],
