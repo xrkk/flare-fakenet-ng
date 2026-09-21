@@ -161,6 +161,19 @@ def iso_ns(value):
     return lo, lo + 10 ** (9 - len(frac)) - 1
 
 
+def terminal_bounds(observed, last_activity, bounds):
+    """A buffered client write cannot contradict its accepted peer's close.
+
+    The earlier original-tuple teardown exception concerns a pre-redirect
+    kernel TCB, not the independently bound accepted relay connection.
+    """
+    peer_tcb = (observed.get('peer') or {}).get('tcb')
+    return [bounds(event['text'])[0]
+            for event in observed['termination'] + observed['tuple_terminals']
+            if (peer_tcb is not None and event.get('tcb') == peer_tcb)
+            or bounds(event['text'])[0] >= last_activity]
+
+
 def time_bounds(event):
     if isinstance(event, str):
         if re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)', event):
@@ -540,9 +553,7 @@ def assess(case, root, expected_candidate=CANDIDATE):
                                                          'tls_handshake_attempt',
                                                          'udp_sent')] or [0])
             finish = min([bounds(end)[0]] +
-                         [bounds(e['text'])[0] for e in observed['termination']
-                          + observed['tuple_terminals']
-                          if bounds(e['text'])[0] >= last_activity])
+                         terminal_bounds(observed, last_activity, bounds))
             if not trace_lo <= bounds(lower)[0] <= bounds(upper)[1] <= trace_hi:
                 raise EvidenceError('action outside complete trace window')
         elif kind == 'packet':

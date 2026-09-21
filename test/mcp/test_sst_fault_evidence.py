@@ -378,3 +378,26 @@ def test_session_killing_faults_still_require_full_action_containment():
     assert sst.contains_session(0, 407 * ms, 438 * ms, 741 * ms)
     assert sst.contains_session(0, 100 * ms, 200 * ms, 200 * ms)
     assert not sst.contains_session(101 * ms, 100 * ms, 200 * ms, 300 * ms)
+
+
+def test_buffered_write_does_not_remove_bound_peer_fin():
+    # The actual candidate07 pattern: peer FIN precedes a successful local
+    # Write by <1 ms; a later write reports reset. Keep the earlier peer end.
+    peer_fin = 1789955724065327000
+    local_write = 1789955724066010300
+    later_reset = 1789955724135846400
+    observed = {'peer': {'tcb': '0XBBB'}, 'termination': [
+        {'tcb': '0XBBB', 'text': peer_fin},
+        {'tcb': '0XAAA', 'text': later_reset}], 'tuple_terminals': []}
+    assert min(sst.terminal_bounds(observed, local_write, lambda x: (x, x))) == peer_fin
+    assert min(sst.terminal_bounds(observed, local_write + 1000000000,
+                                   lambda x: (x, x))) == peer_fin
+
+
+def test_pre_redirect_original_teardown_does_not_erase_later_peer_terminal():
+    observed = {'peer': {'tcb': '0XBBB'}, 'termination': [
+        {'tcb': '0XAAA', 'text': 10}, {'tcb': '0XBBB', 'text': 30}],
+        'tuple_terminals': []}
+    assert sst.terminal_bounds(observed, 20, lambda x: (x, x)) == [30]
+    observed['peer'] = None
+    assert sst.terminal_bounds(observed, 20, lambda x: (x, x)) == [30]
