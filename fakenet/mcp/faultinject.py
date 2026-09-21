@@ -82,7 +82,6 @@ class FaultInjector:
         self._held_sockets = []
         self._child = None
         self._ipc_fault = None
-        self._start_gate_liveness = None
 
     def ipc_response(self, request, response):
         """Alter only actual health responses on the private child pipe.
@@ -283,7 +282,7 @@ class FaultInjector:
         """
         if not enabled() or armed_fault() not in ('listener_stop', 'diverter_stop', 'child_hang'):
             return False
-        still_live = self._start_gate_liveness
+        still_live = getattr(self, '_start_gate_liveness', None)
         self._start_gate_liveness = None
         gate = _fault_file().with_name('fault-injection-gate.json')
         ready = _fault_file().with_name('fault-injection-ready.json')
