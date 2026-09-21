@@ -3,12 +3,15 @@
 """Local transparent TLS relay for reviewed EgressControl mode."""
 
 from collections import Counter, defaultdict, deque
+import json
 import logging
+import os
 import select
 import socket
 import struct
 import threading
 import time
+from pathlib import Path
 
 from fakenet.diverters.egresspolicy import normalize_hostname
 
@@ -381,6 +384,37 @@ class DomainEgressRelay(object):
             return 'relay_error'
         return 'sni_mismatch' if hello_sni is not None else 'clienthello_error'
 
+    def _record_native_terminal(self, outcome, reason_code, mapping, source,
+                                sport, sni):
+        """Append one native-clocked connection-terminal record.
+
+        The acceptance adjudication compares this instant with kernel trace
+        events natively (no guest wall-timer uncertainty) and uses the
+        abortive client close it accompanies as the deny delivery proof.
+        Diagnostic only: a failed record never disturbs the connection path.
+        """
+        try:
+            from fakenet.mcp.native_clock import native_clock_sample
+            record = {
+                'schema': 'fakenetng.relay-native-terminal.v1',
+                'pid': os.getpid(),
+                'outcome': outcome,
+                'reason_code': reason_code,
+                'src': source, 'sport': sport,
+                'domain': mapping.domain,
+                'original_ip': mapping.server_ip,
+                'original_port': mapping.server_port,
+                'generation': mapping.generation,
+                'sni': sni,
+                'clock': native_clock_sample(),
+            }
+            path = Path.cwd() / 'relay-native-events.jsonl'
+            with path.open('a', encoding='utf-8') as stream:
+                stream.write(json.dumps(record, ensure_ascii=False) + '\n')
+        except Exception:
+            self.logger.debug('relay native terminal record failed',
+                              exc_info=True)
+
     def _handle_client(self, client, address, mapping):
         source = address[0]
         upstream = None
@@ -388,6 +422,7 @@ class DomainEgressRelay(object):
         pending = True
         active = False
         hello_sni = None
+        deny_reason_code = None
         with self._connections_lock:
             self._connections.add(client)
         try:
@@ -441,6 +476,7 @@ class DomainEgressRelay(object):
             # teardown decision, not a deny verdict on this client.
             if not self._stop.is_set() and not self._quiesce.is_set():
                 reason_code = self._deny_reason_code(exc, hello_sni)
+                deny_reason_code = reason_code
                 deny_fields = {
                     'domain': mapping.domain, 'reason': type(exc).__name__,
                     'reason_code': reason_code, 'src': source,
@@ -469,6 +505,15 @@ class DomainEgressRelay(object):
                 if connection:
                     with self._connections_lock:
                         self._connections.discard(connection)
+                    if connection is client and deny_reason_code:
+                        # A denied client must receive its reset while the
+                        # mapping rewrite still translates it: the graceful
+                        # FIN leaves the client TCB half-open until its own
+                        # retransmission timeout (candidate10 sst-004 case-2:
+                        # RexmitCount 1..5 then a bare RST on the original
+                        # tuple after the filter closed).
+                        _abortive_close(connection)
+                        continue
                     try:
                         connection.shutdown(socket.SHUT_RDWR)
                     except (OSError, AttributeError):
@@ -477,6 +522,10 @@ class DomainEgressRelay(object):
                         connection.close()
                     except OSError:
                         pass
+            self._record_native_terminal(
+                'deny' if deny_reason_code else 'closed',
+                deny_reason_code or 'session_closed', mapping,
+                source, address[1], hello_sni)
             self.callbacks.closeRelayMapping(mapping.generation)
             with self._workers_lock:
                 self._workers.discard(threading.current_thread())

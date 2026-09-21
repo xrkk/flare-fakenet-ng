@@ -353,6 +353,9 @@ def _b1_sni_oracle_fixture(root, *, handshake_sni='example.com', deny_sni=None,
                            drop_reason_code=False, drop_generation=False,
                            observation_end_lower_delay_ms=400,
                            observation_identity_error=False,
+                           native_deny=None, native_shift_ns=None,
+                           native_duplicate=False, native_unsupported=False,
+                           etw_window_ms=(-30, 10),
                            curl_allow_line=True):
     """B1 fixture whose auxiliary case 4 is the planned SNI-deny case.
 
@@ -475,11 +478,33 @@ def _b1_sni_oracle_fixture(root, *, handshake_sni='example.com', deny_sni=None,
                  'end_lower_ns': ticks(3, 38, 56, 400) and
                  (ticks(3, 38, 56, 400) - 621355968000000000) * 100 +
                  observation_end_lower_delay_ms * 10**6}
+        if native_deny is not None:
+            value['etw_connect_upper_ns'] = deny_ns + etw_window_ms[0] * 10**6
+            value['etw_terminal_lower_ns'] = deny_ns + etw_window_ms[1] * 10**6
         if observation_identity_error:
             value['connection_id'] = value['connection_id'] + '-other'
         return value
 
     runner._application_observation = observation
+    if native_deny is not None:
+        clock = {'supported': not native_unsupported,
+                 'api': 'GetSystemTimePreciseAsFileTime',
+                 'filetime_100ns': (deny_ns + (native_shift_ns or 0)
+                                    + 11644473600000000000) // 100,
+                 'qpc_before': 1, 'qpc_after': 2, 'qpc_frequency': 10_000_000}
+        if native_unsupported:
+            clock = {'supported': False, 'reason': 'unsupported'}
+        record = {'schema': 'fakenetng.relay-native-terminal.v1',
+                  'outcome': 'deny', 'reason_code': 'sni_mismatch',
+                  'src': '192.168.204.233', 'sport': 50161,
+                  'domain': 'api.deepseek.com',
+                  'original_ip': '119.188.175.46', 'original_port': 443,
+                  'generation': 2, 'sni': handshake_sni, 'clock': clock}
+        lines = [json.dumps(record)]
+        if native_duplicate:
+            lines.append(json.dumps(record))
+        (root / 'relay-native-events.jsonl').write_text(
+            '\n'.join(lines) + '\n', encoding='utf-8')
     capture = {'probe_path': 'probe.jsonl', 'pktmon_path': 'pktmon.txt'}
     if observation_contract:
         capture['observation_contract'] = observation_contract
@@ -1966,3 +1991,51 @@ def test_vm_footprint_prune_keeps_runs_while_service_bound():
     # run artifacts are removed while the service still holds them.
     assert 'runs' in vm_commands[0] and 'Remove-Item' in vm_commands[0]
     assert "Join-Path $runs 'r1'" not in vm_commands[0]
+
+
+def test_short_window_deny_passes_through_native_record():
+    """An inverted conservative wall interval passes via the native record.
+
+    candidate10-12 sst-004 case-4: the deny session lives ~10ms, shorter
+    than twice the frozen 15,625,000ns wall-timer uncertainty, so the wall
+    containment is structurally unsatisfiable.  The relay's native terminal
+    record (FILETIME with a QPC bracket) judges the same decision inside
+    the case's own ETW window in one clock domain.
+    """
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        runner, profile, nonce, run, sentinel, deny_line, deny_ns = \
+            _b1_sni_oracle_fixture(root, observation_end_lower_delay_ms=-200,
+                                   native_deny=True)
+        case4 = runner._traffic_oracle(run, profile, nonce, sentinel)['cases'][3]
+        assert case4['passed'], case4
+        binding = case4['sni_binding']
+        assert binding['contract_version'] == 2
+        native = binding['native_deny']
+        assert native['generation'] == 2
+        assert native['etw_connect_upper_ns'] <= native['filetime_ns'] <= \
+            native['etw_terminal_lower_ns']
+
+
+def test_native_deny_rejects_substitutes():
+    """Every weaker or misplaced native record keeps the case failing."""
+    cases = [
+        ('filetime outside the ETW window', dict(
+            observation_end_lower_delay_ms=-200, native_deny=True,
+            native_shift_ns=100 * 10**6)),
+        ('duplicate records stay ambiguous', dict(
+            observation_end_lower_delay_ms=-200, native_deny=True,
+            native_duplicate=True)),
+        ('unsupported clock is not native evidence', dict(
+            observation_end_lower_delay_ms=-200, native_deny=True,
+            native_unsupported=True)),
+    ]
+    for name, kwargs in cases:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runner, profile, nonce, run, sentinel, _, _ = \
+                _b1_sni_oracle_fixture(root, **kwargs)
+            case4 = runner._traffic_oracle(run, profile, nonce,
+                                           sentinel)['cases'][3]
+            assert not case4['passed'], name
+            assert not case4.get('sni_binding'), name

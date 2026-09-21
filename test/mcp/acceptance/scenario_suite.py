@@ -2142,22 +2142,32 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             moment = line_ns(line)
             if moment is None:
                 return None, None
+            native = None
             if not (begin_bound <= moment - uncertainty
                     and moment + uncertainty <= end_bound):
-                return None, None
+                # A deny session shorter than twice the frozen wall-timer
+                # uncertainty inverts the conservative interval structurally;
+                # the product's native terminal record judges the same
+                # decision in one clock domain when it exists.
+                native = self._native_deny_contained(
+                    log_path, generation, source, target, planned_sni,
+                    case_observation)
+                if native is None:
+                    return None, None
             if matched is not None:
                 return None, None
-            matched = (line, fields, generation)
+            matched = (line, fields, generation, native)
         if matched is None:
             return None, None
-        line, fields, generation = matched
+        line, fields, generation, native = matched
         raw = log_path.read_bytes()
         needle = line.encode('utf-8')
         offset = raw.find(needle)
         if offset < 0 or raw.find(needle, offset + 1) >= 0:
             return None, None
         binding = {'schema': 'sst.sni-mismatch-binding.v1',
-                   'contract_version': 1,
+                   'contract_version': 2 if native else 1,
+                   'native_deny': native,
                    'deny_log': line,
                    'deny_log_ref': {'path': log_rel_path,
                                     'byte_start': offset,
@@ -2170,7 +2180,67 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                    'handshake_sni': handshake.get('sni')}
         return line, binding
 
-    SNI_BINDING_FIELDS = ('schema', 'contract_version', 'deny_log', 'deny_log_ref',
+    def _native_deny_contained(self, log_path, generation, source, target,
+                                planned_sni, case_observation):
+        """Native-clock containment for a deny the wall margins cannot judge.
+
+        Short-lived deny sessions live shorter than twice the frozen
+        15,625,000ns wall-timer uncertainty, so the conservative wall
+        interval inverts structurally (candidate10-12 sst-004 case-4).  The
+        product's native terminal record carries this deny in the FILETIME
+        domain with a QPC bracket; the case's own ETW connect/terminal
+        instants are the same-domain bounds.  Identity (generation, tuple,
+        SNI) plus one-record uniqueness replace timestamp disambiguation;
+        containment still requires the deny instant inside the ETW window.
+        Absent, unsupported, ambiguous or out-of-window records leave the
+        case failing exactly as before.
+        """
+        native_path = log_path.parent / 'relay-native-events.jsonl'
+        try:
+            rows = [json.loads(line) for line in
+                    native_path.read_text(encoding='utf-8').splitlines()
+                    if line.strip()]
+        except (OSError, ValueError):
+            return None
+        candidates = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if (row.get('schema') != 'fakenetng.relay-native-terminal.v1'
+                    or row.get('outcome') != 'deny'
+                    or row.get('reason_code') != 'sni_mismatch'
+                    or row.get('generation') != generation
+                    or str(row.get('sport')) != str(source[1])
+                    or row.get('src') != source[0]
+                    or row.get('original_ip') != target[0]
+                    or str(row.get('original_port')) != str(target[1])
+                    or row.get('sni') != planned_sni):
+                continue
+            clock = row.get('clock') if isinstance(row.get('clock'), dict) else {}
+            if clock.get('supported') is not True:
+                continue
+            candidates.append(clock)
+        if len(candidates) != 1:
+            return None
+        clock = candidates[0]
+        try:
+            moment_ns = int(clock['filetime_100ns']) * 100 - 11644473600000000000
+        except (KeyError, TypeError, ValueError):
+            return None
+        lo = case_observation.get('etw_connect_upper_ns')
+        hi = case_observation.get('etw_terminal_lower_ns')
+        if not (isinstance(lo, int) and isinstance(hi, int)):
+            return None
+        if not lo <= moment_ns <= hi:
+            return None
+        return {'generation': generation, 'filetime_ns': moment_ns,
+                'qpc_before': clock.get('qpc_before'),
+                'qpc_after': clock.get('qpc_after'),
+                'qpc_frequency': clock.get('qpc_frequency'),
+                'etw_connect_upper_ns': lo, 'etw_terminal_lower_ns': hi}
+
+    SNI_BINDING_FIELDS = ('schema', 'contract_version', 'native_deny',
+                           'deny_log', 'deny_log_ref',
                            'sni', 'domain', 'generation', 'begin_bound_ns',
                            'end_bound_ns', 'handshake_sni')
 
@@ -2435,6 +2505,12 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 raise SuiteError('application lifetime constrained before establishment')
             if include_begin_bound:
                 result['begin_upper_ns'] = begin
+            # Native ETW instants without the conservative wall-clock margin:
+            # the relay's native terminal records compare against these so a
+            # short-lived deny session is judged in one clock domain (the
+            # margin exists for wall-vs-native comparisons only).
+            result['etw_connect_upper_ns'] = fault.time_bounds(observed['connect']['text'])[1]
+            result['etw_terminal_lower_ns'] = terminal + uncertainty
             result.update(observation_kind='tcpip_etw', connection_refs=[e['ref'] for e in observed['events']],
                           generation_manifest=observed['generation_manifest'],
                           tuple_terminal_refs=[e['ref'] for e in observed['tuple_terminals']],
@@ -3412,7 +3488,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         names = ('run.log', 'stdout_stderr.log', 'ipc-parent.jsonl', 'ipc-child.jsonl',
                  'creation.jsonl', 'fault-triggered.json', 'fault-action.json',
                  'published.json', 'managed-thread-stacks.json', 'stop-thread-stacks.txt',
-                 'endpoint-lifetimes.json')
+                 'endpoint-lifetimes.json', 'relay-native-events.jsonl')
         quoted_names = ','.join(quote_ps(name) for name in names)
         command = (
             "$ErrorActionPreference='Stop';$run=" + quote_ps(run_id) + ";"
