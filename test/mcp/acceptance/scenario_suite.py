@@ -2035,7 +2035,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         5. the record's timestamp, under the frozen capture clock resolution
            (integer conservative interval, the same 15,625,000ns uncertainty
            the application observation uses), must fit entirely after the
-           probe-established conservative bound and before the observation's
+           native/policy/probe-established conservative upper bound and before the observation's
            native/probe earliest-termination lower bound ``end_lower_ns`` --
            probe min/max never widen that bound;
         6. the byte range of the record inside the sealed run.log is
@@ -2055,6 +2055,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 and case_observation.get('src') == ':'.join(source)
                 and case_observation.get('dst') == ':'.join(target)
                 and case_observation.get('protocol') == 'TCP'
+                and isinstance(case_observation.get('begin_upper_ns'), int)
                 and isinstance(case_observation.get('end_lower_ns'), int)):
             return None, None
         rows = [row for row in case_events
@@ -2067,11 +2068,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         # Frozen conservative clock rule shared with the application
         # observation: resolution 15,625,000ns, uncertainty resolution-1.
         uncertainty = 15625000 - 1
-        established_ns = min(row['utc_ticks'] for row in rows) - 621355968000000000
-        established_ns *= 100
         case_upper_ns = max(row['utc_ticks'] for row in rows) - 621355968000000000
         case_upper_ns *= 100
-        begin_bound = established_ns - uncertainty
+        begin_bound = case_observation['begin_upper_ns']
         end_bound = case_observation['end_lower_ns']
 
         def line_ns(line):
@@ -2188,8 +2187,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         null or scalar, an unknown contract version, an sni_mismatch branch
         row without its sealed binding, and any tampered field or moved byte
         reference are all rejected.  Results written before the contract
-        carry no binding and stay comparable as legacy -- they are never
-        treated as a new-version verified pass.
+        carry no binding cannot satisfy a newly required binding; legacy
+        evidence is preserved but does not silently become a verified pass.
         """
         issues: list[str] = []
         indexes = [row.get('index') for row in stored_cases if isinstance(row, dict)]
@@ -2218,6 +2217,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     if (Suite._binding_normalized(binding.get(field)) !=
                             Suite._binding_normalized(recomputed.get(field))):
                         issues.append('stored SNI deny binding field %s differs (case %s)' % (field, index))
+            elif any(row.get('index') == index and isinstance(row.get('sni_binding'), dict)
+                     for row in recomputed_cases if isinstance(row, dict)):
+                issues.append('recomputed SNI deny case lacks stored binding (case %s)' % index)
             elif (isinstance(branch, str) and 'TLS_SNI_DENY ' in branch
                     and 'reason_code=sni_mismatch' in branch):
                 # A new-version adjudicator always seals the binding next to
@@ -2264,7 +2266,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 'event_count': len(session['connection_event_refs'])}
 
     def _application_observation(self, run, origin, ends, nonce, src, dst, protocol,
-                                 creation_ticks=None):
+                                 creation_ticks=None, include_begin_bound=False):
         """Rebuild one observation from hash-bound originals, online or on replay."""
         import scenario_tcpip as tcpip
         import scenario_kernel_network as kernel
@@ -2422,6 +2424,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             if observed['tuple_terminals'] and min(fault.time_bounds(e['text'])[0]
                     for e in observed['tuple_terminals']) - uncertainty < begin:
                 raise SuiteError('application lifetime constrained before establishment')
+            if include_begin_bound:
+                result['begin_upper_ns'] = begin
             result.update(observation_kind='tcpip_etw', connection_refs=[e['ref'] for e in observed['events']],
                           generation_manifest=observed['generation_manifest'],
                           tuple_terminal_refs=[e['ref'] for e in observed['tuple_terminals']],
@@ -2853,7 +2857,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # policy line are its whole evidence.
                     try:
                         terminals=[row for row in case_events if row.get('connection_id')==first.get('connection_id') and row.get('event') in ('case_error','case_eof','case_close')]
-                        case_observation=self._application_observation(run,first,terminals,nonce,':'.join(source),':'.join(target),case_protocol)
+                        case_observation=self._application_observation(run,first,terminals,nonce,':'.join(source),':'.join(target),case_protocol, include_begin_bound=(planned['expectation'] == 'deny' and planned['protocol'] == 'tls'))
                     except (KeyError,OSError,ValueError,SuiteError) as exc:
                         case_ok=False
                         case_observation_error=str(exc)

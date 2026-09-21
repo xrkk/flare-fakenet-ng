@@ -466,11 +466,12 @@ def _b1_sni_oracle_fixture(root, *, handshake_sni='example.com', deny_sni=None,
 
     runner._pktmon_observations = packets
 
-    def observation(run, origin, ends, nonce, src, dst, protocol, creation_ticks=None):
+    def observation(run, origin, ends, nonce, src, dst, protocol, creation_ticks=None, include_begin_bound=False):
         value = {'schema': 'sst.application-observation.v1', 'nonce': nonce,
                  'pid': origin['pid'], 'case_index': origin.get('case_index'),
                  'connection_id': origin.get('connection_id'),
                  'src': src, 'dst': dst, 'protocol': protocol,
+                 'begin_upper_ns': ((origin['utc_ticks'] - 621355968000000000) * 100 + 15624999) if include_begin_bound else None,
                  'end_lower_ns': ticks(3, 38, 56, 400) and
                  (ticks(3, 38, 56, 400) - 621355968000000000) * 100 +
                  observation_end_lower_delay_ms * 10**6}
@@ -513,6 +514,7 @@ def test_auxiliary_sni_mismatch_deny_binds_strictly():
 def test_auxiliary_sni_mismatch_deny_rejects_substitutes():
     """Every weaker or ambiguous substitute must leave the case failing."""
     cases = [
+        ('deny overlaps uncertain establishment', dict(deny_timestamp='2026-09-21 11:38:56,110')),
         ('wrong handshake sni', dict(handshake_sni='example.org')),
         ('deny sni differs from handshake', dict(deny_sni='example.net')),
         ('old unbound deny format', dict(drop_reason_code=True, deny_sport='0')),
@@ -732,8 +734,8 @@ def test_stored_sni_binding_tamper_is_rejected_in_recheck():
     assert suite.Suite._stored_binding_issues(
         [{'index': 4, 'sni_binding': dict(base),
           'branch_log': 'TLS_SNI_DENY reason_code=sni_mismatch'}], recomputed) == []
-    # Results written before the contract carry no binding and stay comparable.
-    assert suite.Suite._stored_binding_issues([{'index': 4}], recomputed) == []
+    # Deleting both binding and branch cannot downgrade to a legacy pass.
+    assert suite.Suite._stored_binding_issues([{'index': 4}], recomputed)
     for field, value in [('deny_log', 'deny line '), ('sni', 'other.example'),
                          ('domain', 'other.example'), ('generation', 3),
                          ('handshake_sni', 'other.example'),
@@ -753,7 +755,7 @@ def test_stored_sni_binding_tamper_is_rejected_in_recheck():
     assert any('contract version' in issue for issue in suite.Suite._stored_binding_issues(
         [{'index': 4, 'sni_binding': unversioned}], recomputed))
     # Deleting the binding from an sni_mismatch branch row strips sealed evidence.
-    assert any('lacks its sealed binding' in issue
+    assert any('binding' in issue
                for issue in suite.Suite._stored_binding_issues(
                    [{'index': 4, 'branch_log': 'TLS_SNI_DENY reason_code=sni_mismatch'}],
                    recomputed))
