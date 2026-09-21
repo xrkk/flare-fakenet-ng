@@ -249,12 +249,32 @@ class ManagedProcess:
         finally:
             self._lock.release()
 
+    def _record_termination(self, event, error=None):
+        # Supplemental fault-test evidence, not a filter-close timestamp or
+        # recovery gate. A diagnostic failure must never prevent containment.
+        try:
+            if os.environ.get('FAKENETNG_MCP_FAULT_INJECTION') != '1':
+                return
+            from fakenet.mcp.faultinject import native_clock_observation
+            record_ipc(self.run_dir, 'parent', event, dict(
+                run_id=self.run_id, identity=self.identity,
+                native_clock=native_clock_observation(), error=error))
+        except Exception:
+            pass
+
     def terminate(self, deadline):
-        self.job.terminate(deadline)
-        while self.job.poll() is None or self.job.members():
-            if time.monotonic() >= deadline:
-                raise TimeoutError('managed Job object end unconfirmed')
-            time.sleep(min(0.02, max(0, deadline - time.monotonic())))
+        self._record_termination('job-terminate-begin')
+        try:
+            self.job.terminate(deadline)
+            self._record_termination('job-terminate-returned')
+            while self.job.poll() is None or self.job.members():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('managed Job object end unconfirmed')
+                time.sleep(min(0.02, max(0, deadline - time.monotonic())))
+        except BaseException as exc:
+            self._record_termination('job-terminate-error', repr(exc))
+            raise
+        self._record_termination('job-empty-confirmed')
 
     def close(self):
         if self.job is not None:
