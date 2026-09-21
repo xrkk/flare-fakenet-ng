@@ -296,6 +296,10 @@ class FaultInjector:
         if (isinstance(probe_path, str) and probe_path and
                 armed_fault() in ('listener_stop', 'diverter_stop')):
             if self._wait_for_probe_traffic(probe_path, arm.get('nonce'), timeout):
+                # The rendezvous files must not outlive the release: a stale
+                # gate blocks the next scenario's arm.
+                gate.unlink(missing_ok=True)
+                ready.unlink(missing_ok=True)
                 return True
             raise TimeoutError('fault start probe-traffic deadline exceeded')
         expected = dict(arm, run_id=Path.cwd().name)

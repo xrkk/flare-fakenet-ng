@@ -190,6 +190,8 @@ def test_in_child_gate_waits_for_probe_flow_and_own_log(tmp_path, monkeypatch):
                     'pid': 4242, 'src': '192.168.204.233:50444'}) + '\n')
     assert injector.wait_for_start_gate(timeout=.3) is True
     assert not (logs / 'fault-injection-ready.json').exists()
+    assert not (logs / 'fault-injection-gate.json').exists(), \
+        'a stale gate blocks the next scenario arm'
 
 
 def test_in_child_gate_rejects_unmapped_flow(tmp_path, monkeypatch):
