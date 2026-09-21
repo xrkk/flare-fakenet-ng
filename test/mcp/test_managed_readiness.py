@@ -386,3 +386,66 @@ def test_cleanup_deadline_does_not_release_an_inflight_initialization(tmp_path):
         release.set()
         worker.join(2)
     assert owner.cleanup(time.monotonic() + 1) and owner.ended()
+
+
+@pytest.mark.parametrize('inject', [True, False])
+def test_cleanup_fault_precedes_resource_release_and_retry_stops(monkeypatch, tmp_path, inject):
+    from contextlib import nullcontext
+    from fakenet.mcp.faultinject import FaultInjector
+    import fakenet.mcp.managed_stacks as stacks
+
+    def in_job(process, job, result):
+        ctypes.cast(result, ctypes.POINTER(ctypes.wintypes.BOOL)).contents.value = True
+        return True
+    kernel = SimpleNamespace(GetCurrentProcess=NativeCall(lambda: 1),
+                             IsProcessInJob=NativeCall(in_job))
+    monkeypatch.setattr(ctypes, 'WinDLL', lambda *a, **k: kernel, raising=False)
+    monkeypatch.setenv('PROGRAMDATA', str(tmp_path / 'data'))
+    monkeypatch.chdir(tmp_path)
+    if inject:
+        monkeypatch.setenv('FAKENETNG_MCP_FAULT_INJECTION', '1')
+        FaultInjector().arm('cleanup_error')
+    else:
+        monkeypatch.delenv('FAKENETNG_MCP_FAULT_INJECTION', raising=False)
+    monkeypatch.setattr(logging.getLogger('managed'), 'error', lambda *a: None)
+    monkeypatch.setattr(logging, 'basicConfig', lambda **k: None)
+    monkeypatch.setattr(logging, 'FileHandler', lambda *a, **k: None)
+    monkeypatch.setattr(logging, 'StreamHandler', lambda *a, **k: None)
+    monkeypatch.setattr(managed, 'install_thread_exception_logging', lambda: None)
+    monkeypatch.setattr(service_stop, 'process_identity', lambda pid: dict(pid=42, creation_time='123'))
+    monkeypatch.setattr(stacks, 'save_stacks', lambda *a: None)
+    monkeypatch.setattr(managed, 'capture_stop_stacks', lambda *a: nullcontext())
+    stopped = []
+    instance = SimpleNamespace(parse_config=lambda path: None, fakenet_config={},
+                               diverter_config={}, start=lambda: None,
+                               running_listener_providers=[], diverter=None,
+                               stop=lambda: stopped.append('released'))
+    monkeypatch.setitem(sys.modules, 'fakenet.fakenet', SimpleNamespace(Fakenet=lambda: instance))
+    monkeypatch.setattr(managed, 'probe_instance', lambda instance: {'probe': True})
+    requests = [dict(run_id='cleanup-run', seq=1, kind='start',
+                     payload=dict(config_path='fixture', fakenet_config={}, diverter_config={})),
+                dict(run_id='cleanup-run', seq=2, kind='stop')]
+    if inject:
+        requests.append(dict(run_id='cleanup-run', seq=3, kind='stop'))
+
+    class Output(io.BytesIO):
+        def write(self, value):
+            frame = json.loads(value)
+            if frame['seq'] == 2:
+                if inject:
+                    assert stopped == [], 'cleanup fault arrived after resource release'
+                    assert 'injected cleanup error' in frame['error']
+                    assert json.loads((tmp_path / 'fault-triggered.json').read_text())['fault'] == 'cleanup_error'
+                else:
+                    assert stopped == ['released']
+                    assert frame['result'] == {'stopped': True}
+            return super().write(value)
+
+    output = Output()
+    monkeypatch.setattr(managed, 'redirect_child_streams', lambda path: (
+        io.BytesIO(b''.join(json.dumps(x).encode() + b'\n' for x in requests)), output, io.StringIO()))
+    assert managed.child_main('cleanup-run', tmp_path) == 0
+    assert stopped == ['released']
+    assert json.loads(output.getvalue().splitlines()[-1])['result'] == {'stopped': True}
+    if not inject:
+        assert not (tmp_path / 'fault-triggered.json').exists()

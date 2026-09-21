@@ -433,8 +433,10 @@ def child_main(run_id, run_dir):
                 if instance is not None:
                     with capture_stop_stacks(directory):
                         fault.before_listener_phase()
-                        instance.stop()
+                        # Inject at the resource-release entry, while the
+                        # managed session is still owned and recoverable.
                         fault.on_stop_error()
+                        instance.stop()
                 response['result'] = {'stopped': True}
                 exiting = True
             else:
