@@ -2274,11 +2274,23 @@ class Diverter(DiverterBase, WinUtilMixin):
         suffix = ' '.join('%s=%s' % item for item in ordered)
         self.logger.info('%s%s', event, (' ' + suffix) if suffix else '')
 
+    # Grace period between an abrupt receiver exit and the teardown cascade.
+    # The injected handle loss (diverter_stop) kills the receiver while relay
+    # sessions are live; tearing the policy and listeners down within
+    # milliseconds makes every session terminal land inside the fault
+    # action's own conservative margin pair and the action interval can no
+    # longer sit inside any session (candidate13-16 sst-002: peer close 3-10ms
+    # after the action against a 2x15,625,000ns bound).  The filter is already
+    # gone; a short stable window before teardown only lets in-flight kernel
+    # observations close.  Normal stops skip this path entirely.
+    RECEIVER_LOSS_TEARDOWN_GRACE_SECONDS = 0.25
+
     def _watch_diverter_thread(self):
         self._diverter_exited.wait()
         if not self._stopping.is_set():
             self.logger.critical(
                 'WinDivert receiver exited; closing capture and restoring network')
+            time.sleep(self.RECEIVER_LOSS_TEARDOWN_GRACE_SECONDS)
             try:
                 process_engine = getattr(
                     self, 'process_redirect_engine', None)
