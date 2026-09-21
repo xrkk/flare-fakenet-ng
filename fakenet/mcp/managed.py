@@ -389,6 +389,26 @@ def redirect_child_streams(run_dir):
     return protocol_in, protocol_out, output
 
 
+# The fault-evidence contract bounds a cleanup_error action by the managed
+# stop round-trip (receipt consumption through the parent's stop-error
+# response record).  Quiescing at the exception instant kills the primary
+# session inside that interval (candidate11 sst-004: session end preceded
+# trigger_upper by 32.5ms) and breaks the containment adjudication.  The
+# supervisor's incident flow keeps the child alive for seconds before Job
+# termination, so a short defer clears the trigger interval while the
+# diverter still filters.
+STOP_FAILURE_QUIESCE_DELAY_SECONDS = 0.25
+
+
+def _quiesce_redirected_flows_after_failed_stop(instance):
+    import logging
+    try:
+        instance.quiesce_redirected_flows('managed_stop_failed')
+    except BaseException:
+        logging.getLogger('managed').exception(
+            'redirected-flow quiesce after failed stop raised')
+
+
 def child_main(run_id, run_dir):
     """Internal entry; fixed commands, no arbitrary code or file RPC."""
     import ctypes as c
@@ -464,15 +484,22 @@ def child_main(run_id, run_dir):
                         # releases the filter, reset the redirected client
                         # flows so their kernel TCBs cannot emit on the
                         # original tuples after the filter is gone
-                        # (candidate10 sst-004 primary leak).  A quiesce
-                        # failure is diagnostic only and never masks the
-                        # original stop error.
+                        # (candidate10 sst-004 primary leak).  The short
+                        # delay lets the stop-error round-trip close the
+                        # fault action interval before the session ends; a
+                        # scheduling failure is diagnostic only and never
+                        # masks the original stop error.
                         try:
-                            instance.quiesce_redirected_flows('managed_stop_failed')
+                            timer = threading.Timer(
+                                STOP_FAILURE_QUIESCE_DELAY_SECONDS,
+                                _quiesce_redirected_flows_after_failed_stop,
+                                (instance,))
+                            timer.daemon = True
+                            timer.start()
                         except BaseException:
                             logging.getLogger('managed').exception(
-                                'redirected-flow quiesce after failed stop '
-                                'raised')
+                                'redirected-flow quiesce scheduling after '
+                                'failed stop raised')
                         raise
                 response['result'] = {'stopped': True}
                 exiting = True

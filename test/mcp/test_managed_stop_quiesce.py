@@ -15,6 +15,7 @@ import json
 import logging
 import sys
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -68,6 +69,8 @@ class _FakeInstance:
 
 
 def _child_harness(monkeypatch, tmp_path, requests, instance):
+    monkeypatch.setattr(managed, 'STOP_FAILURE_QUIESCE_DELAY_SECONDS', 0.0)
+
     def in_job(process, job, result):
         ctypes.cast(result, ctypes.POINTER(ctypes.wintypes.BOOL)).contents.value = True
         return True
@@ -90,6 +93,13 @@ def _child_harness(monkeypatch, tmp_path, requests, instance):
     return output
 
 
+def _wait_for_quiesce(instance, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while not instance.quiesce_calls and time.monotonic() < deadline:
+        time.sleep(0.005)
+    return list(instance.quiesce_calls)
+
+
 def _start_then_stop_requests():
     return [dict(run_id='current', seq=1, kind='ready', payload={}),
             dict(run_id='current', seq=2, kind='start',
@@ -110,7 +120,7 @@ def test_failed_stop_quiesces_redirected_flows_once(monkeypatch, tmp_path):
     stop_response = responses[-1]
     assert stop_response['error'] and 'injected cleanup error' in stop_response['error']
     assert instance.stop_calls == 1
-    assert instance.quiesce_calls == ['managed_stop_failed']
+    assert _wait_for_quiesce(instance) == ['managed_stop_failed']
 
 
 def test_successful_stop_never_quiesces(monkeypatch, tmp_path):
@@ -134,7 +144,7 @@ def test_quiesce_failure_does_not_mask_stop_error(monkeypatch, tmp_path):
     responses = [json.loads(x) for x in output.getvalue().splitlines()]
     assert 'injected cleanup error' in responses[-1]['error']
     assert 'quiesce socket failure' not in responses[-1]['error']
-    assert instance.quiesce_calls == ['managed_stop_failed']
+    assert _wait_for_quiesce(instance) == ['managed_stop_failed']
 
 
 def test_stop_without_instance_does_not_quiesce(monkeypatch, tmp_path):
