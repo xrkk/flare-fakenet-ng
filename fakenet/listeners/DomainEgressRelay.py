@@ -504,6 +504,11 @@ class DomainEgressRelay(object):
             # the rewrite for a short teardown grace so the client's final
             # ACK exchange stays translated. Revoking first leaves the peer
             # TCB half-open until its read timeout.
+            self._record_native_terminal(
+                'deny' if deny_reason_code else 'closed',
+                deny_reason_code or 'session_closed', mapping,
+                source, address[1], hello_sni)
+
             infrastructure_failure = deny_reason_code == 'relay_error'
             if (infrastructure_failure and not self._stop.is_set()
                     and not self._quiesce.is_set()):
@@ -540,10 +545,6 @@ class DomainEgressRelay(object):
                         connection.close()
                     except OSError:
                         pass
-            self._record_native_terminal(
-                'deny' if deny_reason_code else 'closed',
-                deny_reason_code or 'session_closed', mapping,
-                source, address[1], hello_sni)
             self.callbacks.closeRelayMapping(mapping.generation)
             with self._workers_lock:
                 self._workers.discard(threading.current_thread())
