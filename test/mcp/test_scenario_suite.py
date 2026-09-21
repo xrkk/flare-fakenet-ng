@@ -342,6 +342,205 @@ def test_b2_traffic_oracle_requires_each_released_case_flow_and_fnpr_receipt():
         assert not runner._traffic_oracle(run, profile, nonce, sentinel)['passed']
 
 
+def _b1_sni_oracle_fixture(root, *, handshake_sni='example.com', deny_sni=None,
+                           deny_generation='2', deny_reason='ClientHelloError',
+                           deny_reason_code='sni_mismatch', deny_original_ip='119.188.175.46',
+                           deny_domain='api.deepseek.com', deny_sport='50161',
+                           deny_timestamp='2026-09-21 11:38:56,286',
+                           extra_lines=(),
+                           observation_contract='con008', case4_nic=False,
+                           drop_reason_code=False, drop_generation=False):
+    """B1 fixture whose auxiliary case 4 is the planned SNI-deny case.
+
+    Returns (runner, profile, nonce, run, sentinel, deny_line) with the
+    sealed run.log written under root.  Everything the strict binding needs
+    (probe ticks, exact-tuple PROCESS_FLOW, relay deny line) is realistic;
+    only the pktmon and con008 observation seams are stubbed, as in the
+    existing B2 oracle test.
+    """
+    import datetime as _dt
+    runner = object.__new__(suite.Suite)
+    runner.root = root
+    profile = suite.materialize_probe_profile(suite.profile_for_bucket('B1', 0), '60.28.220.199')
+    nonce = 'oracle-b1-sni'
+    expected = {'profile': profile['bucket'], 'variant': profile['variant'],
+                'tempo': profile['tempo'], 'interleave': profile['interleave'],
+                'cadence_ms': profile['cadence_ms'],
+                'target_host': profile['probe_target']['host'],
+                'target_port': profile['probe_target']['port'],
+                'target_protocol': profile['probe_target']['protocol'],
+                'process_mode': profile['probe_target'].get('process_mode', 'match'),
+                'fnpr_role': profile['probe_target'].get('fnpr_role', ''),
+                'startup_retry_seconds': profile.get('startup_retry_seconds', 70),
+                'additional_targets': list(profile['negative_cases'])}
+
+    def ticks(hour, minute, second, millis):
+        stamp = _dt.datetime(2026, 9, 21, hour, minute, second, millis * 1000,
+                             tzinfo=_dt.timezone.utc)
+        return 621355968000000000 + int(stamp.timestamp() * 10**7)
+
+    rows = [dict(event='ready', nonce=nonce, **expected),
+            {'event': 'released', 'nonce': nonce, 'interleave': profile['interleave']},
+            {'event': 'established', 'nonce': nonce, 'connection_id': 'main', 'pid': 777,
+             'src': '192.168.204.233:5000', 'dst': '60.28.220.199:443',
+             'actual_dst': '60.28.220.199:443'},
+            {'event': 'send', 'nonce': nonce, 'connection_id': 'main', 'pid': 777,
+             'cadence_ms': profile['cadence_ms'], 'utc_ticks': ticks(3, 38, 10, 0)},
+            {'event': 'send', 'nonce': nonce, 'connection_id': 'main', 'pid': 777,
+             'cadence_ms': profile['cadence_ms'],
+             'utc_ticks': ticks(3, 38, 10, 0) + profile['cadence_ms'] * 10_000},
+            {'event': 'close', 'nonce': nonce, 'connection_id': 'main', 'pid': 777},
+            {'event': 'cases_released', 'nonce': nonce, 'phase': 'after-healthy', 'count': 4},
+            {'event': 'case_established', 'nonce': nonce, 'case_index': 1,
+             'connection_id': 'case-1', 'pid': 777, 'utc_ticks': ticks(3, 38, 52, 700),
+             'src': '192.168.204.233:50158', 'actual_dst': '192.168.204.233:443'},
+            {'event': 'case_send', 'nonce': nonce, 'case_index': 1, 'connection_id': 'case-1',
+             'pid': 777, 'utc_ticks': ticks(3, 38, 52, 800)},
+            {'event': 'case_close', 'nonce': nonce, 'case_index': 1, 'connection_id': 'case-1',
+             'pid': 777, 'utc_ticks': ticks(3, 38, 52, 900)},
+            {'event': 'case_established', 'nonce': nonce, 'case_index': 2,
+             'connection_id': 'case-2', 'pid': 777, 'utc_ticks': ticks(3, 38, 53, 700),
+             'src': '192.168.204.233:50159', 'actual_dst': '198.51.100.77:1337'},
+            {'event': 'case_send', 'nonce': nonce, 'case_index': 2, 'connection_id': 'case-2',
+             'pid': 777, 'utc_ticks': ticks(3, 38, 53, 800)},
+            {'event': 'case_close', 'nonce': nonce, 'case_index': 2, 'connection_id': 'case-2',
+             'pid': 777, 'utc_ticks': ticks(3, 38, 53, 900)},
+            {'event': 'case_udp_sent', 'nonce': nonce, 'case_index': 3,
+             'connection_id': 'case-3', 'pid': 777, 'utc_ticks': ticks(3, 38, 54, 700),
+             'src': '192.168.204.233:50160', 'actual_dst': '119.188.175.46:443'},
+            {'event': 'case_close', 'nonce': nonce, 'case_index': 3, 'connection_id': 'case-3',
+             'pid': 777, 'utc_ticks': ticks(3, 38, 54, 900)},
+            {'event': 'case_established', 'nonce': nonce, 'case_index': 4,
+             'connection_id': 'case-4', 'pid': 777, 'utc_ticks': ticks(3, 38, 56, 100),
+             'src': '192.168.204.233:50161', 'actual_dst': '119.188.175.46:443'},
+            {'event': 'case_tls_handshake_attempt', 'nonce': nonce, 'case_index': 4,
+             'connection_id': 'case-4', 'pid': 777, 'utc_ticks': ticks(3, 38, 56, 280),
+             'sni': handshake_sni},
+            {'event': 'case_error', 'nonce': nonce, 'case_index': 4, 'connection_id': 'case-4',
+             'pid': 777, 'utc_ticks': ticks(3, 38, 56, 320)},
+            {'event': 'case_close', 'nonce': nonce, 'case_index': 4, 'connection_id': 'case-4',
+             'pid': 777, 'utc_ticks': ticks(3, 38, 56, 400)}]
+    (root / 'probe.jsonl').write_text('\n'.join(json.dumps(row) for row in rows) + '\n',
+                                      encoding='utf-8')
+    (root / 'pktmon.txt').write_text('pktmon fixture\n', encoding='utf-8')
+    deny_fields = ['TLS_SNI_DENY domain=%s' % deny_domain,
+                   None if drop_generation else 'generation=%s' % deny_generation,
+                   'original_ip=%s' % deny_original_ip, 'original_port=443',
+                   'reason=%s' % deny_reason,
+                   None if drop_reason_code else 'reason_code=%s' % deny_reason_code,
+                   'sni=%s' % (deny_sni or handshake_sni),
+                   'sport=%s' % deny_sport, 'src=192.168.204.233']
+    deny_line = '%s INFO Diverter %s' % (
+        deny_timestamp, ' '.join(field for field in deny_fields if field))
+    log_lines = [
+        'EGRESS_CONTROL_READY',
+        '2026-09-21 11:38:52,774 INFO Diverter PROCESS_FLOW disposition=DIVERT_FAKE domain=- dport=443 dst=192.168.204.233 pid=777 process=powershell.exe proto=TCP sport=50158 src=192.168.204.233',
+        '2026-09-21 11:38:52,774 INFO Diverter DIVERT_FAKE original_ip=192.168.204.233 original_port=443',
+        '2026-09-21 11:38:53,774 INFO Diverter PROCESS_FLOW disposition=DIVERT_FAKE domain=- dport=1337 dst=198.51.100.77 pid=777 process=powershell.exe proto=TCP sport=50159 src=192.168.204.233',
+        '2026-09-21 11:38:53,774 INFO Diverter DIVERT_FAKE original_ip=198.51.100.77 original_port=1337',
+        '2026-09-21 11:38:54,774 INFO Diverter PROCESS_FLOW disposition=DIVERT_FAKE domain=api.deepseek.com dport=443 dst=119.188.175.46 pid=777 process=powershell.exe proto=UDP sport=50160 src=192.168.204.233',
+        '2026-09-21 11:38:54,774 INFO Diverter DIVERT_FAKE original_ip=119.188.175.46 original_port=443',
+        '2026-09-21 11:38:56,286 INFO Diverter PROCESS_FLOW disposition=REDIRECT_TLS_RELAY domain=api.deepseek.com dport=443 dst=119.188.175.46 pid=777 process=powershell.exe proto=TCP sport=50161 src=192.168.204.233',
+        deny_line]
+    log_lines.extend(extra_lines)
+    (root / 'run.log').write_text('\n'.join(log_lines) + '\n', encoding='utf-8')
+
+    def packets(capture, src, dst, protocol, not_after_local=None, not_before_local=None):
+        nic = ([{'component': 9}] if case4_nic and dst == '119.188.175.46:443'
+               and protocol == 'TCP' else [])
+        return ([{'src': src, 'dst': dst, 'protocol': protocol}], nic, {'component_ids': [9]})
+
+    runner._pktmon_observations = packets
+    runner._application_observation = (
+        lambda *args, **kwargs: {'schema': 'sst.application-observation.v1'})
+    capture = {'probe_path': 'probe.jsonl', 'pktmon_path': 'pktmon.txt'}
+    if observation_contract:
+        capture['observation_contract'] = observation_contract
+    run = {'capture': capture, 'originals': {'files': [{'path': 'run.log'}]}}
+    sentinel = {'rows': []}
+    return runner, profile, nonce, run, sentinel, deny_line
+
+
+def test_auxiliary_sni_mismatch_deny_binds_strictly():
+    """The planned SNI-deny case passes only through a fully bound record."""
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        runner, profile, nonce, run, sentinel, deny_line = _b1_sni_oracle_fixture(root)
+        verdict = runner._traffic_oracle(run, profile, nonce, sentinel)
+        case4 = verdict['cases'][3]
+        assert case4['passed'], case4
+        binding = case4['sni_binding']
+        assert binding['deny_log'] == deny_line
+        assert binding['sni'] == 'example.com'
+        assert binding['domain'] == 'api.deepseek.com'
+        assert binding['generation'] == 2
+        assert binding['window_ns'][0] < binding['window_ns'][1]
+        raw = (root / 'run.log').read_bytes()
+        ref = binding['deny_log_ref']
+        assert raw[ref['byte_start']:ref['byte_end']].decode('utf-8') == deny_line
+        # The other deny cases keep their strict DIVERT_FAKE branch.
+        assert verdict['cases'][0]['passed'] and verdict['cases'][1]['passed']
+        assert verdict['cases'][2]['passed']
+
+
+def test_auxiliary_sni_mismatch_deny_rejects_substitutes():
+    """Every weaker or ambiguous substitute must leave the case failing."""
+    cases = [
+        ('wrong handshake sni', dict(handshake_sni='example.org')),
+        ('deny sni differs from handshake', dict(deny_sni='example.net')),
+        ('old unbound deny format', dict(drop_reason_code=True, deny_sport='0')),
+        ('parse error not mismatch', dict(deny_reason_code='clienthello_error')),
+        ('relay error not mismatch', dict(deny_reason_code='relay_error', deny_reason='OSError')),
+        ('missing generation', dict(drop_generation=True)),
+        ('generation zero', dict(deny_generation='0')),
+        ('generation not an integer', dict(deny_generation='x')),
+        ('contradictory allow', dict(extra_lines=(
+            '2026-09-21 11:38:56,290 INFO Diverter TLS_SNI_ALLOW domain=api.deepseek.com original_ip=119.188.175.46 sni=example.com sport=50161 src=192.168.204.233',))),
+        ('ambiguous second deny', dict(extra_lines=(
+            '2026-09-21 11:38:56,300 INFO Diverter TLS_SNI_DENY domain=api.deepseek.com generation=9 original_ip=119.188.175.46 original_port=443 reason=ClientHelloError reason_code=sni_mismatch sni=example.com sport=50161 src=192.168.204.233',))),
+        ('deny after connection window', dict(deny_timestamp='2026-09-21 11:38:57,900')),
+        ('deny exactly at close boundary', dict(deny_timestamp='2026-09-21 11:38:56,400')),
+        ('deny before established', dict(deny_timestamp='2026-09-21 11:38:56,050')),
+        ('original target mismatch', dict(deny_original_ip='119.188.175.47')),
+        ('domain not this case policy', dict(deny_domain='other.example')),
+        ('different source port', dict(deny_sport='50199')),
+        ('no con008 observation', dict(observation_contract=None)),
+        ('physical egress on NIC', dict(case4_nic=True)),
+    ]
+    for name, kwargs in cases:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runner, profile, nonce, run, sentinel, _ = _b1_sni_oracle_fixture(root, **kwargs)
+            case4 = runner._traffic_oracle(run, profile, nonce, sentinel)['cases'][3]
+            assert not case4['passed'], name
+            if name != 'physical egress on NIC':
+                # The NIC rejection is independent of the relay decision; the
+                # bound record may legitimately remain as diagnostics.
+                assert not case4.get('sni_binding'), name
+
+
+def test_stored_sni_binding_tamper_is_rejected_in_recheck():
+    """The offline recheck compares stored bindings against raw rebuilds."""
+    binding = {'deny_log': 'deny line', 'sni': 'example.com',
+               'deny_log_ref': {'path': 'run.log', 'byte_start': 4, 'byte_end': 13}}
+    recomputed = [{'index': 4, 'passed': True, 'sni_binding': binding}]
+    assert suite.Suite._stored_binding_issues([{'index': 4, 'sni_binding': binding}],
+                                              recomputed) == []
+    # Results written before the contract carry no binding and stay comparable.
+    assert suite.Suite._stored_binding_issues([{'index': 4}], recomputed) == []
+    tampered = {'deny_log': 'deny line ', 'sni': 'example.com',
+                'deny_log_ref': {'path': 'run.log', 'byte_start': 4, 'byte_end': 13}}
+    assert suite.Suite._stored_binding_issues(
+        [{'index': 4, 'sni_binding': tampered}], recomputed) == [
+        'stored SNI deny binding differs from recomputed evidence (case 4)']
+    moved = dict(binding, deny_log_ref={'path': 'run.log', 'byte_start': 5, 'byte_end': 13})
+    assert suite.Suite._stored_binding_issues(
+        [{'index': 4, 'sni_binding': moved}], recomputed)
+    assert suite.Suite._stored_binding_issues(
+        [{'index': 4, 'sni_binding': binding}], [{'index': 4, 'passed': False}]) == [
+        'stored SNI deny binding has no recomputed counterpart (case 4)']
+
+
 def test_positive_curl_branch_binds_its_pid_flow_and_outer_nic_tuple():
     """The B1/B4 curl path cannot pass from an unrelated relay event."""
     with tempfile.TemporaryDirectory() as temp:
