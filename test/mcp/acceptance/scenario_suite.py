@@ -1652,6 +1652,12 @@ class Suite:
             self._fail_closed_cooperative(coop, capture['stop'])
         except Exception as exc:  # noqa: BLE001
             primary_error = exc
+        # The probe's cooperative exit closes its sockets; the kernel close/
+        # RST events land moments later. Stopping the kernel trace in the
+        # next breath sometimes missed them, leaving the primary TCB with no
+        # terminal event (fakenet100 r09-run-13 sst-010: 710 lifecycle rows,
+        # zero terminals). Give the teardown a bounded settle window first.
+        time.sleep(1.0)
         try:
             kernel = self._stop_kernel_capture(capture['kernel_capture'])
         except Exception as secondary:
