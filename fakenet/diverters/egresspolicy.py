@@ -1024,6 +1024,22 @@ class EgressPolicy(object):
             mapping.expires_at = self._now() + self.relay_idle_timeout + 30
             return True
 
+    def relay_client_mapping_state(self, sample_ip, sample_port):
+        """'none'/'pending'/'active'/'expired' for the client tuple.
+
+        Non-relay flows (reviewed-IP allows, takeover sinks) carry no NAT
+        mapping at all; 'none' lets callers apply a product-wide liveness
+        rule instead of a mapping rule that can never hold.
+        """
+        now = self._now()
+        with self._lock:
+            mapping = self._nat_client.get((str(sample_ip), int(sample_port)))
+            if mapping is None:
+                return 'none'
+            if mapping.expires_at <= now:
+                return 'expired'
+            return 'active' if mapping.active else 'pending'
+
     def relay_client_mapping_active(self, sample_ip, sample_port):
         """Whether the client tuple's relay mapping is currently active.
 

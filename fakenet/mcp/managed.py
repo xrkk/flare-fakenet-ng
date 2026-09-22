@@ -460,10 +460,18 @@ def child_main(run_id, run_dir):
                 instance.start()
                 _policy = getattr(instance.diverter, 'egress_policy', None)
                 if _policy is not None and hasattr(
-                        _policy, 'relay_client_mapping_active'):
-                    fault.set_start_gate_liveness(
-                        lambda row: _policy.relay_client_mapping_active(
-                            *str(row.get('src', '')).rsplit(':', 1)))
+                        _policy, 'relay_client_mapping_state'):
+                    _diverter = instance.diverter
+                    def _gate_liveness(row, _policy=_policy, _diverter=_diverter):
+                        state = _policy.relay_client_mapping_state(
+                            *str(row.get('src', '')).rsplit(':', 1))
+                        if state in ('active', 'pending', 'expired'):
+                            return state == 'active'
+                        # Reviewed-IP/takeover flows carry no mapping; the
+                        # product-wide condition is the filtering itself.
+                        return (_diverter.handle is not None
+                                and not _diverter._stopping.is_set())
+                    fault.set_start_gate_liveness(_gate_liveness)
                 # The runner-side rendezvous allows the probe 60s; the
                 # in-child wait must be at least as patient or late probe
                 # traffic (B2 reviewed-private DNS + route setup exceeded the
