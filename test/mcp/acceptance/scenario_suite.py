@@ -4120,6 +4120,12 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # restart-branch wait that read an unclosed file).
                     first_run['events'] = call('get_events', {'limit': 100})
                     first_run['artifacts'] = call('list_artifacts')
+                    if interleave == 'stop-window':
+                        # run-01's stop portion lives inside the restart
+                        # mutation; release its probe before the capture
+                        # closes (finish_capture pops the capture dict).
+                        first_run['probe_release'] = self._release_probe(
+                            captures[first_label], 'stop-window')
                     finish_capture(first_label, first_run)
                     second_label = 'run-02'
                     captures[second_label] = self._start_capture_and_probe(guest, runtime_profile, nonce, second_label)
@@ -4138,12 +4144,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # the stop-window branch throw 'probe start control was
                     # already released' (fakenet100 r09 sst-005: restart +
                     # stop-window combination).
-                    if interleave == 'stop-window':
-                        first_run['probe_release'] = self._release_probe(
-                            captures[first_label], 'stop-window')
-                        second_release = None
-                    else:
-                        second_release = self._release_probe(captures[second_label], 'restart-window')
+                    second_release = None if interleave == 'stop-window' else \
+                        self._release_probe(captures[second_label], 'restart-window')
                     restarted = call('restart', {}, mutation=True)
                     first_run['recovery_audit'], first_run['five_sections_after'] = self._run_recovery_sections(
                         first_run['run_id'], root / first_label / 'recovery-audits', evidence)
