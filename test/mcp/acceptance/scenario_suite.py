@@ -4132,8 +4132,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                         first_run['probe_release'] = self._release_probe(
                             captures[first_label], 'stop-window')
                     second_label = 'run-02'
-                    captures[second_label] = self._start_capture_and_probe(guest, runtime_profile, nonce, second_label)
-                    evidence.write(second_label + '-capture-start.json', captures[second_label])
+                    if interleave != 'stop-window':
+                        captures[second_label] = self._start_capture_and_probe(guest, runtime_profile, nonce, second_label)
+                        evidence.write(second_label + '-capture-start.json', captures[second_label])
                     restart_context, restart_context_raw = self._capture_sections()
                     evidence.write(second_label + '-pre-restart-context.json',
                                    {'sections': restart_context, 'raw': restart_context_raw,
@@ -4153,11 +4154,19 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     restarted = call('restart', {}, mutation=True)
                     if interleave == 'stop-window':
                         # The probe has now overlapped run-01's stop portion
-                        # (the restart); observe its cases and close the
-                        # capture while the second capture is already bound.
+                        # (the restart). Close run-01's capture BEFORE
+                        # starting run-02's: pktmon runs a single capture
+                        # session at a time, so an overlapping start died
+                        # with the first 'pktmon stop' (fakenet100 r09-run-08
+                        # sst-005: run-02 never got its pktmon.etl). run-02's
+                        # active window lies entirely after the restart, so
+                        # its capture starts right after this close.
                         self._run_auxiliary_cases(
                             first_run, captures[first_label], runtime_profile)
                         finish_capture(first_label, first_run)
+                        captures[second_label] = self._start_capture_and_probe(
+                            guest, runtime_profile, nonce, second_label)
+                        evidence.write(second_label + '-capture-start.json', captures[second_label])
                     first_run['recovery_audit'], first_run['five_sections_after'] = self._run_recovery_sections(
                         first_run['run_id'], root / first_label / 'recovery-audits', evidence)
                     restart_difference = self._section_difference(first_run['five_sections_before'],
