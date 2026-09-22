@@ -1657,7 +1657,7 @@ class Suite:
         # next breath sometimes missed them, leaving the primary TCB with no
         # terminal event (fakenet100 r09-run-13 sst-010: 710 lifecycle rows,
         # zero terminals). Give the teardown a bounded settle window first.
-        time.sleep(1.0)
+        time.sleep(3.0)
         try:
             kernel = self._stop_kernel_capture(capture['kernel_capture'])
         except Exception as secondary:
