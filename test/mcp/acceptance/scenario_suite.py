@@ -4173,7 +4173,12 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     runs.append(active_run)
                     if restarted.get('state') != 'healthy':
                         raise SuiteError('restart did not publish healthy')
-                    self._run_auxiliary_cases(active_run, captures[second_label], runtime_profile)
+                    if interleave != 'stop-window':
+                        # stop-window runs its auxiliary cases in the stop
+                        # branch below; running them here as well released
+                        # the case controls twice and the second completion
+                        # wait expired (fakenet100 r09-run-03 sst-005).
+                        self._run_auxiliary_cases(active_run, captures[second_label], runtime_profile)
                 else:
                     active_run = first_run
                 for sample_index in range(3):
