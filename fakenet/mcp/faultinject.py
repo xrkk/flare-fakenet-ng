@@ -340,6 +340,7 @@ class FaultInjector:
         deadline = time.monotonic() + timeout
         seen = 0
         established = None
+        settle_started = None
         while time.monotonic() < deadline:
             try:
                 with open(probe_path, encoding='utf-8', errors='replace') as handle:
@@ -359,7 +360,22 @@ class FaultInjector:
             if (established is not None
                     and self._own_log_maps_flow(established, _re)
                     and (still_live is None or still_live(established))):
-                return True
+                # Hold the release past the adjudication's conservative
+                # wall-clock band (2 x 15,625,000ns around establishment and
+                # the action's file times). An action fired within that band
+                # of the session edge fails containment on the margin, not on
+                # the physics (candidate22 fault-spike sst-015: injection
+                # ~10ms after established, 26ms inside the left band). The
+                # settle re-verifies liveness after the wait so the action
+                # still fires only inside a live session.
+                if settle_started is None:
+                    settle_started = time.monotonic()
+                elif time.monotonic() - settle_started >= 0.06:
+                    if still_live is None or still_live(established):
+                        return True
+                    settle_started = None
+            else:
+                settle_started = None
             time.sleep(.01)
         return False
 
