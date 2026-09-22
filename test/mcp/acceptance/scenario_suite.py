@@ -4122,10 +4122,16 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     first_run['artifacts'] = call('list_artifacts')
                     if interleave == 'stop-window':
                         # run-01's stop portion lives inside the restart
-                        # mutation; release its probe before the capture
-                        # closes (finish_capture pops the capture dict).
+                        # mutation; release its probe and boundary cases
+                        # before the capture closes (finish_capture pops the
+                        # capture dict and stops the probe). The boundary
+                        # cases belong to run-01's own healthy window and
+                        # would otherwise never run (fakenet100 r09-run-04
+                        # sst-005: run-01 cases all unexecuted).
                         first_run['probe_release'] = self._release_probe(
                             captures[first_label], 'stop-window')
+                        self._run_auxiliary_cases(
+                            first_run, captures[first_label], runtime_profile)
                     finish_capture(first_label, first_run)
                     second_label = 'run-02'
                     captures[second_label] = self._start_capture_and_probe(guest, runtime_profile, nonce, second_label)
