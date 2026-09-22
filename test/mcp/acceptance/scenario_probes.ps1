@@ -616,7 +616,14 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
     if ($additionalTargets.Count -gt 8) { throw 'AdditionalTargetsJson exceeds bounded case count' }
     if ($StartupRetrySeconds -lt 20 -or $StartupRetrySeconds -gt 120) { throw 'StartupRetrySeconds is outside the bounded range' }
     Write-JsonLine $Path @{ event = 'ready'; nonce = $Token; pid = $PID; profile = $Bucket; variant = $Variant; tempo = $Tempo; interleave = $Interleave; cadence_ms = $Cadence; target_host = $endpoint.host; target_port = $endpoint.port; target_protocol = $endpoint.protocol; process_mode = $ProcessMode; fnpr_role = $FnprRole; additional_targets = $additionalTargets; startup_retry_seconds = $StartupRetrySeconds; creation_ticks = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks; stopwatch_frequency = [Diagnostics.Stopwatch]::Frequency }
-    $releaseDeadline = [DateTime]::UtcNow.AddSeconds(90)
+    # A stop-window probe is released at the END of the active window by
+    # definition; for a restart-lifecycle scenario that includes the whole
+    # restart transition plus its recovery audit settle window (~150s), so
+    # the plain 90s deadline expired before the release and the probe died
+    # with 'probe start control was not released' (fakenet100 r09-run-07
+    # sst-005 run-02). Every other interleave keeps the 90s bound.
+    $releaseWaitSeconds = if ($Interleave -eq 'stop-window') { 300 } else { 90 }
+    $releaseDeadline = [DateTime]::UtcNow.AddSeconds($releaseWaitSeconds)
     while (-not (Test-Path $Start) -and -not (Test-Path $Stop) -and [DateTime]::UtcNow -lt $releaseDeadline) { Start-Sleep -Milliseconds 20 }
     if (-not (Test-Path $Start)) { throw 'probe start control was not released' }
     Write-JsonLine $Path @{ event = 'released'; nonce = $Token; profile = $Bucket; interleave = $Interleave }
