@@ -2231,7 +2231,14 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         hi = case_observation.get('etw_terminal_lower_ns')
         if not (isinstance(lo, int) and isinstance(hi, int)):
             return None
-        if not lo <= moment_ns <= hi:
+        # The ETW trace clock (QPC converted by the relogger) and the
+        # record's GetSystemTimePreciseAsFileTime are two realizations of
+        # wall time; measured agreement is sub-microsecond (candidate23
+        # sst-001 case-4: the deny sat 254ns past the kernel terminal it
+        # causally preceded).  A 2ms cross-domain guard absorbs that skew
+        # while staying three orders of magnitude tighter than the frozen
+        # 15,625,000ns wall-timer band it replaces.
+        if not lo - 2_000_000 <= moment_ns <= hi + 2_000_000:
             return None
         return {'generation': generation, 'filetime_ns': moment_ns,
                 'qpc_before': clock.get('qpc_before'),
