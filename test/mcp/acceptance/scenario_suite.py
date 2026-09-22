@@ -1400,7 +1400,7 @@ class Suite:
             "$ordinal=0;try{Get-WinEvent -Path $m.etl_path -Oldest -ErrorAction Stop|ForEach-Object {$writer.WriteLine((@{ordinal=$ordinal;xml=$_.ToXml()}|ConvertTo-Json -Compress -Depth 4));$ordinal++}}finally{$writer.Dispose()};"
             "& tracerpt $m.etl_path -o $m.header_path -of XML -summary $m.summary_path -y|Out-Null;$exit=$LASTEXITCODE;"
             "$c=@{event_reader=('Get-WinEvent -Path '+$m.etl_path+' -Oldest | ForEach-Object { $_.ToXml() }');event_reader_exit_code=0;tracerpt_argv=@('tracerpt',$m.etl_path,'-o',$m.header_path,'-of','XML','-summary',$m.summary_path,'-y');tracerpt_exit_code=$exit};"
-            "function Hash-Shared([string]$p){for($i=0;$i -lt 10;$i++){try{return (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLower()}catch{Start-Sleep -Milliseconds 500}};throw ('file remained shared: '+$p)};"
+            "function Hash-Shared([string]$p){for($i=0;$i -lt 60;$i++){try{return (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLower()}catch{Start-Sleep -Milliseconds 500}};throw ('file remained shared: '+$p)};"
             "foreach($pair in @(@('etl',$m.etl_path),@('events',$m.events_path),@('header',$m.header_path),@('summary',$m.summary_path))){$c[($pair[0]+'_sha256')]=Hash-Shared $pair[1]};"
             "$m|Add-Member -NotePropertyName conversion -NotePropertyValue $c -Force;$m|ConvertTo-Json -Depth 8|Set-Content $mp -Encoding UTF8;if($exit -ne 0){throw 'kernel tracerpt failed'};"
             "@{files=@(@($m.etl_path,$m.events_path,$m.header_path,$m.summary_path,$mp)|ForEach-Object {$f=Get-Item $_;@{path=$f.FullName;bytes=$f.Length;sha256=(Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()}})}|ConvertTo-Json -Depth 5 -Compress")
