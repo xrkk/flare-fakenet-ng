@@ -4151,6 +4151,15 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # stop-window combination).
                     second_release = None if interleave == 'stop-window' else \
                         self._release_probe(captures[second_label], 'restart-window')
+                    if interleave == 'stop-window':
+                        # run-01's boundary cases must complete BEFORE the
+                        # restart tears its session down: their policy
+                        # dispositions land in run-01's own run.log, and the
+                        # oracle binds them there (fakenet100 r09-run-09
+                        # sst-005: post-restart cases landed in run-02's log
+                        # and run-01's oracle found no policy flow).
+                        self._run_auxiliary_cases(
+                            first_run, captures[first_label], runtime_profile)
                     restarted = call('restart', {}, mutation=True)
                     if interleave == 'stop-window':
                         # The probe has now overlapped run-01's stop portion
@@ -4161,8 +4170,6 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                         # sst-005: run-02 never got its pktmon.etl). run-02's
                         # active window lies entirely after the restart, so
                         # its capture starts right after this close.
-                        self._run_auxiliary_cases(
-                            first_run, captures[first_label], runtime_profile)
                         finish_capture(first_label, first_run)
                         captures[second_label] = self._start_capture_and_probe(
                             guest, runtime_profile, nonce, second_label)
