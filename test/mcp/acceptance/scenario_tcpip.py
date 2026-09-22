@@ -251,6 +251,14 @@ def parse_line(text, ref):
         endpoint(m[2]); endpoint(m[3])
         event.update(tcb=m[1].upper(), local=m[2], remote=m[3], kind='sent RST', terminal=True)
         return event
+    m = re.fullmatch(r'[Cc]onnection (' + TCB + r') flushing reassembly state at RcvNxt = \d+\. Reason = Connection shutdown\.', body)
+    if m:
+        # Endpoint-less reassembly flush: the provider omits the address
+        # bracket on this shutdown variant. It is a terminal shutdown for the
+        # named TCB, bound by TCB identity alone (fakenet100 r09-run-11
+        # sst-007 case-1: the endpoint-less flush crashed case construction).
+        event.update(tcb=m[1].upper(), kind='shutdown initiated', terminal=True)
+        return event
     raise ValueError('unsupported TCP lifecycle: ' + body)
 
 
