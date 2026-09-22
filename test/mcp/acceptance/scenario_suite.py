@@ -4122,17 +4122,15 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     first_run['artifacts'] = call('list_artifacts')
                     if interleave == 'stop-window':
                         # run-01's stop portion lives inside the restart
-                        # mutation; release its probe and boundary cases
-                        # before the capture closes (finish_capture pops the
-                        # capture dict and stops the probe). The boundary
-                        # cases belong to run-01's own healthy window and
-                        # would otherwise never run (fakenet100 r09-run-04
-                        # sst-005: run-01 cases all unexecuted).
+                        # mutation: release its probe and boundary cases so
+                        # they overlap the restart transition, and keep the
+                        # capture open through it -- stopping the capture
+                        # before the restart cut the probe off after one
+                        # payload and the cadence chain could never hold
+                        # (fakenet100 r09-run-06 sst-038). finish_capture
+                        # runs after the restart converges below.
                         first_run['probe_release'] = self._release_probe(
                             captures[first_label], 'stop-window')
-                        self._run_auxiliary_cases(
-                            first_run, captures[first_label], runtime_profile)
-                    finish_capture(first_label, first_run)
                     second_label = 'run-02'
                     captures[second_label] = self._start_capture_and_probe(guest, runtime_profile, nonce, second_label)
                     evidence.write(second_label + '-capture-start.json', captures[second_label])
@@ -4153,6 +4151,13 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     second_release = None if interleave == 'stop-window' else \
                         self._release_probe(captures[second_label], 'restart-window')
                     restarted = call('restart', {}, mutation=True)
+                    if interleave == 'stop-window':
+                        # The probe has now overlapped run-01's stop portion
+                        # (the restart); observe its cases and close the
+                        # capture while the second capture is already bound.
+                        self._run_auxiliary_cases(
+                            first_run, captures[first_label], runtime_profile)
+                        finish_capture(first_label, first_run)
                     first_run['recovery_audit'], first_run['five_sections_after'] = self._run_recovery_sections(
                         first_run['run_id'], root / first_label / 'recovery-audits', evidence)
                     restart_difference = self._section_difference(first_run['five_sections_before'],
