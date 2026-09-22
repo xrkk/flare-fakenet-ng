@@ -1433,6 +1433,12 @@ class Suite:
             ";New-Item -ItemType Directory -Path $r -Force|Out-Null;"
             "$etl=Join-Path $r 'pktmon.etl';$nic=Join-Path $r 'pktmon-nic.json';"
             "$list=(& pktmon list|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon list failed'};"
+            # pktmon runs one capture session at a time and its stop returns
+            # before the session fully tears down; a back-to-back start then
+            # fails or silently never writes the ETL (fakenet100 r09-run-10
+            # sst-008: run-02's pktmon.etl missing after run-01's stop).
+            # Wait bounded for a quiet session before starting.
+            "$quiet=[DateTime]::UtcNow.AddSeconds(15);while([DateTime]::UtcNow -lt $quiet){$running=(& pktmon status|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon status failed'};if($running -notmatch 'Running'){break};Start-Sleep -Milliseconds 200};"
             "$adapters=@(Get-NetAdapter|Select-Object ifIndex,Name,InterfaceDescription,MacAddress,Status);"
             "$before=(& pktmon counters|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon counters before start failed'};" +
             _sst_clock.clock_sample_ps('clockBefore') +
