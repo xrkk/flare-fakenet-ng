@@ -1446,6 +1446,18 @@ class Suite:
             "$pktmonStart=(& pktmon start --capture --comp all --pkt-size 0 --flags 0x1f --trace -p Microsoft-Windows-TCPIP -k 0xFF -l 4 --file-name $etl --file-size "
             + str(self.pktmon_file_size_mib) + "|Out-String);"
             "if($LASTEXITCODE -ne 0){throw 'pktmon start failed'};$captureStarted=$true;"
+            # A start that returns 0 immediately after the previous session's
+            # stop can silently fail to begin: no ETL ever materializes and
+            # the later etl2txt finds nothing (fakenet100 r09-run-10/12
+            # sst-008: run-02 pktmon.etl missing). Verify the file appears,
+            # retrying the whole start once after a forced stop.
+            "$etlDeadline=[DateTime]::UtcNow.AddSeconds(10);while(-not (Test-Path $etl) -and [DateTime]::UtcNow -lt $etlDeadline){Start-Sleep -Milliseconds 200};"
+            "if(-not (Test-Path $etl)){& pktmon stop 2>&1|Out-Null;Start-Sleep -Seconds 2;"
+            "$pktmonStart=(& pktmon start --capture --comp all --pkt-size 0 --flags 0x1f --trace -p Microsoft-Windows-TCPIP -k 0xFF -l 4 --file-name $etl --file-size "
+            + str(self.pktmon_file_size_mib) + "|Out-String);"
+            "if($LASTEXITCODE -ne 0){throw 'pktmon retry start failed'};"
+            "$etlDeadline=[DateTime]::UtcNow.AddSeconds(10);while(-not (Test-Path $etl) -and [DateTime]::UtcNow -lt $etlDeadline){Start-Sleep -Milliseconds 200};"
+            "if(-not (Test-Path $etl)){throw 'pktmon etl did not materialize'}}"
             "$out=Join-Path $r 'probe.jsonl';$start=Join-Path $r 'probe.start';$cases=Join-Path $r 'probe.cases';$stop=Join-Path $r 'probe.stop';$script=" + quote_ps(script) + ";"
             "$encoded=" + quote_ps(encoded_child) + ";"
             "$stdout=Join-Path $r 'probe.stdout';$stderr=Join-Path $r 'probe.stderr';"
