@@ -225,6 +225,12 @@ def parse_line(text, ref):
         # failure on 0.0.0.0:1688 crashed case construction).
         tail = re.sub(r'connect attempt failed with status = .*\.', 'abort issued.', tail)
         tail = re.sub(r'connect failed: .*', 'abort issued.', tail)
+        # "Connection shutdown" reassembly flush accompanies a shutdown on a
+        # connection with queued out-of-order data; it is the same terminal
+        # shutdown as any other reason text (fakenet100 r09-run-05 sst-010:
+        # flush at RcvNxt on a B1 before-start session).
+        tail = re.sub(r'^flushing reassembly state at RcvNxt = \d+\. Reason = Connection shutdown\.',
+                      'shutdown initiated.', tail)
         valid = re.fullmatch(r'(requested to connect|connect proceeding|connect completed|abort issued|abort completed|shutdown initiated|close issued|disconnect completed|connection terminated|initiating SYN/RST validation|(?:send: )?Beginning zero-window probing with SndUna = \d+)\.(?: PID = (\d+)\.)?', tail)
         if not valid:
             raise ValueError('unsupported TCP lifecycle: ' + body)
