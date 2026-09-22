@@ -4128,10 +4128,22 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     evidence.write(second_label + '-pre-restart-context.json',
                                    {'sections': restart_context, 'raw': restart_context_raw,
                                     'role': 'active-run-context-not-recovery-baseline'})
-                    # The second session is released immediately before the
-                    # restart mutation; its record proves the restart window,
-                    # rather than merely carrying that label in the manifest.
-                    second_release = self._release_probe(captures[second_label], 'restart-window')
+                    # The pre-restart release depends on the interleave: for
+                    # restart-window the SECOND session is released here to
+                    # overlap the restart mutation; for stop-window the FIRST
+                    # session's probe is the one whose release must precede
+                    # run-01's stop portion inside the restart, while run-02's
+                    # probe is released later at its own stop window (the
+                    # stop-window branch below) -- releasing both here made
+                    # the stop-window branch throw 'probe start control was
+                    # already released' (fakenet100 r09 sst-005: restart +
+                    # stop-window combination).
+                    if interleave == 'stop-window':
+                        first_run['probe_release'] = self._release_probe(
+                            captures[first_label], 'stop-window')
+                        second_release = None
+                    else:
+                        second_release = self._release_probe(captures[second_label], 'restart-window')
                     restarted = call('restart', {}, mutation=True)
                     first_run['recovery_audit'], first_run['five_sections_after'] = self._run_recovery_sections(
                         first_run['run_id'], root / first_label / 'recovery-audits', evidence)
