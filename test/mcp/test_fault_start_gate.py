@@ -274,3 +274,40 @@ def test_in_child_gate_requires_session_liveness(tmp_path, monkeypatch):
     state['live'] = True
     assert injector.wait_for_start_gate(timeout=.3) is True
     assert not (logs / 'fault-injection-gate.json').exists()
+
+
+def test_diverter_action_keeps_outer_clock_and_supplemental_calls(tmp_path, monkeypatch):
+    from fakenet.mcp import faulttrace
+    injector, _, _ = setup_gate(tmp_path, monkeypatch)
+    faultinject._fault_file().unlink()
+    injector.arm('diverter_stop')
+    class Diverter:
+        handle = type('Handle', (), {'_handle': 123})()
+        def _close_windivert_handle(self):
+            faulttrace.call('PyDivert.close', lambda: None, fields={'handle': 123})
+    monkeypatch.setattr(faultinject, 'native_handle_observation', lambda _: {})
+    monkeypatch.setattr(faultinject, 'native_clock_observation', lambda: {'outer': True})
+    assert injector.inject_diverter_stop(Diverter())
+    action = json.loads((tmp_path / 'run-identity' / 'fault-action.json').read_text())
+    assert action['clock_observations'] == {'before': {'outer': True}, 'after': {'outer': True}}
+    trace = action['native_call_trace']
+    assert trace['run_id'] == action['run_id'] and trace['nonce'] == action['nonce']
+    assert [e['phase'] for e in trace['events']] == ['enter', 'return']
+    assert all(e['handle'] == 123 for e in trace['events'])
+    assert trace['diagnostic_only'] is True
+    assert faulttrace.finish() is None
+
+
+def test_diverter_close_error_disarms_call_trace(tmp_path, monkeypatch):
+    from fakenet.mcp import faulttrace
+    injector, _, _ = setup_gate(tmp_path, monkeypatch)
+    faultinject._fault_file().unlink()
+    injector.arm('diverter_stop')
+    class Diverter:
+        handle = type('Handle', (), {'_handle': 123})()
+        def _close_windivert_handle(self):
+            raise OSError('close failed')
+    monkeypatch.setattr(faultinject, 'native_handle_observation', lambda _: {})
+    with pytest.raises(OSError, match='close failed'):
+        injector.inject_diverter_stop(Diverter())
+    assert faulttrace.finish() is None

@@ -305,7 +305,11 @@ class EvidenceOracleTests(unittest.TestCase):
     def test_frozen_pause_frame_requires_exact_source_mapping(self):
         root, case = self.minimal_case('policy_pause', dict(init_evidence=True, probe=True))
         source = (PATH.parents[3] / 'fakenet/mcp/faultinject.py').read_bytes()
-        stack = b'LIVE STOP STACKS timestamp=1789212555.055\n  File "fakenet\\mcp\\faultinject.py", line 127, in before_listener_phase\n'
+        pause_lines = [i for i, line in enumerate(source.splitlines(), 1)
+                       if line.strip() == b'time.sleep(3600)']
+        self.assertEqual(len(pause_lines), 1)
+        pause_line = pause_lines[0]
+        stack = ('LIVE STOP STACKS timestamp=1789212555.055\n  File "fakenet\\mcp\\faultinject.py", line %d, in before_listener_phase\n' % pause_line).encode()
         def add(name, raw):
             (root / name).write_bytes(raw)
             case['files'] = [f for f in case['files'] if f['path'] != name]
@@ -318,7 +322,8 @@ class EvidenceOracleTests(unittest.TestCase):
         self.assertFalse(success())
         case['trigger']['success_refs'].append(add('source.py', source))
         self.assertTrue(success())
-        case['trigger']['success_refs'][0] = add('stack.txt', stack.replace(b'127', b'126'))
+        case['trigger']['success_refs'][0] = add('stack.txt', stack.replace(('line %d,' % pause_line).encode(),
+            ('line %d,' % (pause_line - 1)).encode()))
         self.assertFalse(success())
 
     def test_unrelated_dead_relay_prevents_listener_attribution(self):

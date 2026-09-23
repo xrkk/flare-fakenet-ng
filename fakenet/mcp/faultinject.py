@@ -203,6 +203,7 @@ class FaultInjector:
         return False
 
     def inject_diverter_stop(self, diverter):
+        from . import faulttrace
         if not (enabled() and armed_fault() == 'diverter_stop'):
             return False
         clear()
@@ -211,6 +212,8 @@ class FaultInjector:
             return False
         raw_handle = getattr(handle, '_handle', None)
         before = native_handle_observation(raw_handle)
+        receipt = json.loads((Path.cwd() / 'fault-triggered.json').read_text(encoding='utf-8'))
+        faulttrace.begin(Path.cwd().name, receipt['nonce'])
         clock_before = native_clock_observation()
         identity_before = safe_native_identity()
         began = time.time_ns()
@@ -222,7 +225,7 @@ class FaultInjector:
             ended = time.time_ns()
             clock_after = native_clock_observation()
             identity_after = safe_native_identity()
-            receipt = json.loads((Path.cwd() / 'fault-triggered.json').read_text(encoding='utf-8'))
+            call_trace = faulttrace.finish()
             for identity in (identity_before, identity_after):
                 identity['run_id'] = Path.cwd().name
                 identity['nonce'] = receipt['nonce']
@@ -232,8 +235,10 @@ class FaultInjector:
                     action='WinDivertClose', start_time_ns=began, end_time_ns=ended,
                     clock_observations=dict(before=clock_before, after=clock_after),
                     native_identity=dict(before=identity_before, after=identity_after),
+                    native_call_trace=call_trace,
                     before=before, after=after), stream)
         finally:
+            faulttrace.finish()
             diverter.handle = None
         return True
 

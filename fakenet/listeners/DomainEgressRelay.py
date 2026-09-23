@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from fakenet.diverters.egresspolicy import normalize_hostname
+from fakenet.mcp import faulttrace
 
 
 class ClientHelloError(ValueError):
@@ -557,8 +558,8 @@ class DomainEgressRelay(object):
             if remaining <= 0:
                 raise ClientHelloError('ClientHello timeout')
             client.settimeout(remaining)
-            chunk = client.recv(min(16384,
-                                    self._settings['hello_max_bytes'] - len(data)))
+            chunk = faulttrace.socket_call(client, 'recv', min(16384,
+                                    self._settings['hello_max_bytes'] - len(data)), role='client-hello')
             if not chunk:
                 raise ClientHelloError('EOF before ClientHello')
             data.extend(chunk)
@@ -595,7 +596,8 @@ class DomainEgressRelay(object):
             readable, writable, _ = select.select(reads, writes, [], 1)
             for sock in readable:
                 destination = to_upstream if sock is client else to_client
-                chunk = sock.recv(min(65536, limit - len(destination)))
+                chunk = faulttrace.socket_call(sock, 'recv', min(65536, limit - len(destination)),
+                                              role='client' if sock is client else 'upstream')
                 if chunk:
                     last_activity = time.monotonic()
                     destination.extend(chunk)
@@ -613,7 +615,8 @@ class DomainEgressRelay(object):
                         pass
             for sock in writable:
                 buffer = to_upstream if sock is upstream else to_client
-                sent = sock.send(buffer)
+                sent = faulttrace.socket_call(sock, 'send', buffer,
+                                             role='client' if sock is client else 'upstream')
                 if sent:
                     del buffer[:sent]
                     last_activity = time.monotonic()

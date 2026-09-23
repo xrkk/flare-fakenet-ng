@@ -29,6 +29,7 @@ import json
 import struct
 import tempfile
 import hashlib
+from fakenet.mcp import faulttrace
 
 _TAKEOVER_ROUTE_SCRIPT = r'''
 $ErrorActionPreference = 'Stop'
@@ -1145,8 +1146,13 @@ class Diverter(DiverterBase, WinUtilMixin):
         """
         if self.handle is None:
             return
-        ctypes.windll.kernel32.SetLastError(0)
-        self.handle.close()
+        handle = self.handle
+        def close_handle():
+            # The diagnostic clock itself may change last-error.
+            ctypes.windll.kernel32.SetLastError(0)
+            handle.close()
+        faulttrace.call('PyDivert.close', close_handle,
+                        fields={'handle': getattr(handle, '_handle', None)})
         self.handle = None
 
     def _inbound_capture_filter(self):
