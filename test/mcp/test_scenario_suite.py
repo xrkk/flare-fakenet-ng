@@ -2041,40 +2041,89 @@ def test_native_deny_rejects_substitutes():
             assert not case4.get('sni_binding'), name
 
 
-def test_pktmon_bare_rst_exemption_is_live_for_both_paths(tmp_path):
-    """The bare-RST exemption must actually see the parsed TCP flags.
-
-    is_bare_rst read a 'flags' key parse_packets never produced, so the
-    exemption (sst-089 precedent: a half-open denied TCB's teardown RST is
-    signaling, not payload) was dead code and every <=60B reset counted as a
-    leak on both the primary and the case paths (candidate19 sst-004 case-1:
-    a 54-byte RST after the 1337 listener deny).  With flags parsed, the
-    same packet is exempt; a data-carrying segment stays counted.
-    """
-    import importlib.util as _ilu
-    spec = _ilu.spec_from_file_location(
-        'scenario_pktmon', Path(suite.__file__).with_name('scenario_pktmon.py'))
-    decoder = _ilu.module_from_spec(spec)
-    spec.loader.exec_module(decoder)
+def test_pktmon_exact_nic_tx_counts_rst_and_other_packets(tmp_path):
+    """The real selector retains exact physical Tx, including short RSTs."""
     header = ('[02]1CB4.11C4::2026-09-21 13:38:54.917249300 '
               '[Microsoft-Windows-PktMon] PktGroupId 1，PktNumber 1，出现 1，'
-              '方向 Tx ，类型 以太网 ，组件 9，边缘 1，筛选器 0，'
+              '方向 %s ，类型 以太网 ，组件 %d，边缘 1，筛选器 0，'
               'OriginalSize %d，LoggedSize %d \n')
     body = ('\t00-0C-29-C1-CA-49 > 00-50-56-E7-FE-AA, ethertype IPv4 (0x0800), '
-            'length %d: 192.168.204.233.50161 > 198.51.100.77.1337: %s\n')
-    raw = ('ï»¿' + (header % (54, 54) + body % (54, 'Flags [R.], seq 3052344439, '
-             'ack 952653051, win 0, length 0') +
-            header % (194, 194) + body % (194, 'Flags [P.], seq 2039796806:2039796947, '
-             'ack 1760304382, win 1024, length 141'))).encode('utf-8')
-    packets = decoder.parse_packets(raw)
-    rst = next(p for p in packets if p['flags'] == 'R.')
-    data = next(p for p in packets if p['flags'] == 'P.')
-    assert rst['original_size'] == 54 and data['original_size'] == 194
-    # The oracle's exemption helper in scenario_suite sees the same key.
-    source = Path(suite.__file__).read_text(encoding='utf-8')
-    assert "packet.get('flags')" in source
-    def is_bare_rst(packet):
-        flags = str(packet.get('flags') or '').upper()
-        size = packet.get('original_size') or packet.get('logged_size')
-        return 'R' in flags and size is not None and size <= 60
-    assert is_bare_rst(rst) and not is_bare_rst(data)
+            'length %d: %s > %s: Flags [%s], seq 1, ack 1, win 0, length 0\n')
+    source, target = '192.168.204.233.50161', '198.51.100.77.1337'
+    def record(size, src=source, dst=target, flags='R.', component=9, direction='Tx'):
+        return header % (direction, component, size, size) + body % (size, src, dst, flags)
+    trace = ('MSNT_SystemTrace Header\r\nEventsLost: 0\r\nBuffersLost: 0\r\n' +
+             record(54) + record(60) + record(194, flags='P.') +
+             record(54, src='192.168.204.233.50162') +
+             record(54, component=20) + record(54, direction='Rx'))
+    (tmp_path / 'pktmon.txt').write_text(trace, encoding='utf-8')
+    metadata = {'schema': suite.NIC_CAPTURE_SCHEMA,
+                'pktmon_list': ' 9 00-0C-29-C1-CA-49 Intel(R) 82574L Gigabit Network Connection\n',
+                'adapters': [{'ifIndex': 11, 'Name': 'Ethernet0',
+                              'InterfaceDescription': 'Intel(R) 82574L Gigabit Network Connection',
+                              'MacAddress': '00-0C-29-C1-CA-49', 'Status': 'Up'}],
+                'pktmon_status_after': '数据包监视器没有运行。'}
+    (tmp_path / 'pktmon-nic.json').write_text(json.dumps(metadata), encoding='utf-8')
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.root = tmp_path
+    all_packets, nic_packets, binding = runner._pktmon_observations(
+        {'pktmon_path': 'pktmon.txt', 'pktmon_nic_path': 'pktmon-nic.json'},
+        '192.168.204.233:50161', '198.51.100.77:1337', 'TCP')
+    assert binding['component_ids'] == [9]
+    assert [(p['original_size'], p['flags']) for p in nic_packets] == [
+        (54, 'R.'), (60, 'R.'), (194, 'P.')]
+    assert len(all_packets) == 4  # includes matching tuple on unbound component 20
+
+
+@pytest.mark.parametrize(('delta_ns', 'expected'), [
+    (-2_000_000, False), (-1_000_000, False), (-100, False),
+    (0, True), (5_000_000, True), (10_000_000, True),
+    (10_000_100, False), (11_000_000, False), (12_000_000, False),
+])
+def test_native_deny_uses_closed_etw_interval(tmp_path, delta_ns, expected):
+    runner = suite.Suite.__new__(suite.Suite)
+    lo = 1_790_000_000_000_000_000
+    hi = lo + 10_000_000
+    row = {'schema': 'fakenetng.relay-native-terminal.v1', 'outcome': 'deny',
+           'reason_code': 'sni_mismatch', 'generation': 2,
+           'src': '192.168.204.233', 'sport': 50161,
+           'original_ip': '119.188.175.46', 'original_port': 443,
+           'sni': 'example.com',
+           'clock': {'supported': True,
+                     'filetime_100ns': (lo + delta_ns + 11644473600000000000) // 100}}
+    (tmp_path / 'relay-native-events.jsonl').write_text(json.dumps(row) + '\n', encoding='utf-8')
+    actual = runner._native_deny_contained(
+        tmp_path / 'run.log', 2, ('192.168.204.233', '50161'),
+        ('119.188.175.46', '443'), 'example.com',
+        {'etw_connect_upper_ns': lo, 'etw_terminal_lower_ns': hi})
+    assert (actual is not None) is expected
+    if expected:
+        assert actual['filetime_ns'] == lo + delta_ns
+
+
+def test_native_deny_rejects_wrong_identity_and_duplicate(tmp_path):
+    runner = suite.Suite.__new__(suite.Suite)
+    lo = 1_790_000_000_000_000_000
+    row = {'schema': 'fakenetng.relay-native-terminal.v1', 'outcome': 'deny',
+           'reason_code': 'sni_mismatch', 'generation': 2,
+           'src': '192.168.204.233', 'sport': 50161,
+           'original_ip': '119.188.175.46', 'original_port': 443,
+           'sni': 'example.com',
+           'clock': {'supported': True,
+                     'filetime_100ns': (lo + 11644473600000000000) // 100}}
+    path = tmp_path / 'relay-native-events.jsonl'
+    def judge(**changes):
+        path.write_text(json.dumps(row | changes) + '\n', encoding='utf-8')
+        return runner._native_deny_contained(
+            tmp_path / 'run.log', 2, ('192.168.204.233', '50161'),
+            ('119.188.175.46', '443'), 'example.com',
+            {'etw_connect_upper_ns': lo, 'etw_terminal_lower_ns': lo + 10_000_000})
+    assert judge() is not None
+    for changes in ({'generation': 3}, {'sport': 50162},
+                    {'original_ip': '119.188.175.47'}, {'sni': 'other.example'}):
+        assert judge(**changes) is None
+    path.write_text((json.dumps(row) + '\n') * 2, encoding='utf-8')
+    assert runner._native_deny_contained(
+        tmp_path / 'run.log', 2, ('192.168.204.233', '50161'),
+        ('119.188.175.46', '443'), 'example.com',
+        {'etw_connect_upper_ns': lo, 'etw_terminal_lower_ns': lo + 10_000_000}) is None

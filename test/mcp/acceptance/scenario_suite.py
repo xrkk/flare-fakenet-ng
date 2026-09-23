@@ -2017,20 +2017,6 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 records, src, dst, protocol, component_ids=binding['component_ids'], direction='Tx')
         except decoder.PacketEvidenceError as exc:
             raise SuiteError('pktmon tuple evidence is ambiguous/incomplete: %s' % (exc,)) from exc
-        # A zero-length bare RST is TCP teardown signaling, not payload:
-        # a half-open application TCB whose retransmission timer expires
-        # after the deny decision emits exactly one such packet from the
-        # local stack. It carries no data and is not a policy leak
-        # (discovery100-30 sst-089 case-4: 19s after TLS_SNI_DENY).
-        def is_bare_rst(packet):
-            flags = str(packet.get('flags') or '').upper()
-            size = packet.get('original_size') or packet.get('logged_size')
-            # A bare RST (TCP teardown, no payload) is ≤ 60 bytes including
-            # Ethernet/IP/TCP headers. The old size == 0 check never matched
-            # because original_size includes protocol headers (typically 40+
-            # bytes for IP+TCP alone).
-            return 'R' in flags and size is not None and size <= 60
-        nic_components = [p for p in nic_components if not is_bare_rst(p)]
         return all_components, nic_components, binding
 
     @staticmethod
@@ -2260,14 +2246,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         hi = case_observation.get('etw_terminal_lower_ns')
         if not (isinstance(lo, int) and isinstance(hi, int)):
             return None
-        # The ETW trace clock (QPC converted by the relogger) and the
-        # record's GetSystemTimePreciseAsFileTime are two realizations of
-        # wall time; measured agreement is sub-microsecond (candidate23
-        # sst-001 case-4: the deny sat 254ns past the kernel terminal it
-        # causally preceded).  A 2ms cross-domain guard absorbs that skew
-        # while staying three orders of magnitude tighter than the frozen
-        # 15,625,000ns wall-timer band it replaces.
-        if not lo - 2_000_000 <= moment_ns <= hi + 2_000_000:
+        if not lo <= moment_ns <= hi:
             return None
         return {'generation': generation, 'filetime_ns': moment_ns,
                 'qpc_before': clock.get('qpc_before'),
