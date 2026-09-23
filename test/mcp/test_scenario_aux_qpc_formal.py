@@ -193,3 +193,7 @@ def test_formal_graph_requires_complete_run_and_closed_resources(tmp_path, monke
     else:
         assert contract.evaluate(run, tmp_path, expected_candidate='candidate',
                                  expected_nonce='n')['source_windows_status'] == 'COMPLETE_DIAGNOSTIC_ONLY'
+        with pytest.raises(aux.raw_clock.DiagnosticError, match='mode/proof version'):
+            contract.evaluate(run, tmp_path, expected_candidate='candidate',
+                              expected_nonce='n',
+                              expected_mode='native-qpc-zero-tcb-single-pass-v2')

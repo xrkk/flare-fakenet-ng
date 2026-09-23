@@ -53,6 +53,8 @@ import scenario_clock as _sst_clock
 from scenario_qpc_contract import MODE as QPC_MODE
 
 AUX_QPC_MODE = 'native-qpc-zero-tcb-v1'
+AUX_QPC_V2_MODE = 'native-qpc-zero-tcb-single-pass-v2'
+AUX_QPC_MODES = (AUX_QPC_MODE, AUX_QPC_V2_MODE)
 DEFAULT_SUITE_ROOT = REPO_ROOT / 'Logs' / 'fakenetng-mcp' / 'scenario-suite-20260912'
 SCHEMA = 'fakenetng.mcp-scenario-suite.v1'
 SCENARIO_SCHEMA = 'fakenetng.mcp-scenario.v1'
@@ -1029,7 +1031,7 @@ class Suite:
         if self.fault_clock_evidence not in ('utc-v2', QPC_MODE):
             raise SuiteError('unsupported fault clock evidence mode')
         self.auxiliary_clock_evidence = getattr(args, 'auxiliary_clock_evidence', 'utc-v1')
-        if self.auxiliary_clock_evidence not in ('utc-v1', AUX_QPC_MODE):
+        if self.auxiliary_clock_evidence not in ('utc-v1', *AUX_QPC_MODES):
             raise SuiteError('unsupported auxiliary clock evidence mode')
         self.requested_native_clock_diagnostic = bool(getattr(args, 'native_clock_diagnostic', False))
         self.native_clock_diagnostic = self.requested_native_clock_diagnostic
@@ -2579,7 +2581,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             # constraints add CON009's conservative pre-establishment rejection.
             old_zero_ok = not observed['tuple_terminals'] or min(
                 fault.time_bounds(e['text'])[0] for e in observed['tuple_terminals']) - uncertainty >= begin
-            is_aux_qpc = (getattr(self, 'auxiliary_clock_evidence', 'utc-v1') == AUX_QPC_MODE and
+            is_aux_qpc = (getattr(self, 'auxiliary_clock_evidence', 'utc-v1') in AUX_QPC_MODES and
                           origin.get('event') == 'case_established')
             if is_aux_qpc:
                 proof = next((row for row in (auxiliary_qpc or {}).get('cases', [])
@@ -2700,14 +2702,15 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     'expected_schedule': expected_schedule, 'release_count': len(released)}
         run_log = log_path.read_text(encoding='utf-8-sig')
         auxiliary_qpc = None
-        if getattr(self, 'auxiliary_clock_evidence', 'utc-v1') == AUX_QPC_MODE:
+        if getattr(self, 'auxiliary_clock_evidence', 'utc-v1') in AUX_QPC_MODES:
             try:
                 import scenario_aux_qpc_contract as aux_contract
                 planned_auxiliary = (list(profile.get('negative_cases', ())) +
                                      list(profile.get('probe_cases', ())))
                 if any(case.get('protocol') != 'udp' for case in planned_auxiliary):
                     auxiliary_qpc = aux_contract.evaluate(run, self.root,
-                        expected_candidate=self.identity.candidate_id, expected_nonce=nonce)
+                        expected_candidate=self.identity.candidate_id, expected_nonce=nonce,
+                        expected_mode=self.auxiliary_clock_evidence)
                 else:
                     auxiliary_qpc = aux_contract.no_tcp_applicability(run, self.root, profile,
                         expected_candidate=self.identity.candidate_id, expected_nonce=nonce)
@@ -3359,14 +3362,18 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                             program_name: str = 'scenario_qpc_diagnostic.py') -> None:
         """Export complete ETL after cleanup; seal guest output before verdict."""
         bundle = root / 'qpc-input.zip'
-        if program_name not in ('scenario_qpc_diagnostic.py', 'scenario_aux_qpc_diagnostic.py'):
+        if program_name not in ('scenario_qpc_diagnostic.py', 'scenario_aux_qpc_diagnostic.py',
+                                'scenario_aux_qpc_v2.py'):
             raise SuiteError('unsupported QPC diagnostic program')
         scripts = ('scenario_qpc_diagnostic.py', 'scenario_aux_qpc_diagnostic.py',
                    'scenario_qpc_identity.py',
                    'etl_raw_clock.py', 'tdh_metadata.py', 'scenario_tcpip.py',
                    'scenario_clock.py', 'sst_fault_evidence.py')
-        if program_name == 'scenario_aux_qpc_diagnostic.py':
+        if program_name in ('scenario_aux_qpc_diagnostic.py', 'scenario_aux_qpc_v2.py'):
             scripts += ('scenario_qpc_offline.py',)
+        if program_name == 'scenario_aux_qpc_v2.py':
+            scripts += ('scenario_aux_qpc_single_pass.py', 'scenario_aux_qpc_offline.py',
+                        'scenario_aux_qpc_contract.py')
         with zipfile.ZipFile(bundle, 'x', compression=zipfile.ZIP_DEFLATED,
                              compresslevel=6, allowZip64=False) as archive:
             for item in base['files']:
@@ -3627,8 +3634,11 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         write_new_json(descriptor_path, descriptor)
         evidence.add(descriptor_path)
         try:
+            program = ('scenario_aux_qpc_v2.py' if getattr(
+                       self, 'auxiliary_clock_evidence', AUX_QPC_MODE) ==
+                       AUX_QPC_V2_MODE else 'scenario_aux_qpc_diagnostic.py')
             self._collect_qpc_export(descriptor_path, descriptor, native_root, evidence,
-                                     run['run_id'], 'scenario_aux_qpc_diagnostic.py')
+                                     run['run_id'], program)
             import scenario_aux_qpc_offline as auxiliary_offline
             derived_root = native_root / 'qpc-rejudge'
             auxiliary_offline.derive(descriptor_path, self.root,
@@ -4362,7 +4372,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         self.native_clock_diagnostic = (self.requested_native_clock_diagnostic or
             (scenario.get('fault_class') == 'diverter_stop' and
              self.fault_clock_evidence == QPC_MODE) or
-            self.auxiliary_clock_evidence == AUX_QPC_MODE)
+            self.auxiliary_clock_evidence in AUX_QPC_MODES)
         self.require_clients()
         preflight = self._require_preflight()
         scenario_id = scenario['scenario_id']
@@ -4375,7 +4385,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 raise SuiteError('existing result uses another auxiliary clock evidence mode')
             return previous
         if ((scenario.get('fault_class') == 'diverter_stop' and self.fault_clock_evidence == QPC_MODE)
-                or self.auxiliary_clock_evidence == AUX_QPC_MODE):
+                or self.auxiliary_clock_evidence in AUX_QPC_MODES):
             self._require_qpc_guest_python()
         gate = self._continuation_gate()
         nonce = '%s-a%d-%s' % (scenario_id, attempt, uuid.uuid4().hex)
@@ -4906,7 +4916,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 if 'five_sections_after' not in run:
                     run['five_sections_after'] = after_sections
                 if not fault and run.get('start_response', {}).get('state') == 'healthy':
-                    if self.auxiliary_clock_evidence == AUX_QPC_MODE:
+                    if self.auxiliary_clock_evidence in AUX_QPC_MODES:
                         self._collect_auxiliary_qpc(run, nonce, root, evidence, runtime_profile)
                     run['traffic_oracle'] = self._traffic_oracle(
                         run, runtime_profile, nonce, sentinel_evidence)
@@ -4926,7 +4936,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     scenario, primary, nonce, root, evidence, fault_evidence)
                 primary['fault_connection_case'] = fault_evidence['adjudication'].get('case')
                 if primary.get('start_response', {}).get('state') == 'healthy':
-                    if self.auxiliary_clock_evidence == AUX_QPC_MODE:
+                    if self.auxiliary_clock_evidence in AUX_QPC_MODES:
                         self._collect_auxiliary_qpc(primary, nonce, root, evidence, runtime_profile)
                     # Same verdict path and identity inputs as the offline
                     # _traffic_recheck_issues re-adjudication: no fault-window
@@ -5723,7 +5733,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help='capture optional boot/process/QPC identity without changing verdicts')
     parser.add_argument('--fault-clock-evidence', choices=('utc-v2', QPC_MODE), default='utc-v2',
                         help='explicit diverter_stop clock proof; default retains v2 UTC verdict')
-    parser.add_argument('--auxiliary-clock-evidence', choices=('utc-v1', AUX_QPC_MODE),
+    parser.add_argument('--auxiliary-clock-evidence', choices=('utc-v1', *AUX_QPC_MODES),
                         default='utc-v1',
                         help='explicit auxiliary TCP native QPC proof for verified zero-TCB RST')
     parser.add_argument('--filter', choices=('benign', 'fault'))

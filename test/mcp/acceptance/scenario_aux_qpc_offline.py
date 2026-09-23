@@ -40,6 +40,10 @@ def verify_windows_summary(windows, identity, targets, groups, case,
 def derive(case_path, evidence_root, export, output, *, require_complete=True):
     """Never turn an old incomplete Windows diagnostic into a formal proof."""
     case_path, evidence_root, export, output = map(Path, (case_path, evidence_root, export, output))
+    if (export / 'manifest.json').is_file() and _read(export / 'manifest.json').get(
+            'schema') == 'sst.aux-qpc-diagnostic.v2':
+        import scenario_aux_qpc_v2
+        return scenario_aux_qpc_v2.derive(case_path, evidence_root, export, output)
     output.mkdir(parents=True, exist_ok=False)
     case = _read(case_path)
     if case.get('schema') != 'sst.aux-qpc-input.v1' or not case.get('cases'):

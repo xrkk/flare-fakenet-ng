@@ -64,7 +64,7 @@ def no_tcp_applicability(run, suite_root, profile, *, expected_candidate, expect
             'originals': after}
 
 
-def evaluate(run, suite_root, *, expected_candidate, expected_nonce):
+def evaluate(run, suite_root, *, expected_candidate, expected_nonce, expected_mode=None):
     """Recompute offline; an old INCOMPLETE Windows export can never pass."""
     root = Path(suite_root).resolve()
     records = run.get('auxiliary_qpc_process') or {}
@@ -127,5 +127,14 @@ def evaluate(run, suite_root, *, expected_candidate, expected_nonce):
             any(case['zero_constraint'] not in ('VERIFIED', 'NO_ZERO_TCB')
                 for case in proof['cases'])):
         raise raw.DiagnosticError('auxiliary QPC run/candidate/nonce/cases differ')
+    if expected_mode is not None and proof['schema'] != {
+            'native-qpc-zero-tcb-v1': 'sst.aux-qpc-offline.v1',
+            'native-qpc-zero-tcb-single-pass-v2': 'sst.aux-qpc-offline.v2',
+            }.get(expected_mode):
+        raise raw.DiagnosticError('auxiliary QPC evidence mode/proof version differs')
+    if proof['schema'] == 'sst.aux-qpc-offline.v2':
+        return {key: proof[key] for key in ('schema', 'status', 'source_windows_status',
+            'candidate_id', 'run_id', 'nonce', 'identity', 'cases', 'single_pass',
+            'legacy_v1_status')}
     return {key: proof[key] for key in ('schema', 'status', 'source_windows_status',
         'candidate_id', 'run_id', 'nonce', 'identity', 'cases', 'reason_map_sha256')}

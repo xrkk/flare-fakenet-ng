@@ -14,9 +14,14 @@ import scenario_aux_qpc_contract as aux_contract  # noqa: E402
 from test_sst_tcpip_events import capture, clocks_and_header, flow, ipc_rows  # noqa: E402
 
 
-def test_auxiliary_builder_parses_bytes_and_seals_exact_run_case(tmp_path, monkeypatch):
+@pytest.mark.parametrize('mode,program', [
+    (suite.AUX_QPC_MODE, 'scenario_aux_qpc_diagnostic.py'),
+    (suite.AUX_QPC_V2_MODE, 'scenario_aux_qpc_v2.py')])
+def test_auxiliary_builder_parses_bytes_and_seals_exact_run_case(tmp_path, monkeypatch,
+                                                                  mode, program):
     runner = suite.Suite.__new__(suite.Suite)
     runner.root = tmp_path
+    runner.auxiliary_clock_evidence = mode
     runner.identity = SimpleNamespace(candidate_id='candidate-test')
     attempt = tmp_path / 'evidence' / 'sst-001' / 'attempt-01'
     attempt.mkdir(parents=True)
@@ -47,7 +52,7 @@ def test_auxiliary_builder_parses_bytes_and_seals_exact_run_case(tmp_path, monke
         return result
     monkeypatch.setattr(tcpip, 'connection_events', parser)
     def fake_export(base_path, descriptor, native_root, evidence, run_id, program):
-        assert program == 'scenario_aux_qpc_diagnostic.py' and run_id == 'r'
+        assert program == expected_program and run_id == 'r'
         assert json.loads(base_path.read_text()) == descriptor
         assert len(descriptor['cases']) == 1
         item = descriptor['cases'][0]
@@ -60,6 +65,7 @@ def test_auxiliary_builder_parses_bytes_and_seals_exact_run_case(tmp_path, monke
         terminal = native_root / 'qpc-process-terminal.json'
         suite.write_new_json(terminal, {'exit_proven': True})
         evidence.add(terminal)
+    expected_program = program
     runner._collect_qpc_export = fake_export
     def fake_derive(case_path, evidence_root, export, output):
         assert case_path.name == 'auxiliary-qpc-input.json'
