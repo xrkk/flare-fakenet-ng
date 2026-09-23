@@ -384,20 +384,40 @@ def test_buffered_write_does_not_remove_bound_peer_fin():
     # The actual candidate07 pattern: peer FIN precedes a successful local
     # Write by <1 ms; a later write reports reset. Keep the earlier peer end.
     peer_fin = 1789955724065327000
-    local_write = 1789955724066010300
     later_reset = 1789955724135846400
     observed = {'peer': {'tcb': '0XBBB'}, 'termination': [
         {'tcb': '0XBBB', 'text': peer_fin},
         {'tcb': '0XAAA', 'text': later_reset}], 'tuple_terminals': []}
-    assert min(sst.terminal_bounds(observed, local_write, lambda x: (x, x))) == peer_fin
-    assert min(sst.terminal_bounds(observed, local_write + 1000000000,
-                                   lambda x: (x, x))) == peer_fin
+    assert min(sst.terminal_bounds(observed, lambda x: (x, x))) == peer_fin
 
 
-def test_pre_redirect_original_teardown_does_not_erase_later_peer_terminal():
+def test_primary_rst_before_later_write_still_ends_session():
     observed = {'peer': {'tcb': '0XBBB'}, 'termination': [
         {'tcb': '0XAAA', 'text': 10}, {'tcb': '0XBBB', 'text': 30}],
         'tuple_terminals': []}
-    assert sst.terminal_bounds(observed, 20, lambda x: (x, x)) == [30]
+    # A later successful userspace Write cannot prove that the same kernel
+    # TCB survived its earlier RST. The old filter kept only peer=30.
+    assert sst.terminal_bounds(observed, lambda x: (x, x)) == [10, 30]
     observed['peer'] = None
-    assert sst.terminal_bounds(observed, 20, lambda x: (x, x)) == [30]
+    assert sst.terminal_bounds(observed, lambda x: (x, x)) == [10, 30]
+
+
+def test_tuple_and_mixed_native_terminals_keep_earliest_conservative_bound():
+    observed = {'peer': {'tcb': '0XBBB'}, 'termination': [
+        {'tcb': '0XAAA', 'text': 25}, {'tcb': '0XBBB', 'text': 35},
+        {'tcb': '0XAAA', 'text': 40}],
+        'tuple_terminals': [{'tcb': '0X0', 'text': 15}]}
+    bounds = lambda x: (x - 2, x + 2)
+    assert sst.terminal_bounds(observed, bounds) == [23, 33, 38, 13]
+    assert min(sst.terminal_bounds(observed, bounds)) == 13
+
+
+def test_earlier_primary_rst_reverses_false_full_action_containment():
+    observed = {'peer': {'tcb': '0XBBB'}, 'termination': [
+        {'tcb': '0XAAA', 'text': 10}, {'tcb': '0XBBB', 'text': 30}],
+        'tuple_terminals': []}
+    # In the old rule, last_activity=20 erased primary=10, leaving peer=30;
+    # begin=0, action=[20,25], probe end=40 then falsely passed.
+    finish = min([40] + sst.terminal_bounds(observed, lambda x: (x, x)))
+    assert finish == 10
+    assert not sst.contains_session(0, 20, 25, finish)

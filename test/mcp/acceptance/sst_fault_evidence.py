@@ -161,17 +161,10 @@ def iso_ns(value):
     return lo, lo + 10 ** (9 - len(frac)) - 1
 
 
-def terminal_bounds(observed, last_activity, bounds):
-    """A buffered client write cannot contradict its accepted peer's close.
-
-    The earlier original-tuple teardown exception concerns a pre-redirect
-    kernel TCB, not the independently bound accepted relay connection.
-    """
-    peer_tcb = (observed.get('peer') or {}).get('tcb')
+def terminal_bounds(observed, bounds):
+    """Retain every native terminal bound to the selected TCP generation."""
     return [bounds(event['text'])[0]
-            for event in observed['termination'] + observed['tuple_terminals']
-            if (peer_tcb is not None and event.get('tcb') == peer_tcb)
-            or bounds(event['text'])[0] >= last_activity]
+            for event in observed['termination'] + observed['tuple_terminals']]
 
 
 def time_bounds(event):
@@ -544,20 +537,8 @@ def assess(case, root, expected_candidate=CANDIDATE):
             if observed['peer'] and time_bounds(observed['peer']['text'])[0] < (managed_created - 116444736000000000) * 100:
                 raise EvidenceError('TCPIP accept precedes managed creation')
             begin = max(begin, bounds(connect)[1])
-            # An ETW termination or identity-less tuple terminal
-            # contradicted by the connection's own later application
-            # activity cannot bound this session's end: the kernel teardown
-            # at redirect time destroys the PRE-redirect original-tuple TCB
-            # while the managed session runs on (discovery100-99 sst-014:
-            # original-tuple termination 52ms after established, 62 payloads
-            # continuing for another 71 seconds).  Events without
-            # contradicting activity still tighten the bound conservatively.
-            last_activity = max([bounds(row)[0] for row in lifecycle
-                                 if row.get('event') in ('send', 'request_sent',
-                                                         'tls_handshake_attempt',
-                                                         'udp_sent')] or [0])
             finish = min([bounds(end)[0]] +
-                         terminal_bounds(observed, last_activity, bounds))
+                         terminal_bounds(observed, bounds))
             if not trace_lo <= bounds(lower)[0] <= bounds(upper)[1] <= trace_hi:
                 raise EvidenceError('action outside complete trace window')
         elif kind == 'packet':
