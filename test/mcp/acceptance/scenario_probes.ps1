@@ -116,7 +116,8 @@ public static class SstNativeIdentity {
       uint returned; int status=NtQuerySystemInformation(90,p,32,out returned);
       byte[] raw=new byte[32]; Marshal.Copy(p,raw,0,32);
       if(status!=0 || returned!=32) throw new InvalidOperationException("class 90 status/length "+status+"/"+returned);
-      Guid guid=new Guid(new ArraySegment<byte>(raw,0,16).ToArray());
+      byte[] guidBytes=new byte[16]; Array.Copy(raw,0,guidBytes,0,16);
+      Guid guid=new Guid(guidBytes);
       if(guid==Guid.Empty) throw new InvalidOperationException("zero BootIdentifier");
       return new object[]{guid.ToString(),BitConverter.ToUInt32(raw,16),BitConverter.ToUInt64(raw,24),
         BitConverter.ToString(raw).Replace("-","").ToLowerInvariant(),status,returned};
