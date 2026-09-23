@@ -4189,7 +4189,27 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                         # and run-01's oracle found no policy flow).
                         self._run_auxiliary_cases(
                             first_run, captures[first_label], runtime_profile)
-                    restarted = call('restart', {}, mutation=True)
+                    # The product's health loop may be mid-protective-stop at
+                    # this instant (before-start probes end their lifecycle
+                    # inside the restart window; the internal stop is a
+                    # legitimate concurrent transition), and the busy gate
+                    # rejects the restart outright (fakenet100 r09-run-20
+                    # sst-010: operation_busy, own command never registered).
+                    # Retry bounded on that specific rejection -- the rejected
+                    # command was never registered, so resubmitting the same
+                    # command_id is a clean fresh submission.
+                    restarted = None
+                    for restart_attempt in range(3):
+                        try:
+                            restarted = call('restart', {}, mutation=True)
+                            break
+                        except SuiteError as restart_exc:
+                            if ("'code': 'operation_busy'" not in repr(restart_exc)
+                                    and 'operation_busy' not in repr(restart_exc)):
+                                raise
+                            if restart_attempt == 2:
+                                raise
+                            time.sleep(30)
                     if interleave == 'stop-window':
                         # The probe has now overlapped run-01's stop portion
                         # (the restart). Close run-01's capture BEFORE
