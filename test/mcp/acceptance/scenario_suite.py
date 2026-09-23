@@ -69,6 +69,8 @@ EXIT_PASS, EXIT_USAGE, EXIT_FAIL, EXIT_BLOCKED = 0, 2, 3, 4
 # 192 MiB bounds a single guest evidence transfer: a B3 pktmon text export
 # legitimately reaches ~70 MiB (discovery100-10 sst-038) from a 5 MiB ETL.
 MAX_GUEST_TRANSFER = 192 * 1024 * 1024
+QPC_EXPORT_WAIT_SECONDS = 600
+QPC_EXPORT_RPC_SECONDS = 900
 GUEST_ROOT = r'C:\ProgramData\FakeNet-NG-MCP\logs'
 PKTMON_MODULE = Path(__file__).with_name('scenario_pktmon.py')
 NIC_CAPTURE_SCHEMA = 'fakenetng.mcp-scenario-pktmon-nic.v1'
@@ -1356,6 +1358,18 @@ class Suite:
 
     def _continuation_gate(self) -> dict[str, Any]:
         assert self.vm
+        for owner in (self.root / 'evidence').glob('*/attempt-*/qpc-process-responsibility.json'):
+            terminal = owner.with_name('qpc-process-terminal.json')
+            if not terminal.is_file():
+                raise Blocked('QPC diagnostic process responsibility remains unsettled: ' + str(owner))
+            state = read_json(terminal)
+            responsibility = read_json(owner)
+            if (state.get('schema') != 'sst.qpc-host-process-terminal.v1' or
+                    state.get('run_id') != responsibility.get('run_id') or
+                    state.get('guest_root') != responsibility.get('guest_root') or
+                    state.get('input_sha256') != responsibility.get('input_sha256') or
+                    state.get('exit_proven') is not True):
+                raise Blocked('QPC diagnostic process exit is unproven: ' + str(terminal))
         status = self._status()
         if status.get('state') != 'stopped' or status.get('run_id'):
             raise Blocked('managed service is not stopped before scenario')
@@ -3237,6 +3251,53 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 value.get('computer') != 'DESKTOP-3FI41GR':
             raise Blocked('QPC diagnostic guest interpreter or VM identity differs')
 
+    def _recover_qpc_guest_process(self, guest: str, run_id: str, source_sha: str) -> dict[str, Any]:
+        """Reconcile only the diagnostic launched under this unique guest root."""
+        program = guest + r'\input\tools\scenario_qpc_diagnostic.py'
+        output = guest + r'\export'
+        command = (
+            "$ErrorActionPreference='Stop';# qpc-responsibility-recover\n"
+            "$r=" + quote_ps(guest) + ";$run=" + quote_ps(run_id) +
+            ";$sha=" + quote_ps(source_sha) + ";$program=" + quote_ps(program) +
+            ";$out=" + quote_ps(output) + ";$p='C:\\Python313\\python.exe';"
+            "$ownerPath=Join-Path $r 'process-responsibility.json';"
+            "$owner=$null;if(Test-Path -LiteralPath $ownerPath){"
+            "$owner=Get-Content -LiteralPath $ownerPath -Raw|ConvertFrom-Json;"
+            "if($owner.run_id -ne $run -or $owner.input_sha256 -ne $sha -or"
+            " $owner.program -ne $program -or $owner.output -ne $out){throw 'QPC owner mismatch'}};"
+            "$target=$null;"
+            "if($owner){$current=Get-CimInstance Win32_Process -Filter ('ProcessId=' + $owner.pid);"
+            "if(!$current -or $current.CreationDate.ToUniversalTime().ToFileTimeUtc()"
+            " -ne $owner.creation_filetime_100ns)"
+            "{@{state='recovered_exited';exit_proven=$true;"
+            "pid=$owner.pid;creation_filetime_100ns=$owner.creation_filetime_100ns;"
+            "guest_root=$r;reason='original PID/creation no longer running'}|ConvertTo-Json -Compress;return};"
+            "if($current.ExecutablePath -ne $p -or !$current.CommandLine -or"
+            " !$current.CommandLine.Contains($program) -or !$current.CommandLine.Contains($out)"
+            " -or $current.CommandLine -ne $owner.command_line)"
+            "{@{state='unknown';exit_proven=$false;guest_root=$r;"
+            "reason='owner command differs'}|ConvertTo-Json -Compress;return};"
+            "$target=$current}else{$matches=@(Get-CimInstance Win32_Process|Where-Object {"
+            "$_.ExecutablePath -eq $p -and $_.CommandLine -and"
+            " $_.CommandLine.Contains($program) -and $_.CommandLine.Contains($out)});"
+            "if($matches.Count -ne 1){@{state='unknown';exit_proven=$false;"
+            "reason='no unique exact diagnostic process';guest_root=$r}|ConvertTo-Json -Compress;return};"
+            "$target=$matches[0]};$pidValue=[int]$target.ProcessId;"
+            "$created=[int64]$target.CreationDate.ToUniversalTime().ToFileTimeUtc();"
+            "Stop-Process -Id $pidValue -Force -ErrorAction Stop;"
+            "$still=@(Get-CimInstance Win32_Process -Filter ('ProcessId=' + $pidValue)|"
+            "Where-Object {$_.CreationDate.ToUniversalTime().ToFileTimeUtc() -eq $created});"
+            "@{state=$(if($still.Count -eq 0){'recovered_terminated'}else{'unknown'});"
+            "exit_proven=($still.Count -eq 0);pid=$pidValue;creation_filetime_100ns=$created;"
+            "guest_root=$r;reason='exact diagnostic process reconciliation'}|ConvertTo-Json -Compress")
+        try:
+            value, raw = self._vm_json(command, 120)
+            value['recovery_raw'] = raw
+            return value
+        except Exception as exc:  # noqa: BLE001 - unproven exit blocks continuation
+            return {'state': 'unknown', 'exit_proven': False, 'guest_root': guest,
+                    'recovery_error': repr(exc)}
+
     def _collect_qpc_export(self, base_path: Path, base: dict[str, Any], root: Path,
                             evidence: Evidence, run_id: str) -> None:
         """Export complete ETL after cleanup; seal guest output before verdict."""
@@ -3261,6 +3322,16 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         guest = GUEST_ROOT + r'\qpc-contract-' + scope
         guest_case = guest + '\\input\\evidence\\' + str(base_path.relative_to(self.root)).replace('/', '\\')
         source_sha = hashlib.sha256(bundle.read_bytes()).hexdigest()
+        responsibility = root / 'qpc-process-responsibility.json'
+        write_new_json(responsibility, {
+            'schema': 'sst.qpc-process-responsibility.v1', 'run_id': run_id,
+            'guest_root': guest, 'input_sha256': source_sha,
+            'program': guest + r'\input\tools\scenario_qpc_diagnostic.py',
+            'output': guest + r'\export', 'python': r'C:\Python313\python.exe',
+            'inner_wait_seconds': QPC_EXPORT_WAIT_SECONDS,
+            'rpc_timeout_seconds': QPC_EXPORT_RPC_SECONDS,
+            'state': 'pending', 'created_at': utc_now()})
+        evidence.add(responsibility)
         guest_error: Exception | None = None
         value: dict[str, Any] = {}
         raw: dict[str, Any] = {}
@@ -3279,21 +3350,48 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 "$program=Join-Path $r 'input\\tools\\scenario_qpc_diagnostic.py';"
                 "$out=Join-Path $r 'export';$stdout=Join-Path $r 'stdout.txt';"
                 "$stderr=Join-Path $r 'stderr.txt';"
+                "$run=" + quote_ps(run_id) + ";$sha=" + quote_ps(source_sha) + ";"
                 "$proc=Start-Process -FilePath $p -ArgumentList @($program,'--case'," + quote_ps(guest_case) +
                 ",'--evidence-root',(Join-Path $r 'input\\evidence'),'--output',$out)"
-                " -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr;"
-                "$terminal=[ordered]@{computer=$env:COMPUTERNAME;exit_code=$proc.ExitCode;"
-                "utc=[DateTime]::UtcNow.ToString('o')};"
-                "$terminal|ConvertTo-Json|Set-Content (Join-Path $r 'terminal.json');"
+                " -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr;"
+                "$native=Get-CimInstance Win32_Process -Filter ('ProcessId=' + $proc.Id);"
+                "if(!$native -or $native.ExecutablePath -ne $p -or !$native.CommandLine -or"
+                " !$native.CommandLine.Contains($program) -or !$native.CommandLine.Contains($out))"
+                "{throw 'QPC child native identity/command unavailable'};"
+                "$created=[int64]$native.CreationDate.ToUniversalTime().ToFileTimeUtc();"
+                "$owner=[ordered]@{schema='sst.qpc-guest-process.v1';run_id=$run;"
+                "input_sha256=$sha;pid=[int]$proc.Id;creation_filetime_100ns=$created;"
+                "executable_path=$native.ExecutablePath;command_line=$native.CommandLine;"
+                "program=$program;output=$out;started_utc=[DateTime]::UtcNow.ToString('o')};"
+                "$ownerPath=Join-Path $r 'process-responsibility.json';"
+                "$owner|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $ownerPath;"
+                "$deadline=[DateTime]::UtcNow.AddSeconds(" + str(QPC_EXPORT_WAIT_SECONDS) + ");"
+                "while(!$proc.HasExited -and [DateTime]::UtcNow -lt $deadline)"
+                "{$null=$proc.WaitForExit(1000);$proc.Refresh()};"
+                "$timedOut=!$proc.HasExited;"
+                "if($timedOut){$current=Get-CimInstance Win32_Process -Filter ('ProcessId=' + $proc.Id);"
+                "if($current -and $current.CreationDate.ToUniversalTime().ToFileTimeUtc() -eq $created"
+                " -and $current.ExecutablePath -eq $p -and $current.CommandLine -eq $native.CommandLine)"
+                "{Stop-Process -Id $proc.Id -Force;$null=$proc.WaitForExit(10000);$proc.Refresh()}};"
+                "$exited=[bool]$proc.HasExited;"
+                "$state=if(!$exited){'unknown'}elseif($timedOut){'timeout_terminated'}else{'exited'};"
+                "$code=if($exited){$proc.ExitCode}else{$null};"
+                "$terminal=[ordered]@{schema='sst.qpc-guest-terminal.v1';"
+                "computer=$env:COMPUTERNAME;run_id=$run;input_sha256=$sha;"
+                "pid=[int]$proc.Id;creation_filetime_100ns=$created;"
+                "executable_path=$native.ExecutablePath;command_line=$native.CommandLine;"
+                "program=$program;output=$out;state=$state;exit_proven=$exited;"
+                "timed_out=$timedOut;exit_code=$code;utc=[DateTime]::UtcNow.ToString('o')};"
+                "$terminal|ConvertTo-Json -Depth 8|Set-Content (Join-Path $r 'terminal.json');"
                 "$outputZip=Join-Path $r 'output.zip';"
-                "Compress-Archive -Path $out,$stdout,$stderr,(Join-Path $r 'terminal.json')"
+                "Compress-Archive -Path $out,$stdout,$stderr,$ownerPath,(Join-Path $r 'terminal.json')"
                 " -DestinationPath $outputZip;"
-                "@{computer=$env:COMPUTERNAME;exit_code=$proc.ExitCode;"
+                "@{computer=$env:COMPUTERNAME;exit_code=$code;process=$terminal;"
                 "bytes=(Get-Item $outputZip).Length;sha256=(Get-FileHash $outputZip -Algorithm SHA256).Hash.ToLower();"
                 "path=$outputZip;input_sha256=(Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()}"
                 "|ConvertTo-Json -Compress")
             try:
-                value, raw = self._vm_json(command, 1200)
+                value, raw = self._vm_json(command, QPC_EXPORT_RPC_SECONDS)
             except Exception as exc:  # noqa: BLE001 - preserve transfer evidence
                 guest_error = exc
         transfer_record = transfer.record()
@@ -3301,6 +3399,41 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                                                     'error': repr(guest_error) if guest_error else None,
                                                     'host_only_transfer': transfer_record})
         evidence.add(root / 'qpc-transfer.json')
+        process = value.get('process')
+        expected_program = guest + r'\input\tools\scenario_qpc_diagnostic.py'
+        expected_output = guest + r'\export'
+        normal_exit = (isinstance(process, dict)
+            and process.get('schema') == 'sst.qpc-guest-terminal.v1'
+            and process.get('computer') == 'DESKTOP-3FI41GR'
+            and process.get('run_id') == run_id
+            and process.get('input_sha256') == source_sha
+            and process.get('program') == expected_program
+            and process.get('output') == expected_output
+            and process.get('executable_path') == r'C:\Python313\python.exe'
+            and type(process.get('pid')) is int and process['pid'] > 0
+            and type(process.get('creation_filetime_100ns')) is int
+            and process['creation_filetime_100ns'] > 0
+            and isinstance(process.get('command_line'), str)
+            and expected_program in process['command_line']
+            and expected_output in process['command_line']
+            and process.get('state') in ('exited', 'timeout_terminated')
+            and process.get('exit_proven') is True)
+        settlement = (process if normal_exit else
+                      self._recover_qpc_guest_process(guest, run_id, source_sha))
+        exit_proven = (normal_exit or
+            (settlement.get('exit_proven') is True
+             and settlement.get('guest_root') == guest
+             and settlement.get('state') in ('recovered_exited', 'recovered_terminated')))
+        process_terminal = root / 'qpc-process-terminal.json'
+        write_new_json(process_terminal, {
+            'schema': 'sst.qpc-host-process-terminal.v1', 'run_id': run_id,
+            'guest_root': guest, 'input_sha256': source_sha,
+            'exit_proven': exit_proven, 'settlement': settlement,
+            'guest_error': repr(guest_error) if guest_error else None,
+            'recorded_at': utc_now()})
+        evidence.add(process_terminal)
+        if not exit_proven:
+            raise SuiteError('QPC diagnostic process exit unproven; guest-only root: ' + guest)
         if guest_error:
             raise guest_error
         if (transfer_record['stopped'] is not True or
@@ -3334,8 +3467,15 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     shutil.copyfileobj(source, stream)
                 evidence.add(target)
         terminal = read_json(destination / 'terminal.json')
+        owner = read_json(destination / 'process-responsibility.json')
         manifest = read_json(destination / 'export' / 'manifest.json')
+        if (terminal != process or owner.get('pid') != terminal.get('pid') or
+                owner.get('creation_filetime_100ns') != terminal.get('creation_filetime_100ns') or
+                owner.get('command_line') != terminal.get('command_line') or
+                owner.get('run_id') != run_id or owner.get('input_sha256') != source_sha):
+            raise SuiteError('QPC guest owner/terminal original differs from VM response')
         if (value.get('exit_code') != 0 or terminal.get('exit_code') != 0 or
+                terminal.get('state') != 'exited' or
                 manifest.get('status') != 'COMPLETE_DIAGNOSTIC_ONLY'):
             raise SuiteError('QPC Windows export incomplete: ' + repr(manifest.get('error')))
 
@@ -3449,7 +3589,14 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             base_path = root / 'fault-evidence-base-v2.case.json'
             write_new_json(base_path, base)
             evidence.add(base_path)
-            self._collect_qpc_export(base_path, base, root, evidence, run['run_id'])
+            try:
+                self._collect_qpc_export(base_path, base, root, evidence, run['run_id'])
+            finally:
+                run['qpc_export_process'] = {
+                    name: file_record(root / name, self.root)
+                    for name in ('qpc-process-responsibility.json',
+                                 'qpc-process-terminal.json', 'qpc-transfer.json')
+                    if (root / name).is_file()}
             descriptor['clock_evidence_mode'] = QPC_MODE
             descriptor['base_case_path'] = str(base_path.relative_to(self.root))
             descriptor['qpc_export_prefix'] = str((root / 'qpc-native' / 'export').relative_to(self.root))

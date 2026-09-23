@@ -244,6 +244,153 @@ def contains_session(begin_upper, trigger_lower, trigger_upper, end_lower):
     return begin_upper <= trigger_lower <= trigger_upper <= end_lower
 
 
+def validate_connection_structure(case, evidence):
+    """Verify original connection identity and complete native lifecycle.
+
+    Shared by v1/v2 UTC and explicit v3 QPC adjudication; only the
+    final clock-domain ordering differs between those modes.
+    """
+    read = evidence.read
+    run = case['run_id']
+    def bounds(event):
+        lo, hi = time_bounds(event)
+        uncertainty = max(0, int(case['clock']['resolution_ns']) - 1)
+        return lo - uncertainty, hi + uncertainty
+    trigger, session = case['trigger'], case['session']
+    lower = read(trigger['lower_ref'])
+    upper = read(trigger['upper_ref'])
+    if isinstance(lower, dict) and 'created_utc' in lower:
+        if (Path(lower.get('path', '').replace('\\', '/')).name != 'fault-triggered.json'
+                or run not in lower['path']):
+            raise EvidenceError('receipt metadata is not the native run receipt')
+        receipt_bytes = evidence.data[case['receipt_ref']['path']]
+        if (lower.get('bytes') != len(receipt_bytes)
+                or lower.get('sha256', '').lower() != hashlib.sha256(receipt_bytes).hexdigest()):
+            raise EvidenceError('native receipt metadata hash/size mismatch')
+    elif not (isinstance(lower, dict) and lower.get('event') == 'request'
+              and lower.get('frame', {}).get('run_id') == run
+              and lower['frame'].get('kind') in ('start', 'stop')):
+        raise EvidenceError('unsupported lower bound')
+    if upper == lower or (isinstance(upper, dict) and 'created_utc' in upper):
+        raise EvidenceError('receipt metadata cannot be an action upper bound')
+    # Upper must itself be among actual action observations/start IPC.
+    if trigger['upper_ref'] not in trigger['success_refs'] + [case['start_response_ref']]:
+        raise EvidenceError('upper bound not linked to action observation')
+    established, managed, end = [read(session[key]) for key in ('established_ref', 'managed_ref', 'end_ref')]
+    if established['event'] != 'established' or end['event'] not in ('eof', 'error', 'close'):
+        raise EvidenceError('invalid connection lifecycle events')
+    for key in ('pid', 'worker', 'seq', 'nonce'):
+        if established[key] != end[key]:
+            raise EvidenceError('cannot splice different/retried connections')
+    connection_id = established.get('connection_id')
+    if (case['schema'] == 'sst.fault-evidence.case.v2' and
+            (not isinstance(connection_id, str) or not connection_id)):
+        raise EvidenceError('native probe connection identity missing')
+    if ((connection_id or end.get('connection_id')) and
+            connection_id != end.get('connection_id')):
+        raise EvidenceError('cannot splice a different connection_id')
+    if (session.get('connection_id') is not None and
+            session['connection_id'] != '%s-%s-%s' % (
+                established['pid'], established['worker'], established['seq'])):
+        raise EvidenceError('case connection identity differs from probe')
+    # End at the first observed close/error/EOF for this exact attempt.
+    lifecycle = []
+    probe_events = [json.loads(line) for line in
+                    evidence.data[session['established_ref']['path']].splitlines()]
+    if not probe_identity_matches(probe_events, established, session['probe_creation']):
+        raise EvidenceError('probe process creation identity mismatch')
+    for row in probe_events:
+        if all(row.get(k) == established[k] for k in ('pid', 'worker', 'seq', 'nonce')) and \
+                (not connection_id or row.get('connection_id') == connection_id):
+            lifecycle.append(row)
+    ends = [x for x in lifecycle if x.get('event') in ('eof', 'error', 'close')]
+    if not ends or bounds(end)[0] != min(bounds(x)[0] for x in ends):
+        raise EvidenceError('end is not the first termination of this connection')
+    if established['nonce'] != case['nonce'] or established['pid'] != session['probe_pid']:
+        raise EvidenceError('probe nonce/PID mismatch')
+    # The flow line is extracted from the actual run log, not a caller
+    # flag. B3 process-redirect rows are recorded as mapping-created
+    # lines whose field names differ (protocol/source_ipv4/source_port).
+    if not isinstance(managed, str) or not ('PROCESS_FLOW ' in managed or
+                                            'PROCESS_REDIRECT_MAPPING_CREATED' in managed):
+        raise EvidenceError('missing native flow mapping')
+    if not tcpip.flow_matches(tcpip.fields(managed), session['probe_pid'],
+                               established['src'], connection_destination(established)):
+        raise EvidenceError('managed flow does not match exact outbound tuple/PID/protocol')
+    full_log = evidence.data[session['managed_ref']['path']].decode('utf-8-sig')
+    matching_flows = [line for line in full_log.splitlines()
+                      if ('PROCESS_FLOW ' in line or
+                          'PROCESS_REDIRECT_MAPPING_CREATED' in line) and
+                      tcpip.flow_matches(tcpip.fields(line), session['probe_pid'],
+                                         established['src'], connection_destination(established))]
+    if not matching_flows or bounds(managed)[1] != max(bounds(line)[1] for line in matching_flows):
+        raise EvidenceError('managed flow reference does not conservatively bound full matching set')
+    if connection_destination(established) != session['dst'] or established['src'] != session['src']:
+        raise EvidenceError('connection tuple mismatch')
+    if case['schema'] == 'sst.fault-evidence.case.v2' and session.get('observation_kind') not in ('packet', 'tcpip_etw'):
+        raise EvidenceError('v2 requires explicit connection observation kind')
+    kind = session.get('observation_kind', 'packet')
+    if case['schema'] == 'sst.fault-evidence.case.v1' and kind != 'packet':
+        raise EvidenceError('v1 cannot contain ETW observations')
+    begin = max(bounds(established)[1], bounds(managed)[1])
+    if kind == 'tcpip_etw':
+        if session.get('packet_refs') or not session.get('connection_event_refs'):
+            raise EvidenceError('mixed/empty ETW observation type')
+        capture = session['connection_capture']
+        text_raw = evidence.data[capture['text_path']]
+        trace_lo, trace_hi = tcpip.validate_capture(text_raw, evidence.data[capture['etl_path']],
+                                                   read(capture['metadata_ref']), case['clock']['resolution_ns'])
+        rows = [json.loads(l) for l in evidence.data[case['start_response_ref']['path']].splitlines()]
+        managed_pid, managed_created = tcpip.managed_identity(rows, run)
+        log_path = session['managed_ref']['path']
+        observed = tcpip.connection_events(text_raw, capture['text_path'],
+            evidence.data[log_path].decode('utf-8-sig'), session['probe_pid'],
+            session['src'], session['dst'], managed_pid)
+        if observed['tuple_terminals']:
+            tcpip.validate_tuple_probe(probe_events, established, session['src'], session['dst'])
+        if session.get('tuple_terminal_refs', []) != [e['ref'] for e in observed['tuple_terminals']]:
+            raise EvidenceError('incomplete/reordered unattributed tuple terminal reference set')
+        expected = [e['ref'] for e in observed['events']]
+        if session.get('generation_manifest') != observed['generation_manifest']:
+            raise EvidenceError('incomplete/changed TCPIP generation manifest')
+        if session['connection_event_refs'] != expected:
+            raise EvidenceError('incomplete/reordered TCPIP lifecycle reference set')
+        for event in observed['events'] + observed['tuple_terminals']:
+            lo_e, hi_e = time_bounds(event['text'])
+            if not trace_lo <= lo_e <= hi_e <= trace_hi + 99:
+                raise EvidenceError('TCPIP event outside trace header')
+        connect = observed['connect']['text']
+        if time_bounds(connect)[0] < (session['probe_creation'] - 621355968000000000) * 100:
+            raise EvidenceError('TCPIP connect precedes native probe creation')
+        if observed['peer'] and time_bounds(observed['peer']['text'])[0] < (managed_created - 116444736000000000) * 100:
+            raise EvidenceError('TCPIP accept precedes managed creation')
+        begin = max(begin, bounds(connect)[1])
+        finish = min([bounds(end)[0]] +
+                     terminal_bounds(observed, bounds))
+        if not trace_lo <= bounds(lower)[0] <= bounds(upper)[1] <= trace_hi:
+            raise EvidenceError('action outside complete trace window')
+    elif kind == 'packet':
+        if session.get('connection_event_refs') or session.get('connection_capture') or session.get('tuple_terminal_refs'):
+            raise EvidenceError('mixed packet/ETW observation type')
+        if not session['packet_refs']:
+            raise EvidenceError('independent packet capture is missing')
+        packet_ends = []
+        for ref in session['packet_refs']:
+            packet = read(ref)
+            if not packet_matches_session(packet, session['src'], session['dst']):
+                raise EvidenceError('packet tuple cannot be linked')
+            if re.search(r'Flags \[[^\]]*[FR]', packet):
+                packet_ends.append(bounds(packet)[0])
+        if not packet_ends:
+            raise EvidenceError('independent capture has no connection termination')
+        finish = min([bounds(end)[0]] + packet_ends)
+    else:
+        raise EvidenceError('unknown connection observation kind')
+    lo, hi = bounds(lower)[0], bounds(upper)[1]
+    return {'session_begin_upper': begin, 'trigger_lower': lo,
+            'trigger_upper': hi, 'session_end_lower': finish}
+
+
 def assess(case, root, expected_candidate=CANDIDATE):
     if case.get('schema') == 'sst.fault-evidence.case.v3':
         return assess_qpc_v3(case, root, expected_candidate)
@@ -445,129 +592,25 @@ def assess(case, root, expected_candidate=CANDIDATE):
             return False, 'healthy start or unrelated observation cannot bound hanging child creation'
         check('child_action_upper', child_action_upper)
 
+    structure = {}
+    def connection_structure():
+        try:
+            structure['intervals'] = validate_connection_structure(case, evidence)
+        except (EvidenceError, ValueError, KeyError, TypeError, IndexError) as exc:
+            structure['error'] = exc
+            raise
+        return True, 'complete original connection lifecycle and action provenance'
+
+    check('connection_structure', connection_structure)
+
     def overlap():
-        trigger, session = case['trigger'], case['session']
-        lower = read(trigger['lower_ref'])
-        upper = read(trigger['upper_ref'])
-        if isinstance(lower, dict) and 'created_utc' in lower:
-            if (Path(lower.get('path', '').replace('\\', '/')).name != 'fault-triggered.json'
-                    or run not in lower['path']):
-                raise EvidenceError('receipt metadata is not the native run receipt')
-            receipt_bytes = evidence.data[case['receipt_ref']['path']]
-            if (lower.get('bytes') != len(receipt_bytes)
-                    or lower.get('sha256', '').lower() != hashlib.sha256(receipt_bytes).hexdigest()):
-                raise EvidenceError('native receipt metadata hash/size mismatch')
-        elif not (isinstance(lower, dict) and lower.get('event') == 'request'
-                  and lower.get('frame', {}).get('run_id') == run
-                  and lower['frame'].get('kind') in ('start', 'stop')):
-            raise EvidenceError('unsupported lower bound')
-        if upper == lower or (isinstance(upper, dict) and 'created_utc' in upper):
-            raise EvidenceError('receipt metadata cannot be an action upper bound')
-        # Upper must itself be among actual action observations/start IPC.
-        if trigger['upper_ref'] not in trigger['success_refs'] + [case['start_response_ref']]:
-            raise EvidenceError('upper bound not linked to action observation')
-        established, managed, end = [read(session[key]) for key in ('established_ref', 'managed_ref', 'end_ref')]
-        if established['event'] != 'established' or end['event'] not in ('eof', 'error', 'close'):
-            raise EvidenceError('invalid connection lifecycle events')
-        for key in ('pid', 'worker', 'seq', 'nonce'):
-            if established[key] != end[key]:
-                raise EvidenceError('cannot splice different/retried connections')
-        # End at the first observed close/error/EOF for this exact attempt.
-        lifecycle = []
-        probe_events = [json.loads(line) for line in
-                        evidence.data[session['established_ref']['path']].splitlines()]
-        if not probe_identity_matches(probe_events, established, session['probe_creation']):
-            raise EvidenceError('probe process creation identity mismatch')
-        for row in probe_events:
-            if all(row.get(k) == established[k] for k in ('pid', 'worker', 'seq', 'nonce')):
-                lifecycle.append(row)
-        ends = [x for x in lifecycle if x.get('event') in ('eof', 'error', 'close')]
-        if not ends or bounds(end)[0] != min(bounds(x)[0] for x in ends):
-            raise EvidenceError('end is not the first termination of this connection')
-        if established['nonce'] != case['nonce'] or established['pid'] != session['probe_pid']:
-            raise EvidenceError('probe nonce/PID mismatch')
-        # The flow line is extracted from the actual run log, not a caller
-        # flag. B3 process-redirect rows are recorded as mapping-created
-        # lines whose field names differ (protocol/source_ipv4/source_port).
-        if not isinstance(managed, str) or not ('PROCESS_FLOW ' in managed or
-                                                'PROCESS_REDIRECT_MAPPING_CREATED' in managed):
-            raise EvidenceError('missing native flow mapping')
-        if not tcpip.flow_matches(tcpip.fields(managed), session['probe_pid'],
-                                   established['src'], connection_destination(established)):
-            raise EvidenceError('managed flow does not match exact outbound tuple/PID/protocol')
-        full_log = evidence.data[session['managed_ref']['path']].decode('utf-8-sig')
-        matching_flows = [line for line in full_log.splitlines()
-                          if ('PROCESS_FLOW ' in line or
-                              'PROCESS_REDIRECT_MAPPING_CREATED' in line) and
-                          tcpip.flow_matches(tcpip.fields(line), session['probe_pid'],
-                                             established['src'], connection_destination(established))]
-        if not matching_flows or bounds(managed)[1] != max(bounds(line)[1] for line in matching_flows):
-            raise EvidenceError('managed flow reference does not conservatively bound full matching set')
-        if connection_destination(established) != session['dst'] or established['src'] != session['src']:
-            raise EvidenceError('connection tuple mismatch')
-        if case['schema'] == 'sst.fault-evidence.case.v2' and session.get('observation_kind') not in ('packet', 'tcpip_etw'):
-            raise EvidenceError('v2 requires explicit connection observation kind')
-        kind = session.get('observation_kind', 'packet')
-        if case['schema'] == 'sst.fault-evidence.case.v1' and kind != 'packet':
-            raise EvidenceError('v1 cannot contain ETW observations')
-        begin = max(bounds(established)[1], bounds(managed)[1])
-        if kind == 'tcpip_etw':
-            if session.get('packet_refs') or not session.get('connection_event_refs'):
-                raise EvidenceError('mixed/empty ETW observation type')
-            capture = session['connection_capture']
-            text_raw = evidence.data[capture['text_path']]
-            trace_lo, trace_hi = tcpip.validate_capture(text_raw, evidence.data[capture['etl_path']],
-                                                       read(capture['metadata_ref']), case['clock']['resolution_ns'])
-            rows = [json.loads(l) for l in evidence.data[case['start_response_ref']['path']].splitlines()]
-            managed_pid, managed_created = tcpip.managed_identity(rows, run)
-            log_path = session['managed_ref']['path']
-            observed = tcpip.connection_events(text_raw, capture['text_path'],
-                evidence.data[log_path].decode('utf-8-sig'), session['probe_pid'],
-                session['src'], session['dst'], managed_pid)
-            if observed['tuple_terminals']:
-                tcpip.validate_tuple_probe(probe_events, established, session['src'], session['dst'])
-            if session.get('tuple_terminal_refs', []) != [e['ref'] for e in observed['tuple_terminals']]:
-                raise EvidenceError('incomplete/reordered unattributed tuple terminal reference set')
-            expected = [e['ref'] for e in observed['events']]
-            if session.get('generation_manifest') != observed['generation_manifest']:
-                raise EvidenceError('incomplete/changed TCPIP generation manifest')
-            if session['connection_event_refs'] != expected:
-                raise EvidenceError('incomplete/reordered TCPIP lifecycle reference set')
-            for event in observed['events'] + observed['tuple_terminals']:
-                lo_e, hi_e = time_bounds(event['text'])
-                if not trace_lo <= lo_e <= hi_e <= trace_hi + 99:
-                    raise EvidenceError('TCPIP event outside trace header')
-            connect = observed['connect']['text']
-            if time_bounds(connect)[0] < (session['probe_creation'] - 621355968000000000) * 100:
-                raise EvidenceError('TCPIP connect precedes native probe creation')
-            if observed['peer'] and time_bounds(observed['peer']['text'])[0] < (managed_created - 116444736000000000) * 100:
-                raise EvidenceError('TCPIP accept precedes managed creation')
-            begin = max(begin, bounds(connect)[1])
-            finish = min([bounds(end)[0]] +
-                         terminal_bounds(observed, bounds))
-            if not trace_lo <= bounds(lower)[0] <= bounds(upper)[1] <= trace_hi:
-                raise EvidenceError('action outside complete trace window')
-        elif kind == 'packet':
-            if session.get('connection_event_refs') or session.get('connection_capture') or session.get('tuple_terminal_refs'):
-                raise EvidenceError('mixed packet/ETW observation type')
-            if not session['packet_refs']:
-                raise EvidenceError('independent packet capture is missing')
-            packet_ends = []
-            for ref in session['packet_refs']:
-                packet = read(ref)
-                if not packet_matches_session(packet, session['src'], session['dst']):
-                    raise EvidenceError('packet tuple cannot be linked')
-                if re.search(r'Flags \[[^\]]*[FR]', packet):
-                    packet_ends.append(bounds(packet)[0])
-            if not packet_ends:
-                raise EvidenceError('independent capture has no connection termination')
-            finish = min([bounds(end)[0]] + packet_ends)
-        else:
-            raise EvidenceError('unknown connection observation kind')
-        lo, hi = bounds(lower)[0], bounds(upper)[1]
-        result['intervals_ns'] = {'session_begin_upper': begin, 'trigger_lower': lo,
-                                  'trigger_upper': hi, 'session_end_lower': finish}
-        return contains_session(begin, lo, hi, finish), 'single managed outbound connection must contain entire conservative action interval'
+        if 'error' in structure:
+            raise structure['error']
+        intervals = structure['intervals']
+        result['intervals_ns'] = intervals
+        return contains_session(intervals['session_begin_upper'], intervals['trigger_lower'],
+                                intervals['trigger_upper'], intervals['session_end_lower']), \
+            'single managed outbound connection must contain entire conservative action interval'
 
     check('overlap', overlap)
 
