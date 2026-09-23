@@ -551,3 +551,57 @@ class ProcessRedirectEngineTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_quiescence_allows_timewait_but_blocks_live_rows(monkeypatch):
+    """TIME_WAIT rows must not block process-redirect takeover.
+
+    A TIME_WAIT row (MIB state 11) is kernel-owned aging with its owner
+    socket closed; blocking on it rejected the product's own restart
+    lifecycle where the predecessor run's probe connections age through
+    TIME_WAIT past the restart settle (fakenet100 r09-run-18 sst-038).
+    Every genuinely live state still blocks.
+    """
+    import importlib.util as _iu
+    import sys as _sys
+    import types as _types
+    from types import SimpleNamespace as _NS
+    if 'winreg' not in _sys.modules:
+        _winreg = _types.ModuleType('winreg')
+        for _name in ('KEY_READ', 'KEY_WRITE', 'KEY_ALL_ACCESS',
+                      'HKEY_LOCAL_MACHINE', 'HKEY_CURRENT_USER', 'REG_SZ',
+                      'REG_MULTI_SZ', 'REG_DWORD', 'REG_BINARY'):
+            setattr(_winreg, _name, None)
+        _sys.modules['winreg'] = _winreg
+    spec = _iu.spec_from_file_location(
+        'fakenet.diverters.windows', 'fakenet/diverters/windows.py')
+    windows = _iu.module_from_spec(spec)
+    _sys.modules.setdefault('fakenet.diverters.windows', windows)
+    spec.loader.exec_module(windows)
+
+    class _Api:
+        def __init__(self, states):
+            self._states = states
+        def find_reviewed_processes(self, identity):
+            return []
+        def get_tcp_owner_rows(self):
+            return tuple(
+                _NS(remote_ipv4='10.20.30.41', state=state)
+                for state in self._states)
+
+    diverter = windows.Diverter.__new__(windows.Diverter)
+    diverter._process_identity_api = _Api([11, 11])
+    diverter.egress_policy = _NS(
+        process_redirect_rule=_NS(original_ipv4='10.20.30.41',
+                                  file_identity='x'))
+    diverter.log_egress_event = lambda *a, **k: None
+    windows.Diverter._validate_process_redirect_quiescence(diverter)  # no raise
+
+    diverter._process_identity_api = _Api([5])  # ESTABLISHED
+    try:
+        windows.Diverter._validate_process_redirect_quuescence = \
+            windows.Diverter._validate_process_redirect_quiescence
+        windows.Diverter._validate_process_redirect_quiescence(diverter)
+        raise AssertionError('established row must block')
+    except windows.PolicyConfigError:
+        pass

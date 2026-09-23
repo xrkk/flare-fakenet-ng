@@ -616,10 +616,18 @@ class Diverter(DiverterBase, WinUtilMixin):
         if running:
             raise PolicyConfigError(
                 'reviewed process image is already running before READY')
+        # MIB state 11 (TIME_WAIT) is kernel-owned aging: the owner socket
+        # is closed and the row can carry no traffic, so it is not a live
+        # flow takeover could capture mid-stream. Blocking on it rejected the
+        # product's own restart lifecycle, where the predecessor run's
+        # probe connections age through TIME_WAIT past the restart settle
+        # (fakenet100 r09-run-18 sst-038: PolicyConfigError on run-02 start
+        # ~100s after the restart's stop killed the probe). Every genuinely
+        # live state (3..10, 12) still blocks.
         existing = [
             row for row in self._process_identity_api.get_tcp_owner_rows()
             if (row.remote_ipv4 == rule.original_ipv4 and
-                3 <= int(row.state) <= 12)]
+                3 <= int(row.state) <= 12 and int(row.state) != 11)]
         if existing:
             raise PolicyConfigError(
                 'an existing TCP row already targets process redirect A')
