@@ -88,6 +88,42 @@ class Blocked(SuiteError):
     """A precondition cannot be proved; callers must not continue."""
 
 
+def extract_qpc_archive(output_zip: Path, destination: Path, evidence) -> None:
+    """Extract complete native views under separate member and aggregate limits.
+
+    A diagnostic export contains raw, default-clock and paired full-event views.
+    Each member retains the single-transfer limit; the aggregate allows those
+    three views plus one limit's worth of metadata (768 MiB at current settings).
+    Validate every header before creating files, then let ZipFile verify CRCs.
+    """
+    with zipfile.ZipFile(output_zip) as archive:
+        members = archive.infolist()
+        if len(members) > 128:
+            raise SuiteError('QPC output archive has too many members')
+        total, targets = 0, {}
+        for member in members:
+            if member.is_dir():
+                continue
+            relative = Path(member.filename)
+            target = (destination / relative).resolve()
+            if (relative.is_absolute() or '..' in relative.parts or
+                    '\\' in member.filename or ':' in member.filename or
+                    not target.is_relative_to(destination.resolve()) or
+                    target in targets or target.exists() or
+                    (member.external_attr >> 16) & 0o170000 == 0o120000 or
+                    not 0 <= member.file_size <= MAX_GUEST_TRANSFER):
+                raise SuiteError('QPC output archive path or size invalid')
+            total += member.file_size
+            if total > 4 * MAX_GUEST_TRANSFER:
+                raise SuiteError('QPC output archive exceeds expanded bound')
+            targets[target] = member
+        for target, member in targets.items():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open('xb') as stream, archive.open(member) as source:
+                shutil.copyfileobj(source, stream)
+            evidence.add(target)
+
+
 class HostOnlyFileTransfer:
     """Serve one immutable test input on the authorized host-only address."""
 
@@ -3520,24 +3556,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         evidence.add(output_zip)
         destination = root / 'qpc-native'
         destination.mkdir(exist_ok=False)
-        with zipfile.ZipFile(output_zip) as archive:
-            total = 0
-            for member in archive.infolist():
-                if member.is_dir():
-                    continue
-                relative = Path(member.filename)
-                target = (destination / relative).resolve()
-                if (relative.is_absolute() or '..' in relative.parts or
-                        not target.is_relative_to(destination.resolve()) or
-                        member.file_size > MAX_GUEST_TRANSFER):
-                    raise SuiteError('QPC output archive path or size invalid')
-                total += member.file_size
-                if total > MAX_GUEST_TRANSFER:
-                    raise SuiteError('QPC output archive exceeds expanded bound')
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with target.open('xb') as stream, archive.open(member) as source:
-                    shutil.copyfileobj(source, stream)
-                evidence.add(target)
+        extract_qpc_archive(output_zip, destination, evidence)
         terminal = read_json(destination / 'terminal.json')
         owner = read_json(destination / 'process-responsibility.json')
         manifest = read_json(destination / 'export' / 'manifest.json')
