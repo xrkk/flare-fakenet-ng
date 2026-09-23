@@ -5197,21 +5197,23 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         selected = [row for row in manifest['scenarios'] if
                     (row['fault_class'] is None if filter_name == 'benign' else row['fault_class'] is not None)]
 
+        traffic_issues: dict[str, list[str]] = {}
+
         def execute() -> list[dict[str, Any]]:
             # Every scenario exports ipc-parent.jsonl, but only fault scenarios
             # arm the evidence environment themselves; arm it for the whole pass.
             results = []
             for scenario in selected:
                 result_path = self._result_path(scenario['scenario_id'])
-                if result_path.exists():
-                    result = read_json(result_path)
-                    if result.get('state') in ('pass', 'fail'):
-                        results.append(result)
-                        if result.get('state') != 'pass' and getattr(self.args, 'stop_on_first_failure', False):
-                            break
-                        continue
-                results.append(self._run_one(scenario, 1))
-                if results[-1]['state'] != 'pass':
+                result = read_json(result_path) if result_path.exists() else None
+                if result is None or result.get('state') not in ('pass', 'fail'):
+                    result = self._run_one(scenario, 1)
+                results.append(result)
+                issues = (self._traffic_recheck_issues(result, scenario)
+                          if result.get('state') == 'pass' else [])
+                if issues:
+                    traffic_issues[scenario['scenario_id']] = issues
+                if result.get('state') != 'pass' or issues:
                     if getattr(self.args, 'stop_on_first_failure', False):
                         break
                     # Preserve this failure and enforce the continuation gate before
@@ -5223,15 +5225,13 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             'ipc-evidence-%s-enabled.json' % filter_name,
             'ipc-evidence-%s-disabled.json' % filter_name, execute)
         results = results if results is not None else []
-        traffic_issues = {row['scenario_id']: self._traffic_recheck_issues(row,
-            next(item for item in selected if item['scenario_id'] == row['scenario_id']))
-            for row in results if row.get('state') == 'pass'}
         passed = (self._ipc_evidence_recovered(ipc_evidence)
                   and all(row.get('state') == 'pass' for row in results)
-                  and not any(traffic_issues.values()))
+                  and not traffic_issues)
         return {'output_dir': str(self.root), 'filter': filter_name, 'count': len(results),
                 'passed': passed, 'ipc_evidence': ipc_evidence,
                 'traffic_recheck_issues': traffic_issues,
+                'not_executed': [row['scenario_id'] for row in selected[len(results):]],
                 'states': {row['scenario_id']: row['state'] for row in results}}
 
     def resume(self) -> dict[str, Any]:
@@ -5245,6 +5245,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         self.require_clients()
         self._require_preflight()
 
+        traffic_issues: dict[str, list[str]] = {}
+
         def execute() -> list[dict[str, Any]]:
             rerun = []
             for scenario in manifest['scenarios']:
@@ -5254,23 +5256,27 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 state = read_json(path)
                 if state.get('phase') in ('pending', 'blocked', 'running'):
                     self._continuation_gate()
-                    rerun.append(self._run_one(scenario, int(state.get('attempt', 0)) + 1))
-                    if rerun[-1].get('state') != 'pass' and getattr(self.args, 'stop_on_first_failure', False):
+                    result = self._run_one(scenario, int(state.get('attempt', 0)) + 1)
+                    rerun.append(result)
+                    issues = (self._traffic_recheck_issues(result, scenario)
+                              if result.get('state') == 'pass' else [])
+                    if issues:
+                        traffic_issues[scenario['scenario_id']] = issues
+                    if (result.get('state') != 'pass' or issues) and getattr(
+                            self.args, 'stop_on_first_failure', False):
                         break
             return rerun
 
         rerun, ipc_evidence = self._ipc_evidence_pass(
             'ipc-evidence-resume-enabled.json', 'ipc-evidence-resume-disabled.json', execute)
         rerun = rerun if rerun is not None else []
-        traffic_issues = {row['scenario_id']: self._traffic_recheck_issues(row,
-            next(item for item in manifest['scenarios'] if item['scenario_id'] == row['scenario_id']))
-            for row in rerun if row.get('state') == 'pass'}
         return {'output_dir': str(self.root), 'resumed': len(rerun),
                 'ipc_evidence': ipc_evidence,
                 'traffic_recheck_issues': traffic_issues,
+                'not_executed': [row['scenario_id'] for row in pending[len(rerun):]],
                 'passed': (self._ipc_evidence_recovered(ipc_evidence)
                            and all(row.get('state') == 'pass' for row in rerun)
-                           and not any(traffic_issues.values()))}
+                           and not traffic_issues)}
 
     def _traffic_recheck_issues(self, result: dict[str, Any], expected: dict[str, Any]) -> list[str]:
         """Re-adjudicate healthy-run traffic from the byte-bound originals."""

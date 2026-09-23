@@ -85,26 +85,6 @@ def test_first_failure_stops_dispatch_without_invoking_next_gate(tmp_path, entry
     assert len(gates) == (1 if entry == 'resume' else 0)
 
 
-@pytest.mark.parametrize('entry', ['run', 'resume'])
-def test_batch_result_cannot_pass_with_failed_raw_traffic_recheck(tmp_path, entry):
-    runner = make_suite(tmp_path)
-    case = next(row for row in runner.manifest()['scenarios'] if row['fault_class'] is None)
-    runner.require_clients = runner._require_preflight = lambda: None
-    if entry == 'resume':
-        state = runner._state_path(case['scenario_id'])
-        state.parent.mkdir(parents=True, exist_ok=True)
-        state.write_text(json.dumps({'phase': 'pending', 'attempt': 0}))
-    runner._ipc_evidence_pass = lambda *_: ([{'scenario_id': case['scenario_id'],
-                                             'state': 'pass'}], {'enabled': {'enabled': True},
-                                                               'disabled': {'enabled': False}})
-    runner._traffic_recheck_issues = lambda result, expected: [
-        'stored SNI deny binding native_deny differs']
-    result = runner.run('benign') if entry == 'run' else runner.resume()
-    assert result['passed'] is False
-    assert result['traffic_recheck_issues'][case['scenario_id']] == [
-        'stored SNI deny binding native_deny differs']
-
-
 def test_direct_script_imports_baseline_without_pythonpath(tmp_path):
     """Match direct-file CLI sys.path, then reach the real lazy import seam."""
     import os

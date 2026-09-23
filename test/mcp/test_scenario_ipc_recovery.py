@@ -26,7 +26,8 @@ class Recorder:
     """Builds a Suite stub whose boundaries can fail on demand."""
 
     def __init__(self, root, command, *, mode_error=None, enabled_write_error=None,
-                 disabled_mode_error=None, run_one=None, stop_on_first_failure=True):
+                 disabled_mode_error=None, run_one=None, recheck=None,
+                 stop_on_first_failure=True):
         self.runner = suite.Suite.__new__(suite.Suite)
         self.runner.vm = object()
         self.runner.root = root
@@ -47,8 +48,9 @@ class Recorder:
         self.runner.require_clients = lambda: None
         self.runner._require_preflight = lambda: None
         self.runner._require_fault_spike = lambda: None
-        self.runner._continuation_gate = lambda: {'vm': {}}
-        self.runner._traffic_recheck_issues = lambda result, expected: []
+        self.runner._continuation_gate = self._gate
+        self.recheck = recheck or (lambda result, expected: [])
+        self.runner._traffic_recheck_issues = self._recheck
         self.runner._result_path = (lambda sid: self.runner.root / ('result-' + sid + '.json'))
 
         def state_path(sid):
@@ -65,6 +67,14 @@ class Recorder:
         if not enabled and self.disabled_mode_error is not None:
             raise self.disabled_mode_error
         return {'enabled': enabled, 'recorded': True}
+
+    def _gate(self):
+        self.order.append('gate')
+        return {'vm': {}}
+
+    def _recheck(self, result, expected):
+        self.order.append('recheck:' + expected['scenario_id'])
+        return self.recheck(result, expected)
 
     def _fake_run_one(self, scenario, attempt):
         self.order.append('scenario:' + scenario['scenario_id'])
@@ -131,7 +141,10 @@ def test_disable_failure_never_reports_passed(roots, monkeypatch, command):
                         disabled_mode_error=suite.SuiteError('controlled stop failed'))
     recorder.attach(monkeypatch)
     result, enabled_name, disabled_name = recorder.invoke()
-    assert recorder.order == ['arm', 'scenario:sst-a', 'scenario:sst-b', 'restore']
+    assert recorder.order == (['arm', 'scenario:sst-a', 'recheck:sst-a', 'scenario:sst-b',
+                               'recheck:sst-b', 'restore'] if command == 'run' else
+                              ['arm', 'gate', 'scenario:sst-a', 'recheck:sst-a',
+                               'gate', 'scenario:sst-b', 'recheck:sst-b', 'restore'])
     assert result['passed'] is False
     assert 'controlled stop failed' in result['ipc_evidence']['disabled']['error']
     assert (recorder.runner.root / enabled_name).is_file()
@@ -146,7 +159,8 @@ def test_scenario_exception_propagates_after_single_disable(roots, monkeypatch, 
     recorder.attach(monkeypatch)
     with pytest.raises(suite.Blocked):
         recorder.invoke()
-    assert recorder.order == ['arm', 'scenario:sst-a', 'restore']
+    assert recorder.order == (['arm', 'scenario:sst-a', 'restore'] if command == 'run' else
+                              ['arm', 'gate', 'scenario:sst-a', 'restore'])
     assert recorder.order.count('restore') == 1
     disabled_name = ('ipc-evidence-benign-disabled.json' if command == 'run'
                      else 'ipc-evidence-resume-disabled.json')
@@ -168,11 +182,94 @@ def test_full_success_still_passes(roots, monkeypatch):
     recorder = Recorder(roots / 'run-ok', 'run')
     recorder.attach(monkeypatch)
     result, enabled_name, disabled_name = recorder.invoke()
-    assert recorder.order == ['arm', 'scenario:sst-a', 'scenario:sst-b', 'restore']
+    assert recorder.order == ['arm', 'scenario:sst-a', 'recheck:sst-a',
+                              'scenario:sst-b', 'recheck:sst-b', 'restore']
     assert result['passed'] is True
     assert result['count'] == 2
     assert (recorder.runner.root / enabled_name).is_file()
     assert (recorder.runner.root / disabled_name).is_file()
+
+
+@pytest.mark.parametrize('command', ['run', 'resume'])
+def test_recheck_failure_stops_before_next_dispatch_or_gate(roots, monkeypatch, command):
+    recorder = Recorder(roots / (command + '-recheck-fail'), command,
+                        recheck=lambda result, expected: ['raw traffic disagrees']
+                        if expected['scenario_id'] == 'sst-a' else [])
+    recorder.attach(monkeypatch)
+    result, _, disabled_name = recorder.invoke()
+    prefix = ['arm'] + (['gate'] if command == 'resume' else [])
+    assert recorder.order == prefix + ['scenario:sst-a', 'recheck:sst-a', 'restore']
+    assert recorder.order.count('restore') == 1
+    assert result['passed'] is False
+    assert result['traffic_recheck_issues'] == {'sst-a': ['raw traffic disagrees']}
+    assert result['not_executed'] == ['sst-b']
+    if command == 'run':
+        assert result['states'] == {'sst-a': 'pass'}
+    else:
+        assert result['resumed'] == 1
+    assert (recorder.runner.root / disabled_name).is_file()
+
+
+def test_cached_pass_is_rechecked_before_next_dispatch(roots, monkeypatch):
+    recorder = Recorder(roots / 'cached-pass-recheck-fail', 'run',
+                        recheck=lambda result, expected: ['raw traffic disagrees'])
+    recorder.attach(monkeypatch)
+    recorder._real_replace_json(recorder.runner._result_path('sst-a'),
+                                {'scenario_id': 'sst-a', 'state': 'pass'})
+    result, _, _ = recorder.invoke()
+    assert recorder.order == ['arm', 'recheck:sst-a', 'restore']
+    assert result['not_executed'] == ['sst-b']
+    assert result['passed'] is False
+    assert json.loads(recorder.runner._result_path('sst-a').read_text())['state'] == 'pass'
+
+
+def test_nonstop_recheck_failure_requires_continuation_gate(roots, monkeypatch):
+    recorder = Recorder(roots / 'nonstop-recheck-fail', 'run',
+                        recheck=lambda result, expected: ['raw traffic disagrees']
+                        if expected['scenario_id'] == 'sst-a' else [],
+                        stop_on_first_failure=False)
+    recorder.attach(monkeypatch)
+    result, _, _ = recorder.invoke()
+    assert recorder.order == ['arm', 'scenario:sst-a', 'recheck:sst-a', 'gate',
+                              'scenario:sst-b', 'recheck:sst-b', 'restore']
+    assert result['passed'] is False
+    assert result['traffic_recheck_issues'] == {'sst-a': ['raw traffic disagrees']}
+
+
+@pytest.mark.parametrize('command', ['run', 'resume'])
+def test_recheck_exception_disables_once_and_keeps_next_unexecuted(roots, monkeypatch, command):
+    def raise_recheck(result, expected):
+        raise suite.SuiteError('raw evidence unreadable')
+    recorder = Recorder(roots / (command + '-recheck-exception'), command,
+                        recheck=raise_recheck)
+    recorder.attach(monkeypatch)
+    with pytest.raises(suite.SuiteError, match='raw evidence unreadable'):
+        recorder.invoke()
+    prefix = ['arm'] + (['gate'] if command == 'resume' else [])
+    assert recorder.order == prefix + ['scenario:sst-a', 'recheck:sst-a', 'restore']
+    assert recorder.order.count('restore') == 1
+
+
+@pytest.mark.parametrize('command', ['run', 'resume'])
+def test_recheck_success_precedes_second_dispatch(roots, monkeypatch, command):
+    recorder = Recorder(roots / (command + '-recheck-pass'), command)
+    recorder.attach(monkeypatch)
+    result, _, _ = recorder.invoke()
+    assert recorder.order.index('recheck:sst-a') < recorder.order.index('scenario:sst-b')
+    assert result['passed'] is True
+    assert result['not_executed'] == []
+
+
+@pytest.mark.parametrize('command', ['run', 'resume'])
+def test_direct_failure_skips_recheck_and_next_dispatch(roots, monkeypatch, command):
+    recorder = Recorder(roots / (command + '-direct-fail'), command,
+                        run_one=lambda scenario, attempt: {'state': 'fail'})
+    recorder.attach(monkeypatch)
+    result, _, _ = recorder.invoke()
+    prefix = ['arm'] + (['gate'] if command == 'resume' else [])
+    assert recorder.order == prefix + ['scenario:sst-a', 'restore']
+    assert result['passed'] is False
+    assert result['not_executed'] == ['sst-b']
 
 
 def test_ipc_disable_command_is_controlled_stop_only():
