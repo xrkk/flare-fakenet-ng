@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent / 'acceptance'))
 import scenario_suite as suite  # noqa: E402
 import scenario_tcpip as tcpip  # noqa: E402
+import scenario_aux_qpc_offline as aux_offline  # noqa: E402
 from test_sst_tcpip_events import capture, flow, ipc_rows  # noqa: E402
 
 
@@ -59,11 +60,18 @@ def test_auxiliary_builder_parses_bytes_and_seals_exact_run_case(tmp_path, monke
         suite.write_new_json(terminal, {'exit_proven': True})
         evidence.add(terminal)
     runner._collect_qpc_export = fake_export
+    def fake_derive(case_path, evidence_root, export, output):
+        assert case_path.name == 'auxiliary-qpc-input.json'
+        assert evidence_root == tmp_path and export.name == 'export'
+        output.mkdir()
+        suite.write_new_json(output / 'derived.json', {'status': 'COMPLETE_FORMAL_INPUT'})
+    monkeypatch.setattr(aux_offline, 'derive', fake_derive)
     evidence = suite.Evidence(attempt)
     runner._collect_auxiliary_qpc(run, 'n', attempt, evidence)
     assert len(calls) == 1
     assert (attempt / 'run-01/auxiliary-qpc/auxiliary-qpc-input.json').is_file()
     assert run['auxiliary_qpc_process']['qpc-process-terminal.json']['sha256']
+    assert run['auxiliary_qpc_proof']['sha256']
 
 
 @pytest.mark.parametrize('terminal', [None, {'exit_proven': False},

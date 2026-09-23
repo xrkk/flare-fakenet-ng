@@ -37,7 +37,7 @@ _OBSERVED_STATES = {'Closed': 0, 'Established': 4, 'FinWait1': 5}
 _UNATTRIBUTED_TERMINALS = {'close issued', 'disconnect completed'}
 
 
-def _role(record, target):
+def _role(record, target, states=None):
     kind = target['kind']
     if kind not in _DIALECT:
         raise raw_clock.DiagnosticError('unverified TCPIP terminal role: ' + kind)
@@ -54,11 +54,12 @@ def _role(record, target):
         raise raw_clock.DiagnosticError('TDH descriptor/task does not prove selected role')
     if kind == 'transition':
         pair = target.get('transition')
+        states = _OBSERVED_STATES if states is None else states
         if (not pair or len(pair) != 2 or
-                any(state not in _OBSERVED_STATES for state in pair)):
+                any(state not in states for state in pair)):
             raise raw_clock.DiagnosticError('unverified TCPIP transition state')
         for name, state in zip(('OldState', 'NewState'), pair):
-            if _property(record, name) != _OBSERVED_STATES[state].to_bytes(4, 'little'):
+            if _property(record, name) != states[state].to_bytes(4, 'little'):
                 raise raw_clock.DiagnosticError('TDH transition state differs from terminal')
         if target.get('terminal') != (pair in tcpip.TERMINATE):
             raise raw_clock.DiagnosticError('TCPIP transition terminal role changed')
@@ -94,7 +95,8 @@ def _sockaddr(value):
     return b'\x02\x00' + int(port).to_bytes(2, 'big') + socket.inet_aton(host)
 
 
-def validate_tdh_semantics(records, targets, primary_tcb, peer_tcb, probe_pid, managed_pid):
+def validate_tdh_semantics(records, targets, primary_tcb, peer_tcb, probe_pid,
+                           managed_pid, *, states=None):
     """Verify TDH Tcb/endpoint/process properties for every selected target."""
     by_ref = {json.dumps(t['pktmon_ref'], sort_keys=True): t for t in targets}
     if len(by_ref) != len(targets) or len(records) != len(targets):
@@ -108,7 +110,7 @@ def validate_tdh_semantics(records, targets, primary_tcb, peer_tcb, probe_pid, m
         target = by_ref.pop(key)
         if selector['tcb'] != target['tcb'] or selector['target_kind'] != target['kind']:
             raise raw_clock.DiagnosticError('TDH target role/TCB changed')
-        _role(record, target)
+        _role(record, target, states)
         tcb = target['tcb']
         if tcb and tcb != '0X0':
             if _property(record, 'Tcb') != int(tcb, 16).to_bytes(8, 'little'):

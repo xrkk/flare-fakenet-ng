@@ -2408,7 +2408,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 'event_count': len(session['connection_event_refs'])}
 
     def _application_observation(self, run, origin, ends, nonce, src, dst, protocol,
-                                 creation_ticks=None, include_begin_bound=False):
+                                 creation_ticks=None, include_begin_bound=False,
+                                 auxiliary_qpc=None):
         """Rebuild one observation from hash-bound originals, online or on replay."""
         import scenario_tcpip as tcpip
         import scenario_kernel_network as kernel
@@ -2563,11 +2564,24 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             # Application observations prove a complete connection, not the
             # fault-action overlap contract. Only the new unattributed negative
             # constraints add CON009's conservative pre-establishment rejection.
-            if (getattr(self, 'auxiliary_clock_evidence', 'utc-v1') == AUX_QPC_MODE and
-                    origin.get('event') == 'case_established'):
-                raise SuiteError('auxiliary native QPC zero-TCB TDH semantics unverified')
-            if observed['tuple_terminals'] and min(fault.time_bounds(e['text'])[0]
-                    for e in observed['tuple_terminals']) - uncertainty < begin:
+            old_zero_ok = not observed['tuple_terminals'] or min(
+                fault.time_bounds(e['text'])[0] for e in observed['tuple_terminals']) - uncertainty >= begin
+            is_aux_qpc = (getattr(self, 'auxiliary_clock_evidence', 'utc-v1') == AUX_QPC_MODE and
+                          origin.get('event') == 'case_established')
+            if is_aux_qpc:
+                proof = next((row for row in (auxiliary_qpc or {}).get('cases', [])
+                              if row['case_index'] == origin.get('case_index') and
+                              row['connection_id'] == origin.get('connection_id')), None)
+                if (not proof or proof['pid'] != origin['pid'] or proof['src'] != src or
+                        proof['dst'] != dst or proof['tuple_terminal_refs'] !=
+                        [e['ref'] for e in observed['tuple_terminals']] or
+                        proof['zero_constraint'] != ('VERIFIED' if observed['tuple_terminals']
+                                                      else 'NO_ZERO_TCB') or
+                        any(gap <= 1 for gap in proof['gaps_ticks'])):
+                    raise SuiteError('auxiliary QPC proof/case/zero-TCB lifetime differs')
+                result['auxiliary_native_qpc'] = proof
+                result['legacy_utc_zero_constraint_passed'] = old_zero_ok
+            if not is_aux_qpc and not old_zero_ok:
                 raise SuiteError('application lifetime constrained before establishment')
             if include_begin_bound:
                 result['begin_upper_ns'] = begin
@@ -2672,6 +2686,14 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             return {'passed': False, 'reason': 'probe did not record exactly one declared lifecycle release',
                     'expected_schedule': expected_schedule, 'release_count': len(released)}
         run_log = log_path.read_text(encoding='utf-8-sig')
+        auxiliary_qpc = None
+        if getattr(self, 'auxiliary_clock_evidence', 'utc-v1') == AUX_QPC_MODE:
+            try:
+                import scenario_aux_qpc_contract as aux_contract
+                auxiliary_qpc = aux_contract.evaluate(run, self.root,
+                    expected_candidate=self.identity.candidate_id, expected_nonce=nonce)
+            except Exception as exc:  # noqa: BLE001 - native proof fails closed
+                return {'passed': False, 'reason': 'auxiliary native QPC original rejected: ' + str(exc)}
         def numeric_endpoint(value: Any) -> tuple[str, str] | None:
             if not isinstance(value, str) or ':' not in value:
                 return None
@@ -3008,7 +3030,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # policy line are its whole evidence.
                     try:
                         terminals=[row for row in case_events if row.get('connection_id')==first.get('connection_id') and row.get('event') in ('case_error','case_eof','case_close')]
-                        case_observation=self._application_observation(run,first,terminals,nonce,':'.join(source),':'.join(target),case_protocol, include_begin_bound=(planned['expectation'] == 'deny' and planned['protocol'] == 'tls'))
+                        case_observation=self._application_observation(run,first,terminals,nonce,':'.join(source),':'.join(target),case_protocol, include_begin_bound=(planned['expectation'] == 'deny' and planned['protocol'] == 'tls'), **({'auxiliary_qpc': auxiliary_qpc} if auxiliary_qpc is not None else {}))
                     except (KeyError,OSError,ValueError,SuiteError) as exc:
                         case_ok=False
                         case_observation_error=str(exc)
@@ -3203,6 +3225,10 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         # failed leg named below.
         core_chain = bool((packet_records or connection_observation) and payloads and cadence_ok)
         passed = bool(core_chain and branch_ok and cases_ok and curl_ok)
+        legacy_utc_passed = passed and all(
+            (row.get('connection_observation') or {}).get(
+                'legacy_utc_zero_constraint_passed', True)
+            for row in case_results)
         if passed:
             reason = None
         else:
@@ -3232,6 +3258,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 'expectation': expectation, 'branch_log': branch_log, 'branch_packet_count': len(branch_packets),
                 'sentinel_receipt': primary_receipt, 'case_release_count': len(releases), 'cases': case_results,
                 'curl': curl,
+                'auxiliary_native_qpc': auxiliary_qpc,
+                'legacy_utc_traffic_passed': legacy_utc_passed if auxiliary_qpc else None,
                 'reason': reason}
 
     @staticmethod
@@ -3318,6 +3346,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                    'scenario_qpc_identity.py',
                    'etl_raw_clock.py', 'tdh_metadata.py', 'scenario_tcpip.py',
                    'scenario_clock.py', 'sst_fault_evidence.py')
+        if program_name == 'scenario_aux_qpc_diagnostic.py':
+            scripts += ('scenario_qpc_offline.py',)
         with zipfile.ZipFile(bundle, 'x', compression=zipfile.ZIP_DEFLATED,
                              compresslevel=6, allowZip64=False) as archive:
             for item in base['files']:
@@ -3497,11 +3527,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
 
     def _collect_auxiliary_qpc(self, run: dict[str, Any], nonce: str,
                                root: Path, evidence: Evidence) -> None:
-        """Seal one run's exact auxiliary generations for later native review.
-
-        The zero-TCB TDH descriptor is still unverified. The guest exporter
-        therefore always returns INCOMPLETE and this path cannot pass traffic.
-        """
+        """Seal one run's exact auxiliary generations and native proof."""
         import scenario_tcpip as tcpip
         files = run['capture']['files'] + run['originals']['files']
         by_name = {Path(item['path']).name: item for item in files}
@@ -3577,6 +3603,13 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         try:
             self._collect_qpc_export(descriptor_path, descriptor, native_root, evidence,
                                      run['run_id'], 'scenario_aux_qpc_diagnostic.py')
+            import scenario_aux_qpc_offline as auxiliary_offline
+            derived_root = native_root / 'qpc-rejudge'
+            auxiliary_offline.derive(descriptor_path, self.root,
+                                     native_root / 'qpc-native/export', derived_root)
+            proof_path = derived_root / 'derived.json'
+            evidence.add(proof_path)
+            run['auxiliary_qpc_proof'] = file_record(proof_path, self.root)
         finally:
             run['auxiliary_qpc_process'] = {
                 name: file_record(native_root / name, self.root)
@@ -5643,7 +5676,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help='explicit diverter_stop clock proof; default retains v2 UTC verdict')
     parser.add_argument('--auxiliary-clock-evidence', choices=('utc-v1', AUX_QPC_MODE),
                         default='utc-v1',
-                        help='explicit auxiliary TCP native QPC collection; zero-TCB TDH gate currently fails closed')
+                        help='explicit auxiliary TCP native QPC proof for verified zero-TCB RST')
     parser.add_argument('--filter', choices=('benign', 'fault'))
     parser.add_argument('--fault-spike-result')
     parser.add_argument('--stop-on-first-failure', action='store_true')

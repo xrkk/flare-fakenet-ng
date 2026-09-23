@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
-"""Collect auxiliary TCP native clock and TDH originals without guessing 0x0 semantics.
-
-The zero-TCB Receive-discarded descriptor has not yet been verified against a
-Windows TDH original. An export containing it remains INCOMPLETE until that
-semantic gate is implemented from real native fields.
-"""
+"""Collect and verify auxiliary TCP native clock and TDH originals."""
 import argparse
 import base64
 import hashlib
 import json
 import re
+import struct
 from pathlib import Path
 import sys
 import traceback
@@ -19,14 +15,133 @@ import scenario_qpc_diagnostic as qpc
 import scenario_tcpip as tcpip
 import sst_fault_evidence as fault
 import tdh_metadata
+import scenario_qpc_offline as offline
 from scenario_qpc_identity import check_aux_provenance
 
 ZERO_TCB_DESCRIPTOR = 'c70500100400ba058000000080000080'
 ZERO_TCB_REASON_MAP = 'TCP_RST_SEND_REASON_ValueMap'
+AUX_STATES = dict(qpc._OBSERVED_STATES, FinWait2=6, CloseWait=7, LastAck=9)
+AUX_EXTRA = {
+    'abort issued': (1039, 1, '0f04011004000f048404000010000080', 'TcpAbortTcbRequest'),
+    'abort completed': (1040, 1, '10040110040010048404000010000080', 'TcpAbortTcbComplete'),
+    'sent RST': (1479, 0, ZERO_TCB_DESCRIPTOR, 'TcpRstSend'),
+}
 
 
-def candidate_field_facts(tdh_rows, candidate_sets, selectors):
-    """Check the observed RST property bytes without interpreting Reason=0."""
+def validate_named_tdh(rows, targets, primary_tcb, peer_tcb, probe_pid, managed_pid):
+    """Preserve the complete named generation, including auxiliary abort/RST roles."""
+    if len(rows) != len(targets):
+        raise raw_clock.DiagnosticError('auxiliary named TDH target count differs')
+    ordinary = [(row, target) for row, target in zip(rows, targets)
+                if target['kind'] not in AUX_EXTRA]
+    named = qpc.validate_tdh_semantics([row for row, _ in ordinary],
+        [target for _, target in ordinary], primary_tcb, peer_tcb,
+        probe_pid, managed_pid, states=AUX_STATES)
+    for row, target in zip(rows, targets):
+        kind = target['kind']
+        if kind not in AUX_EXTRA:
+            continue
+        event_id, version, descriptor, task = AUX_EXTRA[kind]
+        record, parsed = row['record'], row['tdh']['parsed']
+        if (not target['terminal'] or record['provider'] != qpc.TCPIP_PROVIDER or
+                parsed['provider_guid'] != qpc.TCPIP_PROVIDER or
+                record['id'] != event_id or record['task'] != (
+                    1466 if kind == 'sent RST' else event_id) or
+                record['version'] != version or record['opcode'] != 0 or
+                parsed['event_descriptor_bytes'] != descriptor or
+                parsed['strings'].get('task') != task or
+                parsed['strings'].get('provider') != 'Microsoft-Windows-TCPIP' or
+                qpc._property(row, 'Tcb') != int(target['tcb'], 16).to_bytes(8, 'little')):
+            raise raw_clock.DiagnosticError('auxiliary named abort/RST TDH role differs')
+        prefix = 'SockAddr' if kind == 'sent RST' else 'Address'
+        for side, endpoint in (('Local', target['local']), ('Remote', target['remote'])):
+            if qpc._property(row, side + prefix) != qpc._sockaddr(endpoint).ljust(16, b'\0'):
+                raise raw_clock.DiagnosticError('auxiliary named abort/RST endpoint differs')
+        if kind == 'sent RST':
+            if (qpc._property(row, 'IPTransportProtocol') != (6).to_bytes(4, 'little') or
+                    qpc._property(row, 'AddressFamily') != (2).to_bytes(4, 'little') or
+                    len(qpc._property(row, 'Reason')) != 4):
+                raise raw_clock.DiagnosticError('auxiliary named RST properties differ')
+        else:
+            pid = qpc._property(row, 'ProcessId')
+            start = qpc._property(row, 'ProcessStartKey')
+            expected_pid = (probe_pid if target['tcb'] == primary_tcb else
+                            managed_pid if target['tcb'] == peer_tcb else None)
+            expected_start = named['process_start_keys'].get(target['tcb'])
+            if not ((pid == b'\0' * 4 and start == b'\0' * 8) or
+                    (expected_pid is not None and expected_start is not None and
+                     pid == expected_pid.to_bytes(4, 'little') and
+                     start == bytes.fromhex(expected_start))):
+                raise raw_clock.DiagnosticError('auxiliary named abort attribution differs')
+
+
+def parse_reason_map(blob):
+    """Decode the documented EVENT_MAP_INFO/ENTRY layout, with bounded strings."""
+    if len(blob) < 24:
+        raise raw_clock.DiagnosticError('Reason EVENT_MAP_INFO truncated')
+    name_offset, flags, count, value_type = struct.unpack_from('<4I', blob)
+    # Manifest value map, ULONG Value (MAP_VALUETYPE zero), 8-byte entries.
+    end_entries = 16 + count * 8
+    if flags != 1 or value_type != 0 or not 1 <= count <= 4096 or end_entries > len(blob):
+        raise raw_clock.DiagnosticError('Reason map flags/value type/entries invalid')
+
+    def string_at(offset):
+        if offset < end_entries or offset >= len(blob) or offset % 2:
+            raise raw_clock.DiagnosticError('Reason map string offset outside buffer')
+        end = offset
+        while end + 1 < len(blob) and blob[end:end + 2] != b'\0\0':
+            end += 2
+        if end + 1 >= len(blob):
+            raise raw_clock.DiagnosticError('Reason map unterminated string')
+        return blob[offset:end].decode('utf-16-le'), end + 2
+
+    name, name_end = string_at(name_offset)
+    if name != ZERO_TCB_REASON_MAP:
+        raise raw_clock.DiagnosticError('Reason map internal name differs')
+    entries, spans, values = [], [(name_offset, name_end)], set()
+    for index in range(count):
+        offset, value = struct.unpack_from('<2I', blob, 16 + index * 8)
+        label, label_end = string_at(offset)
+        if value in values or not label:
+            raise raw_clock.DiagnosticError('Reason map duplicate value/empty label')
+        values.add(value)
+        entries.append({'value': value, 'text': label})
+        spans.append((offset, label_end))
+    spans.sort()
+    if (any(blob[end_entries:spans[0][0]]) or spans[-1][1] != len(blob) or any(
+            left[1] != right[0] for left, right in zip(spans, spans[1:]))):
+        raise raw_clock.DiagnosticError('Reason map bytes contain gap/overlap/trailing data')
+    match = [item for item in entries if item['value'] == 0]
+    if len(match) != 1 or match[0]['text'] != 'Receive discarded ':
+        raise raw_clock.DiagnosticError('Reason zero value is not Receive discarded')
+    return {'name': name, 'flags': flags, 'value_type': value_type,
+            'entries': entries, 'reason_zero_label': match[0]['text']}
+
+
+def unique_zero_bindings(candidate_sets):
+    """A formatted zero-TCB ref must bind to one full raw identity and seq."""
+    by_ref, used = {}, set()
+    for group in candidate_sets:
+        candidates = group['candidates']
+        if (group['status'] != 'DIAGNOSTIC_CANDIDATES_UNRESOLVED' or
+                len(candidates) != 1 or len(group['exact_filetime_anchor_seqs']) != 1):
+            raise raw_clock.DiagnosticError('zero-TCB no verified unique TDH binding: raw/default pairing')
+        item = candidates[0]
+        seq = item['seq']
+        if (seq != group['exact_filetime_anchor_seqs'][0] or
+                item['binding_status'] != 'unique' or item['identity_occurrences'] != 1 or
+                item['selection_reason'] != 'EXACT_FORMATTED_FILETIME' or seq in used):
+            raise raw_clock.DiagnosticError('zero-TCB no verified unique TDH binding: full non-time identity')
+        key = json.dumps(group['pktmon_ref'], sort_keys=True)
+        if key in by_ref:
+            raise raw_clock.DiagnosticError('zero-TCB formatted reference reused')
+        used.add(seq)
+        by_ref[key] = item
+    return by_ref
+
+
+def candidate_field_facts(tdh_rows, candidate_sets, selectors, *, strict=False):
+    """Check RST bytes; formal mode additionally requires the decoded map."""
     selected = {item['seq']: item for item in selectors}
     rows = {item['selector']['seq']: item for item in tdh_rows}
     if (len(selected) != len(selectors) or len(rows) != len(tdh_rows)
@@ -76,6 +191,11 @@ def candidate_field_facts(tdh_rows, candidate_sets, selectors):
                     meta[name]['out_type_or_struct_members'] != 25):
                 raise raw_clock.DiagnosticError('TDH zero-TCB SockAddr type differs')
         reason = meta['Reason']
+        if (reason['flags'] != 0 or reason['in_type_or_struct_start'] != 8 or
+                reason['out_type_or_struct_members'] != 8 or
+                reason['length_or_index'] != 4 or
+                meta['Tcb']['flags'] != 0 or meta['Tcb']['length_or_index'] != 8):
+            raise raw_clock.DiagnosticError('TDH zero-TCB Reason/Tcb type differs')
         blob = base64.b64decode(row['tdh']['buffer_base64'], validate=True)
         if (reason['map_or_schema_offset'] <= 0 or
                 tdh_metadata.utf16_at(blob, reason['map_or_schema_offset']) !=
@@ -87,15 +207,27 @@ def candidate_field_facts(tdh_rows, candidate_sets, selectors):
         captured = (map_result.get('name') == ZERO_TCB_REASON_MAP and
                     map_result.get('first_status') == 122 and
                     map_result.get('second_status') == 0 and
-                    map_bytes is not None and len(map_bytes) >= 16 and
+                    map_bytes is not None and
+                    len(map_bytes) == map_result.get('required_size', len(map_bytes) if not strict else None) and
                     hashlib.sha256(map_bytes).hexdigest() == map_result.get('buffer_sha256'))
+        decoded = None
+        if captured:
+            try:
+                decoded = parse_reason_map(map_bytes)
+            except raw_clock.DiagnosticError:
+                if strict:
+                    raise
+        if strict and decoded is None:
+            raise raw_clock.DiagnosticError('Reason map original absent')
         facts.append({'seq': seq, 'candidate_ref_count': len(groups),
-                      'status': 'REASON_MAP_OPAQUE_UNVERIFIED' if captured else
-                                'REASON_MAP_NOT_CAPTURED',
+                      'status': ('REASON_MAP_VERIFIED' if decoded else
+                                 'REASON_MAP_OPAQUE_UNVERIFIED' if captured else
+                                 'REASON_MAP_NOT_CAPTURED'),
                       'reason_raw_hex': expected['Reason'].hex(),
                       'reason_map_name': ZERO_TCB_REASON_MAP,
                       'reason_map_sha256': (map_result.get('buffer_sha256') if captured else None),
-                      'tdh_descriptor_hex': ZERO_TCB_DESCRIPTOR})
+                      'tdh_descriptor_hex': ZERO_TCB_DESCRIPTOR,
+                      'reason_label': decoded['reason_zero_label'] if decoded else None})
     return facts
 
 
@@ -222,6 +354,7 @@ def run(case_path: Path, evidence_root: Path, output: Path) -> dict:
         managed_pid, managed_created = tcpip.managed_identity(ipc, case['run_id'])
         exported = raw_clock.export(etl, output / 'raw')
         all_targets, all_selectors, all_candidate_sets, candidate_selectors, details = [], [], [], [], []
+        observed_cases = []
         provenance = []
         for auxiliary in case['cases']:
             origin = evidence.read(auxiliary['probe_ref'])
@@ -267,6 +400,7 @@ def run(case_path: Path, evidence_root: Path, output: Path) -> dict:
             all_selectors.extend(selectors)
             all_candidate_sets.extend(candidate_sets)
             candidate_selectors.extend(diagnostics)
+            observed_cases.append((observed, targets, selectors, auxiliary['pid']))
             by_ref = {json.dumps(target['pktmon_ref'], sort_keys=True): selector['raw_qpc']
                       for target, selector in zip(targets, selectors)}
             begin_refs = [observed['connect']['ref']]
@@ -324,6 +458,33 @@ def run(case_path: Path, evidence_root: Path, output: Path) -> dict:
                     (output / 'tdh/metadata.jsonl').read_text(encoding='utf-8').splitlines()]
         manifest['candidate_field_facts'] = candidate_field_facts(
             tdh_rows, all_candidate_sets, selected)
+        bindings = unique_zero_bindings(all_candidate_sets)
+        offline.verify_export(output, etl, output)
+        offline.verify_tdh_rows(tdh_rows, selected)
+        manifest['candidate_field_facts'] = candidate_field_facts(
+            tdh_rows, all_candidate_sets, selected, strict=True)
+        by_seq = {row['selector']['seq']: row for row in tdh_rows}
+        for detail, (observed, targets, selectors, probe_pid) in zip(details, observed_cases):
+            validate_named_tdh([by_seq[s['seq']] for s in selectors], targets,
+                observed['connect']['tcb'], (observed['peer'] or {}).get('tcb'),
+                probe_pid, managed_pid)
+            groups = [group for group in all_candidate_sets
+                      if group['case_index'] == detail['case_index'] and
+                      group['connection_id'] == detail['connection_id']]
+            by_ref = {json.dumps(target['pktmon_ref'], sort_keys=True): selector['raw_qpc']
+                      for target, selector in zip(targets, selectors)}
+            establish = [observed['connect']['ref']]
+            if observed['peer']:
+                establish.append(observed['peer']['ref'])
+            begin = max(by_ref[json.dumps(ref, sort_keys=True)] for ref in establish)
+            zeros = [bindings[json.dumps(group['pktmon_ref'], sort_keys=True)] for group in groups]
+            gaps = [item['raw_timestamp'] - begin for item in zeros]
+            if any(gap <= 1 for gap in gaps):
+                raise raw_clock.DiagnosticError('zero-TCB QPC at/before establishment margin')
+            detail['native_zero_tcb'] = {'status': 'VERIFIED' if zeros else 'NO_ZERO_TCB',
+                'begin_qpc': begin, 'zero_qpc': [item['raw_timestamp'] for item in zeros],
+                'zero_seqs': [item['seq'] for item in zeros], 'gaps_ticks': gaps,
+                'passed': True}
         identities = [check_aux_provenance(
             evidence.read(capture['metadata_ref']), ready, process_ready, origin,
             exported['passes'][0]['header'], case['candidate_id'], case['run_id'],
@@ -335,13 +496,14 @@ def run(case_path: Path, evidence_root: Path, output: Path) -> dict:
                         managed_creation_filetime_100ns=managed_created,
                         candidate_id=case['candidate_id'], run_id=case['run_id'],
                         identity=identities[0])
-        # Do not turn formatted text's "Receive discarded" into a TDH fact.
-        # The real zero-TCB descriptor, reason and process identity fields
-        # must be established from this export before acceptance is enabled.
-        if all_candidate_sets:
-            raise raw_clock.DiagnosticError(
-                'UNSUPPORTED: zero-TCB diagnostic candidates have no verified unique TDH binding/semantics')
-        raise raw_clock.DiagnosticError('NO_ZERO_TCB_BRANCH: native negative branch unobserved')
+        capture_window = identities[0]['capture_qpc']
+        low, high = capture_window['before'][1], capture_window['after'][0]
+        if any(not low <= item['raw_qpc'] <= high for item in selected):
+            raise raw_clock.DiagnosticError('auxiliary native target outside capture QPC window')
+        if not all_candidate_sets:
+            raise raw_clock.DiagnosticError('NO_ZERO_TCB_BRANCH: native negative branch unobserved')
+        manifest['candidate_binding_status'] = 'UNIQUE_VERIFIED'
+        manifest['status'] = 'COMPLETE_DIAGNOSTIC_ONLY'
     except BaseException as exc:  # preserve original raw/TDH output
         manifest['error'] = {'type': type(exc).__name__, 'message': str(exc),
                              'traceback': traceback.format_exc()}

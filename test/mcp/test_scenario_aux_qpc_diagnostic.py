@@ -259,6 +259,7 @@ def candidate_tdh_fixture():
         props.append({'name': name, 'flags': 2 if name.endswith('SockAddr') else 0,
                       'in_type_or_struct_start': 14 if name.endswith('SockAddr') else 8,
                       'out_type_or_struct_members': 25 if name.endswith('SockAddr') else 8,
+                      'length_or_index': len(value),
                       'map_or_schema_offset': 100 if name == 'Reason' else 0})
         results.append({'name': name, 'size_status': 0, 'property_status': 0,
                         'raw_base64': base64.b64encode(value).decode()})

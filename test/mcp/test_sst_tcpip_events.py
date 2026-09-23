@@ -480,6 +480,46 @@ def test_application_consumer_applies_null_terminal_uncertainty(tmp_path, time, 
             assess()
 
 
+@pytest.mark.parametrize('bad', [None, 'tuple', 'pid', 'missing_ref', 'early', 'equal'])
+def test_auxiliary_explicit_qpc_replaces_only_zero_relative_order(tmp_path, bad):
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent / 'acceptance'))
+    import scenario_suite as suite
+    judge, _case = oracle_case(tmp_path, capture() + null_rst('55.310000000'))
+    (tmp_path/'ipc.jsonl').rename(tmp_path/'ipc-parent.jsonl')
+    (tmp_path/'meta.json').rename(tmp_path/'pktmon-nic.json')
+    rows = [json.loads(line) for line in (tmp_path/'probe.jsonl').read_text().splitlines()]
+    rows[1].update(event='case_established', case_index=1)
+    (tmp_path/'probe.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.root = tmp_path
+    runner.identity = type('Identity', (), {'candidate_id': judge.CANDIDATE})()
+    runner.auxiliary_clock_evidence = suite.AUX_QPC_MODE
+    records = [suite.file_record(path, tmp_path) for path in tmp_path.iterdir()]
+    run = {'run_id': 'r', 'capture': {'files': records}, 'originals': {'files': []}}
+    observed = tcp.connection_events((tmp_path/'pktmon.txt').read_bytes(), 'pktmon.txt',
+        flow(), rows[1]['pid'], rows[1]['src'], rows[1]['dst'], 404)
+    proof = {'cases': [{'case_index': 1, 'connection_id': rows[1]['connection_id'],
+        'pid': rows[1]['pid'], 'src': rows[1]['src'], 'dst': rows[1]['dst'],
+        'tuple_terminal_refs': [event['ref'] for event in observed['tuple_terminals']],
+        'zero_constraint': 'VERIFIED', 'gaps_ticks': [2]}]}
+    item = proof['cases'][0]
+    if bad == 'tuple': item['dst'] = '198.51.100.77:443'
+    if bad == 'pid': item['pid'] += 1
+    if bad == 'missing_ref': item['tuple_terminal_refs'] = []
+    if bad == 'early': item['gaps_ticks'] = [-1]
+    if bad == 'equal': item['gaps_ticks'] = [1]
+    if bad:
+        with pytest.raises(suite.SuiteError, match='auxiliary QPC proof'):
+            runner._application_observation(run, rows[1], [rows[2]], 'n',
+                rows[1]['src'], rows[1]['dst'], 'TCP', auxiliary_qpc=proof)
+    else:
+        result = runner._application_observation(run, rows[1], [rows[2]], 'n',
+            rows[1]['src'], rows[1]['dst'], 'TCP', auxiliary_qpc=proof)
+        assert result['legacy_utc_zero_constraint_passed'] is False
+        assert result['auxiliary_native_qpc'] == item
+
+
 @pytest.mark.parametrize('body', [
     'connection 0xFFFFD48FE2CC5050 send keep-alive at SndUna = 2007798549.',
     'SWS avoidance began on connection 0xFFFFD48FE132A9D0. Timer set for 5000 ms. BytesToSend = 0x10E, SendAvailable = 23062, Cwnd = 14870, MaxSndWnd = 0xFC00.',
