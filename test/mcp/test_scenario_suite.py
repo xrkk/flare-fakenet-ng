@@ -1389,7 +1389,9 @@ def test_qpc_online_export_seals_bundle_and_keeps_failed_guest_originals(
 @pytest.mark.parametrize('guest_error', [TimeoutError('guest RPC timeout'),
                                           ValueError('guest JSON damaged'),
                                           suite.SuiteError('guest parser failed')])
-def test_qpc_guest_transfer_closes_when_guest_command_fails(tmp_path, monkeypatch, guest_error):
+@pytest.mark.parametrize('program', ['scenario_qpc_diagnostic.py',
+                                    'scenario_aux_qpc_diagnostic.py', 'scenario_aux_qpc_v2.py'])
+def test_qpc_guest_transfer_closes_when_guest_command_fails(tmp_path, monkeypatch, guest_error, program):
     import zipfile
     runner = suite.Suite.__new__(suite.Suite)
     runner.root = tmp_path
@@ -1412,13 +1414,16 @@ def test_qpc_guest_transfer_closes_when_guest_command_fails(tmp_path, monkeypatc
     runner._recover_qpc_guest_process = lambda guest, *_: {
         'state': 'recovered_terminated', 'exit_proven': True, 'guest_root': guest}
     with pytest.raises(type(guest_error), match=str(guest_error)):
-        runner._collect_qpc_export(base_path, base, root, suite.Evidence(root), 'run')
+        runner._collect_qpc_export(base_path, base, root, suite.Evidence(root), 'run', program)
     assert transfers[0].stopped
     transfer_record = json.loads((root / 'qpc-transfer.json').read_text())
     assert str(guest_error) in transfer_record['error']
     assert json.loads((root / 'qpc-process-terminal.json').read_text())['exit_proven'] is True
     with zipfile.ZipFile(root / 'qpc-input.zip') as archive:
         assert 'evidence/source.json' in archive.namelist()
+        assert 'tools/' + program in archive.namelist()
+        if program == 'scenario_aux_qpc_v2.py':
+            assert 'tools/scenario_aux_qpc_single_pass.py' in archive.namelist()
 
 
 def test_qpc_unproven_process_blocks_next_scenario_after_rpc_failure(tmp_path, monkeypatch):

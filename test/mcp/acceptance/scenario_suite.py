@@ -3372,7 +3372,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         if program_name in ('scenario_aux_qpc_diagnostic.py', 'scenario_aux_qpc_v2.py'):
             scripts += ('scenario_qpc_offline.py',)
         if program_name == 'scenario_aux_qpc_v2.py':
-            scripts += ('scenario_aux_qpc_single_pass.py', 'scenario_aux_qpc_offline.py',
+            scripts += ('scenario_aux_qpc_v2.py', 'scenario_aux_qpc_single_pass.py', 'scenario_aux_qpc_offline.py',
                         'scenario_aux_qpc_contract.py')
         with zipfile.ZipFile(bundle, 'x', compression=zipfile.ZIP_DEFLATED,
                              compresslevel=6, allowZip64=False) as archive:
