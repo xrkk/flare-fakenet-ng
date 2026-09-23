@@ -28,6 +28,15 @@ manifest and no accepted diagnostic interval. Output consists of
 and `tdh/{manifest,metadata}.json*`. It does not modify the case or original
 fault result and never asserts an ACC pass.
 
+The TDH semantic gate checks the actual TCPIP provider, event descriptor and
+task name against the verified Win10 dialect. Establishment requires nonzero
+PID and ProcessStartKey; same-TCB nonzero identity must remain stable. The
+verified `TcpCloseTcbRequest` may report PID and ProcessStartKey both zero:
+that pair has no process attribution and remains a terminal of the anchored
+TCB. Transitions compare TDH OldState/NewState with the native text; only
+verified state codes are admitted. Unknown tasks or state codes leave the
+diagnostic incomplete until their dialect is independently verified.
+
 `BootIdentifier` is the GUID from private Native API
 `NtQuerySystemInformation(SystemBootEnvironmentInformation=90)`. The
 32-byte Win10 x64 layout is accepted only with status 0 and return length 32;

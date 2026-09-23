@@ -22,6 +22,53 @@ import tdh_metadata
 from scenario_qpc_identity import check_provenance, DiagnosticIdentityError
 
 TCPIP_PROVIDER = '2f07e2ee-15db-40f1-90ef-9d7ba282188a'
+# Win10 TCPIP/Diagnostic descriptors observed in the T007 TDH originals. The
+# descriptor and TDH task name are checked together: a TCB is not an event role.
+_DIALECT = {
+    'connect completed': (1033, 1, '09040110040009048404000004000080', 'TcpConnectTcbComplete'),
+    'accept completed': (1017, 1, 'f90301100400f9038604000004000080', 'TcpAcceptListenerComplete'),
+    'connection terminated': (1184, 0, 'a00400100400a0048000000006000080', 'TcpConnectionTerminatedRcvdRst'),
+    'shutdown initiated': (1044, 1, '14040110040014048404000010000080', 'TcpShutdownTcb'),
+    'transition': (1051, 0, '1b04001004001b040404000000000080', 'TcpTcbStateChange'),
+    'close issued': (1038, 1, '0e04011004000e040404000010000080', 'TcpCloseTcbRequest'),
+}
+_OBSERVED_STATES = {'Closed': 0, 'Established': 4}
+
+
+def _role(record, target):
+    kind = target['kind']
+    if kind not in _DIALECT:
+        raise raw_clock.DiagnosticError('unverified TCPIP terminal role: ' + kind)
+    event_id, version, descriptor, task_name = _DIALECT[kind]
+    actual = record['record']
+    parsed = record['tdh']['parsed']
+    if (actual.get('provider') != TCPIP_PROVIDER or
+            parsed.get('provider_guid') != TCPIP_PROVIDER or
+            actual.get('id') != event_id or actual.get('task') != event_id or
+            actual.get('version') != version or actual.get('opcode') != 0 or
+            parsed.get('event_descriptor_bytes') != descriptor or
+            parsed.get('strings', {}).get('task') != task_name or
+            parsed.get('strings', {}).get('provider') != 'Microsoft-Windows-TCPIP'):
+        raise raw_clock.DiagnosticError('TDH descriptor/task does not prove selected role')
+    if kind == 'transition':
+        pair = target.get('transition')
+        if (not pair or len(pair) != 2 or
+                any(state not in _OBSERVED_STATES for state in pair)):
+            raise raw_clock.DiagnosticError('unverified TCPIP transition state')
+        for name, state in zip(('OldState', 'NewState'), pair):
+            if _property(record, name) != _OBSERVED_STATES[state].to_bytes(4, 'little'):
+                raise raw_clock.DiagnosticError('TDH transition state differs from terminal')
+        if target.get('terminal') != (pair in tcpip.TERMINATE):
+            raise raw_clock.DiagnosticError('TCPIP transition terminal role changed')
+    elif kind in ('connect completed', 'accept completed'):
+        if target.get('terminal'):
+            raise raw_clock.DiagnosticError('establishment marked terminal')
+        if _property(record, 'Status') != b'\0' * 4:
+            raise raw_clock.DiagnosticError('TDH establishment status is not success')
+    elif not target.get('terminal'):
+        raise raw_clock.DiagnosticError('native terminal role changed')
+    if kind == 'connection terminated' and _property(record, 'NewState') != b'\0' * 4:
+        raise raw_clock.DiagnosticError('TDH RST termination did not reach Closed')
 
 
 def _input_hash(path):
@@ -59,6 +106,7 @@ def validate_tdh_semantics(records, targets, primary_tcb, peer_tcb, probe_pid, m
         target = by_ref.pop(key)
         if selector['tcb'] != target['tcb'] or selector['target_kind'] != target['kind']:
             raise raw_clock.DiagnosticError('TDH target role/TCB changed')
+        _role(record, target)
         tcb = target['tcb']
         if tcb and tcb != '0X0':
             if _property(record, 'Tcb') != int(tcb, 16).to_bytes(8, 'little'):
@@ -68,7 +116,8 @@ def validate_tdh_semantics(records, targets, primary_tcb, peer_tcb, probe_pid, m
         for name, endpoint in (('LocalAddress', target.get('local')),
                                ('RemoteAddress', target.get('remote'))):
             value = _optional_property(record, name)
-            if endpoint and value is not None and value[:8] != _sockaddr(endpoint):
+            if endpoint and (value is None or len(value) != 16 or
+                             value != _sockaddr(endpoint).ljust(16, b'\0')):
                 raise raw_clock.DiagnosticError('TDH ' + name + ' differs from selected tuple')
             if (tcb == '0X0' and value is None):
                 raise raw_clock.DiagnosticError('tuple terminal TDH endpoint missing')
@@ -84,12 +133,29 @@ def validate_tdh_semantics(records, targets, primary_tcb, peer_tcb, probe_pid, m
             if expected_pid is None or pid_raw is None or int.from_bytes(pid_raw, 'little') != expected_pid:
                 raise raw_clock.DiagnosticError('TDH establishment process missing/mismatch')
         start_key = _optional_property(record, 'ProcessStartKey')
-        if start_key is not None and tcb != '0X0':
+        if target['kind'] in ('connect completed', 'accept completed',
+                              'shutdown initiated', 'close issued') and (
+                pid_raw is None or start_key is None):
+            raise raw_clock.DiagnosticError('TDH process identity fields missing')
+        if target['kind'] in ('connect completed', 'accept completed') and (
+                start_key is None or len(start_key) != 8 or not any(start_key)):
+            raise raw_clock.DiagnosticError('TDH establishment ProcessStartKey missing/zero')
+        if start_key is not None:
             if len(start_key) != 8:
                 raise raw_clock.DiagnosticError('TDH ProcessStartKey has wrong width')
-            if tcb in start_keys and start_keys[tcb] != start_key:
-                raise raw_clock.DiagnosticError('TDH ProcessStartKey changed within TCB')
-            start_keys[tcb] = start_key
+            if not any(start_key):
+                # This dialect's close request is explicitly unattributed.
+                if target['kind'] != 'close issued' or pid_raw != b'\0' * 4:
+                    raise raw_clock.DiagnosticError('unexpected zero ProcessStartKey')
+            elif tcb != '0X0':
+                if tcb in start_keys and start_keys[tcb] != start_key:
+                    raise raw_clock.DiagnosticError('TDH ProcessStartKey changed within TCB')
+                start_keys[tcb] = start_key
+        if pid_raw == b'\0' * 4 and target['kind'] != 'close issued':
+            raise raw_clock.DiagnosticError('unexpected zero ProcessId')
+        if target['kind'] == 'close issued' and (pid_raw is None or start_key is None or
+                (pid_raw == b'\0' * 4) != (start_key == b'\0' * 8)):
+            raise raw_clock.DiagnosticError('unattributed close identity fields inconsistent')
     if by_ref:
         raise raw_clock.DiagnosticError('one or more selected native terminals omitted by TDH')
     if primary_tcb not in start_keys or (peer_tcb and peer_tcb not in start_keys):
@@ -138,6 +204,7 @@ def choose_targets(observed, paired_path):
             row = options[0]
             target = {'kind': event['kind'], 'terminal': event['terminal'],
                       'tcb': tcb, 'local': event.get('local'), 'remote': event.get('remote'),
+                      'transition': event.get('transition'),
                       'pktmon_ref': event['ref'], 'seq': row['seq']}
             targets.append(target)
             selectors.append({'seq': row['seq'], 'raw_qpc': row['raw_timestamp'],
