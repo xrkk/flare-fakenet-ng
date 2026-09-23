@@ -3840,7 +3840,32 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             # cmd's date-sorted dir (C-speed, ~tens of ms even with hundreds
             # of accumulated run dirs) instead of Get-ChildItem+Sort, which
             # alone cost 150-400ms per discovery on the acceptance VM.
-            "$null=Select-String -LiteralPath ($PSHOME + '\\types.ps1xml') -SimpleMatch -Pattern 'x' -ErrorAction SilentlyContinue;" + "while([DateTime]::UtcNow -lt $deadline){$est=$latched;if($null -eq $est -and (Test-Path -LiteralPath $probe)){try{$lines=[IO.File]::ReadAllLines($probe);if($lines.Count -gt $seen){$from=$seen;$seen=$lines.Count;for($i=$from;$i -lt $lines.Count;$i++){try{$x=$lines[$i]|ConvertFrom-Json}catch{$x=$null};if($null -ne $x -and $x.event -eq 'established' -and $x.nonce -eq " + quote_ps(nonce) + "){$est=$x;$latched=$x;break}}}}catch{}};"
+            # Incremental byte-offset tail: read only the newly appended
+            # bytes each poll instead of re-reading and re-parsing the whole
+            # probe file. Whole-file ReadAllLines every 10ms over the 60s
+            # window reparsed the file thousands of times and the accumulated
+            # object allocations exhausted the 4GB VM's PowerShell session
+            # (candidate26 fault-spike sst-015: OutOfMemoryException in the
+            # gate observer).
+            "$offset=0;$carry='';" +
+            "while([DateTime]::UtcNow -lt $deadline){$est=$latched;"
+            "if($null -eq $est -and (Test-Path -LiteralPath $probe)){"
+            "try{"
+            "$fs=[IO.FileStream]::new($probe,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite);"
+            "if($fs.Length -gt $offset){"
+            "$fs.Seek($offset,[IO.SeekOrigin]::Begin)|Out-Null;"
+            "$sr=[IO.StreamReader]::new($fs);"
+            "$chunk=$carry+$sr.ReadToEnd();"
+            "$offset=$fs.Position;"
+            "$sr.Dispose();"
+            "$parts=$chunk -split \"`n\";"
+            "$carry=$parts[-1];"
+            "for($i=0;$i -lt $parts.Count-1;$i++){"
+            "$line=$parts[$i].Trim();"
+            "if(-not $line){continue};"
+            "try{$x=$line|ConvertFrom-Json}catch{$x=$null};"
+            "if($null -ne $x -and $x.event -eq 'established' -and $x.nonce -eq " + quote_ps(nonce) + "){$est=$x;$latched=$x;break}}"
+            "}}else{$fs.Dispose()}}catch{}};"
             
             "$answer.iterations=$iter+1;$iter=$iter+1;if($null -ne $est -and $null -eq $estAt){$estAt=[DateTimeOffset]::UtcNow.ToString('o')};$answer.est_detected_utc=$estAt;if($null -eq $est){if(($iter % 25) -eq 1){$names=@(cmd /c dir /b /ad /o-d 'C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs' 2>$null|Select-Object -First 8)}}elseif($names.Count -eq 0){$names=@(cmd /c dir /b /ad /o-d 'C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs' 2>$null|Select-Object -First 8)};""if($est){$answer.scan_attempts=$answer.scan_attempts+1;if($null -eq $answer.scan_started_utc){$answer.scan_started_utc=[DateTimeOffset]::UtcNow.ToString('o')};$probePid=[int]$est.pid;$answer.probe_pid=$probePid;$port=($est.src -split ':')[-1];$source=($est.src -split ':')[0];foreach($name in $names){$run=$name;$log='C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs\\'+$name+'\\run.log';$flow=@();if(Test-Path -LiteralPath $log){$flow=@(Select-String -LiteralPath $log -SimpleMatch -Pattern @('PROCESS_FLOW ','PROCESS_REDIRECT_MAPPING_CREATED') -ErrorAction SilentlyContinue|Where-Object {$line=$_.Line;($line -match ('(?:^|\\s)pid='+[regex]::Escape([string]$probePid)+'(?:\\s|$)')) -and ((($line -match '(?:^|\\s)sport=') -and ($line -match ('(?:^|\\s)sport='+[regex]::Escape($port)+'(?:\\s|$)')) -and ($line -match ('(?:^|\\s)src='+[regex]::Escape($source)+'(?:\\s|$)'))) -or ((($line -match '(?:^|\\s)source_port=') -and ($line -match ('(?:^|\\s)source_port='+[regex]::Escape($port)+'(?:\\s|$)')) -and ($line -match ('(?:^|\\s)source_ipv4='+[regex]::Escape($source)+'(?:\\s|$)')))))}|Select-Object -Last 1)};if($flow.Count){$payload=[ordered]@{fault=" + quote_ps(fault) + ";nonce=" + quote_ps(nonce) + ";run_id=$name};"
             + ("$temporary=Join-Path $logs ('.fault-injection-ready-'+[guid]::NewGuid().ToString('N')+'.json');[IO.File]::WriteAllText($temporary,($payload|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false));[IO.File]::Move($temporary,$ready);"
