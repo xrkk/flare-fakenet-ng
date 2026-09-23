@@ -2322,7 +2322,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                                recomputed_cases: list[dict[str, Any]]) -> list[str]:
         """Reject stored SNI-deny bindings that the originals disprove.
 
-        New-version results carry ``contract_version`` 1 bindings.  Every
+        Results carry ``contract_version`` 1 (conservative wall interval) or
+        2 (strict native terminal) bindings. Every
         binding field is compared against the independent recomputation
         (JSON-normalized so list/tuple spellings agree); a required case
         that is missing, a duplicated case index, a binding that is absent,
@@ -2346,15 +2347,27 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 issues.append('stored SNI deny binding is not a record (case %s)' % index)
                 continue
             if isinstance(binding, dict):
-                if binding.get('contract_version') != 1:
+                version = binding.get('contract_version')
+                if type(version) is not int or version not in (1, 2):
                     issues.append('stored SNI deny binding contract version missing/unknown (case %s)' % index)
+                    continue
+                if (binding.get('schema') != 'sst.sni-mismatch-binding.v1' or
+                        (version == 1 and binding.get('native_deny') is not None) or
+                        (version == 2 and not isinstance(binding.get('native_deny'), dict))):
+                    issues.append('stored SNI deny binding version/native shape differs (case %s)' % index)
                     continue
                 current = next((row for row in recomputed_cases
                                 if row.get('index') == index), None)
                 recomputed = current.get('sni_binding') if isinstance(current, dict) else None
-                if not isinstance(recomputed, dict) or recomputed.get('contract_version') != 1:
+                if (not isinstance(recomputed, dict) or
+                        type(recomputed.get('contract_version')) is not int or
+                        recomputed.get('contract_version') != version or
+                        (version == 2 and not isinstance(recomputed.get('native_deny'), dict))):
                     issues.append('stored SNI deny binding has no recomputed counterpart (case %s)' % index)
                     continue
+                if (branch != binding.get('deny_log') or
+                        branch != current.get('branch_log')):
+                    issues.append('stored SNI deny branch differs from sealed binding (case %s)' % index)
                 for field in Suite.SNI_BINDING_FIELDS:
                     if (Suite._binding_normalized(binding.get(field)) !=
                             Suite._binding_normalized(recomputed.get(field))):
@@ -2371,7 +2384,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             if not isinstance(recomputed, dict):
                 continue
             binding = recomputed.get('sni_binding')
-            if (isinstance(binding, dict) and binding.get('contract_version') == 1
+            if (isinstance(binding, dict) and binding.get('contract_version') in (1, 2)
                     and not any(row.get('index') == recomputed.get('index')
                                 for row in stored_cases if isinstance(row, dict))):
                 issues.append('recomputed SNI deny case missing from stored rows (case %s)'
@@ -5015,6 +5028,11 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
     def _validate_fault_spike(self, path: Path) -> None:
         """Bind the five executed cases and rejudge their original bytes."""
         root = path.resolve().parent
+        spike_view = Suite.__new__(Suite)
+        spike_view.root = root
+        spike_view.identity = self.identity
+        spike_view.fault_clock_evidence = self.fault_clock_evidence
+        spike_view.auxiliary_clock_evidence = self.auxiliary_clock_evidence
         try:
             report = read_json(path)
             if (report.get('schema') != 'sst.fault-spike.v1' or
@@ -5069,10 +5087,11 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 calls = [(x.get('tool'), x.get('expect')) for x in result.get('interface_calls', [])]
                 if calls != [(x['tool'], x['expect']) for x in selected['interface_call_plan']]:
                     raise ValueError('Spike interface call contract differs')
-                issues = result_issues(result, root) + fault_recheck_issues(result, root)
+                issues = (result_issues(result, root) + fault_recheck_issues(result, root) +
+                          spike_view._traffic_recheck_issues(result, selected))
                 if issues:
                     raise ValueError('; '.join(issues))
-        except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+        except (OSError, ValueError, KeyError, TypeError, IndexError, SuiteError) as exc:
             raise Blocked('fault run requires bound five-class Spike evidence: ' + str(exc)) from exc
 
     def _require_fault_spike(self):
@@ -5103,6 +5122,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 evidence=adjudication.get('result')))
             problems.extend(result_issues(result, self.root))
             problems.extend(fault_recheck_issues(result, self.root))
+            problems.extend(self._traffic_recheck_issues(result, scenario))
             try:
                 for key in ('case', 'result'):
                     sealed = read_json(self._spike_file(self.root, adjudication[key]))
@@ -5203,10 +5223,15 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             'ipc-evidence-%s-enabled.json' % filter_name,
             'ipc-evidence-%s-disabled.json' % filter_name, execute)
         results = results if results is not None else []
+        traffic_issues = {row['scenario_id']: self._traffic_recheck_issues(row,
+            next(item for item in selected if item['scenario_id'] == row['scenario_id']))
+            for row in results if row.get('state') == 'pass'}
         passed = (self._ipc_evidence_recovered(ipc_evidence)
-                  and all(row.get('state') == 'pass' for row in results))
+                  and all(row.get('state') == 'pass' for row in results)
+                  and not any(traffic_issues.values()))
         return {'output_dir': str(self.root), 'filter': filter_name, 'count': len(results),
                 'passed': passed, 'ipc_evidence': ipc_evidence,
+                'traffic_recheck_issues': traffic_issues,
                 'states': {row['scenario_id']: row['state'] for row in results}}
 
     def resume(self) -> dict[str, Any]:
@@ -5237,10 +5262,15 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         rerun, ipc_evidence = self._ipc_evidence_pass(
             'ipc-evidence-resume-enabled.json', 'ipc-evidence-resume-disabled.json', execute)
         rerun = rerun if rerun is not None else []
+        traffic_issues = {row['scenario_id']: self._traffic_recheck_issues(row,
+            next(item for item in manifest['scenarios'] if item['scenario_id'] == row['scenario_id']))
+            for row in rerun if row.get('state') == 'pass'}
         return {'output_dir': str(self.root), 'resumed': len(rerun),
                 'ipc_evidence': ipc_evidence,
+                'traffic_recheck_issues': traffic_issues,
                 'passed': (self._ipc_evidence_recovered(ipc_evidence)
-                           and all(row.get('state') == 'pass' for row in rerun))}
+                           and all(row.get('state') == 'pass' for row in rerun)
+                           and not any(traffic_issues.values()))}
 
     def _traffic_recheck_issues(self, result: dict[str, Any], expected: dict[str, Any]) -> list[str]:
         """Re-adjudicate healthy-run traffic from the byte-bound originals."""

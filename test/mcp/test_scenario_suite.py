@@ -1,5 +1,6 @@
 """Offline contracts for the real-traffic scenario-suite runner."""
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -755,10 +756,11 @@ def test_stored_sni_binding_tamper_is_rejected_in_recheck():
             'generation': 2, 'handshake_sni': 'example.com',
             'begin_bound_ns': 100, 'end_bound_ns': 900,
             'deny_log_ref': {'path': 'run.log', 'byte_start': 4, 'byte_end': 13}}
-    recomputed = [{'index': 4, 'passed': True, 'sni_binding': dict(base)}]
+    recomputed = [{'index': 4, 'passed': True, 'sni_binding': dict(base),
+                   'branch_log': 'deny line'}]
     assert suite.Suite._stored_binding_issues(
         [{'index': 4, 'sni_binding': dict(base),
-          'branch_log': 'TLS_SNI_DENY reason_code=sni_mismatch'}], recomputed) == []
+          'branch_log': 'deny line'}], recomputed) == []
     # Deleting both binding and branch cannot downgrade to a legacy pass.
     assert suite.Suite._stored_binding_issues([{'index': 4}], recomputed)
     for field, value in [('deny_log', 'deny line '), ('sni', 'other.example'),
@@ -777,7 +779,7 @@ def test_stored_sni_binding_tamper_is_rejected_in_recheck():
     assert any('not a record' in issue for issue in suite.Suite._stored_binding_issues(
         [{'index': 4, 'sni_binding': 'x'}], recomputed))
     unversioned = dict(base, contract_version=2)
-    assert any('contract version' in issue for issue in suite.Suite._stored_binding_issues(
+    assert any('version/native shape' in issue for issue in suite.Suite._stored_binding_issues(
         [{'index': 4, 'sni_binding': unversioned}], recomputed))
     # Deleting the binding from an sni_mismatch branch row strips sealed evidence.
     assert any('binding' in issue
@@ -2175,6 +2177,61 @@ def test_short_window_deny_passes_through_native_record():
         assert native['generation'] == 2
         assert native['etw_connect_upper_ns'] <= native['filetime_ns'] <= \
             native['etw_terminal_lower_ns']
+
+
+@pytest.mark.parametrize('native', [False, True])
+def test_sni_binding_version_survives_serialization_and_full_traffic_recheck(tmp_path, native):
+    runner, profile, nonce, run, sentinel, _, _ = _b1_sni_oracle_fixture(
+        tmp_path, observation_end_lower_delay_ms=-200 if native else 0,
+        native_deny=True if native else None)
+    verdict = runner._traffic_oracle(run, profile, nonce, sentinel)
+    assert verdict['cases'][3]['passed']
+    stored = json.loads(json.dumps(verdict))
+    assert stored['cases'][3]['sni_binding']['contract_version'] == (2 if native else 1)
+    saved_run = dict(run, start_response={'state': 'healthy'}, traffic_oracle=stored)
+    result = {'traffic_evidence': {'nonce': nonce, 'runtime_profile': profile},
+              'run_chain': [saved_run]}
+    expected = {'config_profile': profile}
+    assert not [issue for issue in runner._traffic_recheck_issues(result, expected)
+                if 'binding' in issue]
+
+    def rejected(change):
+        changed = copy.deepcopy(stored)
+        change(changed['cases'])
+        result['run_chain'][0]['traffic_oracle'] = changed
+        assert any('binding' in issue or 'duplicate stored case' in issue or
+                   'missing from stored rows' in issue for issue in
+                   runner._traffic_recheck_issues(result, expected))
+
+    rejected(lambda cases: cases[3]['sni_binding'].update(contract_version=3))
+    rejected(lambda cases: cases[3]['sni_binding'].update(contract_version=True))
+    rejected(lambda cases: cases[3]['sni_binding'].pop('contract_version'))
+    rejected(lambda cases: cases[3]['sni_binding']['deny_log_ref'].update(byte_start=0))
+    rejected(lambda cases: cases[3].update(branch_log=None))
+    rejected(lambda cases: cases[3].update(branch_log=None, sni_binding=None))
+    rejected(lambda cases: cases.append(copy.deepcopy(cases[3])))
+    rejected(lambda cases: cases.pop(3))
+    if native:
+        rejected(lambda cases: cases[3]['sni_binding'].update(contract_version=1))
+        rejected(lambda cases: cases[3]['sni_binding'].update(
+            contract_version=1, native_deny=None))
+        rejected(lambda cases: cases[3]['sni_binding'].update(native_deny=None))
+        rejected(lambda cases: cases[3]['sni_binding']['native_deny'].update(filetime_ns=0))
+        rejected(lambda cases: cases[3]['sni_binding']['native_deny'].update(qpc_before=0))
+        # The recomputation reads the native file again; a forged source
+        # cannot borrow the previously sealed v2 record.
+        native_path = tmp_path / 'relay-native-events.jsonl'
+        original = native_path.read_text()
+        forged = json.loads(original)
+        forged['generation'] = 3
+        native_path.write_text(json.dumps(forged) + '\n')
+        result['run_chain'][0]['traffic_oracle'] = stored
+        assert any('binding' in issue for issue in
+                   runner._traffic_recheck_issues(result, expected))
+        native_path.write_text(original)
+    else:
+        rejected(lambda cases: cases[3]['sni_binding'].update(
+            contract_version=2, native_deny={'generation': 2}))
 
 
 def test_native_deny_rejects_substitutes():

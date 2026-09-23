@@ -48,6 +48,7 @@ class Recorder:
         self.runner._require_preflight = lambda: None
         self.runner._require_fault_spike = lambda: None
         self.runner._continuation_gate = lambda: {'vm': {}}
+        self.runner._traffic_recheck_issues = lambda result, expected: []
         self.runner._result_path = (lambda sid: self.runner.root / ('result-' + sid + '.json'))
 
         def state_path(sid):
