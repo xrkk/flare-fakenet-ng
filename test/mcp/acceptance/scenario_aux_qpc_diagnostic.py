@@ -7,6 +7,7 @@ semantic gate is implemented from real native fields.
 """
 import argparse
 import json
+import re
 from pathlib import Path
 import sys
 import traceback
@@ -39,6 +40,82 @@ def diagnostic_order(observed, targets, selectors):
                 value - begin > 1 for value in zeros)}
 
 
+def diagnostic_candidates(observed, paired_path):
+    """Keep named targets strict; enumerate every possible zero-TCB TDH row.
+
+    FILETIME and provider narrow the diagnostic search only. Duplicate
+    non-time identities expand the set across converted FILETIMEs because
+    raw/default pairing cannot uniquely assign their QPC values. Neither a
+    single remaining row nor its order establishes the native event role.
+    """
+    named = dict(observed, tuple_terminals=[])
+    targets, selectors = qpc.choose_targets(named, paired_path)
+    zero_events = observed['tuple_terminals']
+    stamps = {}
+    for event in zero_events:
+        match = re.search(r'::(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+)', event['text'])
+        if not match or event.get('tcb') != '0X0' or event.get('kind') != 'unattributed_tuple_terminal':
+            raise raw_clock.DiagnosticError('zero-TCB formatted target identity invalid')
+        stamp = raw_clock.pktmon_filetime(match.group(1) + '+08:00')
+        stamps.setdefault(stamp, []).append(event)
+    rows = {stamp: [] for stamp in stamps}
+    identity_groups = {}
+    with paired_path.open(encoding='utf-8') as stream:
+        for line in stream:
+            row = json.loads(line)
+            if row['provider'] != qpc.TCPIP_PROVIDER:
+                continue
+            identity_groups.setdefault(row['identity_sha256'], []).append(row)
+            if row['default_filetime_100ns'] in rows:
+                rows[row['default_filetime_100ns']].append(row)
+    sets = []
+    candidate_selectors = {}
+    for stamp, events in stamps.items():
+        anchors = rows[stamp]
+        if not anchors:
+            raise raw_clock.DiagnosticError('zero-TCB diagnostic candidate set empty')
+        options_by_seq = {}
+        for anchor in anchors:
+            group = identity_groups[anchor['identity_sha256']]
+            if len(group) != anchor['identity_occurrences']:
+                raise raw_clock.DiagnosticError('zero-TCB raw/default identity group count differs')
+            for row in group:
+                options_by_seq[row['seq']] = row
+        options = [options_by_seq[seq] for seq in sorted(options_by_seq)]
+        anchor_seqs = {row['seq'] for row in anchors}
+        for event in events:
+            candidates = []
+            for row in options:
+                candidates.append({key: row[key] for key in (
+                    'seq', 'provider', 'id', 'version', 'opcode', 'task',
+                    'raw_timestamp', 'default_filetime_100ns',
+                    'userdata_sha256', 'identity_sha256', 'identity_occurrences',
+                    'binding_status')})
+                candidates[-1]['selection_reason'] = (
+                    'EXACT_FORMATTED_FILETIME' if row['seq'] in anchor_seqs
+                    else 'SAME_AMBIGUOUS_NON_TIME_IDENTITY')
+                selector = candidate_selectors.get(row['seq'])
+                if selector is None:
+                    selector = {key: row[key] for key in (
+                        'seq', 'provider', 'id', 'version', 'opcode', 'task',
+                        'userdata_sha256', 'identity_sha256', 'binding_status')}
+                    selector.update(raw_qpc=row['raw_timestamp'],
+                                    target_kind='auxiliary_zero_tcb_diagnostic_candidate',
+                                    tcb='0X0', diagnostic_candidate_refs=[])
+                    candidate_selectors[row['seq']] = selector
+                if event['ref'] not in selector['diagnostic_candidate_refs']:
+                    selector['diagnostic_candidate_refs'].append(event['ref'])
+            sets.append({'status': 'DIAGNOSTIC_CANDIDATES_UNRESOLVED',
+                         'pktmon_ref': event['ref'], 'formatted_kind': event['kind'],
+                         'formatted_tcb': event['tcb'], 'local': event.get('local'),
+                         'remote': event.get('remote'), 'default_filetime_100ns': stamp,
+                         'exact_filetime_anchor_seqs': sorted(anchor_seqs),
+                         'candidates': candidates})
+    # The named set remains exactly the old unique selection. A candidate may
+    # overlap it; TDH reads that seq once while the candidate map retains it.
+    return targets, selectors, sets, list(candidate_selectors.values())
+
+
 def run(case_path: Path, evidence_root: Path, output: Path) -> dict:
     output.mkdir(parents=True, exist_ok=False)
     manifest = {'schema': 'sst.aux-qpc-diagnostic.v1', 'status': 'INCOMPLETE',
@@ -65,7 +142,7 @@ def run(case_path: Path, evidence_root: Path, output: Path) -> dict:
         ipc = [json.loads(line) for line in evidence.data[case['ipc_path']].splitlines()]
         managed_pid, managed_created = tcpip.managed_identity(ipc, case['run_id'])
         exported = raw_clock.export(etl, output / 'raw')
-        all_targets, all_selectors, details = [], [], []
+        all_targets, all_selectors, all_candidate_sets, candidate_selectors, details = [], [], [], [], []
         provenance = []
         for auxiliary in case['cases']:
             origin = evidence.read(auxiliary['probe_ref'])
@@ -96,15 +173,31 @@ def run(case_path: Path, evidence_root: Path, output: Path) -> dict:
                 raise raw_clock.DiagnosticError('auxiliary complete native ref set changed')
             if not observed['termination']:
                 raise raw_clock.DiagnosticError('auxiliary named native terminal missing')
-            targets, selectors = qpc.choose_targets(observed, output / 'raw/paired.jsonl')
+            targets, selectors, candidate_sets, diagnostics = diagnostic_candidates(
+                observed, output / 'raw/paired.jsonl')
             for target, selector in zip(targets, selectors):
                 binding = {'run_id': case['run_id'], 'case_index': auxiliary['case_index'],
                            'connection_id': auxiliary['connection_id']}
                 target.update(binding)
                 selector.update(binding)
+            for candidate_set in candidate_sets:
+                candidate_set.update(run_id=case['run_id'],
+                                     case_index=auxiliary['case_index'],
+                                     connection_id=auxiliary['connection_id'])
             all_targets.extend(targets)
             all_selectors.extend(selectors)
-            order = diagnostic_order(observed, targets, selectors)
+            all_candidate_sets.extend(candidate_sets)
+            candidate_selectors.extend(diagnostics)
+            by_ref = {json.dumps(target['pktmon_ref'], sort_keys=True): selector['raw_qpc']
+                      for target, selector in zip(targets, selectors)}
+            begin_refs = [observed['connect']['ref']]
+            if observed['peer']:
+                begin_refs.append(observed['peer']['ref'])
+            begin = max(by_ref[json.dumps(ref, sort_keys=True)] for ref in begin_refs)
+            order = {'status': 'UNVERIFIED_TDH_SEMANTICS', 'begin_qpc': begin,
+                     'candidate_gap_sets_ticks': [
+                         [{'seq': item['seq'], 'gap_ticks': item['raw_timestamp'] - begin}
+                          for item in group['candidates']] for group in candidate_sets]}
             ready_rows = [item for item in probe_rows if item.get('event') == 'ready'
                           and item.get('nonce') == case['nonce']]
             child_rows = [item for item in probe_rows
@@ -121,16 +214,32 @@ def run(case_path: Path, evidence_root: Path, output: Path) -> dict:
                             'probe_pid': auxiliary['pid'], 'managed_pid': managed_pid,
                             'target_seqs': [item['seq'] for item in targets],
                             'tuple_terminal_refs': auxiliary['tuple_terminal_refs'],
+                            'diagnostic_candidate_seqs': [
+                                [item['seq'] for item in group['candidates']]
+                                for group in candidate_sets],
                             'raw_order_diagnostic': order})
         if len({item['seq'] for item in all_selectors}) != len(all_selectors):
             raise raw_clock.DiagnosticError('native event reused across auxiliary cases')
+        selected_by_seq = {item['seq']: item for item in all_selectors}
+        for item in candidate_selectors:
+            existing = selected_by_seq.get(item['seq'])
+            if existing is None:
+                selected_by_seq[item['seq']] = item
+            else:
+                refs = existing.setdefault('diagnostic_candidate_refs', [])
+                for ref in item['diagnostic_candidate_refs']:
+                    if ref not in refs:
+                        refs.append(ref)
+        selected = list(selected_by_seq.values())
+        manifest.update(targets=all_targets, candidate_sets=all_candidate_sets,
+                        cases=details, candidate_binding_status='UNRESOLVED')
         selector_path = output / 'selectors.json'
         selector_path.write_text(json.dumps({'schema': 'fakenet.t007-r02-tdh-selectors.v1',
             'source_event_count': exported['paired_events'],
             'source_etl_sha256': exported['input_before']['sha256'],
-            'selectors': all_selectors}, indent=2) + '\n', encoding='utf-8')
+            'selectors': selected}, indent=2) + '\n', encoding='utf-8')
         tdh = tdh_metadata.run(etl, selector_path, output / 'tdh')
-        if tdh['target_count'] != len(all_targets):
+        if tdh['target_count'] != len(selected):
             raise raw_clock.DiagnosticError('auxiliary TDH target set incomplete')
         identities = [check_aux_provenance(
             evidence.read(capture['metadata_ref']), ready, process_ready, origin,
@@ -139,16 +248,16 @@ def run(case_path: Path, evidence_root: Path, output: Path) -> dict:
             for ready, process_ready, origin in provenance]
         if any(identity != identities[0] for identity in identities[1:]):
             raise raw_clock.DiagnosticError('auxiliary cases have mixed native identity')
-        manifest.update(targets=all_targets, cases=details, managed_pid=managed_pid,
+        manifest.update(managed_pid=managed_pid,
                         managed_creation_filetime_100ns=managed_created,
                         candidate_id=case['candidate_id'], run_id=case['run_id'],
                         identity=identities[0])
         # Do not turn formatted text's "Receive discarded" into a TDH fact.
         # The real zero-TCB descriptor, reason and process identity fields
         # must be established from this export before acceptance is enabled.
-        if any(target['tcb'] == '0X0' for target in all_targets):
+        if all_candidate_sets:
             raise raw_clock.DiagnosticError(
-                'UNSUPPORTED: zero-TCB Receive-discarded TDH descriptor/properties unverified')
+                'UNSUPPORTED: zero-TCB diagnostic candidates have no verified unique TDH binding/semantics')
         raise raw_clock.DiagnosticError('NO_ZERO_TCB_BRANCH: native negative branch unobserved')
     except BaseException as exc:  # preserve original raw/TDH output
         manifest['error'] = {'type': type(exc).__name__, 'message': str(exc),
