@@ -66,6 +66,30 @@ class ExportContractTests(unittest.TestCase):
         rows=[json.loads(x) for x in args[2].read_text().splitlines()]
         with self.assertRaisesRegex(e.DiagnosticError,'ambiguous'):
             e.unique_target(rows,1)
+    def test_same_cpu_and_all_non_time_fields_still_ambiguous(self):
+        args=self.files([{'seq':0,'timestamp':100,'processor_number':3},
+                         {'seq':1,'timestamp':200,'processor_number':3}],
+                        [{'seq':0,'timestamp':1000,'processor_number':3},
+                         {'seq':1,'timestamp':2000,'processor_number':3}])
+        e.pair_streams(*args)
+        rows=[json.loads(x) for x in args[2].read_text().splitlines()]
+        self.assertEqual([r['identity_occurrences'] for r in rows],[2,2])
+        for seq in (0,1):
+            with self.assertRaisesRegex(e.DiagnosticError,'ambiguous'):
+                e.unique_target(rows,seq)
+    def test_cpu_must_differ_stably_across_both_passes_to_identify(self):
+        args=self.files([{'seq':0,'timestamp':100,'processor_number':3},
+                         {'seq':1,'timestamp':200,'processor_number':4}],
+                        [{'seq':0,'timestamp':1000,'processor_number':3},
+                         {'seq':1,'timestamp':2000,'processor_number':4}])
+        e.pair_streams(*args)
+        rows=[json.loads(x) for x in args[2].read_text().splitlines()]
+        self.assertEqual([e.unique_target(rows,i)['processor_number'] for i in (0,1)],[3,4])
+        args[2].unlink()
+        bad=self.files([{'seq':0,'timestamp':100,'processor_number':3}],
+                       [{'seq':0,'timestamp':1000,'processor_number':4}])
+        with self.assertRaisesRegex(e.DiagnosticError,'identity/payload mismatch'):
+            e.pair_streams(*bad)
     def test_converted_time_collision_rejected(self):
         args = self.files([{'seq':0},{'seq':1,'id':4}],
                           [{'seq':0,'timestamp':1000},{'seq':1,'timestamp':1000,'id':4}])

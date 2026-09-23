@@ -1,6 +1,7 @@
 """Offline guardrails for the unverified auxiliary zero-TCB collector."""
 import copy
 import base64
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -225,12 +226,93 @@ def test_incomplete_export_still_sends_every_ambiguous_candidate_to_tdh(tmp_path
         assert [item['diagnostic_candidate_refs'] for item in selectors if item['seq'] in (2, 3)] == [
             [ref(3), ref(4)], [ref(3), ref(4)]]
         output.mkdir()
-        (output / 'metadata.jsonl').write_text('diagnostic TDH originals\n')
+        (output / 'metadata.jsonl').write_text(''.join(
+            json.dumps({'selector': item}) + '\n' for item in selectors))
         return {'target_count': len(selectors)}
     monkeypatch.setattr(aux.tdh_metadata, 'run', fake_tdh)
+    monkeypatch.setattr(aux, 'candidate_field_facts',
+                        lambda rows, groups, selected: [{'diagnostic_rows': len(rows),
+                                                          'candidate_groups': len(groups)}])
     result = aux.run(case_path, root, tmp_path / 'output')
     assert len(observed_selectors) == 4
     assert result['status'] == 'INCOMPLETE'
     assert 'no verified unique TDH binding' in result['error']['message']
     assert [len(row['candidates']) for row in result['candidate_sets']] == [2, 2]
+    assert result['candidate_field_facts'] == [{'diagnostic_rows': 4,
+                                                'candidate_groups': 2}]
     assert result['inputs_before'] == result['inputs_after']
+
+
+def candidate_tdh_fixture():
+    selector = {'seq': 7, 'target_kind': 'auxiliary_zero_tcb_diagnostic_candidate'}
+    local, remote = '192.168.204.233:50127', '198.51.100.77:1337'
+    values = {'Tcb': b'\0' * 8, 'IPTransportProtocol': (6).to_bytes(4, 'little'),
+              'AddressFamily': (2).to_bytes(4, 'little'),
+              'LocalSockAddrLength': (16).to_bytes(4, 'little'),
+              'RemoteSockAddrLength': (16).to_bytes(4, 'little'),
+              'LocalSockAddr': aux.qpc._sockaddr(local).ljust(16, b'\0'),
+              'RemoteSockAddr': aux.qpc._sockaddr(remote).ljust(16, b'\0'),
+              'Reason': b'\0' * 4}
+    props = []
+    results = []
+    for name, value in values.items():
+        props.append({'name': name, 'flags': 2 if name.endswith('SockAddr') else 0,
+                      'in_type_or_struct_start': 14 if name.endswith('SockAddr') else 8,
+                      'out_type_or_struct_members': 25 if name.endswith('SockAddr') else 8,
+                      'map_or_schema_offset': 100 if name == 'Reason' else 0})
+        results.append({'name': name, 'size_status': 0, 'property_status': 0,
+                        'raw_base64': base64.b64encode(value).decode()})
+    blob = bytearray(256)
+    name = aux.ZERO_TCB_REASON_MAP.encode('utf-16-le') + b'\0\0'
+    blob[100:100 + len(name)] = name
+    row = {'selector': selector,
+           'record': {'provider': aux.qpc.TCPIP_PROVIDER, 'id': 1479,
+                      'version': 0, 'opcode': 0, 'task': 1466},
+           'tdh': {'parsed': {'provider_guid': aux.qpc.TCPIP_PROVIDER,
+                              'event_descriptor_bytes': aux.ZERO_TCB_DESCRIPTOR,
+                              'strings': {'provider': 'Microsoft-Windows-TCPIP',
+                                          'task': 'TcpRstSend'},
+                              'properties': props},
+                   'buffer_base64': base64.b64encode(blob).decode()},
+           'property_results': results}
+    group = {'local': local, 'remote': remote, 'candidates': [{'seq': 7}]}
+    return row, group, selector
+
+
+def test_verified_candidate_field_bytes_still_do_not_prove_reason_label():
+    row, group, selector = candidate_tdh_fixture()
+    facts = aux.candidate_field_facts([row], [group], [selector])
+    assert facts[0]['status'] == 'REASON_MAP_NOT_CAPTURED'
+    opaque = b'opaque-event-map!'
+    next(x for x in row['property_results'] if x['name'] == 'Reason')['event_map'] = {
+        'name': aux.ZERO_TCB_REASON_MAP, 'first_status': 122, 'second_status': 0,
+        'buffer_base64': base64.b64encode(opaque).decode(),
+        'buffer_sha256': hashlib.sha256(opaque).hexdigest()}
+    facts = aux.candidate_field_facts([row], [group], [selector])
+    assert facts[0]['status'] == 'REASON_MAP_OPAQUE_UNVERIFIED'
+    next(x for x in row['property_results'] if x['name'] == 'Reason')['event_map'][
+        'buffer_sha256'] = '0' * 64
+    assert aux.candidate_field_facts([row], [group], [selector])[0][
+        'status'] == 'REASON_MAP_NOT_CAPTURED'
+
+
+@pytest.mark.parametrize('mutation,reason', [
+    ('provider', 'provider/descriptor/task'), ('descriptor', 'provider/descriptor/task'),
+    ('tcb', 'property differs: Tcb'), ('reason', 'property differs: Reason'),
+    ('endpoint', 'property differs: LocalSockAddr'),
+    ('sockaddr_type', 'SockAddr type'), ('map_name', 'Reason map name'),
+    ('property_status', 'property missing/ambiguous')])
+def test_candidate_field_corruption_rejected(mutation, reason):
+    row, group, selector = candidate_tdh_fixture()
+    result = {x['name']: x for x in row['property_results']}
+    metadata = {x['name']: x for x in row['tdh']['parsed']['properties']}
+    if mutation == 'provider': row['record']['provider'] = 'other'
+    elif mutation == 'descriptor': row['tdh']['parsed']['event_descriptor_bytes'] = '00' * 16
+    elif mutation == 'tcb': result['Tcb']['raw_base64'] = base64.b64encode((1).to_bytes(8, 'little')).decode()
+    elif mutation == 'reason': result['Reason']['raw_base64'] = base64.b64encode((1).to_bytes(4, 'little')).decode()
+    elif mutation == 'endpoint': result['LocalSockAddr']['raw_base64'] = base64.b64encode(b'X' * 16).decode()
+    elif mutation == 'sockaddr_type': metadata['LocalSockAddr']['in_type_or_struct_start'] = 99
+    elif mutation == 'map_name': metadata['Reason']['map_or_schema_offset'] = 0
+    elif mutation == 'property_status': result['Reason']['property_status'] = 1168
+    with pytest.raises(aux.raw_clock.DiagnosticError, match=reason):
+        aux.candidate_field_facts([row], [group], [selector])

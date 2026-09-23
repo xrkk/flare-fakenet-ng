@@ -6,6 +6,8 @@ Windows TDH original. An export containing it remains INCOMPLETE until that
 semantic gate is implemented from real native fields.
 """
 import argparse
+import base64
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -18,6 +20,83 @@ import scenario_tcpip as tcpip
 import sst_fault_evidence as fault
 import tdh_metadata
 from scenario_qpc_identity import check_aux_provenance
+
+ZERO_TCB_DESCRIPTOR = 'c70500100400ba058000000080000080'
+ZERO_TCB_REASON_MAP = 'TCP_RST_SEND_REASON_ValueMap'
+
+
+def candidate_field_facts(tdh_rows, candidate_sets, selectors):
+    """Check the observed RST property bytes without interpreting Reason=0."""
+    selected = {item['seq']: item for item in selectors}
+    rows = {item['selector']['seq']: item for item in tdh_rows}
+    if (len(selected) != len(selectors) or len(rows) != len(tdh_rows)
+            or set(rows) != set(selected)):
+        raise raw_clock.DiagnosticError('TDH candidate/named selector set differs')
+    candidate_refs = {}
+    for group in candidate_sets:
+        for item in group['candidates']:
+            candidate_refs.setdefault(item['seq'], []).append(group)
+    facts = []
+    for seq, groups in sorted(candidate_refs.items()):
+        row = rows[seq]
+        if row['selector'] != selected[seq]:
+            raise raw_clock.DiagnosticError('TDH zero-TCB selector identity differs')
+        record, parsed = row['record'], row['tdh']['parsed']
+        if (record['provider'] != qpc.TCPIP_PROVIDER or
+                parsed['provider_guid'] != qpc.TCPIP_PROVIDER or
+                record['id'] != 1479 or record['version'] != 0 or
+                record['opcode'] != 0 or record['task'] != 1466 or
+                parsed['event_descriptor_bytes'] != ZERO_TCB_DESCRIPTOR or
+                parsed['strings'].get('provider') != 'Microsoft-Windows-TCPIP' or
+                parsed['strings'].get('task') != 'TcpRstSend'):
+            raise raw_clock.DiagnosticError('TDH zero-TCB provider/descriptor/task differs')
+        expected = {'Tcb': b'\0' * 8, 'IPTransportProtocol': (6).to_bytes(4, 'little'),
+                    'AddressFamily': (2).to_bytes(4, 'little'),
+                    'LocalSockAddrLength': (16).to_bytes(4, 'little'),
+                    'RemoteSockAddrLength': (16).to_bytes(4, 'little'),
+                    'Reason': b'\0' * 4}
+        for group in groups:
+            for name, endpoint in (('LocalSockAddr', group['local']),
+                                   ('RemoteSockAddr', group['remote'])):
+                value = qpc._sockaddr(endpoint).ljust(16, b'\0')
+                if name in expected and expected[name] != value:
+                    raise raw_clock.DiagnosticError('zero-TCB candidate tuples conflict')
+                expected[name] = value
+        by_name = {item['name']: item for item in row['property_results']}
+        meta = {item['name']: item for item in parsed['properties']}
+        if (len(by_name) != len(row['property_results']) or
+                len(meta) != len(parsed['properties'])):
+            raise raw_clock.DiagnosticError('TDH zero-TCB property duplicate')
+        for name, value in expected.items():
+            if name not in by_name or qpc._property(row, name) != value:
+                raise raw_clock.DiagnosticError('TDH zero-TCB property differs: ' + name)
+        for name in ('LocalSockAddr', 'RemoteSockAddr'):
+            if (meta[name]['flags'] != 2 or
+                    meta[name]['in_type_or_struct_start'] != 14 or
+                    meta[name]['out_type_or_struct_members'] != 25):
+                raise raw_clock.DiagnosticError('TDH zero-TCB SockAddr type differs')
+        reason = meta['Reason']
+        blob = base64.b64decode(row['tdh']['buffer_base64'], validate=True)
+        if (reason['map_or_schema_offset'] <= 0 or
+                tdh_metadata.utf16_at(blob, reason['map_or_schema_offset']) !=
+                ZERO_TCB_REASON_MAP):
+            raise raw_clock.DiagnosticError('TDH zero-TCB Reason map name differs')
+        map_result = by_name['Reason'].get('event_map') or {}
+        map_bytes = (base64.b64decode(map_result['buffer_base64'], validate=True)
+                     if map_result.get('buffer_base64') else None)
+        captured = (map_result.get('name') == ZERO_TCB_REASON_MAP and
+                    map_result.get('first_status') == 122 and
+                    map_result.get('second_status') == 0 and
+                    map_bytes is not None and len(map_bytes) >= 16 and
+                    hashlib.sha256(map_bytes).hexdigest() == map_result.get('buffer_sha256'))
+        facts.append({'seq': seq, 'candidate_ref_count': len(groups),
+                      'status': 'REASON_MAP_OPAQUE_UNVERIFIED' if captured else
+                                'REASON_MAP_NOT_CAPTURED',
+                      'reason_raw_hex': expected['Reason'].hex(),
+                      'reason_map_name': ZERO_TCB_REASON_MAP,
+                      'reason_map_sha256': (map_result.get('buffer_sha256') if captured else None),
+                      'tdh_descriptor_hex': ZERO_TCB_DESCRIPTOR})
+    return facts
 
 
 def diagnostic_order(observed, targets, selectors):
@@ -241,6 +320,10 @@ def run(case_path: Path, evidence_root: Path, output: Path) -> dict:
         tdh = tdh_metadata.run(etl, selector_path, output / 'tdh')
         if tdh['target_count'] != len(selected):
             raise raw_clock.DiagnosticError('auxiliary TDH target set incomplete')
+        tdh_rows = [json.loads(line) for line in
+                    (output / 'tdh/metadata.jsonl').read_text(encoding='utf-8').splitlines()]
+        manifest['candidate_field_facts'] = candidate_field_facts(
+            tdh_rows, all_candidate_sets, selected)
         identities = [check_aux_provenance(
             evidence.read(capture['metadata_ref']), ready, process_ready, origin,
             exported['passes'][0]['header'], case['candidate_id'], case['run_id'],

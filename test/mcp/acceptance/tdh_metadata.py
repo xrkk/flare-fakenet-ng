@@ -73,7 +73,41 @@ def configure_tdh():
     api.TdhGetPropertySize.restype=C.c_uint32
     api.TdhGetProperty.argtypes=[C.POINTER(e.EVENT_RECORD),C.c_uint32,C.c_void_p,C.c_uint32,C.POINTER(PROPERTY_DATA_DESCRIPTOR),C.c_uint32,C.c_void_p]
     api.TdhGetProperty.restype=C.c_uint32
+    # Some older TDH implementations do not expose the map API. Preserve
+    # that fact in the diagnostic record; the auxiliary semantic gate rejects
+    # a missing map, while existing TDH property export remains available.
+    map_api=getattr(api,'TdhGetEventMapInformation',None)
+    if map_api is not None:
+        map_api.argtypes=[C.POINTER(e.EVENT_RECORD),C.c_wchar_p,C.c_void_p,C.POINTER(C.c_uint32)]
+        map_api.restype=C.c_uint32
     return api
+
+
+def capture_event_map(ptr, api, name):
+    """Preserve TDH's opaque EVENT_MAP_INFO bytes without interpreting ABI layout."""
+    result={'name':name,'api_available':False,'first_status':None,
+            'required_size':None,'second_status':None,'buffer_sha256':None,
+            'buffer_base64':None}
+    fn=getattr(api,'TdhGetEventMapInformation',None)
+    if fn is None:
+        return result
+    result['api_available']=True
+    needed=C.c_uint32(0)
+    code=fn(ptr,name,None,C.byref(needed))
+    result['first_status']=int(code)
+    result['required_size']=int(needed.value)
+    if code!=ERROR_INSUFFICIENT_BUFFER or not 16<=needed.value<=16*1024*1024:
+        return result
+    capacity=needed.value
+    buffer=C.create_string_buffer(capacity)
+    code=fn(ptr,name,buffer,C.byref(needed))
+    result['second_status']=int(code)
+    if code or needed.value>capacity:
+        return result
+    blob=buffer.raw[:needed.value]
+    result['buffer_sha256']=hashlib.sha256(blob).hexdigest()
+    result['buffer_base64']=base64.b64encode(blob).decode('ascii')
+    return result
 
 def decode_target(ptr, selector, api):
     record=e.record_dict(ptr.contents)
@@ -119,6 +153,11 @@ def decode_target(ptr, selector, api):
                 entry['raw_base64']=base64.b64encode(raw).decode('ascii')
                 entry['raw_sha256']=hashlib.sha256(raw).hexdigest()
                 entry['candidate_userdata_offsets']=raw_offsets(user,raw)
+        if name=='Reason' and record['id']==1479:
+            offset=prop['map_or_schema_offset']
+            entry['event_map']=(capture_event_map(ptr,api,utf16_at(blob,offset))
+                                if offset else {'name':None,'api_available':False,
+                                                'missing_map_name':True})
         result['property_results'].append(entry)
     return result
 
