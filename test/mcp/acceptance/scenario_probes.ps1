@@ -870,11 +870,13 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
                 while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path $Stop)) {
                     Invoke-ReleasedCases
                     $requestOrdinal++
-                    $request = "GET /$Token/$requestOrdinal HTTP/1.1`r`nHost: $($endpoint.host)`r`nConnection: keep-alive`r`n`r`n"
+                    # The connection may use a reviewed IP while TLS names a
+                    # virtual host. HTTP must address that same service.
+                    $request = "GET /$Token/$requestOrdinal HTTP/1.1`r`nHost: $sni`r`nConnection: keep-alive`r`n`r`n"
                     $bytes = [Text.Encoding]::ASCII.GetBytes($request)
                     $ssl.Write($bytes, 0, $bytes.Length)
                     $ssl.Flush()
-                    Write-JsonLine $Path @{ event = 'request_sent'; nonce = $Token; connection_id = $connection; seq = $sequence; ordinal = $requestOrdinal; cadence_ms = $cadenceMs; bytes = $bytes.Length }
+                    Write-JsonLine $Path @{ event = 'request_sent'; nonce = $Token; connection_id = $connection; seq = $sequence; ordinal = $requestOrdinal; cadence_ms = $cadenceMs; bytes = $bytes.Length; http_host = $sni }
                     Start-Sleep -Milliseconds $cadenceMs
                 }
                 $ssl.Dispose()
