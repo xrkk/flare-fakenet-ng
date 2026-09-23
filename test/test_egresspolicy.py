@@ -811,3 +811,126 @@ def test_gui_full_validation_and_reload_share_core_static_rules(text, tmp_path):
     assert gui_accepts(reloaded) is accepted
     if text is not None and '\n' not in text:
         assert text in model.render()
+
+
+# ACC-004: the same saved bytes must reach the actual core configuration
+# entry point.  Expected verdicts are fixed independently of the parser.
+@pytest.mark.parametrize('text,valid,normalized', [
+    (None, True, ()),
+    ('TCP/110.242.69.21/443', True, ('TCP/110.242.69.21/443',)),
+    ('UDP/110.242.69.21/*', True, ('UDP/110.242.69.21/*',)),
+    (' TCP/110.242.69.21/0443,\n UDP/110.242.69.21/53 ', True,
+     ('TCP/110.242.69.21/443', 'UDP/110.242.69.21/53')),
+    ('', False, ()),
+    ('tcp/110.242.69.21/443', False, ()),
+    ('TCP/110.242.69.21/443,', False, ()),
+    ('TCP/110.242.69.21/*,TCP/110.242.69.21/443', False, ()),
+    ('TCP/110.242.69.21/443,TCP/110.242.69.21/0443', False, ()),
+    ('TCP/127.0.0.1/443', False, ()),
+    ('TCP/110.242.69.21/65536', False, ()),
+    ('TCP/110.242.069.21/443', False, ()),
+    ('TCP/110.242.69.21/+443', False, ()),
+    (','.join('TCP/110.242.69.21/%d' % n for n in range(1, 33)), True,
+     tuple('TCP/110.242.69.21/%d' % n for n in range(1, 33))),
+    (','.join('TCP/110.242.69.21/%d' % n for n in range(1, 34)), False, ()),
+    (','.join('TCP/110.242.69.%d/443' % n for n in range(1, 17)), True,
+     tuple('TCP/110.242.69.%d/443' % n for n in range(1, 17))),
+    (','.join('TCP/110.242.69.%d/443' % n for n in range(1, 18)), False, ()),
+])
+def test_saved_gui_matrix_reaches_fakenet_and_policy(text, valid, normalized, tmp_path):
+    import hashlib
+    from fakenet.fakenet import Fakenet
+    from fakenet.gui.configmodel import ConfigModel
+    from fakenet.gui import validator
+
+    model = ConfigModel.load('fakenet/configs/default.ini')
+    model.fakenet().set('DivertTraffic', 'Yes')
+    model.diverter().set('ExternalAccessPolicy', 'EgressControl')
+    model.diverter().set('ExternalAllowedDomains', 'api.deepseek.com')
+    model.diverter().set('ExternalDnsServer', '8.8.8.8')
+    validator.ensure_egress_control_topology(model)
+    for key in ('ExternalProcessRedirectImagePath', 'ExternalProcessRedirectImageSHA256',
+                'ExternalProcessRedirectOriginalIPv4', 'ExternalProcessRedirectTargetIPv4'):
+        model.diverter().delete(key)
+    field = 'ExternalAllowedIPv4Rules'
+    if text is None:
+        model.diverter().delete(field)
+    else:
+        model.diverter().set(field, text)
+    gui_errors = [issue for issue in validator.validate(model)
+                  if issue.level == validator.ERROR]
+    assert bool(gui_errors) is not valid, gui_errors
+
+    saved = tmp_path / 'rules.ini'
+    model.save(str(saved))
+    reloaded = ConfigModel.load(str(saved))
+    if text is None:
+        assert reloaded.diverter().get(field) is None
+    else:
+        assert all(part.strip() in saved.read_text() for part in text.split(','))
+        # ConfigParser removes indentation/trailing whitespace on continuation
+        # lines while retaining the rule tokens and their verdict.
+        assert [part.strip() for part in reloaded.diverter().get(field).split(',')] == [
+            part.strip() for part in text.split(',')]
+    reload_errors = [issue for issue in validator.validate(reloaded)
+                     if issue.level == validator.ERROR]
+    assert bool(reload_errors) is not valid, reload_errors
+    parsed = Fakenet()
+    parsed.parse_config(str(saved))
+    if text is None:
+        assert field.lower() not in parsed.diverter_config
+    else:
+        assert [part.strip() for part in parsed.diverter_config[field.lower()].split(',')] == [
+            part.strip() for part in text.split(',')]
+    if not valid:
+        with pytest.raises(PolicyConfigError):
+            EgressPolicy(parsed.diverter_config, ['10.0.0.5'], [], '8.8.8.8')
+        return
+
+    policy = EgressPolicy(parsed.diverter_config, ['10.0.0.5'], [], '8.8.8.8')
+    assert tuple(rule.normalized for rule in policy.reviewed_ipv4_rules) == tuple(sorted(normalized))
+    canonical = ','.join(sorted(normalized))
+    assert policy.reviewed_ipv4_config_sha256 == (
+        hashlib.sha256(canonical.encode('ascii')).hexdigest() if normalized else '')
+    expected_ids = {}
+    for item in normalized:
+        _, ip, _ = item.split('/')
+        expected_ids.setdefault(ip, []).append(hashlib.sha256(item.encode('ascii')).hexdigest()[:16])
+    assert dict(policy.reviewed_ipv4_rule_ids) == {
+        ip: tuple(sorted(ids)) for ip, ids in expected_ids.items()}
+    assert set(policy._reviewed_match_index) == {
+        (item.split('/')[0], item.split('/')[1]) for item in normalized}
+
+
+@pytest.mark.parametrize('case', ['fragment_option', 'local_target', 'resolver_target'])
+def test_saved_gui_input_keeps_static_and_runtime_rejections_distinct(case, tmp_path):
+    from fakenet.fakenet import Fakenet
+    from fakenet.gui.configmodel import ConfigModel
+    from fakenet.gui import validator
+
+    model = ConfigModel.load('fakenet/configs/default.ini')
+    model.fakenet().set('DivertTraffic', 'Yes')
+    model.diverter().set('ExternalAccessPolicy', 'EgressControl')
+    model.diverter().set('ExternalAllowedDomains', 'api.deepseek.com')
+    model.diverter().set('ExternalDnsServer', '8.8.8.8')
+    validator.ensure_egress_control_topology(model)
+    for key in ('ExternalProcessRedirectImagePath', 'ExternalProcessRedirectImageSHA256',
+                'ExternalProcessRedirectOriginalIPv4', 'ExternalProcessRedirectTargetIPv4'):
+        model.diverter().delete(key)
+    model.diverter().set('ExternalAllowedIPv4Rules',
+        'TCP/8.8.8.8/443' if case == 'resolver_target' else 'TCP/110.242.69.21/443')
+    if case == 'fragment_option':
+        model.diverter().set('UDP/110.242.69.21/53', 'stray')
+    errors = [issue for issue in validator.validate(model)
+              if issue.level == validator.ERROR]
+    assert bool(errors) is (case == 'fragment_option')
+    saved = tmp_path / 'rules.ini'
+    model.save(str(saved))
+    reloaded = ConfigModel.load(str(saved))
+    assert bool([issue for issue in validator.validate(reloaded)
+                 if issue.level == validator.ERROR]) is (case == 'fragment_option')
+    parsed = Fakenet()
+    parsed.parse_config(str(saved))
+    local = ['110.242.69.21'] if case == 'local_target' else ['10.0.0.5']
+    with pytest.raises(PolicyConfigError):
+        EgressPolicy(parsed.diverter_config, local, [], '8.8.8.8')
