@@ -1363,7 +1363,7 @@ class Suite:
 
     def _continuation_gate(self) -> dict[str, Any]:
         assert self.vm
-        for owner in (self.root / 'evidence').glob('*/attempt-*/qpc-process-responsibility.json'):
+        for owner in (self.root / 'evidence').rglob('qpc-process-responsibility.json'):
             terminal = owner.with_name('qpc-process-terminal.json')
             if not terminal.is_file():
                 raise Blocked('QPC diagnostic process responsibility remains unsettled: ' + str(owner))
@@ -3520,7 +3520,6 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             return raw
         probe = payload('probe.jsonl')
         raw_text = payload('pktmon.txt')
-        text = raw_text.decode('utf-16' if raw_text.startswith(b'\xff\xfe') else 'utf-8-sig')
         log = payload('run.log').decode('utf-8-sig')
         ipc = [json.loads(line) for line in payload('ipc-parent.jsonl').splitlines()]
         managed_pid, _ = tcpip.managed_identity(ipc, run['run_id'])
@@ -3536,7 +3535,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 src, dst = row.get('src'), row.get('actual_dst') or row.get('dst')
                 if not src or not dst or not row.get('connection_id'):
                     raise SuiteError('auxiliary QPC probe tuple/connection missing')
-                observed = tcpip.connection_events(text, by_name['pktmon.txt']['path'], log,
+                observed = tcpip.connection_events(raw_text, by_name['pktmon.txt']['path'], log,
                     row['pid'], src, dst, managed_pid, log_path=by_name['run.log']['path'])
                 cases.append({'case_index': row['case_index'],
                     'connection_id': row['connection_id'], 'pid': row['pid'],
