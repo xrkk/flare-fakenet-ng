@@ -128,3 +128,77 @@ def check_provenance(capture, ready, process_ready, established, action,
 
 def ready_or_child(process_ready, ready):
     return process_ready if process_ready is not None else ready
+
+
+def check_aux_provenance(capture, ready, process_ready, established, trace_header,
+                         candidate_id, managed_run_id, managed_pid,
+                         managed_creation_filetime):
+    """Bind an auxiliary probe and complete ETL to one native boot and QPC.
+
+    The managed PID/creation comes from the original start IPC. No fault
+    action or fault-specific clock observation is borrowed for this path.
+    """
+    capture_run = capture.get('capture_run_id')
+    nonce = capture.get('nonce')
+    _require(bool(capture_run) and bool(nonce) and
+             capture.get('candidate_id') == candidate_id,
+             'auxiliary capture run/nonce/candidate missing')
+    items = [
+        _identity(capture.get('native_identity_before'), 'capture before',
+                  capture_run, nonce, candidate_id),
+        _identity(capture.get('native_identity_after'), 'capture after',
+                  capture_run, nonce, candidate_id),
+        _identity(ready.get('native_identity'), 'probe ready',
+                  capture_run, nonce, candidate_id),
+    ]
+    if process_ready is not None:
+        child = _identity(process_ready.get('native_identity'), 'probe child',
+                          capture_run, nonce, candidate_id)
+        items.append(child)
+        probe = child
+        _require(child['pid'] == process_ready.get('pid') == established.get('pid')
+                 and child.get('collector_pid') == items[2]['pid'],
+                 'auxiliary child native identity differs')
+    else:
+        probe = items[2]
+        _require(probe['pid'] == ready.get('pid') == established.get('pid'),
+                 'auxiliary probe PID differs')
+    _require(ready.get('nonce') == established.get('nonce') == nonce and
+             probe['creation_filetime_100ns'] ==
+             ready_or_child(process_ready, ready).get('creation_ticks', 0) - FILETIME_EPOCH_TICKS,
+             'auxiliary probe native creation/run differs')
+    boot = items[0]['boot']['boot_identifier']
+    vm = items[0]['vm_identity']
+    frequency = items[0]['qpc_frequency']
+    for item in items[1:]:
+        _require(item['boot']['boot_identifier'] == boot and
+                 item['vm_identity'] == vm and item['qpc_frequency'] == frequency,
+                 'auxiliary cross-source boot/VM/frequency differs')
+    for name in ('clock_before', 'clock_after'):
+        _require(capture.get(name, {}).get('stopwatch_frequency') == frequency,
+                 'auxiliary capture Stopwatch frequency differs')
+    _require(trace_header.get('ReservedFlags') == 1 and
+             trace_header.get('PerfFreq') == frequency and
+             isinstance(trace_header.get('BootTime'), int) and
+             trace_header['BootTime'] > 0 and
+             trace_header.get('EventsLost') == trace_header.get('BuffersLost') == 0,
+             'auxiliary ETL QPC clock/frequency/boot-time/loss unsupported')
+    _require(type(managed_pid) is int and managed_pid > 0 and
+             type(managed_creation_filetime) is int and managed_creation_filetime > 0,
+             'auxiliary managed original process identity missing')
+    cb, ca = capture.get('clock_before', {}), capture.get('clock_after', {})
+    _require(all(type(x.get(key)) is int and x[key] > 0 for x in (cb, ca)
+                 for key in ('q0', 'q1')) and
+             cb['q0'] <= cb['q1'] <= ca['q0'] <= ca['q1'],
+             'auxiliary capture QPC brackets missing/reversed')
+    return {'schema': 'sst.aux-qpc-provenance.v1', 'boot_identifier': boot,
+            'vm_identity': vm, 'qpc_frequency': frequency,
+            'etl_boot_time_filetime_100ns': trace_header['BootTime'],
+            'capture_run_id': capture_run, 'managed_run_id': managed_run_id,
+            'nonce': nonce, 'candidate_id': candidate_id,
+            'probe_pid': probe['pid'],
+            'probe_creation_filetime_100ns': probe['creation_filetime_100ns'],
+            'managed_pid': managed_pid,
+            'managed_creation_filetime_100ns': managed_creation_filetime,
+            'capture_qpc': {'before': [cb['q0'], cb['q1']],
+                            'after': [ca['q0'], ca['q1']]}}

@@ -51,6 +51,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import scenario_clock as _sst_clock
 from scenario_qpc_contract import MODE as QPC_MODE
+
+AUX_QPC_MODE = 'native-qpc-zero-tcb-v1'
 DEFAULT_SUITE_ROOT = REPO_ROOT / 'Logs' / 'fakenetng-mcp' / 'scenario-suite-20260912'
 SCHEMA = 'fakenetng.mcp-scenario-suite.v1'
 SCENARIO_SCHEMA = 'fakenetng.mcp-scenario.v1'
@@ -1026,6 +1028,9 @@ class Suite:
         self.fault_clock_evidence = getattr(args, 'fault_clock_evidence', 'utc-v2')
         if self.fault_clock_evidence not in ('utc-v2', QPC_MODE):
             raise SuiteError('unsupported fault clock evidence mode')
+        self.auxiliary_clock_evidence = getattr(args, 'auxiliary_clock_evidence', 'utc-v1')
+        if self.auxiliary_clock_evidence not in ('utc-v1', AUX_QPC_MODE):
+            raise SuiteError('unsupported auxiliary clock evidence mode')
         self.requested_native_clock_diagnostic = bool(getattr(args, 'native_clock_diagnostic', False))
         self.native_clock_diagnostic = self.requested_native_clock_diagnostic
         self.root = Path(args.suite_root).resolve()
@@ -2558,6 +2563,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             # Application observations prove a complete connection, not the
             # fault-action overlap contract. Only the new unattributed negative
             # constraints add CON009's conservative pre-establishment rejection.
+            if (getattr(self, 'auxiliary_clock_evidence', 'utc-v1') == AUX_QPC_MODE and
+                    origin.get('event') == 'case_established'):
+                raise SuiteError('auxiliary native QPC zero-TCB TDH semantics unverified')
             if observed['tuple_terminals'] and min(fault.time_bounds(e['text'])[0]
                     for e in observed['tuple_terminals']) - uncertainty < begin:
                 raise SuiteError('application lifetime constrained before establishment')
@@ -3251,9 +3259,10 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 value.get('computer') != 'DESKTOP-3FI41GR':
             raise Blocked('QPC diagnostic guest interpreter or VM identity differs')
 
-    def _recover_qpc_guest_process(self, guest: str, run_id: str, source_sha: str) -> dict[str, Any]:
+    def _recover_qpc_guest_process(self, guest: str, run_id: str, source_sha: str,
+                                   program_name: str = 'scenario_qpc_diagnostic.py') -> dict[str, Any]:
         """Reconcile only the diagnostic launched under this unique guest root."""
-        program = guest + r'\input\tools\scenario_qpc_diagnostic.py'
+        program = guest + '\\input\\tools\\' + program_name
         output = guest + r'\export'
         command = (
             "$ErrorActionPreference='Stop';# qpc-responsibility-recover\n"
@@ -3299,10 +3308,14 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     'recovery_error': repr(exc)}
 
     def _collect_qpc_export(self, base_path: Path, base: dict[str, Any], root: Path,
-                            evidence: Evidence, run_id: str) -> None:
+                            evidence: Evidence, run_id: str,
+                            program_name: str = 'scenario_qpc_diagnostic.py') -> None:
         """Export complete ETL after cleanup; seal guest output before verdict."""
         bundle = root / 'qpc-input.zip'
-        scripts = ('scenario_qpc_diagnostic.py', 'scenario_qpc_identity.py',
+        if program_name not in ('scenario_qpc_diagnostic.py', 'scenario_aux_qpc_diagnostic.py'):
+            raise SuiteError('unsupported QPC diagnostic program')
+        scripts = ('scenario_qpc_diagnostic.py', 'scenario_aux_qpc_diagnostic.py',
+                   'scenario_qpc_identity.py',
                    'etl_raw_clock.py', 'tdh_metadata.py', 'scenario_tcpip.py',
                    'scenario_clock.py', 'sst_fault_evidence.py')
         with zipfile.ZipFile(bundle, 'x', compression=zipfile.ZIP_DEFLATED,
@@ -3318,7 +3331,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         evidence.add(bundle)
         if bundle.stat().st_size > MAX_GUEST_TRANSFER:
             raise SuiteError('QPC input exceeds host-only transfer bound')
-        scope = hashlib.sha256((str(self.root) + run_id).encode()).hexdigest()[:20]
+        scope_key = str(self.root) + run_id + (
+            program_name if program_name != 'scenario_qpc_diagnostic.py' else '')
+        scope = hashlib.sha256(scope_key.encode()).hexdigest()[:20]
         guest = GUEST_ROOT + r'\qpc-contract-' + scope
         guest_case = guest + '\\input\\evidence\\' + str(base_path.relative_to(self.root)).replace('/', '\\')
         source_sha = hashlib.sha256(bundle.read_bytes()).hexdigest()
@@ -3326,7 +3341,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         write_new_json(responsibility, {
             'schema': 'sst.qpc-process-responsibility.v1', 'run_id': run_id,
             'guest_root': guest, 'input_sha256': source_sha,
-            'program': guest + r'\input\tools\scenario_qpc_diagnostic.py',
+            'program': guest + '\\input\\tools\\' + program_name,
             'output': guest + r'\export', 'python': r'C:\Python313\python.exe',
             'inner_wait_seconds': QPC_EXPORT_WAIT_SECONDS,
             'rpc_timeout_seconds': QPC_EXPORT_RPC_SECONDS,
@@ -3347,7 +3362,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 "Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $r 'input');"
                 "$p='C:\\Python313\\python.exe';if(!(Test-Path -LiteralPath $p -PathType Leaf))"
                 "{throw 'QPC Python313 absent'};"
-                "$program=Join-Path $r 'input\\tools\\scenario_qpc_diagnostic.py';"
+                "$program=Join-Path $r " + quote_ps('input\\tools\\' + program_name) + ";"
                 "$out=Join-Path $r 'export';$stdout=Join-Path $r 'stdout.txt';"
                 "$stderr=Join-Path $r 'stderr.txt';"
                 "$run=" + quote_ps(run_id) + ";$sha=" + quote_ps(source_sha) + ";"
@@ -3400,7 +3415,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                                                     'host_only_transfer': transfer_record})
         evidence.add(root / 'qpc-transfer.json')
         process = value.get('process')
-        expected_program = guest + r'\input\tools\scenario_qpc_diagnostic.py'
+        expected_program = guest + '\\input\\tools\\' + program_name
         expected_output = guest + r'\export'
         normal_exit = (isinstance(process, dict)
             and process.get('schema') == 'sst.qpc-guest-terminal.v1'
@@ -3419,7 +3434,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             and process.get('state') in ('exited', 'timeout_terminated')
             and process.get('exit_proven') is True)
         settlement = (process if normal_exit else
-                      self._recover_qpc_guest_process(guest, run_id, source_sha))
+                      self._recover_qpc_guest_process(guest, run_id, source_sha,
+                                                      program_name))
         exit_proven = (normal_exit or
             (settlement.get('exit_proven') is True
              and settlement.get('guest_root') == guest
@@ -3478,6 +3494,96 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 terminal.get('state') != 'exited' or
                 manifest.get('status') != 'COMPLETE_DIAGNOSTIC_ONLY'):
             raise SuiteError('QPC Windows export incomplete: ' + repr(manifest.get('error')))
+
+    def _collect_auxiliary_qpc(self, run: dict[str, Any], nonce: str,
+                               root: Path, evidence: Evidence) -> None:
+        """Seal one run's exact auxiliary generations for later native review.
+
+        The zero-TCB TDH descriptor is still unverified. The guest exporter
+        therefore always returns INCOMPLETE and this path cannot pass traffic.
+        """
+        import scenario_tcpip as tcpip
+        files = run['capture']['files'] + run['originals']['files']
+        by_name = {Path(item['path']).name: item for item in files}
+        required = ('probe.jsonl', 'pktmon.txt', 'pktmon.etl', 'pktmon-nic.json',
+                    'run.log', 'ipc-parent.jsonl')
+        if len(by_name) != len(files) or any(name not in by_name for name in required):
+            raise SuiteError('auxiliary QPC original file set missing/ambiguous')
+        def payload(name: str) -> bytes:
+            record = by_name[name]
+            path = (self.root / record['path']).resolve()
+            if not path.is_relative_to(self.root) or not path.is_file():
+                raise SuiteError('auxiliary QPC original path invalid')
+            raw = path.read_bytes()
+            if len(raw) != record['size'] or hashlib.sha256(raw).hexdigest() != record['sha256']:
+                raise SuiteError('auxiliary QPC original hash changed: ' + name)
+            return raw
+        probe = payload('probe.jsonl')
+        raw_text = payload('pktmon.txt')
+        text = raw_text.decode('utf-16' if raw_text.startswith(b'\xff\xfe') else 'utf-8-sig')
+        log = payload('run.log').decode('utf-8-sig')
+        ipc = [json.loads(line) for line in payload('ipc-parent.jsonl').splitlines()]
+        managed_pid, _ = tcpip.managed_identity(ipc, run['run_id'])
+        cases = []
+        position = 0
+        probe_records = []
+        for line in probe.splitlines(keepends=True):
+            row = json.loads(line)
+            ref = {'path': by_name['probe.jsonl']['path'], 'byte_start': position,
+                   'byte_end': position + len(line), 'event_key': 'json:'}
+            probe_records.append((row, ref))
+            if row.get('event') == 'case_established' and row.get('nonce') == nonce:
+                src, dst = row.get('src'), row.get('actual_dst') or row.get('dst')
+                if not src or not dst or not row.get('connection_id'):
+                    raise SuiteError('auxiliary QPC probe tuple/connection missing')
+                observed = tcpip.connection_events(text, by_name['pktmon.txt']['path'], log,
+                    row['pid'], src, dst, managed_pid, log_path=by_name['run.log']['path'])
+                cases.append({'case_index': row['case_index'],
+                    'connection_id': row['connection_id'], 'pid': row['pid'],
+                    'src': src, 'dst': dst,
+                    'probe_ref': ref,
+                    'connection_refs': [event['ref'] for event in observed['events']],
+                    'tuple_terminal_refs': [event['ref'] for event in observed['tuple_terminals']],
+                    'generation_manifest': observed['generation_manifest']})
+            position += len(line)
+        for item in cases:
+            item['end_refs'] = [ref for row, ref in probe_records
+                if row.get('nonce') == nonce and row.get('pid') == item['pid']
+                and row.get('connection_id') == item['connection_id']
+                and row.get('event') in ('case_error', 'case_eof', 'case_close')]
+            if not item['end_refs']:
+                raise SuiteError('auxiliary QPC probe terminal missing')
+        if not cases:
+            raise SuiteError('auxiliary QPC established TCP case absent')
+        if len({(item['case_index'], item['connection_id']) for item in cases}) != len(cases):
+            raise SuiteError('auxiliary QPC duplicate established case')
+        native_root = root / run['label'] / 'auxiliary-qpc'
+        native_root.mkdir(parents=True, exist_ok=False)
+        meta = by_name['pktmon-nic.json']
+        descriptor = {'schema': 'sst.aux-qpc-input.v1',
+                      'candidate_id': self.identity.candidate_id,
+                      'run_id': run['run_id'], 'nonce': nonce,
+                      'files': [{'path': item['path'], 'bytes': item['size'],
+                                 'sha256': item['sha256']} for item in files],
+                      'capture': {'etl_path': by_name['pktmon.etl']['path'],
+                                  'text_path': by_name['pktmon.txt']['path'],
+                                  'metadata_ref': {'path': meta['path'], 'byte_start': 0,
+                                                   'byte_end': meta['size'], 'event_key': 'json:'}},
+                      'run_log_path': by_name['run.log']['path'],
+                      'ipc_path': by_name['ipc-parent.jsonl']['path'],
+                      'cases': cases}
+        descriptor_path = native_root / 'auxiliary-qpc-input.json'
+        write_new_json(descriptor_path, descriptor)
+        evidence.add(descriptor_path)
+        try:
+            self._collect_qpc_export(descriptor_path, descriptor, native_root, evidence,
+                                     run['run_id'], 'scenario_aux_qpc_diagnostic.py')
+        finally:
+            run['auxiliary_qpc_process'] = {
+                name: file_record(native_root / name, self.root)
+                for name in ('qpc-process-responsibility.json',
+                             'qpc-process-terminal.json', 'qpc-transfer.json')
+                if (native_root / name).is_file()}
 
     def _adjudicate_fault(self, scenario: dict[str, Any], run: dict[str, Any], nonce: str,
                           root: Path, evidence: Evidence, fault_evidence: dict[str, Any]) -> dict[str, Any]:
@@ -4197,14 +4303,21 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         """Execute one manifest row and retain every oracle input, pass or fail."""
         self.native_clock_diagnostic = (self.requested_native_clock_diagnostic or
             (scenario.get('fault_class') == 'diverter_stop' and
-             self.fault_clock_evidence == QPC_MODE))
+             self.fault_clock_evidence == QPC_MODE) or
+            self.auxiliary_clock_evidence == AUX_QPC_MODE)
         self.require_clients()
         preflight = self._require_preflight()
         scenario_id = scenario['scenario_id']
         result_path = self._result_path(scenario_id)
         if result_path.exists():
-            return read_json(result_path)
-        if scenario.get('fault_class') == 'diverter_stop' and self.fault_clock_evidence == QPC_MODE:
+            previous = read_json(result_path)
+            previous_mode = (previous.get('traffic_evidence') or {}).get(
+                'auxiliary_clock_evidence', 'utc-v1')
+            if previous_mode != self.auxiliary_clock_evidence:
+                raise SuiteError('existing result uses another auxiliary clock evidence mode')
+            return previous
+        if ((scenario.get('fault_class') == 'diverter_stop' and self.fault_clock_evidence == QPC_MODE)
+                or self.auxiliary_clock_evidence == AUX_QPC_MODE):
             self._require_qpc_guest_python()
         gate = self._continuation_gate()
         nonce = '%s-a%d-%s' % (scenario_id, attempt, uuid.uuid4().hex)
@@ -4735,6 +4848,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 if 'five_sections_after' not in run:
                     run['five_sections_after'] = after_sections
                 if not fault and run.get('start_response', {}).get('state') == 'healthy':
+                    if self.auxiliary_clock_evidence == AUX_QPC_MODE:
+                        self._collect_auxiliary_qpc(run, nonce, root, evidence)
                     run['traffic_oracle'] = self._traffic_oracle(
                         run, runtime_profile, nonce, sentinel_evidence)
                     if not fault:
@@ -4753,6 +4868,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     scenario, primary, nonce, root, evidence, fault_evidence)
                 primary['fault_connection_case'] = fault_evidence['adjudication'].get('case')
                 if primary.get('start_response', {}).get('state') == 'healthy':
+                    if self.auxiliary_clock_evidence == AUX_QPC_MODE:
+                        self._collect_auxiliary_qpc(primary, nonce, root, evidence)
                     # Same verdict path and identity inputs as the offline
                     # _traffic_recheck_issues re-adjudication: no fault-window
                     # waiver, no divergent parameters (2026-09-20 VFY-004 fix).
@@ -4813,6 +4930,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                   'attempt': attempt, 'seed': scenario['seed'], 'interface_calls': calls,
                   'cleanup_calls': cleanup_calls,
                   'traffic_evidence': {'nonce': nonce, 'runtime_profile': runtime_profile,
+                                       'auxiliary_clock_evidence': self.auxiliary_clock_evidence,
                                        'fnpr_sentinel_record': sentinel_record,
                                        'capture_views': [file_record(root / item['path'], self.root)
                                            for item in evidence.items]},
@@ -5086,6 +5204,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         runtime = traffic.get('runtime_profile')
         if not isinstance(nonce, str) or not isinstance(runtime, dict):
             return ['traffic recheck lacks nonce/runtime profile']
+        if traffic.get('auxiliary_clock_evidence', 'utc-v1') != getattr(
+                self, 'auxiliary_clock_evidence', 'utc-v1'):
+            return ['traffic auxiliary clock evidence mode differs from requested mode']
         planned = expected.get('config_profile') or {}
         for key, value in planned.items():
             if key == 'probe_target':
@@ -5521,6 +5642,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help='capture optional boot/process/QPC identity without changing verdicts')
     parser.add_argument('--fault-clock-evidence', choices=('utc-v2', QPC_MODE), default='utc-v2',
                         help='explicit diverter_stop clock proof; default retains v2 UTC verdict')
+    parser.add_argument('--auxiliary-clock-evidence', choices=('utc-v1', AUX_QPC_MODE),
+                        default='utc-v1',
+                        help='explicit auxiliary TCP native QPC collection; zero-TCB TDH gate currently fails closed')
     parser.add_argument('--filter', choices=('benign', 'fault'))
     parser.add_argument('--fault-spike-result')
     parser.add_argument('--stop-on-first-failure', action='store_true')
