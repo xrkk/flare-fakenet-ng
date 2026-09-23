@@ -181,11 +181,11 @@ def test_rebuild_checks_complete_single_pass_original_and_byte_refs(tmp_path,
     (single_root / 'manifest.json').write_text(json.dumps(manifest))
     monkeypatch.setattr(v2.shared, 'verify_tdh_rows', lambda rows, selectors: None)
     if change == 'none':
-        rows, _ = v2._single_rows(export, etl, 3, [record], {'clock': 'qpc'})
+        rows, _ = v2._single_rows(export, etl, 3, [dict(record, seq=2)], {'clock': 'qpc'})
         assert rows[0]['record_ref']['sha256'] == index[0]['sha256']
     else:
         with pytest.raises(raw.DiagnosticError):
-            v2._single_rows(export, etl, 3, [record], {'clock': 'qpc'})
+            v2._single_rows(export, etl, 3, [dict(record, seq=2)], {'clock': 'qpc'})
 
 
 @pytest.mark.parametrize('failure', ['lost', 'short_count', 'api_error', 'callback'])

@@ -82,7 +82,8 @@ def _single_rows(export, etl, legacy_count, legacy_raw, header):
     _require(len({item['seq'] for item in selectors}) == len(selectors),
              'single-pass callback locator reused')
     native = Counter(json.dumps(row['record'], sort_keys=True) for row in records)
-    historical = Counter(json.dumps(row, sort_keys=True) for row in legacy_raw
+    historical = Counter(json.dumps({key: value for key, value in row.items()
+                                     if key != 'seq'}, sort_keys=True) for row in legacy_raw
                          if row['provider'] == qpc.TCPIP_PROVIDER and row['id'] == 1479)
     _require(native == historical, 'single-pass omitted/added/changed TCPIP RST record')
     _require(all(item['record']['timestamp'] == item['selector']['raw_qpc']
