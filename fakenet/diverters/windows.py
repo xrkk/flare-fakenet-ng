@@ -503,6 +503,12 @@ class Diverter(DiverterBase, WinUtilMixin):
         # never came from the real peer (discovery100-04 sst-006 conn-1).
         self._syn_observed_flows = set()
         self._midstream_bypass_flows = set()
+        # An observed SYN can be rewritten before reinjection. Remember the
+        # wire tuple and its reverse so later packets on either side of the
+        # base NAT cannot be mistaken for startup-race midstream traffic.
+        self._observed_nat_tuples = {}
+        self._observed_nat_forward = set()
+        self._observed_nat_owners = {}
         self._reviewed_route_snapshots = ()
         self._reviewed_target_protocols = frozenset()
         self._reviewed_ip_audit = ReviewedIpFlowAudit()
@@ -1671,6 +1677,15 @@ class Diverter(DiverterBase, WinUtilMixin):
                     self._send_packet(pkt)
                     return
                 cb3, cb4 = self._callbacks()
+                if (pkt.proto == 'TCP' and
+                        (pkt.src_ip0, pkt.sport0, pkt.dst_ip0, pkt.dport0)
+                        in self._observed_nat_forward):
+                    # This packet is already on the translated local leg.
+                    # Re-running forward NAT would delete the original
+                    # endpoint's mapping as "stale", so the later listener
+                    # reply would lose its source fixup.
+                    cb4 = [cb for cb in cb4 if cb not in (
+                        self.maybe_redir_port, self.maybe_redir_ip)]
                 self.handle_pkt(pkt, cb3, cb4,
                                 raw_already_captured=True)
                 handled_by_base = True
@@ -1691,7 +1706,10 @@ class Diverter(DiverterBase, WinUtilMixin):
                 self.log_egress_event(
                     'DIVERT_FAKE', original_ip=pkt.dst_ip0,
                     original_port=pkt.dport0)
-            if not self._send_packet(pkt) and mapping:
+            sent = self._send_packet(pkt)
+            if sent and handled_by_base:
+                self._remember_observed_nat_syn(pkt)
+            if not sent and mapping:
                 self.egress_policy.close_relay_mapping(mapping.generation)
         except PcapWriteError:
             if new_mapping_generation:
@@ -1711,9 +1729,50 @@ class Diverter(DiverterBase, WinUtilMixin):
                     (pkt.hdr.data.flags & dpkt.tcp.TH_SYN) and
                      not (pkt.hdr.data.flags & dpkt.tcp.TH_ACK))
         if is_syn:
-            self._syn_observed_flows.add((pkt.src_ip0, pkt.sport0,
-                                          pkt.dst_ip0, pkt.dport0))
+            key = (pkt.src_ip0, pkt.sport0, pkt.dst_ip0, pkt.dport0)
+            # A new connection may reuse a tuple previously classified as
+            # startup midstream, or one with a completed NAT relationship.
+            # The current SYN owns the new generation of that exact tuple.
+            owner = self._observed_nat_owners.get(key)
+            if owner is not None:
+                self._forget_observed_nat(owner)
+            self._forget_observed_nat(key)
+            self._midstream_bypass_flows.discard(key)
+            self._syn_observed_flows.add(key)
         return is_syn
+
+    def _forget_observed_nat(self, original):
+        keys = self._observed_nat_tuples.pop(original, ())
+        if keys:
+            self._syn_observed_flows.discard(original)
+        for key in keys:
+            if self._observed_nat_owners.get(key) == original:
+                del self._observed_nat_owners[key]
+                self._syn_observed_flows.discard(key)
+                self._observed_nat_forward.discard(key)
+
+    def _remember_observed_nat_syn(self, pkt):
+        if (pkt.proto != 'TCP' or
+                not (pkt.hdr.data.flags & dpkt.tcp.TH_SYN) or
+                (pkt.hdr.data.flags & dpkt.tcp.TH_ACK)):
+            return
+        original = (pkt.src_ip0, pkt.sport0, pkt.dst_ip0, pkt.dport0)
+        translated = (pkt.src_ip, pkt.sport, pkt.dst_ip, pkt.dport)
+        if translated == original:
+            return
+        reverse = (translated[2], translated[3],
+                   translated[0], translated[1])
+        keys = {translated, reverse}
+        for key in keys:
+            owner = self._observed_nat_owners.get(key)
+            if owner is not None and owner != original:
+                self._forget_observed_nat(owner)
+        self._observed_nat_tuples[original] = keys
+        for key in keys:
+            self._observed_nat_owners[key] = original
+        self._observed_nat_forward.add(translated)
+        self._syn_observed_flows.update(keys)
+        self._midstream_bypass_flows.difference_update(keys)
 
     def _is_midstream_tcp_flow(self, pkt):
         """True when this TCP packet belongs to a flow whose SYN we never saw.
@@ -1737,8 +1796,10 @@ class Diverter(DiverterBase, WinUtilMixin):
         if flags & dpkt.tcp.TH_SYN:
             return False
         key = (pkt.src_ip0, pkt.sport0, pkt.dst_ip0, pkt.dport0)
-        if key in self._syn_observed_flows or key in self._midstream_bypass_flows:
-            return key in self._midstream_bypass_flows
+        if key in self._syn_observed_flows:
+            return False
+        if key in self._midstream_bypass_flows:
+            return True
         # First non-SYN packet for a flow with no SYN on record: the flow
         # was established before this diverter started capturing.
         self._midstream_bypass_flows.add(key)

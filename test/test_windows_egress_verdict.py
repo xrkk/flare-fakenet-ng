@@ -1,17 +1,35 @@
 import ast
 import configparser
+import dpkt
 import json
 import logging
 import pathlib
 import subprocess
+import sys
 import threading
+import types
 import unittest
 from unittest import mock
 
 from fakenet.diverters.egresspolicy import (
     PolicyConfigError, ReviewedIPv4Rule, ReviewedPacketTuple, Verdict)
+try:
+    import winreg  # noqa: F401
+except ModuleNotFoundError:
+    _winreg_stub = types.ModuleType('winreg')
+    for _name in ('KEY_READ', 'KEY_WRITE', 'KEY_ALL_ACCESS', 'KEY_QUERY_VALUE',
+                  'KEY_SET_VALUE', 'KEY_ENUMERATE_SUB_KEYS',
+                  'HKEY_LOCAL_MACHINE', 'HKEY_CURRENT_USER', 'HKEY_CLASSES_ROOT',
+                  'REG_SZ', 'REG_MULTI_SZ', 'REG_DWORD', 'REG_EXPAND_SZ',
+                  'REG_OPTION_NON_VOLATILE', 'KEY_CREATE_SUB_KEY'):
+        setattr(_winreg_stub, _name, 0)
+    sys.modules['winreg'] = _winreg_stub
+else:
+    _winreg_stub = None
 from fakenet.diverters.windows import (
     Diverter, ReviewedIpFlowAudit, ROUTE_PROBE_UDP_PORT)
+if _winreg_stub is not None:
+    del sys.modules['winreg']
 from fakenet.diverters.pcapwriter import PcapWriteError
 
 
@@ -156,6 +174,136 @@ class WindowsVerdictTests(unittest.TestCase):
         self.diverter.pdebug_level = 0
         self.diverter.pdebug_labels = {}
         self.diverter._reviewed_target_protocols = frozenset()
+
+    def test_managed_nat_flow_keeps_fixup_after_handshake(self):
+        """Policy handler must run base NAT for both observed TCP directions."""
+        d = self.diverter
+        d.egress_policy = mock.Mock(non_allowed_action='divert')
+        d.egress_policy.match_control_flow.return_value = None
+        d.egress_policy.match_reviewed_ip.return_value = None
+        d.egress_policy.is_exact_local_ipv4.side_effect = (
+            lambda ip: ip == '192.168.204.233')
+        d._matches_takeover_sink_route = mock.Mock(return_value=False)
+        d._timed_write_pcap = mock.Mock()
+        d._log_a_teardown_seen = mock.Mock()
+        d.log_egress_event = mock.Mock()
+        d._send_packet = mock.Mock(return_value=True)
+        d.apply_domain_relay_return_fixup = mock.Mock(return_value=None)
+        d.apply_domain_relay_forward_redirect = mock.Mock(return_value=None)
+        d.redirect_domain_tls_syn = mock.Mock(return_value=(None, None))
+        d.get_pid_comm = mock.Mock(return_value=(8520, 'powershell.exe'))
+        d.check_should_ignore = mock.Mock(return_value=False)
+        d.pdebug = mock.Mock()
+        d.getNewDestinationIp = mock.Mock(return_value='192.168.204.233')
+        d.ip_fwd_table = {}
+        d.ip_fwd_table_lock = threading.Lock()
+        d._syn_observed_flows = set()
+        d._midstream_bypass_flows = set()
+        d._observed_nat_tuples = {}
+        d._observed_nat_forward = set()
+        d._observed_nat_owners = {}
+        d.logger = mock.Mock()
+        nat_calls = []
+
+        def nat(packet, callbacks3, callbacks4, raw_already_captured=False):
+            nat_calls.append((packet.src_ip0, packet.sport0,
+                              packet.dst_ip0, packet.dport0))
+            for callback in callbacks4:
+                callback(None, packet, 8520, 'powershell.exe')
+
+        d.handle_pkt = mock.Mock(side_effect=nat)
+        d._callbacks = mock.Mock(return_value=([],
+            [d.maybe_redir_ip, d.maybe_fixup_srcip]))
+        wire = mock.Mock()
+        wire.raw.tobytes.return_value = bytes.fromhex(
+            '450000140000000040060000c0a8cce9c633644d')
+        wire.is_loopback = False
+
+        def packet(src, sport, dst, dport, flags):
+            p = Packet(src=src, sport=sport, dst=dst, dport=dport)
+            p.hdr = mock.Mock(data=mock.Mock(flags=flags))
+            p.skey = '%s:TCP/%s' % (src, sport)
+            p.dkey = '%s:TCP/%s' % (dst, dport)
+            return p
+
+        client = '192.168.204.233'
+        remote = '198.51.100.77'
+        forward = lambda flags, dst=remote: packet(client, 54364, dst, 1337, flags)
+        reverse = lambda flags: packet(client, 1337, client, 54364, flags)
+        samples = [forward(dpkt.tcp.TH_SYN),
+                   reverse(dpkt.tcp.TH_SYN | dpkt.tcp.TH_ACK),
+                   reverse(dpkt.tcp.TH_ACK),
+                   forward(dpkt.tcp.TH_ACK),
+                   forward(dpkt.tcp.TH_PUSH | dpkt.tcp.TH_ACK, client),
+                   reverse(dpkt.tcp.TH_FIN | dpkt.tcp.TH_ACK),
+                   forward(dpkt.tcp.TH_RST | dpkt.tcp.TH_ACK)]
+        with mock.patch('fakenet.diverters.windows.WindowsPacketCtx',
+                        side_effect=samples):
+            for item in samples:
+                d._handle_policy_packet(wire)
+
+        self.assertEqual(len(samples), len(nat_calls))
+        self.assertEqual(remote, samples[2].src_ip)
+        self.assertEqual(client, samples[4].dst_ip)
+        self.assertEqual(remote, d.ip_fwd_table['%s:TCP/54364' % client])
+        self.assertEqual(remote, samples[5].src_ip)
+        self.assertFalse(any(c.args[0] == 'ESTABLISHED_BYPASS'
+                             for c in d.log_egress_event.call_args_list))
+
+    def test_midstream_classification_preserves_startup_bypass_and_syn_reuse(self):
+        d = self.diverter
+        d._syn_observed_flows = set()
+        d._midstream_bypass_flows = set()
+        d._observed_nat_tuples = {}
+        d._observed_nat_forward = set()
+        d._observed_nat_owners = {}
+
+        def packet(src, sport, dst, dport, proto='TCP', flags=dpkt.tcp.TH_ACK):
+            p = Packet(proto=proto, src=src, sport=sport,
+                       dst=dst, dport=dport)
+            p.hdr = mock.Mock(data=mock.Mock(flags=flags))
+            return p
+
+        client = '192.168.204.233'
+        remote = '198.51.100.77'
+        startup = packet(client, 50000, remote, 1337)
+        self.assertTrue(d._is_midstream_tcp_flow(startup))
+        self.assertTrue(d._is_midstream_tcp_flow(startup))
+        self.assertTrue(d._is_midstream_tcp_flow(
+            packet(remote, 1337, client, 50000)))
+        self.assertFalse(d._is_midstream_tcp_flow(
+            packet(client, 50000, remote, 1337, proto='UDP')))
+        self.assertFalse(d._is_midstream_tcp_flow(
+            packet(client, 50000, remote, 1337,
+                   flags=dpkt.tcp.TH_SYN | dpkt.tcp.TH_ACK)))
+
+        new_syn = packet(client, 50000, remote, 1337,
+                         flags=dpkt.tcp.TH_SYN)
+        self.assertTrue(d._is_new_tcp_syn(new_syn))
+        self.assertFalse(d._is_midstream_tcp_flow(startup))
+        new_syn.dst_ip = client
+        d._remember_observed_nat_syn(new_syn)
+        local_reply = packet(client, 1337, client, 50000)
+        self.assertFalse(d._is_midstream_tcp_flow(local_reply))
+        self.assertTrue(d._is_midstream_tcp_flow(
+            packet(client, 1337, client, 50001)))
+
+        # Reuse removes the old reverse/translated generation; a new SYN
+        # replaces even an earlier bypass decision on its exact tuple.
+        self.assertTrue(d._is_new_tcp_syn(packet(
+            client, 50000, remote, 1337, flags=dpkt.tcp.TH_SYN)))
+        self.assertTrue(d._is_midstream_tcp_flow(local_reply))
+        self.assertFalse(d._is_midstream_tcp_flow(startup))
+
+        # A new SYN on a former translated tuple must also revoke the old
+        # NAT generation, so it is processed as a new local connection.
+        d._remember_observed_nat_syn(new_syn)
+        translated_syn = packet(client, 50000, client, 1337,
+                                flags=dpkt.tcp.TH_SYN)
+        self.assertTrue(d._is_new_tcp_syn(translated_syn))
+        self.assertNotIn((client, 50000, client, 1337),
+                         d._observed_nat_forward)
+        self.assertTrue(d._is_midstream_tcp_flow(startup))
 
     def test_reviewed_audit_rule_ids_are_keyword_bound_at_constructor(self):
         source_path = pathlib.Path(__file__).parents[1] / (
