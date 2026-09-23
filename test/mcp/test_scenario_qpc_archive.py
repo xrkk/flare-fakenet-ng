@@ -20,7 +20,7 @@ def test_three_complete_views_can_exceed_single_transfer_bound(tmp_path, monkeyp
     destination = tmp_path / 'output'; destination.mkdir()
     evidence = Evidence()
     suite.extract_qpc_archive(archive, destination, evidence)
-    assert {str(p.relative_to(destination)): p.read_bytes() for p in evidence.paths} == contents
+    assert {p.relative_to(destination).as_posix(): p.read_bytes() for p in evidence.paths} == contents
 
 @pytest.mark.parametrize('kind', ['member', 'aggregate', 'traversal', 'duplicate', 'symlink', 'count'])
 def test_invalid_archive_rejected_before_any_member_written(tmp_path, monkeypatch, kind):

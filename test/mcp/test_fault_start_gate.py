@@ -311,3 +311,33 @@ def test_diverter_close_error_disarms_call_trace(tmp_path, monkeypatch):
     with pytest.raises(OSError, match='close failed'):
         injector.inject_diverter_stop(Diverter())
     assert faulttrace.finish() is None
+
+
+@pytest.mark.parametrize('bad_receipt', ['sharing_violation', 'malformed_json'])
+def test_receipt_diagnostic_failure_cannot_prevent_diverter_close(tmp_path, monkeypatch, bad_receipt):
+    from fakenet.mcp import faulttrace
+    injector, _, _ = setup_gate(tmp_path, monkeypatch)
+    faultinject._fault_file().unlink()
+    injector.arm('diverter_stop')
+    closed = []
+    class Diverter:
+        handle = type('Handle', (), {'_handle': 123})()
+        def _close_windivert_handle(self):
+            closed.append(True)
+    original = Path.read_text
+    def read(path, *args, **kwargs):
+        if path.name == 'fault-triggered.json':
+            if bad_receipt == 'sharing_violation':
+                raise PermissionError('receipt sharing violation')
+            return '{'
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', read)
+    monkeypatch.setattr(faultinject, 'native_handle_observation', lambda _: {})
+    diverter = Diverter()
+    error = PermissionError if bad_receipt == 'sharing_violation' else json.JSONDecodeError
+    with pytest.raises(error):
+        injector.inject_diverter_stop(diverter)
+    assert closed == [True]
+    assert diverter.handle is None
+    assert faulttrace.finish() is None
+    assert not (tmp_path / 'run-identity' / 'fault-action.json').exists()

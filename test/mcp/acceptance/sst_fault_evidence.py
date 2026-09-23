@@ -563,7 +563,9 @@ def assess(case, root, expected_candidate=CANDIDATE):
                     # T009 only adds diagnostics below the unchanged line 127.
                     '8d6e100d89f7785e14c718f780582befd878f91101ba8f2a9d97c422d0f76366',
                     # T020 adds supplemental call tracing below the unchanged pause hook.
-                    'fd6729387f34683288fbdca6f043db5c48c1780d8d0a0420c9de4b3f15475b61'}
+                    'fd6729387f34683288fbdca6f043db5c48c1780d8d0a0420c9de4b3f15475b61',
+                    # T021 restores receipt I/O after close; same pause hook.
+                    '786413936bd9f4ff1b923cf68b1b83d14ed4b06a62595727fb5e45e03f7f5cba'}
                 and x.splitlines()[126].strip() == 'time.sleep(3600)'
                 for x in observations)
             matched = any(isinstance(x, str) and 'LIVE STOP STACKS timestamp=' in x

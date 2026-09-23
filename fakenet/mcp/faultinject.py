@@ -212,8 +212,9 @@ class FaultInjector:
             return False
         raw_handle = getattr(handle, '_handle', None)
         before = native_handle_observation(raw_handle)
-        receipt = json.loads((Path.cwd() / 'fault-triggered.json').read_text(encoding='utf-8'))
-        faulttrace.begin(Path.cwd().name, receipt['nonce'])
+        # Receipt I/O must remain after the actual fault, as before tracing.
+        # Bind the supplemental trace's nonce only after reading that receipt.
+        faulttrace.begin(Path.cwd().name, None)
         clock_before = native_clock_observation()
         identity_before = safe_native_identity()
         began = time.time_ns()
@@ -226,6 +227,9 @@ class FaultInjector:
             clock_after = native_clock_observation()
             identity_after = safe_native_identity()
             call_trace = faulttrace.finish()
+            receipt = json.loads((Path.cwd() / 'fault-triggered.json').read_text(encoding='utf-8'))
+            if call_trace is not None:
+                call_trace['nonce'] = receipt['nonce']
             for identity in (identity_before, identity_after):
                 identity['run_id'] = Path.cwd().name
                 identity['nonce'] = receipt['nonce']
