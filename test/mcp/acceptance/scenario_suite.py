@@ -1392,7 +1392,12 @@ class Suite:
             "$ErrorActionPreference='Stop';$mp=" + quote_ps(capture['metadata']) + ";$m=Get-Content $mp -Raw|ConvertFrom-Json;"
             "if($m.session_name -ne " + quote_ps(capture['session_name']) + "){throw 'kernel capture identity mismatch'};"
             "$q=(& logman query $m.session_name -ets|Out-String);$session_present=($LASTEXITCODE -eq 0);$stop='';"
-            "if($session_present){$stop=(& logman stop $m.session_name -ets|Out-String);if($LASTEXITCODE -ne 0){throw ('kernel trace stop failed: '+$stop)}};"
+            # logman stop can fail once with a transient WMI error ("The GUID
+            # passed was not recognized as valid by a WMI data provider")
+            # while the session is real and stops on the next attempt
+            # (fakenet100 r09-run-19 sst-010: the stop threw, the session
+            # stayed running, and the capture export lost the whole run).
+            "if($session_present){for($attempt=0;$attempt -lt 3;$attempt++){if($attempt -gt 0){Start-Sleep -Seconds 2};$stop=(& logman stop $m.session_name -ets|Out-String);if($LASTEXITCODE -eq 0){break}};if($LASTEXITCODE -ne 0){throw ('kernel trace stop failed: '+$stop)}};"
             "$m|Add-Member -NotePropertyName session_present_at_stop -NotePropertyValue $session_present -Force;" +
             _sst_clock.clock_sample_ps('clock') +
             "$m|Add-Member -NotePropertyName clock_after -NotePropertyValue $clock -Force;$m|ConvertTo-Json -Depth 8|Set-Content $mp -Encoding UTF8;"
