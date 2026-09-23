@@ -78,6 +78,28 @@ def test_auxiliary_identity_requires_matching_boot_frequency_and_capture_bracket
                                  header, candidate, managed_run, pid, created)
 
 
+@pytest.mark.parametrize('bad', ['boot', 'probe_creation',
+                                  'capture_window', 'etl_loss', 'nonce'])
+def test_auxiliary_native_identity_rejects_cross_source_drift(bad):
+    from test_scenario_qpc_identity import evidence
+    capture, ready, child, established, _action, header, candidate, managed_run, pid, created = copy.deepcopy(evidence())
+    capture['clock_before'].update(q0=1, q1=2)
+    capture['clock_after'].update(q0=3, q1=4)
+    if bad == 'boot':
+        capture['native_identity_after']['boot']['boot_identifier'] = '00000000-0000-0000-0000-000000000001'
+    elif bad == 'probe_creation':
+        established['pid'] += 1
+    elif bad == 'capture_window':
+        capture['clock_after']['q0'] = 1
+    elif bad == 'etl_loss':
+        header['EventsLost'] = 1
+    else:
+        established['nonce'] = 'other'
+    with pytest.raises(aux.check_aux_provenance.__globals__['DiagnosticIdentityError']):
+        aux.check_aux_provenance(capture, ready, child, established,
+                                 header, candidate, managed_run, pid, created)
+
+
 def test_ambiguous_raw_identity_expands_both_timestamps_for_each_zero_ref(tmp_path):
     def event(kind, tcb, suffix, offset, terminal=False):
         return {'kind': kind, 'tcb': tcb, 'terminal': terminal,

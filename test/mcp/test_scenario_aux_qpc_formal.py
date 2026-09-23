@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent / 'acceptance'))
 import scenario_aux_qpc_diagnostic as aux  # noqa: E402
 import scenario_aux_qpc_contract as contract  # noqa: E402
+import scenario_aux_qpc_offline as offline  # noqa: E402
 from test_scenario_aux_qpc_diagnostic import candidate_tdh_fixture  # noqa: E402
 
 
@@ -100,6 +101,21 @@ def test_only_one_full_native_identity_binds_zero_ref():
     assert next(iter(aux.unique_zero_bindings([group()]).values()))['seq'] == 7
 
 
+@pytest.mark.parametrize('bad', ['pid', 'creation', 'run', 'candidate', 'identity'])
+def test_offline_original_ipc_and_export_summary_must_match(bad):
+    case = {'candidate_id': 'candidate', 'run_id': 'run'}
+    windows = {'identity': {'boot': 'boot'}, 'targets': [], 'candidate_sets': [],
+               'candidate_id': 'candidate', 'run_id': 'run', 'managed_pid': 42,
+               'managed_creation_filetime_100ns': 100}
+    change = {'pid': ('managed_pid', 43), 'creation': ('managed_creation_filetime_100ns', 101),
+              'run': ('run_id', 'other'), 'candidate': ('candidate_id', 'other'),
+              'identity': ('identity', {'boot': 'other'})}
+    key, value = change[bad]
+    windows[key] = value
+    with pytest.raises(aux.raw_clock.DiagnosticError, match='summary differs'):
+        offline.verify_windows_summary(windows, {'boot': 'boot'}, [], [], case, 42, 100)
+
+
 @pytest.mark.parametrize('bad', [
     lambda x: x['candidates'].append(copy.deepcopy(x['candidates'][0])),
     lambda x: x['candidates'][0].update(identity_occurrences=2),
@@ -115,7 +131,8 @@ def test_ambiguous_or_inexact_binding_never_promotes(bad):
 
 
 @pytest.mark.parametrize('bad', [None, 'exit', 'transfer', 'input_sha', 'zip',
-                                   'proof_hash', 'candidate', 'nonce', 'no_zero'])
+                                   'proof_hash', 'candidate', 'nonce', 'no_zero',
+                                   'old_version'])
 def test_formal_graph_requires_complete_run_and_closed_resources(tmp_path, monkeypatch, bad):
     """Synthetic graph checks the formal adapter; it is not a Windows proof."""
     root = tmp_path / 'evidence/run/auxiliary-qpc'
@@ -140,6 +157,9 @@ def test_formal_graph_requires_complete_run_and_closed_resources(tmp_path, monke
     if bad == 'candidate': proof['candidate_id'] = 'wrong'
     if bad == 'nonce': proof['nonce'] = 'wrong'
     if bad == 'no_zero': proof['cases'][0]['zero_constraint'] = 'NO_ZERO_TCB'
+    if bad == 'old_version':
+        proof['status'] = 'DIAGNOSTIC_ONLY_INCOMPLETE_SOURCE'
+        proof['source_windows_status'] = 'INCOMPLETE'
     def put(path, value):
         path.write_text(json.dumps(value))
         return {'path': path.relative_to(tmp_path).as_posix(),

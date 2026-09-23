@@ -22,6 +22,21 @@ def _lines(path):
         return [json.loads(line) for line in stream]
 
 
+def verify_windows_summary(windows, identity, targets, groups, case,
+                           managed_pid, managed_created):
+    """Tie the Windows export's run and managed creation to original IPC."""
+    for label, actual, expected in (
+            ('identity', windows.get('identity'), identity),
+            ('targets', windows.get('targets'), json.loads(json.dumps(targets))),
+            ('candidate_sets', windows.get('candidate_sets'), json.loads(json.dumps(groups))),
+            ('candidate_id', windows.get('candidate_id'), case['candidate_id']),
+            ('run_id', windows.get('run_id'), case['run_id']),
+            ('managed_pid', windows.get('managed_pid'), managed_pid),
+            ('managed_creation', windows.get('managed_creation_filetime_100ns'), managed_created)):
+        if actual != expected:
+            raise raw.DiagnosticError('Windows auxiliary ' + label + ' summary differs')
+
+
 def derive(case_path, evidence_root, export, output, *, require_complete=True):
     """Never turn an old incomplete Windows diagnostic into a formal proof."""
     case_path, evidence_root, export, output = map(Path, (case_path, evidence_root, export, output))
@@ -118,16 +133,8 @@ def derive(case_path, evidence_root, export, output, *, require_complete=True):
     if any(identity != identities[0] for identity in identities[1:]):
         raise raw.DiagnosticError('auxiliary native identity differs across cases')
     identity = identities[0]
-    for label, actual, expected in (
-            ('identity', windows.get('identity'), identity),
-            ('targets', windows.get('targets'), json.loads(json.dumps(all_targets))),
-            ('candidate_sets', windows.get('candidate_sets'), json.loads(json.dumps(groups))),
-            ('candidate_id', windows.get('candidate_id'), case['candidate_id']),
-            ('run_id', windows.get('run_id'), case['run_id']),
-            ('managed_pid', windows.get('managed_pid'), managed_pid),
-            ('managed_creation', windows.get('managed_creation_filetime_100ns'), managed_created)):
-        if actual != expected:
-            raise raw.DiagnosticError('Windows auxiliary ' + label + ' summary differs')
+    verify_windows_summary(windows, identity, all_targets, groups, case,
+                           managed_pid, managed_created)
     bindings = aux.unique_zero_bindings(groups)
     if not bindings:
         raise raw.DiagnosticError('NO_ZERO_TCB_BRANCH: no native negative branch')
