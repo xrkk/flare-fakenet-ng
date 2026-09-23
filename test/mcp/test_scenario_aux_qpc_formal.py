@@ -131,7 +131,8 @@ def test_ambiguous_or_inexact_binding_never_promotes(bad):
 
 
 @pytest.mark.parametrize('bad', [None, 'exit', 'transfer', 'input_sha', 'zip',
-                                   'proof_hash', 'candidate', 'nonce', 'no_zero',
+                                   'proof_hash', 'candidate', 'nonce', 'wrong_zero',
+                                   'no_zero', 'mixed',
                                    'old_version'])
 def test_formal_graph_requires_complete_run_and_closed_resources(tmp_path, monkeypatch, bad):
     """Synthetic graph checks the formal adapter; it is not a Windows proof."""
@@ -156,7 +157,9 @@ def test_formal_graph_requires_complete_run_and_closed_resources(tmp_path, monke
     if bad == 'input_sha': transfer['host_only_transfer']['sha256'] = 'c' * 64
     if bad == 'candidate': proof['candidate_id'] = 'wrong'
     if bad == 'nonce': proof['nonce'] = 'wrong'
+    if bad == 'wrong_zero': proof['cases'][0]['zero_constraint'] = 'UNVERIFIED'
     if bad == 'no_zero': proof['cases'][0]['zero_constraint'] = 'NO_ZERO_TCB'
+    if bad == 'mixed': proof['cases'].append({'zero_constraint': 'NO_ZERO_TCB'})
     if bad == 'old_version':
         proof['status'] = 'DIAGNOSTIC_ONLY_INCOMPLETE_SOURCE'
         proof['source_windows_status'] = 'INCOMPLETE'
@@ -184,7 +187,7 @@ def test_formal_graph_requires_complete_run_and_closed_resources(tmp_path, monke
     (root/'auxiliary-qpc-input.json').write_text('{}')
     monkeypatch.setattr(contract.offline, 'derive', lambda *_: proof)
     run = {'run_id': 'r', 'auxiliary_qpc_process': records, 'auxiliary_qpc_proof': stored}
-    if bad:
+    if bad not in (None, 'no_zero', 'mixed'):
         with pytest.raises(aux.raw_clock.DiagnosticError):
             contract.evaluate(run, tmp_path, expected_candidate='candidate', expected_nonce='n')
     else:

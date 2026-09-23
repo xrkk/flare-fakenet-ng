@@ -10,7 +10,8 @@ sys.path.insert(0, str(Path(__file__).parent / 'acceptance'))
 import scenario_suite as suite  # noqa: E402
 import scenario_tcpip as tcpip  # noqa: E402
 import scenario_aux_qpc_offline as aux_offline  # noqa: E402
-from test_sst_tcpip_events import capture, flow, ipc_rows  # noqa: E402
+import scenario_aux_qpc_contract as aux_contract  # noqa: E402
+from test_sst_tcpip_events import capture, clocks_and_header, flow, ipc_rows  # noqa: E402
 
 
 def test_auxiliary_builder_parses_bytes_and_seals_exact_run_case(tmp_path, monkeypatch):
@@ -67,7 +68,8 @@ def test_auxiliary_builder_parses_bytes_and_seals_exact_run_case(tmp_path, monke
         suite.write_new_json(output / 'derived.json', {'status': 'COMPLETE_FORMAL_INPUT'})
     monkeypatch.setattr(aux_offline, 'derive', fake_derive)
     evidence = suite.Evidence(attempt)
-    runner._collect_auxiliary_qpc(run, 'n', attempt, evidence)
+    runner._collect_auxiliary_qpc(run, 'n', attempt, evidence,
+                                  {'probe_cases': [{'protocol': 'tcp'}]})
     assert len(calls) == 1
     assert (attempt / 'run-01/auxiliary-qpc/auxiliary-qpc-input.json').is_file()
     assert run['auxiliary_qpc_process']['qpc-process-terminal.json']['sha256']
@@ -89,3 +91,48 @@ def test_nested_auxiliary_process_responsibility_blocks_next_run(tmp_path, termi
         suite.write_new_json(native / 'qpc-process-terminal.json', state)
     with pytest.raises(suite.Blocked, match='responsibility remains unsettled|exit is unproven'):
         runner._continuation_gate()
+
+
+@pytest.mark.parametrize('bad', [None, 'tcp_plan', 'established', 'capture_missing',
+                                   'capture_changed', 'wrong_run'])
+def test_no_tcp_applicability_rechecks_complete_capture_and_probe(tmp_path, bad):
+    raw, meta = clocks_and_header(capture())
+    rows = [dict(event='ready', nonce='n'), dict(event='case_udp_sent', nonce='n')]
+    if bad == 'established':
+        rows.append(dict(event='case_established', nonce='n'))
+    values = {'probe.jsonl': ''.join(json.dumps(row) + '\n' for row in rows).encode(),
+              'pktmon.txt': raw, 'pktmon.etl': b'fixture ETL',
+              'pktmon-nic.json': json.dumps(meta).encode(), 'run.log': flow().encode(),
+              'ipc-parent.jsonl': ''.join(json.dumps(row) + '\n'
+                                          for row in ipc_rows()).encode()}
+    for name, data in values.items():
+        (tmp_path / name).write_bytes(data)
+    records = {name: suite.file_record(tmp_path / name, tmp_path) for name in values}
+    if bad == 'capture_missing':
+        (tmp_path / 'pktmon.etl').unlink()
+    if bad == 'capture_changed':
+        (tmp_path / 'pktmon.txt').write_bytes(b'changed')
+    run = {'run_id': 'other' if bad == 'wrong_run' else 'r', 'label': 'run-01',
+           'capture': {'files': [records[name] for name in
+                       ('probe.jsonl', 'pktmon.txt', 'pktmon.etl', 'pktmon-nic.json')],
+                       'probe_path': 'probe.jsonl', 'pktmon_path': 'pktmon.txt'},
+           'originals': {'files': [records[name] for name in
+                         ('run.log', 'ipc-parent.jsonl')]}}
+    profile = {'negative_cases': [{'protocol': 'tcp' if bad == 'tcp_plan' else 'udp'}]}
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.root = tmp_path
+    runner.identity = SimpleNamespace(candidate_id='candidate-test')
+    attempt = tmp_path / 'evidence'
+    attempt.mkdir()
+    evidence = suite.Evidence(attempt)
+    if bad:
+        with pytest.raises((ValueError, aux_contract.raw.DiagnosticError,
+                            suite.SuiteError, OSError)):
+            runner._collect_auxiliary_qpc(run, 'n', attempt, evidence, profile)
+    else:
+        runner._collect_auxiliary_qpc(run, 'n', attempt, evidence, profile)
+        assert not (attempt / 'run-01/auxiliary-qpc').exists()
+        verdict = aux_contract.no_tcp_applicability(run, tmp_path, profile,
+            expected_candidate='candidate-test', expected_nonce='n')
+        assert verdict['status'] == 'NOT_APPLICABLE_NO_TCP_AUXILIARY'
+        assert len(verdict['originals']) == 6

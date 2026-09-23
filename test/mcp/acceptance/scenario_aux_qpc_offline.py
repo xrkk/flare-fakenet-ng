@@ -133,11 +133,11 @@ def derive(case_path, evidence_root, export, output, *, require_complete=True):
     if any(identity != identities[0] for identity in identities[1:]):
         raise raw.DiagnosticError('auxiliary native identity differs across cases')
     identity = identities[0]
+    # INCOMPLETE Windows exports stop before emitting the final identity
+    # summary. Diagnose a real zero-TCB ambiguity from rebuilt originals first.
+    bindings = aux.unique_zero_bindings(groups)
     verify_windows_summary(windows, identity, all_targets, groups, case,
                            managed_pid, managed_created)
-    bindings = aux.unique_zero_bindings(groups)
-    if not bindings:
-        raise raw.DiagnosticError('NO_ZERO_TCB_BRANCH: no native negative branch')
     facts = aux.candidate_field_facts(rows, groups, selected, strict=True)
     if windows['status'] == 'COMPLETE_DIAGNOSTIC_ONLY' and (
             windows.get('candidate_binding_status') != 'UNIQUE_VERIFIED' or

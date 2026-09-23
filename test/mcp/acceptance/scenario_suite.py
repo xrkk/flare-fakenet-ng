@@ -2690,8 +2690,14 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         if getattr(self, 'auxiliary_clock_evidence', 'utc-v1') == AUX_QPC_MODE:
             try:
                 import scenario_aux_qpc_contract as aux_contract
-                auxiliary_qpc = aux_contract.evaluate(run, self.root,
-                    expected_candidate=self.identity.candidate_id, expected_nonce=nonce)
+                planned_auxiliary = (list(profile.get('negative_cases', ())) +
+                                     list(profile.get('probe_cases', ())))
+                if any(case.get('protocol') != 'udp' for case in planned_auxiliary):
+                    auxiliary_qpc = aux_contract.evaluate(run, self.root,
+                        expected_candidate=self.identity.candidate_id, expected_nonce=nonce)
+                else:
+                    auxiliary_qpc = aux_contract.no_tcp_applicability(run, self.root, profile,
+                        expected_candidate=self.identity.candidate_id, expected_nonce=nonce)
             except Exception as exc:  # noqa: BLE001 - native proof fails closed
                 return {'passed': False, 'reason': 'auxiliary native QPC original rejected: ' + str(exc)}
         def numeric_endpoint(value: Any) -> tuple[str, str] | None:
@@ -3526,8 +3532,15 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             raise SuiteError('QPC Windows export incomplete: ' + repr(manifest.get('error')))
 
     def _collect_auxiliary_qpc(self, run: dict[str, Any], nonce: str,
-                               root: Path, evidence: Evidence) -> None:
+                               root: Path, evidence: Evidence,
+                               profile: dict[str, Any]) -> None:
         """Seal one run's exact auxiliary generations and native proof."""
+        planned = list(profile.get('negative_cases', ())) + list(profile.get('probe_cases', ()))
+        if not any(case.get('protocol') != 'udp' for case in planned):
+            import scenario_aux_qpc_contract as aux_contract
+            aux_contract.no_tcp_applicability(run, self.root, profile,
+                expected_candidate=self.identity.candidate_id, expected_nonce=nonce)
+            return
         import scenario_tcpip as tcpip
         files = run['capture']['files'] + run['originals']['files']
         by_name = {Path(item['path']).name: item for item in files}
@@ -4881,7 +4894,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     run['five_sections_after'] = after_sections
                 if not fault and run.get('start_response', {}).get('state') == 'healthy':
                     if self.auxiliary_clock_evidence == AUX_QPC_MODE:
-                        self._collect_auxiliary_qpc(run, nonce, root, evidence)
+                        self._collect_auxiliary_qpc(run, nonce, root, evidence, runtime_profile)
                     run['traffic_oracle'] = self._traffic_oracle(
                         run, runtime_profile, nonce, sentinel_evidence)
                     if not fault:
@@ -4901,7 +4914,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 primary['fault_connection_case'] = fault_evidence['adjudication'].get('case')
                 if primary.get('start_response', {}).get('state') == 'healthy':
                     if self.auxiliary_clock_evidence == AUX_QPC_MODE:
-                        self._collect_auxiliary_qpc(primary, nonce, root, evidence)
+                        self._collect_auxiliary_qpc(primary, nonce, root, evidence, runtime_profile)
                     # Same verdict path and identity inputs as the offline
                     # _traffic_recheck_issues re-adjudication: no fault-window
                     # waiver, no divergent parameters (2026-09-20 VFY-004 fix).

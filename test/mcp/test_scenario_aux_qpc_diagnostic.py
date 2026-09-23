@@ -10,6 +10,31 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent / 'acceptance'))
 import scenario_aux_qpc_diagnostic as aux  # noqa: E402
+from test_scenario_qpc_diagnostic import _twelve  # noqa: E402
+
+
+def test_closing_8_is_auxiliary_only_and_keeps_transition_role():
+    targets, records, prop = _twelve()
+    target, record = targets[9], records[9]
+    target['transition'] = ('FinWait1', 'Closing')
+    next(row for row in record['property_results'] if row['name'] == 'NewState').update(
+        prop('NewState', (8).to_bytes(4, 'little')))
+    aux.qpc._role(record, target, states=aux.AUX_STATES)
+    with pytest.raises(aux.raw_clock.DiagnosticError, match='unverified TCPIP transition state'):
+        aux.qpc._role(record, target)
+    wrong = copy.deepcopy(record)
+    next(row for row in wrong['property_results'] if row['name'] == 'NewState').update(
+        prop('NewState', (7).to_bytes(4, 'little')))
+    with pytest.raises(aux.raw_clock.DiagnosticError, match='transition state differs'):
+        aux.qpc._role(wrong, target, states=aux.AUX_STATES)
+    wrong = copy.deepcopy(record)
+    wrong['record']['task'] = 1038
+    with pytest.raises(aux.raw_clock.DiagnosticError, match='descriptor/task'):
+        aux.qpc._role(wrong, target, states=aux.AUX_STATES)
+    wrong = copy.deepcopy(target)
+    wrong['terminal'] = False
+    with pytest.raises(aux.raw_clock.DiagnosticError, match='terminal role'):
+        aux.qpc._role(record, wrong, states=aux.AUX_STATES)
 
 
 def ref(index):
@@ -263,6 +288,82 @@ def test_incomplete_export_still_sends_every_ambiguous_candidate_to_tdh(tmp_path
     assert result['candidate_field_facts'] == [{'diagnostic_rows': 4,
                                                 'candidate_groups': 2}]
     assert result['inputs_before'] == result['inputs_after']
+
+
+def test_complete_zero_free_auxiliary_run_is_explicitly_no_zero(tmp_path, monkeypatch):
+    """Synthetic Windows pipeline fixture that fails under the old global gate."""
+    root = tmp_path / 'evidence'
+    root.mkdir()
+    rows = [dict(event='ready', nonce='n'),
+            dict(event='case_established', nonce='n', case_index=1,
+                 connection_id='c', pid=7, src='1.1.1.1:1000', actual_dst='2.2.2.2:443'),
+            dict(event='case_close', nonce='n', connection_id='c', pid=7)]
+    probe = ''.join(json.dumps(row) + '\n' for row in rows).encode()
+    blobs = {'probe.jsonl': probe, 'pktmon.txt': b'text', 'pktmon.etl': b'etl',
+             'pktmon-nic.json': b'{}', 'run.log': b'log', 'ipc-parent.jsonl': b'{}\n'}
+    for name, payload in blobs.items():
+        (root / name).write_bytes(payload)
+    def probe_ref(index):
+        start = sum(len(json.dumps(row).encode()) + 1 for row in rows[:index])
+        return {'path': 'probe.jsonl', 'byte_start': start,
+                'byte_end': start + len(json.dumps(rows[index]).encode()) + 1,
+                'event_key': 'json:'}
+    connect = {'kind': 'connect completed', 'tcb': '0X1', 'terminal': False,
+               'ref': ref(1), 'text': 'x::2026-09-23 15:23:52.000000100'}
+    terminal = {'kind': 'connection terminated', 'tcb': '0X1', 'terminal': True,
+                'ref': ref(2), 'text': 'x::2026-09-23 15:23:52.000000200'}
+    observed = {'events': [connect, terminal], 'connect': connect, 'peer': None,
+                'termination': [terminal], 'tuple_terminals': [],
+                'generation_manifest': [{'tcb': '0X1'}]}
+    case = {'schema': 'sst.aux-qpc-input.v1', 'candidate_id': 'candidate',
+            'run_id': 'run', 'nonce': 'n',
+            'files': [{'path': name, 'bytes': len(payload),
+                       'sha256': hashlib.sha256(payload).hexdigest()}
+                      for name, payload in blobs.items()],
+            'capture': {'etl_path': 'pktmon.etl', 'text_path': 'pktmon.txt',
+                        'metadata_ref': {'path': 'pktmon-nic.json', 'byte_start': 0,
+                                         'byte_end': 2, 'event_key': 'json:'}},
+            'run_log_path': 'run.log', 'ipc_path': 'ipc-parent.jsonl',
+            'cases': [{'case_index': 1, 'connection_id': 'c', 'pid': 7,
+                       'src': '1.1.1.1:1000', 'dst': '2.2.2.2:443',
+                       'probe_ref': probe_ref(1), 'end_refs': [probe_ref(2)],
+                       'connection_refs': [ref(1), ref(2)], 'tuple_terminal_refs': [],
+                       'generation_manifest': observed['generation_manifest']}]}
+    case_path = root / 'case.json'
+    case_path.write_text(json.dumps(case))
+    monkeypatch.setattr(aux.tcpip, 'validate_capture', lambda *args: None)
+    monkeypatch.setattr(aux.tcpip, 'managed_identity', lambda *args: (50, 100))
+    monkeypatch.setattr(aux.tcpip, 'validate_tuple_probe', lambda *args: None)
+    monkeypatch.setattr(aux.tcpip, 'connection_events', lambda *args, **kwargs: observed)
+    monkeypatch.setattr(aux, 'check_aux_provenance', lambda *args: {
+        'capture_qpc': {'before': [0, 99], 'after': [200, 300]}})
+    def export(_etl, output):
+        output.mkdir()
+        (output / 'paired.jsonl').write_text('')
+        return {'paired_events': 2, 'input_before': {'sha256': hashlib.sha256(b'etl').hexdigest()},
+                'passes': [{'header': {}}]}
+    monkeypatch.setattr(aux.raw_clock, 'export', export)
+    targets = [{'seq': index, 'kind': item['kind'], 'tcb': '0X1',
+                'pktmon_ref': item['ref']}
+               for index, item in enumerate((connect, terminal))]
+    selectors = [{'seq': index, 'raw_qpc': 110 + index * 10,
+                  'pktmon_ref': item['ref']} for index, item in enumerate((connect, terminal))]
+    monkeypatch.setattr(aux, 'diagnostic_candidates',
+                        lambda *_: (copy.deepcopy(targets), copy.deepcopy(selectors), [], []))
+    def tdh(_etl, selector_path, output):
+        selected = json.loads(selector_path.read_text())['selectors']
+        output.mkdir()
+        (output / 'metadata.jsonl').write_text(''.join(json.dumps({'selector': row}) + '\n'
+                                                  for row in selected))
+        return {'target_count': len(selected)}
+    monkeypatch.setattr(aux.tdh_metadata, 'run', tdh)
+    monkeypatch.setattr(aux.offline, 'verify_export', lambda *_: None)
+    monkeypatch.setattr(aux.offline, 'verify_tdh_rows', lambda *_: None)
+    monkeypatch.setattr(aux, 'validate_named_tdh', lambda *_: None)
+    result = aux.run(case_path, root, tmp_path / 'output')
+    assert result['status'] == 'COMPLETE_DIAGNOSTIC_ONLY'
+    assert result['candidate_sets'] == []
+    assert result['cases'][0]['native_zero_tcb']['status'] == 'NO_ZERO_TCB'
 
 
 def candidate_tdh_fixture():
