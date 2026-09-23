@@ -136,3 +136,96 @@ def test_changed_identity_wrong_descriptor_and_missing_terminal_rejected():
         module.validate_tdh_semantics(wrong, targets, '0X1234', None, 1572, 8024)
     with pytest.raises(module.raw_clock.DiagnosticError, match='missing/duplicate'):
         module.validate_tdh_semantics(records[:1], targets, '0X1234', None, 1572, 8024)
+
+
+def _twelve():
+    """Small, self-contained shape of the two-owner Win10 TDH lifecycle."""
+    roles = [
+        ('connect completed', '0X1234', None, 1572, 123),
+        ('accept completed', '0X5678', None, 8024, 124),
+        ('connection terminated', '0X5678', None, None, None),
+        ('shutdown initiated', '0X5678', None, 8024, 124),
+        ('transition', '0X5678', ('Established', 'Closed'), None, None),
+        ('close issued', '0X5678', None, 0, 0),
+        ('transition', '0X1234', ('Established', 'FinWait1'), None, None),
+        ('connection terminated', '0X1234', None, None, None),
+        ('shutdown initiated', '0X1234', None, 1572, 123),
+        ('transition', '0X1234', ('FinWait1', 'Closed'), None, None),
+        ('disconnect completed', '0X1234', None, 0, 0),
+        ('close issued', '0X1234', None, 0, 0),
+    ]
+    def prop(name, raw):
+        return dict(name=name, size_status=0, property_status=0,
+                    raw_base64=base64.b64encode(raw).decode())
+    targets, records = [], []
+    states = module._OBSERVED_STATES
+    for index, (kind, tcb, pair, pid, start) in enumerate(roles):
+        ref = {'path': 'pktmon.txt', 'byte_start': index, 'byte_end': index + 1,
+               'event_key': 'text'}
+        local = '192.0.2.1:1234' if tcb == '0X1234' else '198.51.100.1:443'
+        remote = '198.51.100.1:443' if tcb == '0X1234' else '192.0.2.1:1234'
+        if kind == 'transition':
+            local = remote = None
+        target = dict(kind=kind, tcb=tcb, terminal=index >= 2,
+                      transition=pair, local=local, remote=remote, pktmon_ref=ref)
+        event_id, version, descriptor, task = module._DIALECT[kind]
+        properties = [prop('Tcb', int(tcb, 16).to_bytes(8, 'little'))]
+        if local:
+            properties += [prop('LocalAddress', module._sockaddr(local).ljust(16, b'\0')),
+                           prop('RemoteAddress', module._sockaddr(remote).ljust(16, b'\0'))]
+        if kind in ('connect completed', 'accept completed'):
+            properties.append(prop('Status', b'\0' * 4))
+        if kind == 'connection terminated':
+            properties.append(prop('NewState', b'\0' * 4))
+        if pair:
+            properties += [prop('OldState', states[pair[0]].to_bytes(4, 'little')),
+                           prop('NewState', states[pair[1]].to_bytes(4, 'little'))]
+        if pid is not None:
+            properties += [prop('ProcessId', pid.to_bytes(4, 'little')),
+                           prop('ProcessStartKey', start.to_bytes(8, 'little'))]
+        record = dict(selector=dict(pktmon_ref=ref, tcb=tcb, target_kind=kind),
+                      record=dict(provider=module.TCPIP_PROVIDER, id=event_id,
+                                  task=event_id, version=version, opcode=0),
+                      tdh=dict(parsed=dict(provider_guid=module.TCPIP_PROVIDER,
+                          event_descriptor_bytes=descriptor,
+                          strings=dict(task=task, provider='Microsoft-Windows-TCPIP'))),
+                      property_results=properties)
+        targets.append(target); records.append(record)
+    return targets, records, prop
+
+
+def test_verified_twelve_event_lifecycle_and_finwait_fail_closed():
+    targets, records, prop = _twelve()
+    result = module.validate_tdh_semantics(records, targets, '0X1234', '0X5678', 1572, 8024)
+    assert result['target_count'] == 12
+    assert len(result['process_start_keys']) == 2
+    wrong = copy.deepcopy(records)
+    row = next(p for p in wrong[6]['property_results'] if p['name'] == 'NewState')
+    row.update(prop('NewState', (6).to_bytes(4, 'little')))
+    with pytest.raises(module.raw_clock.DiagnosticError, match='transition state'):
+        module.validate_tdh_semantics(wrong, targets, '0X1234', '0X5678', 1572, 8024)
+    wrong = copy.deepcopy(records)
+    wrong[10]['record']['task'] = 1038
+    with pytest.raises(module.raw_clock.DiagnosticError, match='descriptor/task'):
+        module.validate_tdh_semantics(wrong, targets, '0X1234', '0X5678', 1572, 8024)
+
+
+def test_twelve_event_identity_terminal_and_endpoint_negatives():
+    targets, records, prop = _twelve()
+    wrong = copy.deepcopy(records)
+    next(p for p in wrong[0]['property_results'] if p['name'] == 'ProcessId').update(
+        prop('ProcessId', b'\0' * 4))
+    with pytest.raises(module.raw_clock.DiagnosticError, match='establishment process'):
+        module.validate_tdh_semantics(wrong, targets, '0X1234', '0X5678', 1572, 8024)
+    wrong = copy.deepcopy(records)
+    next(p for p in wrong[8]['property_results'] if p['name'] == 'ProcessStartKey').update(
+        prop('ProcessStartKey', (125).to_bytes(8, 'little')))
+    with pytest.raises(module.raw_clock.DiagnosticError, match='changed within TCB'):
+        module.validate_tdh_semantics(wrong, targets, '0X1234', '0X5678', 1572, 8024)
+    wrong = copy.deepcopy(records)
+    next(p for p in wrong[10]['property_results'] if p['name'] == 'RemoteAddress').update(
+        prop('RemoteAddress', module._sockaddr('192.0.2.2:1234').ljust(16, b'\0')))
+    with pytest.raises(module.raw_clock.DiagnosticError, match='RemoteAddress'):
+        module.validate_tdh_semantics(wrong, targets, '0X1234', '0X5678', 1572, 8024)
+    with pytest.raises(module.raw_clock.DiagnosticError, match='missing/duplicate'):
+        module.validate_tdh_semantics(records[:-1], targets, '0X1234', '0X5678', 1572, 8024)

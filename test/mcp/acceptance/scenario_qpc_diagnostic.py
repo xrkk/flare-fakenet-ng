@@ -31,8 +31,10 @@ _DIALECT = {
     'shutdown initiated': (1044, 1, '14040110040014048404000010000080', 'TcpShutdownTcb'),
     'transition': (1051, 0, '1b04001004001b040404000000000080', 'TcpTcbStateChange'),
     'close issued': (1038, 1, '0e04011004000e040404000010000080', 'TcpCloseTcbRequest'),
+    'disconnect completed': (1043, 1, '13040110040013048404000010000080', 'TcpDisconnectTcbComplete'),
 }
-_OBSERVED_STATES = {'Closed': 0, 'Established': 4}
+_OBSERVED_STATES = {'Closed': 0, 'Established': 4, 'FinWait1': 5}
+_UNATTRIBUTED_TERMINALS = {'close issued', 'disconnect completed'}
 
 
 def _role(record, target):
@@ -133,8 +135,8 @@ def validate_tdh_semantics(records, targets, primary_tcb, peer_tcb, probe_pid, m
             if expected_pid is None or pid_raw is None or int.from_bytes(pid_raw, 'little') != expected_pid:
                 raise raw_clock.DiagnosticError('TDH establishment process missing/mismatch')
         start_key = _optional_property(record, 'ProcessStartKey')
-        if target['kind'] in ('connect completed', 'accept completed',
-                              'shutdown initiated', 'close issued') and (
+        if target['kind'] in ({'connect completed', 'accept completed',
+                               'shutdown initiated'} | _UNATTRIBUTED_TERMINALS) and (
                 pid_raw is None or start_key is None):
             raise raw_clock.DiagnosticError('TDH process identity fields missing')
         if target['kind'] in ('connect completed', 'accept completed') and (
@@ -144,18 +146,18 @@ def validate_tdh_semantics(records, targets, primary_tcb, peer_tcb, probe_pid, m
             if len(start_key) != 8:
                 raise raw_clock.DiagnosticError('TDH ProcessStartKey has wrong width')
             if not any(start_key):
-                # This dialect's close request is explicitly unattributed.
-                if target['kind'] != 'close issued' or pid_raw != b'\0' * 4:
+                # Only verified close/disconnect TDH descriptors lack attribution.
+                if target['kind'] not in _UNATTRIBUTED_TERMINALS or pid_raw != b'\0' * 4:
                     raise raw_clock.DiagnosticError('unexpected zero ProcessStartKey')
             elif tcb != '0X0':
                 if tcb in start_keys and start_keys[tcb] != start_key:
                     raise raw_clock.DiagnosticError('TDH ProcessStartKey changed within TCB')
                 start_keys[tcb] = start_key
-        if pid_raw == b'\0' * 4 and target['kind'] != 'close issued':
+        if pid_raw == b'\0' * 4 and target['kind'] not in _UNATTRIBUTED_TERMINALS:
             raise raw_clock.DiagnosticError('unexpected zero ProcessId')
-        if target['kind'] == 'close issued' and (pid_raw is None or start_key is None or
+        if target['kind'] in _UNATTRIBUTED_TERMINALS and (pid_raw is None or start_key is None or
                 (pid_raw == b'\0' * 4) != (start_key == b'\0' * 8)):
-            raise raw_clock.DiagnosticError('unattributed close identity fields inconsistent')
+            raise raw_clock.DiagnosticError('unattributed terminal identity fields inconsistent')
     if by_ref:
         raise raw_clock.DiagnosticError('one or more selected native terminals omitted by TDH')
     if primary_tcb not in start_keys or (peer_tcb and peer_tcb not in start_keys):

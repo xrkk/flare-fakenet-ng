@@ -36,6 +36,25 @@ that pair has no process attribution and remains a terminal of the anchored
 TCB. Transitions compare TDH OldState/NewState with the native text; only
 verified state codes are admitted. Unknown tasks or state codes leave the
 diagnostic incomplete until their dialect is independently verified.
+T009 R03 adds only two facts from the new Win10 TDH originals: `FinWait1=5`
+and the `TcpDisconnectTcbComplete` event descriptor. That disconnect event,
+like the verified close request, can report PID and ProcessStartKey both zero;
+it remains a terminal on the established TCB. Other zero identities and
+unknown tasks or state codes still fail closed.
+
+For an already exported Windows run, use `scenario_qpc_offline.py` on the
+host with `--case`, `--evidence-root`, `--export` (the original Windows export
+directory), and a fresh `--output`. It verifies every case byte reference and
+hash, re-pairs the complete raw/default ETL streams, checks their manifests,
+the unchanged original selectors and TDH binary metadata, then re-runs the
+identity and terminal semantics. Its `derived.json` records all source hashes,
+the original Windows status, the complete target list, conservative UTC
+bounds and QPC differences. `COMPLETE_DIAGNOSTIC_ONLY` is the status of this
+new host derivation; it does not rewrite the original Windows manifest or the
+formal fault verdict. Microsoft [QPC guidance](https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps)
+treats cross-thread values within ±1 tick as ambiguously ordered; the derived
+lower differences subtract at most that one tick and add no acceptance
+tolerance.
 
 `BootIdentifier` is the GUID from private Native API
 `NtQuerySystemInformation(SystemBootEnvironmentInformation=90)`. The
