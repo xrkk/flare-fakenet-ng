@@ -142,6 +142,15 @@ def verify_tdh_rows(rows, selectors):
     require(seen == set(by_seq), 'TDH terminal selector omitted')
 
 
+def conservative_time_bounds(event, resolution_ns):
+    """Mirror the formal oracle's uncertainty, not timestamp display precision."""
+    require(type(resolution_ns) is int and 0 < resolution_ns <= 10**9,
+            'invalid UTC resolution')
+    lo, hi = fault.time_bounds(event)
+    uncertainty = resolution_ns - 1
+    return lo - uncertainty, hi + uncertainty
+
+
 def derive(case_path, evidence_root, export, output):
     """All source reads are checked before writing a derived-only result."""
     output.mkdir(parents=True, exist_ok=False)
@@ -218,13 +227,14 @@ def derive(case_path, evidence_root, export, output):
     for name in brackets:
         require(brackets[name]['qpc_before'] <= brackets[name]['qpc_after'],
                 'action QPC bracket reversed')
-    begin_utc = max(fault.time_bounds(established)[1],
-                    fault.time_bounds(evidence.read(session['managed_ref']))[1],
-                    fault.time_bounds(observed['connect']['text'])[1])
-    trigger_lower = fault.time_bounds(evidence.read(case['trigger']['lower_ref']))[0]
-    trigger_upper = fault.time_bounds(evidence.read(case['trigger']['upper_ref']))[1]
-    end_utc = min([fault.time_bounds(evidence.read(session['end_ref']))[0]] +
-                  fault.terminal_bounds(observed, fault.time_bounds))
+    bounds = lambda event: conservative_time_bounds(event, case['clock']['resolution_ns'])
+    begin_utc = max(bounds(established)[1],
+                    bounds(evidence.read(session['managed_ref']))[1],
+                    bounds(observed['connect']['text'])[1])
+    trigger_lower = bounds(evidence.read(case['trigger']['lower_ref']))[0]
+    trigger_upper = bounds(evidence.read(case['trigger']['upper_ref']))[1]
+    end_utc = min([bounds(evidence.read(session['end_ref']))[0]] +
+                  fault.terminal_bounds(observed, bounds))
     after = {str(p): raw.sha_file(p) for p in source_paths}
     require(before == after, 'source input changed during offline derivation')
     result = {'schema': 'sst.qpc-offline-derived.v1',

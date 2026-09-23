@@ -82,3 +82,12 @@ def test_offline_changed_etl_failed_tdh_and_omitted_row_rejected(tmp_path):
         offline.verify_export(export, etl, output)
     with pytest.raises(offline.raw.DiagnosticError, match='row count incomplete'):
         offline.verify_tdh_rows([], [selector])
+
+
+def test_utc_diagnostic_retains_formal_uncertainty():
+    event = '2026-09-23T09:21:35.2625067Z'
+    lo, hi = offline.fault.time_bounds(event)
+    assert offline.conservative_time_bounds(event, 15625000) == (lo - 15624999, hi + 15624999)
+    assert offline.conservative_time_bounds(event, 1) == (lo, hi)
+    with pytest.raises(offline.raw.DiagnosticError, match='resolution'):
+        offline.conservative_time_bounds(event, 0)
