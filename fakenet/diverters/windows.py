@@ -718,12 +718,24 @@ class Diverter(DiverterBase, WinUtilMixin):
             return None
         script = _TAKEOVER_ROUTE_SCRIPT.replace(
             '__TARGET__', self.egress_policy.takeover_ipv4)
-        completed = subprocess.run(
-            ['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
-             '-ExecutionPolicy', 'Bypass', '-Command', script],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, timeout=10,
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        # A transient PowerShell startup failure returns a nonzero code with
+        # no stdout/stderr at all; treating it as fatal aborted an otherwise
+        # healthy start (fakenet100 r09-run-21 sst-018: 'PowerShell returned
+        # no diagnostic' once under probe load, same binary passed in earlier
+        # roots). Retry bounded on exactly the no-diagnostic shape; a real
+        # diagnostic still fails immediately.
+        completed = None
+        for attempt in range(3):
+            completed = subprocess.run(
+                ['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
+                 '-ExecutionPolicy', 'Bypass', '-Command', script],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, timeout=10,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            if completed.returncode == 0 or (completed.stderr or '').strip() or (
+                    completed.stdout or '').strip():
+                break
+            time.sleep(1)
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout).strip()
             raise PolicyConfigError(
