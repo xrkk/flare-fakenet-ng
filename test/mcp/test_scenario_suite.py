@@ -1290,6 +1290,109 @@ def test_run_and_resume_arm_ipc_evidence_around_every_scenario(tmp_path, monkeyp
         assert (runner.root / disabled_name).is_file()
 
 
+@pytest.mark.parametrize('status,passes', [('COMPLETE_DIAGNOSTIC_ONLY', True),
+                                          ('INCOMPLETE', False)])
+def test_qpc_online_export_seals_bundle_and_keeps_failed_guest_originals(
+        tmp_path, monkeypatch, status, passes):
+    import io
+    import zipfile
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.root = tmp_path
+    run_root = tmp_path / 'evidence' / 'sst-002' / 'attempt-01'
+    run_root.mkdir(parents=True)
+    original = tmp_path / 'original.json'
+    original.write_text('{"original":true}\n')
+    base = {'files': [dict(path='original.json', bytes=original.stat().st_size,
+                           sha256=hashlib.sha256(original.read_bytes()).hexdigest())]}
+    base_path = run_root / 'base.json'
+    suite.write_new_json(base_path, base)
+    evidence = suite.Evidence(run_root)
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, 'w') as archive:
+        archive.writestr('export/manifest.json', json.dumps({'status': status,
+            'error': None if passes else {'message': 'native export failed'}}))
+        archive.writestr('terminal.json', json.dumps({'exit_code': 0 if passes else 1}))
+        archive.writestr('stdout.txt', 'guest stdout')
+        archive.writestr('stderr.txt', 'guest stderr')
+    output_bytes = output.getvalue()
+    seen = []
+
+    class Transfer:
+        def __init__(self, source, public_name):
+            self.source = source
+            self.public_name = public_name
+            self.stopped = False
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            self.stopped = True
+        @property
+        def url(self):
+            return 'http://192.168.204.1:12345/qpc-input.zip'
+        def record(self):
+            return {'stopped': self.stopped,
+                    'requests': [{'status': 200, 'bytes': self.source.stat().st_size}]}
+
+    monkeypatch.setattr(suite, 'HostOnlyFileTransfer', Transfer)
+    def guest(command, timeout):
+        seen.append((command, timeout))
+        assert timeout == 1200 and 'C:\\Python313\\python.exe' in command
+        return ({'computer': 'DESKTOP-3FI41GR', 'exit_code': 0 if passes else 1,
+                 'path': r'C:\guest\output.zip', 'bytes': len(output_bytes),
+                 'sha256': hashlib.sha256(output_bytes).hexdigest(),
+                 'input_sha256': hashlib.sha256((run_root / 'qpc-input.zip').read_bytes()).hexdigest()},
+                {'output': 'guest transfer result'})
+    runner._vm_json = guest
+    def download(path, size, sha, destination):
+        assert path == r'C:\guest\output.zip'
+        assert size == len(output_bytes) and sha == hashlib.sha256(output_bytes).hexdigest()
+        destination.write_bytes(output_bytes)
+        return suite.file_record(destination, tmp_path)
+    runner._transfer_guest_file = download
+    if passes:
+        runner._collect_qpc_export(base_path, base, run_root, evidence, 'run')
+    else:
+        with pytest.raises(suite.SuiteError, match='Windows export incomplete'):
+            runner._collect_qpc_export(base_path, base, run_root, evidence, 'run')
+    assert seen
+    with zipfile.ZipFile(run_root / 'qpc-input.zip') as archive:
+        assert 'evidence/original.json' in archive.namelist()
+        assert 'evidence/evidence/sst-002/attempt-01/base.json' in archive.namelist()
+        assert 'tools/scenario_qpc_diagnostic.py' in archive.namelist()
+    assert (run_root / 'qpc-output.zip').read_bytes() == output_bytes
+    assert (run_root / 'qpc-native/export/manifest.json').is_file()
+    assert json.loads((run_root / 'qpc-transfer.json').read_text())['host_only_transfer']['stopped']
+
+
+def test_qpc_guest_transfer_closes_when_guest_command_fails(tmp_path, monkeypatch):
+    import zipfile
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.root = tmp_path
+    root = tmp_path / 'attempt'; root.mkdir()
+    original = tmp_path / 'source.json'; original.write_text('{}\n')
+    base = {'files': [suite.file_record(original, tmp_path)]}
+    base_path = root / 'base.json'; suite.write_new_json(base_path, base)
+    transfers = []
+    class Transfer:
+        def __init__(self, source, public_name):
+            self.stopped = False; transfers.append(self)
+        def __enter__(self): return self
+        def __exit__(self, *_): self.stopped = True
+        @property
+        def url(self): return 'http://192.168.204.1:12345/qpc-input.zip'
+        def record(self): return {'stopped': self.stopped, 'requests': []}
+    monkeypatch.setattr(suite, 'HostOnlyFileTransfer', Transfer)
+    def fail(*_): raise suite.SuiteError('guest parser failed')
+    runner._vm_json = fail
+    with pytest.raises(suite.SuiteError, match='guest parser failed'):
+        runner._collect_qpc_export(base_path, base, root, suite.Evidence(root), 'run')
+    assert transfers[0].stopped
+    transfer_record = json.loads((root / 'qpc-transfer.json').read_text())
+    assert 'guest parser failed' in transfer_record['error']
+    with zipfile.ZipFile(root / 'qpc-input.zip') as archive:
+        assert 'evidence/source.json' in archive.namelist()
+
+
 def test_fnpr_sentinel_falls_back_to_container_on_privileged_port_denial(tmp_path, monkeypatch):
     spawned = []
 

@@ -245,6 +245,10 @@ def contains_session(begin_upper, trigger_lower, trigger_upper, end_lower):
 
 
 def assess(case, root, expected_candidate=CANDIDATE):
+    if case.get('schema') == 'sst.fault-evidence.case.v3':
+        return assess_qpc_v3(case, root, expected_candidate)
+    if 'clock_evidence_mode' in case or 'qpc_evidence' in case:
+        raise EvidenceError('QPC evidence requires explicit case.v3')
     if case.get('schema') not in ('sst.fault-evidence.case.v1', 'sst.fault-evidence.case.v2') or not REQUIRED <= case.keys():
         raise EvidenceError('invalid/missing case schema fields')
     if case['fault'] not in FAULTS:
@@ -621,6 +625,75 @@ def assess(case, root, expected_candidate=CANDIDATE):
 
     check('recovery', recovery, case['recovery_refs'])
     result['passed'] = all(c['passed'] for c in checks)
+    return result
+
+
+def assess_qpc_v3(case, root, expected_candidate=CANDIDATE):
+    """Explicit QPC mode: retain old verdict, replace only ETW/action ordering."""
+    from etl_raw_clock import DiagnosticError
+    from scenario_qpc_contract import MODE, evaluate
+    result = {'schema': 'sst.fault-evidence.result.v1', 'case_id': case.get('case_id'),
+              'passed': False, 'synthetic': bool(case.get('synthetic')),
+              'clock_evidence_mode': case.get('clock_evidence_mode'), 'checks': [],
+              'unsupported_observations': []}
+    checks = result['checks']
+    try:
+        if (case.get('clock_evidence_mode') != MODE or case.get('fault') != 'diverter_stop'
+                or case.get('session', {}).get('observation_kind') != 'tcpip_etw'
+                or case.get('synthetic') is not False):
+            raise EvidenceError('v3 mode requires real diverter_stop/tcpip_etw')
+        evidence = Evidence(root, case['files'])
+        base_ref = case['qpc_evidence']['base_case_ref']
+        base = evidence.read(base_ref)
+        if (base_ref['event_key'] != 'json:' or base_ref['byte_start'] != 0
+                or base_ref['byte_end'] != len(evidence.data[base_ref['path']])
+                or base.get('schema') != 'sst.fault-evidence.case.v2'):
+            raise EvidenceError('complete base-v2 case not sealed')
+        expected = dict(case)
+        for key in ('clock_evidence_mode', 'qpc_evidence'):
+            expected.pop(key)
+        expected['schema'] = 'sst.fault-evidence.case.v2'
+        expected['files'] = base['files']
+        if expected != base:
+            raise EvidenceError('v3 case differs from frozen base-v2 facts')
+        original_files = {x['path'] for x in base['files']}
+        added = {x['path'] for x in case['files'] if x['path'] not in original_files}
+        prefix = case['qpc_evidence']['export_prefix'].rstrip('/')
+        names = ('manifest.json', 'raw/manifest.json', 'raw/raw.jsonl',
+                 'raw/default.jsonl', 'raw/paired.jsonl', 'selectors.json',
+                 'tdh/manifest.json', 'tdh/metadata.jsonl')
+        if added != {base_ref['path']} | {prefix + '/' + name for name in names}:
+            raise EvidenceError('v3 export/base file set incomplete or extra')
+        export = (Path(root).resolve() / prefix).resolve()
+        if not export.is_relative_to(Path(root).resolve()):
+            raise EvidenceError('v3 export escapes evidence root')
+        checks.append({'id': 'integrity', 'passed': True,
+                       'reason': 'v3/base/native export original hashes and refs verified',
+                       'evidence_refs': [base_ref]})
+    except (OSError, EvidenceError, ValueError, KeyError, TypeError, IndexError) as exc:
+        checks.append({'id': 'qpc_case_integrity', 'passed': False,
+                       'reason': str(exc), 'evidence_refs': []})
+        return result
+    old = assess(base, root, expected_candidate)
+    old_overlap = next((x for x in old['checks'] if x['id'] == 'overlap'), None)
+    result['legacy_utc_full_interval'] = {
+        'passed': bool(old_overlap and old_overlap['passed']),
+        'intervals_ns': old.get('intervals_ns'),
+        'reason': old_overlap['reason'] if old_overlap else 'old overlap not evaluated'}
+    checks.extend(x for x in old['checks'] if x['id'] not in ('integrity', 'overlap'))
+    try:
+        proof = evaluate(Path(root) / base_ref['path'], root, export,
+                         require_complete=True)
+        result['qpc_proof'] = proof
+        checks.append({'id': 'utc_independent', 'passed': proof['utc']['passed'],
+                       'reason': repr(proof['utc']), 'evidence_refs': []})
+        checks.append({'id': 'native_qpc_interval', 'passed': proof['native_qpc']['passed'],
+                       'reason': repr(proof['native_qpc']), 'evidence_refs': []})
+    except (OSError, EvidenceError, ValueError, KeyError, TypeError, IndexError,
+            DiagnosticError) as exc:
+        checks.append({'id': 'native_qpc_interval', 'passed': False,
+                       'reason': str(exc), 'evidence_refs': []})
+    result['passed'] = all(x['passed'] for x in checks)
     return result
 
 

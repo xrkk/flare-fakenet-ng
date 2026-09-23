@@ -35,6 +35,7 @@ import threading
 import urllib.error
 import urllib.request
 import uuid
+import zipfile
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -49,6 +50,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import scenario_clock as _sst_clock
+from scenario_qpc_contract import MODE as QPC_MODE
 DEFAULT_SUITE_ROOT = REPO_ROOT / 'Logs' / 'fakenetng-mcp' / 'scenario-suite-20260912'
 SCHEMA = 'fakenetng.mcp-scenario-suite.v1'
 SCENARIO_SCHEMA = 'fakenetng.mcp-scenario.v1'
@@ -1019,7 +1021,11 @@ class Suite:
                              % (self.PKTMON_FILE_SIZE_MIB_CHOICES, file_size))
         self.args = args
         self.pktmon_file_size_mib = file_size
-        self.native_clock_diagnostic = bool(getattr(args, 'native_clock_diagnostic', False))
+        self.fault_clock_evidence = getattr(args, 'fault_clock_evidence', 'utc-v2')
+        if self.fault_clock_evidence not in ('utc-v2', QPC_MODE):
+            raise SuiteError('unsupported fault clock evidence mode')
+        self.requested_native_clock_diagnostic = bool(getattr(args, 'native_clock_diagnostic', False))
+        self.native_clock_diagnostic = self.requested_native_clock_diagnostic
         self.root = Path(args.suite_root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.identity = Identity(args.candidate_id, args.source_commit,
@@ -3220,6 +3226,119 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             return ['complete run.log missing']
         return [marker for marker in ('Traceback (most recent call last)', 'Unhandled exception') if marker in text]
 
+    def _require_qpc_guest_python(self) -> None:
+        """Check the real guest interpreter before any scenario mutation."""
+        value, _ = self._vm_json(
+            "$ErrorActionPreference='Stop';$p='C:\\Python313\\python.exe';"
+            "if(!(Test-Path -LiteralPath $p -PathType Leaf)){throw 'QPC Python313 absent'};"
+            "$v=(& $p -c 'import sys;print(sys.version_info[:2])' | Out-String).Trim();"
+            "@{path=$p;version=$v;computer=$env:COMPUTERNAME}|ConvertTo-Json -Compress", 60)
+        if value.get('path') != r'C:\Python313\python.exe' or value.get('version') != '(3, 13)' or \
+                value.get('computer') != 'DESKTOP-3FI41GR':
+            raise Blocked('QPC diagnostic guest interpreter or VM identity differs')
+
+    def _collect_qpc_export(self, base_path: Path, base: dict[str, Any], root: Path,
+                            evidence: Evidence, run_id: str) -> None:
+        """Export complete ETL after cleanup; seal guest output before verdict."""
+        bundle = root / 'qpc-input.zip'
+        scripts = ('scenario_qpc_diagnostic.py', 'scenario_qpc_identity.py',
+                   'etl_raw_clock.py', 'tdh_metadata.py', 'scenario_tcpip.py',
+                   'scenario_clock.py', 'sst_fault_evidence.py')
+        with zipfile.ZipFile(bundle, 'x', compression=zipfile.ZIP_DEFLATED,
+                             compresslevel=6, allowZip64=False) as archive:
+            for item in base['files']:
+                path = (self.root / item['path']).resolve()
+                if not path.is_relative_to(self.root) or not path.is_file():
+                    raise SuiteError('QPC base input path missing or escaping')
+                archive.write(path, 'evidence/' + item['path'])
+            archive.write(base_path, 'evidence/' + str(base_path.relative_to(self.root)))
+            for name in scripts:
+                archive.write(Path(__file__).with_name(name), 'tools/' + name)
+        evidence.add(bundle)
+        if bundle.stat().st_size > MAX_GUEST_TRANSFER:
+            raise SuiteError('QPC input exceeds host-only transfer bound')
+        scope = hashlib.sha256((str(self.root) + run_id).encode()).hexdigest()[:20]
+        guest = GUEST_ROOT + r'\qpc-contract-' + scope
+        guest_case = guest + '\\input\\evidence\\' + str(base_path.relative_to(self.root)).replace('/', '\\')
+        source_sha = hashlib.sha256(bundle.read_bytes()).hexdigest()
+        guest_error: Exception | None = None
+        value: dict[str, Any] = {}
+        raw: dict[str, Any] = {}
+        with HostOnlyFileTransfer(bundle, 'qpc-input.zip') as transfer:
+            command = (
+                "$ErrorActionPreference='Stop';$r=" + quote_ps(guest) +
+                ";if(Test-Path -LiteralPath $r){throw 'QPC guest evidence collision'};"
+                "[void](New-Item -ItemType Directory -Path $r);"
+                "$zip=Join-Path $r 'input.zip';$web=New-Object Net.WebClient;$web.Proxy=$null;"
+                "$web.DownloadFile(" + quote_ps(transfer.url) + ",$zip);"
+                "if((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -ne " + quote_ps(source_sha) +
+                "){throw 'QPC input hash mismatch'};"
+                "Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $r 'input');"
+                "$p='C:\\Python313\\python.exe';if(!(Test-Path -LiteralPath $p -PathType Leaf))"
+                "{throw 'QPC Python313 absent'};"
+                "$program=Join-Path $r 'input\\tools\\scenario_qpc_diagnostic.py';"
+                "$out=Join-Path $r 'export';$stdout=Join-Path $r 'stdout.txt';"
+                "$stderr=Join-Path $r 'stderr.txt';"
+                "$proc=Start-Process -FilePath $p -ArgumentList @($program,'--case'," + quote_ps(guest_case) +
+                ",'--evidence-root',(Join-Path $r 'input\\evidence'),'--output',$out)"
+                " -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr;"
+                "$terminal=[ordered]@{computer=$env:COMPUTERNAME;exit_code=$proc.ExitCode;"
+                "utc=[DateTime]::UtcNow.ToString('o')};"
+                "$terminal|ConvertTo-Json|Set-Content (Join-Path $r 'terminal.json');"
+                "$outputZip=Join-Path $r 'output.zip';"
+                "Compress-Archive -Path $out,$stdout,$stderr,(Join-Path $r 'terminal.json')"
+                " -DestinationPath $outputZip;"
+                "@{computer=$env:COMPUTERNAME;exit_code=$proc.ExitCode;"
+                "bytes=(Get-Item $outputZip).Length;sha256=(Get-FileHash $outputZip -Algorithm SHA256).Hash.ToLower();"
+                "path=$outputZip;input_sha256=(Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()}"
+                "|ConvertTo-Json -Compress")
+            try:
+                value, raw = self._vm_json(command, 1200)
+            except Exception as exc:  # noqa: BLE001 - preserve transfer evidence
+                guest_error = exc
+        transfer_record = transfer.record()
+        write_new_json(root / 'qpc-transfer.json', {'guest': value, 'raw': raw,
+                                                    'error': repr(guest_error) if guest_error else None,
+                                                    'host_only_transfer': transfer_record})
+        evidence.add(root / 'qpc-transfer.json')
+        if guest_error:
+            raise guest_error
+        if (transfer_record['stopped'] is not True or
+                len(transfer_record['requests']) != 1 or
+                transfer_record['requests'][0].get('status') != 200 or
+                value.get('computer') != 'DESKTOP-3FI41GR' or
+                value.get('input_sha256') != source_sha):
+            raise SuiteError('QPC guest identity or host-only input transfer differs')
+        output_zip = root / 'qpc-output.zip'
+        self._transfer_guest_file(str(value['path']), int(value['bytes']),
+                                  str(value['sha256']), output_zip)
+        evidence.add(output_zip)
+        destination = root / 'qpc-native'
+        destination.mkdir(exist_ok=False)
+        with zipfile.ZipFile(output_zip) as archive:
+            total = 0
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                relative = Path(member.filename)
+                target = (destination / relative).resolve()
+                if (relative.is_absolute() or '..' in relative.parts or
+                        not target.is_relative_to(destination.resolve()) or
+                        member.file_size > MAX_GUEST_TRANSFER):
+                    raise SuiteError('QPC output archive path or size invalid')
+                total += member.file_size
+                if total > MAX_GUEST_TRANSFER:
+                    raise SuiteError('QPC output archive exceeds expanded bound')
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with target.open('xb') as stream, archive.open(member) as source:
+                    shutil.copyfileobj(source, stream)
+                evidence.add(target)
+        terminal = read_json(destination / 'terminal.json')
+        manifest = read_json(destination / 'export' / 'manifest.json')
+        if (value.get('exit_code') != 0 or terminal.get('exit_code') != 0 or
+                manifest.get('status') != 'COMPLETE_DIAGNOSTIC_ONLY'):
+            raise SuiteError('QPC Windows export incomplete: ' + repr(manifest.get('error')))
+
     def _adjudicate_fault(self, scenario: dict[str, Any], run: dict[str, Any], nonce: str,
                           root: Path, evidence: Evidence, fault_evidence: dict[str, Any]) -> dict[str, Any]:
         """Build a descriptor from transferred originals and run the fail-closed oracle."""
@@ -3322,6 +3441,18 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         descriptor = {'scenario_id': scenario['scenario_id'], 'case_id': 'scenario-' + scenario['scenario_id'],
                       'candidate_id': self.identity.candidate_id, 'run_id': run['run_id'], 'fault': fault,
                       'nonce': nonce, 'clock_resolution_ns': 15625000, 'observation_kind': 'tcpip_etw', 'raw': raw}
+        if fault == 'diverter_stop' and self.fault_clock_evidence == QPC_MODE:
+            import scenario_fault_evidence as adapter
+            base = adapter.build_case(self.root, descriptor)
+            if base.get('schema') != 'sst.fault-evidence.case.v2':
+                raise SuiteError('QPC export requires frozen tcpip_etw base-v2 case')
+            base_path = root / 'fault-evidence-base-v2.case.json'
+            write_new_json(base_path, base)
+            evidence.add(base_path)
+            self._collect_qpc_export(base_path, base, root, evidence, run['run_id'])
+            descriptor['clock_evidence_mode'] = QPC_MODE
+            descriptor['base_case_path'] = str(base_path.relative_to(self.root))
+            descriptor['qpc_export_prefix'] = str((root / 'qpc-native' / 'export').relative_to(self.root))
         descriptor_path = root / 'fault-capture-descriptor.json'
         if not descriptor_path.exists():
             write_new_json(descriptor_path, descriptor)
@@ -3917,12 +4048,17 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
 
     def _run_one(self, scenario: dict[str, Any], attempt: int) -> dict[str, Any]:
         """Execute one manifest row and retain every oracle input, pass or fail."""
+        self.native_clock_diagnostic = (self.requested_native_clock_diagnostic or
+            (scenario.get('fault_class') == 'diverter_stop' and
+             self.fault_clock_evidence == QPC_MODE))
         self.require_clients()
         preflight = self._require_preflight()
         scenario_id = scenario['scenario_id']
         result_path = self._result_path(scenario_id)
         if result_path.exists():
             return read_json(result_path)
+        if scenario.get('fault_class') == 'diverter_stop' and self.fault_clock_evidence == QPC_MODE:
+            self._require_qpc_guest_python()
         gate = self._continuation_gate()
         nonce = '%s-a%d-%s' % (scenario_id, attempt, uuid.uuid4().hex)
         root = self.root / 'evidence' / scenario_id / ('attempt-%02d' % attempt)
@@ -4610,6 +4746,10 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                         sealed_case.get('synthetic') is not False):
                     raise ValueError('synthetic or unclassified Spike evidence')
                 descriptor = read_json(self._spike_file(root, adjudication['descriptor']))
+                expected_mode = (QPC_MODE if case['fault_class'] == 'diverter_stop'
+                                 and self.fault_clock_evidence == QPC_MODE else None)
+                if descriptor.get('clock_evidence_mode') != expected_mode:
+                    raise ValueError('Spike fault clock evidence mode differs')
                 if (descriptor.get('synthetic') or
                         descriptor.get('candidate_id') != self.identity.candidate_id or
                         descriptor.get('fault') != case['fault_class'] or
@@ -5130,10 +5270,26 @@ def fault_recheck_issues(result: dict[str, Any], root: Path) -> list[str]:
         oracle_spec.loader.exec_module(oracle)
         capture = json.loads(raw)
         case = adapter.build_case(root, capture)
+        mode = capture.get('clock_evidence_mode')
+        if mode == QPC_MODE:
+            case = adapter.build_qpc_case(root, capture, case)
+            sealed_case = adjudication.get('case') or {}
+            sealed_result = adjudication.get('result') or {}
+            case_path = (root / str(sealed_case['path'])).resolve()
+            result_path = (root / str(sealed_result['path'])).resolve()
+            if (not case_path.is_relative_to(root) or not result_path.is_relative_to(root)
+                    or file_record(case_path, root) != sealed_case
+                    or file_record(result_path, root) != sealed_result
+                    or json.loads(case_path.read_text(encoding='utf-8')) != case):
+                raise ValueError('sealed v3 case differs from independent reconstruction')
+        elif mode is not None:
+            raise ValueError('unknown fault clock evidence mode')
         verdict = oracle.assess(case, root, capture['candidate_id'])
+        if mode == QPC_MODE and json.loads(result_path.read_text(encoding='utf-8')) != verdict:
+            raise ValueError('stored v3 verdict differs from independent reconstruction')
         if not verdict.get('passed'):
             return ['fault raw-evidence re-adjudication failed']
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+    except Exception as exc:  # noqa: BLE001 - fail closed on malformed native exports
         return ['fault raw-evidence re-adjudication failed: ' + str(exc)]
     return []
 
@@ -5216,6 +5372,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         default=128)
     parser.add_argument('--native-clock-diagnostic', action='store_true',
                         help='capture optional boot/process/QPC identity without changing verdicts')
+    parser.add_argument('--fault-clock-evidence', choices=('utc-v2', QPC_MODE), default='utc-v2',
+                        help='explicit diverter_stop clock proof; default retains v2 UTC verdict')
     parser.add_argument('--filter', choices=('benign', 'fault'))
     parser.add_argument('--fault-spike-result')
     parser.add_argument('--stop-on-first-failure', action='store_true')

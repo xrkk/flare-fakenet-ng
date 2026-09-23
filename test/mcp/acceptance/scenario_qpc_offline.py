@@ -64,7 +64,9 @@ def verify_export(export, etl, output):
     count = rm.get('paired_events')
     require(len(passes) == 2 and [p.get('mode') for p in passes] == ['raw', 'default']
             and isinstance(count, int) and count > 0 and
-            all(p.get('events') == count and p.get('process_trace_return') == 0
+            all(type(p.get('open_trace_handle')) is int and
+                0 < p['open_trace_handle'] < 0xffffffffffffffff and
+                p.get('events') == count and p.get('process_trace_return') == 0
                 and p.get('close_trace_return') == 0 and p.get('events_lost_output') == 0
                 and p.get('header', {}).get('EventsLost') == 0
                 and p.get('header', {}).get('BuffersLost') == 0 for p in passes)
@@ -76,13 +78,16 @@ def verify_export(export, etl, output):
         pairing = raw.pair_streams(export / 'raw/raw.jsonl', export / 'raw/default.jsonl', rebuilt)
         require(pairing == rm.get('pairing') and pairing['events'] == count,
                 'raw/default pairing differs from Windows manifest')
-        original = _lines(export / 'raw/paired.jsonl')
-        derived = _lines(rebuilt)
-        for index in range(count):
-            require(next(original, None) == next(derived, None),
-                    'paired row changed at seq ' + str(index))
-        require(next(original, None) is None and next(derived, None) is None,
-                'paired row count differs')
+        # Close both handles before TemporaryDirectory cleanup, including on
+        # a mismatch: Wine/Windows keeps an open JSONL file locked.
+        with (export / 'raw/paired.jsonl').open(encoding='utf-8') as original, \
+                rebuilt.open(encoding='utf-8') as derived:
+            for index in range(count):
+                a, b = original.readline(), derived.readline()
+                require(bool(a) and bool(b) and json.loads(a) == json.loads(b),
+                        'paired row changed at seq ' + str(index))
+            require(not original.readline() and not derived.readline(),
+                    'paired row count differs')
     require(source.get('schema') == 'fakenet.t007-r02-tdh-selectors.v1'
             and source.get('source_event_count') == count
             and source.get('source_etl_sha256') == etl_hash['sha256']
@@ -97,6 +102,8 @@ def verify_export(export, etl, output):
             and tm.get('target_count') == tm.get('target_records') ==
                 tm.get('tdh_success_count') == len(selectors)
             and tm.get('property_failure_count') == 0
+            and type(tm.get('api', {}).get('open_trace_handle')) is int
+            and 0 < tm['api']['open_trace_handle'] < 0xffffffffffffffff
             and tm.get('api', {}).get('process_trace_return') == 0
             and tm.get('api', {}).get('close_trace_return') == 0
             and _same_header(tm.get('api', {}).get('header', {}), passes[0]['header']),
@@ -202,6 +209,10 @@ def derive(case_path, evidence_root, export, output):
     require(windows.get('schema') == 'sst.qpc-diagnostic.v1'
             and windows.get('status') in ('INCOMPLETE', 'COMPLETE_DIAGNOSTIC_ONLY')
             and windows.get('formal_fault_verdict') == 'UNCHANGED'
+            and (windows.get('status') != 'COMPLETE_DIAGNOSTIC_ONLY' or
+                 (windows.get('capture_run_id') == capture['capture_run_id']
+                  and windows.get('managed_run_id') == case['run_id']
+                  and windows.get('candidate_id') == case['candidate_id']))
             and windows.get('inputs_before') == windows.get('inputs_after')
             and Counter((x['bytes'], x['sha256']) for x in
                         windows['inputs_before'].values()) == expected_hashes
@@ -213,6 +224,9 @@ def derive(case_path, evidence_root, export, output):
     verify_tdh_rows(rows, selectors)
     semantics = qpc.validate_tdh_semantics(rows, targets, observed['connect']['tcb'],
         (observed['peer'] or {}).get('tcb'), session['probe_pid'], managed_pid)
+    if windows['status'] == 'COMPLETE_DIAGNOSTIC_ONLY':
+        require(windows.get('error') is None and windows.get('tdh_semantics') == semantics,
+                'complete Windows diagnostic terminal or TDH semantics differ')
     by_seq = {s['seq']: s for s in selectors}
     details = [{**t, 'raw_qpc': by_seq[t['seq']]['raw_qpc'],
                 'utc_bounds_ns': fault.time_bounds(next(e['text'] for e in

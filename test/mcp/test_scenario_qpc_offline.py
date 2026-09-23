@@ -34,9 +34,10 @@ def _export_fixture(tmp_path):
     pairing = offline.raw.pair_streams(export / 'raw/raw.jsonl',
         export / 'raw/default.jsonl', export / 'raw/paired.jsonl')
     header = dict(ReservedFlags=1, EventsLost=0, BuffersLost=0)
-    passes = [dict(mode=mode, events=1, process_trace_return=0,
+    passes = [dict(mode=mode, events=1, open_trace_handle=100 + index,
+                   process_trace_return=0,
                    close_trace_return=0, events_lost_output=0, header=header)
-              for mode in ('raw', 'default')]
+              for index, mode in enumerate(('raw', 'default'))]
     etl_hash = offline.raw.sha_file(etl)
     _write(export / 'raw/manifest.json', dict(schema=offline.raw.SCHEMA,
         status='COMPLETE_DIAGNOSTIC_ONLY', error=None, host={'system': 'Windows'},
@@ -51,7 +52,8 @@ def _export_fixture(tmp_path):
         status='COMPLETE_DIAGNOSTIC_ONLY', error=None, input_before=hashes,
         input_after=hashes, source_event_count=1, observed_count=1, target_count=1,
         target_records=1, tdh_success_count=1, property_failure_count=0,
-        api=dict(process_trace_return=0, close_trace_return=0, header=header)))
+        api=dict(open_trace_handle=102, process_trace_return=0,
+                 close_trace_return=0, header=header)))
     return export, etl, output, selector
 
 
@@ -82,6 +84,20 @@ def test_offline_changed_etl_failed_tdh_and_omitted_row_rejected(tmp_path):
         offline.verify_export(export, etl, output)
     with pytest.raises(offline.raw.DiagnosticError, match='row count incomplete'):
         offline.verify_tdh_rows([], [selector])
+
+
+@pytest.mark.parametrize('stage', ['raw', 'default', 'tdh'])
+def test_open_trace_handle_failure_rejected_from_original_manifest(tmp_path, stage):
+    export, etl, output, _ = _export_fixture(tmp_path)
+    manifest_path = export / ('tdh/manifest.json' if stage == 'tdh' else 'raw/manifest.json')
+    manifest = json.loads(manifest_path.read_text())
+    if stage == 'tdh':
+        manifest['api']['open_trace_handle'] = 0xffffffffffffffff
+    else:
+        manifest['passes'][0 if stage == 'raw' else 1]['open_trace_handle'] = 0
+    _write(manifest_path, manifest)
+    with pytest.raises(offline.raw.DiagnosticError, match='native API status|TDH manifest'):
+        offline.verify_export(export, etl, output)
 
 
 def test_utc_diagnostic_retains_formal_uncertainty():

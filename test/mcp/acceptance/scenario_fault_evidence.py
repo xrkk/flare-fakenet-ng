@@ -23,11 +23,16 @@ HERE = Path(__file__).resolve().parent
 ADJUDICATOR = HERE / 'sst_fault_evidence.py'
 sys.path.insert(0, str(HERE))
 import scenario_tcpip as tcpip
+from scenario_qpc_contract import MODE as QPC_MODE, SCHEMA as QPC_SCHEMA
+
+QPC_EXPORT_FILES = ('manifest.json', 'raw/manifest.json', 'raw/raw.jsonl',
+                    'raw/default.jsonl', 'raw/paired.jsonl', 'selectors.json',
+                    'tdh/manifest.json', 'tdh/metadata.jsonl')
 
 
 def record(path: Path, root: Path) -> dict[str, Any]:
     raw = path.read_bytes()
-    return {'path': str(path.relative_to(root)), 'bytes': len(raw),
+    return {'path': path.relative_to(root).as_posix(), 'bytes': len(raw),
             'sha256': hashlib.sha256(raw).hexdigest()}
 
 
@@ -37,7 +42,7 @@ def ref(path: Path, root: Path, start: int = 0, end: int | None = None,
     # Do not reread the entire capture for every reference they emit.
     if end is None:
         end = len(path.read_bytes())
-    return {'path': str(path.relative_to(root)), 'byte_start': start,
+    return {'path': path.relative_to(root).as_posix(), 'byte_start': start,
             'byte_end': end, 'event_key': key}
 
 
@@ -277,13 +282,46 @@ def build_case(root: Path, capture: dict[str, Any]) -> dict[str, Any]:
     return case
 
 
+def build_qpc_case(root: Path, capture: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
+    """Bind one frozen base-v2 case and complete native export without cycles."""
+    if (capture.get('clock_evidence_mode') != QPC_MODE or
+            capture.get('fault') != 'diverter_stop' or
+            base.get('schema') != 'sst.fault-evidence.case.v2' or
+            base['session'].get('observation_kind') != 'tcpip_etw'):
+        raise ValueError('QPC mode requires diverter_stop/tcpip_etw')
+    base_path = _relative(root, capture, 'base_case_path')
+    if json.loads(base_path.read_text(encoding='utf-8')) != base:
+        raise ValueError('frozen base-v2 case differs from reconstructed originals')
+    prefix = capture.get('qpc_export_prefix')
+    if not isinstance(prefix, str) or not prefix or Path(prefix).is_absolute():
+        raise ValueError('native export prefix missing or absolute')
+    export = (root / prefix).resolve()
+    if not export.is_relative_to(root.resolve()):
+        raise ValueError('native export escapes evidence root')
+    paths = [(export / name).resolve() for name in QPC_EXPORT_FILES]
+    if any(not path.is_relative_to(export) or not path.is_file() for path in paths):
+        raise ValueError('native export file set incomplete')
+    case = dict(base, schema=QPC_SCHEMA, clock_evidence_mode=QPC_MODE,
+                qpc_evidence={'base_case_ref': ref(base_path, root),
+                              'export_prefix': export.relative_to(root).as_posix()})
+    case['files'] = base['files'] + [record(path, root) for path in [base_path] + paths]
+    return case
+
+
 
 def adjudicate(root: Path, capture: dict[str, Any], output: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     case_path = output.with_suffix('.case.json')
     if case_path.exists() or output.exists():
         raise FileExistsError('case/result already exists')
     try:
-        case = build_case(root, capture)
+        base = build_case(root, capture)
+        mode = capture.get('clock_evidence_mode')
+        if mode is None:
+            case = base
+        elif mode == QPC_MODE:
+            case = build_qpc_case(root, capture, base)
+        else:
+            raise ValueError('unknown clock evidence mode')
     except (ValueError, KeyError, TypeError, OSError) as exc:
         # An unsupported original is an explicit failure, not a missing result
         # and never an invented case with partial/filtered evidence references.
@@ -295,7 +333,8 @@ def adjudicate(root: Path, capture: dict[str, Any], output: Path) -> tuple[dict[
         with output.open('x', encoding='utf-8') as stream:
             stream.write(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
         return {}, result
-    case_path.write_text(json.dumps(case, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    with case_path.open('x', encoding='utf-8') as stream:
+        stream.write(json.dumps(case, ensure_ascii=False, indent=2) + '\n')
     process = subprocess.run([sys.executable, str(ADJUDICATOR), '--expected-candidate', case['candidate_id'],
                               '--input', str(case_path), '--evidence-root', str(root), '--output', str(output)],
                              text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
