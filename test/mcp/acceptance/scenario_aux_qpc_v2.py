@@ -235,13 +235,16 @@ def rebuild(case_path, evidence_root, export, *, require_windows=True):
              'auxiliary cases have mixed native identity')
     _require(len({s['seq'] for s in named_selectors}) == len(named_selectors) and
              all(s in selected for s in named_selectors) and
-             all(t in legacy_manifest.get('targets', []) for t in named_targets),
+             json.loads(json.dumps(named_targets)) == legacy_manifest.get('targets'),
              'legacy named selector/target differs')
     _require(len(cases) == len(case['cases']), 'auxiliary case proof count differs')
     after = {str(path): raw.sha_file(path) for path in paths}
     _require(before == after, 'auxiliary v2 inputs changed during rebuild')
-    proof = {'schema': PROOF_SCHEMA, 'status': 'COMPLETE_FORMAL_INPUT',
-             'source_windows_status': 'COMPLETE_DIAGNOSTIC_ONLY',
+    proof = {'schema': PROOF_SCHEMA,
+             'status': ('COMPLETE_FORMAL_INPUT' if require_windows else
+                        'COMPLETE_DIAGNOSTIC_REBUILD_ONLY'),
+             'source_windows_status': ('COMPLETE_DIAGNOSTIC_ONLY' if require_windows else
+                                       'NOT_REQUIRED_DIAGNOSTIC'),
              'candidate_id': case['candidate_id'], 'run_id': case['run_id'],
              'nonce': case['nonce'], 'identity': identities[0], 'cases': cases,
              'single_pass': {'scan': single_manifest['scan'],
