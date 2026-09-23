@@ -408,7 +408,9 @@ def assess(case, root, expected_candidate=CANDIDATE):
                     '47ba677e131509425ae12d22bc7dde1d1612b4889f2a213971d27be044638696',
                     '4603f5339680f01a1e188b37427e3c2f999c306d9e1e9fe4bb6fa06ceecf0815',
                     '1aabcd16e3f35a0d010a966ba82de4be5a0f4430033c5f177df1a41f2955ac33',
-                    '7b1a3a72772caf400d176391233745479c2b4d927b80c2d1e9746d10ffb0a2b5'}
+                    '7b1a3a72772caf400d176391233745479c2b4d927b80c2d1e9746d10ffb0a2b5',
+                    # T009 only adds diagnostics below the unchanged line 127.
+                    '8d6e100d89f7785e14c718f780582befd878f91101ba8f2a9d97c422d0f76366'}
                 and x.splitlines()[126].strip() == 'time.sleep(3600)'
                 for x in observations)
             matched = any(isinstance(x, str) and 'LIVE STOP STACKS timestamp=' in x

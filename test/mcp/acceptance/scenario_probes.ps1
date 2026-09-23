@@ -5,11 +5,15 @@
 # accepting a scenario.
 [CmdletBinding()]
 param(
-    [ValidateSet('traffic', 'preflight-b1', 'ensure-client')]
+    [ValidateSet('traffic', 'preflight-b1', 'ensure-client', 'identity')]
     [string]$Action = 'traffic',
     [ValidateSet('B1', 'B2', 'B3', 'B4', 'default')]
     [string]$Profile = 'B1',
     [string]$Nonce,
+    [string]$CaptureRunId,
+    [string]$CandidateId,
+    [switch]$DiagnosticIdentity,
+    [int]$IdentityPid,
     [string]$Output,
     [string]$StopFile,
     [string]$StartFile,
@@ -81,6 +85,72 @@ function Write-NativeJsonLine([string]$Path, [hashtable]$Value, [Int64]$UtcTicks
     if (-not $Value.ContainsKey('worker')) { $Value.worker = 1 }
     if (-not $Value.ContainsKey('seq')) { $Value.seq = 0 }
     [IO.File]::AppendAllText($Path, (($Value | ConvertTo-Json -Depth 12 -Compress) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+}
+
+function Get-NativeIdentity([int]$TargetPid, [string]$Run, [string]$Token, [string]$Candidate) {
+    # Diagnostic only. phnt ntexapi.h class 90 / Win10 x64 layout:
+    # GUID at 0, FirmwareType at 16, BootFlags at 24, sizeof=32.
+    $base = @{schema='sst.native-identity.v1';supported=$false;run_id=$Run;nonce=$Token;candidate_id=$Candidate;
+        boot_api='NtQuerySystemInformation';boot_class=90;boot_layout='phnt:SYSTEM_BOOT_ENVIRONMENT_INFORMATION:win10-19045-x64';
+        process_api='GetProcessTimes';creation_unit='FILETIME_100ns_since_1601';frequency_api='QueryPerformanceFrequency';frequency_unit='ticks_per_second'}
+    try {
+        if (-not [Environment]::Is64BitProcess) { throw 'x64 process required' }
+        $version = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).Version
+        if ($version -ne '10.0.19045') { throw ('unverified Windows build: '+$version) }
+        if (-not ('SstNativeIdentity' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class SstNativeIdentity {
+  [DllImport("ntdll.dll")] static extern int NtQuerySystemInformation(int cls, IntPtr buffer, uint length, out uint returned);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetProcessTimes(IntPtr handle, out long created, out long exit, out long kernel, out long user);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool QueryPerformanceFrequency(out long frequency);
+  public static object[] Boot() {
+    IntPtr p=Marshal.AllocHGlobal(32);
+    try {
+      for(int i=0;i<32;i++) Marshal.WriteByte(p,i,0);
+      uint returned; int status=NtQuerySystemInformation(90,p,32,out returned);
+      byte[] raw=new byte[32]; Marshal.Copy(p,raw,0,32);
+      if(status!=0 || returned!=32) throw new InvalidOperationException("class 90 status/length "+status+"/"+returned);
+      Guid guid=new Guid(new ArraySegment<byte>(raw,0,16).ToArray());
+      if(guid==Guid.Empty) throw new InvalidOperationException("zero BootIdentifier");
+      return new object[]{guid.ToString(),BitConverter.ToUInt32(raw,16),BitConverter.ToUInt64(raw,24),
+        BitConverter.ToString(raw).Replace("-","").ToLowerInvariant(),status,returned};
+    } finally { Marshal.FreeHGlobal(p); }
+  }
+  public static long Creation(int pid, int currentPid) {
+    bool owned=pid!=currentPid; IntPtr h=owned?OpenProcess(0x1000,false,pid):GetCurrentProcess();
+    if(h==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(),"OpenProcess");
+    try { long c,e,k,u; if(!GetProcessTimes(h,out c,out e,out k,out u))
+      throw new Win32Exception(Marshal.GetLastWin32Error(),"GetProcessTimes");
+      if(c<=0) throw new InvalidOperationException("invalid creation FILETIME"); return c;
+    } finally { if(owned) CloseHandle(h); }
+  }
+  public static long Frequency() { long hz; if(!QueryPerformanceFrequency(out hz) || hz<=0)
+    throw new Win32Exception(Marshal.GetLastWin32Error(),"QueryPerformanceFrequency"); return hz; }
+}
+'@
+        }
+        $collector = [int]$PID
+        if ($TargetPid -le 0) { $TargetPid = $collector }
+        $boot = [SstNativeIdentity]::Boot()
+        $machine = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction Stop).MachineGuid
+        if (-not $machine -or -not $env:COMPUTERNAME) { throw 'VM identity incomplete' }
+        $base.supported=$true
+        $base.boot=@{boot_identifier=[string]$boot[0];firmware_type=[uint32]$boot[1];boot_flags=[uint64]$boot[2];
+            raw_hex=[string]$boot[3];ntstatus=[int]$boot[4];return_length=[int]$boot[5];buffer_length=32;information_class=90;layout=$base.boot_layout}
+        $base.collector_pid=$collector
+        $base.collector_creation_filetime_100ns=[SstNativeIdentity]::Creation($collector,$collector)
+        $base.pid=$TargetPid
+        $base.creation_filetime_100ns=[SstNativeIdentity]::Creation($TargetPid,$collector)
+        $base.qpc_frequency=[SstNativeIdentity]::Frequency()
+        $base.vm_identity=@{computer_name=$env:COMPUTERNAME;machine_guid=([string]$machine).ToLowerInvariant()}
+    } catch { $base.supported=$false;$base.error=($_.Exception.GetType().Name+': '+$_.Exception.Message) }
+    return $base
 }
 
 function Ensure-Output([string]$Path) {
@@ -615,7 +685,9 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
     try { $parsedTargets = ConvertFrom-Json -InputObject $AdditionalTargetsJson; $additionalTargets = @(foreach ($target in $parsedTargets) { $target }) } catch { throw 'AdditionalTargetsJson is not a JSON array' }
     if ($additionalTargets.Count -gt 8) { throw 'AdditionalTargetsJson exceeds bounded case count' }
     if ($StartupRetrySeconds -lt 20 -or $StartupRetrySeconds -gt 120) { throw 'StartupRetrySeconds is outside the bounded range' }
-    Write-JsonLine $Path @{ event = 'ready'; nonce = $Token; pid = $PID; profile = $Bucket; variant = $Variant; tempo = $Tempo; interleave = $Interleave; cadence_ms = $Cadence; target_host = $endpoint.host; target_port = $endpoint.port; target_protocol = $endpoint.protocol; process_mode = $ProcessMode; fnpr_role = $FnprRole; additional_targets = $additionalTargets; startup_retry_seconds = $StartupRetrySeconds; creation_ticks = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks; stopwatch_frequency = [Diagnostics.Stopwatch]::Frequency }
+    $ready = @{ event = 'ready'; nonce = $Token; pid = $PID; profile = $Bucket; variant = $Variant; tempo = $Tempo; interleave = $Interleave; cadence_ms = $Cadence; target_host = $endpoint.host; target_port = $endpoint.port; target_protocol = $endpoint.protocol; process_mode = $ProcessMode; fnpr_role = $FnprRole; additional_targets = $additionalTargets; startup_retry_seconds = $StartupRetrySeconds; creation_ticks = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks; stopwatch_frequency = [Diagnostics.Stopwatch]::Frequency }
+    if ($DiagnosticIdentity) { $ready.native_identity = Get-NativeIdentity $PID $CaptureRunId $Token $CandidateId }
+    Write-JsonLine $Path $ready
     # A stop-window probe is released at the END of the active window by
     # definition; for a restart-lifecycle scenario that includes the whole
     # restart transition plus its recovery audit settle window (~150s), so
@@ -660,7 +732,9 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
         $stdout = Join-Path (Split-Path -Parent $Path) 'probe-client.stdout'
         $process = Start-Process -FilePath $identity.path -ArgumentList @($endpoint.host, $endpoint.port, $Stop, $Cadence, $Token, $StartupRetrySeconds) -RedirectStandardOutput $stdout -PassThru -WindowStyle Hidden
         $childCreation = (Get-Process -Id $process.Id).StartTime.ToUniversalTime().Ticks
-        Write-JsonLine $Path @{ event = 'process_ready'; nonce = $Token; profile = $Bucket; variant = $Variant; tempo = $Tempo; interleave = $Interleave; pid = $process.Id; worker = 1; seq = 0; creation_ticks = $childCreation; stopwatch_frequency = [Diagnostics.Stopwatch]::Frequency }
+        $childReady = @{ event = 'process_ready'; nonce = $Token; profile = $Bucket; variant = $Variant; tempo = $Tempo; interleave = $Interleave; pid = $process.Id; worker = 1; seq = 0; creation_ticks = $childCreation; stopwatch_frequency = [Diagnostics.Stopwatch]::Frequency }
+        if ($DiagnosticIdentity) { $childReady.native_identity = Get-NativeIdentity $process.Id $CaptureRunId $Token $CandidateId }
+        Write-JsonLine $Path $childReady
         Write-JsonLine $Path @{ event = 'process_started'; nonce = $Token; connection_id = "$Token-b3"; image = $identity.path; image_sha256 = $identity.sha256; child_pid = $process.Id; pid = $process.Id; dst = "$($endpoint.host):$($endpoint.port)" }
         $deadline = [DateTime]::UtcNow.AddSeconds($StartupRetrySeconds + 5)
         $script:b3EstablishedEmitted = $false
@@ -828,6 +902,9 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
 }
 
 switch ($Action) {
+    'identity' {
+        Get-NativeIdentity $IdentityPid $CaptureRunId $Nonce $CandidateId | ConvertTo-Json -Depth 8 -Compress
+    }
     'ensure-client' {
         if (-not $Output) { throw '-Output is required for ensure-client' }
         Ensure-ProbeClient $Output | Out-Null

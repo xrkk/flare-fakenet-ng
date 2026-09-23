@@ -1004,6 +1004,7 @@ class FnprSentinel:
 
 
 class Suite:
+    native_clock_diagnostic = False
     # The two pktmon file-size values already exercised by the master's
     # capacity contrast.  Validated here so directly-constructed Namespace
     # objects (offline callers) also obey the same contract; the default
@@ -1018,6 +1019,7 @@ class Suite:
                              % (self.PKTMON_FILE_SIZE_MIB_CHOICES, file_size))
         self.args = args
         self.pktmon_file_size_mib = file_size
+        self.native_clock_diagnostic = bool(getattr(args, 'native_clock_diagnostic', False))
         self.root = Path(args.suite_root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.identity = Identity(args.candidate_id, args.source_commit,
@@ -1418,6 +1420,7 @@ class Suite:
         assert self.vm
         script = GUEST_ROOT + r'\scenario-suite-20260912\scenario_probes.ps1'
         run_root = guest + '\\' + run_label
+        capture_run_id = nonce + ':' + run_label
         params = dict(Action='traffic', Profile=profile['bucket'], Nonce=nonce,
             Output=run_root + r'\probe.jsonl', StopFile=run_root + r'\probe.stop',
             StartFile=run_root + r'\probe.start', CaseFile=run_root + r'\probe.cases',
@@ -1430,7 +1433,13 @@ class Suite:
             FnprRole=profile['probe_target'].get('fnpr_role', ''),
             AdditionalTargetsJson=json.dumps(list(profile.get('negative_cases', ())) + list(profile.get('probe_cases', ())), separators=(',', ':')),
             StartupRetrySeconds=int(profile.get('startup_retry_seconds', 70)))
-        splat = ';'.join(key + '=' + (str(value) if isinstance(value, int) else quote_ps(value)) for key, value in params.items())
+        if self.native_clock_diagnostic:
+            params.update(CaptureRunId=capture_run_id,
+                          CandidateId=self.identity.candidate_id,
+                          DiagnosticIdentity=True)
+        splat = ';'.join(key + '=' + ('$true' if value is True else '$false' if value is False
+                                     else str(value) if isinstance(value, int) else quote_ps(value))
+                         for key, value in params.items())
         child = "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';$parameters=@{" + splat + "};try{& " + quote_ps(script) + " @parameters 1> " + quote_ps(run_root + r'\probe.stdout') + " 2> " + quote_ps(run_root + r'\probe.stderr') + "}catch{$_|Out-File -LiteralPath " + quote_ps(run_root + r'\probe.stderr') + ";exit 1}"
         encoded_child = base64.b64encode(child.encode('utf-16le')).decode('ascii')
         command = (
@@ -1447,7 +1456,12 @@ class Suite:
             "$adapters=@(Get-NetAdapter|Select-Object ifIndex,Name,InterfaceDescription,MacAddress,Status);"
             "$before=(& pktmon counters|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon counters before start failed'};" +
             _sst_clock.clock_sample_ps('clockBefore') +
-            "@{capture_mode='all-components-tcpip';clock_before=$clockBefore;schema='" + NIC_CAPTURE_SCHEMA + "';captured_utc=[DateTime]::UtcNow.ToString('o');pktmon_list=$list;adapters=$adapters;pktmon_counters_before=$before}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $nic -Encoding UTF8;"
+            ("$identityBefore=(& " + quote_ps(script) + " -Action identity -CaptureRunId " + quote_ps(capture_run_id) +
+             " -Nonce " + quote_ps(nonce) + " -CandidateId " + quote_ps(self.identity.candidate_id) +
+             ")|ConvertFrom-Json;" if self.native_clock_diagnostic else '') +
+            "@{capture_mode='all-components-tcpip';clock_before=$clockBefore;schema='" + NIC_CAPTURE_SCHEMA + "';captured_utc=[DateTime]::UtcNow.ToString('o');pktmon_list=$list;adapters=$adapters;pktmon_counters_before=$before" +
+            (";native_identity_before=$identityBefore;capture_run_id=" + quote_ps(capture_run_id) + ";nonce=" + quote_ps(nonce) + ";candidate_id=" + quote_ps(self.identity.candidate_id) if self.native_clock_diagnostic else '') +
+            "}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $nic -Encoding UTF8;"
             "$pktmonStart=(& pktmon start --capture --comp all --pkt-size 0 --flags 0x1f --trace -p Microsoft-Windows-TCPIP -k 0xFF -l 4 --file-name $etl --file-size "
             + str(self.pktmon_file_size_mib) + "|Out-String);"
             "if($LASTEXITCODE -ne 0){throw 'pktmon start failed'};$captureStarted=$true;"
@@ -1485,6 +1499,9 @@ class Suite:
             raise
         value['raw'] = raw
         value['kernel_capture'] = kernel
+        if self.native_clock_diagnostic:
+            value['capture_run_id'] = capture_run_id
+            value['nonce'] = nonce
         return value
 
     def _probe_cooperative_cleanup_command(self, pid, creation_ticks, stop_path,
@@ -1618,9 +1635,15 @@ class Suite:
             capture['pid'], capture.get('probe_creation_ticks'), capture['stop'],
             status_path, 'pktmon stop', wait_seconds=30)
         clock_after = _sst_clock.clock_sample_ps('clockAfter')
+        identity_after = (
+            "$identityAfter=(& " + quote_ps(GUEST_ROOT + r'\scenario-suite-20260912\scenario_probes.ps1') +
+            " -Action identity -CaptureRunId " + quote_ps(capture['capture_run_id']) +
+            " -Nonce " + quote_ps(capture['nonce']) + " -CandidateId " + quote_ps(self.identity.candidate_id) +
+            ")|ConvertFrom-Json;" if self.native_clock_diagnostic else '')
         nic_update = (
             "$nic=Get-Content -LiteralPath " + quote_ps(capture['pktmon_nic']) + " -Raw|ConvertFrom-Json;"
             "$nic|Add-Member -NotePropertyName clock_after -NotePropertyValue $clockAfter -Force;"
+            + ("$nic|Add-Member -NotePropertyName native_identity_after -NotePropertyValue $identityAfter -Force;" if self.native_clock_diagnostic else '') +
             "$after=(& pktmon counters|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon counters after stop failed'};"
             "$status=(& pktmon status|Out-String);"
             "$nic|Add-Member -NotePropertyName pktmon_counters_after -NotePropertyValue $after -Force;"
@@ -1646,7 +1669,7 @@ class Suite:
                    "$coop=" + quote_ps(coop_cmd) + ";"
                    "$coopJson=& { Invoke-Expression $coop };"
                    "$coopValue=$coopJson|ConvertFrom-Json;"
-                   + clock_after + nic_update + nic_write + conversion + nic_write +
+                   + clock_after + identity_after + nic_update + nic_write + conversion + nic_write +
                    "@{coop=$coopValue}|ConvertTo-Json -Depth 6 -Compress")
         primary_error = None
         value = None
@@ -5191,6 +5214,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # values already exercised by the master's capacity contrast runs.
     parser.add_argument('--pktmon-file-size-mib', type=int, choices=(128, 1024),
                         default=128)
+    parser.add_argument('--native-clock-diagnostic', action='store_true',
+                        help='capture optional boot/process/QPC identity without changing verdicts')
     parser.add_argument('--filter', choices=('benign', 'fault'))
     parser.add_argument('--fault-spike-result')
     parser.add_argument('--stop-on-first-failure', action='store_true')

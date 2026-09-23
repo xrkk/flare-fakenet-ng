@@ -156,6 +156,31 @@ def test_action_clock_samples_bracket_close_without_replacing_utc(tmp_path, monk
     assert action['schema'] == 'fakenet.fault-action.v1'
 
 
+def test_identity_diagnostic_failure_does_not_skip_close(tmp_path, monkeypatch):
+    injector, _, _ = setup_gate(tmp_path, monkeypatch)
+    faultinject._fault_file().unlink()
+    injector.arm('diverter_stop')
+    closed = []
+
+    class Diverter:
+        handle = type('Handle', (), {'_handle': 123})()
+
+        def _close_windivert_handle(self):
+            closed.append(True)
+
+    monkeypatch.setattr(faultinject, 'native_handle_observation', lambda _: {})
+    monkeypatch.setattr(faultinject, 'native_clock_observation',
+                        lambda: {'supported': False})
+    monkeypatch.setattr('fakenet.mcp.native_provenance.native_identity',
+                        lambda: (_ for _ in ()).throw(OSError('diagnostic failure')))
+    assert injector.inject_diverter_stop(Diverter())
+    result = json.loads((tmp_path / 'run-identity' / 'fault-action.json').read_text())
+    assert closed == [True]
+    assert result['native_identity']['before']['supported'] is False
+    assert result['native_identity']['after']['supported'] is False
+    assert 'diagnostic failure' in result['native_identity']['before']['error']
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='native Windows clock APIs required')
 def test_native_precise_clock_records_ordered_raw_samples():
     first = faultinject.native_clock_observation()

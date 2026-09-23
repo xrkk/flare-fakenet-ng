@@ -12,11 +12,13 @@ execution input), and the PowerShell wait semantics are separately proven on
 real WinPS5.1 with own short-lived child processes in the VM evidence run.
 """
 import importlib.util
+import base64
 import json
 import re
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 HERE = Path(__file__).parent
 SPEC = importlib.util.spec_from_file_location('suite_cleanup_test', HERE / 'acceptance/scenario_suite.py')
@@ -27,13 +29,15 @@ SPEC.loader.exec_module(suite)
 FORBIDDEN = re.compile(r'Stop-Process|TerminateProcess|taskkill|\.Kill\(|Stop-Process -Force')
 
 
-def build_start_command():
+def build_start_command(diagnostic=False):
     """Drive the real _start_capture_and_probe command construction with a
     recording fake VM: the first _vm_json call returns startup_failed so the
     failure cleanup path is exercised and its command captured."""
     runner = suite.Suite.__new__(suite.Suite)
     runner.vm = object()
     runner.pktmon_file_size_mib = 128  # field a validated __init__ provides
+    runner.native_clock_diagnostic = diagnostic
+    runner.identity = SimpleNamespace(candidate_id='candidate-diagnostic')
     captured = []
 
     def fake_vm_json(command, timeout=120):
@@ -63,6 +67,18 @@ def build_start_command():
     except suite.SuiteError as exc:
         assert 'startup failed' in str(exc), exc
     return captured[0]
+
+
+def test_optional_native_identity_command_uses_same_capture_and_probe():
+    ordinary = build_start_command()
+    diagnostic = build_start_command(True)
+    assert 'native_identity_before' not in ordinary
+    assert 'DiagnosticIdentity' not in ordinary
+    assert 'native_identity_before=$identityBefore' in diagnostic
+    assert '-Action identity -CaptureRunId' in diagnostic
+    encoded = re.search(r"\$encoded='([^']+)'", diagnostic).group(1)
+    assert 'DiagnosticIdentity=$true' in base64.b64decode(encoded).decode('utf-16le')
+    assert 'nonce-1:run-01' in diagnostic
 
 
 class StartCleanupTests(unittest.TestCase):

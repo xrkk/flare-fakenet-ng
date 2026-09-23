@@ -212,6 +212,7 @@ class FaultInjector:
         raw_handle = getattr(handle, '_handle', None)
         before = native_handle_observation(raw_handle)
         clock_before = native_clock_observation()
+        identity_before = safe_native_identity()
         began = time.time_ns()
         try:
             # Use the same close boundary as normal teardown: PyDivert 2.1.0
@@ -220,12 +221,17 @@ class FaultInjector:
             after = native_handle_observation(raw_handle)
             ended = time.time_ns()
             clock_after = native_clock_observation()
+            identity_after = safe_native_identity()
             receipt = json.loads((Path.cwd() / 'fault-triggered.json').read_text(encoding='utf-8'))
+            for identity in (identity_before, identity_after):
+                identity['run_id'] = Path.cwd().name
+                identity['nonce'] = receipt['nonce']
             with (Path.cwd() / 'fault-action.json').open('x', encoding='utf-8') as stream:
                 json.dump(dict(schema='fakenet.fault-action.v1',
                     run_id=Path.cwd().name, pid=os.getpid(), **receipt,
                     action='WinDivertClose', start_time_ns=began, end_time_ns=ended,
                     clock_observations=dict(before=clock_before, after=clock_after),
+                    native_identity=dict(before=identity_before, after=identity_after),
                     before=before, after=after), stream)
         finally:
             diverter.handle = None
@@ -404,6 +410,16 @@ class FaultInjector:
                     fields.get('source_ipv4') == source):
                 return True
         return False
+
+
+def safe_native_identity():
+    """Diagnostic identity failure must never skip a fault or its cleanup."""
+    try:
+        from .native_provenance import native_identity
+        return native_identity()
+    except Exception as exc:  # noqa: BLE001 - diagnostic evidence only
+        return {'schema': 'sst.native-identity.v1', 'supported': False,
+                'error': type(exc).__name__ + ': ' + str(exc)}
 
 
 def native_clock_observation():
