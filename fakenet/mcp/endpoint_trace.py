@@ -66,7 +66,10 @@ public static class FakeNetEndpointTraceV1 {
         // Sequential plus explicit stop-on-hybrid-shutdown. Otherwise Windows
         // adds a session-dependent shutdown flag, including in session zero.
         p.LogFileMode = 0x00400001;
-        p.FlushTimer = 1;
+        // File-mode traces flush full buffers and flush remaining events at
+        // managed stop. Periodic flushes waste the bounded file on partially
+        // filled buffers and can exhaust it before the recovery audit.
+        p.FlushTimer = 0;
         p.LoggerNameOffset = (uint)Marshal.SizeOf(typeof(Properties));
         p.LogFileNameOffset = p.LoggerNameOffset + 1024;
         Marshal.StructureToPtr(p, memory, false);
