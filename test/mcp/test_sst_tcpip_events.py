@@ -275,6 +275,133 @@ def reused_capture():
     return ('\ufeff'+''.join(old)+capture().decode('utf-16-le').lstrip('\ufeff')).encode('utf-16-le')
 
 
+def terminal_prefix_capture(tcb='0xAAA', old_tuple='192.168.204.233:51330',
+                            old_remote='192.168.204.233:443', when='54.900000000'):
+    old = line(when, f'connection {tcb} (local={old_tuple} remote={old_remote}) close issued.')
+    return ('\ufeff'+old+capture().decode('utf-16-le').lstrip('\ufeff')).encode('utf-16-le')
+
+
+def test_old_tuple_terminal_prefix_remains_bound_before_explicit_new_birth():
+    raw = terminal_prefix_capture()
+    result = reconstruct(raw)
+    prefix, target = [g for g in result['generation_manifest'] if g['tcb'] == '0XAAA']
+    assert prefix['generation_ordinal'] == 0 and prefix['left_censored'] is True
+    assert prefix['birth_ref'] is None and prefix['closed_ref'] is None
+    assert len(prefix['record_refs']) == 1
+    old = prefix['record_refs'][0]
+    assert raw[old['byte_start']:old['byte_end']].decode('utf-16-le').endswith('close issued.\r\n')
+    assert target['generation_ordinal'] == 1 and target['left_censored'] is False
+    assert target['birth_ref'] == result['events'][0]['ref']
+    assert result['connect']['generation_ordinal'] == 1
+    assert old not in [e['ref'] for e in result['events'] + result['termination']]
+
+
+def test_old_tuple_terminal_prefix_also_requires_explicit_listener_birth():
+    raw = terminal_prefix_capture('0xBBB', '192.168.204.233:38928',
+                                  '192.168.204.233:16632')
+    result = reconstruct(raw)
+    prefix, target = [g for g in result['generation_manifest'] if g['tcb'] == '0XBBB']
+    assert prefix['left_censored'] is True and prefix['birth_ref'] is None
+    assert prefix['closed_ref'] is None and len(prefix['record_refs']) == 1
+    assert target['left_censored'] is False and target['birth_ref'] is not None
+    assert target['identity']['pid'] == 404
+    assert result['peer']['generation_ordinal'] == 1
+    assert prefix['record_refs'][0] not in [e['ref'] for e in result['events']]
+
+
+@pytest.mark.parametrize('bad,reason', [
+    ('same_tuple', 'distinct tuple'),
+    ('missing_birth', 'later native birth'),
+    ('wrong_time', 'later native birth'),
+    ('missing_old_tuple', 'unsupported TCP lifecycle'),
+    ('early_old_rst', 'missing native birth'),
+    ('old_reappears', 'prefix conflicts'),
+    ('second_old_terminal', 'later native birth'),
+    ('repeated_birth', 'before prior generation reached Closed'),
+    ('wrong_pid', 'unique original-tuple/PID connect missing'),
+    ('wrong_new_tuple', 'unique original-tuple/PID connect missing'),
+    ('zero_tcb', 'zero TCB'),
+])
+def test_old_terminal_prefix_does_not_excuse_unproven_identity_or_order(bad, reason):
+    raw = terminal_prefix_capture().decode('utf-16-le')
+    args = {}
+    if bad == 'same_tuple':
+        raw = terminal_prefix_capture(old_tuple='192.168.204.233:16633',
+                                      old_remote='119.188.175.46:443').decode('utf-16-le')
+    elif bad == 'missing_birth':
+        raw = raw.replace(line('55.100000000', 'connection 0xAAA transition from ClosedState  to SynSentState , SndNxt = 0.'), '')
+    elif bad == 'wrong_time':
+        raw = terminal_prefix_capture(when='56.900000000').decode('utf-16-le')
+    elif bad == 'missing_old_tuple':
+        raw = raw.replace('local=192.168.204.233:51330', 'local=')
+    elif bad == 'early_old_rst':
+        raw = raw.replace('connection 0xAAA (local=192.168.204.233:51330 remote=192.168.204.233:443) close issued.',
+            'Connection 0xAAA Transport (Protocol TCP , AddressFamily = IPV4 ) sent RST with Local = 192.168.204.233:51330, Remote = 192.168.204.233:443. Reason = Connection aborted .')
+    elif bad == 'old_reappears':
+        old = line('55.150000000', 'connection 0xAAA (local=192.168.204.233:51330 remote=192.168.204.233:443) close issued.')
+        birth = line('55.100000000', 'connection 0xAAA transition from ClosedState  to SynSentState , SndNxt = 0.')
+        raw = raw.replace(birth, birth + old)
+    elif bad == 'second_old_terminal':
+        first = line('54.900000000', 'connection 0xAAA (local=192.168.204.233:51330 remote=192.168.204.233:443) close issued.')
+        raw = raw.replace(first, first + line('54.950000000',
+            'connection 0xAAA (local=192.168.204.233:51330 remote=192.168.204.233:443) close issued.'))
+    elif bad == 'repeated_birth':
+        birth = line('55.100000000', 'connection 0xAAA transition from ClosedState  to SynSentState , SndNxt = 0.')
+        raw = raw.replace(birth, birth + line('55.150000000', 'connection 0xAAA transition from ClosedState  to SynSentState , SndNxt = 0.'))
+    elif bad == 'wrong_pid':
+        args['pid'] = 99
+    elif bad == 'wrong_new_tuple':
+        raw = raw.replace('local=192.168.204.233:16633 remote=119.188.175.46:443) connect completed.',
+                          'local=192.168.204.233:16634 remote=119.188.175.46:443) connect completed.')
+    elif bad == 'zero_tcb':
+        raw = raw.replace('0xAAA', '0x0')
+    with pytest.raises(ValueError, match=reason):
+        reconstruct(raw.encode('utf-16-le'), **args)
+
+
+def test_old_terminal_prefix_cannot_hide_an_early_target_close():
+    birth = line('55.100000000', 'connection 0xAAA transition from ClosedState  to SynSentState , SndNxt = 0.')
+    early = line('55.150000000', 'connection 0xAAA (local=192.168.204.233:16633 remote=119.188.175.46:443) close issued.')
+    raw = terminal_prefix_capture().decode('utf-16-le').replace(birth, birth + early)
+    with pytest.raises(ValueError, match='prefix conflicts'):
+        reconstruct(raw.encode('utf-16-le'))
+
+
+@pytest.mark.parametrize('tamper', ['change_old_tuple', 'delete_old_terminal'])
+def test_old_terminal_prefix_still_requires_full_etl_text_hash(tamper):
+    import hashlib
+    raw, meta = clocks_and_header(terminal_prefix_capture())
+    tcp.validate_capture(raw, b'fixture ETL', meta, 15625000)
+    if tamper == 'change_old_tuple':
+        modified = raw.replace('51330'.encode('utf-16-le'), '51331'.encode('utf-16-le'))
+    else:
+        old = line('54.900000000', 'connection 0xAAA (local=192.168.204.233:51330 remote=192.168.204.233:443) close issued.')
+        modified = raw.replace(old.encode('utf-16-le'), b'')
+    assert hashlib.sha256(modified).hexdigest() != meta['conversion']['text_sha256']
+    with pytest.raises(ValueError, match='conversion hash mismatch'):
+        tcp.validate_capture(modified, b'fixture ETL', meta, 15625000)
+
+
+def test_old_terminal_prefix_does_not_weaken_native_creation_binding(tmp_path):
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent / 'acceptance'))
+    import scenario_suite as suite
+    judge, _case = oracle_case(tmp_path, terminal_prefix_capture())
+    (tmp_path/'ipc.jsonl').rename(tmp_path/'ipc-parent.jsonl')
+    (tmp_path/'meta.json').rename(tmp_path/'pktmon-nic.json')
+    rows = [json.loads(line) for line in (tmp_path/'probe.jsonl').read_text().splitlines()]
+    rows[0]['creation_ticks'] = rows[1]['utc_ticks'] + 1000000
+    (tmp_path/'probe.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.root = tmp_path
+    runner.identity = type('Identity', (), {'candidate_id': judge.CANDIDATE})()
+    records = [suite.file_record(path, tmp_path) for path in tmp_path.iterdir()]
+    run = {'run_id': 'r', 'capture': {'files': records}, 'originals': {'files': []}}
+    with pytest.raises(suite.SuiteError, match='connect precedes native creation'):
+        runner._application_observation(run, rows[1], [rows[2]], 'n',
+                                        rows[1]['src'], rows[1]['dst'], 'TCP')
+
+
 def test_missing_birth_now_splits_on_tuple_change():
     # discovery100-90 sst-080: a kernel TCB address reused without an
     # observed birth is bounded by the tuple change itself; the new

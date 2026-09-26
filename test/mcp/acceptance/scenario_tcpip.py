@@ -478,7 +478,7 @@ def connection_events(raw, path, log, pid, src, dst, managed_pid, policy_window=
     selected = []
     for tcb in sorted(tcbs):
         expected = connected if tcb == connected['tcb'] else peer
-        groups = reconstruct_generations([e for e in all_events if e['tcb'] == tcb])
+        groups = reconstruct_generations([e for e in all_events if e['tcb'] == tcb], expected)
         matches = [g for g in groups if any(e['ref'] == expected['ref'] for e in g['events'])]
         if len(matches) != 1:
             raise ValueError('connection has no unique complete native generation')
@@ -512,15 +512,41 @@ def connection_events(raw, path, log, pid, src, dst, managed_pid, policy_window=
                 policy_outside=sorted(primary_policy['outside']+peer_policy['outside'], key=lambda x:x['ref']['byte_start']))
 
 
-def reconstruct_generations(events):
-    """A close observation bounds the session; Closed permits a new allocation."""
+def reconstruct_generations(events, expected=None):
+    """Keep a captured old close separate when a native birth proves reuse."""
     groups = []
+    old_prefix = None
+    if events and events[0]['kind'] == 'close issued':
+        old = events[0]
+        new = events[1] if len(events) > 1 else None
+        old_tuple = (old.get('local'), old.get('remote'))
+        target_tuple = ((expected or {}).get('local'), (expected or {}).get('remote'))
+        stamp = lambda event: re.search(
+            r'::(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{9}) \[Microsoft-Windows-TCPIP\] TCP:',
+            event['text'])
+        old_time = stamp(old)
+        new_time = stamp(new) if new else None
+        if (expected is None or not old['terminal'] or not all(old_tuple) or
+                old_tuple == target_tuple or new is None or
+                new.get('transition') not in {('Closed', 'SynSent'), ('Listen', 'SynRcvd')} or
+                old['ref']['byte_end'] > new['ref']['byte_start'] or
+                not old_time or not new_time or old_time[1] >= new_time[1]):
+            raise ValueError('TCB old terminal lacks distinct tuple and later native birth')
+        # The close call is not an observed Closed transition. Preserve its
+        # exact bytes as an unselectable, left-censored prior generation;
+        # only the next native transition can establish the new generation.
+        old_prefix = old_tuple
+        groups.append(dict(ordinal=0, left_censored=True, birth_ref=None,
+                           closed_ref=None, identity=dict(local=old_tuple[0],
+                           remote=old_tuple[1], pid=old.get('pid')), events=[old]))
+        events = events[1:]
     for event in events:
         if int(event['tcb'], 16) == 0:
             raise ValueError('zero TCB cannot identify a named generation')
         birth = event.get('transition') in {('Closed', 'SynSent'), ('Listen', 'SynRcvd')}
         if birth:
-            if groups and groups[-1]['closed_ref'] is None:
+            if (groups and groups[-1]['closed_ref'] is None and
+                    not (old_prefix is not None and len(groups) == 1)):
                 raise ValueError('TCB new birth before prior generation reached Closed')
             groups.append(dict(ordinal=len(groups), left_censored=False, birth_ref=event['ref'],
                                closed_ref=None, identity=None, events=[]))
@@ -565,6 +591,16 @@ def reconstruct_generations(events):
         if event.get('transition', (None, None))[1] == 'Closed' and group['closed_ref'] is None:
             group['closed_ref'] = event['ref']
         group['events'].append(event)
+    if old_prefix is not None:
+        target_events = groups[1]['events'] if len(groups) > 1 else []
+        target_connect = next((i for i, e in enumerate(target_events)
+                               if e['ref'] == expected['ref']), None)
+        if (len(groups) < 2 or
+                groups[1]['identity'] != dict(local=expected['local'], remote=expected['remote'], pid=expected['pid']) or
+                target_connect is None or
+                any(e['terminal'] for e in target_events[:target_connect]) or
+                any((e.get('local'), e.get('remote')) == old_prefix for e in events)):
+            raise ValueError('TCB old terminal prefix conflicts with new target generation')
     return groups
 
 
