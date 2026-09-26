@@ -84,6 +84,14 @@ class SuiteError(RuntimeError):
     """A scenario failure whose evidence must be retained."""
 
 
+class VmCommandError(SuiteError):
+    """A VM command failure retaining its complete wire response."""
+
+    def __init__(self, message: str, record: dict[str, Any]):
+        super().__init__(message)
+        self.record = record
+
+
 class Blocked(SuiteError):
     """A precondition cannot be proved; callers must not continue."""
 
@@ -816,7 +824,7 @@ class VmMcp(RawMcp):
                   'output': output, 'exit_code': exit_code,
                   'is_error': bool(result.get('isError'))}
         if record['is_error'] or exit_code != 0:
-            raise SuiteError('VM PowerShell failed: ' + raw[-800:])
+            raise VmCommandError('VM PowerShell failed: ' + raw[-800:], record)
         return record
 
 
@@ -848,6 +856,48 @@ class Evidence:
         write_new_json(path, value)
         self.add(path)
         return path
+
+
+def p7_capture_begin(suite_root: Path, scenario_id: str, attempt: int) -> Path | None:
+    """Optional bounded rendezvous; an external owner starts pktmon before P7 start."""
+    location = os.environ.get('SST_P7_CAPTURE_CONTROL_DIR')
+    if not location:
+        return None
+    control = Path(location)
+    if not control.is_dir():
+        raise SuiteError('P7 capture control directory absent')
+    write_p7_control(control / 'request.json', {
+        'suite_root': str(suite_root), 'scenario_id': scenario_id,
+        'attempt': attempt, 'requested_at': utc_now()})
+    deadline = time.monotonic() + 90
+    while not (control / 'ack.json').is_file():
+        if time.monotonic() >= deadline:
+            raise SuiteError('P7 capture start acknowledgement timed out')
+        time.sleep(0.05)
+    ack = read_json(control / 'ack.json')
+    if (ack.get('status') != 'ready' or not ack.get('owner') or
+            not ack.get('etl') or not ack.get('started')):
+        raise SuiteError('P7 capture start failed: ' + repr(ack))
+    return control
+
+
+def p7_capture_end(control: Path | None, run_id: str | None,
+                   probe: dict[str, Any] | None, cleanup: dict[str, Any]) -> None:
+    if control is not None:
+        write_p7_control(control / 'done.json', {
+            'run_id': run_id, 'probe_started_at': (probe or {}).get('started_at'),
+            'probe_ended_at': (probe or {}).get('ended_at'),
+            'cleanup': cleanup, 'completed_at': utc_now()})
+
+
+def write_p7_control(path: Path, value: dict[str, Any]) -> None:
+    """Publish a complete JSON rendezvous record without replacing old evidence."""
+    temporary = path.with_name(path.name + '.tmp-' + uuid.uuid4().hex)
+    try:
+        temporary.write_bytes(canonical_bytes(value))
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def runtime_pcap_required(profile: dict[str, Any]) -> bool:
@@ -1128,9 +1178,13 @@ class Suite:
         try:
             value = json.loads(raw['output'])
         except ValueError as exc:
-            raise SuiteError('expected VM JSON: ' + raw['output'][:500]) from exc
+            failure = SuiteError('expected VM JSON: ' + raw['output'][:500])
+            failure.vm_record = raw
+            raise failure from exc
         if not isinstance(value, dict):
-            raise SuiteError('expected VM JSON object')
+            failure = SuiteError('expected VM JSON object')
+            failure.vm_record = raw
+            raise failure
         return value, raw
 
     def _status(self, timeout: float = 120) -> dict[str, Any]:
@@ -1267,7 +1321,8 @@ class Suite:
                 "@{computer=$env:COMPUTERNAME;tcp=$x.TcpTestSucceeded;remote=[string]$x.RemoteAddress}|ConvertTo-Json -Compress", 60))
             evidence.write('p6-test-net.json', {'value': p6, 'raw': raw})
             b1 = profile_content(profile_for_bucket('B1', 0), route['external_dns_server'])
-            p7 = check('P7-deepseek-relay', lambda: self._preflight_b1(b1, 'preflight-b1', 1))
+            p7 = check('P7-deepseek-relay', lambda: self._preflight_b1(b1, 'preflight-b1', 1,
+                                                                       evidence))
             evidence.write('p7-deepseek-relay.json', p7)
         except Exception:
             result = {'schema': SCHEMA + '.preflight.v1', 'identity': self.identity.as_dict(),
@@ -1306,33 +1361,108 @@ class Suite:
         return {'loaded': loaded, 'started': started, 'health_samples': samples,
                 'stopped': stopped}
 
-    def _preflight_b1(self, content: str, scenario_id: str, attempt: int) -> dict[str, Any]:
+    def _preflight_b1(self, content: str, scenario_id: str, attempt: int,
+                      evidence: Evidence) -> dict[str, Any]:
         assert self.vm
         name = 'sst-preflight-b1.ini'
         created = self._mutate(scenario_id, attempt, 10, 'create_config',
                                {'name': name, 'content': content})
+        result = None
+        failure = None
+        cleanup: dict[str, Any] = {'actions': [], 'errors': []}
+        capture_control = None
+        started = None
+        probe = None
         try:
             loaded = self._mutate(scenario_id, attempt, 11, 'load_config', {'name': name})
+            capture_control = p7_capture_begin(self.root, scenario_id, attempt)
             started = self._mutate(scenario_id, attempt, 12, 'start', {})
             if started.get('state') != 'healthy':
                 raise SuiteError('B1 did not start healthy')
-            probe, raw = self._vm_json(
-                "$ErrorActionPreference='Stop';$p=" + quote_ps(GUEST_ROOT + r'\scenario-suite-20260912\scenario_probes.ps1') +
-                ";$n='preflight-'+[guid]::NewGuid().ToString();& $p -Action preflight-b1 -Nonce $n;"
-                "if($LASTEXITCODE -ne 0){throw 'B1 curl probe failed'}", 60)
-            stopped = self._mutate(scenario_id, attempt, 13, 'stop', {})
-            if stopped.get('state') != 'stopped' or probe.get('exit_code') != 0:
+            command = ("$ErrorActionPreference='Stop';$p=" +
+                       quote_ps(GUEST_ROOT + r'\scenario-suite-20260912\scenario_probes.ps1') +
+                       ";$n='preflight-'+[guid]::NewGuid().ToString();" +
+                       "& $p -Action preflight-b1 -Nonce $n")
+            try:
+                probe, raw = self._vm_json(command, 60)
+            except Exception as exc:
+                evidence.write('p7-probe-wire.json', {
+                    'run_id': started.get('run_id'), 'command': command,
+                    'error': repr(exc),
+                    'vm_record': getattr(exc, 'record', getattr(exc, 'vm_record', None))})
+                raise
+            evidence.write('p7-probe-wire.json', {
+                'run_id': started.get('run_id'), 'command': command,
+                'probe': probe, 'vm_record': raw})
+            for stream_name in ('stdout', 'stderr'):
+                guest_path = probe.get(stream_name + '_path')
+                size = probe.get(stream_name + '_size')
+                sha256 = probe.get(stream_name + '_sha256')
+                if not guest_path or type(size) is not int or not sha256 or size > 1024 * 1024:
+                    raise SuiteError('B1 curl %s original unavailable or over 1 MiB' % stream_name)
+                destination = evidence.root / ('p7-curl.' + stream_name + '.raw')
+                self._transfer_guest_file(guest_path, size, sha256, destination)
+                evidence.add(destination)
+            if (probe.get('exit_code') != 0 or probe.get('actual_curl_exit') != 0 or
+                    probe.get('native_error') or
+                    not probe.get('nonce') or not probe.get('url') or
+                    probe.get('http_code') in ('', '000')):
                 raise SuiteError('B1 relay preflight failed')
-            return {'created': created, 'loaded': loaded, 'started': started,
-                    'probe': probe, 'probe_raw': raw, 'stopped': stopped}
+            result = {'created': created, 'loaded': loaded, 'started': started,
+                      'probe': probe, 'probe_raw': raw}
+        except Exception as exc:
+            failure = exc
         finally:
-            status = self._status()
-            if status.get('state') != 'stopped':
-                self._mutate(scenario_id, attempt, 14, 'stop', {})
-            current = self.service.tool('read_config', {'name': name}) if self.service else {}
-            if not current.get('error'):
-                self._mutate(scenario_id, attempt, 15, 'delete_config',
-                             {'name': name, 'expected_sha256': current['sha256']})
+            try:
+                status = self._status()
+                cleanup['before'] = status
+                if status.get('state') != 'stopped':
+                    owner = status.get('controller')
+                    if owner and owner != self.service.controller_id:
+                        raise SuiteError('B1 cleanup found another controller')
+                    cleanup['actions'].append({'stop': self._mutate(scenario_id, attempt, 14,
+                                                                     'stop', {})})
+            except Exception as exc:
+                cleanup['errors'].append('stop: ' + repr(exc))
+            try:
+                status = self._status()
+                if status.get('state') != 'stopped' or status.get('run_id') or status.get('controller'):
+                    raise SuiteError('B1 cleanup did not reach owner-free stopped')
+                if (status.get('config_identity') or {}).get('name') != 'default.ini':
+                    cleanup['actions'].append({'load_default': self._mutate(
+                        scenario_id, attempt, 15, 'load_config', {'name': 'default.ini'})})
+            except Exception as exc:
+                cleanup['errors'].append('default: ' + repr(exc))
+            try:
+                status = self._status()
+                if (status.get('state') != 'stopped' or status.get('run_id') or
+                        status.get('controller') or
+                        (status.get('config_identity') or {}).get('name') != 'default.ini'):
+                    raise SuiteError('B1 config still active; deletion withheld')
+                current = self.service.tool('read_config', {'name': name})
+                if current.get('error') or not current.get('sha256'):
+                    raise SuiteError('B1 temporary config could not be read for deletion')
+                cleanup['actions'].append({'delete': self._mutate(
+                    scenario_id, attempt, 16, 'delete_config',
+                    {'name': name, 'expected_sha256': current['sha256']})})
+            except Exception as exc:
+                cleanup['errors'].append('delete: ' + repr(exc))
+            try:
+                cleanup['final'] = self._status()
+            except Exception as exc:
+                cleanup['errors'].append('final-status: ' + repr(exc))
+            try:
+                p7_capture_end(capture_control, (started or {}).get('run_id'), probe, cleanup)
+            except Exception as exc:
+                cleanup['errors'].append('capture-done: ' + repr(exc))
+            evidence.write('p7-cleanup.json', cleanup)
+        if cleanup['errors']:
+            raise SuiteError('B1 cleanup failed: ' + '; '.join(cleanup['errors']) +
+                             ('; probe: ' + repr(failure) if failure else '')) from failure
+        if failure:
+            raise failure
+        result['cleanup'] = cleanup
+        return result
 
     def _prune_scenario_configs(self, scenario_id: str) -> dict[str, Any]:
         """Delete this scenario's own leftover configs from aborted attempts.

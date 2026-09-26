@@ -330,12 +330,132 @@ public static class ScenarioProbeClient {
     return $row
 }
 
+if (-not ('ScenarioNativeCapture' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Threading.Tasks;
+
+public sealed class ScenarioNativeCaptureResult {
+    public int? ExitCode;
+    public string StartError;
+    public string StreamError;
+    public bool TimedOut;
+}
+
+public static class ScenarioNativeCapture {
+    // ProcessStartInfo.Arguments on .NET Framework needs Win32 argument quoting.
+    public static string QuoteArgument(string value) {
+        if (value == null) throw new ArgumentNullException("value");
+        var text = new StringBuilder("\"");
+        int slashes = 0;
+        foreach (char ch in value) {
+            if (ch == '\\') { slashes++; continue; }
+            if (ch == '"') {
+                text.Append('\\', slashes * 2 + 1).Append('"');
+                slashes = 0;
+                continue;
+            }
+            text.Append('\\', slashes).Append(ch);
+            slashes = 0;
+        }
+        text.Append('\\', slashes * 2).Append('"');
+        return text.ToString();
+    }
+
+    public static ScenarioNativeCaptureResult Run(string executable, string[] args,
+            string stdoutPath, string stderrPath, int timeoutMs) {
+        var result = new ScenarioNativeCaptureResult();
+        var info = new ProcessStartInfo(executable);
+        info.UseShellExecute = false;
+        info.CreateNoWindow = true;
+        info.RedirectStandardOutput = true;
+        info.RedirectStandardError = true;
+        info.Arguments = String.Join(" ", Array.ConvertAll(args, QuoteArgument));
+        using (var stdout = new FileStream(stdoutPath, FileMode.CreateNew, FileAccess.Write))
+        using (var stderr = new FileStream(stderrPath, FileMode.CreateNew, FileAccess.Write)) {
+            Process child;
+            try { child = Process.Start(info); }
+            catch (Exception error) { result.StartError = error.ToString(); return result; }
+            if (child == null) { result.StartError = "Process.Start returned null"; return result; }
+            using (child) {
+                // Drain both raw byte streams concurrently; sequential reads can deadlock.
+                Task outTask = child.StandardOutput.BaseStream.CopyToAsync(stdout);
+                Task errTask = child.StandardError.BaseStream.CopyToAsync(stderr);
+                try {
+                    if (!child.WaitForExit(timeoutMs)) {
+                        result.TimedOut = true;
+                        child.Kill();
+                        child.WaitForExit(5000);
+                    }
+                    if (!Task.WaitAll(new Task[] { outTask, errTask }, 10000))
+                        result.StreamError = "native stream drain timed out";
+                } catch (Exception error) {
+                    result.StreamError = error.ToString();
+                    if (!child.HasExited) {
+                        try { child.Kill(); child.WaitForExit(5000); }
+                        catch (Exception killError) {
+                            result.StreamError += "; kill: " + killError;
+                        }
+                    }
+                }
+                if (child.HasExited) result.ExitCode = child.ExitCode;
+            }
+        }
+        return result;
+    }
+}
+'@
+}
+
 function Invoke-PreflightB1([string]$Token) {
     $url = "https://api.deepseek.com/$Token"
-    $code = 1
-    $text = & curl.exe --noproxy '*' -sS -o NUL -w '%{http_code}' --connect-timeout 10 --max-time 30 $url 2>$null
-    if ($LASTEXITCODE -eq 0) { $code = 0 }
-    @{ exit_code = $code; http_code = "$text"; url = $url; nonce = $Token } | ConvertTo-Json -Compress
+    if ($Token -notmatch '^preflight-[0-9a-fA-F-]{36}$') { throw 'invalid preflight nonce' }
+    $dir = Join-Path $PSScriptRoot 'p7-preflight'
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $stdoutPath = Join-Path $dir ($Token + '.stdout.txt')
+    $stderrPath = Join-Path $dir ($Token + '.stderr.txt')
+    if ((Test-Path -LiteralPath $stdoutPath) -or (Test-Path -LiteralPath $stderrPath)) {
+        throw 'preflight curl evidence collision'
+    }
+    $started = [DateTimeOffset]::UtcNow.ToString('o')
+    $curlArgs = @('--noproxy', '*', '-sS', '-o', 'NUL', '-w', '%{http_code}',
+                  '--connect-timeout', '10', '--max-time', '30', $url)
+    $capture = [ScenarioNativeCapture]::Run('curl.exe', [string[]]$curlArgs,
+                                            $stdoutPath, $stderrPath, 45000)
+    $actual = $(if ($null -ne $capture.ExitCode) { $capture.ExitCode } else { -1 })
+    $nativeError = $(if ($capture.StartError) { $capture.StartError }
+                     elseif ($capture.StreamError) { $capture.StreamError }
+                     elseif ($capture.TimedOut) { 'curl process deadline exceeded' }
+                     else { $null })
+    $ended = [DateTimeOffset]::UtcNow.ToString('o')
+    $stdout = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($stdoutPath))
+    $stderr = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($stderrPath))
+    $row = @{
+        exit_code = $(if ($actual -eq 0) { 0 } else { 1 })
+        actual_curl_exit = $actual
+        http_code = $stdout.Trim()
+        stdout = $stdout
+        stderr = $stderr
+        native_error = $nativeError
+        process_timed_out = $capture.TimedOut
+        url = $url
+        nonce = $Token
+        started_at = $started
+        ended_at = $ended
+        stdout_path = $stdoutPath
+        stderr_path = $stderrPath
+        stdout_size = (Get-Item -LiteralPath $stdoutPath).Length
+        stderr_size = (Get-Item -LiteralPath $stderrPath).Length
+        stdout_sha256 = (Get-FileHash -LiteralPath $stdoutPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        stderr_sha256 = (Get-FileHash -LiteralPath $stderrPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    # The transport command returns structured JSON even when curl fails.
+    # The host still rejects exit_code=1 under the existing P7 verdict.
+    $global:LASTEXITCODE = 0
+    $row | ConvertTo-Json -Compress
 }
 
 function New-ApplicationRequest([string]$Kind, [string]$Token, [int]$Index) {
