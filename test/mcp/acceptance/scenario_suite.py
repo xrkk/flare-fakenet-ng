@@ -76,6 +76,8 @@ MAX_GUEST_TRANSFER = 192 * 1024 * 1024
 QPC_EXPORT_WAIT_SECONDS = 600
 QPC_EXPORT_RPC_SECONDS = 900
 GUEST_ROOT = r'C:\ProgramData\FakeNet-NG-MCP\logs'
+E_GUEST_WORK_ROOT = r'E:\FakeNet-NG-MCP-test-work'
+CAPTURE_CONTRACTS = ('per-run-v1', 'scenario-shared-v2')
 PKTMON_MODULE = Path(__file__).with_name('scenario_pktmon.py')
 NIC_CAPTURE_SCHEMA = 'fakenetng.mcp-scenario-pktmon-nic.v1'
 
@@ -94,6 +96,22 @@ class VmCommandError(SuiteError):
 
 class Blocked(SuiteError):
     """A precondition cannot be proved; callers must not continue."""
+
+
+class UnsettledCaptureStart(SuiteError):
+    """A probe may still own a socket; retain the physical writer."""
+
+
+class UnsettledCaptureStop(SuiteError):
+    """A probe/kernel close is unproved; retain the physical writer."""
+
+
+class RecoveredCaptureStart(SuiteError):
+    """An unknown start was reconciled and its exact writer was closed."""
+
+    def __init__(self, record: dict[str, Any]):
+        super().__init__('capture start response lost; exact writer recovered')
+        self.record = record
 
 
 def extract_qpc_archive(output_zip: Path, destination: Path, evidence) -> None:
@@ -1099,11 +1117,34 @@ class FnprSentinel:
 
 class Suite:
     native_clock_diagnostic = False
+    guest_work_root = GUEST_ROOT
+    capture_contract = 'per-run-v1'
     # The two pktmon file-size values already exercised by the master's
     # capacity contrast.  Validated here so directly-constructed Namespace
     # objects (offline callers) also obey the same contract; the default
     # keeps existing behavior.  Nothing VM-facing runs before this check.
     PKTMON_FILE_SIZE_MIB_CHOICES = (128, 1024)
+
+    @staticmethod
+    def _pktmon_stopped(status: Any) -> bool:
+        return isinstance(status, str) and bool(re.search(
+            r'\b(?:stopped|not\s+running)\b|数据包监视器没有运行',
+            status, re.IGNORECASE))
+
+    @classmethod
+    def _pktmon_running(cls, status: Any) -> bool:
+        return isinstance(status, str) and not cls._pktmon_stopped(status) and bool(
+            re.search(r'\brunning\b|正在运行', status, re.IGNORECASE))
+
+    @staticmethod
+    def _tool_identity() -> dict[str, Any]:
+        """Freeze the complete acceptance tool source set for a new suite root."""
+        directory = Path(__file__).resolve().parent
+        files = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                 for path in sorted(directory.iterdir())
+                 if path.is_file() and path.suffix in ('.py', '.ps1')}
+        return {'schema': 'sst.acceptance-tool-set.v1', 'files': files,
+                'sha256': digest(files)}
 
     def __init__(self, args: argparse.Namespace):
         file_size = getattr(args, 'pktmon_file_size_mib', 128)
@@ -1113,6 +1154,12 @@ class Suite:
                              % (self.PKTMON_FILE_SIZE_MIB_CHOICES, file_size))
         self.args = args
         self.pktmon_file_size_mib = file_size
+        self.capture_contract = getattr(args, 'capture_contract', 'per-run-v1')
+        if self.capture_contract not in CAPTURE_CONTRACTS:
+            raise SuiteError('unsupported capture contract')
+        self.guest_work_root = getattr(args, 'guest_work_root', GUEST_ROOT)
+        if self.guest_work_root not in (GUEST_ROOT, E_GUEST_WORK_ROOT):
+            raise SuiteError('guest work root must be the frozen C or E absolute local root')
         self.fault_clock_evidence = getattr(args, 'fault_clock_evidence', 'utc-v2')
         if self.fault_clock_evidence not in ('utc-v2', QPC_MODE):
             raise SuiteError('unsupported fault clock evidence mode')
@@ -1234,7 +1281,7 @@ class Suite:
     def _stage_probe(self) -> dict[str, Any]:
         assert self.vm
         script = (Path(__file__).with_name('scenario_probes.ps1')).read_bytes()
-        guest = GUEST_ROOT + r'\scenario-suite-20260912\scenario_probes.ps1'
+        guest = self.guest_work_root + r'\scenario-suite-20260912\scenario_probes.ps1'
         source = Path(__file__).with_name('scenario_probes.ps1')
         with HostOnlyFileTransfer(source, 'scenario_probes.ps1') as transfer:
             temporary = guest + '.download-' + uuid.uuid4().hex
@@ -1258,6 +1305,31 @@ class Suite:
         value['raw'] = raw
         return value
 
+    def _guest_work_root_gate(self) -> dict[str, Any]:
+        """Read only: bind the selected drive and reject reparse ancestors."""
+        root = self.guest_work_root
+        command = (
+            "$ErrorActionPreference='Stop';$r=" + quote_ps(root) + ";"
+            "$parts=@();$p=$r;while($p){$parts+=,$p;$parent=Split-Path -Parent $p;"
+            "if(!$parent -or $parent -eq $p){break};$p=$parent};"
+            "$existing=@();foreach($part in $parts){if(Test-Path -LiteralPath $part){"
+            "$item=Get-Item -LiteralPath $part -Force;"
+            "if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){throw ('reparse work root: '+$part)};"
+            "$existing+=@{path=$part;full=$item.FullName}}};"
+            "$c=(Get-PSDrive C).Free;$e=$null;$eType=$null;"
+            + ("$e=(Get-PSDrive E).Free;$eType=(Get-CimInstance Win32_LogicalDisk "
+               "-Filter \"DeviceID='E:'\").DriveType;" if root == E_GUEST_WORK_ROOT else '') +
+            "@{computer=$env:COMPUTERNAME;root=$r;existing=$existing;c_free=$c;e_free=$e;e_drive_type=$eType;"
+            "utc=[DateTimeOffset]::UtcNow.ToString('o')}|ConvertTo-Json -Depth 5 -Compress")
+        value, raw = self._vm_json(command, 60)
+        if (value.get('computer') != 'DESKTOP-3FI41GR' or value.get('root') != root or
+                type(value.get('c_free')) is not int or value['c_free'] < 2 * 2**30 or
+                (root == E_GUEST_WORK_ROOT and
+                 (type(value.get('e_free')) is not int or value['e_free'] < 3 * 2**30 or
+                  value.get('e_drive_type') != 3))):
+            raise Blocked('guest work root identity or C/E space gate failed')
+        return {'value': value, 'raw': raw}
+
     def preflight(self) -> dict[str, Any]:
         self.require_clients()
         evidence = Evidence(self.root / 'preflight-evidence')
@@ -1277,6 +1349,8 @@ class Suite:
             evidence.write('p1-vm-identity.json', {'value': identity, 'raw': raw})
             if identity.get('computer') != 'DESKTOP-3FI41GR' or '00-0C-29-C1-CA-49' not in identity.get('mac', []):
                 raise Blocked('unexpected .233 VM identity')
+            work_root = check('P1-guest-work-root', self._guest_work_root_gate)
+            evidence.write('p1-guest-work-root.json', work_root)
             material = check('P2-candidate-material', self._identity_material)
             evidence.write('p2-candidate-material.json', material)
             service = check('P2-service-candidate', self._status)
@@ -1299,6 +1373,7 @@ class Suite:
                 raise Blocked('default route or external DNS unavailable')
             if self.args.preflight_through == 'P4':
                 result = {'schema': SCHEMA + '.preflight.v1', 'identity': self.identity.as_dict(),
+                          'guest_work_root': self.guest_work_root, 'capture_contract': self.capture_contract,
                           'stage': 'P4', 'passed': True, 'checks': checks, 'evidence': evidence.items,
                           'external_dns_server': route['external_dns_server'], 'api_ipv4': route['api_ipv4'],
                           'created_at': utc_now()}
@@ -1326,18 +1401,27 @@ class Suite:
             evidence.write('p7-deepseek-relay.json', p7)
         except Exception:
             result = {'schema': SCHEMA + '.preflight.v1', 'identity': self.identity.as_dict(),
+                      'guest_work_root': self.guest_work_root, 'capture_contract': self.capture_contract,
+                      'tool_identity': self._tool_identity(),
                       'passed': False, 'checks': checks, 'evidence': evidence.items,
                       'created_at': utc_now()}
             if not self.preflight_path.exists():
                 write_new_json(self.preflight_path, result)
             raise Blocked('preflight failed; no scenario may start')
         result = {'schema': SCHEMA + '.preflight.v1', 'identity': self.identity.as_dict(),
+                  'guest_work_root': self.guest_work_root, 'capture_contract': self.capture_contract,
+                  'tool_identity': self._tool_identity(),
                   'passed': True, 'checks': checks, 'evidence': evidence.items,
                   'external_dns_server': route['external_dns_server'], 'api_ipv4': route['api_ipv4'],
                   'created_at': utc_now()}
         if self.preflight_path.exists():
             old = read_json(self.preflight_path)
-            if old.get('identity') != result['identity'] or not old.get('passed'):
+            if (old.get('identity') != result['identity'] or not old.get('passed') or
+                    old.get('guest_work_root', GUEST_ROOT) != self.guest_work_root or
+                    old.get('capture_contract', 'per-run-v1') != self.capture_contract or
+                    ((self.capture_contract == 'scenario-shared-v2' or
+                      self.guest_work_root == E_GUEST_WORK_ROOT) and
+                     old.get('tool_identity') != result['tool_identity'])):
                 raise Blocked('preflight file exists with another identity/result; use a new suite root')
         else:
             write_new_json(self.preflight_path, result)
@@ -1380,7 +1464,7 @@ class Suite:
             if started.get('state') != 'healthy':
                 raise SuiteError('B1 did not start healthy')
             command = ("$ErrorActionPreference='Stop';$p=" +
-                       quote_ps(GUEST_ROOT + r'\scenario-suite-20260912\scenario_probes.ps1') +
+                       quote_ps(self.guest_work_root + r'\scenario-suite-20260912\scenario_probes.ps1') +
                        ";$n='preflight-'+[guid]::NewGuid().ToString();" +
                        "& $p -Action preflight-b1 -Nonce $n")
             try:
@@ -1516,6 +1600,13 @@ class Suite:
         result = read_json(self.preflight_path)
         if not result.get('passed') or result.get('identity') != self.identity.as_dict():
             raise Blocked('preflight does not pass for this candidate identity')
+        if (result.get('guest_work_root', GUEST_ROOT) != self.guest_work_root or
+                result.get('capture_contract', 'per-run-v1') != self.capture_contract):
+            raise Blocked('preflight work root/capture contract differs')
+        if ((self.capture_contract == 'scenario-shared-v2' or
+             self.guest_work_root == E_GUEST_WORK_ROOT) and
+                result.get('tool_identity') != self._tool_identity()):
+            raise Blocked('preflight tool source identity differs')
         if not result.get('external_dns_server') or not result.get('api_ipv4'):
             raise Blocked('preflight lacks separate resolver and api IPv4 evidence')
         return result
@@ -1550,18 +1641,27 @@ class Suite:
             "$ErrorActionPreference='Stop';$fault='C:\\ProgramData\\FakeNet-NG-MCP\\logs\\fault-injection.json';"
             "$probe=@(Get-Process powershell -ErrorAction SilentlyContinue | Where-Object {$_.Path -and $_.Path -like '*scenario*'});"
             "$pkt=(pktmon status | Out-String);@{fault=(Test-Path $fault);probe_count=$probe.Count;pktmon=$pkt}|ConvertTo-Json -Compress", 60)
-        if value.get('fault') or value.get('probe_count') or 'Running' in str(value.get('pktmon')):
+        if (value.get('fault') or value.get('probe_count') or
+                not self._pktmon_stopped(value.get('pktmon'))):
             raise Blocked('continuation gate found fault/probe/pktmon residue')
-        return {'status': status, 'vm': value, 'raw': raw}
+        capacity = self._guest_work_root_gate()
+        return {'status': status, 'vm': value, 'raw': raw,
+                'guest_work_root_capacity': capacity}
 
     def _guest_scenario_root(self, scenario_id: str, attempt: int) -> str:
         scope = hashlib.sha256(str(self.root.resolve()).encode()).hexdigest()[:12]
-        return GUEST_ROOT + '\\scenario-suite-20260912\\' + scope + '-' + scenario_id + ('-a%d' % attempt)
+        return self.guest_work_root + '\\scenario-suite-20260912\\' + scope + '-' + scenario_id + ('-a%d' % attempt)
 
     def _start_kernel_capture(self, run_root: str) -> dict[str, Any]:
         session = 'SST-Kernel-' + str(uuid.uuid4())
         command = (
             "$ErrorActionPreference='Stop';$r=" + quote_ps(run_root) + ";"
+            "if(Test-Path -LiteralPath $r){throw 'kernel run root collision'};"
+            "$a=Split-Path -Parent $r;while($a){if(Test-Path -LiteralPath $a){"
+            "$item=Get-Item -LiteralPath $a -Force;"
+            "if($item.Attributes -band [IO.FileAttributes]::ReparsePoint)"
+            "{throw ('reparse run ancestor: '+$a)}};"
+            "$next=Split-Path -Parent $a;if(!$next -or $next -eq $a){break};$a=$next};"
             "New-Item -ItemType Directory -Path $r -Force|Out-Null;$s=" + quote_ps(session) + ";"
             "$etl=Join-Path $r 'kernel-network.etl';if(Test-Path $etl){throw 'kernel capture collision'};" +
             _sst_clock.clock_sample_ps('clock') +
@@ -1607,11 +1707,117 @@ class Suite:
         value, raw = self._vm_json(command, 120)
         return dict(files=value['files'], raw=raw)
 
+    def _capture_start_snapshot(self, run_root: str, etl: str,
+                                nonce: str, run_label: str) -> dict[str, Any]:
+        """Read only snapshot after an RPC whose start response was lost."""
+        command = (
+            "$ErrorActionPreference='Stop';$r=" + quote_ps(run_root) + ";"
+            "$out=Join-Path $r 'probe.jsonl';$ready=$null;$process=$null;"
+            "$receipt=$null;$receiptPath=Join-Path $r 'probe-launch.json';"
+            "if(Test-Path -LiteralPath $receiptPath -PathType Leaf){"
+            "try{$receipt=Get-Content -LiteralPath $receiptPath -Raw|ConvertFrom-Json}"
+            "catch{$receipt=$null}};"
+            "if(Test-Path -LiteralPath $out -PathType Leaf){"
+            "$line=Get-Content -LiteralPath $out -TotalCount 1;"
+            "try{$ready=$line|ConvertFrom-Json}catch{$ready=$null}};"
+            "$origin=if($ready){$ready}else{$receipt};"
+            "if($origin -and $origin.pid){$p=Get-Process -Id ([int]$origin.pid) "
+            "-ErrorAction SilentlyContinue;if($p){$process=@{pid=$p.Id;"
+            "creation_ticks=$p.StartTime.ToUniversalTime().Ticks}}};"
+            "$status=(& pktmon status|Out-String);"
+            "@{run_root=$r;probe_ready=$ready;launch_receipt=$receipt;process=$process;"
+            "etl_exists=(Test-Path -LiteralPath " + quote_ps(etl) +
+            " -PathType Leaf);pktmon_status=$status;pktmon_exit=$LASTEXITCODE}"
+            "|ConvertTo-Json -Depth 8 -Compress")
+        try:
+            value, raw = self._vm_json(command, 60)
+            ready = value.get('probe_ready') or value.get('launch_receipt') or {}
+            process = value.get('process') or {}
+            native = ready.get('native_identity') or {}
+            identity_match = (ready.get('nonce') == nonce and
+                              ready.get('pid') == process.get('pid') and
+                              ready.get('creation_ticks') == process.get('creation_ticks') and
+                              native.get('supported') is True and
+                              native.get('run_id') == nonce + ':' + run_label and
+                              native.get('candidate_id') == self.identity.candidate_id)
+            return {'value': value, 'raw': raw, 'identity_match': identity_match}
+        except Exception as exc:
+            return {'snapshot_error': repr(exc), 'run_root': run_root, 'etl': etl}
+
+    def _reconcile_capture_start(self, snapshot: dict[str, Any], kernel: dict[str, Any],
+                                 run_root: str, etl: str, nic: str, nonce: str,
+                                 run_label: str, owner_id: str | None) -> dict[str, Any] | None:
+        """Close only a positively identified probe, never infer from an absent reply."""
+        value = snapshot.get('value') or {}
+        ready = value.get('probe_ready') or value.get('launch_receipt') or {}
+        status = str(value.get('pktmon_status', ''))
+        if (snapshot.get('identity_match') is not True or
+                value.get('etl_exists') is not True or
+                value.get('pktmon_exit') != 0 or not self._pktmon_running(status)):
+            return None
+        capture = {'guest': run_root, 'run_label': run_label,
+                   'pid': ready['pid'], 'probe_creation_ticks': ready['creation_ticks'],
+                   'probe': run_root + r'\probe.jsonl',
+                   'start': run_root + r'\probe.start',
+                   'case': run_root + r'\probe.cases',
+                   'stop': run_root + r'\probe.stop',
+                   'stdout': run_root + r'\probe.stdout',
+                   'stderr': run_root + r'\probe.stderr',
+                   'etl': etl, 'pktmon_nic': nic,
+                   'kernel_capture': kernel, 'capture_run_id': nonce + ':' + run_label,
+                   'nonce': nonce, 'physical_owner_id': owner_id}
+        if owner_id and run_label == 'run-02':
+            capture['shared_physical'] = True
+            capture['startup_recovery'] = not bool(value.get('probe_ready'))
+        stopped = self._stop_capture_and_probe(capture)
+        return {'snapshot': snapshot, 'capture': capture, 'stop': stopped}
+
+    @staticmethod
+    def _shared_start_failure_ps() -> str:
+        """Fail closed while the same command still owns its launch receipt."""
+        return (
+            "catch{$failure=[string]$_;$errors=@();$stopOutput=$null;"
+            "$probeTerminal='not-created';$physicalTerminal='not-started';"
+            "$launchPidOut=$launchPid;$launchCreationOut=$launchCreation;"
+            "if($probeCreateAttempted){$probeTerminal='identity-unknown';"
+            "if($launchPidOut -and $launchCreationOut -gt 0){"
+            "$procInfo=$null;try{$procInfo=Get-Process -Id $launchPidOut -ErrorAction SilentlyContinue}"
+            "catch{$errors+=('probe query: '+[string]$_)};"
+            "if(!$procInfo){$probeTerminal='exited'}else{"
+            "$actual=$null;try{$actual=$procInfo.StartTime.ToUniversalTime().Ticks}"
+            "catch{$errors+=('probe identity: '+[string]$_)};"
+            "if($actual -eq $launchCreationOut){"
+            "try{if(-not(Test-Path -LiteralPath $stop)){"
+            "[IO.File]::WriteAllText($stop,'stop',[Text.UTF8Encoding]::new($false))}}"
+            "catch{$errors+=('stopfile: '+[string]$_)};"
+            "if($errors.Count -eq 0){$wait=[Diagnostics.Stopwatch]::StartNew();"
+            "while(-not $procInfo.HasExited -and $wait.ElapsedMilliseconds -lt 30000)"
+            "{Start-Sleep -Milliseconds 200};"
+            "if($procInfo.HasExited){$probeTerminal='exited'}"
+            "else{$probeTerminal='timeout'}}}"
+            "elseif($null -ne $actual){$probeTerminal='identity-mismatch'}}}};"
+            "if($captureStarted){$physicalTerminal='retained';"
+            "if($probeTerminal -eq 'exited' -or $probeTerminal -eq 'not-created'){"
+            "if($errors.Count -eq 0){try{$stopOutput=(& pktmon stop|Out-String);"
+            "if($LASTEXITCODE -eq 0){$after=(& pktmon status|Out-String);"
+            "if($LASTEXITCODE -eq 0 -and $after -match '没有运行|(?i:not running|stopped)')"
+            "{$physicalTerminal='stopped'}else{$errors+='pktmon stop status uncertain'}}"
+            "else{$errors+=('pktmon stop exit '+$LASTEXITCODE)}}"
+            "catch{$errors+=('pktmon stop error: '+[string]$_)}}}}"
+            "elseif($pktmonStartAttempted){$physicalTerminal='start-unknown'};"
+            "@{startup_failed=$true;error=$failure;cooperative_errors=$errors;"
+            "capture_started=$captureStarted;pktmon_start_attempted=$pktmonStartAttempted;"
+            "probe_create_attempted=$probeCreateAttempted;guest=$r;"
+            "cooperative_exit=$probeTerminal;physical_terminal=$physicalTerminal;"
+            "probe_pid=$launchPidOut;probe_creation_ticks=$launchCreationOut;"
+            "pktmon_start_output=$pktmonStart;pktmon_stop_output=$stopOutput}"
+            "|ConvertTo-Json -Depth 6 -Compress}")
+
     def _start_capture_and_probe(self, guest: str, profile: dict[str, Any], nonce: str,
                                  run_label: str) -> dict[str, Any]:
         """Start one independent pktmon/probe chain for exactly one run."""
         assert self.vm
-        script = GUEST_ROOT + r'\scenario-suite-20260912\scenario_probes.ps1'
+        script = self.guest_work_root + r'\scenario-suite-20260912\scenario_probes.ps1'
         run_root = guest + '\\' + run_label
         capture_run_id = nonce + ':' + run_label
         params = dict(Action='traffic', Profile=profile['bucket'], Nonce=nonce,
@@ -1636,8 +1842,9 @@ class Suite:
         child = "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';$parameters=@{" + splat + "};try{& " + quote_ps(script) + " @parameters 1> " + quote_ps(run_root + r'\probe.stdout') + " 2> " + quote_ps(run_root + r'\probe.stderr') + "}catch{$_|Out-File -LiteralPath " + quote_ps(run_root + r'\probe.stderr') + ";exit 1}"
         encoded_child = base64.b64encode(child.encode('utf-16le')).decode('ascii')
         command = (
-            "$ErrorActionPreference='Stop';$captureStarted=$false;$p=$null;try{$g=" + quote_ps(guest) + ";$r=Join-Path $g " + quote_ps(run_label) +
-            ";New-Item -ItemType Directory -Path $r -Force|Out-Null;"
+            "$ErrorActionPreference='Stop';$captureStarted=$false;$pktmonStartAttempted=$false;$probeCreateAttempted=$false;$p=$null;try{$g=" + quote_ps(guest) + ";$r=Join-Path $g " + quote_ps(run_label) +
+            ";foreach($n in @('probe.jsonl','probe.stop','probe.start','probe.cases','pktmon.etl','pktmon-nic.json'))"
+            "{if(Test-Path -LiteralPath (Join-Path $r $n)){throw ('capture file collision: '+$n)}};"
             "$etl=Join-Path $r 'pktmon.etl';$nic=Join-Path $r 'pktmon-nic.json';"
             "$list=(& pktmon list|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon list failed'};"
             # pktmon runs one capture session at a time and its stop returns
@@ -1645,7 +1852,8 @@ class Suite:
             # fails or silently never writes the ETL (fakenet100 r09-run-10
             # sst-008: run-02's pktmon.etl missing after run-01's stop).
             # Wait bounded for a quiet session before starting.
-            "$quiet=[DateTime]::UtcNow.AddSeconds(15);while([DateTime]::UtcNow -lt $quiet){$running=(& pktmon status|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon status failed'};if($running -notmatch 'Running'){break};Start-Sleep -Milliseconds 200};"
+            "$quiet=[DateTime]::UtcNow.AddSeconds(15);while([DateTime]::UtcNow -lt $quiet){$running=(& pktmon status|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon status failed'};if($running -match '没有运行|(?i:not running|stopped)'){break};Start-Sleep -Milliseconds 200};"
+            "if($running -notmatch '没有运行|(?i:not running|stopped)'){throw 'pktmon previous owner remains active or status unknown'};"
             "$adapters=@(Get-NetAdapter|Select-Object ifIndex,Name,InterfaceDescription,MacAddress,Status);"
             "$before=(& pktmon counters|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon counters before start failed'};" +
             _sst_clock.clock_sample_ps('clockBefore') +
@@ -1655,7 +1863,7 @@ class Suite:
             "@{capture_mode='all-components-tcpip';clock_before=$clockBefore;schema='" + NIC_CAPTURE_SCHEMA + "';captured_utc=[DateTime]::UtcNow.ToString('o');pktmon_list=$list;adapters=$adapters;pktmon_counters_before=$before" +
             (";native_identity_before=$identityBefore;capture_run_id=" + quote_ps(capture_run_id) + ";nonce=" + quote_ps(nonce) + ";candidate_id=" + quote_ps(self.identity.candidate_id) if self.native_clock_diagnostic else '') +
             "}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $nic -Encoding UTF8;"
-            "$pktmonStart=(& pktmon start --capture --comp all --pkt-size 0 --flags 0x1f --trace -p Microsoft-Windows-TCPIP -k 0xFF -l 4 --file-name $etl --file-size "
+            "$pktmonStartAttempted=$true;$pktmonStart=(& pktmon start --capture --comp all --pkt-size 0 --flags 0x1f --trace -p Microsoft-Windows-TCPIP -k 0xFF -l 4 --file-name $etl --file-size "
             + str(self.pktmon_file_size_mib) + "|Out-String);"
             "if($LASTEXITCODE -ne 0){throw 'pktmon start failed'};$captureStarted=$true;"
             # A start that returns 0 immediately after the previous session's
@@ -1664,27 +1872,57 @@ class Suite:
             # sst-008: run-02 pktmon.etl missing). Verify the file appears,
             # retrying the whole start once after a forced stop.
             "$etlDeadline=[DateTime]::UtcNow.AddSeconds(10);while(-not (Test-Path $etl) -and [DateTime]::UtcNow -lt $etlDeadline){Start-Sleep -Milliseconds 200};"
-            "if(-not (Test-Path $etl)){& pktmon stop 2>&1|Out-Null;Start-Sleep -Seconds 2;"
+            + ("if(-not (Test-Path $etl)){throw 'physical owner ETL did not materialize'}"
+               if self.capture_contract == 'scenario-shared-v2' else
+               "if(-not (Test-Path $etl)){& pktmon stop 2>&1|Out-Null;Start-Sleep -Seconds 2;"
             "$pktmonStart=(& pktmon start --capture --comp all --pkt-size 0 --flags 0x1f --trace -p Microsoft-Windows-TCPIP -k 0xFF -l 4 --file-name $etl --file-size "
             + str(self.pktmon_file_size_mib) + "|Out-String);"
             "if($LASTEXITCODE -ne 0){throw 'pktmon retry start failed'};"
             "$etlDeadline=[DateTime]::UtcNow.AddSeconds(10);while(-not (Test-Path $etl) -and [DateTime]::UtcNow -lt $etlDeadline){Start-Sleep -Milliseconds 200};"
-            "if(-not (Test-Path $etl)){throw 'pktmon etl did not materialize'}}"
-            "$out=Join-Path $r 'probe.jsonl';$start=Join-Path $r 'probe.start';$cases=Join-Path $r 'probe.cases';$stop=Join-Path $r 'probe.stop';$script=" + quote_ps(script) + ";"
+            "if(-not (Test-Path $etl)){throw 'pktmon etl did not materialize'}}")
+            + "$out=Join-Path $r 'probe.jsonl';$start=Join-Path $r 'probe.start';$cases=Join-Path $r 'probe.cases';$stop=Join-Path $r 'probe.stop';$script=" + quote_ps(script) + ";"
             "$encoded=" + quote_ps(encoded_child) + ";"
             "$stdout=Join-Path $r 'probe.stdout';$stderr=Join-Path $r 'probe.stderr';"
-            "$created=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=('powershell.exe -NoProfile -EncodedCommand '+$encoded);CurrentDirectory=$r};if($created.ReturnValue -ne 0){throw 'probe process creation failed'};$p=Get-Process -Id $created.ProcessId -ErrorAction Stop;$launchPid=$p.Id;$launchCreation=$p.StartTime.ToUniversalTime().Ticks;"
+            "$probeCreateAttempted=$true;$created=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=('powershell.exe -NoProfile -EncodedCommand '+$encoded);CurrentDirectory=$r};if($created.ReturnValue -ne 0){throw 'probe process creation failed'};$p=Get-Process -Id $created.ProcessId -ErrorAction Stop;$launchPid=$p.Id;$launchCreation=$p.StartTime.ToUniversalTime().Ticks;"
             "$deadline=[DateTime]::UtcNow.AddSeconds(20);while(!(Test-Path $out) -and -not $p.HasExited -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 100};"
             "if(!(Test-Path $out) -or $p.HasExited){throw ('probe did not become ready: '+(Get-Content $stderr -Raw -ErrorAction SilentlyContinue))};"
             "$ready=Get-Content $out -TotalCount 1|ConvertFrom-Json;if($ready.event -ne 'ready' -or [int]$ready.pid -ne $p.Id -or [long]$ready.creation_ticks -ne $p.StartTime.ToUniversalTime().Ticks){throw 'probe ready identity mismatch'};"
-            "@{guest=$r;run_label=" + quote_ps(run_label) + ";pid=$p.Id;etl=$etl;probe=$out;start=$start;case=$cases;stop=$stop;pktmon_nic=$nic;probe_creation_ticks=$ready.creation_ticks;stdout=$stdout;stderr=$stderr;capture_scope='all-components';requested_file_size_mib="
-            + str(self.pktmon_file_size_mib) + ";tempo=" + quote_ps(profile['tempo']) + ";cadence_ms=" + str(int(profile['cadence_ms'])) + ";startup_retry_seconds=" + str(int(profile.get('startup_retry_seconds', 70))) + ";variant=" + quote_ps(profile['variant']) + ";probe_target=" + quote_ps(json.dumps(profile['probe_target'], separators=(',', ':'))) + ";interleave=" + quote_ps(profile['interleave']) + ";started=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress}catch{$failure=[string]$_;$cleanup=@();$coop=$null;$err2=@();$launchPidOut=$launchPid;$launchCreationOut=$launchCreation;if($stop){try{if(-not (Test-Path $stop)){[IO.File]::WriteAllText($stop,'stop',[Text.UTF8Encoding]::new($false))}}catch{$err2+=('stopfile: '+[string]$_)}};$procInfo=$null;try{$procInfo=Get-Process -Id $launchPidOut -ErrorAction SilentlyContinue}catch{$err2+=('query: '+[string]$_)};$actualCreation=$null;try{if($null -ne $procInfo){$actualCreation=$procInfo.StartTime.ToUniversalTime().Ticks}}catch{$err2+=('identity-read: '+[string]$_)};if($null -eq $procInfo){$coop='exited'}elseif(-not $launchCreationOut -or $launchCreationOut -le 0){$coop='identity-unknown';$err2+=('identity-unknown: no launch creation recorded')}elseif($null -eq $actualCreation){$coop='identity-unknown';$err2+=('identity-unknown: process present but creation unreadable')}elseif($actualCreation -ne $launchCreationOut){$coop='identity-mismatch(new process not touched)'}else{try{$deadlineW=[Diagnostics.Stopwatch]::StartNew();while(-not $procInfo.HasExited -and $deadlineW.ElapsedMilliseconds -lt 30000){Start-Sleep -Milliseconds 200};if($procInfo.HasExited){$coop='exited'}else{$coop='timeout'}}catch{$err2+=('wait: '+[string]$_);if(-not $coop){$coop='wait-error'}}};if($captureStarted){try{$captureStop=(& pktmon stop|Out-String);if($LASTEXITCODE -ne 0){$cleanup+='pktmon stop exit '+$LASTEXITCODE}}catch{$cleanup+='pktmon stop error: '+[string]$_}}else{$cleanup+='pktmon not started; no capture cleanup owed'};@{startup_failed=$true;error=$failure;cleanup_errors=$cleanup;cooperative_errors=$err2;capture_started=$captureStarted;guest=$r;cooperative_exit=$coop;probe_pid=$launchPidOut;probe_creation_ticks=$launchCreationOut}|ConvertTo-Json -Compress}")
+            "@{guest=$r;run_label=" + quote_ps(run_label) + ";pid=$p.Id;etl=$etl;probe=$out;start=$start;case=$cases;stop=$stop;pktmon_nic=$nic;probe_creation_ticks=$ready.creation_ticks;stdout=$stdout;stderr=$stderr;pktmon_status_before=$running;pktmon_start_output=$pktmonStart;capture_scope='all-components';requested_file_size_mib="
+            + str(self.pktmon_file_size_mib) + ";tempo=" + quote_ps(profile['tempo']) + ";cadence_ms=" + str(int(profile['cadence_ms'])) + ";startup_retry_seconds=" + str(int(profile.get('startup_retry_seconds', 70))) + ";variant=" + quote_ps(profile['variant']) + ";probe_target=" + quote_ps(json.dumps(profile['probe_target'], separators=(',', ':'))) + ";interleave=" + quote_ps(profile['interleave']) + ";started=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress}" + (self._shared_start_failure_ps() if self.capture_contract == 'scenario-shared-v2' else "catch{$failure=[string]$_;$cleanup=@();$coop=$null;$err2=@();$launchPidOut=$launchPid;$launchCreationOut=$launchCreation;if($stop){try{if(-not (Test-Path $stop)){[IO.File]::WriteAllText($stop,'stop',[Text.UTF8Encoding]::new($false))}}catch{$err2+=('stopfile: '+[string]$_)}};$procInfo=$null;try{$procInfo=Get-Process -Id $launchPidOut -ErrorAction SilentlyContinue}catch{$err2+=('query: '+[string]$_)};$actualCreation=$null;try{if($null -ne $procInfo){$actualCreation=$procInfo.StartTime.ToUniversalTime().Ticks}}catch{$err2+=('identity-read: '+[string]$_)};if($null -eq $procInfo){$coop='exited'}elseif(-not $launchCreationOut -or $launchCreationOut -le 0){$coop='identity-unknown';$err2+=('identity-unknown: no launch creation recorded')}elseif($null -eq $actualCreation){$coop='identity-unknown';$err2+=('identity-unknown: process present but creation unreadable')}elseif($actualCreation -ne $launchCreationOut){$coop='identity-mismatch(new process not touched)'}else{try{$deadlineW=[Diagnostics.Stopwatch]::StartNew();while(-not $procInfo.HasExited -and $deadlineW.ElapsedMilliseconds -lt 30000){Start-Sleep -Milliseconds 200};if($procInfo.HasExited){$coop='exited'}else{$coop='timeout'}}catch{$err2+=('wait: '+[string]$_);if(-not $coop){$coop='wait-error'}}};if($captureStarted){try{$captureStop=(& pktmon stop|Out-String);if($LASTEXITCODE -ne 0){$cleanup+='pktmon stop exit '+$LASTEXITCODE}}catch{$cleanup+='pktmon stop error: '+[string]$_}}else{$cleanup+='pktmon not started; no capture cleanup owed'};@{startup_failed=$true;error=$failure;cleanup_errors=$cleanup;cooperative_errors=$err2;capture_started=$captureStarted;guest=$r;cooperative_exit=$coop;probe_pid=$launchPidOut;probe_creation_ticks=$launchCreationOut}|ConvertTo-Json -Compress}"))
         kernel = self._start_kernel_capture(run_root)
+        response_received = False
         try:
             value, raw = self._vm_json(command, 60)
+            response_received = True
             if value.get('startup_failed'):
+                if self.capture_contract == 'scenario-shared-v2' and (
+                    value.get('cooperative_exit') not in ('exited', 'not-created') or
+                    value.get('physical_terminal') not in ('stopped', 'not-started') or
+                    value.get('cooperative_errors')):
+                    raise UnsettledCaptureStart(
+                        'physical start returned with live/unknown writer: %r' %
+                        dict(value, raw=raw))
                 raise SuiteError('capture/probe startup failed: %r' % dict(value, raw=raw))
         except BaseException as original:
+            if isinstance(original, UnsettledCaptureStart):
+                raise
+            if (self.capture_contract == 'scenario-shared-v2' and not response_received):
+                snapshot = self._capture_start_snapshot(
+                    run_root, run_root + r'\pktmon.etl', nonce, run_label)
+                try:
+                    recovered = self._reconcile_capture_start(
+                        snapshot, kernel, run_root, run_root + r'\pktmon.etl',
+                        run_root + r'\pktmon-nic.json', nonce, run_label,
+                        nonce + ':pktmon')
+                except Exception as recovery_error:
+                    raise UnsettledCaptureStart('physical owner start/recovery uncertain: '
+                        'original=%r; snapshot=%r; recovery=%r' %
+                        (original, snapshot, recovery_error)) from original
+                if recovered is not None:
+                    raise RecoveredCaptureStart(recovered) from original
+                raise UnsettledCaptureStart('physical owner start response uncertain: %r; '
+                    'read-only snapshot=%r; kernel session retained=%s' %
+                    (original, snapshot, kernel['session_name'])) from original
             try:
                 self._stop_kernel_capture(kernel)
             except Exception as secondary:
@@ -1692,9 +1930,154 @@ class Suite:
             raise
         value['raw'] = raw
         value['kernel_capture'] = kernel
+        if self.capture_contract == 'scenario-shared-v2' and (
+                value.get('guest') != run_root or value.get('run_label') != run_label or
+                value.get('etl') != run_root + r'\pktmon.etl' or
+                value.get('probe') != run_root + r'\probe.jsonl' or
+                not isinstance(value.get('pid'), int) or value['pid'] <= 0 or
+                not isinstance(value.get('probe_creation_ticks'), int) or
+                value['probe_creation_ticks'] <= 0):
+            snapshot = self._capture_start_snapshot(
+                run_root, run_root + r'\pktmon.etl', nonce, run_label)
+            try:
+                recovered = self._reconcile_capture_start(
+                    snapshot, kernel, run_root, run_root + r'\pktmon.etl',
+                    run_root + r'\pktmon-nic.json', nonce, run_label,
+                    nonce + ':pktmon')
+            except Exception as recovery_error:
+                raise UnsettledCaptureStart('physical owner response/recovery invalid: '
+                    'response=%r; snapshot=%r; recovery=%r' %
+                    (value, snapshot, recovery_error)) from recovery_error
+            if recovered is not None:
+                raise RecoveredCaptureStart(recovered)
+            raise UnsettledCaptureStart('physical owner response invalid; writer retained: '
+                'response=%r snapshot=%r' % (value, snapshot))
         if self.native_clock_diagnostic:
             value['capture_run_id'] = capture_run_id
             value['nonce'] = nonce
+        return value
+
+    def _start_probe_on_shared_capture(self, guest: str, profile: dict[str, Any], nonce: str,
+                                       run_label: str, owner: dict[str, Any]) -> dict[str, Any]:
+        """Start this run's probe/kernel trace while retaining one pktmon owner."""
+        if (owner.get('run_label') != 'run-01' or not owner.get('etl') or
+                not owner.get('pktmon_nic') or owner.get('physical_owner_id') != nonce + ':pktmon'):
+            raise SuiteError('shared capture owner identity incomplete')
+        script = self.guest_work_root + r'\scenario-suite-20260912\scenario_probes.ps1'
+        run_root = guest + '\\' + run_label
+        capture_run_id = nonce + ':' + run_label
+        params = dict(Action='traffic', Profile=profile['bucket'], Nonce=nonce,
+            Output=run_root + r'\probe.jsonl', StopFile=run_root + r'\probe.stop',
+            StartFile=run_root + r'\probe.start', CaseFile=run_root + r'\probe.cases',
+            Tempo=profile['tempo'], Variant=profile['variant'], Interleave=profile['interleave'],
+            CadenceMilliseconds=int(profile['cadence_ms']), HoldSeconds=int(profile['connection_window_seconds']),
+            TargetHost=profile['probe_target']['host'], TargetPort=int(profile['probe_target']['port']),
+            TargetProtocol=profile['probe_target']['protocol'],
+            ProcessMode=profile['probe_target'].get('process_mode', 'match'),
+            TlsServerName=profile['probe_target'].get('tls_server_name', ''),
+            FnprRole=profile['probe_target'].get('fnpr_role', ''),
+            AdditionalTargetsJson=json.dumps(list(profile.get('negative_cases', ())) + list(profile.get('probe_cases', ())), separators=(',', ':')),
+            StartupRetrySeconds=int(profile.get('startup_retry_seconds', 70)))
+        if self.native_clock_diagnostic:
+            params.update(CaptureRunId=capture_run_id, CandidateId=self.identity.candidate_id,
+                          DiagnosticIdentity=True)
+        splat = ';'.join(key + '=' + ('$true' if value is True else '$false' if value is False
+                                     else str(value) if isinstance(value, int) else quote_ps(value))
+                         for key, value in params.items())
+        child = ("$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';$parameters=@{" + splat +
+                 "};try{& " + quote_ps(script) + " @parameters 1> " + quote_ps(run_root + r'\probe.stdout') +
+                 " 2> " + quote_ps(run_root + r'\probe.stderr') + "}catch{$_|Out-File -LiteralPath " +
+                 quote_ps(run_root + r'\probe.stderr') + ";exit 1}")
+        encoded_child = base64.b64encode(child.encode('utf-16le')).decode('ascii')
+        command = (
+            "$ErrorActionPreference='Stop';$r=" + quote_ps(run_root) + ";"
+            "if(!(Test-Path -LiteralPath (Join-Path $r 'kernel-network.metadata.json')))"
+            "{throw 'shared probe kernel root absent'};"
+            "foreach($n in @('probe.jsonl','probe.stop','probe.start','probe.cases'))"
+            "{if(Test-Path -LiteralPath (Join-Path $r $n)){throw ('shared probe file collision: '+$n)}};"
+            "$etl=" + quote_ps(owner['etl']) + ";$nic=" + quote_ps(owner['pktmon_nic']) + ";"
+            "if(!(Test-Path -LiteralPath $etl -PathType Leaf) -or !(Test-Path -LiteralPath $nic -PathType Leaf))"
+            "{throw 'physical owner files absent'};"
+            "$status=(& pktmon status|Out-String);if($LASTEXITCODE -ne 0 -or "
+            "($status -match '没有运行|(?i:not running|stopped)' -or "
+            "($status -notmatch 'Running' -and $status -notmatch '正在运行'))){throw 'physical pktmon owner not running'};"
+            "$encoded=" + quote_ps(encoded_child) + ";"
+            "$out=Join-Path $r 'probe.jsonl';$start=Join-Path $r 'probe.start';"
+            "$cases=Join-Path $r 'probe.cases';$stop=Join-Path $r 'probe.stop';"
+            "$stdout=Join-Path $r 'probe.stdout';$stderr=Join-Path $r 'probe.stderr';"
+            "$created=Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+            "-Arguments @{CommandLine=('powershell.exe -NoProfile -EncodedCommand '+$encoded);CurrentDirectory=$r};"
+            "if($created.ReturnValue -ne 0){throw 'shared probe process creation failed'};"
+            "$p=Get-Process -Id $created.ProcessId -ErrorAction Stop;"
+            "$launchPid=$p.Id;$launchCreation=$p.StartTime.ToUniversalTime().Ticks;"
+            "$receipt=Join-Path $r 'probe-launch.json';"
+            "$native=(& " + quote_ps(script) + " -Action identity -IdentityPid $launchPid"
+            " -CaptureRunId " + quote_ps(capture_run_id) +
+            " -Nonce " + quote_ps(nonce) + " -CandidateId " +
+            quote_ps(self.identity.candidate_id) + ")|ConvertFrom-Json;"
+            "@{pid=$launchPid;creation_ticks=$launchCreation;nonce=" + quote_ps(nonce) +
+            ";capture_run_id=" + quote_ps(capture_run_id) +
+            ";candidate_id=" + quote_ps(self.identity.candidate_id) +
+            ";native_identity=$native}|ConvertTo-Json -Depth 8"
+            "|Set-Content -LiteralPath $receipt -Encoding UTF8;"
+            "$deadline=[DateTime]::UtcNow.AddSeconds(20);"
+            "while(!(Test-Path $out) -and -not $p.HasExited -and [DateTime]::UtcNow -lt $deadline)"
+            "{Start-Sleep -Milliseconds 100};"
+            "if(!(Test-Path $out) -or $p.HasExited){throw 'shared probe did not become ready'};"
+            "$ready=Get-Content $out -TotalCount 1|ConvertFrom-Json;"
+            "if($ready.event -ne 'ready' -or [int]$ready.pid -ne $p.Id -or "
+            "[long]$ready.creation_ticks -ne $launchCreation){throw 'shared probe ready identity mismatch'};"
+            "@{guest=$r;run_label=" + quote_ps(run_label) + ";pid=$p.Id;etl=$etl;probe=$out;"
+            "start=$start;case=$cases;stop=$stop;pktmon_nic=$nic;probe_creation_ticks=$launchCreation;"
+            "stdout=$stdout;stderr=$stderr;capture_scope='all-components';shared_physical=$true;"
+            "physical_owner_id=" + quote_ps(owner['physical_owner_id']) + ";"
+            "physical_status_before=$status;capture_run_id=" + quote_ps(capture_run_id) + ";"
+            "nonce=" + quote_ps(nonce) + ";started=[DateTimeOffset]::UtcNow.ToString('o')}"
+            "|ConvertTo-Json -Compress")
+        kernel = self._start_kernel_capture(run_root)
+        try:
+            value, raw = self._vm_json(command, 60)
+        except Exception as original:
+            # The RPC can fail after creating the process. Without an exact
+            # launch identity it is unsafe to close either the writer or the
+            # per-run kernel trace. Preserve both for guarded reconciliation.
+            snapshot = self._capture_start_snapshot(run_root, owner['etl'], nonce, run_label)
+            try:
+                recovered = self._reconcile_capture_start(
+                    snapshot, kernel, run_root, owner['etl'], owner['pktmon_nic'],
+                    nonce, run_label, owner['physical_owner_id'])
+            except Exception as recovery_error:
+                raise UnsettledCaptureStart('shared probe start/recovery uncertain: '
+                    'original=%r; snapshot=%r; recovery=%r' %
+                    (original, snapshot, recovery_error)) from original
+            if recovered is not None:
+                raise RecoveredCaptureStart(recovered) from original
+            raise UnsettledCaptureStart('shared probe start response uncertain: %r; '
+                'read-only snapshot=%r; kernel session retained: %s' %
+                (original, snapshot, kernel['session_name'])) from original
+        value['raw'] = raw
+        value['kernel_capture'] = kernel
+        if (value.get('physical_owner_id') != owner['physical_owner_id'] or
+                value.get('etl') != owner['etl'] or value.get('pktmon_nic') != owner['pktmon_nic'] or
+                value.get('guest') != run_root or value.get('run_label') != run_label or
+                value.get('nonce') != nonce or value.get('capture_run_id') != capture_run_id or
+                value.get('probe') != run_root + r'\probe.jsonl' or
+                not isinstance(value.get('pid'), int) or value['pid'] <= 0 or
+                not isinstance(value.get('probe_creation_ticks'), int) or
+                value['probe_creation_ticks'] <= 0):
+            snapshot = self._capture_start_snapshot(run_root, owner['etl'], nonce, run_label)
+            try:
+                recovered = self._reconcile_capture_start(
+                    snapshot, kernel, run_root, owner['etl'], owner['pktmon_nic'],
+                    nonce, run_label, owner['physical_owner_id'])
+            except Exception as recovery_error:
+                raise UnsettledCaptureStart('shared probe response/recovery identity differs: '
+                    'response=%r; snapshot=%r; recovery=%r' %
+                    (value, snapshot, recovery_error)) from recovery_error
+            if recovered is not None:
+                raise RecoveredCaptureStart(recovered)
+            raise UnsettledCaptureStart('shared probe response changed physical owner; '
+                'writer retained: response=%r snapshot=%r' % (value, snapshot))
         return value
 
     def _probe_cooperative_cleanup_command(self, pid, creation_ticks, stop_path,
@@ -1725,8 +2108,9 @@ class Suite:
             "elseif($null -eq $actual){$outcome.cooperative_exit='identity-unknown';$outcome.errors+=('identity-unknown: process present but creation unreadable')}\n"
             "elseif($actual -ne $expected){$outcome.cooperative_exit='identity-mismatch(new process not touched)'}\n"
             "else{try{$deadline=[Diagnostics.Stopwatch]::StartNew();while(-not $p.HasExited -and $deadline.ElapsedMilliseconds -lt " + str(int(wait_seconds) * 1000) + "){Start-Sleep -Milliseconds 200};if($p.HasExited){$outcome.cooperative_exit='exited'}else{$outcome.cooperative_exit='timeout'}}catch{$outcome.errors+=('wait: '+[string]$_);if(-not $outcome.cooperative_exit){$outcome.cooperative_exit='wait-error'}}}\n"
-            "try{$outcome.pktmon_stop=(& " + pktmon_stop_command + " 2>&1 | Out-String);$outcome.pktmon_exit=$LASTEXITCODE;if($LASTEXITCODE -ne 0){$outcome.errors+=('pktmon stop exit '+$LASTEXITCODE)}}catch{$outcome.pktmon_exit=-1;$outcome.errors+=('pktmon: '+[string]$_)}\n"
-            "try{$prevEap=$ErrorActionPreference;$ErrorActionPreference='Stop';$outcome|ConvertTo-Json -Depth 4 -Compress|Set-Content -LiteralPath " + quote_ps(status_path) + " -Encoding UTF8}catch{$outcome.errors+=('status-write: '+[string]$_)}finally{if($prevEap){$ErrorActionPreference=$prevEap}}\n"
+            + ("try{$outcome.pktmon_stop=(& " + pktmon_stop_command + " 2>&1 | Out-String);$outcome.pktmon_exit=$LASTEXITCODE;if($LASTEXITCODE -ne 0){$outcome.errors+=('pktmon stop exit '+$LASTEXITCODE)}}catch{$outcome.pktmon_exit=-1;$outcome.errors+=('pktmon: '+[string]$_)}\n"
+             if pktmon_stop_command else "$outcome.pktmon_stop='retained-by-scenario-owner';$outcome.pktmon_exit=$null;\n")
+            + "try{$prevEap=$ErrorActionPreference;$ErrorActionPreference='Stop';$outcome|ConvertTo-Json -Depth 4 -Compress|Set-Content -LiteralPath " + quote_ps(status_path) + " -Encoding UTF8}catch{$outcome.errors+=('status-write: '+[string]$_)}finally{if($prevEap){$ErrorActionPreference=$prevEap}}\n"
             "$outcome|ConvertTo-Json -Depth 4 -Compress")
 
     def _fail_closed_cooperative(self, value, capture_label):
@@ -1823,13 +2207,17 @@ class Suite:
         success; a reused PID is recorded, never waited on or touched.
         """
         assert self.vm
+        if capture.get('shared_physical'):
+            return self._stop_shared_probe_and_kernel(capture)
+        if capture.get('physical_owner_id'):
+            return self._stop_owned_shared_physical(capture)
         status_path = str(capture['probe']) + '.exit-status.json'
         coop_cmd = self._probe_cooperative_cleanup_command(
             capture['pid'], capture.get('probe_creation_ticks'), capture['stop'],
             status_path, 'pktmon stop', wait_seconds=30)
         clock_after = _sst_clock.clock_sample_ps('clockAfter')
         identity_after = (
-            "$identityAfter=(& " + quote_ps(GUEST_ROOT + r'\scenario-suite-20260912\scenario_probes.ps1') +
+            "$identityAfter=(& " + quote_ps(self.guest_work_root + r'\scenario-suite-20260912\scenario_probes.ps1') +
             " -Action identity -CaptureRunId " + quote_ps(capture['capture_run_id']) +
             " -Nonce " + quote_ps(capture['nonce']) + " -CandidateId " + quote_ps(self.identity.candidate_id) +
             ")|ConvertFrom-Json;" if self.native_clock_diagnostic else '')
@@ -1901,6 +2289,153 @@ class Suite:
                 'cooperative_exit': value.get('coop', {}).get('cooperative_exit'),
                 'exit_status_path': status_path}
 
+    def _stop_shared_probe_and_kernel(self, capture: dict[str, Any]) -> dict[str, Any]:
+        """Stop only this probe and its kernel session; keep pktmon with owner."""
+        status_path = str(capture['probe']) + '.exit-status.json'
+        coop_cmd = self._probe_cooperative_cleanup_command(
+            capture['pid'], capture.get('probe_creation_ticks'), capture['stop'],
+            status_path, None, wait_seconds=30)
+        primary_error = None
+        value = None
+        raw = None
+        try:
+            value, raw = self._vm_json("$ErrorActionPreference='Stop';$coop=" +
+                quote_ps(coop_cmd) + ";$result=& {Invoke-Expression $coop};"
+                "@{coop=($result|ConvertFrom-Json)}|ConvertTo-Json -Depth 5 -Compress", 90)
+            self._fail_closed_cooperative(value.get('coop'), capture['stop'])
+        except Exception as exc:
+            primary_error = exc
+        if primary_error is not None:
+            # The same run's kernel writer can still be recording a live
+            # socket. Keep it for identity-bound continuation.
+            raise UnsettledCaptureStop('shared probe cooperative close uncertain: %r' %
+                                       (primary_error,)) from primary_error
+        time.sleep(3.0)
+        try:
+            kernel = self._stop_kernel_capture(capture['kernel_capture'])
+        except Exception as exc:
+            raise UnsettledCaptureStop('shared probe kernel close uncertain: %r' %
+                                       (exc,)) from exc
+        paths = [capture['probe'], capture['stdout'], capture['stderr'], status_path,
+                 str(PureWindowsPath(capture['probe']).parent / 'probe-launch.json')]
+        client_out = str(PureWindowsPath(capture['probe']).parent / 'probe-client.stdout')
+        file_list = ','.join(quote_ps(path) for path in paths)
+        command = ("$ErrorActionPreference='Stop';$files=@(" + file_list + ");"
+                   + ("$files=@($files|Where-Object{Test-Path -LiteralPath $_ -PathType Leaf});"
+                      if capture.get('startup_recovery') else '') +
+                   "$optional=" + quote_ps(client_out) + ";"
+                   "if(Test-Path -LiteralPath $optional){$files=@($files+$optional)};"
+                   "@{files=@($files|ForEach-Object{$f=Get-Item -LiteralPath $_ -ErrorAction Stop;"
+                   "@{path=$f.FullName;bytes=$f.Length;sha256=(Get-FileHash -LiteralPath $f.FullName "
+                   "-Algorithm SHA256).Hash.ToLower()}})}|ConvertTo-Json -Depth 5 -Compress")
+        files_value, files_raw = self._vm_json(command, 120)
+        if not isinstance(files_value.get('files'), list):
+            raise SuiteError('shared probe file manifest missing')
+        return {'files': files_value['files'] + kernel['files'], 'raw': raw,
+                'file_raw': files_raw, 'kernel_raw': kernel['raw'],
+                'run_label': capture['run_label'], 'shared_physical': True,
+                'physical_owner_id': capture['physical_owner_id'],
+                'cooperative_exit': value['coop']['cooperative_exit'],
+                'exit_status_path': status_path}
+
+    def _stop_owned_shared_physical(self, capture: dict[str, Any]) -> dict[str, Any]:
+        """Close an owned shared writer in separate, evidenced terminal stages."""
+        status_path = str(capture['probe']) + '.exit-status.json'
+        coop_cmd = self._probe_cooperative_cleanup_command(
+            capture['pid'], capture.get('probe_creation_ticks'), capture['stop'],
+            status_path, None, wait_seconds=30)
+        try:
+            coop_value, coop_raw = self._vm_json(
+                "$ErrorActionPreference='Stop';$c=" + quote_ps(coop_cmd) +
+                ";$r=& {Invoke-Expression $c};@{coop=($r|ConvertFrom-Json)}"
+                "|ConvertTo-Json -Depth 5 -Compress", 90)
+            coop = self._fail_closed_cooperative(coop_value.get('coop'), capture['stop'])
+        except Exception as exc:
+            raise UnsettledCaptureStop('physical owner probe close uncertain: %r' %
+                                       (exc,)) from exc
+        # A separate RPC returns the exact native stop output before any
+        # conversion. An unknown response retains the still possibly active
+        # physical writer and its kernel trace for later identity recovery.
+        stop_cmd = (
+            "$ErrorActionPreference='Stop';$output=(& pktmon stop|Out-String);"
+            "$exit=$LASTEXITCODE;$status=(& pktmon status|Out-String);"
+            "$statusExit=$LASTEXITCODE;@{output=$output;exit=$exit;"
+            "status=$status;status_exit=$statusExit;owner_id=" +
+            quote_ps(capture['physical_owner_id']) + "}|ConvertTo-Json -Compress")
+        try:
+            stopped, stop_raw = self._vm_json(stop_cmd, 90)
+        except Exception as exc:
+            raise UnsettledCaptureStop('physical pktmon stop response unknown: %r' %
+                                       (exc,)) from exc
+        if (stopped.get('owner_id') != capture['physical_owner_id'] or
+                stopped.get('exit') != 0 or stopped.get('status_exit') != 0 or
+                not self._pktmon_stopped(stopped.get('status'))):
+            raise UnsettledCaptureStop('physical pktmon terminal status unproved: %r' %
+                                       (stopped,))
+        time.sleep(3.0)
+        try:
+            kernel = self._stop_kernel_capture(capture['kernel_capture'])
+        except Exception as exc:
+            raise UnsettledCaptureStop('shared owner kernel terminal unproved: %r' %
+                                       (exc,)) from exc
+        text_path = str(capture['etl']).replace('.etl', '.txt')
+        clock_after = _sst_clock.clock_sample_ps('clockAfter')
+        identity_after = (
+            "$identityAfter=(& " + quote_ps(self.guest_work_root + r'\scenario-suite-20260912\scenario_probes.ps1') +
+            " -Action identity -CaptureRunId " + quote_ps(capture['capture_run_id']) +
+            " -Nonce " + quote_ps(capture['nonce']) +
+            " -CandidateId " + quote_ps(self.identity.candidate_id) +
+            ")|ConvertFrom-Json;" if self.native_clock_diagnostic else '')
+        conversion_cmd = (
+            "$ErrorActionPreference='Stop';$etl=" + quote_ps(capture['etl']) +
+            ";$txt=" + quote_ps(text_path) + ";$mp=" + quote_ps(capture['pktmon_nic']) + ";"
+            "if(Test-Path -LiteralPath $txt){throw 'pktmon conversion collision'};"
+            "$nic=Get-Content -LiteralPath $mp -Raw|ConvertFrom-Json;" +
+            clock_after + identity_after +
+            "$nic|Add-Member -NotePropertyName clock_after -NotePropertyValue $clockAfter -Force;" +
+            ("$nic|Add-Member -NotePropertyName native_identity_after -NotePropertyValue $identityAfter -Force;"
+             if self.native_clock_diagnostic else '') +
+            "$counters=(& pktmon counters|Out-String);if($LASTEXITCODE -ne 0)"
+            "{throw 'pktmon counters after stop failed'};"
+            "$status=(& pktmon status|Out-String);if($LASTEXITCODE -ne 0 -or $status -notmatch '没有运行|(?i:not running|stopped)')"
+            "{throw 'pktmon running before conversion'};"
+            "$nic|Add-Member -NotePropertyName pktmon_counters_after -NotePropertyValue $counters -Force;"
+            "$nic|Add-Member -NotePropertyName pktmon_status_after -NotePropertyValue $status -Force;"
+            "$nic|Add-Member -NotePropertyName pktmon_stop_output -NotePropertyValue " +
+            quote_ps(str(stopped['output'])) + " -Force;"
+            "& pktmon etl2txt $etl --out $txt | Out-Null;$exit=$LASTEXITCODE;"
+            "if($exit -ne 0){throw ('pktmon etl2txt failed: '+$exit)};"
+            "$conversion=@{exit_code=$exit;argv=@('pktmon','etl2txt',$etl,'--out',$txt);"
+            "etl_sha256=(Get-FileHash -LiteralPath $etl -Algorithm SHA256).Hash.ToLower();"
+            "text_sha256=(Get-FileHash -LiteralPath $txt -Algorithm SHA256).Hash.ToLower()};"
+            "$nic|Add-Member -NotePropertyName conversion -NotePropertyValue $conversion -Force;"
+            "$nic|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $mp -Encoding UTF8;"
+            "@{conversion=$conversion;status=$status}|ConvertTo-Json -Depth 7 -Compress")
+        try:
+            conversion, conversion_raw = self._vm_json(conversion_cmd, 180)
+        except Exception as exc:
+            raise SuiteError('physical writer stopped; conversion incomplete: %r; '
+                             'stop=%r' % (exc, stopped)) from exc
+        paths = [capture['probe'], capture['etl'], text_path, capture['pktmon_nic'],
+                 capture['stdout'], capture['stderr'], status_path]
+        optional = str(PureWindowsPath(capture['probe']).parent / 'probe-client.stdout')
+        files_cmd = (
+            "$ErrorActionPreference='Stop';$files=@(" +
+            ','.join(quote_ps(path) for path in paths) + ");$optional=" + quote_ps(optional) +
+            ";if(Test-Path -LiteralPath $optional){$files=@($files+$optional)};"
+            "@{files=@($files|ForEach-Object{$f=Get-Item -LiteralPath $_ -ErrorAction Stop;"
+            "@{path=$f.FullName;bytes=$f.Length;sha256=(Get-FileHash -LiteralPath $f.FullName "
+            "-Algorithm SHA256).Hash.ToLower()}})}|ConvertTo-Json -Depth 5 -Compress")
+        files_value, files_raw = self._vm_json(files_cmd, 120)
+        if not isinstance(files_value.get('files'), list):
+            raise SuiteError('shared physical files manifest missing')
+        return {'files': files_value['files'] + kernel['files'],
+                'run_label': capture['run_label'], 'physical_owner_id': capture['physical_owner_id'],
+                'cooperative_exit': coop['cooperative_exit'],
+                'coop_raw': coop_raw, 'stop': stopped, 'stop_raw': stop_raw,
+                'conversion': conversion, 'conversion_raw': conversion_raw,
+                'files_raw': files_raw, 'kernel_raw': kernel['raw']}
+
 
     def _transfer_guest_file(self, guest_path: str, size: int, sha256: str,
                              destination: Path) -> dict[str, Any]:
@@ -1933,7 +2468,7 @@ class Suite:
         service.json from a parsed object or guesses the normal grace period.
         """
         assert self.vm
-        guest = GUEST_ROOT + r'\scenario-suite-20260912'
+        guest = self.guest_work_root + r'\scenario-suite-20260912'
         if enabled:
             body = """$g=""" + quote_ps(guest) + """;$key='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\fakenetng-mcp';$cfg='C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json';
 New-Item -ItemType Directory -Path $g -Force|Out-Null;$backup=Join-Path $g 'fault-mode-original-service.json';$envbackup=Join-Path $g 'fault-mode-original-environment.xml';
@@ -1989,7 +2524,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         state until the matrix pass ends.
         """
         assert self.vm
-        guest = GUEST_ROOT + r'\scenario-suite-20260912'
+        guest = self.guest_work_root + r'\scenario-suite-20260912'
         backup = guest + r'\ipc-evidence-original-environment.xml'
         if enabled:
             body = """$g=""" + quote_ps(guest) + """;$key='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\fakenetng-mcp';$envbackup=""" + quote_ps(backup) + """;
@@ -3007,7 +3542,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             return {'passed': False, 'reason': 'pktmon evidence unavailable: %r' % (exc,)}
         try:
             connection_observation = (self._application_observation(run,event,ends,nonce,src,dst,protocol)
-                if capture.get('observation_contract') == 'con008' else self._fault_primary_observation(run,event,nonce))
+                if capture.get('observation_contract') in ('con008', 'con008-shared-v2') else self._fault_primary_observation(run,event,nonce))
         except (KeyError, OSError, ValueError, SuiteError) as exc:
             return {'passed': False, 'reason': 'fault primary binding failed: ' + str(exc)}
         expectation = profile['probe_target']['expectation']
@@ -3234,7 +3769,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                             if marker_case in line and 'connect' in line][:4] or []
                     except OSError:
                         case_packets = []
-                if capture.get('observation_contract') == 'con008' and not dropped_attempt:
+                if capture.get('observation_contract') in ('con008', 'con008-shared-v2') and not dropped_attempt:
                     # A silently dropped attempt has no completed TCP connect
                     # by construction; the pktmon send records plus the drop
                     # policy line are its whole evidence.
@@ -3356,7 +3891,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                               fields.get('proto') == 'TCP' and fields.get('dport') == '443')(
                                   self._log_fields(line))]
                 selected_flow = curl_flow[0] if len(curl_flow) == 1 else None
-                if capture.get('observation_contract') == 'con008':
+                if capture.get('observation_contract') in ('con008', 'con008-shared-v2'):
                     try:
                         app_tuple = tcpip.curl_tuple(run_log, started)
                         selected_flow = next(line for line in curl_flow
@@ -3379,7 +3914,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                                 not_after_local=stop_boundary)
                         except (OSError, ValueError, SuiteError):
                             curl_ok = False
-                        if capture.get('observation_contract') == 'con008':
+                        if capture.get('observation_contract') in ('con008', 'con008-shared-v2'):
                             try:
                                 if curl_dst not in started['dns_ipv4'] or started['dns_before_ticks'] > started['creation_ticks']:
                                     raise SuiteError('curl destination not in prior native DNS set')
@@ -3393,7 +3928,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                                 curl_ok=False
                                 curl_observation_error=str(exc)
                         curl_window = None
-                        if capture.get('observation_contract') == 'con008':
+                        if capture.get('observation_contract') in ('con008', 'con008-shared-v2'):
                             curl_window = ((started['creation_ticks']-621355968000000000)*100+15624999,
                                            (completed['utc_ticks']-621355968000000000)*100-15624999)
                         allowed = log_event('TLS_SNI_ALLOW', window=curl_window, domain='api.deepseek.com', original_ip=curl_dst)
@@ -3578,7 +4113,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         scope_key = str(self.root) + run_id + (
             program_name if program_name != 'scenario_qpc_diagnostic.py' else '')
         scope = hashlib.sha256(scope_key.encode()).hexdigest()[:20]
-        guest = GUEST_ROOT + r'\qpc-contract-' + scope
+        guest = self.guest_work_root + r'\qpc-contract-' + scope
         guest_case = guest + '\\input\\evidence\\' + str(base_path.relative_to(self.root)).replace('/', '\\')
         source_sha = hashlib.sha256(bundle.read_bytes()).hexdigest()
         responsibility = root / 'qpc-process-responsibility.json'
@@ -4546,6 +5081,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             self.auxiliary_clock_evidence in AUX_QPC_MODES)
         self.require_clients()
         preflight = self._require_preflight()
+        tool_identity = self._tool_identity()
         scenario_id = scenario['scenario_id']
         result_path = self._result_path(scenario_id)
         if result_path.exists():
@@ -4564,6 +5100,12 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         evidence = Evidence(root)
         fault = scenario.get('fault_class')
         runtime_profile = materialize_probe_profile(scenario['config_profile'], preflight['api_ipv4'])
+        shared_physical = (self.capture_contract == 'scenario-shared-v2' and
+                           scenario.get('lifecycle_chain') == 'restart' and
+                           runtime_profile['interleave'] != 'stop-window')
+        if shared_physical:
+            # A run view must bind its probe to the native capture identity.
+            self.native_clock_diagnostic = True
         scratch, active, imported = (scenario_id + '-%s-a%d.ini' % (label, attempt)
                                      for label in ('scratch', 'active', 'import'))
         calls: list[dict[str, Any]] = []
@@ -4643,6 +5185,17 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 raise SuiteError('cleanup %s rejected: %r' % (label, outcome['error']))
             return outcome['value']
 
+        def retain_recovered_start(label: str, record: dict[str, Any]) -> None:
+            evidence.write(label + '-start-reconciliation.json', record)
+            transferred = []
+            for item in record['stop']['files']:
+                destination = root / label / 'start-reconciliation' / PureWindowsPath(item['path']).name
+                transferred.append(self._transfer_guest_file(
+                    item['path'], item['bytes'], item['sha256'], destination))
+                evidence.add(destination)
+            evidence.write(label + '-start-reconciliation-transfer.json',
+                           {'files': transferred})
+
         def finish_capture(label: str, run: dict[str, Any]) -> None:
             capture = captures.pop(label, None)
             if not capture:
@@ -4655,6 +5208,10 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 transfers.append(self._transfer_guest_file(item['path'], item['bytes'], item['sha256'], local))
                 evidence.add(local)
             evidence.write('%s-capture-transfer.json' % label, {'files': transfers})
+            if capture.get('shared_physical'):
+                run['_shared_probe_files'] = transfers
+                run['probe_stopped_at'] = utc_now()
+                return
             nic_record = next((item for item in transfers
                                if PureWindowsPath(str(item['path'])).name == 'pktmon-nic.json'), None)
             if not nic_record:
@@ -4684,6 +5241,91 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                               'pktmon_nic_path': nic_record['path'], 'pktmon_binding': binding,
                               'pktmon_capture_issues': nic_issues}
             run['capture_stopped_at'] = utc_now()
+
+        def seal_shared_capture(first: dict[str, Any], second: dict[str, Any]) -> None:
+            """Bind two run views to the same stopped physical ETL, without changing old v1."""
+            if self._tool_identity() != tool_identity:
+                raise SuiteError('acceptance tool source changed during shared capture')
+            primary = first.get('capture') or {}
+            probe_files = second.pop('_shared_probe_files', None)
+            if not isinstance(probe_files, list) or not probe_files:
+                raise SuiteError('shared second probe did not close and export')
+            physical_names = {'pktmon.etl', 'pktmon.txt', 'pktmon-nic.json'}
+            physical = [x for x in primary.get('files', [])
+                        if Path(x['path']).name in physical_names]
+            if len(physical) != 3 or len({Path(x['path']).name for x in physical}) != 3:
+                raise SuiteError('shared physical ETL/text/metadata incomplete')
+            # The owner may already have been popped by finish_capture; its
+            # start record remains immutable beside this attempt.
+            start_path = root / (first['label'] + '-capture-start.json')
+            owner_start = read_json(start_path)
+            if (owner_start.get('physical_owner_id') != nonce + ':pktmon' or
+                    not owner_start.get('etl') or owner_start.get('run_label') != 'run-01'):
+                raise SuiteError('shared capture start owner identity differs')
+            second_start = read_json(root / (second['label'] + '-capture-start.json'))
+            if (not second_start.get('shared_physical') or
+                    second_start.get('physical_owner_id') != owner_start['physical_owner_id'] or
+                    second_start.get('etl') != owner_start['etl']):
+                raise SuiteError('shared second probe owner/ETL differs')
+            second_files = probe_files + physical
+            second['capture'] = {
+                'observation_contract': 'con008-shared-v2', 'label': second['label'],
+                'files': second_files, 'all_components': True,
+                'requested_file_size_mib': owner_start['requested_file_size_mib'],
+                'probe_launcher_pid': second_start['pid'],
+                'probe_path': next((x['path'] for x in probe_files
+                                    if x['path'].endswith('probe.jsonl')), None),
+                'pktmon_path': next(x['path'] for x in physical if x['path'].endswith('pktmon.txt')),
+                'pktmon_etl_path': next(x['path'] for x in physical if x['path'].endswith('pktmon.etl')),
+                'pktmon_nic_path': next(x['path'] for x in physical if x['path'].endswith('pktmon-nic.json')),
+                'pktmon_binding': primary['pktmon_binding'],
+                'pktmon_capture_issues': primary['pktmon_capture_issues'],
+            }
+            primary['observation_contract'] = 'con008-shared-v2'
+            owner = {'schema': 'sst.scenario-physical-capture-owner.v2',
+                     'owner_id': nonce + ':pktmon', 'nonce': nonce,
+                     'scenario_id': scenario_id, 'epoch': attempt,
+                     'capture_contract': self.capture_contract,
+                     'guest_work_root': self.guest_work_root,
+                     'tool_sha256': tool_identity['sha256'],
+                     'physical_files': physical,
+                     'run_ids': [first['run_id'], second['run_id']],
+                     'started_utc': owner_start.get('started'),
+                     'stopped_utc': first.get('capture_stopped_at')}
+            owner_path = evidence.write('physical-capture-owner.json', owner)
+            owner_record = file_record(owner_path, self.root)
+            for run, start in ((first, owner_start), (second, second_start)):
+                probe_record = next((x for x in run['capture']['files']
+                                     if x['path'] == run['capture']['probe_path']), None)
+                if probe_record is None:
+                    raise SuiteError('shared run probe file absent')
+                view = {'schema': 'sst.scenario-run-capture-view.v2',
+                        'owner': owner_record, 'owner_id': owner['owner_id'],
+                        'scenario_id': scenario_id, 'attempt': attempt,
+                        'run_id': run['run_id'], 'label': run['label'],
+                        'nonce': nonce, 'capture_run_id': nonce + ':' + run['label'],
+                        'guest_work_root': self.guest_work_root,
+                        'tool_sha256': owner['tool_sha256'],
+                        'probe_pid': start['pid'],
+                        'probe_creation_ticks': start['probe_creation_ticks'],
+                        'probe': probe_record, 'physical_files': physical,
+                        'capture_started_utc': owner['started_utc'],
+                        'capture_stopped_utc': owner['stopped_utc']}
+                path = evidence.write(run['label'] + '-capture-view.json', view)
+                run['capture']['run_view'] = file_record(path, self.root)
+                run['capture']['physical_owner'] = owner_record
+                run['capture']['owner_id'] = owner['owner_id']
+                run['capture_stopped_at'] = owner['stopped_utc']
+            from scenario_capture_view import validate_shared_views
+            validate_shared_views({
+                'scenario_id': scenario_id, 'attempt': attempt,
+                'identity': self.identity.as_dict(),
+                'guest_work_root': self.guest_work_root,
+                'tool_identity': tool_identity,
+                'traffic_evidence': {'nonce': nonce, 'capture_views': [
+                    file_record(root / item['path'], self.root) for item in evidence.items]},
+                'run_chain': [first, second],
+            }, self.root)
 
         try:
             evidence.write('continuation-gate.json', gate)
@@ -4730,7 +5372,16 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             call('load_config', {'name': active}, mutation=True)
             guest = self._guest_scenario_root(scenario_id, attempt)
             first_label = 'run-01'
-            captures[first_label] = self._start_capture_and_probe(guest, runtime_profile, nonce, first_label)
+            try:
+                captures[first_label] = self._start_capture_and_probe(guest, runtime_profile, nonce, first_label)
+            except RecoveredCaptureStart as recovered:
+                retain_recovered_start(first_label, recovered.record)
+                raise SuiteError('first capture start response lost; exact writer closed') from recovered
+            except UnsettledCaptureStart:
+                operation_unsettled = True
+                raise
+            if shared_physical:
+                captures[first_label]['physical_owner_id'] = nonce + ':pktmon'
             evidence.write(first_label + '-capture-start.json', captures[first_label])
             if fault in ('listener_stop', 'diverter_stop', 'child_hang'):
                 fault_evidence['arm'] = self._arm_fault(
@@ -4824,7 +5475,17 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                             captures[first_label], 'stop-window')
                     second_label = 'run-02'
                     if interleave != 'stop-window':
-                        captures[second_label] = self._start_capture_and_probe(guest, runtime_profile, nonce, second_label)
+                        try:
+                            captures[second_label] = (self._start_probe_on_shared_capture(
+                                guest, runtime_profile, nonce, second_label, captures[first_label])
+                                if shared_physical else self._start_capture_and_probe(
+                                    guest, runtime_profile, nonce, second_label))
+                        except RecoveredCaptureStart as recovered:
+                            retain_recovered_start(second_label, recovered.record)
+                            raise SuiteError('second capture start response lost; exact writer closed') from recovered
+                        except UnsettledCaptureStart:
+                            operation_unsettled = True
+                            raise
                         evidence.write(second_label + '-capture-start.json', captures[second_label])
                     restart_context, restart_context_raw = self._capture_sections()
                     evidence.write(second_label + '-pre-restart-context.json',
@@ -4954,7 +5615,18 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 # its own run id after both writers closed; a later run's
                 # bytes never stand in for an earlier run.
                 self._collect_runtime_pcaps(runs, root, evidence, runtime_profile)
-                finish_capture(active_run['label'], active_run)
+                try:
+                    finish_capture(active_run['label'], active_run)
+                except UnsettledCaptureStop:
+                    operation_unsettled = True
+                    raise
+                if shared_physical:
+                    try:
+                        finish_capture(first_label, first_run)
+                    except UnsettledCaptureStop:
+                        operation_unsettled = True
+                        raise
+                    seal_shared_capture(first_run, active_run)
                 run_after, run_after_raw = self._capture_sections()
                 active_run['five_sections_after'] = run_after
                 run_difference = self._section_difference(active_run['five_sections_before'], run_after)
@@ -5009,52 +5681,62 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 # stop or any other mutable command while the original start
                 # RPC may still own the controller.  Preserve this explicit
                 # failed attempt for a later human/continuation-gate recovery.
-                cleanup_errors.append('no cleanup mutation: start operation was not terminal')
+                cleanup_errors.append('no cleanup mutation: start/capture ownership was not terminal')
             else:
-                for label, capture in list(captures.items()):
+                pending = list(captures.items())
+                if shared_physical:
+                    pending.sort(key=lambda pair: 0 if pair[1].get('shared_physical') else 1)
+                for label, capture in pending:
                     try:
                         owner = next((item for item in runs if item.get('label') == label), {'label': label})
                         finish_capture(label, owner)
+                    except UnsettledCaptureStop as exc:
+                        operation_unsettled = True
+                        cleanup_errors.append('capture %s unsettled: %r' % (label, exc))
+                        break
                     except Exception as exc:  # noqa: BLE001
                         cleanup_errors.append('capture %s: %r' % (label, exc))
-                try:
-                    current = self._status()
-                    if current.get('state') != 'stopped':
-                        cleanup_mutation('stop-managed-service', 'stop', {})
-                except Exception as exc:  # noqa: BLE001
-                    cleanup_errors.append('service stop: %r' % (exc,))
-                for name in (imported, scratch, active):
+                if operation_unsettled:
+                    cleanup_errors.append('no further cleanup mutation: capture writer retained')
+                else:
                     try:
-                        current = self.service.tool_outcome('read_config', {'name': name})  # type: ignore[union-attr]
-                        value = current.get('value') or {}
-                        if current.get('ok') and not value.get('error'):
-                            cleanup_mutation('delete-' + name, 'delete_config',
-                                             {'name': name, 'expected_sha256': value['sha256']})
+                        current = self._status()
+                        if current.get('state') != 'stopped':
+                            cleanup_mutation('stop-managed-service', 'stop', {})
                     except Exception as exc:  # noqa: BLE001
-                        cleanup_errors.append('config %s: %r' % (name, exc))
-                if fault_mode_attempted:
+                        cleanup_errors.append('service stop: %r' % (exc,))
+                    for name in (imported, scratch, active):
+                        try:
+                            current = self.service.tool_outcome('read_config', {'name': name})  # type: ignore[union-attr]
+                            value = current.get('value') or {}
+                            if current.get('ok') and not value.get('error'):
+                                cleanup_mutation('delete-' + name, 'delete_config',
+                                                 {'name': name, 'expected_sha256': value['sha256']})
+                        except Exception as exc:  # noqa: BLE001
+                            cleanup_errors.append('config %s: %r' % (name, exc))
+                    if fault_mode_attempted:
+                        try:
+                            fault_evidence['terminal_status'] = self._status()
+                            evidence.write('fault-terminal-primary.json', fault_evidence['terminal_status'])
+                        except Exception as exc:
+                            cleanup_errors.append('primary fault terminal capture: %r' % (exc,))
+                        try:
+                            fault_evidence['mode_disabled'] = self._fault_mode(False)
+                            evidence.write('fault-mode-disabled.json', fault_evidence['mode_disabled'])
+                        except Exception as exc:  # noqa: BLE001
+                            cleanup_errors.append('fault-mode restore: %r' % (exc,))
                     try:
-                        fault_evidence['terminal_status'] = self._status()
-                        evidence.write('fault-terminal-primary.json', fault_evidence['terminal_status'])
-                    except Exception as exc:
-                        cleanup_errors.append('primary fault terminal capture: %r' % (exc,))
-                    try:
-                        fault_evidence['mode_disabled'] = self._fault_mode(False)
-                        evidence.write('fault-mode-disabled.json', fault_evidence['mode_disabled'])
+                        after_sections, after_raw = self._capture_sections()
+                        diff = self._section_difference(before_sections or {}, after_sections)
+                        attribution = (self._attribute_section_difference(before_sections or {}, after_sections)
+                                       if diff else None)
+                        evidence.write('five-sections-after.json', {
+                            'sections': after_sections, 'raw': after_raw, 'difference': diff,
+                            'difference_attribution': attribution})
+                        if self._difference_is_residue(diff, attribution):
+                            cleanup_errors.append('five-section environment difference: ' + repr(diff))
                     except Exception as exc:  # noqa: BLE001
-                        cleanup_errors.append('fault-mode restore: %r' % (exc,))
-                try:
-                    after_sections, after_raw = self._capture_sections()
-                    diff = self._section_difference(before_sections or {}, after_sections)
-                    attribution = (self._attribute_section_difference(before_sections or {}, after_sections)
-                                   if diff else None)
-                    evidence.write('five-sections-after.json', {
-                        'sections': after_sections, 'raw': after_raw, 'difference': diff,
-                        'difference_attribution': attribution})
-                    if self._difference_is_residue(diff, attribution):
-                        cleanup_errors.append('five-section environment difference: ' + repr(diff))
-                except Exception as exc:  # noqa: BLE001
-                    cleanup_errors.append('five-section recovery capture: %r' % (exc,))
+                        cleanup_errors.append('five-section recovery capture: %r' % (exc,))
             if sentinel is not None:
                 try:
                     sentinel_evidence = sentinel.stop()
@@ -5166,6 +5848,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         self._write_state(scenario_id, state)
         result = {'schema': SCENARIO_SCHEMA, 'identity': self.identity.as_dict(),
                   'scenario_id': scenario_id, 'state': scenario_state, 'scenario': scenario,
+                  'capture_contract': ('scenario-shared-v2' if shared_physical else 'per-run-v1'),
+                  'guest_work_root': self.guest_work_root,
+                  'tool_identity': tool_identity,
                   'attempt': attempt, 'seed': scenario['seed'], 'interface_calls': calls,
                   'cleanup_calls': cleanup_calls,
                   'traffic_evidence': {'nonce': nonce, 'runtime_profile': runtime_profile,
@@ -5186,11 +5871,11 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
 
     def _probe_image_identity(self) -> dict[str, str]:
         assert self.vm
-        script = GUEST_ROOT + r'\scenario-suite-20260912\scenario_probes.ps1'
+        script = self.guest_work_root + r'\scenario-suite-20260912\scenario_probes.ps1'
         value, _ = self._vm_json(
             "$ErrorActionPreference='Stop';& " + quote_ps(script) + " -Action ensure-client -Output " +
-            quote_ps(GUEST_ROOT + r'\scenario-suite-20260912\probe-client.json') + ";"
-            "Get-Content " + quote_ps(GUEST_ROOT + r'\scenario-suite-20260912\probe-client.json') + " -Raw", 120)
+            quote_ps(self.guest_work_root + r'\scenario-suite-20260912\probe-client.json') + ";"
+            "Get-Content " + quote_ps(self.guest_work_root + r'\scenario-suite-20260912\probe-client.json') + " -Raw", 120)
         required = ('path', 'sha256', 'public_ipv4', 'private_ipv4')
         if any(not value.get(key) for key in required):
             raise Blocked('B3 probe executable identity incomplete')
@@ -5466,6 +6151,12 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         runtime = traffic.get('runtime_profile')
         if not isinstance(nonce, str) or not isinstance(runtime, dict):
             return ['traffic recheck lacks nonce/runtime profile']
+        if result.get('capture_contract', 'per-run-v1') == 'scenario-shared-v2':
+            try:
+                from scenario_capture_view import validate_shared_views
+                validate_shared_views(result, self.root)
+            except (ValueError, KeyError, OSError) as exc:
+                return ['shared capture view invalid: ' + str(exc)]
         if traffic.get('auxiliary_clock_evidence', 'utc-v1') != getattr(
                 self, 'auxiliary_clock_evidence', 'utc-v1'):
             return ['traffic auxiliary clock evidence mode differs from requested mode']
@@ -5500,7 +6191,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         for run in result.get('run_chain') or []:
             if run.get('start_response', {}).get('state') != 'healthy':
                 continue
-            if run.get('capture', {}).get('observation_contract') != 'con008':
+            if run.get('capture', {}).get('observation_contract') not in ('con008', 'con008-shared-v2'):
                 issues.append('current execution cannot downgrade application observation contract')
                 continue
             verdict = self._traffic_oracle(run, runtime, nonce, sentinel)
@@ -5672,6 +6363,21 @@ def result_issues(result: dict[str, Any], root: Path) -> list[str]:
         issue = bound_file(item, 'capture-view')
         if issue:
             failures.append(issue)
+    if result.get('capture_contract', 'per-run-v1') == 'scenario-shared-v2':
+        tool = result.get('tool_identity') or {}
+        if (result.get('guest_work_root') not in (GUEST_ROOT, E_GUEST_WORK_ROOT) or
+                tool.get('schema') != 'sst.acceptance-tool-set.v1' or
+                not isinstance(tool.get('files'), dict) or
+                tool.get('sha256') != digest(tool['files'])):
+            failures.append('shared capture work root/tool identity missing')
+        try:
+            from scenario_capture_view import validate_shared_views
+            validate_shared_views(result, root)
+        except (ValueError, KeyError, OSError, TypeError) as exc:
+            failures.append('shared capture view invalid: ' + str(exc))
+    elif any((run.get('capture') or {}).get('observation_contract') == 'con008-shared-v2'
+             for run in result.get('run_chain') or []):
+        failures.append('shared run view without versioned capture contract')
     runs = result.get('run_chain') or []
     if not runs:
         failures.append('run chain missing')
@@ -5900,6 +6606,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # values already exercised by the master's capacity contrast runs.
     parser.add_argument('--pktmon-file-size-mib', type=int, choices=(128, 1024),
                         default=128)
+    parser.add_argument('--capture-contract', choices=CAPTURE_CONTRACTS,
+                        default='per-run-v1')
+    parser.add_argument('--guest-work-root', choices=(GUEST_ROOT, E_GUEST_WORK_ROOT),
+                        default=GUEST_ROOT)
     parser.add_argument('--native-clock-diagnostic', action='store_true',
                         help='capture optional boot/process/QPC identity without changing verdicts')
     parser.add_argument('--fault-clock-evidence', choices=('utc-v2', QPC_MODE), default='utc-v2',
