@@ -3,7 +3,7 @@ import unittest
 from unittest import mock
 
 from dnslib import (A, CNAME, CLASS, DNSHeader, DNSQuestion, DNSRecord,
-                    QTYPE, RCODE, RR)
+                    NS, QTYPE, RCODE, RR)
 
 from fakenet.listeners import DNSListener as dns_module
 from fakenet.listeners.DNSListener import DNSHandler
@@ -82,6 +82,252 @@ class DnsPolicyTests(unittest.TestCase):
             ('api.deepseek.com', (('93.184.216.34', 10),)),
             self.callbacks.leases)
         self.assertEqual([20, 10], [rr.ttl for rr in response.rr])
+
+    def test_related_nameserver_glue_is_stripped_without_changing_lease(self):
+        # Constructed from the later R05 resolver observation, not the P7 wire.
+        upstream = DNSRecord(
+            DNSHeader(id=99, qr=1, ra=1), q=self.request.q)
+        upstream.add_answer(RR('api.deepseek.com', QTYPE.CNAME, ttl=20,
+                               rdata=CNAME('api.deepseek.com.eo.dnse1.com')))
+        upstream.add_answer(RR('api.deepseek.com.eo.dnse1.com', QTYPE.A,
+                               ttl=30, rdata=A('93.184.216.34')))
+        upstream.add_auth(RR('com', QTYPE.NS, ttl=100,
+                             rdata=NS('a.gtld-servers.net')))
+        upstream.add_ar(RR('a.gtld-servers.net', QTYPE.A, ttl=1,
+                           rdata=A('8.8.4.4')))
+
+        packed = self.handler._validate_and_synthesize(
+            self.request, upstream, 'api.deepseek.com',
+            'api.deepseek.com', self.callbacks, self.settings)
+
+        response = DNSRecord.parse(packed)
+        self.assertEqual(7, response.header.id)
+        self.assertEqual([QTYPE.CNAME, QTYPE.A],
+                         [rr.rtype for rr in response.rr])
+        self.assertEqual([20, 20], [rr.ttl for rr in response.rr])
+        self.assertEqual([], response.auth)
+        self.assertEqual([], response.ar)
+        self.assertEqual(('api.deepseek.com',
+                          (('93.184.216.34', 20),)), self.callbacks.leases)
+        self.assertIsNone(self.callbacks.alias)
+        self.assertEqual(['DNS_LEASE_ADD'],
+                         [event for event, _ in self.callbacks.events])
+
+    def test_root_nameserver_glue_is_stripped(self):
+        upstream = DNSRecord(DNSHeader(id=99, qr=1, ra=1), q=self.request.q)
+        upstream.add_answer(RR('api.deepseek.com', QTYPE.A, ttl=30,
+                               rdata=A('93.184.216.34')))
+        upstream.add_auth(RR('.', QTYPE.NS, ttl=100,
+                             rdata=NS('a.root-servers.net')))
+        upstream.add_ar(RR('a.root-servers.net', QTYPE.A, ttl=1,
+                           rdata=A('8.8.4.4')))
+
+        response = DNSRecord.parse(self.handler._validate_and_synthesize(
+            self.request, upstream, 'api.deepseek.com',
+            'api.deepseek.com', self.callbacks, self.settings))
+
+        self.assertEqual(['93.184.216.34'],
+                         [str(rr.rdata) for rr in response.rr])
+        self.assertEqual([], response.auth)
+        self.assertEqual([], response.ar)
+        self.assertEqual(('api.deepseek.com',
+                          (('93.184.216.34', 30),)), self.callbacks.leases)
+
+    def test_related_cname_ancestor_glue_does_not_change_multiple_a_ttls(self):
+        upstream = DNSRecord(DNSHeader(id=99, qr=1, ra=1), q=self.request.q)
+        upstream.add_answer(RR('api.deepseek.com', QTYPE.CNAME, ttl=25,
+                               rdata=CNAME('edge.example.net')))
+        upstream.add_answer(RR('edge.example.net', QTYPE.A, ttl=30,
+                               rdata=A('93.184.216.34')))
+        upstream.add_answer(RR('edge.example.net', QTYPE.A, ttl=10,
+                               rdata=A('8.8.8.8')))
+        upstream.add_auth(RR('example.net', QTYPE.NS, ttl=1,
+                             rdata=NS('ns.example.net')))
+        upstream.add_ar(RR('ns.example.net', QTYPE.A, ttl=1,
+                           rdata=A('8.8.4.4')))
+
+        response = DNSRecord.parse(self.handler._validate_and_synthesize(
+            self.request, upstream, 'api.deepseek.com',
+            'api.deepseek.com', self.callbacks, self.settings))
+
+        self.assertEqual([25, 25, 10], [rr.ttl for rr in response.rr])
+        self.assertEqual([], response.auth)
+        self.assertEqual([], response.ar)
+        self.assertEqual(('api.deepseek.com',
+                          (('93.184.216.34', 25), ('8.8.8.8', 10))),
+                         self.callbacks.leases)
+        self.assertEqual(2, len(self.callbacks.events))
+
+    def test_unrelated_section_addresses_and_cnames_have_no_side_effects(self):
+        for section, rr in (
+                ('auth', RR('attacker.example', QTYPE.A, ttl=10,
+                            rdata=A('8.8.4.4'))),
+                ('auth', RR('attacker.example', QTYPE.CNAME, ttl=10,
+                            rdata=CNAME('edge.example.net'))),
+                ('ar', RR('attacker.example', QTYPE.A, ttl=10,
+                          rdata=A('8.8.4.4'))),
+                ('ar', RR('attacker.example', QTYPE.CNAME, ttl=10,
+                          rdata=CNAME('edge.example.net')))):
+            with self.subTest(section=section, rtype=rr.rtype):
+                upstream = DNSRecord(
+                    DNSHeader(id=99, qr=1, ra=1), q=self.request.q)
+                upstream.add_answer(RR('api.deepseek.com', QTYPE.A, ttl=10,
+                                       rdata=A('93.184.216.34')))
+                getattr(upstream, 'add_' + section)(rr)
+                callbacks = Callbacks()
+                with self.assertRaises(ValueError):
+                    self.handler._validate_and_synthesize(
+                        self.request, upstream, 'api.deepseek.com',
+                        'api.deepseek.com', callbacks, self.settings)
+                self.assertIsNone(callbacks.leases)
+                self.assertIsNone(callbacks.alias)
+                self.assertEqual([], callbacks.events)
+
+    def test_only_exact_glue_of_strict_label_ancestor_can_be_stripped(self):
+        for ns_owner, ns_target, additional_owner, additional_ip in (
+                ('evil.com', 'ns.example.net', 'ns.example.net', '8.8.4.4'),
+                ('seek.com', 'ns.example.net', 'ns.example.net', '8.8.4.4'),
+                ('api.deepseek.com', 'ns.example.net', 'ns.example.net',
+                 '8.8.4.4'),
+                ('com', 'ns.example.net', 'other.example.net', '8.8.4.4'),
+                ('com', 'api.deepseek.com', 'api.deepseek.com', '8.8.4.4'),
+                ('com', 'ns.example.net', 'ns.example.net', '10.0.0.1')):
+            with self.subTest(ns_owner=ns_owner, ns_target=ns_target,
+                              additional_owner=additional_owner,
+                              additional_ip=additional_ip):
+                upstream = DNSRecord(
+                    DNSHeader(id=99, qr=1, ra=1), q=self.request.q)
+                upstream.add_answer(RR('api.deepseek.com', QTYPE.A, ttl=10,
+                                       rdata=A('93.184.216.34')))
+                upstream.add_auth(RR(ns_owner, QTYPE.NS, ttl=10,
+                                     rdata=NS(ns_target)))
+                upstream.add_ar(RR(additional_owner, QTYPE.A, ttl=10,
+                                   rdata=A(additional_ip)))
+                callbacks = Callbacks()
+                with self.assertRaises(ValueError):
+                    self.handler._validate_and_synthesize(
+                        self.request, upstream, 'api.deepseek.com',
+                        'api.deepseek.com', callbacks, self.settings)
+                self.assertIsNone(callbacks.leases)
+                self.assertIsNone(callbacks.alias)
+                self.assertEqual([], callbacks.events)
+
+    def test_structurally_forged_nameserver_glue_is_discarded_not_authorized(self):
+        upstream = DNSRecord(DNSHeader(id=99, qr=1, ra=1), q=self.request.q)
+        upstream.add_answer(RR('api.deepseek.com', QTYPE.A, ttl=20,
+                               rdata=A('93.184.216.34')))
+        upstream.add_auth(RR('com', QTYPE.NS, ttl=10,
+                             rdata=NS('forged.example.net')))
+        upstream.add_ar(RR('forged.example.net', QTYPE.A, ttl=10,
+                           rdata=A('8.8.4.4')))
+
+        response = DNSRecord.parse(self.handler._validate_and_synthesize(
+            self.request, upstream, 'api.deepseek.com',
+            'api.deepseek.com', self.callbacks, self.settings))
+
+        self.assertEqual(['93.184.216.34'],
+                         [str(rr.rdata) for rr in response.rr])
+        self.assertEqual([], response.auth)
+        self.assertEqual([], response.ar)
+        self.assertEqual(('api.deepseek.com',
+                          (('93.184.216.34', 20),)), self.callbacks.leases)
+        self.assertIsNone(self.callbacks.alias)
+        self.assertEqual(['DNS_LEASE_ADD'],
+                         [event for event, _ in self.callbacks.events])
+
+    def test_glue_cannot_shadow_terminal_cname_owner(self):
+        upstream = DNSRecord(DNSHeader(id=99, qr=1, ra=1), q=self.request.q)
+        upstream.add_answer(RR('api.deepseek.com', QTYPE.CNAME, ttl=20,
+                               rdata=CNAME('edge.example.net')))
+        upstream.add_answer(RR('edge.example.net', QTYPE.A, ttl=20,
+                               rdata=A('93.184.216.34')))
+        upstream.add_auth(RR('com', QTYPE.NS, ttl=10,
+                             rdata=NS('edge.example.net')))
+        upstream.add_ar(RR('edge.example.net', QTYPE.A, ttl=10,
+                           rdata=A('8.8.4.4')))
+
+        with self.assertRaises(ValueError):
+            self.handler._validate_and_synthesize(
+                self.request, upstream, 'api.deepseek.com',
+                'api.deepseek.com', self.callbacks, self.settings)
+        self.assertIsNone(self.callbacks.leases)
+        self.assertIsNone(self.callbacks.alias)
+        self.assertEqual([], self.callbacks.events)
+
+    def test_unrelated_additional_after_glue_rejects_entire_response(self):
+        upstream = DNSRecord(DNSHeader(id=99, qr=1, ra=1), q=self.request.q)
+        upstream.add_answer(RR('api.deepseek.com', QTYPE.A, ttl=20,
+                               rdata=A('93.184.216.34')))
+        upstream.add_auth(RR('com', QTYPE.NS, ttl=10,
+                             rdata=NS('ns.example.net')))
+        upstream.add_ar(RR('ns.example.net', QTYPE.A, ttl=10,
+                           rdata=A('8.8.4.4')))
+        upstream.add_ar(RR('attacker.example', QTYPE.A, ttl=10,
+                           rdata=A('8.8.8.8')))
+
+        with self.assertRaises(ValueError):
+            self.handler._validate_and_synthesize(
+                self.request, upstream, 'api.deepseek.com',
+                'api.deepseek.com', self.callbacks, self.settings)
+        self.assertIsNone(self.callbacks.leases)
+        self.assertIsNone(self.callbacks.alias)
+        self.assertEqual([], self.callbacks.events)
+
+    def test_glue_cannot_fill_missing_answer_or_change_cname_only_alias(self):
+        upstream = DNSRecord(DNSHeader(id=99, qr=1, ra=1), q=self.request.q)
+        upstream.add_auth(RR('com', QTYPE.NS, ttl=10,
+                             rdata=NS('ns.example.net')))
+        upstream.add_ar(RR('ns.example.net', QTYPE.A, ttl=10,
+                           rdata=A('8.8.4.4')))
+        with self.assertRaises(ValueError):
+            self.handler._validate_and_synthesize(
+                self.request, upstream, 'api.deepseek.com',
+                'api.deepseek.com', self.callbacks, self.settings)
+        self.assertIsNone(self.callbacks.leases)
+        self.assertIsNone(self.callbacks.alias)
+        self.assertEqual([], self.callbacks.events)
+
+        upstream.add_answer(RR('api.deepseek.com', QTYPE.CNAME, ttl=20,
+                               rdata=CNAME('edge.example.net')))
+        response = DNSRecord.parse(self.handler._validate_and_synthesize(
+            self.request, upstream, 'api.deepseek.com',
+            'api.deepseek.com', self.callbacks, self.settings))
+        self.assertEqual([QTYPE.CNAME], [rr.rtype for rr in response.rr])
+        self.assertEqual([], response.auth)
+        self.assertEqual([], response.ar)
+        self.assertIsNone(self.callbacks.leases)
+        self.assertEqual(('api.deepseek.com', 'edge.example.net', 20),
+                         self.callbacks.alias)
+        self.assertEqual([], self.callbacks.events)
+
+    def test_invalid_answer_chain_with_glue_has_no_side_effects(self):
+        for extra_rr in (
+                RR('api.deepseek.com', QTYPE.CNAME, ttl=10,
+                   rdata=CNAME('other.example.net')),
+                RR('unrelated.example.net', QTYPE.A, ttl=10,
+                   rdata=A('8.8.8.8'))):
+            with self.subTest(extra_owner=str(extra_rr.rname),
+                              extra_type=extra_rr.rtype):
+                upstream = DNSRecord(
+                    DNSHeader(id=99, qr=1, ra=1), q=self.request.q)
+                upstream.add_answer(RR('api.deepseek.com', QTYPE.CNAME,
+                                       ttl=20,
+                                       rdata=CNAME('edge.example.net')))
+                upstream.add_answer(RR('edge.example.net', QTYPE.A,
+                                       ttl=20, rdata=A('93.184.216.34')))
+                upstream.add_answer(extra_rr)
+                upstream.add_auth(RR('com', QTYPE.NS, ttl=10,
+                                     rdata=NS('ns.example.net')))
+                upstream.add_ar(RR('ns.example.net', QTYPE.A, ttl=10,
+                                   rdata=A('8.8.4.4')))
+                callbacks = Callbacks()
+                with self.assertRaises(ValueError):
+                    self.handler._validate_and_synthesize(
+                        self.request, upstream, 'api.deepseek.com',
+                        'api.deepseek.com', callbacks, self.settings)
+                self.assertIsNone(callbacks.leases)
+                self.assertIsNone(callbacks.alias)
+                self.assertEqual([], callbacks.events)
 
     def test_additional_address_injection_is_rejected(self):
         upstream = DNSRecord(

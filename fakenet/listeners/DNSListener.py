@@ -405,7 +405,7 @@ class DNSHandler():
                                  allowed_root, callbacks, settings):
         cnames = {}
         addresses = {}
-        for rr in upstream.auth + upstream.ar:
+        for rr in upstream.auth:
             if rr.rtype in (QTYPE.A, QTYPE.CNAME):
                 raise ValueError('address injection outside answer section')
         for rr in upstream.rr:
@@ -437,6 +437,25 @@ class DNSHandler():
         if any(owner not in relevant for owner in cnames) or any(
                 owner != current for owner in addresses):
             raise ValueError('unrelated DNS answer owner')
+
+        # NS records only identify additional glue to discard. They never
+        # supply an answer, alias, lease, or response record.
+        glue_names = set()
+        for rr in upstream.auth:
+            if rr.rtype == QTYPE.NS:
+                owner = self._norm_name(rr.rname)
+                if any(name != owner and (not owner or
+                       name.endswith('.' + owner)) for name in relevant):
+                    glue_names.add(self._norm_name(rr.rdata.label))
+        for rr in upstream.ar:
+            if rr.rtype == QTYPE.CNAME:
+                raise ValueError('address injection outside answer section')
+            if rr.rtype == QTYPE.A:
+                owner = self._norm_name(rr.rname)
+                address = ipaddress.ip_address(str(rr.rdata))
+                if (owner not in glue_names or owner in relevant or
+                        address.version != 4 or not address.is_global):
+                    raise ValueError('address injection outside answer section')
 
         response = DNSRecord(DNSHeader(
             id=request.header.id, qr=1, aa=0, ra=1,
