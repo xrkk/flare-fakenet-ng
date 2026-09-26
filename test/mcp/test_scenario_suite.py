@@ -419,6 +419,9 @@ def _b1_sni_oracle_fixture(root, *, handshake_sni='example.com', deny_sni=None,
              'src': '192.168.204.233:50160', 'actual_dst': '119.188.175.46:443'},
             {'event': 'case_close', 'nonce': nonce, 'case_index': 3, 'connection_id': 'case-3',
              'pid': 777, 'utc_ticks': ticks(3, 38, 54, 900)},
+            {'event': 'case_connect_attempt', 'nonce': nonce, 'case_index': 4,
+             'connection_id': 'case-4', 'pid': 777, 'utc_ticks': ticks(3, 38, 56, 50),
+             'src': '0.0.0.0:50161'},
             {'event': 'case_established', 'nonce': nonce, 'case_index': 4,
              'connection_id': 'case-4', 'pid': 777, 'utc_ticks': ticks(3, 38, 56, 100),
              'src': '192.168.204.233:50161', 'actual_dst': '119.188.175.46:443'},
@@ -636,6 +639,9 @@ def test_sni_mismatch_binding_rebuilds_from_real_originals_online_and_offline():
                 {'event': 'close', 'nonce': nonce, 'connection_id': 'main', 'pid': 7948,
                  'utc_ticks': ticks(1, 48, 12, 100)},
                 {'event': 'cases_released', 'nonce': nonce, 'phase': 'after-healthy', 'count': 4},
+                {'event': 'case_connect_attempt', 'nonce': nonce, 'case_index': 4,
+                 'connection_id': 'case-4', 'pid': 7948, 'utc_ticks': ticks(1, 48, 55, 100),
+                 'src': '0.0.0.0:50161'},
                 {'event': 'case_established', 'nonce': nonce, 'case_index': 4,
                  'connection_id': 'case-4', 'pid': 7948, 'utc_ticks': ticks(1, 48, 55, 300),
                  'src': '192.168.204.233:50161', 'actual_dst': '119.188.175.46:443'},
@@ -2349,3 +2355,170 @@ def test_native_deny_rejects_wrong_identity_and_duplicate(tmp_path):
         tmp_path / 'run.log', 2, ('192.168.204.233', '50161'),
         ('119.188.175.46', '443'), 'example.com',
         {'etw_connect_upper_ns': lo, 'etw_terminal_lower_ns': lo + 10_000_000}) is None
+
+
+@pytest.mark.parametrize(('allow_stamp', 'allow_ip', 'expected', 'variant'), [
+    (None, None, True, None),
+    ('2026-09-27 00:15:03,028', '111.32.200.78', False, None),
+    ('2026-09-27 00:15:03,050', '111.32.200.78', False, None),
+    ('2026-09-27 00:15:03,061', '111.32.200.78', False, None),
+    ('2026-09-27 00:15:03,113', '111.32.200.78', False, None),
+    ('2026-09-27 00:15:03,115', '111.32.200.78', True, None),
+    ('2026-09-27 00:15:01,695', '111.32.200.78', True, None),
+    ('2026-09-27 00:15:03,428', '111.32.200.78', True, None),
+    ('2026-09-27 00:15:03,028', '111.32.200.79', True, None),
+    ('unparseable', '111.32.200.78', False, None),
+    ('2026-99-27 00:15:03,028', '111.32.200.78', False, None),
+    ('2026-09-27 00:15:01,695', '111.32.200.78', False, 'missing-attempt'),
+    ('2026-09-27 00:15:03,428', '111.32.200.78', False, 'inverted-probe'),
+    ('2026-09-27 00:15:03,428', '111.32.200.78', False, 'wrong-probe-pid'),
+    (None, None, False, 'wrong-native-generation'),
+    (None, None, False, 'unsupported-native-clock'),
+])
+def test_native_short_sni_allow_requires_disjoint_possible_connection(
+        tmp_path, allow_stamp, allow_ip, expected, variant):
+    """Portable shape of Spike05 case 4, including its inverted wall bounds."""
+    runner = suite.Suite.__new__(suite.Suite)
+    nonce = 'portable-short-case'
+    connection_id = nonce + '-case-4'
+    source = ('192.168.204.233', '51082')
+    target = ('111.32.200.78', '443')
+    first = {'event': 'case_connect_attempt', 'utc_ticks': 639260361030301951,
+             'nonce': nonce, 'pid': 404, 'case_index': 4,
+             'connection_id': connection_id, 'src': '0.0.0.0:51082'}
+    events = [first,
+              {'event': 'case_tls_handshake_attempt', 'utc_ticks': 639260361030334486,
+               'connection_id': connection_id, 'sni': 'example.com'},
+              {'event': 'case_close', 'utc_ticks': 639260361030827161,
+               'nonce': nonce, 'pid': 404, 'case_index': 4,
+               'connection_id': connection_id}]
+    if variant == 'missing-attempt':
+        events.pop(0)
+    elif variant == 'inverted-probe':
+        events[-1]['utc_ticks'] = first['utc_ticks'] - 1
+    elif variant == 'wrong-probe-pid':
+        events[-1]['pid'] = 999
+    observation = {'schema': 'sst.application-observation.v1',
+                   'nonce': nonce, 'pid': 404, 'case_index': 4,
+                   'connection_id': connection_id,
+                   'src': ':'.join(source), 'dst': ':'.join(target),
+                   'protocol': 'TCP', 'begin_upper_ns': 1790439303048538798,
+                   'end_lower_ns': 1790439303020313601,
+                   'etw_connect_upper_ns': 1790439303032577500,
+                   'etw_terminal_lower_ns': 1790439303035938600}
+    deny = ('2026-09-27 00:15:03,028 INFO Diverter TLS_SNI_DENY '
+            'domain=api.deepseek.com generation=2 original_ip=111.32.200.78 '
+            'original_port=443 reason=ClientHelloError reason_code=sni_mismatch '
+            'sni=example.com sport=51082 src=192.168.204.233')
+    lines = [deny]
+    if allow_stamp:
+        lines.insert(0, allow_stamp + ' INFO Diverter TLS_SNI_ALLOW '
+                     'domain=api.deepseek.com original_ip=' + allow_ip +
+                     ' sni=api.deepseek.com')
+    run_log = '\n'.join(lines) + '\n'
+    path = tmp_path / 'run.log'
+    path.write_text(run_log, encoding='utf-8')
+    native = {'schema': 'fakenetng.relay-native-terminal.v1',
+              'outcome': 'deny', 'reason_code': 'sni_mismatch',
+              'generation': 2, 'src': source[0], 'sport': 51082,
+              'original_ip': target[0], 'original_port': 443,
+              'sni': 'example.com', 'clock': {'supported': True,
+              'filetime_100ns': 134349129030349732}}
+    if variant == 'wrong-native-generation':
+        native['generation'] = 3
+    elif variant == 'unsupported-native-clock':
+        native['clock']['supported'] = False
+    (tmp_path / 'relay-native-events.jsonl').write_text(
+        json.dumps(native) + '\n', encoding='utf-8')
+    _, binding = runner._sni_mismatch_deny_binding(
+        run_log, path, 'run.log', events, first, source, target,
+        {'protocol': 'tls', 'tls_server_name': 'example.com',
+         'host': 'api.deepseek.com'}, observation)
+    assert (binding is not None) is expected
+    if binding:
+        assert binding['contract_version'] == 2
+
+
+@pytest.mark.parametrize(('allow_stamp', 'allow_ip', 'expected', 'variant'), [
+    (None, None, True, None),
+    ('2026-09-27 00:15:03,028', '111.32.200.78', False, None),
+    ('2026-09-27 00:15:03,050', '111.32.200.78', False, None),
+    ('2026-09-27 00:15:02,999', '111.32.200.78', False, None),
+    ('2026-09-27 00:15:02,998', '111.32.200.78', True, None),
+    ('2026-09-27 00:15:04,113', '111.32.200.78', False, None),
+    ('2026-09-27 00:15:04,115', '111.32.200.78', True, None),
+    ('2026-09-27 00:15:03,028', '111.32.200.79', True, None),
+    ('unparseable', '111.32.200.78', False, None),
+    ('2026-99-27 00:15:03,028', '111.32.200.78', False, None),
+    ('2026-09-27 00:15:02,998', '111.32.200.78', False, 'missing-attempt'),
+    ('2026-09-27 00:15:04,115', '111.32.200.78', False, 'duplicate-close'),
+    ('2026-09-27 00:15:04,115', '111.32.200.78', False, 'wrong-close-pid'),
+    ('2026-09-27 00:15:04,115', '111.32.200.78', False, 'inverted-probe'),
+    ('2026-09-27 00:15:02,998', '111.32.200.78', False, 'duplicate-wrong-pid'),
+    ('2026-09-27 00:15:04,115', '111.32.200.78', False, 'duplicate-bad-time'),
+    ('2026-09-27 00:15:02,998', '111.32.200.78', False, 'bad-attempt-time'),
+])
+def test_wall_sni_allow_uses_same_outer_bounds_as_native(
+        tmp_path, allow_stamp, allow_ip, expected, variant):
+    """Long connection: DENY fits the wall inner bounds, ALLOW needs outer ones."""
+    runner = suite.Suite.__new__(suite.Suite)
+    nonce = 'portable-long-case'
+    connection_id = nonce + '-case-4'
+    source = ('192.168.204.233', '51082')
+    target = ('111.32.200.78', '443')
+    attempt = {'event': 'case_connect_attempt', 'utc_ticks': 639260361030301951,
+               'nonce': nonce, 'pid': 404, 'case_index': 4,
+               'connection_id': connection_id, 'src': '0.0.0.0:51082'}
+    first = {'event': 'case_established', 'utc_ticks': 639260361030329137,
+             'nonce': nonce, 'pid': 404, 'case_index': 4,
+             'connection_id': connection_id, 'src': ':'.join(source)}
+    events = [attempt, first,
+              {'event': 'case_tls_handshake_attempt', 'utc_ticks': 639260361030334486,
+               'connection_id': connection_id, 'sni': 'example.com'},
+              {'event': 'case_error', 'utc_ticks': 639260361040814667,
+               'connection_id': connection_id},
+              {'event': 'case_close', 'utc_ticks': 639260361040827161,
+               'nonce': nonce, 'pid': 404, 'case_index': 4,
+               'connection_id': connection_id}]
+    if variant == 'missing-attempt':
+        events.remove(attempt)
+    elif variant == 'duplicate-close':
+        events.append(dict(events[-1]))
+    elif variant == 'wrong-close-pid':
+        events[-1]['pid'] = 999
+    elif variant == 'inverted-probe':
+        events[-1]['utc_ticks'] = attempt['utc_ticks'] - 1
+    elif variant == 'duplicate-wrong-pid':
+        events.append(dict(attempt, pid=999))
+    elif variant == 'duplicate-bad-time':
+        duplicate = dict(events[-1])
+        duplicate.pop('utc_ticks')
+        events.append(duplicate)
+    elif variant == 'bad-attempt-time':
+        attempt['utc_ticks'] = 'unparseable'
+    observation = {'schema': 'sst.application-observation.v1',
+                   'nonce': nonce, 'pid': 404, 'case_index': 4,
+                   'connection_id': connection_id,
+                   'src': ':'.join(source), 'dst': ':'.join(target),
+                   'protocol': 'TCP', 'begin_upper_ns': 1790439303048538798,
+                   'end_lower_ns': 1790439304020313601}
+    deny = ('2026-09-27 00:15:03,100 INFO Diverter TLS_SNI_DENY '
+            'domain=api.deepseek.com generation=2 original_ip=111.32.200.78 '
+            'original_port=443 reason=ClientHelloError reason_code=sni_mismatch '
+            'sni=example.com sport=51082 src=192.168.204.233')
+    lines = [deny]
+    if allow_stamp:
+        lines.insert(0, allow_stamp + ' INFO Diverter TLS_SNI_ALLOW '
+                     'domain=api.deepseek.com original_ip=' + allow_ip +
+                     ' sni=api.deepseek.com')
+    run_log = '\n'.join(lines) + '\n'
+    path = tmp_path / 'run.log'
+    path.write_text(run_log, encoding='utf-8')
+    _, binding = runner._sni_mismatch_deny_binding(
+        run_log, path, 'run.log', events, first, source, target,
+        {'protocol': 'tls', 'tls_server_name': 'example.com',
+         'host': 'api.deepseek.com'}, observation)
+    assert (binding is not None) is expected
+    if binding:
+        assert binding['contract_version'] == 1
+        assert binding['native_deny'] is None

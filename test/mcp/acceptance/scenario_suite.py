@@ -2298,9 +2298,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 and isinstance(case_observation.get('begin_upper_ns'), int)
                 and isinstance(case_observation.get('end_lower_ns'), int)):
             return None, None
-        rows = [row for row in case_events
-                if row.get('connection_id') == first.get('connection_id')
-                and isinstance(row.get('utc_ticks'), int)]
+        case_rows = [row for row in case_events
+                     if row.get('connection_id') == first.get('connection_id')]
+        rows = [row for row in case_rows if isinstance(row.get('utc_ticks'), int)]
         handshake = next((row for row in rows
                           if row.get('event') == 'case_tls_handshake_attempt'), None)
         if not rows or not handshake or handshake.get('sni') != planned_sni:
@@ -2308,8 +2308,6 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         # Frozen conservative clock rule shared with the application
         # observation: resolution 15,625,000ns, uncertainty resolution-1.
         uncertainty = 15625000 - 1
-        case_upper_ns = max(row['utc_ticks'] for row in rows) - 621355968000000000
-        case_upper_ns *= 100
         begin_bound = case_observation['begin_upper_ns']
         end_bound = case_observation['end_lower_ns']
 
@@ -2317,32 +2315,12 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             stamp = re.match(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),(\d{3}) ', line)
             if not stamp:
                 return None
-            base = dt.datetime.strptime(stamp[1], '%Y-%m-%d %H:%M:%S') - dt.timedelta(hours=8)
+            try:
+                base = dt.datetime.strptime(stamp[1], '%Y-%m-%d %H:%M:%S') - dt.timedelta(hours=8)
+            except ValueError:
+                return None
             delta = base - dt.datetime(1970, 1, 1)
             return (delta.days * 86400 + delta.seconds) * 10**9 + int(stamp[2]) * 10**6
-
-        # Real product TLS_SNI_ALLOW rows carry no client identity.  A
-        # relevant record (same original destination) can only be excluded
-        # when its conservative interval is provably disjoint from this
-        # case's own connection bounds; otherwise the attribution stays
-        # ambiguous and the case fails.
-        for line in run_log.splitlines():
-            if 'TLS_SNI_ALLOW ' not in line:
-                continue
-            fields = self._log_fields(line)
-            if fields.get('src') and fields.get('sport'):
-                if fields.get('src') == source[0] and fields.get('sport') == source[1]:
-                    return None, None
-                continue
-            if fields.get('original_ip') != target[0]:
-                continue
-            moment = line_ns(line)
-            if moment is None:
-                return None, None
-            if (moment - uncertainty > case_upper_ns + uncertainty
-                    or moment + uncertainty < begin_bound):
-                continue
-            return None, None
 
         matched: tuple[str, dict[str, str], int] | None = None
         for line in run_log.splitlines():
@@ -2391,6 +2369,50 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         if matched is None:
             return None, None
         line, fields, generation, native = matched
+        # In either deny path the wall begin/end are inner containment bounds,
+        # so neither proves that an ALLOW happened outside the connection.
+        # The probe records connect_attempt before BeginConnect and case_close
+        # after the case's TLS work.  Their same-identity UTC ticks supply the
+        # outer bounds used only for ALLOW disambiguation.
+        outer_start = outer_end = None
+        attempts = [row for row in case_rows
+                    if row.get('event') == 'case_connect_attempt']
+        closes = [row for row in case_rows if row.get('event') == 'case_close']
+        if len(attempts) == len(closes) == 1:
+            attempt, close = attempts[0], closes[0]
+            start_tick, end_tick = attempt.get('utc_ticks'), close.get('utc_ticks')
+            if (type(start_tick) is int and type(end_tick) is int
+                    and all(row.get('nonce') == first.get('nonce')
+                            and row.get('pid') == first.get('pid')
+                            and row.get('case_index') == first.get('case_index')
+                            for row in (attempt, close))
+                    and attempt.get('src') in (':'.join(source), '0.0.0.0:' + source[1])
+                    and start_tick <= end_tick):
+                outer_start = (start_tick - 621355968000000000) * 100 - uncertainty
+                outer_end = (end_tick - 621355968000000000) * 100 + uncertainty
+
+        # Identity-free ALLOW can be ignored only when its whole uncertain
+        # interval is disjoint from the possible connection interval.  This
+        # check does not establish either version's positive DENY containment.
+        for allow_line in run_log.splitlines():
+            if 'TLS_SNI_ALLOW ' not in allow_line:
+                continue
+            allow_fields = self._log_fields(allow_line)
+            if allow_fields.get('src') and allow_fields.get('sport'):
+                if (allow_fields.get('src') == source[0]
+                        and allow_fields.get('sport') == source[1]):
+                    return None, None
+                continue
+            if allow_fields.get('original_ip') != target[0]:
+                continue
+            allow_ns = line_ns(allow_line)
+            if allow_ns is None:
+                return None, None
+            if (outer_start is not None and outer_end is not None
+                    and (allow_ns + uncertainty < outer_start
+                         or allow_ns - uncertainty > outer_end)):
+                continue
+            return None, None
         raw = log_path.read_bytes()
         needle = line.encode('utf-8')
         offset = raw.find(needle)
