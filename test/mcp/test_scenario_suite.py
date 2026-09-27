@@ -2522,3 +2522,43 @@ def test_wall_sni_allow_uses_same_outer_bounds_as_native(
     if binding:
         assert binding['contract_version'] == 1
         assert binding['native_deny'] is None
+
+
+def test_exit_driven_stop_window_receipt_precedes_new_start():
+    base = 621355968000000000 + 1_000_000_000_000
+    nonce, cid = 'sst-038-test', 'sst-038-test-1'
+    events = [
+        {'event': 'ready', 'nonce': nonce, 'pid': 99, 'creation_ticks': 123, 'utc_ticks': base - 1},
+        {'event': 'managed_exit_observer_ready', 'nonce': nonce, 'managed_pid': 47,
+         'utc_ticks': base},
+        {'event': 'connect_attempt', 'nonce': nonce, 'connection_id': cid,
+         'src': '192.168.204.233:50116', 'dst': '198.51.100.77:443', 'utc_ticks': base + 1000000},
+        {'event': 'send', 'nonce': nonce, 'connection_id': cid, 'utc_ticks': base + 2500000},
+        {'event': 'close_requested', 'nonce': nonce, 'connection_id': cid,
+         'utc_ticks': base + 3500000},
+        {'event': 'close_completed', 'nonce': nonce, 'connection_id': cid,
+         'utc_ticks': base + 3600000},
+        {'event': 'close', 'nonce': nonce, 'connection_id': cid, 'utc_ticks': base + 3700000},
+        {'event': 'managed_exit_observed', 'nonce': nonce, 'managed_pid': 47,
+         'utc_ticks': base + 3800000},
+        {'event': 'finished', 'nonce': nonce, 'utc_ticks': base + 3900000},
+    ]
+    events = [dict(row, pid=99) for row in events]
+    new_start = (base + 4000000 - 621355968000000000) / 10_000_000
+    check = suite.Suite._check_exit_driven_order
+    assert check(events, nonce, 47, 99, 123, new_start, base + 2000000, base + 3000000)['stop_window_send_count'] == 1
+    for changed, message in (
+        ([dict(e, utc_ticks=base + 4100000) if e['event'] == 'close_completed' else e
+          for e in events], 'did not precede'),
+        ([e for e in events if e['event'] != 'close_completed'], 'close receipt'),
+        ([e for e in events if e['event'] != 'send'], 'no real send'),
+        ([dict(e, managed_pid=48) if e['event'] == 'managed_exit_observer_ready' else e
+          for e in events], 'incomplete'),
+        ([dict(e, src='192.168.204.234:50116') if e['event'] == 'connect_attempt' else e
+          for e in events], 'exact guest tuple'),
+    ):
+        with pytest.raises(suite.SuiteError, match=message):
+            check(changed, nonce, 47, 99, 123, new_start, base + 2000000, base + 3000000)
+    with pytest.raises(suite.SuiteError, match='did not precede'):
+        check(events, nonce, 47, 99, 123, (base + 3800000 - 621355968000000000) / 10_000_000,
+              base + 2000000, base + 3000000)

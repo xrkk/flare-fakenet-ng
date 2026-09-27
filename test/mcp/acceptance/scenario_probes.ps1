@@ -17,6 +17,7 @@ param(
     [string]$Output,
     [string]$StopFile,
     [string]$StartFile,
+    [string]$ExitControlFile,
     [ValidateSet('hold', 'burst', 'stagger', 'drip', 'overlap')]
     [string]$Tempo = 'hold',
     [string]$Variant = 'baseline',
@@ -61,6 +62,56 @@ public static class ScenarioProbeClock {
     }
 }
 '@
+}
+
+# A process HANDLE, rather than a repeatedly resolved PID, is the wait target.
+# The retained Process object owns it until the probe has closed its socket.
+if (-not ('ScenarioExitWatch' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Threading;
+public static class ScenarioExitWatch {
+    [DllImport("kernel32.dll", SetLastError=true)]
+    private static extern uint WaitForMultipleObjects(uint count, IntPtr[] handles, bool all, uint milliseconds);
+    public static int Wait(Process process, WaitHandle io, int milliseconds) {
+        uint result = WaitForMultipleObjects(2,
+            new IntPtr[] { process.Handle, io.SafeWaitHandle.DangerousGetHandle() },
+            false, (uint)milliseconds);
+        if (result == 0) return 0;  // old process exited
+        if (result == 1) return 1;  // connect completed
+        if (result == 258) return 2; // bounded timeout
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "managed-exit/connect wait failed");
+    }
+}
+'@
+}
+
+function Open-ManagedExitWatch([string]$Control, [string]$Path, [string]$Token) {
+    if (-not (Test-Path -LiteralPath $Control)) { throw 'managed exit control is missing' }
+    $identity = Get-Content -LiteralPath $Control -Raw -ErrorAction Stop | ConvertFrom-Json
+    if ($identity.nonce -ne $Token -or -not $identity.run_id -or
+        [int]$identity.pid -le 0 -or [long]$identity.creation_filetime -le 0) {
+        throw 'managed exit control identity is invalid'
+    }
+    $process = Get-Process -Id ([int]$identity.pid) -ErrorAction Stop
+    try {
+        $handle = $process.Handle
+        $actual = $process.StartTime.ToUniversalTime().ToFileTimeUtc()
+        if ([long]$actual -ne [long]$identity.creation_filetime) {
+            throw 'managed exit process creation identity mismatch'
+        }
+        if ($process.WaitForExit(0)) { throw 'old managed process exited before observer ready' }
+        Write-JsonLine $Path @{ event = 'managed_exit_observer_ready'; nonce = $Token;
+            run_id = $identity.run_id; managed_pid = [int]$identity.pid;
+            managed_creation_filetime = [long]$identity.creation_filetime }
+        return $process
+    } catch {
+        $process.Dispose()
+        throw
+    }
 }
 
 function Write-JsonLine([string]$Path, [hashtable]$Value) {
@@ -793,7 +844,7 @@ function Invoke-PositiveCurl([string]$Path, [string]$Token) {
     Write-JsonLine $Path @{ event = 'curl_completed'; nonce = $Token; pid = $process.Id; exit_code = $process.ExitCode; http_code = "$out".Trim(); stderr = "$err".Trim(); url = $uri }
 }
 
-function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]$Stop, [string]$Start, [int]$Seconds, [string]$Tempo, [string]$Variant, [string]$Interleave, [int]$Cadence, [string]$TargetHost, [int]$TargetPort, [string]$TargetProtocol, [string]$ProcessMode, [string]$TlsServerName, [string]$FnprRole, [string]$AdditionalTargetsJson, [string]$CaseFile, [int]$StartupRetrySeconds) {
+function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]$Stop, [string]$Start, [int]$Seconds, [string]$Tempo, [string]$Variant, [string]$Interleave, [int]$Cadence, [string]$TargetHost, [int]$TargetPort, [string]$TargetProtocol, [string]$ProcessMode, [string]$TlsServerName, [string]$FnprRole, [string]$AdditionalTargetsJson, [string]$CaseFile, [int]$StartupRetrySeconds, [string]$ExitControlFile) {
     Ensure-Output $Path
     $endpoint = Get-Endpoint $Bucket $TargetHost $TargetPort $TargetProtocol
     $sequence = 0
@@ -960,15 +1011,42 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
         Write-JsonLine $Path @{ event = 'finished'; nonce = $Token }
         return
     }
+    if ($ExitControlFile -and ($Bucket -ne 'B3' -or $Interleave -ne 'stop-window' -or $ProcessMode -ne 'nonmatch' -or $endpoint.protocol -ne 'tcp')) {
+        throw 'managed exit control is limited to B3 nonmatch TCP stop-window'
+    }
+    $managedExit = if ($ExitControlFile) { Open-ManagedExitWatch $ExitControlFile $Path $Token } else { $null }
+    $exitDetected = $false
+    try {
     while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path $Stop)) {
+        if ($managedExit -and $managedExit.WaitForExit(0)) { $exitDetected = $true; break }
         Invoke-ReleasedCases
         $sequence++
         $connection = "${Token}-${sequence}"
         $client = [Net.Sockets.TcpClient]::new()
         try {
-            Write-JsonLine $Path @{ event = 'connect_attempt'; nonce = $Token; connection_id = $connection; seq = $sequence; dst = "$($endpoint.host):$($endpoint.port)" }
+            if ($managedExit) {
+                $client.Client.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Parse('192.168.204.233'), 0))
+                $client.SendTimeout = 500
+                $client.ReceiveTimeout = 500
+            }
+            $localAttempt = if ($client.Client.LocalEndPoint) { $client.Client.LocalEndPoint.ToString() } else { $null }
+            Write-JsonLine $Path @{ event = 'connect_attempt'; nonce = $Token; connection_id = $connection; seq = $sequence; src = $localAttempt; dst = "$($endpoint.host):$($endpoint.port)" }
+            # Record intent before the socket can emit a SYN. The exit-driven
+            # branch has a source tuple because it bound the socket above.
+            # If the record fails, catch/finally closes the unconnected socket.
             $async = $client.BeginConnect($endpoint.host, [int]$endpoint.port, $null, $null)
-            if (-not $async.AsyncWaitHandle.WaitOne(10000)) { throw [TimeoutException]::new('connect timeout') }
+            if ($managedExit) {
+                $remaining = 10000
+                while ($remaining -gt 0) {
+                    if (Test-Path -LiteralPath $Stop) { throw 'probe stop control cancelled connect' }
+                    $slice = [Math]::Min(100, $remaining)
+                    $waitResult = [ScenarioExitWatch]::Wait($managedExit, $async.AsyncWaitHandle, $slice)
+                    if ($waitResult -eq 0) { $exitDetected = $true; throw [OperationCanceledException]::new('old managed process exited during connect') }
+                    if ($waitResult -eq 1) { break }
+                    $remaining -= $slice
+                }
+                if ($remaining -le 0) { throw [TimeoutException]::new('connect timeout') }
+            } elseif (-not $async.AsyncWaitHandle.WaitOne(10000)) { throw [TimeoutException]::new('connect timeout') }
             $client.EndConnect($async)
             $local = $client.Client.LocalEndPoint.ToString()
             $remote = $client.Client.RemoteEndPoint.ToString()
@@ -988,6 +1066,7 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
                 $ssl.AuthenticateAsClient($sni)
                 $requestOrdinal = 0
                 while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path $Stop)) {
+                    if ($managedExit -and $managedExit.WaitForExit(0)) { $exitDetected = $true; break }
                     Invoke-ReleasedCases
                     $requestOrdinal++
                     # The connection may use a reviewed IP while TLS names a
@@ -997,12 +1076,14 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
                     $ssl.Write($bytes, 0, $bytes.Length)
                     $ssl.Flush()
                     Write-JsonLine $Path @{ event = 'request_sent'; nonce = $Token; connection_id = $connection; seq = $sequence; ordinal = $requestOrdinal; cadence_ms = $cadenceMs; bytes = $bytes.Length; http_host = $sni }
-                    Start-Sleep -Milliseconds $cadenceMs
+                    if ($managedExit) { if ($managedExit.WaitForExit($cadenceMs)) { $exitDetected = $true; break } }
+                    else { Start-Sleep -Milliseconds $cadenceMs }
                 }
                 $ssl.Dispose()
             } else {
                 $bytes = if ($FnprRole) { [Text.Encoding]::ASCII.GetBytes("FNPR/1|$Token|$FnprRole`n") } else { [Text.Encoding]::ASCII.GetBytes("SST-$Token-$sequence ") }
                 while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path $Stop)) {
+                    if ($managedExit -and $managedExit.WaitForExit(0)) { $exitDetected = $true; break }
                     Invoke-ReleasedCases
                     $client.GetStream().Write($bytes, 0, $bytes.Length)
                     Write-JsonLine $Path @{ event = 'send'; nonce = $Token; connection_id = $connection; seq = $sequence; cadence_ms = $cadenceMs; bytes = $bytes.Length; fnpr_role = $FnprRole }
@@ -1010,18 +1091,31 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
                         $client.ReceiveTimeout = 3000;$buffer = New-Object byte[] 512;$read = $client.GetStream().Read($buffer, 0, $buffer.Length);$reply = [Text.Encoding]::ASCII.GetString($buffer, 0, $read)
                         Write-JsonLine $Path @{ event = 'response'; nonce = $Token; connection_id = $connection; seq = $sequence; response = $reply; fnpr_role = $FnprRole }
                     }
-                    Start-Sleep -Milliseconds $cadenceMs
+                    if ($managedExit) { if ($managedExit.WaitForExit($cadenceMs)) { $exitDetected = $true; break } }
+                    else { Start-Sleep -Milliseconds $cadenceMs }
                 }
             }
         } catch {
-            Write-JsonLine $Path @{ event = 'error'; nonce = $Token; connection_id = $connection; seq = $sequence; error_type = $_.Exception.GetType().Name; message = $_.Exception.Message }
+            # A signaled old-process HANDLE is the expected cancellation
+            # path. The finally block still proves the actual socket close.
+            if (-not ($exitDetected -and $_.Exception -is [OperationCanceledException])) {
+                Write-JsonLine $Path @{ event = 'error'; nonce = $Token; connection_id = $connection; seq = $sequence; error_type = $_.Exception.GetType().Name; message = $_.Exception.Message }
+            }
+            if ($managedExit -and $_.Exception -is [ComponentModel.Win32Exception]) { throw }
         } finally {
+            try {
+                if ($managedExit) { Write-JsonLine $Path @{ event = 'close_requested'; nonce = $Token; connection_id = $connection; seq = $sequence } }
+            } finally { $client.Dispose() }
+            if ($managedExit) { Write-JsonLine $Path @{ event = 'close_completed'; nonce = $Token; connection_id = $connection; seq = $sequence } }
             Write-JsonLine $Path @{ event = 'close'; nonce = $Token; connection_id = $connection; seq = $sequence }
-            $client.Dispose()
         }
-        Start-Sleep -Milliseconds $betweenMs
+        if ($exitDetected) { break }
+        if ($managedExit) { if ($managedExit.WaitForExit($betweenMs)) { $exitDetected = $true; break } }
+        else { Start-Sleep -Milliseconds $betweenMs }
     }
+    if ($exitDetected) { Write-JsonLine $Path @{ event = 'managed_exit_observed'; nonce = $Token; managed_pid = $managedExit.Id } }
     Write-JsonLine $Path @{ event = 'finished'; nonce = $Token }
+    } finally { if ($managedExit) { $managedExit.Dispose() } }
 }
 
 switch ($Action) {
@@ -1038,6 +1132,6 @@ switch ($Action) {
     }
     'traffic' {
         if (-not $Output -or -not $Nonce -or -not $StopFile -or -not $StartFile) { throw '-Output, -Nonce, -StopFile and -StartFile are required for traffic' }
-        Invoke-Traffic $Profile $Output $Nonce $StopFile $StartFile $HoldSeconds $Tempo $Variant $Interleave $CadenceMilliseconds $TargetHost $TargetPort $TargetProtocol $ProcessMode $TlsServerName $FnprRole $AdditionalTargetsJson $CaseFile $StartupRetrySeconds
+        Invoke-Traffic $Profile $Output $Nonce $StopFile $StartFile $HoldSeconds $Tempo $Variant $Interleave $CadenceMilliseconds $TargetHost $TargetPort $TargetProtocol $ProcessMode $TlsServerName $FnprRole $AdditionalTargetsJson $CaseFile $StartupRetrySeconds $ExitControlFile
     }
 }

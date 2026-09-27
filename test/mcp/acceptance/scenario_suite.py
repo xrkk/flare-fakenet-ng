@@ -1929,7 +1929,7 @@ class Suite:
             "|ConvertTo-Json -Depth 6 -Compress}")
 
     def _start_capture_and_probe(self, guest: str, profile: dict[str, Any], nonce: str,
-                                 run_label: str) -> dict[str, Any]:
+                                 run_label: str, *, exit_driven: bool = False) -> dict[str, Any]:
         """Start one independent pktmon/probe chain for exactly one run."""
         assert self.vm
         script = self.guest_work_root + r'\scenario-suite-20260912\scenario_probes.ps1'
@@ -1947,6 +1947,13 @@ class Suite:
             FnprRole=profile['probe_target'].get('fnpr_role', ''),
             AdditionalTargetsJson=json.dumps(list(profile.get('negative_cases', ())) + list(profile.get('probe_cases', ())), separators=(',', ':')),
             StartupRetrySeconds=int(profile.get('startup_retry_seconds', 70)))
+        if exit_driven:
+            if (run_label != 'run-01' or profile['bucket'] != 'B3' or
+                    profile['interleave'] != 'stop-window' or
+                    profile['probe_target'].get('process_mode') != 'nonmatch' or
+                    profile['probe_target']['protocol'] != 'tcp'):
+                raise SuiteError('exit-driven stop is limited to run-01 B3 nonmatch TCP stop-window')
+            params['ExitControlFile'] = run_root + r'\probe.managed-exit.json'
         if self.native_clock_diagnostic:
             params.update(CaptureRunId=capture_run_id,
                           CandidateId=self.identity.candidate_id,
@@ -1958,7 +1965,7 @@ class Suite:
         encoded_child = base64.b64encode(child.encode('utf-16le')).decode('ascii')
         command = (
             "$ErrorActionPreference='Stop';$captureStarted=$false;$pktmonStartAttempted=$false;$probeCreateAttempted=$false;$p=$null;try{$g=" + quote_ps(guest) + ";$r=Join-Path $g " + quote_ps(run_label) +
-            ";foreach($n in @('probe.jsonl','probe.stop','probe.start','probe.cases','pktmon.etl','pktmon-nic.json'))"
+            ";foreach($n in @('probe.jsonl','probe.stop','probe.start','probe.cases','probe.managed-exit.json','pktmon.etl','pktmon-nic.json'))"
             "{if(Test-Path -LiteralPath (Join-Path $r $n)){throw ('capture file collision: '+$n)}};"
             "$etl=Join-Path $r 'pktmon.etl';$nic=Join-Path $r 'pktmon-nic.json';"
             "$list=(& pktmon list|Out-String);if($LASTEXITCODE -ne 0){throw 'pktmon list failed'};"
@@ -2003,7 +2010,7 @@ class Suite:
             "if(!(Test-Path $out) -or $p.HasExited){throw ('probe did not become ready: '+(Get-Content $stderr -Raw -ErrorAction SilentlyContinue))};"
             "$ready=Get-Content $out -TotalCount 1|ConvertFrom-Json;if($ready.event -ne 'ready' -or [int]$ready.pid -ne $p.Id -or [long]$ready.creation_ticks -ne $p.StartTime.ToUniversalTime().Ticks){throw 'probe ready identity mismatch'};"
             "@{guest=$r;run_label=" + quote_ps(run_label) + ";pid=$p.Id;etl=$etl;probe=$out;start=$start;case=$cases;stop=$stop;pktmon_nic=$nic;probe_creation_ticks=$ready.creation_ticks;stdout=$stdout;stderr=$stderr;pktmon_status_before=$running;pktmon_start_output=$pktmonStart;capture_scope='all-components';requested_file_size_mib="
-            + str(self.pktmon_file_size_mib) + ";tempo=" + quote_ps(profile['tempo']) + ";cadence_ms=" + str(int(profile['cadence_ms'])) + ";startup_retry_seconds=" + str(int(profile.get('startup_retry_seconds', 70))) + ";variant=" + quote_ps(profile['variant']) + ";probe_target=" + quote_ps(json.dumps(profile['probe_target'], separators=(',', ':'))) + ";interleave=" + quote_ps(profile['interleave']) + ";started=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress}" + (self._shared_start_failure_ps() if self.capture_contract == 'scenario-shared-v2' else "catch{$failure=[string]$_;$cleanup=@();$coop=$null;$err2=@();$launchPidOut=$launchPid;$launchCreationOut=$launchCreation;if($stop){try{if(-not (Test-Path $stop)){[IO.File]::WriteAllText($stop,'stop',[Text.UTF8Encoding]::new($false))}}catch{$err2+=('stopfile: '+[string]$_)}};$procInfo=$null;try{$procInfo=Get-Process -Id $launchPidOut -ErrorAction SilentlyContinue}catch{$err2+=('query: '+[string]$_)};$actualCreation=$null;try{if($null -ne $procInfo){$actualCreation=$procInfo.StartTime.ToUniversalTime().Ticks}}catch{$err2+=('identity-read: '+[string]$_)};if($null -eq $procInfo){$coop='exited'}elseif(-not $launchCreationOut -or $launchCreationOut -le 0){$coop='identity-unknown';$err2+=('identity-unknown: no launch creation recorded')}elseif($null -eq $actualCreation){$coop='identity-unknown';$err2+=('identity-unknown: process present but creation unreadable')}elseif($actualCreation -ne $launchCreationOut){$coop='identity-mismatch(new process not touched)'}else{try{$deadlineW=[Diagnostics.Stopwatch]::StartNew();while(-not $procInfo.HasExited -and $deadlineW.ElapsedMilliseconds -lt 30000){Start-Sleep -Milliseconds 200};if($procInfo.HasExited){$coop='exited'}else{$coop='timeout'}}catch{$err2+=('wait: '+[string]$_);if(-not $coop){$coop='wait-error'}}};if($captureStarted){try{$captureStop=(& pktmon stop|Out-String);if($LASTEXITCODE -ne 0){$cleanup+='pktmon stop exit '+$LASTEXITCODE}}catch{$cleanup+='pktmon stop error: '+[string]$_}}else{$cleanup+='pktmon not started; no capture cleanup owed'};@{startup_failed=$true;error=$failure;cleanup_errors=$cleanup;cooperative_errors=$err2;capture_started=$captureStarted;guest=$r;cooperative_exit=$coop;probe_pid=$launchPidOut;probe_creation_ticks=$launchCreationOut}|ConvertTo-Json -Compress}"))
+            + str(self.pktmon_file_size_mib) + ";tempo=" + quote_ps(profile['tempo']) + ";cadence_ms=" + str(int(profile['cadence_ms'])) + ";startup_retry_seconds=" + str(int(profile.get('startup_retry_seconds', 70))) + ";variant=" + quote_ps(profile['variant']) + ";probe_target=" + quote_ps(json.dumps(profile['probe_target'], separators=(',', ':'))) + ";interleave=" + quote_ps(profile['interleave']) + ";exit_control=" + quote_ps(params.get('ExitControlFile', '')) + ";started=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json -Compress}" + (self._shared_start_failure_ps() if self.capture_contract == 'scenario-shared-v2' else "catch{$failure=[string]$_;$cleanup=@();$coop=$null;$err2=@();$launchPidOut=$launchPid;$launchCreationOut=$launchCreation;if($stop){try{if(-not (Test-Path $stop)){[IO.File]::WriteAllText($stop,'stop',[Text.UTF8Encoding]::new($false))}}catch{$err2+=('stopfile: '+[string]$_)}};$procInfo=$null;try{$procInfo=Get-Process -Id $launchPidOut -ErrorAction SilentlyContinue}catch{$err2+=('query: '+[string]$_)};$actualCreation=$null;try{if($null -ne $procInfo){$actualCreation=$procInfo.StartTime.ToUniversalTime().Ticks}}catch{$err2+=('identity-read: '+[string]$_)};if($null -eq $procInfo){$coop='exited'}elseif(-not $launchCreationOut -or $launchCreationOut -le 0){$coop='identity-unknown';$err2+=('identity-unknown: no launch creation recorded')}elseif($null -eq $actualCreation){$coop='identity-unknown';$err2+=('identity-unknown: process present but creation unreadable')}elseif($actualCreation -ne $launchCreationOut){$coop='identity-mismatch(new process not touched)'}else{try{$deadlineW=[Diagnostics.Stopwatch]::StartNew();while(-not $procInfo.HasExited -and $deadlineW.ElapsedMilliseconds -lt 30000){Start-Sleep -Milliseconds 200};if($procInfo.HasExited){$coop='exited'}else{$coop='timeout'}}catch{$err2+=('wait: '+[string]$_);if(-not $coop){$coop='wait-error'}}};if($captureStarted){try{$captureStop=(& pktmon stop|Out-String);if($LASTEXITCODE -ne 0){$cleanup+='pktmon stop exit '+$LASTEXITCODE}}catch{$cleanup+='pktmon stop error: '+[string]$_}}else{$cleanup+='pktmon not started; no capture cleanup owed'};@{startup_failed=$true;error=$failure;cleanup_errors=$cleanup;cooperative_errors=$err2;capture_started=$captureStarted;guest=$r;cooperative_exit=$coop;probe_pid=$launchPidOut;probe_creation_ticks=$launchCreationOut}|ConvertTo-Json -Compress}"))
         kernel = self._start_kernel_capture(run_root)
         response_received = False
         try:
@@ -2049,6 +2056,7 @@ class Suite:
                 value.get('guest') != run_root or value.get('run_label') != run_label or
                 value.get('etl') != run_root + r'\pktmon.etl' or
                 value.get('probe') != run_root + r'\probe.jsonl' or
+                (exit_driven and value.get('exit_control') != params['ExitControlFile']) or
                 not isinstance(value.get('pid'), int) or value['pid'] <= 0 or
                 not isinstance(value.get('probe_creation_ticks'), int) or
                 value['probe_creation_ticks'] <= 0):
@@ -2258,6 +2266,127 @@ class Suite:
             "@{phase=" + quote_ps(phase) + ";path=$p;released_utc=[DateTimeOffset]::UtcNow.ToString('o');bytes=(Get-Item $p).Length}|ConvertTo-Json -Compress", 60)
         value['raw'] = raw
         return value
+
+    def _arm_managed_exit_probe(self, capture: dict[str, Any], run_id: str,
+                                nonce: str) -> dict[str, Any]:
+        """Bind the old managed HANDLE before releasing run-01 stop traffic."""
+        if not capture.get('exit_control') or not run_id:
+            raise SuiteError('managed exit observer has no owned control or run')
+        creation = ('C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs\\' +
+                    run_id + r'\creation.jsonl')
+        command = (
+            "$ErrorActionPreference='Stop';$rows=@(Get-Content -LiteralPath " + quote_ps(creation) +
+            "|ForEach-Object {$_|ConvertFrom-Json}|Where-Object {$_.stage -eq 'after_api' -and $_.run_id -eq " + quote_ps(run_id) + "});"
+            "if($rows.Count -ne 1 -or $null -eq $rows[0].child){throw 'managed creation identity missing or ambiguous'};"
+            "$pid0=[int]$rows[0].child.pid;$created=[long]$rows[0].child.creation_time;"
+            "$p=Get-Process -Id $pid0 -ErrorAction Stop;try{$handle=$p.Handle;"
+            "if($p.StartTime.ToUniversalTime().ToFileTimeUtc() -ne $created -or $p.WaitForExit(0)){throw 'old managed identity changed or exited'};"
+            "$value=@{run_id=" + quote_ps(run_id) + ";nonce=" + quote_ps(nonce) +
+            ";pid=$pid0;creation_filetime=$created};$path=" + quote_ps(capture['exit_control']) + ";"
+            "if(Test-Path -LiteralPath $path){throw 'managed exit control collision'};"
+            "[IO.File]::WriteAllText($path,($value|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false));"
+            "$value|ConvertTo-Json -Compress}finally{$p.Dispose()}")
+        value, raw = self._vm_json(command, 60)
+        value['raw'] = raw
+        return value
+
+    def _await_managed_exit_observer(self, capture: dict[str, Any],
+                                     armed: dict[str, Any], nonce: str) -> dict[str, Any]:
+        """Do not submit restart until the exact handle observer is ready and traffic began."""
+        command = (
+            "$ErrorActionPreference='Stop';$path=" + quote_ps(capture['probe']) + ";"
+            "$deadline=[DateTime]::UtcNow.AddSeconds(20);$ready=$null;$attempt=$null;"
+            "while([DateTime]::UtcNow -lt $deadline){"
+            "$rows=@(Get-Content -LiteralPath $path -ErrorAction Stop|ForEach-Object {try{$_|ConvertFrom-Json}catch{$null}}|Where-Object {$_});"
+            "$ready=@($rows|Where-Object {$_.event -eq 'managed_exit_observer_ready' -and $_.nonce -eq " + quote_ps(nonce) + "});"
+            "$attempt=@($rows|Where-Object {$_.event -eq 'connect_attempt' -and $_.nonce -eq " + quote_ps(nonce) + "});"
+            "if(@($rows|Where-Object {$_.event -eq 'finished' -or $_.event -eq 'managed_exit_observed'}).Count -gt 0){throw 'probe ended before restart'};"
+            "if($ready.Count -eq 1 -and $attempt.Count -gt 0){break};Start-Sleep -Milliseconds 50};"
+            "if($ready.Count -ne 1 -or $attempt.Count -eq 0){throw 'managed exit observer/traffic not ready before restart'};"
+            "if([int]$ready[0].managed_pid -ne " + str(int(armed['pid'])) +
+            " -or [long]$ready[0].managed_creation_filetime -ne " + str(int(armed['creation_filetime'])) +
+            " -or $ready[0].run_id -ne " + quote_ps(armed['run_id']) +
+            "){throw 'managed exit observer identity differs'};"
+            "$probe=Get-Process -Id " + str(int(capture['pid'])) + " -ErrorAction Stop;try{$handle=$probe.Handle;"
+            "if($probe.StartTime.ToUniversalTime().Ticks -ne " + str(int(capture['probe_creation_ticks'])) +
+            " -or $probe.WaitForExit(0)){throw 'probe identity changed or exited before restart'}}finally{$probe.Dispose()};"
+            "@{observer_ready=$ready[0];first_attempt=$attempt[0];observed_utc=[DateTimeOffset]::UtcNow.ToString('o')}|ConvertTo-Json -Depth 6 -Compress")
+        value, raw = self._vm_json(command, 35)
+        value['raw'] = raw
+        return value
+
+    def _managed_run_creation(self, run_id: str) -> dict[str, Any]:
+        creation = ('C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs\\' +
+                    run_id + r'\creation.jsonl')
+        value, raw = self._vm_json(
+            "$ErrorActionPreference='Stop';$rows=@(Get-Content -LiteralPath " + quote_ps(creation) +
+            "|ForEach-Object {$_|ConvertFrom-Json}|Where-Object {$_.stage -eq 'before_job' -and $_.run_id -eq " + quote_ps(run_id) + "});"
+            "if($rows.Count -ne 1){throw 'new run before_job is missing or ambiguous'};"
+            "@{run_id=" + quote_ps(run_id) + ";before_job_unix_seconds=[double]$rows[0].time}|ConvertTo-Json -Compress", 60)
+        value['raw'] = raw
+        return value
+
+    def _managed_stop_window(self, run_id: str) -> dict[str, Any]:
+        log = ('C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs\\' +
+               run_id + r'\run.log')
+        command = (
+            "$ErrorActionPreference='Stop';$lines=@(Get-Content -LiteralPath " + quote_ps(log) + ");"
+            "$begin=@($lines|Where-Object {$_ -match 'INFO FakeNet STOP_PHASE_BEGIN phase=complete'});"
+            "$end=@($lines|Where-Object {$_ -match 'INFO FakeNet STOP_PHASE_END phase=complete'});"
+            "if($begin.Count -ne 1 -or $end.Count -ne 1){throw 'old run stop window ambiguous'};"
+            "$fmt='yyyy-MM-dd HH:mm:ss,fff';$culture=[Globalization.CultureInfo]::InvariantCulture;"
+            "$b=[DateTime]::ParseExact($begin[0].Substring(0,23),$fmt,$culture,[Globalization.DateTimeStyles]::AssumeLocal).ToUniversalTime().Ticks;"
+            "$e=[DateTime]::ParseExact($end[0].Substring(0,23),$fmt,$culture,[Globalization.DateTimeStyles]::AssumeLocal).ToUniversalTime().Ticks;"
+            "if($e -le $b){throw 'old run stop window reversed'};"
+            "@{run_id=" + quote_ps(run_id) + ";begin_ticks=$b;end_ticks=$e;begin=$begin[0];end=$end[0]}|ConvertTo-Json -Compress")
+        value, raw = self._vm_json(command, 60)
+        value['raw'] = raw
+        return value
+
+    @staticmethod
+    def _check_exit_driven_order(events: list[dict[str, Any]], nonce: str,
+                                 managed_pid: int, probe_pid: int,
+                                 probe_creation_ticks: int, new_run_before_job: float,
+                                 stop_begin_ticks: int, stop_end_ticks: int) -> dict[str, Any]:
+        selected = [row for row in events if row.get('nonce') == nonce]
+        probe_ready = [row for row in selected if row.get('event') == 'ready']
+        if (len(probe_ready) != 1 or probe_ready[0].get('pid') != probe_pid or
+                probe_ready[0].get('creation_ticks') != probe_creation_ticks or
+                any(row.get('pid') != probe_pid for row in selected)):
+            raise SuiteError('exit-driven probe PID/creation identity differs')
+        ready = [row for row in selected if row.get('event') == 'managed_exit_observer_ready'
+                 and row.get('managed_pid') == managed_pid]
+        attempts = [row for row in selected if row.get('event') == 'connect_attempt']
+        observed = [row for row in selected if row.get('event') == 'managed_exit_observed'
+                    and row.get('managed_pid') == managed_pid]
+        finished = [row for row in selected if row.get('event') == 'finished']
+        if len(ready) != 1 or not attempts or len(observed) != 1 or len(finished) != 1:
+            raise SuiteError('exit-driven probe observer/attempt/exit/finish evidence incomplete')
+        for attempt in attempts:
+            cid = attempt.get('connection_id')
+            if not cid or not re.fullmatch(r'192\.168\.204\.233:\d+', str(attempt.get('src', ''))):
+                raise SuiteError('exit-driven attempt has no exact guest tuple')
+            requested = [row for row in selected if row.get('connection_id') == cid and
+                         row.get('event') == 'close_requested']
+            closed = [row for row in selected if row.get('connection_id') == cid and
+                      row.get('event') == 'close_completed']
+            if len(requested) != 1 or len(closed) != 1 or not (
+                    attempt['utc_ticks'] <= requested[0]['utc_ticks'] <= closed[0]['utc_ticks']):
+                raise SuiteError('exit-driven socket close receipt missing or out of order')
+        last_closed = max(row['utc_ticks'] for row in selected
+                          if row.get('event') == 'close_completed')
+        new_start_ticks = round(new_run_before_job * 10_000_000 + 621355968000000000)
+        stop_sends = [row for row in selected if row.get('event') == 'send' and
+                      stop_begin_ticks <= row.get('utc_ticks', 0) <= stop_end_ticks]
+        if not stop_sends:
+            raise SuiteError('old probe has no real send in product stop window')
+        if not (ready[0]['utc_ticks'] < attempts[0]['utc_ticks'] and
+                last_closed <= observed[0]['utc_ticks'] <= finished[0]['utc_ticks'] < new_start_ticks):
+            raise SuiteError('old probe close/exit receipt did not precede new managed start')
+        return {'probe_ready': probe_ready[0], 'ready': ready[0], 'first_attempt': attempts[0],
+                'stop_window_send_count': len(stop_sends), 'stop_window': [stop_begin_ticks, stop_end_ticks],
+                'last_close_ticks': last_closed, 'exit_observed': observed[0],
+                'finished': finished[0], 'new_run_before_job_ticks': new_start_ticks}
 
     def _release_probe_cases(self, capture: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any] | None:
         """Release auxiliary policy probes only after this run is healthy.
@@ -5275,6 +5404,11 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         shared_physical = (self.capture_contract == 'scenario-shared-v2' and
                            scenario.get('lifecycle_chain') == 'restart' and
                            runtime_profile['interleave'] != 'stop-window')
+        exit_driven = (scenario.get('lifecycle_chain') == 'restart' and
+                       runtime_profile['interleave'] == 'stop-window' and
+                       runtime_profile['bucket'] == 'B3' and
+                       runtime_profile['probe_target'].get('process_mode') == 'nonmatch' and
+                       runtime_profile['probe_target']['protocol'] == 'tcp')
         if shared_physical:
             # A run view must bind its probe to the native capture identity.
             self.native_clock_diagnostic = True
@@ -5545,7 +5679,10 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             guest = self._guest_scenario_root(scenario_id, attempt)
             first_label = 'run-01'
             try:
-                captures[first_label] = self._start_capture_and_probe(guest, runtime_profile, nonce, first_label)
+                captures[first_label] = (self._start_capture_and_probe(
+                    guest, runtime_profile, nonce, first_label, exit_driven=True)
+                    if exit_driven else self._start_capture_and_probe(
+                        guest, runtime_profile, nonce, first_label))
             except RecoveredCaptureStart as recovered:
                 retain_recovered_start(first_label, recovered.record)
                 raise SuiteError('first capture start response lost; exact writer closed') from recovered
@@ -5643,6 +5780,10 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                         # payload and the cadence chain could never hold
                         # (fakenet100 r09-run-06 sst-038). finish_capture
                         # runs after the restart converges below.
+                        if exit_driven:
+                            first_run['managed_exit_arm'] = self._arm_managed_exit_probe(
+                                captures[first_label], first_run['run_id'], nonce)
+                            evidence.write('run-01-managed-exit-arm.json', first_run['managed_exit_arm'])
                         first_run['probe_release'] = self._release_probe(
                             captures[first_label], 'stop-window')
                     second_label = 'run-02'
@@ -5684,6 +5825,11 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                         # and run-01's oracle found no policy flow).
                         self._run_auxiliary_cases(
                             first_run, captures[first_label], runtime_profile)
+                        if exit_driven:
+                            first_run['managed_exit_observer'] = self._await_managed_exit_observer(
+                                captures[first_label], first_run['managed_exit_arm'], nonce)
+                            evidence.write('run-01-managed-exit-observer.json',
+                                           first_run['managed_exit_observer'])
                     # The product's health loop may be mid-protective-stop at
                     # this instant (before-start probes end their lifecycle
                     # inside the restart window; the internal stop is a
@@ -5714,7 +5860,24 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                         # sst-005: run-02 never got its pktmon.etl). run-02's
                         # active window lies entirely after the restart, so
                         # its capture starts right after this close.
+                        if exit_driven:
+                            first_run['managed_exit_probe_creation_ticks'] = (
+                                captures[first_label]['probe_creation_ticks'])
                         finish_capture(first_label, first_run)
+                        if exit_driven and restarted.get('state') == 'healthy':
+                            creation = self._managed_run_creation(restarted['run_id'])
+                            stop_window = self._managed_stop_window(first_run['run_id'])
+                            evidence.write('run-02-managed-creation-boundary.json', creation)
+                            evidence.write('run-01-managed-stop-window.json', stop_window)
+                            first_run['managed_exit_order'] = self._check_exit_driven_order(
+                                self._read_probe_events(self.root / first_run['capture']['probe_path']),
+                                nonce, first_run['managed_exit_arm']['pid'],
+                                first_run['capture']['probe_launcher_pid'],
+                                first_run['managed_exit_probe_creation_ticks'],
+                                creation['before_job_unix_seconds'],
+                                stop_window['begin_ticks'], stop_window['end_ticks'])
+                            evidence.write('run-01-managed-exit-order.json',
+                                           first_run['managed_exit_order'])
                         captures[second_label] = self._start_capture_and_probe(
                             guest, runtime_profile, nonce, second_label)
                         evidence.write(second_label + '-capture-start.json', captures[second_label])
