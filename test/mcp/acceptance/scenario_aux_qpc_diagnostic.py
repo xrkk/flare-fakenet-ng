@@ -20,7 +20,8 @@ from scenario_qpc_identity import check_aux_provenance
 
 ZERO_TCB_DESCRIPTOR = 'c70500100400ba058000000080000080'
 ZERO_TCB_REASON_MAP = 'TCP_RST_SEND_REASON_ValueMap'
-AUX_STATES = dict(qpc._OBSERVED_STATES, FinWait2=6, CloseWait=7, Closing=8, LastAck=9)
+AUX_STATES = dict(qpc._OBSERVED_STATES, FinWait2=6, CloseWait=7, Closing=8,
+                  LastAck=9, TimeWait=10)
 AUX_EXTRA = {
     'abort issued': (1039, 1, '0f04011004000f048404000010000080', 'TcpAbortTcbRequest'),
     'abort completed': (1040, 1, '10040110040010048404000010000080', 'TcpAbortTcbComplete'),

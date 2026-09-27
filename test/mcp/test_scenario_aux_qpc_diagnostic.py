@@ -13,6 +13,39 @@ import scenario_aux_qpc_diagnostic as aux  # noqa: E402
 from test_scenario_qpc_diagnostic import _twelve  # noqa: E402
 
 
+def test_sst018_native_timewait_closed_keeps_exact_transition_guard():
+    """Run-01 seq 6357: pktmon bytes 4236198..4236552, TDH 10 -> 0."""
+    fixture = json.loads((Path(__file__).parent / 'fixtures' /
+        'sst018-timewait-closed-native.json').read_text(encoding='utf-8'))
+    target, record = fixture['target'], fixture['tdh_record']
+    target['transition'] = tuple(target['transition'])
+    aux.qpc._role(record, target, states=aux.AUX_STATES)
+
+    for pair in (('Unknown', 'Closed'), ('TimeWait', 'Unknown')):
+        wrong = copy.deepcopy(target)
+        wrong['transition'] = pair
+        with pytest.raises(aux.raw_clock.DiagnosticError, match='unverified TCPIP transition state'):
+            aux.qpc._role(record, wrong, states=aux.AUX_STATES)
+    wrong = copy.deepcopy(record)
+    next(x for x in wrong['property_results'] if x['name'] == 'OldState')['raw_base64'] = base64.b64encode((11).to_bytes(4, 'little')).decode()
+    with pytest.raises(aux.raw_clock.DiagnosticError, match='TDH transition state differs'):
+        aux.qpc._role(wrong, target, states=aux.AUX_STATES)
+    for field, value in (('provider', '00000000-0000-0000-0000-000000000000'),
+                         ('id', 1038)):
+        wrong = copy.deepcopy(record)
+        wrong['record'][field] = value
+        with pytest.raises(aux.raw_clock.DiagnosticError, match='descriptor/task'):
+            aux.qpc._role(wrong, target, states=aux.AUX_STATES)
+    wrong = copy.deepcopy(record)
+    wrong['tdh']['parsed']['event_descriptor_bytes'] = '00' * 16
+    with pytest.raises(aux.raw_clock.DiagnosticError, match='descriptor/task'):
+        aux.qpc._role(wrong, target, states=aux.AUX_STATES)
+    wrong = copy.deepcopy(target)
+    wrong['terminal'] = False
+    with pytest.raises(aux.raw_clock.DiagnosticError, match='terminal role changed'):
+        aux.qpc._role(record, wrong, states=aux.AUX_STATES)
+
+
 def test_closing_8_is_auxiliary_only_and_keeps_transition_role():
     targets, records, prop = _twelve()
     target, record = targets[9], records[9]

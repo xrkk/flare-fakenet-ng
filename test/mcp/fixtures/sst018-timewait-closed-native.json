@@ -1,0 +1,73 @@
+{
+  "origin": {
+    "formal_result_sha256": "09a7b59dd90a0d07427842dc651bb1bc466797e15005228b5d8774abd28989d8",
+    "native_tdh_sha256": "bac6f72121bc95851312e0de31847d2ea2f936248cb91ac1079d751f1a5c2488",
+    "selectors_sha256": "de94de6fd877b532416f01b29ecf8f2d8cbd5d4214299a4432b5fa4db6d7aaa9",
+    "pktmon_sha256": "574a70e456496068c11266e8ae04d52f59135c42f975bf915dd239339625a91b",
+    "pktmon_byte_range": [
+      4236198,
+      4236552
+    ],
+    "seq": 6357,
+    "text": "[00]1B2C.17FC::2026-09-28 00:28:33.079797800 [Microsoft-Windows-TCPIP] TCP: connection 0xFFFFDE8FBDDB6A20 transition from TimeWaitState  to ClosedState , SndNxt = 2971815692."
+  },
+  "target": {
+    "kind": "transition",
+    "terminal": true,
+    "transition": [
+      "TimeWait",
+      "Closed"
+    ],
+    "tcb": "0XFFFFDE8FBDDB6A20",
+    "pktmon_ref": {
+      "path": "evidence/sst-018/attempt-01/run-01/pktmon.txt",
+      "byte_start": 4236198,
+      "byte_end": 4236552,
+      "event_key": "text"
+    }
+  },
+  "tdh_record": {
+    "record": {
+      "provider": "2f07e2ee-15db-40f1-90ef-9d7ba282188a",
+      "id": 1051,
+      "task": 1051,
+      "version": 0,
+      "opcode": 0
+    },
+    "tdh": {
+      "parsed": {
+        "provider_guid": "2f07e2ee-15db-40f1-90ef-9d7ba282188a",
+        "event_descriptor_bytes": "1b04001004001b040404000000000080",
+        "strings": {
+          "channel": "Microsoft-Windows-TCPIP/Diagnostic",
+          "event_message": "TCP: connection %4 transition from %1 to %2, SndNxt = %3. ",
+          "keywords": "ut:TcpipTcb",
+          "level": "信息 ",
+          "opcode": "信息 ",
+          "provider": "Microsoft-Windows-TCPIP",
+          "task": "TcpTcbStateChange"
+        }
+      }
+    },
+    "property_results": [
+      {
+        "name": "OldState",
+        "raw_base64": "CgAAAA==",
+        "size_status": 0,
+        "property_status": 0
+      },
+      {
+        "name": "NewState",
+        "raw_base64": "AAAAAA==",
+        "size_status": 0,
+        "property_status": 0
+      },
+      {
+        "name": "Tcb",
+        "raw_base64": "IGrbvY/e//8=",
+        "size_status": 0,
+        "property_status": 0
+      }
+    ]
+  }
+}
