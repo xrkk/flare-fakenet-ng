@@ -30,6 +30,53 @@ def observed(count=2):
             for i in range(count)]}
 
 
+@pytest.mark.parametrize('failure', [False, True])
+def test_native_manifest_is_strict_utf8_under_cp936_default(tmp_path, monkeypatch, failure):
+    """The Windows locale must not decide the bytes of a native proof."""
+    evidence = tmp_path / '证据'
+    evidence.mkdir()
+    source = evidence / '原始.etl'
+    source.write_bytes(b'original ETL')
+    case_path = tmp_path / 'case.json'
+    case_path.write_text(json.dumps({
+        'candidate_id': '候选', 'run_id': '运行', 'nonce': '一次',
+        'files': [{'path': '原始.etl'}],
+        'capture': {'etl_path': '原始.etl'},
+        'timezone': '中国标准时间',
+    }, ensure_ascii=False), encoding='utf-8')
+    monkeypatch.setattr(single, 'export', lambda *_: {'status': 'COMPLETE_DIAGNOSTIC_ONLY'})
+    monkeypatch.setattr(v2.aux, 'run', lambda *_: None)
+
+    def rebuild(*_args, **_kwargs):
+        if failure:
+            raise raw.DiagnosticError('中国标准时间：诊断错误')
+        return {'identity': {'timezone': '中国标准时间'},
+                'cases': [{'timezone': '中国标准时间'}],
+                'single_pass': {'timezone': '中国标准时间'},
+                'legacy_v1_status': '诊断'}
+
+    monkeypatch.setattr(v2, 'rebuild', rebuild)
+    original_write_text = Path.write_text
+
+    def cp936_default(self, data, encoding=None, errors=None, newline=None):
+        return original_write_text(self, data, encoding=encoding or 'cp936',
+                                   errors=errors, newline=newline)
+
+    monkeypatch.setattr(Path, 'write_text', cp936_default)
+    result = v2.run(case_path, evidence, tmp_path / ('失败' if failure else '成功'))
+    manifest_path = tmp_path / ('失败' if failure else '成功') / 'manifest.json'
+    native = json.loads(manifest_path.read_text(encoding='utf-8'))
+    assert native == result
+    assert native['inputs_before'] == native['inputs_after']
+    assert native['inputs_before'][str(source)] == raw.sha_file(source)
+    if failure:
+        assert native['status'] == 'INCOMPLETE'
+        assert '中国标准时间：诊断错误' in native['error']['traceback']
+    else:
+        assert native['status'] == 'COMPLETE_DIAGNOSTIC_ONLY'
+        assert native['identity']['timezone'] == '中国标准时间'
+
+
 def test_identical_non_time_records_retain_both_native_instants():
     result = v2.adjudicate_zeros([zero_row(7, 110), zero_row(8, 120)],
                                  observed(), SRC, DST, 100, 99, 130)

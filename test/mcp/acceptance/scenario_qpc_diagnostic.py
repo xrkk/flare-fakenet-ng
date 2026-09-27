@@ -276,10 +276,11 @@ def run(case_path, evidence_root, output):
         selector_path.write_text(json.dumps({'schema': 'fakenet.t007-r02-tdh-selectors.v1',
             'source_event_count': export['paired_events'],
             'source_etl_sha256': export['input_before']['sha256'],
-            'selectors': selectors}, indent=2) + '\n')
+            'selectors': selectors}, indent=2) + '\n', encoding='utf-8')
         manifest['targets'] = targets
         tdh = tdh_metadata.run(etl, selector_path, output / 'tdh')
-        tdh_rows = [json.loads(line) for line in (output / 'tdh' / 'metadata.jsonl').read_text().splitlines()]
+        tdh_rows = [json.loads(line) for line in
+                    (output / 'tdh' / 'metadata.jsonl').read_text(encoding='utf-8').splitlines()]
         manifest['tdh_semantics'] = validate_tdh_semantics(tdh_rows, targets,
             observed['connect']['tcb'], (observed['peer'] or {}).get('tcb'),
             session['probe_pid'], managed_pid)

@@ -306,7 +306,7 @@ def run(case_path, evidence_root, output):
             manifest['status'] = 'INCOMPLETE'
             manifest['error'] = {'type': 'InputChanged', 'message': 'v2 input changed'}
         (output / 'manifest.json').write_text(json.dumps(manifest, indent=2,
-            ensure_ascii=False, sort_keys=True) + '\n')
+            ensure_ascii=False, sort_keys=True) + '\n', encoding='utf-8')
     return manifest
 
 
@@ -316,7 +316,8 @@ def derive(case_path, evidence_root, export, output):
     proof = rebuild(case_path, evidence_root, export)
     # Bind the final Windows manifest as well as the complete raw graph.
     proof['windows_manifest'] = raw.sha_file(Path(export) / 'manifest.json')
-    (output / 'derived.json').write_text(json.dumps(proof, indent=2, sort_keys=True) + '\n')
+    (output / 'derived.json').write_text(json.dumps(proof, indent=2, sort_keys=True) + '\n',
+                                         encoding='utf-8')
     return proof
 
 

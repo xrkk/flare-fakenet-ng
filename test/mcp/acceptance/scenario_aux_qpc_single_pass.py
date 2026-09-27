@@ -123,7 +123,8 @@ def export(etl, output, *, walk=native_walk):
         if manifest['input_after'] != before:
             manifest['status'] = 'INCOMPLETE'
             manifest['error'] = {'type': 'InputChanged', 'message': 'ETL changed during scan'}
-        (output / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+        (output / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n',
+                                              encoding='utf-8')
     return manifest
 
 
