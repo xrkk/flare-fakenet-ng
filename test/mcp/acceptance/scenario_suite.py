@@ -37,6 +37,7 @@ import urllib.error
 import urllib.request
 import uuid
 import zipfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -3617,22 +3618,326 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
 
     _QUIESCENCE_REFUSAL_MARKER = ('reviewed process image is already '
                                   'running before READY')
+    _ACTIVE_A_REFUSAL_MARKER = ('fakenet.diverters.egresspolicy.PolicyConfigError: '
+                                'an existing TCP row already targets process redirect A')
+
+    @classmethod
+    def _branch_verdict(cls, runs: list[dict[str, Any]], profile: dict[str, Any],
+                        plan_tools: list[str], call_tools: list[str],
+                        fault: str | None) -> tuple[dict[str, Any], bool]:
+        """Keep the approved refusal exception out of pre-existing fault gates."""
+        refusal_recorded = any(item.get('expected_refusal') for item in runs)
+        approved = (not fault and len(runs) == 1 and
+                    runs[0].get('expected_refusal', {}).get('marker') == cls._ACTIVE_A_REFUSAL_MARKER and
+                    runs[0].get('expected_refusal', {}).get('proof', {}).get('kind') ==
+                        'approved-active-a-refusal-v2' and
+                    profile.get('bucket') == 'B3' and
+                    profile.get('interleave') == 'before-start' and
+                    profile.get('probe_target', {}).get('process_mode') == 'nonmatch')
+        return ({
+            'interface_semantics': (call_tools == plan_tools or
+                (refusal_recorded and not approved and
+                 plan_tools[:len(call_tools)] == call_tools)),
+            'per_run_dual_capture': bool(runs) and (
+                (not approved or all(item.get('capture', {}).get('all_components')
+                                     for item in runs)) and
+                all(item.get('capture', {}).get('all_components') and
+                    (not runtime_pcap_required(profile) or item.get('runtime_pcap'))
+                    for item in runs
+                    if item.get('start_response', {}).get('state') == 'healthy')),
+            'traffic_oracle': ('NOT_EXECUTED' if approved else
+                bool(runs) and all(item.get('traffic_oracle', {}).get('passed')
+                                   for item in runs
+                                   if item.get('start_response', {}).get('state') == 'healthy')),
+        }, approved)
+
+    @staticmethod
+    def _scenario_passed(failure: str | None, verdict: dict[str, Any],
+                         approved_refusal: bool) -> bool:
+        if failure is not None:
+            return False
+        if approved_refusal:
+            return (verdict.get('traffic_oracle') == 'NOT_EXECUTED' and
+                    all(value is True for key, value in verdict.items()
+                        if key != 'traffic_oracle'))
+        return all(value is True for value in verdict.values())
 
     def _is_quiescence_refusal_family(self, profile: dict[str, Any]) -> bool:
         target = profile.get('probe_target', {})
         return (profile.get('bucket') == 'B3' and
-                target.get('process_mode') == 'match' and
+                target.get('process_mode') in ('match', 'nonmatch') and
                 profile.get('interleave') == 'before-start')
 
+    @staticmethod
+    def _active_a_refusal_proof(root: Path, profile: dict[str, Any], nonce: str,
+                                run: dict[str, Any]) -> dict[str, Any]:
+        """Bind the approved nonmatch refusal to this attempt's native TCP activity.
+
+        ETW establishes a live PID/tuple during start. The product's exact
+        rejection establishes its MIB decision; ETW cannot identify the unique
+        row read by that decision, and this proof does not claim it can.
+        """
+        root = root.resolve()
+        target = profile.get('probe_target') or {}
+        if (profile.get('bucket'), profile.get('interleave'), target.get('process_mode'),
+                target.get('protocol'), target.get('host'), target.get('port'),
+                target.get('expectation')) != ('B3', 'before-start', 'nonmatch',
+                                               'tcp', '198.51.100.77', 443, 'ordinary_path'):
+            raise ValueError('not the approved B3 nonmatch A tuple')
+        capture = run.get('capture') or {}
+        records = {Path(str(item.get('path', ''))).name: item
+                   for item in capture.get('files') or []}
+        if len(records) != len(capture.get('files') or []):
+            raise ValueError('duplicate native original name')
+        def original(name: str) -> Path:
+            item = records.get(name)
+            if not item:
+                raise ValueError('missing native original: ' + name)
+            path = (root / item['path']).resolve()
+            if (not path.is_relative_to(root.resolve()) or not path.is_file() or
+                    file_record(path, root) != item):
+                raise ValueError('changed native original: ' + name)
+            return path
+        probe_path = original('probe.jsonl')
+        etw_path = original('kernel-network.events.jsonl')
+        original('kernel-network.etl')
+        metadata_path = original('kernel-network.metadata.json')
+        summary_path = original('kernel-network.summary.txt')
+        original('pktmon.etl')
+        pktmon_path = original('pktmon.txt')
+        original('pktmon-nic.json')
+        metadata = read_json(metadata_path)
+        summary = summary_path.read_text(encoding='utf-8-sig', errors='replace')
+        conversion = metadata.get('conversion') or {}
+        if (conversion.get('etl_sha256') != records['kernel-network.etl']['sha256'] or
+                conversion.get('events_sha256') != records['kernel-network.events.jsonl']['sha256'] or
+                conversion.get('tracerpt_exit_code') != 0 or
+                conversion.get('event_reader_exit_code') != 0 or
+                not re.search(r'Total Events\s+Lost\s+0\b', summary)):
+            raise ValueError('native TCP trace is incomplete')
+        if (not capture.get('all_components') or capture.get('pktmon_capture_issues') or
+                not (capture.get('pktmon_binding') or {}).get('component_ids')):
+            raise ValueError('physical capture is incomplete')
+        # The capture-start original is located alongside the bound probe.
+        start_path = probe_path.parent.parent / (run['label'] + '-capture-start.json')
+        start = read_json(start_path)
+        start_target = start.get('probe_target')
+        if isinstance(start_target, str):
+            start_target = json.loads(start_target)
+        events = Suite._read_probe_events(probe_path)
+        ready = [row for row in events if row.get('event') == 'ready']
+        released = [row for row in events if row.get('event') == 'released']
+        if len(ready) != 1 or len(released) != 1:
+            raise ValueError('probe ready/release identity is incomplete')
+        ready, released = ready[0], released[0]
+        pid, creation = ready.get('pid'), ready.get('creation_ticks')
+        native = ready.get('native_identity') or {}
+        if (not isinstance(nonce, str) or not nonce or
+                any(row.get('nonce') != nonce for row in events) or
+                type(pid) is not int or pid <= 0 or type(creation) is not int or creation <= 0 or
+                start.get('nonce') != nonce or start.get('pid') != pid or
+                start.get('probe_creation_ticks') != creation or
+                start.get('capture_run_id') != nonce + ':' + run['label'] or
+                start.get('run_label') != run['label'] or
+                start.get('interleave') != 'before-start' or
+                start_target != target or
+                capture.get('probe_launcher_pid') != pid or
+                native.get('pid') != pid or native.get('nonce') != nonce or
+                native.get('run_id') != nonce + ':' + run['label'] or
+                native.get('creation_filetime_100ns') != creation - 504911232000000000 or
+                ready.get('target_host') != target['host'] or
+                ready.get('target_port') != target['port'] or
+                ready.get('target_protocol') != 'tcp' or
+                ready.get('process_mode') != 'nonmatch' or
+                ready.get('interleave') != 'before-start' or
+                run.get('probe_release', {}).get('phase') != 'before-start'):
+            raise ValueError('probe nonce/PID/creation/A identity differs')
+        def instant(value: str) -> dt.datetime:
+            return dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+        release_at = instant(run['probe_release']['released_utc'])
+        start_end = instant(run['started_at'])
+        failure_at = instant(run.get('refusal_failure_utc') or run['started_at'])
+        if not instant(ready['utc']) <= release_at <= instant(released['utc']) <= start_end:
+            raise ValueError('probe release is outside startup order')
+        attempts = [row for row in events if row.get('event') == 'connect_attempt' and
+                    row.get('pid') == pid and row.get('dst') == '198.51.100.77:443' and
+                    str(row.get('connection_id', '')).startswith(nonce + '-') and
+                    release_at <= instant(row['utc']) <= min(start_end, failure_at)]
+        if not attempts:
+            raise ValueError('no same-probe A connect during startup')
+        native_rows = []
+        for line in etw_path.read_text(encoding='utf-8-sig').splitlines():
+            row = json.loads(line)
+            xml = ET.fromstring(row['xml'])
+            provider = xml.find('.//{*}Provider')
+            if (provider is None or provider.get('Name') != 'Microsoft-Windows-Kernel-Network' or
+                    xml.findtext('.//{*}Task') != '10'):
+                continue
+            data = {item.get('Name'): item.text for item in xml.findall('.//{*}EventData/{*}Data')}
+            if not all(data.get(key) for key in ('PID', 'daddr', 'dport', 'sport')):
+                continue
+            dst = str(ipaddress.IPv4Address(int(data['daddr']).to_bytes(4, 'little')))
+            port = int.from_bytes(int(data['dport']).to_bytes(2, 'little'), 'big')
+            source_port = int.from_bytes(int(data['sport']).to_bytes(2, 'little'), 'big')
+            when = instant(xml.find('.//{*}TimeCreated').get('SystemTime'))
+            if (int(data['PID']) == pid and dst == target['host'] and port == 443 and
+                    0 < source_port < 65536 and any(instant(attempt['utc']) <= when <= min(start_end, failure_at)
+                                                    for attempt in attempts)):
+                native_rows.append({'ordinal': row['ordinal'], 'pid': pid,
+                                    'source_port': source_port, 'target': dst + ':443',
+                                    'utc': when.isoformat()})
+        if not native_rows:
+            raise ValueError('no same-PID native A TCP event during startup')
+        from scenario_tcpip import (byte_records, parse_line, reconstruct_generations,
+                                    validate_capture)
+        from sst_fault_evidence import time_bounds
+        pktmon = _pktmon_module()
+        pktmon_raw = pktmon_path.read_bytes()
+        pktmon_etl = (root / records['pktmon.etl']['path']).read_bytes()
+        nic = read_json(root / records['pktmon-nic.json']['path'])
+        nic_issues = pktmon_capture_issues(nic, pktmon_raw)
+        if nic_issues or pktmon_nic_binding(nic) != capture.get('pktmon_binding'):
+            raise ValueError('bound physical NIC capture is incomplete or differs')
+        validate_capture(pktmon_raw, pktmon_etl, nic, 50_000_000)
+        packet_rows = pktmon.parse_packets(pktmon_raw)
+        native_lines = [(text, ref) for text, ref in byte_records(pktmon_raw,
+                        records['pktmon.txt']['path']) if '[Microsoft-Windows-TCPIP] TCP:' in text]
+        request_events = []
+        for text, ref in native_lines:
+            if 'requested to connect.' not in text or 'remote=198.51.100.77:443' not in text:
+                continue
+            event = parse_line(text, ref)
+            if event and event.get('kind') == 'requested to connect':
+                request_events.append(event)
+        if not request_events:
+            raise ValueError('no native A TCP request')
+        release_ns = time_bounds(run['probe_release']['released_utc'])[0]
+        failure_ns = time_bounds(run.get('refusal_failure_utc') or run['started_at'])[1]
+        creation_ns = (creation - 621355968000000000) * 100
+        finished = [row for row in events if row.get('event') == 'finished' and row.get('pid') == pid]
+        if len(finished) != 1:
+            raise ValueError('probe process terminal identity is missing')
+        finished_ns = time_bounds(finished[0]['utc'])[0]
+        if not creation_ns <= release_ns < failure_ns < finished_ns:
+            raise ValueError('probe process lifetime does not contain refusal')
+        native_proofs = []
+        for request in request_events:
+            source_port = int(request['local'].rsplit(':', 1)[1])
+            matching_etw = [row for row in native_rows if row['source_port'] == source_port]
+            if not matching_etw:
+                continue
+            tcb = request['tcb']
+            tcb_events = [parse_line(text, ref) for text, ref in native_lines
+                          if tcb.lower() in text.lower()]
+            groups = reconstruct_generations(tcb_events)
+            selected = [group for group in groups if request in group['events']]
+            if len(selected) != 1:
+                raise ValueError('A request has ambiguous TCB generation')
+            group = selected[0]
+            if (group['identity'] != {'local': request['local'],
+                                     'remote': '198.51.100.77:443', 'pid': pid} or
+                    group['birth_ref'] is None):
+                raise ValueError('A request lacks exact PID/tuple/native TCB birth')
+            syns = [row for row in group['events'] if
+                    ' is going to output SYN with ISN = ' in row['text']]
+            if len(syns) != 1:
+                raise ValueError('A generation lacks unique native output SYN')
+            syn = syns[0]
+            if not (group['birth_ref']['byte_start'] < request['ref']['byte_start'] <
+                    syn['ref']['byte_start'] and
+                    (group['closed_ref'] is None or syn['ref']['byte_start'] <
+                     group['closed_ref']['byte_start'])):
+                raise ValueError('A TCB birth/request/SYN lifecycle order differs')
+            request_ns = time_bounds(request['text'])[0]
+            syn_ns = time_bounds(syn['text'])[0]
+            if not (creation_ns <= release_ns <= request_ns <= syn_ns <= failure_ns):
+                raise ValueError('A TCB SYN is outside live pre-refusal window')
+            if not any(time_bounds(item['utc'])[0] <= request_ns for item in attempts):
+                raise ValueError('A TCB request lacks preceding probe connect intent')
+            etw = next((row for row in matching_etw if
+                        syn_ns <= time_bounds(row['utc'])[0] <= failure_ns and
+                        time_bounds(row['utc'])[0] < finished_ns), None)
+            if etw is None:
+                raise ValueError('A TCB SYN lacks same-port live-PID ETW corroboration')
+            isn = re.search(r'output SYN with ISN = (\d+)', syn['text'])
+            if isn is None:
+                raise ValueError('native output SYN lacks ISN')
+            try:
+                packets = pktmon.select_packets(packet_rows, request['local'],
+                    request['remote'], 'TCP',
+                    component_ids=capture['pktmon_binding']['component_ids'], direction='Tx')
+            except pktmon.PacketEvidenceError as exc:
+                raise ValueError('A SYN NIC tuple is ambiguous') from exc
+            matched_packets = []
+            for packet in packets:
+                if packet.get('flags') != 'S' or not packet.get('timestamp_local'):
+                    continue
+                packet_ns = time_bounds('::' + packet['timestamp_local'])[0]
+                if not syn_ns <= packet_ns <= min(syn_ns + 50_000_000, failure_ns):
+                    continue
+                block = pktmon_raw[packet['byte_start']:packet['byte_end']].decode(
+                    'utf-16-le' if pktmon_raw.startswith(b'\xff\xfe') else 'utf-8')
+                if not re.search(r'\bseq ' + re.escape(isn[1]) + r'\b', block):
+                    continue
+                matched_packets.append(packet)
+            if not matched_packets:
+                raise ValueError('A TCB SYN has no same-ISN bound-NIC packet')
+            packet = matched_packets[0]
+            native_proofs.append({'tcb': tcb, 'generation_ordinal': group['ordinal'],
+                                  'source': request['local'], 'target': request['remote'],
+                                  'birth_ref': group['birth_ref'], 'request_ref': request['ref'],
+                                  'syn_ref': syn['ref'], 'syn_isn': int(isn[1]),
+                                  'syn_utc_ns': syn_ns, 'etw': etw,
+                                  'nic_packet_ref': {'path': records['pktmon.txt']['path'],
+                                                     'byte_start': packet['byte_start'],
+                                                     'byte_end': packet['byte_end']}})
+        if not native_proofs:
+            raise ValueError('no same-generation native A SYN/ETW/NIC packet')
+        return {'kind': 'approved-active-a-refusal-v2', 'nonce': nonce, 'pid': pid,
+                'creation_ticks': creation, 'probe': records['probe.jsonl'],
+                'native_events': records['kernel-network.events.jsonl'],
+                'native_etl': records['kernel-network.etl'],
+                'native_tcp_count': len(native_rows), 'syn_proofs': native_proofs,
+                'traffic_status': 'NOT_EXECUTED', 'mib_row_uniqueness': 'NOT_OBSERVED'}
+
     def _expected_quiescence_refusal(self, started: dict[str, Any],
-                                     profile: dict[str, Any]) -> dict[str, Any] | None:
+                                     profile: dict[str, Any], *, run: dict[str, Any] | None = None,
+                                     nonce: str | None = None) -> dict[str, Any] | None:
         """Return the recorded refusal when it is this family's exact outcome."""
         if not self._is_quiescence_refusal_family(profile):
             return None
         status = self._status()
         reason = str(status.get('failure_reason') or '')
+        if profile.get('probe_target', {}).get('process_mode') == 'nonmatch':
+            if (started.get('state') != 'stopped' or started.get('run_id') is not None or
+                    started.get('last_run_outcome') != 'failed' or
+                    status.get('state') != 'stopped' or status.get('run_id') is not None or
+                    status.get('controller') is not None or status.get('last_run_outcome') != 'failed' or
+                    not reason.startswith('managed start failed: RuntimeError(') or
+                    self._ACTIVE_A_REFUSAL_MARKER not in reason or run is None or nonce is None):
+                return None
+            samples = run.get('refusal_status_samples') or []
+            if (len(samples) != 3 or any(
+                    item.get('state') != 'stopped' or item.get('run_id') is not None or
+                    item.get('controller') is not None or item.get('last_run_outcome') != 'failed' or
+                    self._ACTIVE_A_REFUSAL_MARKER not in str(item.get('failure_reason') or '')
+                    for item in samples)):
+                return None
+            try:
+                proof = self._active_a_refusal_proof(self.root, profile, nonce, run)
+            except (ValueError, KeyError, OSError, TypeError, ET.ParseError):
+                return None
+            return {'reason': reason, 'state': status['state'], 'run_id': None,
+                    'marker': self._ACTIVE_A_REFUSAL_MARKER, 'proof': proof,
+                    'traffic_status': 'NOT_EXECUTED'}
         if (started.get('state') != 'healthy' and
                 self._QUIESCENCE_REFUSAL_MARKER in reason):
+            if run is not None:
+                samples = run.get('refusal_status_samples') or []
+                if (status.get('state') != 'stopped' or status.get('run_id') is not None or
+                        len(samples) != 3 or any(item.get('state') != 'stopped' or
+                        item.get('run_id') is not None for item in samples)):
+                    return None
             return {'reason': reason,
                     'state': status.get('state'),
                     'run_id': status.get('run_id'),
@@ -5982,17 +6287,28 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # The refusal family's benign plan tail is sampled in
                     # order: get_status x3, then get_events, list_artifacts,
                     # stop (strict prefix semantics).
-                    call('get_status')
-                    call('get_status')
-                    call('get_status')
+                    first_run['refusal_status_samples'] = [call('get_status') for _ in range(3)]
                 else:
                     call('get_status')
-                call('get_events', {'limit': 100})
+                event_receipt = call('get_events', {'limit': 100})
                 call('list_artifacts')
+                if benign_refusal and runtime_profile['probe_target']['process_mode'] == 'nonmatch':
+                    release_at = dt.datetime.fromisoformat(first_run['probe_release']['released_utc'].replace('Z', '+00:00'))
+                    current_events = [item for item in event_receipt.get('events', [])
+                                      if isinstance(item.get('timestamp'), (int, float)) and
+                                      item['timestamp'] >= release_at.timestamp()]
+                    failed_events = [item for item in current_events
+                                     if item.get('kind') == 'health' and item.get('state') == 'failed' and
+                                     self._ACTIVE_A_REFUSAL_MARKER in str(item.get('failure_reason') or '')]
+                    if (len(failed_events) != 1 or any(item.get('state') == 'healthy' or
+                            item.get('run_id') for item in current_events)):
+                        raise SuiteError('nonmatch refusal lacks unique failed event or published healthy')
+                    first_run['refusal_failure_utc'] = dt.datetime.fromtimestamp(
+                        failed_events[0]['timestamp'], dt.timezone.utc).isoformat()
                 finish_capture(first_label, first_run)
                 if not fault:
                     refusal = self._expected_quiescence_refusal(
-                        started, runtime_profile)
+                        started, runtime_profile, run=first_run, nonce=nonce)
                     if refusal is None:
                         raise SuiteError('benign scenario did not publish healthy')
                     # A B3 match image released before start is BY DESIGN
@@ -6003,7 +6319,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     first_run['expected_refusal'] = refusal
                     evidence.write(first_label + '-expected-refusal.json', refusal)
                     # The stop is idempotent on the already-stopped service.
-                    call('stop', {}, mutation=True)
+                    first_run['stop_response'] = call('stop', {}, mutation=True)
             final = self._status()
             evidence.write('final-status.json', final)
             if final.get('state') != 'stopped':
@@ -6097,6 +6413,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     if run.get('expected_refusal'):
                         # The product refused this start by design; no run
                         # existed, so there are no run originals to export.
+                        run['five_sections_after'] = after_sections
+                        run['traffic_oracle'] = {'status': 'NOT_EXECUTED', 'passed': None}
                         continue
                     raise SuiteError('run has no immutable run_id')
                 original_root = root / run['label'] / 'originals'
@@ -6137,24 +6455,27 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         refusal_recorded = any(item.get('expected_refusal') for item in runs)
         plan_tools = [item['tool'] for item in scenario['interface_call_plan']]
         call_tools = [item['tool'] for item in calls]
-        verdict = {'interface_semantics': (call_tools == plan_tools or
-                   (bool(refusal_recorded) and plan_tools[:len(call_tools)] == call_tools)),
+        branch_verdict, approved_refusal = self._branch_verdict(
+            runs, runtime_profile, plan_tools, call_tools, fault)
+        verdict = {'interface_semantics': branch_verdict['interface_semantics'],
                    'stale_lock_rejection': any(item.get('expect') == 'reject_state_conflict' and
                                                item.get('rejection_oracle', {}).get('side_effect_free')
                                                for item in calls),
                    'continuous_health': (bool(fault) or bool(refusal_recorded) or
                                          (len(status_samples) == 3 and
                                          all(item['status'].get('state') == 'healthy' for item in status_samples))),
-                   'per_run_dual_capture': bool(runs) and all(item.get('capture', {}).get('all_components') and
-                                                               (not runtime_pcap_required(runtime_profile) or item.get('runtime_pcap')) for item in runs if
-                                                               item.get('start_response', {}).get('state') == 'healthy'),
+                   'per_run_dual_capture': branch_verdict['per_run_dual_capture'],
                    'five_section_recovery': not cleanup_errors and after_sections is not None,
-                   'traffic_oracle': bool(runs) and all(
-                       item.get('traffic_oracle', {}).get('passed') for item in runs
-                       if item.get('start_response', {}).get('state') == 'healthy'),
+                   'traffic_oracle': branch_verdict['traffic_oracle'],
                    'log_clean': (bool(fault) or all(not item.get('log_clean_issues') for item in runs
                                                      if item.get('start_response', {}).get('state') == 'healthy')),
                    'cleanup_recorded': bool(cleanup_calls) or final_status.get('state') == 'stopped',
+                   'refusal_recovery': (not approved_refusal or
+                                        (final_status.get('state') == 'stopped' and
+                                         final_status.get('run_id') is None and
+                                         final_status.get('controller') is None and
+                                         final_status.get('last_run_outcome') == 'failed' and
+                                         not cleanup_errors and after_sections is not None)),
                    'fault_oracle': not fault}
         if fault:
             # A fault result is accepted only after scenario_fault_evidence.py
@@ -6169,7 +6490,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                                          len(recovery.get('health_samples', [])) == 3 and
                                          recovery.get('stopped', {}).get('state') == 'stopped')
             verdict['fault_oracle'] = bool(fault_evidence.get('adjudication', {}).get('passed'))
-        scenario_passed = failure is None and all(verdict.values())
+        scenario_passed = self._scenario_passed(failure, verdict, approved_refusal)
         try:
             vm_footprint = self._prune_scenario_vm_footprint(
                 runs, guest, fault, scenario_passed=scenario_passed)
@@ -6193,7 +6514,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                                        'fnpr_sentinel_record': sentinel_record,
                                        'capture_views': [file_record(root / item['path'], self.root)
                                            for item in evidence.items]},
-                  'health_trace': {'window': 'W-traffic', 'samples': status_samples,
+                  'health_trace': {'window': ('W-start-refusal' if refusal_recorded else 'W-traffic'),
+                                   'traffic_status': ('NOT_EXECUTED' if refusal_recorded else 'EXECUTED'),
+                                   'samples': status_samples,
                                    'all_healthy': bool(status_samples) and all(x['status'].get('state') == 'healthy' for x in status_samples)},
                   'five_section_audit': {'before': before_sections, 'after': after_sections},
                   'fault_evidence': fault_evidence, 'verdict': verdict, 'run_chain': runs,
@@ -6714,6 +7037,12 @@ def result_issues(result: dict[str, Any], root: Path) -> list[str]:
              for run in result.get('run_chain') or []):
         failures.append('shared run view without versioned capture contract')
     runs = result.get('run_chain') or []
+    refusal_runs = [run for run in runs if run.get('expected_refusal')]
+    if refusal_runs:
+        if len(runs) != 1 or len(refusal_runs) != 1:
+            failures.append('refusal must have exactly one attempted run')
+        else:
+            failures.extend(refusal_recheck_issues(result, root))
     if not runs:
         failures.append('run chain missing')
     try:
@@ -6744,10 +7073,15 @@ def result_issues(result: dict[str, Any], root: Path) -> list[str]:
             if issue:
                 failures.append(issue)
                 break
-        if not run.get('originals', {}).get('files'):
+        refusal = bool(run.get('expected_refusal'))
+        if refusal and run.get('run_id') is None:
+            if run.get('originals') or run.get('runtime_pcap'):
+                failures.append('refusal fabricated run originals')
+                break
+        elif not run.get('originals', {}).get('files'):
             failures.append('complete VM run originals missing')
             break
-        originals = run['originals']
+        originals = run.get('originals') or {}
         for item in originals.get('files', []):
             issue = bound_file(item, 'VM original')
             if issue:
@@ -6772,7 +7106,7 @@ def result_issues(result: dict[str, Any], root: Path) -> list[str]:
         if not result.get('scenario', {}).get('fault_class') and run.get('log_clean_issues'):
             failures.append('benign complete run.log contains exception marker')
             break
-        if not result.get('scenario', {}).get('fault_class'):
+        if not result.get('scenario', {}).get('fault_class') and not refusal:
             log = next((item for item in originals.get('files', [])
                         if Path(str(item.get('path', ''))).name == 'run.log'), None)
             if not log:
@@ -6808,11 +7142,108 @@ def result_issues(result: dict[str, Any], root: Path) -> list[str]:
             failures.append('fault distinct healthy recovery cycle missing')
     else:
         health = result.get('health_trace', {}).get('samples') or []
-        if len(health) != 3 or not all(item.get('status', {}).get('state') == 'healthy' for item in health):
+        if not refusal_runs and (len(health) != 3 or not all(item.get('status', {}).get('state') == 'healthy' for item in health)):
             failures.append('continuous healthy trace missing')
-        if recovery.get('final_status', {}).get('last_run_outcome') != 'ok':
+        if not refusal_runs and recovery.get('final_status', {}).get('last_run_outcome') != 'ok':
             failures.append('benign final outcome is not ok')
     return failures
+
+
+def refusal_recheck_issues(result: dict[str, Any], root: Path) -> list[str]:
+    """Independently reconstruct an approved refusal from sealed originals."""
+    try:
+        run = result['run_chain'][0]
+        profile = result['traffic_evidence']['runtime_profile']
+        nonce = result['traffic_evidence']['nonce']
+        refusal = run['expected_refusal']
+        calls = result['interface_calls']
+        planned = [(item['tool'], item['expect'])
+                   for item in result['scenario']['interface_call_plan']]
+        if ([(item.get('tool'), item.get('expect')) for item in calls] != planned or
+                any(item.get('ok') is not True for item in calls
+                    if item.get('expect') == 'success')):
+            raise ValueError('refusal interface plan was not fully executed')
+        def value(item: dict[str, Any]) -> dict[str, Any]:
+            return json.loads(item['response']['result']['content'][0]['text'])
+        starts = [value(item) for item in calls if item['tool'] == 'start']
+        statuses = [value(item) for item in calls if item['tool'] == 'get_status']
+        stops = [value(item) for item in calls if item['tool'] == 'stop']
+        if (len(starts) != 1 or starts[0] != run.get('start_response') or
+                len(statuses) != 3 or statuses != run.get('refusal_status_samples') or
+                len(stops) != 1 or stops[0] != run.get('stop_response') or
+                stops[0].get('state') != 'stopped'):
+            raise ValueError('refusal start/status/stop receipts differ')
+        approved_nonmatch = profile.get('probe_target', {}).get('process_mode') == 'nonmatch'
+        if (run.get('run_id') is not None or starts[0].get('state') != 'stopped' or
+                starts[0].get('last_run_outcome') != 'failed' or
+                starts[0].get('run_id') is not None or
+                any(item.get('state') != 'stopped' or item.get('run_id') is not None or
+                    item.get('controller') is not None for item in statuses) or
+                (result.get('health_trace') or {}).get('samples') or
+                (result.get('health_trace') or {}).get('window') != 'W-start-refusal' or
+                (result.get('health_trace') or {}).get('traffic_status') != 'NOT_EXECUTED' or
+                (run.get('traffic_oracle') or {}).get('status') != 'NOT_EXECUTED' or
+                (run.get('traffic_oracle') or {}).get('passed') is not None or
+                result.get('verdict', {}).get('traffic_oracle') !=
+                    ('NOT_EXECUTED' if approved_nonmatch else True)):
+            raise ValueError('refusal incorrectly claimed healthy run or traffic')
+        final = result.get('recovery', {}).get('final_status') or {}
+        if (final.get('state') != 'stopped' or final.get('run_id') is not None or
+                final.get('controller') is not None or final.get('last_run_outcome') != 'failed' or
+                result.get('recovery', {}).get('cleanup_errors')):
+            raise ValueError('refusal terminal/recovery is incomplete')
+        audit = result.get('five_section_audit') or {}
+        after_record = next((item for item in result.get('traffic_evidence', {}).get('capture_views', [])
+                             if Path(str(item.get('path', ''))).name == 'five-sections-after.json'), None)
+        if not after_record:
+            raise ValueError('refusal five-section recovery original absent')
+        after_path = (root.resolve() / after_record['path']).resolve()
+        if (not after_path.is_relative_to(root.resolve()) or
+                file_record(after_path, root.resolve()) != after_record):
+            raise ValueError('refusal five-section recovery original differs')
+        after = read_json(after_path)
+        if (after.get('sections') != audit.get('after') or
+                run.get('five_sections_before') != audit.get('before') or
+                run.get('five_sections_after') != audit.get('after') or
+                Suite._difference_is_residue(after.get('difference') or {},
+                                              after.get('difference_attribution'))):
+            raise ValueError('refusal five-section recovery differs or leaves residue')
+        if profile.get('probe_target', {}).get('process_mode') == 'nonmatch':
+            events = [value(item) for item in calls if item['tool'] == 'get_events']
+            if len(events) != 1 or not isinstance(events[0].get('events'), list):
+                raise ValueError('refusal event receipt absent')
+            release_at = dt.datetime.fromisoformat(run['probe_release']['released_utc'].replace('Z', '+00:00'))
+            current = [item for item in events[0]['events']
+                       if isinstance(item.get('timestamp'), (int, float)) and
+                       item['timestamp'] >= release_at.timestamp()]
+            failed = [item for item in current if item.get('kind') == 'health' and
+                      item.get('state') == 'failed' and
+                      Suite._ACTIVE_A_REFUSAL_MARKER in str(item.get('failure_reason') or '')]
+            if (len(failed) != 1 or any(item.get('state') == 'healthy' or
+                    item.get('run_id') for item in current) or
+                    run.get('refusal_failure_utc') != dt.datetime.fromtimestamp(
+                        failed[0]['timestamp'], dt.timezone.utc).isoformat()):
+                raise ValueError('refusal failure event/READY boundary differs')
+            proof = Suite._active_a_refusal_proof(root, profile, nonce, run)
+            if (refusal.get('proof') != proof or
+                    refusal.get('marker') != Suite._ACTIVE_A_REFUSAL_MARKER or
+                    refusal.get('traffic_status') != 'NOT_EXECUTED' or
+                    any(not str(item.get('failure_reason') or '').startswith(
+                            'managed start failed: RuntimeError(') or
+                        Suite._ACTIVE_A_REFUSAL_MARKER not in str(item.get('failure_reason') or '')
+                        or item.get('last_run_outcome') != 'failed' for item in statuses) or
+                    refusal.get('reason') != statuses[-1].get('failure_reason')):
+                raise ValueError('nonmatch refusal proof/reason differs')
+        elif profile.get('probe_target', {}).get('process_mode') == 'match':
+            if (profile.get('bucket') != 'B3' or profile.get('interleave') != 'before-start' or
+                    Suite._QUIESCENCE_REFUSAL_MARKER not in refusal.get('reason', '') or
+                    refusal.get('reason') != statuses[-1].get('failure_reason')):
+                raise ValueError('match refusal family/reason differs')
+        else:
+            raise ValueError('unapproved refusal family')
+    except (KeyError, ValueError, TypeError, OSError, ET.ParseError, IndexError) as exc:
+        return ['refusal raw re-adjudication failed: ' + str(exc)]
+    return []
 
 
 def fault_recheck_issues(result: dict[str, Any], root: Path) -> list[str]:
@@ -6872,6 +7303,7 @@ def actual_coverage(manifest: dict[str, Any], records: Iterable[dict[str, Any]])
     bucket = {key: 0 for key in BUCKET_COUNTS}
     faults = {key: 0 for key in FAULTS}
     passed = failed = blocked = 0
+    traffic_executed = traffic_not_executed = 0
     problems: list[str] = []
     ids = [row.get('scenario_id') for row in rows]
     duplicates = {item for item in ids if isinstance(item, str) and ids.count(item) > 1}
@@ -6889,6 +7321,15 @@ def actual_coverage(manifest: dict[str, Any], records: Iterable[dict[str, Any]])
         state = row.get('state')
         if state == 'pass':
             passed += 1
+            runs = row.get('run_chain') or []
+            if runs and all(run.get('expected_refusal') and
+                            (run.get('traffic_oracle') or {}).get('status') == 'NOT_EXECUTED'
+                            for run in runs):
+                traffic_not_executed += 1
+            elif runs and all(run.get('start_response', {}).get('state') == 'healthy' and
+                              (run.get('traffic_oracle') or {}).get('passed') is True
+                              for run in runs):
+                traffic_executed += 1
         elif state == 'blocked':
             blocked += 1
         else:
@@ -6918,6 +7359,8 @@ def actual_coverage(manifest: dict[str, Any], records: Iterable[dict[str, Any]])
     return {'schema': COVERAGE_SCHEMA, 'kind': 'actual', 'scenario_count': len(rows),
             'pass': passed, 'fail': failed, 'blocked': blocked, 'bucket': bucket,
             'fault': faults, 'tool_distinct_scenarios': tool_counts,
+            'traffic_executed': traffic_executed,
+            'traffic_not_executed': traffic_not_executed,
             'problems': problems}
 
 

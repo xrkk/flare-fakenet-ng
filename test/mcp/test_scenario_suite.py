@@ -58,6 +58,308 @@ def test_actual_coverage_uses_records_not_only_manifest():
     assert 'missing actual scenario: sst-100' in suite.actual_coverage(manifest, records)['problems']
 
 
+def test_approved_nonmatch_refusal_rechecks_native_identity_and_never_counts_traffic(tmp_path):
+    nonce, pid = 'sst-039-a1-test', 3832
+    creation = 639261396537083524
+    profile = {'bucket': 'B3', 'interleave': 'before-start',
+               'probe_target': {'process_mode': 'nonmatch', 'protocol': 'tcp',
+                                'host': '198.51.100.77', 'port': 443,
+                                'expectation': 'ordinary_path'}}
+    folder = tmp_path / 'evidence' / 'sst-039' / 'attempt-01'
+    probe_dir = folder / 'run-01'
+    probe_dir.mkdir(parents=True)
+    (folder / 'run-01-capture-start.json').write_text(json.dumps({
+        'nonce': nonce, 'pid': pid, 'probe_creation_ticks': creation,
+        'capture_run_id': nonce + ':run-01', 'run_label': 'run-01',
+        'interleave': 'before-start', 'probe_target': profile['probe_target']}), encoding='utf-8')
+    probe = [
+        {'event': 'ready', 'nonce': nonce, 'pid': pid, 'creation_ticks': creation,
+         'native_identity': {'pid': pid, 'nonce': nonce,
+                             'run_id': nonce + ':run-01',
+                             'creation_filetime_100ns': creation - 504911232000000000},
+         'target_host': '198.51.100.77', 'target_port': 443,
+         'target_protocol': 'tcp', 'process_mode': 'nonmatch', 'interleave': 'before-start',
+         'utc': '2026-09-27T21:00:54.400Z'},
+        {'event': 'released', 'nonce': nonce, 'pid': pid, 'utc': '2026-09-27T21:00:54.950Z'},
+        {'event': 'connect_attempt', 'nonce': nonce, 'pid': pid,
+         'connection_id': nonce + '-1', 'dst': '198.51.100.77:443',
+         'utc': '2026-09-27T21:00:54.969Z'},
+        {'event': 'finished', 'nonce': nonce, 'pid': pid,
+         'utc': '2026-09-27T21:01:50Z'},
+    ]
+    (probe_dir / 'probe.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in probe), encoding='utf-8')
+    xml = ("<Event><System><Provider Name='Microsoft-Windows-Kernel-Network'/>"
+           "<Task>10</Task><TimeCreated SystemTime='2026-09-27T21:00:55Z'/></System>"
+           "<EventData><Data Name='PID'>3832</Data><Data Name='daddr'>1298412486</Data>"
+           "<Data Name='dport'>47873</Data><Data Name='sport'>18628</Data></EventData></Event>")
+    (probe_dir / 'kernel-network.events.jsonl').write_text(json.dumps({'ordinal': 61, 'xml': xml}) + '\n')
+    for name in ('kernel-network.etl', 'pktmon.etl', 'pktmon.txt', 'pktmon-nic.json'):
+        (probe_dir / name).write_bytes(b'original')
+    prefix = '[01]0EF8.0154::2026-09-28 05:00:54.'
+    pktmon_text = (
+        '[00]0EF8.0154::2026-09-28 05:00:53.000000000 [MSNT_SystemTrace] '
+        'EndTime: 134350164700000000, EventsLost: 0, StartTime: 134350164530000000, '
+        'BuffersLost: 0, LogFileNameString: X:\\pktmon.etl\n'
+        + prefix + '976181000 [Microsoft-Windows-TCPIP] TCP: connection 0x1 '
+        'transition from ClosedState  to SynSentState , SndNxt = 0.\n'
+        + prefix + '976196400 [Microsoft-Windows-TCPIP] TCP: Tcb 0x1 '
+        '(local=192.168.204.233:50248 remote=198.51.100.77:443) '
+        'requested to connect. PID = 3832.\n'
+        + prefix + '976235100 [Microsoft-Windows-TCPIP] TCP: Tcb 0x1 '
+        'is going to output SYN with ISN = 7, RcvWnd = 64240, RcvWndScale = 8.\n'
+        + prefix + '976249900 [Microsoft-Windows-PktMon] 方向 Tx ，类型 以太网 ，'
+        '组件 9，OriginalSize 66，LoggedSize 66\n'
+        '\tethertype IPv4: 192.168.204.233.50248 > 198.51.100.77.443: '
+        'Flags [S], seq 7, length 0\n')
+    (probe_dir / 'pktmon.txt').write_text(pktmon_text, encoding='utf-8')
+    (probe_dir / 'pktmon-nic.json').write_text(json.dumps({
+        'schema': suite.NIC_CAPTURE_SCHEMA, 'pktmon_status_after': 'stopped',
+        'pktmon_list': '9 00-0C-29-C1-CA-49 Intel(R) 82574L Gigabit Network Connection',
+        'adapters': [{'MacAddress': '00-0C-29-C1-CA-49',
+                      'InterfaceDescription': 'Intel(R) 82574L Gigabit Network Connection',
+                      'Status': 'Up', 'ifIndex': 11, 'Name': 'Ethernet0'}],
+        'capture_mode': 'all-components-tcpip',
+        'clock_before': {'offset_minutes': 480, 'utc_ticks': 639261396520000000,
+                         'mono': 0, 'stopwatch_frequency': 10000000},
+        'clock_after': {'offset_minutes': 480, 'utc_ticks': 639261396710000000,
+                        'mono': 190000000, 'stopwatch_frequency': 10000000},
+        'conversion': {'argv': ['pktmon', 'etl2txt', 'X:\\pktmon.etl', '--out', 'X:\\pktmon.txt'],
+                       'exit_code': 0,
+                       'etl_sha256': hashlib.sha256((probe_dir / 'pktmon.etl').read_bytes()).hexdigest(),
+                       'text_sha256': hashlib.sha256((probe_dir / 'pktmon.txt').read_bytes()).hexdigest()},
+    }), encoding='utf-8')
+    (probe_dir / 'kernel-network.summary.txt').write_text('Total Events Lost 0\n')
+    records = [suite.file_record(path, tmp_path) for path in probe_dir.iterdir()]
+    by_name = {Path(item['path']).name: item for item in records}
+    (probe_dir / 'kernel-network.metadata.json').write_text(json.dumps({'conversion': {
+        'etl_sha256': by_name['kernel-network.etl']['sha256'],
+        'events_sha256': by_name['kernel-network.events.jsonl']['sha256'],
+        'tracerpt_exit_code': 0, 'event_reader_exit_code': 0}}))
+    records.append(suite.file_record(probe_dir / 'kernel-network.metadata.json', tmp_path))
+    by_name['kernel-network.metadata.json'] = records[-1]
+    sections = {key: '' for key in ('dns_servers', 'routes', 'listen_ports',
+                                    'windivert_processes', 'services')}
+    after_path = folder / 'five-sections-after.json'
+    after_path.write_text(json.dumps({'sections': sections, 'difference': {},
+                                      'difference_attribution': None}), encoding='utf-8')
+    after_record = suite.file_record(after_path, tmp_path)
+    reason = 'managed start failed: RuntimeError(' + suite.Suite._ACTIVE_A_REFUSAL_MARKER + ')'
+    failure_at = '2026-09-27T21:01:07+00:00'
+    failure_event = {'timestamp': 1790542867, 'kind': 'health', 'state': 'failed',
+                     'failure_reason': reason}
+    started = {'state': 'stopped', 'run_id': None, 'last_run_outcome': 'failed'}
+    status = {'state': 'stopped', 'run_id': None, 'controller': None,
+              'last_run_outcome': 'failed', 'failure_reason': reason}
+    run = {'label': 'run-01', 'run_id': None, 'start_response': started,
+           'started_at': '2026-09-27T21:01:34Z',
+           'refusal_failure_utc': failure_at,
+           'probe_release': {'phase': 'before-start', 'released_utc': '2026-09-27T21:00:54.941Z'},
+           'capture': {'files': records, 'all_components': True,
+                       'probe_launcher_pid': pid, 'pktmon_capture_issues': [],
+                       'pktmon_binding': suite.pktmon_nic_binding(
+                           json.loads((probe_dir / 'pktmon-nic.json').read_text(encoding='utf-8')))},
+           'five_sections_before': sections, 'five_sections_after': sections,
+           'refusal_status_samples': [status] * 3,
+           'stop_response': {'state': 'stopped'},
+           'traffic_oracle': {'status': 'NOT_EXECUTED', 'passed': None}}
+    proof = suite.Suite._active_a_refusal_proof(tmp_path, profile, nonce, run)
+    assert proof['syn_proofs'][0]['source'] == '192.168.204.233:50248'
+    run['expected_refusal'] = {'reason': reason, 'marker': suite.Suite._ACTIVE_A_REFUSAL_MARKER,
+                               'traffic_status': 'NOT_EXECUTED', 'proof': proof}
+    def call(tool, value):
+        return {'tool': tool, 'expect': 'success', 'ok': True,
+                'response': {'result': {'content': [{'text': json.dumps(value)}]}}}
+    tools = ['start', 'get_status', 'get_status', 'get_status', 'get_events',
+             'list_artifacts', 'stop']
+    calls = [call(tool, (started if tool == 'start' else status if tool == 'get_status'
+                         else {'state': 'stopped'} if tool == 'stop'
+                         else {'events': [failure_event]} if tool == 'get_events'
+                         else {})) for tool in tools]
+    result = {'scenario': {'interface_call_plan': [
+                           {'tool': tool, 'expect': 'success'} for tool in tools],
+                           'config_profile': profile},
+              'traffic_evidence': {'runtime_profile': profile, 'nonce': nonce,
+                                   'capture_views': [after_record]},
+              'interface_calls': calls, 'run_chain': [run],
+              'health_trace': {'samples': [], 'window': 'W-start-refusal',
+                               'traffic_status': 'NOT_EXECUTED'},
+              'verdict': {'traffic_oracle': 'NOT_EXECUTED'},
+              'five_section_audit': {'before': sections, 'after': sections},
+              'recovery': {'final_status': status, 'cleanup_errors': []}}
+    assert suite.refusal_recheck_issues(result, tmp_path) == []
+    runner = suite.Suite.__new__(suite.Suite)
+    runner.root = tmp_path
+    runner._status = lambda: status
+    assert runner._expected_quiescence_refusal(started, profile, run=run, nonce=nonce)['proof'] == proof
+    runner._status = lambda: dict(status, failure_reason='generic start failure')
+    assert runner._expected_quiescence_refusal(started, profile, run=run, nonce=nonce) is None
+    runner._status = lambda: status
+    assert runner._expected_quiescence_refusal(dict(started, state='healthy'),
+                                                profile, run=run, nonce=nonce) is None
+    match = {'bucket': 'B3', 'interleave': 'before-start',
+             'probe_target': {'process_mode': 'match'}}
+    runner._status = lambda: {'state': 'stopped', 'run_id': None,
+                              'failure_reason': runner._QUIESCENCE_REFUSAL_MARKER}
+    assert runner._expected_quiescence_refusal({'state': 'stopped'}, match)['marker'] == runner._QUIESCENCE_REFUSAL_MARKER
+    assert runner._expected_quiescence_refusal({'state': 'stopped'}, match,
+        run={'refusal_status_samples': [runner._status()] * 3})['marker'] == runner._QUIESCENCE_REFUSAL_MARKER
+    match_result = copy.deepcopy(result)
+    match_result['traffic_evidence']['runtime_profile']['probe_target']['process_mode'] = 'match'
+    match_status = dict(status, failure_reason=runner._QUIESCENCE_REFUSAL_MARKER)
+    match_result['run_chain'][0]['refusal_status_samples'] = [match_status] * 3
+    match_result['run_chain'][0]['expected_refusal'] = {
+        'reason': runner._QUIESCENCE_REFUSAL_MARKER,
+        'marker': runner._QUIESCENCE_REFUSAL_MARKER}
+    match_result['verdict']['traffic_oracle'] = True
+    for entry in match_result['interface_calls']:
+        if entry['tool'] == 'get_status':
+            entry['response']['result']['content'][0]['text'] = json.dumps(match_status)
+    assert suite.refusal_recheck_issues(match_result, tmp_path) == []
+    assert runner._expected_quiescence_refusal(started,
+        dict(profile, interleave='during-start'), run=run, nonce=nonce) is None
+    assert suite.actual_coverage({'scenarios': [{'scenario_id': 'sst-039',
+        'config_profile': profile, 'fault_class': None, 'interface_call_plan': []}]},
+        [{'scenario_id': 'sst-039', 'state': 'pass', 'scenario': {'scenario_id': 'sst-039',
+          'config_profile': profile, 'fault_class': None, 'interface_call_plan': []},
+          'run_chain': [run]}])['traffic_not_executed'] == 1
+    for change in ('nonce', 'creation', 'target', 'protocol', 'interleave', 'reason',
+                   'healthy', 'status_missing', 'stop_missing', 'recovery'):
+        bad = copy.deepcopy(result)
+        item = bad['run_chain'][0]
+        if change == 'nonce': bad['traffic_evidence']['nonce'] = 'wrong'
+        elif change == 'creation': item['expected_refusal']['proof']['creation_ticks'] += 1
+        elif change == 'target': bad['traffic_evidence']['runtime_profile']['probe_target']['host'] = '203.0.113.1'
+        elif change == 'protocol': bad['traffic_evidence']['runtime_profile']['probe_target']['protocol'] = 'udp'
+        elif change == 'interleave': bad['traffic_evidence']['runtime_profile']['interleave'] = 'during-start'
+        elif change == 'reason': item['expected_refusal']['reason'] = 'generic failure'
+        elif change == 'healthy': item['start_response']['state'] = 'healthy'
+        elif change == 'status_missing': bad['interface_calls'].pop(1)
+        elif change == 'stop_missing': bad['interface_calls'].pop()
+        elif change == 'recovery': bad['recovery']['cleanup_errors'] = ['residue']
+        assert suite.refusal_recheck_issues(bad, tmp_path), change
+    pktmon_path = probe_dir / 'pktmon.txt'
+    original_pktmon = pktmon_path.read_text(encoding='utf-8')
+    old_unbounded_tcb_match = (r'local=[^\s:]+:50248 remote=198\.51\.100\.77:443\)'
+                               r'[\s\S]{0,1000}output SYN\b')
+    def rewrite_pktmon(value):
+        pktmon_path.write_text(value, encoding='utf-8')
+        by_name['pktmon.txt']['sha256'] = hashlib.sha256(pktmon_path.read_bytes()).hexdigest()
+        by_name['pktmon.txt']['size'] = pktmon_path.stat().st_size
+        nic_path = probe_dir / 'pktmon-nic.json'
+        nic = json.loads(nic_path.read_text(encoding='utf-8'))
+        nic['conversion']['text_sha256'] = by_name['pktmon.txt']['sha256']
+        nic_path.write_text(json.dumps(nic), encoding='utf-8')
+        by_name['pktmon-nic.json']['sha256'] = hashlib.sha256(nic_path.read_bytes()).hexdigest()
+        by_name['pktmon-nic.json']['size'] = nic_path.stat().st_size
+    birth = prefix + '976235100 [Microsoft-Windows-TCPIP] TCP: Tcb 0x1 '
+    cross_tcb = original_pktmon.replace('Tcb 0x1 is going to output SYN',
+                                        'Tcb 0x2 is going to output SYN')
+    assert re.search(old_unbounded_tcb_match, cross_tcb)
+    for changed in (
+        cross_tcb,
+        original_pktmon.replace(birth,
+            prefix + '976210000 [Microsoft-Windows-TCPIP] TCP: connection 0x1 '
+            'transition from SynSentState  to ClosedState , SndNxt = 0.\n'
+            + prefix + '976220000 [Microsoft-Windows-TCPIP] TCP: connection 0x1 '
+            'transition from ClosedState  to SynSentState , SndNxt = 0.\n' + birth),
+        original_pktmon.replace('05:00:54.976235100', '05:01:08.976235100'),
+        original_pktmon.replace(birth + 'is going to output SYN with ISN = 7, '
+                                'RcvWnd = 64240, RcvWndScale = 8.\n', ''),
+        original_pktmon.replace('Flags [S], seq 7', 'Flags [S], seq 8'),
+        original_pktmon.replace('requested to connect. PID = 3832.',
+                                'requested to connect. PID = 999.'),
+    ):
+        rewrite_pktmon(changed)
+        with pytest.raises(ValueError):
+            suite.Suite._active_a_refusal_proof(tmp_path, profile, nonce, run)
+    rewrite_pktmon(original_pktmon)
+    assert suite.Suite._active_a_refusal_proof(tmp_path, profile, nonce, run) == proof
+    probe_path = probe_dir / 'probe.jsonl'
+    original_probe = probe_path.read_text(encoding='utf-8')
+    probe_path.write_text(original_probe.replace('2026-09-27T21:01:50Z',
+                                                 '2026-09-27T21:00:54.980Z'), encoding='utf-8')
+    by_name['probe.jsonl']['sha256'] = hashlib.sha256(probe_path.read_bytes()).hexdigest()
+    by_name['probe.jsonl']['size'] = probe_path.stat().st_size
+    with pytest.raises(ValueError, match='probe process lifetime'):
+        suite.Suite._active_a_refusal_proof(tmp_path, profile, nonce, run)
+    probe_path.write_text(original_probe, encoding='utf-8')
+    by_name['probe.jsonl']['sha256'] = hashlib.sha256(probe_path.read_bytes()).hexdigest()
+    by_name['probe.jsonl']['size'] = probe_path.stat().st_size
+    etw = probe_dir / 'kernel-network.events.jsonl'
+    etw.write_text(etw.read_text().replace('1298412486', '1298412487'), encoding='utf-8')
+    by_name['kernel-network.events.jsonl']['sha256'] = hashlib.sha256(etw.read_bytes()).hexdigest()
+    metadata = probe_dir / 'kernel-network.metadata.json'
+    data = json.loads(metadata.read_text())
+    data['conversion']['events_sha256'] = by_name['kernel-network.events.jsonl']['sha256']
+    metadata.write_text(json.dumps(data))
+    by_name['kernel-network.metadata.json']['sha256'] = hashlib.sha256(metadata.read_bytes()).hexdigest()
+    by_name['kernel-network.metadata.json']['size'] = metadata.stat().st_size
+    with pytest.raises(ValueError, match='no same-PID native A TCP event'):
+        suite.Suite._active_a_refusal_proof(tmp_path, profile, nonce, run)
+
+
+def test_refusal_branch_isolated_from_actual_fault_and_healthy_run_chains():
+    base = Path(__file__).parents[2] / 'Logs' / 'fakenetng-mcp' / 'final100-20260920'
+    cases = [
+        ('candidate26-fault-spike-06', '015', 'listener_stop', True),
+        ('formal-spike-dns-glue-05', '003', 'child_hang', True),
+        ('formal-final100-dns-glue-10', '038', None, True),
+    ]
+    if not all((base / root / 'results' / ('scenario-sst-' + number + '.json')).is_file()
+               for root, number, _, _ in cases):
+        pytest.skip('historical native scenario originals are unavailable')
+    for folder, number, expected_fault, expected_pass in cases:
+        root = base / folder
+        result = json.loads((root / 'results' / ('scenario-sst-' + number + '.json')).read_text(
+            encoding='utf-8'))
+        assert result['scenario']['fault_class'] == expected_fault
+        assert suite.result_issues(result, root) == []
+        if expected_fault:
+            assert result['fault_evidence']['adjudication']['passed'] is True
+        planned = [item['tool'] for item in result['scenario']['interface_call_plan']]
+        observed = [item['tool'] for item in result['interface_calls']]
+        branch, approved = suite.Suite._branch_verdict(
+            result['run_chain'], result['traffic_evidence']['runtime_profile'],
+            planned, observed, expected_fault)
+        assert not approved
+        assert all(branch[key] == result['verdict'][key] for key in branch)
+        assert suite.Suite._scenario_passed(result['failure'], result['verdict'], approved) is expected_pass
+        if expected_fault == 'listener_stop':
+            assert result['run_chain'][0]['start_response']['state'] != 'healthy'
+            assert not result['run_chain'][0].get('traffic_oracle')
+            assert branch['traffic_oracle'] is True  # pre-existing fault adjudication owns this case
+        if expected_fault == 'child_hang':
+            bad_run = copy.deepcopy(result['run_chain'])
+            bad_run[0]['traffic_oracle']['passed'] = False
+            bad, approved = suite.Suite._branch_verdict(
+                bad_run, result['traffic_evidence']['runtime_profile'],
+                planned, observed, expected_fault)
+            assert not approved and bad['traffic_oracle'] is False
+            assert not suite.Suite._scenario_passed(None,
+                dict(result['verdict'], traffic_oracle=bad['traffic_oracle']), approved)
+    old = json.loads((base / 'formal-final100-dns-glue-10' / 'results' /
+                      'scenario-sst-039.json').read_text(encoding='utf-8'))
+    old_run = copy.deepcopy(old['run_chain'][0])
+    old_run['expected_refusal'] = {'marker': suite.Suite._ACTIVE_A_REFUSAL_MARKER,
+                                   'proof': {'kind': 'approved-active-a-refusal-v2'}}
+    plan = [item['tool'] for item in old['scenario']['interface_call_plan']]
+    actual = [item['tool'] for item in old['interface_calls']]
+    branch, approved = suite.Suite._branch_verdict(
+        [old_run], old['traffic_evidence']['runtime_profile'], plan, actual, None)
+    assert approved and branch['traffic_oracle'] == 'NOT_EXECUTED'
+    assert branch['interface_semantics'] is False  # old 039 lacks two statuses and stop
+    assert not suite.Suite._scenario_passed(None,
+        dict(old['verdict'], interface_semantics=False,
+             traffic_oracle='NOT_EXECUTED'), approved)
+    match = dict(old['traffic_evidence']['runtime_profile'],
+                 probe_target=dict(old['traffic_evidence']['runtime_profile']['probe_target'],
+                                   process_mode='match'))
+    old_run['expected_refusal'] = {'marker': suite.Suite._QUIESCENCE_REFUSAL_MARKER}
+    match_branch, match_approved = suite.Suite._branch_verdict([old_run], match,
+        plan, plan[:-1], None)
+    assert not match_approved and match_branch['interface_semantics'] is True
+
+
 def test_result_integrity_rechecks_bound_evidence_bytes():
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
