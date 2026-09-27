@@ -74,6 +74,10 @@ EXIT_PASS, EXIT_USAGE, EXIT_FAIL, EXIT_BLOCKED = 0, 2, 3, 4
 # 192 MiB bounds a single guest evidence transfer: a B3 pktmon text export
 # legitimately reaches ~70 MiB (discovery100-10 sst-038) from a 5 MiB ETL.
 MAX_GUEST_TRANSFER = 192 * 1024 * 1024
+# Shared all-components capture covers two runs. PktMon text can expand well
+# beyond its ETL (R55: 213,867,814 bytes from 78,303,357 bytes). Keep this
+# separate from the bound for arbitrary guest evidence and QPC ZIP members.
+MAX_SHARED_PKTMON_TEXT_TRANSFER = 512 * 1024 * 1024
 QPC_EXPORT_WAIT_SECONDS = 600
 QPC_EXPORT_RPC_SECONDS = 900
 GUEST_ROOT = r'C:\ProgramData\FakeNet-NG-MCP\logs'
@@ -227,9 +231,13 @@ def digest(value: Any) -> str:
 
 
 def file_record(path: Path, root: Path | None = None) -> dict[str, Any]:
-    raw = path.read_bytes()
+    size = path.stat().st_size
+    hashed = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            hashed.update(block)
     return {'path': str(path.relative_to(root) if root else path),
-            'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+            'size': size, 'sha256': hashed.hexdigest()}
 
 
 def write_new_json(path: Path, value: Any) -> None:
@@ -2513,24 +2521,46 @@ class Suite:
     def _transfer_guest_file(self, guest_path: str, size: int, sha256: str,
                              destination: Path) -> dict[str, Any]:
         assert self.vm
-        if not 0 <= int(size) <= MAX_GUEST_TRANSFER:
+        guest = PureWindowsPath(guest_path)
+        guest_root = PureWindowsPath(self.guest_work_root)
+        if (not guest.is_absolute() or '..' in guest.parts or
+                not destination.resolve().is_relative_to(self.root.resolve())):
+            raise SuiteError('guest evidence path outside transfer scope: ' + guest_path)
+        guest_parts = tuple(part.casefold() for part in guest.parts)
+        root_parts = tuple(part.casefold() for part in guest_root.parts)
+        shared_text = (self.capture_contract == 'scenario-shared-v2' and
+                       guest_parts[:len(root_parts)] == root_parts and
+                       len(guest_parts) == len(root_parts) + 4 and
+                       guest_parts[len(root_parts)] == 'scenario-suite-20260912' and
+                       guest_parts[-2:] == ('run-01', 'pktmon.txt') and
+                       PureWindowsPath(destination).name == 'pktmon.txt' and
+                       destination.parent.name == 'run-01')
+        limit = MAX_SHARED_PKTMON_TEXT_TRANSFER if shared_text else MAX_GUEST_TRANSFER
+        if not 0 <= int(size) <= limit:
             raise SuiteError('guest evidence outside transfer bound: ' + guest_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            raise SuiteError('guest evidence destination collision: ' + str(destination))
+        temporary = destination.with_name(destination.name + '.transfer-' + uuid.uuid4().hex)
         actual = hashlib.sha256()
-        with destination.open('xb') as stream:
-            for offset in range(0, int(size), 1024 * 1024):
-                length = min(1024 * 1024, int(size) - offset)
-                command = (
-                    "$ErrorActionPreference='Stop';$s=[IO.File]::OpenRead(" + quote_ps(guest_path) + ");"
-                    "try{$null=$s.Seek(" + str(offset) + ",[IO.SeekOrigin]::Begin);$b=New-Object byte[] " + str(length) + ";"
-                    "$n=$s.Read($b,0,$b.Length);if($n -ne $b.Length){throw 'short read'};[Convert]::ToBase64String($b)}finally{$s.Dispose()}")
-                block = base64.b64decode(self.vm.powershell(command, 60)['output'], validate=True)
-                if len(block) != length:
-                    raise SuiteError('guest evidence short base64 block')
-                stream.write(block)
-                actual.update(block)
-        if actual.hexdigest().lower() != str(sha256).lower():
-            raise SuiteError('guest evidence SHA-256 mismatch: ' + guest_path)
+        try:
+            with temporary.open('xb') as stream:
+                for offset in range(0, int(size), 1024 * 1024):
+                    length = min(1024 * 1024, int(size) - offset)
+                    command = (
+                        "$ErrorActionPreference='Stop';$s=[IO.File]::OpenRead(" + quote_ps(guest_path) + ");"
+                        "try{$null=$s.Seek(" + str(offset) + ",[IO.SeekOrigin]::Begin);$b=New-Object byte[] " + str(length) + ";"
+                        "$n=$s.Read($b,0,$b.Length);if($n -ne $b.Length){throw 'short read'};[Convert]::ToBase64String($b)}finally{$s.Dispose()}")
+                    block = base64.b64decode(self.vm.powershell(command, 60)['output'], validate=True)
+                    if len(block) != length:
+                        raise SuiteError('guest evidence short base64 block')
+                    stream.write(block)
+                    actual.update(block)
+            if actual.hexdigest().lower() != str(sha256).lower():
+                raise SuiteError('guest evidence SHA-256 mismatch: ' + guest_path)
+            os.link(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
         return file_record(destination, self.root)
 
     def _fault_mode(self, enabled: bool) -> dict[str, Any]:
