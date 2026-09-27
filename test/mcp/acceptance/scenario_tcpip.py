@@ -190,6 +190,15 @@ def parse_line(text, ref):
         # it is transport context, never a terminal or identity event.
         event.update(tcb=m[1].upper(), kind='transport context', bh=True)
         return event
+    m = re.fullmatch(
+        r'(?:Option (?:TCP_OFFLOAD_NOT_PREFERRED|TCP_KEEPALIVE)|'
+        r'Socket Option SO_KEEPALIVE)  is going to be set for connection ('
+        + TCB + r')\.', body)
+    if m:
+        # R49 native ETW: these three exact option notices follow a proved
+        # connect. They name only a TCB, not a tuple, birth, or close.
+        event.update(tcb=m[1].upper(), kind='connection option context')
+        return event
     m = ENDPOINT.fullmatch(body)
     if m:
         tail = m[4]
@@ -556,6 +565,8 @@ def reconstruct_generations(events, expected=None):
             groups.append(dict(ordinal=0, left_censored=True, birth_ref=None, closed_ref=None,
                                identity=None, events=[]))
         group = groups[-1]
+        if event['kind'] == 'connection option context' and group['closed_ref'] is not None:
+            raise ValueError('TCB option after Closed has ambiguous generation')
         if event['kind'] == 'exists' and group['events']:
             raise ValueError('unexpected existing generation marker')
         if event.get('local'):

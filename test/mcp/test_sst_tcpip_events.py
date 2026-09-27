@@ -39,6 +39,89 @@ def line(t, body):
     return f'[00]0001.0002::2026-09-11 09:48:{t} [Microsoft-Windows-TCPIP] TCP: {body}\r\n'
 
 
+# R49 run-01/pktmon.txt, decoded native event at 15:17:44.354699900.
+OFFLOAD_BODY = ('Option TCP_OFFLOAD_NOT_PREFERRED  is going to be set for '
+                'connection 0xFFFFC88EF78AC4B0.')
+
+
+def test_native_offload_option_is_tcb_metadata_only():
+    original = ('[00]132C.06F4::2026-09-27 15:17:44.354699900 '
+                '[Microsoft-Windows-TCPIP] TCP: ' + OFFLOAD_BODY + ' \r\n')
+    ref = {'path': 'run-01/pktmon.txt', 'byte_start': 123, 'byte_end': 456}
+    event = tcp.parse_line(original, ref)
+    assert event['kind'] == 'connection option context'
+    assert event['tcb'] == '0XFFFFC88EF78AC4B0'
+    assert event['ref'] is ref and event['text'] == original
+    assert not event['terminal']
+    assert 'local' not in event and 'remote' not in event and 'pid' not in event
+
+
+@pytest.mark.parametrize('body', [
+    OFFLOAD_BODY.replace('TCP_OFFLOAD_NOT_PREFERRED', 'TCP_UNKNOWN_OPTION'),
+    OFFLOAD_BODY.replace('0xFFFFC88EF78AC4B0', '0xINVALID'),
+    OFFLOAD_BODY + ' extra',
+    OFFLOAD_BODY.replace(' for connection ', ' for '),
+    OFFLOAD_BODY.replace(' is going to be set', ' was set'),
+])
+def test_offload_option_near_misses_rejected(body):
+    with pytest.raises(ValueError, match='unsupported TCP lifecycle'):
+        tcp.parse_line(line('55.100000000', body), {})
+
+
+@pytest.mark.parametrize('body', [
+    OFFLOAD_BODY,
+    'Socket Option SO_KEEPALIVE  is going to be set for connection 0xFFFFC88EF78AC4B0.',
+    'Option TCP_KEEPALIVE  is going to be set for connection 0xFFFFC88EF78AC4B0.',
+])
+def test_exact_native_option_never_supplies_birth_or_terminal(body):
+    option = tcp.parse_line(line('55.300000000', body), {})
+    assert option['kind'] == 'connection option context' and not option['terminal']
+    with pytest.raises(ValueError, match='missing native birth'):
+        tcp.reconstruct_generations([option])
+    raw = capture().decode('utf-16-le').replace(
+        line('57.000000000', 'connection 0xAAA (local=192.168.204.233:16633 remote=119.188.175.46:443) close issued.'),
+        '')
+    raw = raw.replace(line('56.100000000', 'connection 0xAAA transition from EstablishedState  to CloseWaitState , SndNxt = 3.'),
+        line('55.300000000', body.replace('0xFFFFC88EF78AC4B0', '0xAAA')))
+    result = reconstruct(raw.encode('utf-16-le'))
+    assert all(e['kind'] != 'connection option context' for e in result['termination'])
+    assert any(e['kind'] == 'connection option context' for e in result['events'])
+    assert all(e['tcb'] != '0XAAA' for e in result['termination'])
+
+
+def test_option_between_closed_and_reused_birth_is_rejected():
+    birth = tcp.parse_line(line('55.100000000',
+        'connection 0xAAA transition from ClosedState to SynSentState , SndNxt = 0.'),
+        {'byte_start': 0, 'byte_end': 1})
+    closed = tcp.parse_line(line('55.200000000',
+        'connection 0xAAA transition from SynSentState to ClosedState , SndNxt = 0.'),
+        {'byte_start': 2, 'byte_end': 3})
+    option = tcp.parse_line(line('55.300000000', OFFLOAD_BODY.replace('0xFFFFC88EF78AC4B0', '0xAAA')),
+                            {'byte_start': 4, 'byte_end': 5})
+    new_birth = tcp.parse_line(line('55.400000000',
+        'connection 0xAAA transition from ClosedState to SynSentState , SndNxt = 0.'),
+        {'byte_start': 6, 'byte_end': 7})
+    with pytest.raises(ValueError, match='ambiguous generation'):
+        tcp.reconstruct_generations([birth, closed, option, new_birth])
+
+
+def test_option_in_old_generation_does_not_enter_new_generation():
+    bodies = [
+        'connection 0xAAA transition from ClosedState to SynSentState , SndNxt = 0.',
+        OFFLOAD_BODY.replace('0xFFFFC88EF78AC4B0', '0xAAA'),
+        'connection 0xAAA transition from SynSentState to ClosedState , SndNxt = 0.',
+        'connection 0xAAA transition from ClosedState to SynSentState , SndNxt = 0.',
+        'connection 0xAAA (local=192.168.204.233:16633 remote=119.188.175.46:443) connect completed. PID = 7948.',
+    ]
+    events = [tcp.parse_line(line(f'55.{i + 1}00000000', body),
+                             {'byte_start': i * 2, 'byte_end': i * 2 + 1})
+              for i, body in enumerate(bodies)]
+    old, new = tcp.reconstruct_generations(events, events[-1])
+    assert events[1] in old['events'] and events[1] not in new['events']
+    assert old['closed_ref'] == events[2]['ref']
+    assert new['birth_ref'] == events[3]['ref']
+
+
 def capture():
     return ('\ufeff' + ''.join([
         line('55.100000000', 'connection 0xAAA transition from ClosedState  to SynSentState , SndNxt = 0.'),
