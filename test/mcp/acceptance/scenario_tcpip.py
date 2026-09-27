@@ -202,6 +202,14 @@ def parse_line(text, ref):
     m = ENDPOINT.fullmatch(body)
     if m:
         tail = m[4]
+        if tail == 'terminating: FIN-WAIT-2 timeout expired.':
+            # R51 sst-012: this notice precedes the reviewed shutdown and
+            # FinWait2 -> Closed records. It supplies neither birth nor a
+            # terminal boundary, and must match an already identified tuple.
+            endpoint(m[2]); endpoint(m[3])
+            event.update(tcb=m[1].upper(), local=m[2], remote=m[3],
+                         kind='termination context')
+            return event
         exists = re.fullmatch(r'exists\. State = (\w+)State \. PID = (\d+)\.', tail)
         retransmit = re.fullmatch(r'(?:retransmitting data|retransmitting connect attempt), RexmitCount = \d+\.', tail)
         if exists or retransmit:
@@ -565,11 +573,15 @@ def reconstruct_generations(events, expected=None):
             groups.append(dict(ordinal=0, left_censored=True, birth_ref=None, closed_ref=None,
                                identity=None, events=[]))
         group = groups[-1]
-        if event['kind'] == 'connection option context' and group['closed_ref'] is not None:
-            raise ValueError('TCB option after Closed has ambiguous generation')
+        if event['kind'] in ('connection option context', 'termination context') and group['closed_ref'] is not None:
+            raise ValueError('TCB context after Closed has ambiguous generation')
+        if event['kind'] == 'termination context' and (group['identity'] is None or
+                (event['local'], event['remote']) !=
+                (group['identity']['local'], group['identity']['remote'])):
+            raise ValueError('TCP termination context lacks matching generation identity')
         if event['kind'] == 'exists' and group['events']:
             raise ValueError('unexpected existing generation marker')
-        if event.get('local'):
+        if event.get('local') and event['kind'] != 'termination context':
             identity = group['identity']
             if identity is None:
                 group['identity'] = dict(local=event['local'], remote=event['remote'], pid=event.get('pid'))

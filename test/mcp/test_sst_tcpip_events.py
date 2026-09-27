@@ -42,6 +42,62 @@ def line(t, body):
 # R49 run-01/pktmon.txt, decoded native event at 15:17:44.354699900.
 OFFLOAD_BODY = ('Option TCP_OFFLOAD_NOT_PREFERRED  is going to be set for '
                 'connection 0xFFFFC88EF78AC4B0.')
+FINWAIT_BODY = ('connection 0xFFFFC88EFB4E2700 '
+                '(local=192.168.204.233:13077 remote=111.31.109.107:443) '
+                'terminating: FIN-WAIT-2 timeout expired.')
+
+
+def test_r51_finwait_notice_is_exact_nonterminal_context():
+    original = ('[02]0000.0000::2026-09-27 15:56:19.102995400 '
+                '[Microsoft-Windows-TCPIP] TCP: ' + FINWAIT_BODY + ' \r\n')
+    ref = dict(path='run-01/pktmon.txt', byte_start=55714346,
+               byte_end=55714756)
+    event = tcp.parse_line(original, ref)
+    assert event['kind'] == 'termination context'
+    assert event['tcb'] == '0XFFFFC88EFB4E2700'
+    assert (event['local'], event['remote']) == ('192.168.204.233:13077',
+                                                 '111.31.109.107:443')
+    assert event['text'] == original and event['ref'] is ref
+    assert len(original.encode('utf-16-le')) == ref['byte_end'] - ref['byte_start']
+    assert not event['terminal'] and 'pid' not in event and 'transition' not in event
+
+
+@pytest.mark.parametrize('body', [
+    FINWAIT_BODY.replace('FIN-WAIT-2', 'FIN-WAIT-1'),
+    FINWAIT_BODY.replace('timeout expired', 'idle timeout expired'),
+    FINWAIT_BODY.replace(' (local=192.168.204.233:13077 remote=111.31.109.107:443)', ''),
+    FINWAIT_BODY + ' extra',
+    FINWAIT_BODY.replace('0xFFFFC88EFB4E2700', '0xINVALID'),
+])
+def test_finwait_near_misses_still_fail_closed(body):
+    with pytest.raises(ValueError, match='unsupported TCP lifecycle'):
+        tcp.parse_line(line('55.100000000', body), {})
+
+
+def test_finwait_context_cannot_create_or_close_a_generation():
+    context = tcp.parse_line(line('55.100000000', FINWAIT_BODY),
+                             dict(byte_start=0, byte_end=1))
+    with pytest.raises(ValueError, match='missing native birth'):
+        tcp.reconstruct_generations([context])
+    birth = tcp.parse_line(line('55.200000000',
+        'connection 0xFFFFC88EFB4E2700 transition from ClosedState  to SynSentState , SndNxt = 0.'),
+        dict(byte_start=2, byte_end=3))
+    with pytest.raises(ValueError, match='matching generation identity'):
+        tcp.reconstruct_generations([birth, context])
+    connected = tcp.parse_line(line('55.300000000',
+        'connection 0xFFFFC88EFB4E2700 (local=192.168.204.233:13077 remote=111.31.109.107:443) connect completed. PID = 4260.'),
+        dict(byte_start=4, byte_end=5))
+    groups = tcp.reconstruct_generations([birth, connected, context])
+    assert len(groups) == 1 and groups[0]['closed_ref'] is None
+    wrong_tuple = tcp.parse_line(line('55.400000000', FINWAIT_BODY.replace(':13077', ':13078')),
+                                 dict(byte_start=6, byte_end=7))
+    with pytest.raises(ValueError, match='matching generation identity'):
+        tcp.reconstruct_generations([birth, connected, wrong_tuple])
+    closed = tcp.parse_line(line('55.500000000',
+        'connection 0xFFFFC88EFB4E2700 transition from FinWait2State  to ClosedState , SndNxt = 3.'),
+        dict(byte_start=8, byte_end=9))
+    with pytest.raises(ValueError, match='ambiguous generation'):
+        tcp.reconstruct_generations([birth, connected, closed, context])
 
 
 def test_native_offload_option_is_tcb_metadata_only():
