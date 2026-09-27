@@ -1,0 +1,26 @@
+
+收集的数据:
+    数据包计数器，数据包捕获
+
+捕获类型:
+    所有数据包
+
+监视的组件:
+    全部
+
+数据包筛选器:
+    无
+
+记录程序参数:
+    记录程序名称:        PktMon
+    日志模式:       循环
+    日志文件:           E:\FakeNet-NG-MCP-test-work\scenario-suite-20260912\0ce24ebdba9b-sst-012-a1\run-01\pktmon.etl
+    最大文件大小:      1024 MB
+    已用内存:        144 MB
+    丢失的事件:        0
+
+事件提供程序:
+    ID                          级别  关键字 
+    --                          --  --- 
+    Microsoft-Windows-TCPIP      4 0xff 
+    Microsoft-Windows-PktMon     4 0x1f 

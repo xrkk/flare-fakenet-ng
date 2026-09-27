@@ -102,7 +102,10 @@ def test_first_unknown_response_with_exact_ready_recovers_only_owned_writer():
     s._capture_start_snapshot=lambda *args:{'identity_match':True,'value':{
         'probe_ready':{'pid':101,'creation_ticks':123},
         'process':{'pid':101,'creation_ticks':123},
-        'etl_exists':True,'pktmon_exit':0,'pktmon_status':'Running'}}
+        'etl_exists':True,'pktmon_exit':0,
+        'pktmon_status':('Collected data:\n    Packet capture\nCapture type:\n'
+                         '    All packets\nLogging parameters:\n    Logger name: PktMon\n'
+                         '    Log file: '+args[1]+'\n    Maximum file size: 128 MB\n')}}
     s._stop_capture_and_probe=lambda c:(closed.append(c) or {'files':[]})
     with pytest.raises(suite.RecoveredCaptureStart):
         s._start_capture_and_probe(r'E:\scope',PROFILE,'nonce','run-01')
@@ -126,7 +129,9 @@ def test_second_probe_created_without_ready_recovers_only_exact_receipt():
         return {'probe_ready':None,'launch_receipt':receipt,
                 'process':{'pid':101,'creation_ticks':creation},
                 'etl_exists':True,'pktmon_exit':0,
-                'pktmon_status':'数据包监视器正在运行。'},'snapshot wire'
+                'pktmon_status':('Collected data:\n    Packet capture\nCapture type:\n'
+                                 '    All packets\nLogging parameters:\n    Logger name: PktMon\n'
+                                 '    Log file: '+owner['etl']+'\n    Maximum file size: 128 MB\n')},'snapshot wire'
     s._vm_json=vm
     s._stop_capture_and_probe=lambda c:(closed.append(c) or {'files':[]})
     with pytest.raises(suite.RecoveredCaptureStart):

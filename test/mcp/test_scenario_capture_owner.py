@@ -156,7 +156,11 @@ def test_unknown_shared_probe_with_exact_identity_recovers_its_own_writer():
         'identity_match': True,
         'value': {'probe_ready': {'pid': 321, 'creation_ticks': 456},
                   'etl_exists': True, 'pktmon_exit': 0,
-                  'pktmon_status': 'Running'}}
+                  'pktmon_status': ('Collected data:\n    Packet capture\n'
+                                    'Capture type:\n    All packets\n'
+                                    'Logging parameters:\n    Logger name: PktMon\n'
+                                    '    Log file: E:/pktmon.etl\n'
+                                    '    Maximum file size: 128 MB\n')}}
     stopped = []
     runner._stop_capture_and_probe = lambda capture: (
         stopped.append(capture) or {'files': []})

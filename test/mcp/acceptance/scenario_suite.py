@@ -24,6 +24,7 @@ import http.server
 import importlib.util
 import ipaddress
 import json
+import ntpath
 import os
 from pathlib import Path, PureWindowsPath
 import re
@@ -1137,6 +1138,75 @@ class Suite:
             re.search(r'\brunning\b|正在运行', status, re.IGNORECASE))
 
     @staticmethod
+    def _shared_pktmon_owner_active(status: Any, exit_code: Any, etl: str) -> bool:
+        """Accept only one complete active status bound to the exact owner ETL."""
+        if not isinstance(status, str) or exit_code != 0 or not isinstance(etl, str):
+            return False
+        if re.search(r'数据包监视器没有运行|\bnot\s+running\b|\bstopped\b',
+                     status, re.IGNORECASE):
+            return False
+        lines = [line.strip() for line in status.splitlines() if line.strip()]
+        if not lines or not re.fullmatch(r'收集的数据:|Collected data:', lines[0], re.I):
+            return False
+
+        def values(label: str) -> list[str]:
+            return [match.group(1).strip() for match in
+                    re.finditer(r'^[ \t]*(?:' + label + r')[ \t]*:[ \t]*(.*?)[ \t]*$',
+                                status, re.I | re.M)]
+
+        data = values(r'收集的数据|Collected data')
+        capture = values(r'捕获类型|Capture type')
+        logging = values(r'记录程序参数|Logging parameters')
+        logger = values(r'记录程序名称|Logger name')
+        files = values(r'日志文件|Log file')
+        max_size = values(r'最大文件大小|Maximum file size')
+        if (len(data) != 1 or len(capture) != 1 or len(logging) != 1 or
+                len(logger) != 1 or len(files) != 1 or len(max_size) != 1):
+            return False
+        if (not re.search(r'(?m)^[ \t]*(?:收集的数据|Collected data)[ \t]*:[ \t]*\r?\n'
+                         r'[ \t]*[^\r\n]*(?:数据包捕获|packet capture)', status, re.I) or
+                not re.search(r'(?m)^[ \t]*(?:捕获类型|Capture type)[ \t]*:[ \t]*\r?\n'
+                              r'[ \t]*[^\r\n]*(?:所有数据包|all packets)', status, re.I) or
+                logger[0].casefold() != 'pktmon' or
+                not re.fullmatch(r'\d+\s*MB', max_size[0], re.I)):
+            return False
+        # Status values are absolute Windows paths, never prefixes or substrings.
+        if not all(re.match(r'^[A-Za-z]:[\\/]', path) for path in (files[0], etl)):
+            return False
+        return ntpath.normcase(ntpath.normpath(files[0])) == ntpath.normcase(ntpath.normpath(etl))
+
+    @staticmethod
+    def _shared_pktmon_owner_gate_ps() -> str:
+        """Pure PowerShell 5.1 twin of the offline status/owner predicate."""
+        return (
+            "function Test-SharedPktMonOwner([string]$text,[int]$exitCode,[string]$ownerEtl){"
+            "if($exitCode -ne 0 -or [string]::IsNullOrWhiteSpace($text) -or "
+            "[string]::IsNullOrWhiteSpace($ownerEtl)){return $false};"
+            "if($text -match '数据包监视器没有运行|(?i:not\\s+running|\\bstopped\\b)'){return $false};"
+            "$lines=@($text -split '\\r?\\n'|ForEach-Object{$_.Trim()}|Where-Object{$_});"
+            "if($lines.Count -eq 0 -or $lines[0] -notmatch '^(收集的数据|Collected data):$'){return $false};"
+            "$data=@([regex]::Matches($text,'(?im)^[ \\t]*(收集的数据|Collected data)[ \\t]*:[ \\t]*(.*?)[ \\t]*$'));"
+            "$capture=@([regex]::Matches($text,'(?im)^[ \\t]*(捕获类型|Capture type)[ \\t]*:[ \\t]*(.*?)[ \\t]*$'));"
+            "$logging=@([regex]::Matches($text,'(?im)^[ \\t]*(记录程序参数|Logging parameters)[ \\t]*:[ \\t]*(.*?)[ \\t]*$'));"
+            "$logger=@([regex]::Matches($text,'(?im)^[ \\t]*(记录程序名称|Logger name)[ \\t]*:[ \\t]*(.*?)[ \\t]*$'));"
+            "$files=@([regex]::Matches($text,'(?im)^[ \\t]*(日志文件|Log file)[ \\t]*:[ \\t]*(.*?)[ \\t]*$'));"
+            "$max=@([regex]::Matches($text,'(?im)^[ \\t]*(最大文件大小|Maximum file size)[ \\t]*:[ \\t]*(.*?)[ \\t]*$'));"
+            "if($data.Count -ne 1 -or $capture.Count -ne 1 -or $logging.Count -ne 1 -or "
+            "$logger.Count -ne 1 -or $files.Count -ne 1 -or $max.Count -ne 1){return $false};"
+            "if($text -notmatch '(?im)^[ \\t]*(收集的数据|Collected data)[ \\t]*:[ \\t]*\\r?\\n[ \\t]*[^\\r\\n]*(数据包捕获|packet capture)' -or "
+            "$text -notmatch '(?im)^[ \\t]*(捕获类型|Capture type)[ \\t]*:[ \\t]*\\r?\\n[ \\t]*[^\\r\\n]*(所有数据包|all packets)' -or "
+            "$logger[0].Groups[2].Value.Trim() -ine 'PktMon' -or "
+            "$max[0].Groups[2].Value.Trim() -notmatch '^(?i:\\d+\\s*MB)$'){return $false};"
+            "$actual=$files[0].Groups[2].Value.Trim();"
+            "if($actual -notmatch '^[A-Za-z]:[\\\\/]' -or "
+            "$ownerEtl -notmatch '^[A-Za-z]:[\\\\/]'){return $false};"
+            "try{$a=[IO.Path]::GetFullPath($actual.Replace('/','\\'));"
+            "$b=[IO.Path]::GetFullPath($ownerEtl.Replace('/','\\'));"
+            "return [string]::Equals($a,$b,[StringComparison]::OrdinalIgnoreCase)}"
+            "catch{return $false}};"
+        )
+
+    @staticmethod
     def _tool_identity() -> dict[str, Any]:
         """Freeze the complete acceptance tool source set for a new suite root."""
         directory = Path(__file__).resolve().parent
@@ -1753,7 +1823,9 @@ class Suite:
         status = str(value.get('pktmon_status', ''))
         if (snapshot.get('identity_match') is not True or
                 value.get('etl_exists') is not True or
-                value.get('pktmon_exit') != 0 or not self._pktmon_running(status)):
+                not (self._shared_pktmon_owner_active(status, value.get('pktmon_exit'), etl)
+                     if owner_id else
+                     value.get('pktmon_exit') == 0 and self._pktmon_running(status))):
             return None
         capture = {'guest': run_root, 'run_label': run_label,
                    'pid': ready['pid'], 'probe_creation_ticks': ready['creation_ticks'],
@@ -1998,9 +2070,10 @@ class Suite:
             "$etl=" + quote_ps(owner['etl']) + ";$nic=" + quote_ps(owner['pktmon_nic']) + ";"
             "if(!(Test-Path -LiteralPath $etl -PathType Leaf) -or !(Test-Path -LiteralPath $nic -PathType Leaf))"
             "{throw 'physical owner files absent'};"
-            "$status=(& pktmon status|Out-String);if($LASTEXITCODE -ne 0 -or "
-            "($status -match '没有运行|(?i:not running|stopped)' -or "
-            "($status -notmatch 'Running' -and $status -notmatch '正在运行'))){throw 'physical pktmon owner not running'};"
+            + self._shared_pktmon_owner_gate_ps() +
+            "$status=(& pktmon status|Out-String);$statusExit=$LASTEXITCODE;"
+            "if(-not(Test-SharedPktMonOwner $status $statusExit $etl))"
+            "{throw 'physical pktmon owner not running'};"
             "$encoded=" + quote_ps(encoded_child) + ";"
             "$out=Join-Path $r 'probe.jsonl';$start=Join-Path $r 'probe.start';"
             "$cases=Join-Path $r 'probe.cases';$stop=Join-Path $r 'probe.stop';"
