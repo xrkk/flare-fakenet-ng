@@ -14,6 +14,14 @@ def _json(path):
     return json.loads(path.read_text(encoding='utf-8'))
 
 
+def _stream_digest(stream):
+    digest = hashlib.sha256()
+    with stream:
+        while block := stream.read(1024 * 1024):
+            digest.update(block)
+    return digest.digest()
+
+
 def _record(root, record):
     path = (root / record['path']).resolve()
     if (not path.is_relative_to(root.resolve()) or not path.is_file() or
@@ -106,8 +114,8 @@ def evaluate(run, suite_root, *, expected_candidate, expected_nonce, expected_mo
             target = (guest_root / relative).resolve()
             if (relative.is_absolute() or '..' in relative.parts or
                     not target.is_relative_to(guest_root.resolve()) or not target.is_file() or
-                    hashlib.sha256(target.read_bytes()).digest() !=
-                    hashlib.sha256(archive.read(name)).digest()):
+                    _stream_digest(target.open('rb')) !=
+                    _stream_digest(archive.open(name))):
                 raise raw.DiagnosticError('auxiliary QPC ZIP/extracted original differs')
         if set(names) != {path.relative_to(guest_root).as_posix() for path in
                           guest_root.rglob('*') if path.is_file()}:

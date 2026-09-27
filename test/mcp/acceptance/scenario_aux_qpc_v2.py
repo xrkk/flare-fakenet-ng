@@ -158,8 +158,8 @@ def rebuild(case_path, evidence_root, export, *, require_windows=True):
         export, etl, len(legacy_raw), legacy_raw, header)
     text = evidence.data[capture['text_path']]
     log = evidence.data[case['run_log_path']].decode('utf-8-sig')
-    tcpip.validate_capture(text, evidence.data[capture['etl_path']],
-                           evidence.read(capture['metadata_ref']), 50_000_000)
+    capture_interval = tcpip.validate_capture(text, evidence.data[capture['etl_path']],
+                                              evidence.read(capture['metadata_ref']), 50_000_000)
     ipc = [json.loads(line) for line in evidence.data[case['ipc_path']].splitlines()]
     managed_pid, managed_created = tcpip.managed_identity(ipc, case['run_id'])
     cases, identities, named_targets, named_selectors, used_tuples = [], [], [], [], set()
@@ -210,9 +210,13 @@ def rebuild(case_path, evidence_root, export, *, require_windows=True):
                  row.get('nonce') == case['nonce'] and row.get('pid') == item['pid']]
         _require(len(ready) == 1 and len(child) <= 1,
                  'auxiliary native probe ready ambiguous')
+        shared_context = ({'case': case, 'evidence': evidence, 'probe_rows': probe_rows,
+                           'capture_interval': capture_interval}
+                          if case.get('shared_capture') else None)
         identity = check_aux_provenance(evidence.read(capture['metadata_ref']), ready[0],
             child[0] if child else None, origin, header, case['candidate_id'],
-            case['run_id'], managed_pid, managed_created)
+            case['run_id'], managed_pid, managed_created,
+            **({'shared': shared_context} if shared_context is not None else {}))
         identities.append(identity)
         lower, upper = identity['capture_qpc']['before'][1], identity['capture_qpc']['after'][0]
         _require(all(lower <= row['raw_qpc'] <= upper for row in selectors),

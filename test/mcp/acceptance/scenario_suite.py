@@ -78,6 +78,11 @@ MAX_GUEST_TRANSFER = 192 * 1024 * 1024
 # beyond its ETL (R55: 213,867,814 bytes from 78,303,357 bytes). Keep this
 # separate from the bound for arbitrary guest evidence and QPC ZIP members.
 MAX_SHARED_PKTMON_TEXT_TRANSFER = 512 * 1024 * 1024
+# R55's complete auxiliary v2 export is 221,311,163 compressed bytes and
+# 2,076,097,607 expanded bytes. This exception belongs only to that program.
+MAX_AUX_V2_ZIP_TRANSFER = 256 * 1024 * 1024
+MAX_AUX_V2_MEMBER = 1024 * 1024 * 1024
+MAX_AUX_V2_EXPANDED = 3 * 1024 * 1024 * 1024
 QPC_EXPORT_WAIT_SECONDS = 600
 QPC_EXPORT_RPC_SECONDS = 900
 GUEST_ROOT = r'C:\ProgramData\FakeNet-NG-MCP\logs'
@@ -119,7 +124,8 @@ class RecoveredCaptureStart(SuiteError):
         self.record = record
 
 
-def extract_qpc_archive(output_zip: Path, destination: Path, evidence) -> None:
+def extract_qpc_archive(output_zip: Path, destination: Path, evidence,
+                        *, auxiliary_v2: bool = False) -> None:
     """Extract complete native views under separate member and aggregate limits.
 
     A diagnostic export contains raw, default-clock and paired full-event views.
@@ -127,31 +133,60 @@ def extract_qpc_archive(output_zip: Path, destination: Path, evidence) -> None:
     three views plus one limit's worth of metadata (768 MiB at current settings).
     Validate every header before creating files, then let ZipFile verify CRCs.
     """
+    member_limit = MAX_AUX_V2_MEMBER if auxiliary_v2 else MAX_GUEST_TRANSFER
+    total_limit = MAX_AUX_V2_EXPANDED if auxiliary_v2 else 4 * MAX_GUEST_TRANSFER
+    stage = destination.with_name(destination.name + '.extract-' + uuid.uuid4().hex)
+    if auxiliary_v2 and output_zip.stat().st_size > MAX_AUX_V2_ZIP_TRANSFER:
+        raise SuiteError('QPC native output ZIP exceeds transfer bound')
+    if auxiliary_v2 and destination.exists():
+        raise SuiteError('QPC native output destination collision')
     with zipfile.ZipFile(output_zip) as archive:
         members = archive.infolist()
         if len(members) > 128:
             raise SuiteError('QPC output archive has too many members')
-        total, targets = 0, {}
+        total, targets, folded = 0, {}, set()
         for member in members:
-            if member.is_dir():
-                continue
             relative = Path(member.filename)
             target = (destination / relative).resolve()
             if (relative.is_absolute() or '..' in relative.parts or
                     '\\' in member.filename or ':' in member.filename or
+                    not member.filename or '\x00' in member.filename or
+                    (auxiliary_v2 and relative.as_posix().rstrip('/') !=
+                     member.filename.rstrip('/')) or
                     not target.is_relative_to(destination.resolve()) or
-                    target in targets or target.exists() or
+                    target in targets or (auxiliary_v2 and
+                    member.filename.casefold() in folded) or target.exists() or
                     (member.external_attr >> 16) & 0o170000 == 0o120000 or
-                    not 0 <= member.file_size <= MAX_GUEST_TRANSFER):
+                    not 0 <= member.file_size <= member_limit):
                 raise SuiteError('QPC output archive path or size invalid')
+            folded.add(member.filename.casefold())
+            if member.is_dir():
+                continue
             total += member.file_size
-            if total > 4 * MAX_GUEST_TRANSFER:
+            if total > total_limit:
                 raise SuiteError('QPC output archive exceeds expanded bound')
             targets[target] = member
-        for target, member in targets.items():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open('xb') as stream, archive.open(member) as source:
-                shutil.copyfileobj(source, stream)
+        if not auxiliary_v2:
+            for target, member in targets.items():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with target.open('xb') as stream, archive.open(member) as source:
+                    shutil.copyfileobj(source, stream, 1024 * 1024)
+                evidence.add(target)
+            return
+        stage.mkdir(parents=True, exist_ok=False)
+        try:
+            for target, member in targets.items():
+                staged = stage / target.relative_to(destination)
+                staged.parent.mkdir(parents=True, exist_ok=True)
+                with staged.open('xb') as stream, archive.open(member) as source:
+                    shutil.copyfileobj(source, stream, 1024 * 1024)
+                if staged.stat().st_size != member.file_size:
+                    raise SuiteError('QPC output archive member short extraction')
+            os.replace(stage, destination)
+        except BaseException:
+            shutil.rmtree(stage, ignore_errors=True)
+            raise
+        for target in targets:
             evidence.add(target)
 
 
@@ -2519,7 +2554,8 @@ class Suite:
 
 
     def _transfer_guest_file(self, guest_path: str, size: int, sha256: str,
-                             destination: Path) -> dict[str, Any]:
+                             destination: Path, *, auxiliary_v2_output: bool = False
+                             ) -> dict[str, Any]:
         assert self.vm
         guest = PureWindowsPath(guest_path)
         guest_root = PureWindowsPath(self.guest_work_root)
@@ -2535,7 +2571,17 @@ class Suite:
                        guest_parts[-2:] == ('run-01', 'pktmon.txt') and
                        PureWindowsPath(destination).name == 'pktmon.txt' and
                        destination.parent.name == 'run-01')
-        limit = MAX_SHARED_PKTMON_TEXT_TRANSFER if shared_text else MAX_GUEST_TRANSFER
+        native_zip = (auxiliary_v2_output and
+                      guest_parts[:len(root_parts)] == root_parts and
+                      len(guest_parts) == len(root_parts) + 2 and
+                      guest_parts[len(root_parts)].startswith('qpc-contract-') and
+                      guest_parts[-1] == 'output.zip' and
+                      destination.name == 'qpc-output.zip' and
+                      destination.parent.name == 'auxiliary-qpc')
+        if auxiliary_v2_output and not native_zip:
+            raise SuiteError('auxiliary v2 output transfer scope differs')
+        limit = (MAX_SHARED_PKTMON_TEXT_TRANSFER if shared_text else
+                 MAX_AUX_V2_ZIP_TRANSFER if native_zip else MAX_GUEST_TRANSFER)
         if not 0 <= int(size) <= limit:
             raise SuiteError('guest evidence outside transfer bound: ' + guest_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -4218,7 +4264,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         scope = hashlib.sha256(scope_key.encode()).hexdigest()[:20]
         guest = self.guest_work_root + r'\qpc-contract-' + scope
         guest_case = guest + '\\input\\evidence\\' + str(base_path.relative_to(self.root)).replace('/', '\\')
-        source_sha = hashlib.sha256(bundle.read_bytes()).hexdigest()
+        source_sha = file_record(bundle, self.root)['sha256']
         responsibility = root / 'qpc-process-responsibility.json'
         write_new_json(responsibility, {
             'schema': 'sst.qpc-process-responsibility.v1', 'run_id': run_id,
@@ -4341,12 +4387,19 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 value.get('input_sha256') != source_sha):
             raise SuiteError('QPC guest identity or host-only input transfer differs')
         output_zip = root / 'qpc-output.zip'
-        self._transfer_guest_file(str(value['path']), int(value['bytes']),
-                                  str(value['sha256']), output_zip)
+        if program_name == 'scenario_aux_qpc_v2.py':
+            self._transfer_guest_file(str(value['path']), int(value['bytes']),
+                                      str(value['sha256']), output_zip,
+                                      auxiliary_v2_output=True)
+        else:
+            self._transfer_guest_file(str(value['path']), int(value['bytes']),
+                                      str(value['sha256']), output_zip)
         evidence.add(output_zip)
         destination = root / 'qpc-native'
-        destination.mkdir(exist_ok=False)
-        extract_qpc_archive(output_zip, destination, evidence)
+        if program_name != 'scenario_aux_qpc_v2.py':
+            destination.mkdir(exist_ok=False)
+        extract_qpc_archive(output_zip, destination, evidence,
+                            auxiliary_v2=program_name == 'scenario_aux_qpc_v2.py')
         terminal = read_json(destination / 'terminal.json')
         owner = read_json(destination / 'process-responsibility.json')
         manifest = read_json(destination / 'export' / 'manifest.json')
@@ -4372,6 +4425,20 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             return
         import scenario_tcpip as tcpip
         files = run['capture']['files'] + run['originals']['files']
+        shared_capture = None
+        if run['capture'].get('observation_contract') == 'con008-shared-v2':
+            owner = run['capture'].get('physical_owner')
+            view = run['capture'].get('run_view')
+            if not owner or not view:
+                raise SuiteError('auxiliary QPC shared owner/view absent')
+            files += [owner, view]
+            shared_capture = {'owner': owner, 'view': view}
+            if run['label'] == 'run-02':
+                receipts = [item for item in files
+                            if Path(item['path']).name == 'probe-launch.json']
+                if len(receipts) != 1:
+                    raise SuiteError('auxiliary QPC shared second launch absent/ambiguous')
+                shared_capture['launch'] = receipts[0]
         by_name = {Path(item['path']).name: item for item in files}
         required = ('probe.jsonl', 'pktmon.txt', 'pktmon.etl', 'pktmon-nic.json',
                     'run.log', 'ipc-parent.jsonl')
@@ -4439,6 +4506,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                       'run_log_path': by_name['run.log']['path'],
                       'ipc_path': by_name['ipc-parent.jsonl']['path'],
                       'cases': cases}
+        if shared_capture is not None:
+            descriptor['shared_capture'] = shared_capture
         descriptor_path = native_root / 'auxiliary-qpc-input.json'
         write_new_json(descriptor_path, descriptor)
         evidence.add(descriptor_path)

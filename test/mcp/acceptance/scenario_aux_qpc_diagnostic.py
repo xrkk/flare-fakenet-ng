@@ -348,8 +348,8 @@ def run(case_path: Path, evidence_root: Path, output: Path) -> dict:
         etl = (evidence_root / capture['etl_path']).resolve()
         text = evidence.data[capture['text_path']]
         log = evidence.data[case['run_log_path']].decode('utf-8-sig')
-        tcpip.validate_capture(text, evidence.data[capture['etl_path']],
-                               evidence.read(capture['metadata_ref']), 50_000_000)
+        capture_interval = tcpip.validate_capture(text, evidence.data[capture['etl_path']],
+                                                  evidence.read(capture['metadata_ref']), 50_000_000)
         ipc = [json.loads(line) for line in evidence.data[case['ipc_path']].splitlines()]
         managed_pid, managed_created = tcpip.managed_identity(ipc, case['run_id'])
         exported = raw_clock.export(etl, output / 'raw')
@@ -419,7 +419,8 @@ def run(case_path: Path, evidence_root: Path, output: Path) -> dict:
                           item.get('pid') == auxiliary['pid']]
             if len(ready_rows) != 1 or len(child_rows) > 1:
                 raise raw_clock.DiagnosticError('auxiliary native probe ready ambiguous')
-            provenance.append((ready_rows[0], child_rows[0] if child_rows else None, origin))
+            provenance.append((ready_rows[0], child_rows[0] if child_rows else None,
+                               origin, probe_rows))
             details.append({'case_index': auxiliary['case_index'],
                             'connection_id': auxiliary['connection_id'],
                             'primary_tcb': observed['connect']['tcb'],
@@ -488,8 +489,11 @@ def run(case_path: Path, evidence_root: Path, output: Path) -> dict:
         identities = [check_aux_provenance(
             evidence.read(capture['metadata_ref']), ready, process_ready, origin,
             exported['passes'][0]['header'], case['candidate_id'], case['run_id'],
-            managed_pid, managed_created)
-            for ready, process_ready, origin in provenance]
+            managed_pid, managed_created,
+            **({'shared': {'case': case, 'evidence': evidence, 'probe_rows': probe_rows,
+                           'capture_interval': capture_interval}}
+               if case.get('shared_capture') else {}))
+            for ready, process_ready, origin, probe_rows in provenance]
         if any(identity != identities[0] for identity in identities[1:]):
             raise raw_clock.DiagnosticError('auxiliary cases have mixed native identity')
         manifest.update(managed_pid=managed_pid,
