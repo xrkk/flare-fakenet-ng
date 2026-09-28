@@ -31,11 +31,11 @@ def test_client_engine_wait_holds_first_connection_until_rule_marker():
     source = client_source()
     assert 'a[6] == "engine-wait"' in source
     assert 'PROCESS_REDIRECT_RULE_READY' in source
-    # The wait is bounded by the same startup budget and by the stop control.
+    # The wait is bounded by its own budget and by the stop control.
     assert re.search(
-        r'while \(DateTime\.UtcNow < retryDeadline && !File\.Exists\(a\[2\]\)\)', source)
+        r'while \(DateTime\.UtcNow < markerDeadline && !File\.Exists\(a\[2\]\)\)', source)
     # An engine that never publishes the marker is a distinct failure.
-    assert 'if (!markerSeen) return 4;' in source
+    assert re.search(r'if \(!markerSeen\) \{.*?MARKER_MISSED.*?return 4;', source, re.S)
     # The marker wait has its own extended budget: the restart transition
     # plus the run log's block-buffered flush can consume nearly the whole
     # startup budget before the marker line reaches disk.
