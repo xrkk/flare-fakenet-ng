@@ -12,15 +12,46 @@ import scenario_tcpip
 import scenario_capture_view as view
 
 
-REPO = Path(__file__).resolve().parents[2]
-OLD = REPO / 'Logs/fakenetng-mcp/final100-20260920/formal-final100-dns-glue-02/evidence/sst-012/attempt-01/run-01'
 SECTIONS = {key: [] for key in ('dns_servers','routes','listen_ports','windivert_processes','services')}
 
 
+def synthetic_capture(candidate_id):
+    """Small synthetic ETW conversion envelope; never a native capture claim."""
+    etl = b'synthetic ETL bytes for shared-owner control only'
+    start = 134350164530000000
+    end = start + 80_000_000  # Eight seconds in FILETIME units.
+    path = r'X:\synthetic\pktmon.etl'
+    text = (f'\ufeff[00]0000.0000::2026-09-28 05:00:53.000000000 [MSNT_SystemTrace] '
+            f'EndTime: {end}, EventsLost: 0, StartTime: {start}, '
+            f'BuffersLost: 0, LogFileNameString: {path}\n').encode('utf-16-le')
+    boot = {'boot_identifier': 'synthetic-boot'}
+    machine = {'machine_guid': 'synthetic-machine'}
+    identity = {'supported': True, 'candidate_id': candidate_id,
+                'boot': boot, 'vm_identity': machine}
+    metadata = {
+        'schema': suite.NIC_CAPTURE_SCHEMA, 'pktmon_status_after': 'stopped',
+        'pktmon_list': '9 00-0C-29-C1-CA-49 Synthetic Ethernet',
+        'adapters': [{'MacAddress': '00-0C-29-C1-CA-49',
+                      'InterfaceDescription': 'Synthetic Ethernet', 'Status': 'Up',
+                      'ifIndex': 11, 'Name': 'Ethernet0'}],
+        'capture_mode': 'all-components-tcpip',
+        'clock_before': {'offset_minutes': 480, 'utc_ticks': start + 504911232000000000,
+                         'mono': 0, 'stopwatch_frequency': 10_000_000},
+        'clock_after': {'offset_minutes': 480, 'utc_ticks': end + 504911232000000000,
+                        'mono': 80_000_000, 'stopwatch_frequency': 10_000_000},
+        'conversion': {'argv': ['pktmon', 'etl2txt', path, '--out', path[:-4] + '.txt'],
+                       'exit_code': 0, 'etl_sha256': hashlib.sha256(etl).hexdigest(),
+                       'text_sha256': hashlib.sha256(text).hexdigest()},
+        'native_identity_before': identity, 'native_identity_after': identity,
+    }
+    return etl, text, metadata
+
+
 def test_real_executor_seals_shared_owner_to_result_and_rechecks(tmp_path, monkeypatch):
-    """ETL bytes are old native originals; new probes/service are synthetic controls."""
+    """Run the real shared-owner seal and recheck with synthetic input bytes."""
     monkeypatch.setattr(suite.time, 'sleep', lambda _: None)
-    identity = json.loads((REPO / 'Logs/fakenetng-mcp/final100-20260920/formal-final100-dns-glue-02/results/scenario-sst-012.json').read_text())['identity']
+    identity = {'candidate_id': 'synthetic-' + 'a' * 64,
+                'source_commit': 'b' * 40, 'package_sha256': 'c' * 64}
     args = suite.parse_args(['generate', '--candidate-id', identity['candidate_id'],
         '--source-commit', identity['source_commit'], '--package-sha256', identity['package_sha256'],
         '--suite-root', str(tmp_path), '--capture-contract', 'scenario-shared-v2',
@@ -28,9 +59,7 @@ def test_real_executor_seals_shared_owner_to_result_and_rechecks(tmp_path, monke
     runner = suite.Suite(args)
     scenario = next(row for row in suite.build_manifest(20260912)['scenarios']
                     if row['scenario_id'] == 'sst-012')
-    raw_etl = (OLD / 'pktmon.etl').read_bytes()
-    raw_txt = (OLD / 'pktmon.txt').read_bytes()
-    metadata = json.loads((OLD / 'pktmon-nic.json').read_text(encoding='utf-8-sig'))
+    raw_etl, raw_txt, metadata = synthetic_capture(identity['candidate_id'])
     lo, hi = scenario_tcpip.validate_capture(raw_txt, raw_etl, metadata, 50_000_000)
     assert hi - lo > 4_000_000_000
     boot = metadata['native_identity_before']['boot']
