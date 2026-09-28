@@ -324,11 +324,16 @@ public static class ScenarioProbeClient {
       // must be adoptable at the second start's quiescence gate) but hold
       // the first connection until the restarted engine publishes its rule
       // marker, mirroring the launcher-side readiness rule: only run
-      // directories created after this process started qualify.
+      // directories created after this process started qualify.  The whole
+      // restart transition (stop + settle + second start) can consume
+      // nearly the full startup budget before the marker appears, so the
+      // marker wait gets its own extended budget.
       var runsRoot = @"C:\ProgramData\FakeNet-NG-MCP\artifacts\runs";
       var launchUtc = Process.GetCurrentProcess().StartTime.ToUniversalTime().AddSeconds(-2);
-      var markerSeen = false;
-      while (DateTime.UtcNow < retryDeadline && !File.Exists(a[2])) {
+      var markerDeadline = DateTime.UtcNow.AddSeconds(retrySeconds + 60);
+      var markerSeen = false; var markerDir = "";
+      Console.WriteLine("ENGINE_WAIT|" + retrySeconds + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush();
+      while (DateTime.UtcNow < markerDeadline && !File.Exists(a[2])) {
         try {
           var fresh = new System.Collections.Generic.List<string>();
           foreach (var d in Directory.GetDirectories(runsRoot)) {
@@ -338,18 +343,17 @@ public static class ScenarioProbeClient {
           foreach (var d in fresh) {
             var log = Path.Combine(d, "run.log");
             try {
-              if (File.Exists(log) && File.ReadAllText(log).Contains("PROCESS_REDIRECT_RULE_READY")) { markerSeen = true; break; }
+              if (File.Exists(log) && File.ReadAllText(log).Contains("PROCESS_REDIRECT_RULE_READY")) { markerSeen = true; markerDir = d; break; }
             } catch { }
           }
         } catch { }
         if (markerSeen) break;
         Thread.Sleep(200);
       }
-      if (!markerSeen) return 4;
-      // The whole restart transition (stop + settle + second start) can
-      // consume nearly the entire startup budget before the marker appears;
-      // the connection attempts then get a fresh full budget so the probe
-      // still establishes inside the same launcher-side envelope.
+      if (!markerSeen) { Console.WriteLine("MARKER_MISSED|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush(); return 4; }
+      Console.WriteLine("MARKER|" + markerDir + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush();
+      // The connection attempts get a fresh full budget so the probe still
+      // establishes inside the same launcher-side envelope.
       retryDeadline = DateTime.UtcNow.AddSeconds(retrySeconds);
     }
     while (!File.Exists(a[2]) && DateTime.UtcNow < retryDeadline) {

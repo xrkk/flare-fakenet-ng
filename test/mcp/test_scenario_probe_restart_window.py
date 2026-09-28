@@ -36,11 +36,16 @@ def test_client_engine_wait_holds_first_connection_until_rule_marker():
         r'while \(DateTime\.UtcNow < retryDeadline && !File\.Exists\(a\[2\]\)\)', source)
     # An engine that never publishes the marker is a distinct failure.
     assert 'if (!markerSeen) return 4;' in source
-    # The restart transition can consume nearly the whole startup budget
-    # before the marker; connection attempts get a fresh budget after it.
+    # The marker wait has its own extended budget: the restart transition
+    # plus the run log's block-buffered flush can consume nearly the whole
+    # startup budget before the marker line reaches disk.
     assert re.search(
-        r'if \(!markerSeen\) return 4;\s*'
-        r'// The whole restart transition.*?\s*'
+        r'var markerDeadline = DateTime\.UtcNow\.AddSeconds\(retrySeconds \+ 60\);', source)
+    assert 'if (!markerSeen) {' in source and 'MARKER_MISSED|' in source
+    assert '"MARKER|" + markerDir' in source and 'ENGINE_WAIT|' in source
+    # Connection attempts get a fresh budget after the marker.
+    assert re.search(
+        r'MARKER\|" \+ markerDir.*?\s*'
         r'retryDeadline = DateTime\.UtcNow\.AddSeconds\(retrySeconds\);',
         source, re.S)
 
