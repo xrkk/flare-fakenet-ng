@@ -289,18 +289,6 @@ function Wait-EngineReadiness([string]$Path, [string]$Token, [string]$Bucket, [s
 function Ensure-ProbeClient([string]$ResultPath) {
     $root = Split-Path -Parent $ResultPath
     New-Item -ItemType Directory -Path $root -Force | Out-Null
-    # Reuse a live previous build when its image still exists: recompiling
-    # into the SAME exe path requires overwriting an image that antivirus
-    # routinely holds for many minutes after first execution
-    # (CS0016, discovery100-59 sst-041..045: locked across a whole batch).
-    if (Test-Path -LiteralPath $ResultPath) {
-        try {
-            $prior = Get-Content -LiteralPath $ResultPath -Raw | ConvertFrom-Json
-            if ($prior -and $prior.path -and (Test-Path -LiteralPath $prior.path)) {
-                return $prior
-            }
-        } catch { }
-    }
     # Each build writes under a unique name so csc never overwrites a file
     # any scanner may hold; stale builds are swept best-effort.
     Get-ChildItem -LiteralPath $root -Filter 'scenario-probe-client-*.exe' -ErrorAction SilentlyContinue |
@@ -383,6 +371,24 @@ public static class ScenarioProbeClient {
   }
 }
 '@
+    # Reuse a live previous build ONLY when it was compiled from the exact
+    # current client source: recompiling into the SAME exe path requires
+    # overwriting an image that antivirus routinely holds for many minutes
+    # after first execution (CS0016, discovery100-59 sst-041..045: locked
+    # across a whole batch), but a reused stale binary silently keeps the
+    # old argv contract (sst-041 option A, 2026-09-28: the engine-wait
+    # client returned 2 on seven arguments and produced no output).
+    $sourceHash = [BitConverter]::ToString(
+        [Security.Cryptography.SHA256]::Create().ComputeHash(
+            [Text.Encoding]::UTF8.GetBytes($clientSource))).Replace('-','').ToLower()
+    if (Test-Path -LiteralPath $ResultPath) {
+        try {
+            $prior = Get-Content -LiteralPath $ResultPath -Raw | ConvertFrom-Json
+            if ($prior -and $prior.path -and $prior.source_sha256 -eq $sourceHash -and (Test-Path -LiteralPath $prior.path)) {
+                return $prior
+            }
+        } catch { }
+    }
     $needsBuild = $true
     if ($needsBuild) {
         $clientSource | Set-Content -LiteralPath $source -Encoding UTF8
@@ -406,7 +412,7 @@ public static class ScenarioProbeClient {
         }
         if (-not $compiled) { throw ('B3 probe executable compilation failed: ' + ($attempts -join '; ') + ' csc said: ' + $lastOutput) }
     }
-    $row = @{ path = $exe; sha256 = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower(); public_ipv4 = '198.51.100.77'; private_ipv4 = '192.168.204.1' }
+    $row = @{ path = $exe; sha256 = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower(); public_ipv4 = '198.51.100.77'; private_ipv4 = '192.168.204.1'; source_sha256 = $sourceHash }
     [IO.File]::WriteAllText($ResultPath, ($row | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
     return $row
 }

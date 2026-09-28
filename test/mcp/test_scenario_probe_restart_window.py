@@ -54,6 +54,29 @@ def test_spawn_passes_engine_wait_only_for_restart_window():
     assert '-ArgumentList @($endpoint.host, $endpoint.port, $Stop, $Cadence, $Token, $StartupRetrySeconds) -RedirectStandardOutput' not in PROBES
 
 
+def test_client_build_reuse_requires_matching_source_hash():
+    """A reused probe binary must come from the current client source.
+
+    A stale reused binary keeps the old argv contract: the engine-wait
+    client returned 2 on seven arguments with no output (sst-041 option A,
+    2026-09-28), and the failure only surfaced as a missing probe close.
+    """
+    reuse = re.search(
+        r"if \(Test-Path -LiteralPath \$ResultPath\) \{\s*"
+        r"try \{\s*\$prior = Get-Content -LiteralPath \$ResultPath -Raw \| ConvertFrom-Json\s*"
+        r"if \(\$prior -and \$prior\.path -and \$prior\.source_sha256 -eq \$sourceHash "
+        r"-and \(Test-Path -LiteralPath \$prior\.path\)\) \{\s*return \$prior",
+        PROBES)
+    assert reuse, 'source-hash gated reuse missing from Ensure-ProbeClient'
+    assert re.search(
+        r"\$sourceHash = \[BitConverter\]::ToString\(\s*"
+        r"\[Security\.Cryptography\.SHA256\]::Create\(\)\.ComputeHash\(\s*"
+        r"\[Text\.Encoding\]::UTF8\.GetBytes\(\$clientSource\)\)\)",
+        PROBES)
+    assert re.search(
+        r"private_ipv4 = '192\.168\.204\.1'; source_sha256 = \$sourceHash \}", PROBES)
+
+
 def test_driver_stops_run01_probe_before_b3_match_restart():
     # The cooperative pre-restart stop exists and keeps the capture open (no
     # pktmon stop is passed).
