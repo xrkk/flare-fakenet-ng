@@ -266,6 +266,49 @@ def digest(value: Any) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
+def lifecycle_rpc_timeout(tool: str) -> int:
+    """Cover 420s server stop + 5s settle + 480s start with 55s margin."""
+    return 960 if tool == 'restart' else 480 if tool in ('start', 'stop') else 120
+
+
+def reconcile_timed_out_command(service: Any, command_id: str, operation: str,
+                                controller_id: str, budget_seconds: float = 120) -> dict[str, Any]:
+    """Observe the original command only; never resubmit an ambiguous mutation."""
+    deadline = time.monotonic() + budget_seconds
+    samples: list[dict[str, Any]] = []
+    while True:
+        sample: dict[str, Any] = {'at': utc_now()}
+        try:
+            events = service.tool('get_events', {'limit': 500}, timeout=15)['events']
+            status = service.tool('get_status', timeout=15)
+            sample['status'] = status
+            accepted = any(e.get('kind') == 'command.accepted' and
+                           e.get('command_id') == command_id and
+                           e.get('operation') == operation and
+                           e.get('controller') == controller_id for e in events)
+            terminal = next((e for e in reversed(events)
+                             if e.get('kind') in ('command.completed', 'command.failed') and
+                             e.get('command_id') == command_id and
+                             e.get('operation') == operation), None)
+            sample['accepted'] = accepted
+            sample['terminal_event'] = terminal
+            terminal_status_ok = (isinstance(status, dict) and
+                                  status.get('state') in ('healthy', 'stopped', 'failed') and
+                                  status.get('controller') in (None, controller_id))
+            sample['terminal_status_ok'] = terminal_status_ok
+            samples.append(sample)
+            if accepted and terminal is not None and terminal_status_ok:
+                return {'settled': True, 'command_id': command_id,
+                        'operation': operation, 'samples': samples}
+        except Exception as exc:  # read-only observation may itself be unavailable
+            sample['read_error'] = repr(exc)
+            samples.append(sample)
+        if time.monotonic() >= deadline:
+            return {'settled': False, 'command_id': command_id,
+                    'operation': operation, 'samples': samples}
+        time.sleep(min(2, max(0, deadline - time.monotonic())))
+
+
 def file_record(path: Path, root: Path | None = None) -> dict[str, Any]:
     size = path.stat().st_size
     hashed = hashlib.sha256()
@@ -1387,7 +1430,7 @@ class Suite:
         args = dict(arguments)
         args['command_id'] = self._command_id(scenario_id, attempt, sequence)
         args['expected_state_version'] = status['state_version']
-        result = self.service.tool(name, args, timeout=480 if name in ('start', 'stop') else 120)
+        result = self.service.tool(name, args, timeout=lifecycle_rpc_timeout(name))
         if result.get('error'):
             raise SuiteError('%s rejected: %s' % (name, result['error']))
         return result
@@ -5551,7 +5594,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 status = self._status()
                 sent.update(command_id=self._command_id(scenario_id, attempt, sequence, '-recovery'),
                             expected_state_version=status['state_version'])
-            outcome = self.service.tool_outcome(tool, sent, timeout=480 if tool in ('start', 'stop') else 120)
+            outcome = self.service.tool_outcome(tool, sent, timeout=lifecycle_rpc_timeout(tool))
             entry = {'tool': tool, 'sent_arguments': outcome['sent_arguments'],
                      'response': outcome['response'], 'ok': bool(outcome['ok']), 'error': outcome['error'],
                      'command_id': sent.get('command_id'), 'response_digest': digest(outcome['response'])}
@@ -5745,7 +5788,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         def call(tool: str, arguments: dict[str, Any] | None = None, *, mutation: bool = False,
                  expect: str = 'success', forced_version: int | None = None) -> dict[str, Any]:
             """Append the exact sent arguments and response before asserting it."""
-            nonlocal sequence
+            nonlocal sequence, operation_unsettled
             sequence += 1
             sent = dict(arguments or {})
             command_id = None
@@ -5755,7 +5798,32 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 sent.update(command_id=command_id,
                             expected_state_version=(status['state_version'] if forced_version is None else forced_version))
             began = time.monotonic()
-            outcome = self.service.tool_outcome(tool, sent, timeout=480 if tool in ('start', 'stop') else 120)  # type: ignore[union-attr]
+            try:
+                outcome = self.service.tool_outcome(  # type: ignore[union-attr]
+                    tool, sent, timeout=lifecycle_rpc_timeout(tool))
+            except (TimeoutError, urllib.error.URLError, ConnectionError) as exc:
+                if not mutation:
+                    raise
+                # The request may already be executing. Bind the failed RPC
+                # to its original identity before any possible cleanup.
+                operation_unsettled = True
+                entry = {'tool': tool, 'expect': expect, 'mutation': True,
+                         'command_id': command_id, 'sent_arguments': sent,
+                         'args_digest': digest(sent), 'response': None,
+                         'response_digest': None, 'response_headers': None,
+                         'ok': False, 'error': {'code': 'transport_unknown',
+                                               'message': repr(exc)},
+                         'transport_error': repr(exc),
+                         'duration_seconds': time.monotonic() - began}
+                calls.append(entry)
+                reconciliation = reconcile_timed_out_command(
+                    self.service, command_id, tool, self.service.controller_id)  # type: ignore[union-attr]
+                entry['reconciliation'] = reconciliation
+                evidence.write('command-timeout-%s.json' % command_id, entry)
+                operation_unsettled = not reconciliation['settled']
+                raise SuiteError('%s transport timed out; original command %s %s' %
+                                 (tool, command_id, 'settled' if reconciliation['settled']
+                                  else 'remains unknown')) from exc
             finished = time.monotonic()
             entry = {'tool': tool, 'expect': expect, 'mutation': mutation, 'command_id': command_id,
                      'sent_arguments': outcome['sent_arguments'], 'args_digest': digest(outcome['sent_arguments']),
@@ -5787,7 +5855,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
             status = self._status()
             sent = dict(args, command_id=self._command_id(scenario_id, attempt, sequence),
                         expected_state_version=status['state_version'])
-            outcome = self.service.tool_outcome(tool, sent, timeout=480 if tool == 'stop' else 120)  # type: ignore[union-attr]
+            outcome = self.service.tool_outcome(tool, sent, timeout=lifecycle_rpc_timeout(tool))  # type: ignore[union-attr]
             entry = {'label': label, 'tool': tool, 'command_id': sent['command_id'],
                      'sent_arguments': sent, 'args_digest': digest(sent), 'response': outcome['response'],
                      'response_digest': digest(outcome['response']), 'ok': bool(outcome['ok']), 'error': outcome['error']}
@@ -6332,7 +6400,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 # stop or any other mutable command while the original start
                 # RPC may still own the controller.  Preserve this explicit
                 # failed attempt for a later human/continuation-gate recovery.
-                cleanup_errors.append('no cleanup mutation: start/capture ownership was not terminal')
+                cleanup_errors.append('no cleanup mutation: lifecycle/capture ownership was not terminal')
             else:
                 pending = list(captures.items())
                 if shared_physical:
