@@ -34,6 +34,7 @@ param(
     [int]$StartupRetrySeconds = 70,
     [ValidateSet('before-start', 'during-start', 'after-healthy', 'restart-window', 'stop-window')]
     [string]$Interleave = 'during-start',
+    [switch]$EngineWait,
     [int]$CadenceMilliseconds = 250,
     [int]$HoldSeconds = 90
 )
@@ -885,7 +886,7 @@ function Invoke-PositiveCurl([string]$Path, [string]$Token) {
     Write-JsonLine $Path @{ event = 'curl_completed'; nonce = $Token; pid = $process.Id; exit_code = $process.ExitCode; http_code = "$out".Trim(); stderr = "$err".Trim(); url = $uri }
 }
 
-function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]$Stop, [string]$Start, [int]$Seconds, [string]$Tempo, [string]$Variant, [string]$Interleave, [int]$Cadence, [string]$TargetHost, [int]$TargetPort, [string]$TargetProtocol, [string]$ProcessMode, [string]$TlsServerName, [string]$FnprRole, [string]$AdditionalTargetsJson, [string]$CaseFile, [int]$StartupRetrySeconds, [string]$ExitControlFile) {
+function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]$Stop, [string]$Start, [int]$Seconds, [string]$Tempo, [string]$Variant, [string]$Interleave, [switch]$EngineWait, [int]$Cadence, [string]$TargetHost, [int]$TargetPort, [string]$TargetProtocol, [string]$ProcessMode, [string]$TlsServerName, [string]$FnprRole, [string]$AdditionalTargetsJson, [string]$CaseFile, [int]$StartupRetrySeconds, [string]$ExitControlFile) {
     Ensure-Output $Path
     $endpoint = Get-Endpoint $Bucket $TargetHost $TargetPort $TargetProtocol
     $sequence = 0
@@ -943,11 +944,14 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
         $identityPath = Join-Path $suiteRoot 'probe-client.json'
         $identity = Ensure-ProbeClient $identityPath
         $stdout = Join-Path (Split-Path -Parent $Path) 'probe-client.stdout'
-        # A restart-window probe is released before the restart while the
-        # engine is going down; it must hold its first connection until the
-        # restarted engine publishes the rule marker (see client source).
+        # Only the SECOND probe of a restart-window scenario is released
+        # before the restart while the engine is going down (run-01's probe
+        # is released after its engine is already proven up); it alone must
+        # hold its first connection until the restarted engine publishes the
+        # rule marker (see client source).  The launcher passes -EngineWait
+        # for exactly that probe.
         $clientArgs = @($endpoint.host, $endpoint.port, $Stop, $Cadence, $Token, $StartupRetrySeconds)
-        if ($Interleave -eq 'restart-window') { $clientArgs += @('engine-wait') }
+        if ($Interleave -eq 'restart-window' -and $EngineWait) { $clientArgs += @('engine-wait') }
         $process = Start-Process -FilePath $identity.path -ArgumentList $clientArgs -RedirectStandardOutput $stdout -PassThru -WindowStyle Hidden
         $childCreation = (Get-Process -Id $process.Id).StartTime.ToUniversalTime().Ticks
         $childReady = @{ event = 'process_ready'; nonce = $Token; profile = $Bucket; variant = $Variant; tempo = $Tempo; interleave = $Interleave; pid = $process.Id; worker = 1; seq = 0; creation_ticks = $childCreation; stopwatch_frequency = [Diagnostics.Stopwatch]::Frequency }
@@ -1178,6 +1182,6 @@ switch ($Action) {
     }
     'traffic' {
         if (-not $Output -or -not $Nonce -or -not $StopFile -or -not $StartFile) { throw '-Output, -Nonce, -StopFile and -StartFile are required for traffic' }
-        Invoke-Traffic $Profile $Output $Nonce $StopFile $StartFile $HoldSeconds $Tempo $Variant $Interleave $CadenceMilliseconds $TargetHost $TargetPort $TargetProtocol $ProcessMode $TlsServerName $FnprRole $AdditionalTargetsJson $CaseFile $StartupRetrySeconds $ExitControlFile
+        Invoke-Traffic $Profile $Output $Nonce $StopFile $StartFile $HoldSeconds $Tempo $Variant $Interleave $EngineWait $CadenceMilliseconds $TargetHost $TargetPort $TargetProtocol $ProcessMode $TlsServerName $FnprRole $AdditionalTargetsJson $CaseFile $StartupRetrySeconds $ExitControlFile
     }
 }

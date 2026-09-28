@@ -51,14 +51,23 @@ def test_client_engine_wait_only_accepts_run_dirs_created_after_launch():
     assert 'Directory.GetCreationTimeUtc(d) > launchUtc' in source
 
 
-def test_spawn_passes_engine_wait_only_for_restart_window():
+def test_spawn_passes_engine_wait_only_for_second_restart_window_probe():
     assert re.search(
         r"\$clientArgs = @\(\$endpoint\.host, \$endpoint\.port, \$Stop, "
         r"\$Cadence, \$Token, \$StartupRetrySeconds\)\r?\n"
-        r"\s*if \(\$Interleave -eq 'restart-window'\) \{ \$clientArgs \+= @\('engine-wait'\) \}",
+        r"\s*if \(\$Interleave -eq 'restart-window' -and \$EngineWait\) \{ \$clientArgs \+= @\('engine-wait'\) \}",
         PROBES)
+    assert re.search(r"\[switch\]\$EngineWait", PROBES)
     # The legacy six-argument spawn form is gone.
     assert '-ArgumentList @($endpoint.host, $endpoint.port, $Stop, $Cadence, $Token, $StartupRetrySeconds) -RedirectStandardOutput' not in PROBES
+
+
+def test_suite_marks_only_the_second_probe_engine_wait():
+    matches = re.findall(
+        r"if \(run_label == 'run-02' and profile\['interleave'\] == 'restart-window'\):\s*"
+        r"#\s*Only this probe is released before the restart.*?\s*"
+        r"params\['EngineWait'\] = True", SUITE, re.S)
+    assert len(matches) == 2, 'expected EngineWait gating at both probe launch sites'
 
 
 def test_client_build_reuse_requires_matching_source_hash():

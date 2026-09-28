@@ -2002,6 +2002,11 @@ class Suite:
             params.update(CaptureRunId=capture_run_id,
                           CandidateId=self.identity.candidate_id,
                           DiagnosticIdentity=True)
+        if (run_label == 'run-02' and profile['interleave'] == 'restart-window'):
+            # Only this probe is released before the restart while the engine
+            # is going down; it must wait for the restarted engine's marker
+            # (sst-041 option A, 2026-09-29).
+            params['EngineWait'] = True
         splat = ';'.join(key + '=' + ('$true' if value is True else '$false' if value is False
                                      else str(value) if isinstance(value, int) else quote_ps(value))
                          for key, value in params.items())
@@ -2148,6 +2153,11 @@ class Suite:
         if self.native_clock_diagnostic:
             params.update(CaptureRunId=capture_run_id, CandidateId=self.identity.candidate_id,
                           DiagnosticIdentity=True)
+        if (run_label == 'run-02' and profile['interleave'] == 'restart-window'):
+            # Only this probe is released before the restart while the engine
+            # is going down; it must wait for the restarted engine's marker
+            # (sst-041 option A, 2026-09-29).
+            params['EngineWait'] = True
         splat = ';'.join(key + '=' + ('$true' if value is True else '$false' if value is False
                                      else str(value) if isinstance(value, int) else quote_ps(value))
                          for key, value in params.items())
