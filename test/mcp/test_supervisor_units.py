@@ -289,3 +289,35 @@ def test_startup_network_prerequisite_polls_transient_adapter_gap(tmp_path, monk
     saved = json_module.loads(
         (tmp_path / 'x' / 'pre-start-native-network.json').read_text())
     assert saved['prerequisite_attempts'] == 13 and not saved['active_ethernet']
+
+
+def test_restart_passes_the_quiescence_marker_start_does_not(monkeypatch):
+    """Option A (2026-09-28): only the restart lifecycle asks the second
+    start to adopt a held reviewed image; a fresh start keeps the strict
+    pre-READY quiescence rejection."""
+    from fakenet.mcp import supervisor as supervisor_module
+
+    calls = []
+
+    class _Recording:
+        def start(self, coordinator, controller, config_identity,
+                  restart_quiescence=False):
+            calls.append(restart_quiescence)
+            return {'state': 'healthy'}
+
+    instance = _Recording()
+    monkeypatch.setattr(supervisor_module.RealSupervisor, 'stop',
+                        lambda self, coordinator, baseline_audit=True,
+                        deadline=None: {'state': 'stopped'})
+    monkeypatch.setattr(supervisor_module.RealSupervisor, 'start',
+                        instance.start)
+    monkeypatch.setattr(supervisor_module, 'RESTART_SETTLE_SECONDS', 0.0)
+    holder = supervisor_module.RealSupervisor.__new__(
+        supervisor_module.RealSupervisor)
+    result = supervisor_module.RealSupervisor.restart(
+        holder, None, None, {'name': 'default.ini', 'builtin': True})
+    assert result['state'] == 'healthy'
+    assert calls == [True]
+
+    instance.start(None, None, {'name': 'default.ini', 'builtin': True})
+    assert calls == [True, False]

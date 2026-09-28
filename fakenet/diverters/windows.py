@@ -128,6 +128,13 @@ if ($source -notin $sourceAddresses) {
 ROUTE_PROBE_UDP_PORT = 9
 _REVIEWED_ROUTE_QUERY_TIMEOUT_SECONDS = 2
 _PROCESS_REDIRECT_ROUTE_QUERY_TIMEOUT_SECONDS = 10
+# Restart-window adoption budget (user-approved option A, 2026-09-28): the
+# second start of a restart waits this long for a held reviewed image to
+# exit before adopting it with a clean active-A-row table.  The budget is
+# deliberately small: the acceptance probe waits 55s for RULE_READY, and the
+# restart's stop phase already consumed most of that window.
+PROCESS_REDIRECT_RESTART_ADOPT_SECONDS = 5.0
+PROCESS_REDIRECT_RESTART_ADOPT_POLL_SECONDS = 0.25
 
 from fakenet.mcp.controlfilter import (
     ControlFilterError, apply_control_link_exclusion,
@@ -615,32 +622,66 @@ class Diverter(DiverterBase, WinUtilMixin):
             image_sha256=(
                 self.egress_policy.process_redirect_rule.image_sha256))
 
-    def _validate_process_redirect_quiescence(self):
-        """Reject stale owners before READY and before opening WinDivert."""
-        rule = self.egress_policy.process_redirect_rule
-        running = self._process_identity_api.find_reviewed_processes(
-            rule.file_identity)
-        if running:
-            raise PolicyConfigError(
-                'reviewed process image is already running before READY')
-        # MIB state 11 (TIME_WAIT) is kernel-owned aging: the owner socket
-        # is closed and the row can carry no traffic, so it is not a live
-        # flow takeover could capture mid-stream. Blocking on it rejected the
-        # product's own restart lifecycle, where the predecessor run's
-        # probe connections age through TIME_WAIT past the restart settle
-        # (fakenet100 r09-run-18 sst-038: PolicyConfigError on run-02 start
-        # ~100s after the restart's stop killed the probe). Every genuinely
-        # live state (3..10, 12) still blocks.
-        existing = [
+    def _active_process_redirect_a_rows(self, rule):
+        """Rows a takeover could capture mid-stream; TIME_WAIT is excluded.
+
+        MIB state 11 (TIME_WAIT) is kernel-owned aging: the owner socket
+        is closed and the row can carry no traffic, so it is not a live
+        flow takeover could capture mid-stream.  Blocking on it rejected the
+        product's own restart lifecycle, where the predecessor run's
+        probe connections age through TIME_WAIT past the restart settle
+        (fakenet100 r09-run-18 sst-038: PolicyConfigError on run-02 start
+        ~100s after the restart's stop killed the probe).  Every genuinely
+        live state (3..10, 12) still blocks.
+        """
+        return [
             row for row in self._process_identity_api.get_tcp_owner_rows()
             if (row.remote_ipv4 == rule.original_ipv4 and
                 3 <= int(row.state) <= 12 and int(row.state) != 11)]
-        if existing:
+
+    def _validate_process_redirect_quiescence(self):
+        """Reject stale owners before READY and before opening WinDivert."""
+        rule = self.egress_policy.process_redirect_rule
+        # The supervisor's restart path alone injects this marker as a real
+        # boolean through the runtime payload; a configuration file can only
+        # supply strings, so a fresh start never enters the adopt branch
+        # (user-approved restart-window adoption, 2026-09-28 option A).
+        restart_adopt = self.getconfigval(
+            '_runtime_process_redirect_restart_adopt') is True
+        running = self._process_identity_api.find_reviewed_processes(
+            rule.file_identity)
+        adopted = 0
+        if running and restart_adopt:
+            # A match/restart-window acceptance interleave legitimately holds
+            # the reviewed image across the stop->start transition.  Wait
+            # bounded for it to exit, fail fast on any live A row (that
+            # process already escaped the previous teardown into the redirect
+            # target), and adopt a clean hold once the budget is spent.  The
+            # engine gates the adopted process's future connections exactly
+            # like any process started after READY.
+            deadline = time.monotonic() + PROCESS_REDIRECT_RESTART_ADOPT_SECONDS
+            while running and time.monotonic() < deadline:
+                if self._active_process_redirect_a_rows(rule):
+                    raise PolicyConfigError(
+                        'an existing TCP row already targets process redirect A')
+                time.sleep(PROCESS_REDIRECT_RESTART_ADOPT_POLL_SECONDS)
+                running = self._process_identity_api.find_reviewed_processes(
+                    rule.file_identity)
+            adopted = len(running)
+        elif running:
+            raise PolicyConfigError(
+                'reviewed process image is already running before READY')
+        if self._active_process_redirect_a_rows(rule):
             raise PolicyConfigError(
                 'an existing TCP row already targets process redirect A')
+        if adopted:
+            self.log_egress_event(
+                'PROCESS_REDIRECT_RESTART_ADOPT',
+                running_reviewed_processes=adopted,
+                wait_seconds=PROCESS_REDIRECT_RESTART_ADOPT_SECONDS)
         self.log_egress_event(
             'PROCESS_REDIRECT_QUIESCENCE_OK',
-            running_reviewed_processes=0, existing_a_rows=0)
+            running_reviewed_processes=adopted, existing_a_rows=0)
 
     def _select_external_dns_server(self):
         configured = str(self.getconfigval('ExternalDnsServer', 'Auto')).strip()

@@ -115,7 +115,8 @@ class RealSupervisor:
                           controller=self._marker['controller_id'])
         return result
 
-    def start(self, coordinator, controller, config_identity):
+    def start(self, coordinator, controller, config_identity,
+              restart_quiescence=False):
         if self._start_guard:
             self._start_guard()
         if os.name == 'nt' and self._fakenet is None:
@@ -190,10 +191,18 @@ class RealSupervisor:
                     process_identity(), self._exit_instance, root)
                 self._exit_retention.initialize()
                 self._fakenet.observe_creation('before_start')
+                diverter_config = dict(parsed.diverter_config)
+                if restart_quiescence:
+                    # Runtime-only adoption marker for the restart lifecycle
+                    # (user-approved option A, 2026-09-28).  A real boolean
+                    # cannot come from a configuration file, where every
+                    # value is a string, so only this path can enable it.
+                    diverter_config[
+                        '_runtime_process_redirect_restart_adopt'] = True
                 detail = self._fakenet.request('start', {
                     'config_path': str(config_path),
                     'fakenet_config': parsed.fakenet_config,
-                    'diverter_config': parsed.diverter_config}, timeout=30)
+                    'diverter_config': diverter_config}, timeout=30)
                 self._health_cache = dict(detail, process_alive=self._fakenet.alive(),
                                           identity=self._fakenet.identity)
                 self._last_final_filter = detail.get('final_filter')
@@ -609,7 +618,8 @@ class RealSupervisor:
         if result['state'] != 'stopped':
             return dict(result, restart_refused=True)
         time.sleep(RESTART_SETTLE_SECONDS)
-        return self.start(coordinator, controller, config_identity)
+        return self.start(coordinator, controller, config_identity,
+                          restart_quiescence=True)
 
     def _diagnostic_call(self, operation, payload, deadline):
         # Condition.wait releases *all* levels of the lifecycle RLock while

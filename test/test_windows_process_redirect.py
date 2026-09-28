@@ -75,6 +75,7 @@ class ProcessRedirectWindowsAdapterTests(unittest.TestCase):
         diverter = Diverter.__new__(Diverter)
         diverter._process_identity_api = mock.Mock()
         diverter.log_egress_event = mock.Mock()
+        diverter._dict = {}
         rule = mock.Mock()
         rule.file_identity = mock.sentinel.reviewed_identity
         rule.original_ipv4 = '93.184.216.34'
@@ -93,6 +94,102 @@ class ProcessRedirectWindowsAdapterTests(unittest.TestCase):
 
         diverter._process_identity_api.get_tcp_owner_rows.return_value = ()
         diverter._validate_process_redirect_quiescence()
+
+    def test_restart_adopt_waits_bounded_then_adopts_clean_hold(self):
+        """User-approved option A (2026-09-28): the restart lifecycle alone
+        adopts a held reviewed image when the active-A-row table is clean.
+
+        A fresh start (no runtime marker) still rejects immediately, and a
+        config-file string can never enable the adopt branch because the
+        marker must be a real boolean.
+        """
+        from types import SimpleNamespace
+
+        def make_diverter(marker):
+            diverter = Diverter.__new__(Diverter)
+            diverter._process_identity_api = mock.Mock()
+            diverter.log_egress_event = mock.Mock()
+            diverter._dict = ({}
+                              if marker is _ABSENT
+                              else {'_runtime_process_redirect_restart_adopt': marker})
+            rule = mock.Mock()
+            rule.file_identity = mock.sentinel.reviewed_identity
+            rule.original_ipv4 = '93.184.216.34'
+            diverter.egress_policy = mock.Mock(process_redirect_rule=rule)
+            return diverter
+
+        _ABSENT = object()
+        held = (mock.sentinel.held_process,)
+
+        # A fresh start (marker absent) keeps the immediate rejection.
+        fresh = make_diverter(_ABSENT)
+        fresh._process_identity_api.find_reviewed_processes.return_value = held
+        with self.assertRaisesRegex(Exception, 'already running'):
+            fresh._validate_process_redirect_quiescence()
+
+        # A config-file string is not the runtime boolean: still rejected.
+        configured_string = make_diverter('Yes')
+        configured_string._process_identity_api.find_reviewed_processes.return_value = held
+        with self.assertRaisesRegex(Exception, 'already running'):
+            configured_string._validate_process_redirect_quiescence()
+
+        # Restart adopt with a clean A-row table: the wait is bounded, the
+        # held image is adopted, and the adopt event is recorded.
+        adopt = make_diverter(True)
+        adopt._process_identity_api.find_reviewed_processes.return_value = held
+        adopt._process_identity_api.get_tcp_owner_rows.return_value = ()
+        with mock.patch(
+                'fakenet.diverters.windows.PROCESS_REDIRECT_RESTART_ADOPT_SECONDS',
+                0.0):
+            adopt._validate_process_redirect_quiescence()
+        events = [call.args[0]
+                  for call in adopt.log_egress_event.call_args_list]
+        self.assertIn('PROCESS_REDIRECT_RESTART_ADOPT', events)
+        self.assertIn('PROCESS_REDIRECT_QUIESCENCE_OK', events)
+
+        # A held image that exits within the budget: no adopt event, plain
+        # QUIESCENCE_OK with zero running processes.
+        exits = make_diverter(True)
+        exits._process_identity_api.find_reviewed_processes.side_effect = (
+            held, ())
+        exits._process_identity_api.get_tcp_owner_rows.return_value = ()
+        with mock.patch(
+                'fakenet.diverters.windows.PROCESS_REDIRECT_RESTART_ADOPT_SECONDS',
+                5.0), mock.patch(
+                'fakenet.diverters.windows.PROCESS_REDIRECT_RESTART_ADOPT_POLL_SECONDS',
+                0.0):
+            exits._validate_process_redirect_quiescence()
+        events = [call.args[0]
+                  for call in exits.log_egress_event.call_args_list]
+        self.assertNotIn('PROCESS_REDIRECT_RESTART_ADOPT', events)
+        self.assertIn('PROCESS_REDIRECT_QUIESCENCE_OK', events)
+
+        # A live A row during the adopt wait fails fast with the exact
+        # existing-A-row rejection; adoption never bypasses the row gate.
+        leak = make_diverter(True)
+        leak._process_identity_api.find_reviewed_processes.return_value = held
+        leak._process_identity_api.get_tcp_owner_rows.return_value = (
+            SimpleNamespace(remote_ipv4='93.184.216.34', state=5),)
+        with self.assertRaisesRegex(Exception, 'existing TCP row'):
+            leak._validate_process_redirect_quiescence()
+
+        # A live A row appearing during the adopt wait fails fast with the
+        # exact existing-A-row rejection; adoption never bypasses the row
+        # gate, neither inside the wait budget nor at the final check.
+        late = make_diverter(True)
+        late._process_identity_api.find_reviewed_processes.return_value = held
+        late._process_identity_api.get_tcp_owner_rows.side_effect = (
+            (), (SimpleNamespace(remote_ipv4='93.184.216.34', state=3),))
+        with mock.patch(
+                'fakenet.diverters.windows.PROCESS_REDIRECT_RESTART_ADOPT_SECONDS',
+                5.0), mock.patch(
+                'fakenet.diverters.windows.PROCESS_REDIRECT_RESTART_ADOPT_POLL_SECONDS',
+                0.0):
+            with self.assertRaisesRegex(Exception, 'existing TCP row'):
+                late._validate_process_redirect_quiescence()
+        self.assertNotIn(
+            'PROCESS_REDIRECT_RESTART_ADOPT',
+            [call.args[0] for call in late.log_egress_event.call_args_list])
 
     def test_fragment_guard_covers_outbound_a_and_inbound_b_non_first_parts(self):
         def raw(src, dst, fragment_bits):

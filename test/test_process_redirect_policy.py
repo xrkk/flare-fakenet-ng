@@ -591,6 +591,7 @@ def test_quiescence_allows_timewait_but_blocks_live_rows(monkeypatch):
 
     diverter = windows.Diverter.__new__(windows.Diverter)
     diverter._process_identity_api = _Api([11, 11])
+    diverter._dict = {}
     diverter.egress_policy = _NS(
         process_redirect_rule=_NS(original_ipv4='10.20.30.41',
                                   file_identity='x'))
