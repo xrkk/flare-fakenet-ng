@@ -1182,6 +1182,6 @@ switch ($Action) {
     }
     'traffic' {
         if (-not $Output -or -not $Nonce -or -not $StopFile -or -not $StartFile) { throw '-Output, -Nonce, -StopFile and -StartFile are required for traffic' }
-        Invoke-Traffic $Profile $Output $Nonce $StopFile $StartFile $HoldSeconds $Tempo $Variant $Interleave $EngineWait $CadenceMilliseconds $TargetHost $TargetPort $TargetProtocol $ProcessMode $TlsServerName $FnprRole $AdditionalTargetsJson $CaseFile $StartupRetrySeconds $ExitControlFile
+        Invoke-Traffic $Profile $Output $Nonce $StopFile $StartFile $HoldSeconds $Tempo $Variant $Interleave -EngineWait:$EngineWait $CadenceMilliseconds $TargetHost $TargetPort $TargetProtocol $ProcessMode $TlsServerName $FnprRole $AdditionalTargetsJson $CaseFile $StartupRetrySeconds $ExitControlFile
     }
 }
