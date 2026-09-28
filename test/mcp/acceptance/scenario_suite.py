@@ -2311,6 +2311,25 @@ class Suite:
         value['raw'] = raw
         return value
 
+    def _pre_restart_probe_stop(self, capture: dict[str, Any]) -> dict[str, Any]:
+        """Cooperatively end run-01's probe before a restart adopts the image.
+
+        Writes only this probe's stop control and waits (identity-bound) for
+        the probe launcher to observe it; the capture stays open for its
+        normal post-restart finish.  A probe that does not provably exit is a
+        responsibility, not a success: its live A rows would then refuse the
+        restart the scenario is trying to drive.
+        """
+        assert self.vm
+        status_path = str(capture['probe']) + '.pre-restart-stop-status.json'
+        command = self._probe_cooperative_cleanup_command(
+            capture['pid'], capture.get('probe_creation_ticks'), capture['stop'],
+            status_path, None, wait_seconds=30)
+        value, raw = self._vm_json(command, 60)
+        value['raw'] = raw
+        self._fail_closed_cooperative(value, str(capture.get('label', 'run-01')))
+        return value
+
     def _arm_managed_exit_probe(self, capture: dict[str, Any], run_id: str,
                                 nonce: str) -> dict[str, Any]:
         """Bind the old managed HANDLE before releasing run-01 stop traffic."""
@@ -6189,6 +6208,20 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # stop-window combination).
                     second_release = None if interleave == 'stop-window' else \
                         self._release_probe(captures[second_label], 'restart-window')
+                    if (interleave == 'restart-window' and
+                            runtime_profile.get('bucket') == 'B3' and
+                            runtime_profile['probe_target'].get('process_mode') == 'match'):
+                        # The first run's match probe is the same reviewed
+                        # image the second start must adopt.  Keep it running
+                        # through the restart and its gap SYN retries would
+                        # leave live A rows that the restart quiescence gate
+                        # (correctly) refuses; its run-01 traffic evidence is
+                        # already complete, so stop it cooperatively BEFORE
+                        # the restart while the engine can still close its
+                        # held connection into TIME_WAIT (sst-041 option A,
+                        # 2026-09-28).
+                        first_stop = self._pre_restart_probe_stop(captures[first_label])
+                        evidence.write('run-01-probe-pre-restart-stop.json', first_stop)
                     if interleave == 'stop-window':
                         # run-01's boundary cases must complete BEFORE the
                         # restart tears its session down: their policy

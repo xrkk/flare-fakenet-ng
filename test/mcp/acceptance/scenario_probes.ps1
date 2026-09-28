@@ -324,10 +324,40 @@ public static class ScenarioProbeClient {
     return value + 504911232000000000L;
   }
   public static int Main(string[] a) {
-    if (a.Length != 6) return 2;
+    if (a.Length != 6 && a.Length != 7) return 2;
+    var engineWait = a.Length == 7 && a[6] == "engine-wait";
     var retrySeconds = Int32.Parse(a[5]);
     if (retrySeconds < 20 || retrySeconds > 120) return 2;
     var retryDeadline = DateTime.UtcNow.AddSeconds(retrySeconds); var attempt = 0;
+    if (engineWait) {
+      // A restart-window match probe is released BEFORE the restart, so the
+      // engine is by definition going down.  Stay alive (the reviewed image
+      // must be adoptable at the second start's quiescence gate) but hold
+      // the first connection until the restarted engine publishes its rule
+      // marker, mirroring the launcher-side readiness rule: only run
+      // directories created after this process started qualify.
+      var runsRoot = @"C:\ProgramData\FakeNet-NG-MCP\artifacts\runs";
+      var launchUtc = Process.GetCurrentProcess().StartTime.ToUniversalTime().AddSeconds(-2);
+      var markerSeen = false;
+      while (DateTime.UtcNow < retryDeadline && !File.Exists(a[2])) {
+        try {
+          var fresh = new System.Collections.Generic.List<string>();
+          foreach (var d in Directory.GetDirectories(runsRoot)) {
+            try { if (Directory.GetCreationTimeUtc(d) > launchUtc) fresh.Add(d); } catch { }
+          }
+          fresh.Sort((x, y) => Directory.GetCreationTimeUtc(y).CompareTo(Directory.GetCreationTimeUtc(x)));
+          foreach (var d in fresh) {
+            var log = Path.Combine(d, "run.log");
+            try {
+              if (File.Exists(log) && File.ReadAllText(log).Contains("PROCESS_REDIRECT_RULE_READY")) { markerSeen = true; break; }
+            } catch { }
+          }
+        } catch { }
+        if (markerSeen) break;
+        Thread.Sleep(200);
+      }
+      if (!markerSeen) return 4;
+    }
     while (!File.Exists(a[2]) && DateTime.UtcNow < retryDeadline) {
       attempt++; Console.WriteLine("CONNECT_ATTEMPT|" + attempt + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency);
       TcpClient c = null;
@@ -902,7 +932,12 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
         $identityPath = Join-Path $suiteRoot 'probe-client.json'
         $identity = Ensure-ProbeClient $identityPath
         $stdout = Join-Path (Split-Path -Parent $Path) 'probe-client.stdout'
-        $process = Start-Process -FilePath $identity.path -ArgumentList @($endpoint.host, $endpoint.port, $Stop, $Cadence, $Token, $StartupRetrySeconds) -RedirectStandardOutput $stdout -PassThru -WindowStyle Hidden
+        # A restart-window probe is released before the restart while the
+        # engine is going down; it must hold its first connection until the
+        # restarted engine publishes the rule marker (see client source).
+        $clientArgs = @($endpoint.host, $endpoint.port, $Stop, $Cadence, $Token, $StartupRetrySeconds)
+        if ($Interleave -eq 'restart-window') { $clientArgs += @('engine-wait') }
+        $process = Start-Process -FilePath $identity.path -ArgumentList $clientArgs -RedirectStandardOutput $stdout -PassThru -WindowStyle Hidden
         $childCreation = (Get-Process -Id $process.Id).StartTime.ToUniversalTime().Ticks
         $childReady = @{ event = 'process_ready'; nonce = $Token; profile = $Bucket; variant = $Variant; tempo = $Tempo; interleave = $Interleave; pid = $process.Id; worker = 1; seq = 0; creation_ticks = $childCreation; stopwatch_frequency = [Diagnostics.Stopwatch]::Frequency }
         if ($DiagnosticIdentity) { $childReady.native_identity = Get-NativeIdentity $process.Id $CaptureRunId $Token $CandidateId }
