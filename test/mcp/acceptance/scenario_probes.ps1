@@ -345,6 +345,11 @@ public static class ScenarioProbeClient {
         Thread.Sleep(200);
       }
       if (!markerSeen) return 4;
+      // The whole restart transition (stop + settle + second start) can
+      // consume nearly the entire startup budget before the marker appears;
+      // the connection attempts then get a fresh full budget so the probe
+      // still establishes inside the same launcher-side envelope.
+      retryDeadline = DateTime.UtcNow.AddSeconds(retrySeconds);
     }
     while (!File.Exists(a[2]) && DateTime.UtcNow < retryDeadline) {
       attempt++; Console.WriteLine("CONNECT_ATTEMPT|" + attempt + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency);

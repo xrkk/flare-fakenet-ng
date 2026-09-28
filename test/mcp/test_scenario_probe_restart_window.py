@@ -36,6 +36,13 @@ def test_client_engine_wait_holds_first_connection_until_rule_marker():
         r'while \(DateTime\.UtcNow < retryDeadline && !File\.Exists\(a\[2\]\)\)', source)
     # An engine that never publishes the marker is a distinct failure.
     assert 'if (!markerSeen) return 4;' in source
+    # The restart transition can consume nearly the whole startup budget
+    # before the marker; connection attempts get a fresh budget after it.
+    assert re.search(
+        r'if \(!markerSeen\) return 4;\s*'
+        r'// The whole restart transition.*?\s*'
+        r'retryDeadline = DateTime\.UtcNow\.AddSeconds\(retrySeconds\);',
+        source, re.S)
 
 
 def test_client_engine_wait_only_accepts_run_dirs_created_after_launch():
