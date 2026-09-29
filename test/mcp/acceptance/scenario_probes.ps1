@@ -943,7 +943,7 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
         # rule marker (see client source).  The launcher passes -EngineWait
         # for exactly that probe.
         $clientArgs = @($endpoint.host, $endpoint.port, $Stop, $Cadence, $Token, $StartupRetrySeconds)
-        if (($Interleave -eq 'restart-window' -or $Interleave -eq 'during-start' -or $Interleave -eq 'after-healthy') -and $EngineWait) { $clientArgs += @('engine-wait') }
+        if (($Interleave -eq 'restart-window' -or $Interleave -eq 'during-start' -or $Interleave -eq 'after-healthy' -or $Interleave -eq 'before-start') -and $EngineWait) { $clientArgs += @('engine-wait') }
         $process = Start-Process -FilePath $identity.path -ArgumentList $clientArgs -RedirectStandardOutput $stdout -PassThru -WindowStyle Hidden
         $childCreation = (Get-Process -Id $process.Id).StartTime.ToUniversalTime().Ticks
         $childReady = @{ event = 'process_ready'; nonce = $Token; profile = $Bucket; variant = $Variant; tempo = $Tempo; interleave = $Interleave; pid = $process.Id; worker = 1; seq = 0; creation_ticks = $childCreation; stopwatch_frequency = [Diagnostics.Stopwatch]::Frequency }

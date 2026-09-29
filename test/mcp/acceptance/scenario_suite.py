@@ -2003,7 +2003,7 @@ class Suite:
                           CandidateId=self.identity.candidate_id,
                           DiagnosticIdentity=True)
         if (run_label == 'run-02' and profile['bucket'] == 'B3' and
-                profile['interleave'] in ('restart-window', 'during-start', 'after-healthy')):
+                profile['interleave'] in ('restart-window', 'during-start', 'after-healthy', 'before-start')):
             # Only this probe is released before the restart while the engine
             # is going down; it must hold its first connection until the
             # launcher's signal (sst-041/048 option A follow-up, 2026-09-29).
@@ -2155,7 +2155,7 @@ class Suite:
             params.update(CaptureRunId=capture_run_id, CandidateId=self.identity.candidate_id,
                           DiagnosticIdentity=True)
         if (run_label == 'run-02' and profile['bucket'] == 'B3' and
-                profile['interleave'] in ('restart-window', 'during-start', 'after-healthy')):
+                profile['interleave'] in ('restart-window', 'during-start', 'after-healthy', 'before-start')):
             # Only this probe is released before the restart while the engine
             # is going down; it must hold its first connection until the
             # launcher's signal (sst-041/048 option A follow-up, 2026-09-29).
@@ -6425,8 +6425,23 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                 # publication is manufactured by the test runner.
                 benign_refusal = (not fault and self._is_quiescence_refusal_family(
                     runtime_profile))
-                if benign_refusal:
-                    # The refusal family's benign plan tail is sampled in
+                refusal_continuation = (benign_refusal and
+                                        scenario.get('lifecycle_chain') == 'restart')
+                if refusal_continuation:
+                    # The frozen plan continues a refused before-start start
+                    # through the restart: the before-start probe ends its
+                    # lifecycle inside the restart window by design, and the
+                    # second start then succeeds (adopting a held B3 match
+                    # image or ignoring a dead nonmatch one).  Follow the
+                    # plan order exactly -- get_events, list_artifacts,
+                    # restart, get_status x3, get_events, list_artifacts,
+                    # stop -- so the strict prefix verdict holds; the refusal
+                    # samples are captured as internal status reads while the
+                    # service is still stopped, before the restart (sst-043,
+                    # 2026-09-29).
+                    pass
+                elif benign_refusal:
+                    # The start-stop refusal family's plan tail is sampled in
                     # order: get_status x3, then get_events, list_artifacts,
                     # stop (strict prefix semantics).
                     first_run['refusal_status_samples'] = [call('get_status') for _ in range(3)]
@@ -6447,7 +6462,45 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                         raise SuiteError('nonmatch refusal lacks unique failed event or published healthy')
                     first_run['refusal_failure_utc'] = dt.datetime.fromtimestamp(
                         failed_events[0]['timestamp'], dt.timezone.utc).isoformat()
-                finish_capture(first_label, first_run)
+                if refusal_continuation:
+                    second_label = 'run-02'
+                    second_run = {'label': second_label, 'started_at': utc_now(),
+                                  'five_sections_before': None}
+                    try:
+                        captures[second_label] = (self._start_probe_on_shared_capture(
+                            guest, runtime_profile, nonce, second_label, captures[first_label])
+                            if shared_physical else self._start_capture_and_probe(
+                                guest, runtime_profile, nonce, second_label))
+                        evidence.write(second_label + '-capture-start.json', captures[second_label])
+                    except (RecoveredCaptureStart, UnsettledCaptureStart):
+                        raise
+                    evidence.write(second_label + '-probe-release.json',
+                                   self._release_probe(captures[second_label], 'restart-window'))
+                    first_run['refusal_status_samples'] = [self._status() for _ in range(3)]
+                    evidence.write('run-01-probe-pre-restart-stop.json',
+                                   self._pre_restart_probe_stop(captures[first_label]))
+                    restart_context, restart_context_raw = self._capture_sections()
+                    evidence.write(second_label + '-pre-restart-context.json',
+                                   {'sections': restart_context, 'raw': restart_context_raw,
+                                    'role': 'refusal-continuation-context'})
+                    second_run['five_sections_before'] = restart_context
+                    restarted = call('restart', {}, mutation=True)
+                    second_run['start_response'] = restarted
+                    second_run['run_id'] = restarted.get('run_id')
+                    runs.append(second_run)
+                    if (runtime_profile.get('bucket') == 'B3' and
+                            interleave in ('restart-window', 'during-start', 'after-healthy',
+                                           'before-start')):
+                        evidence.write('run-02-engine-ok.json',
+                                       self._signal_engine_ok(captures[second_label]))
+                    for _ in range(3):
+                        call('get_status')
+                    second_run['events'] = call('get_events', {'limit': 100})
+                    call('list_artifacts')
+                    first_run['stop_response'] = call('stop', {}, mutation=True)
+                    finish_capture(second_label, second_run)
+                else:
+                    finish_capture(first_label, first_run)
                 if not fault:
                     refusal = self._expected_quiescence_refusal(
                         started, runtime_profile, run=first_run, nonce=nonce)
@@ -6460,8 +6513,9 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # (discovery100-68 sst-051..053).
                     first_run['expected_refusal'] = refusal
                     evidence.write(first_label + '-expected-refusal.json', refusal)
-                    # The stop is idempotent on the already-stopped service.
-                    first_run['stop_response'] = call('stop', {}, mutation=True)
+                    if not refusal_continuation:
+                        # The stop is idempotent on the already-stopped service.
+                        first_run['stop_response'] = call('stop', {}, mutation=True)
             final = self._status()
             evidence.write('final-status.json', final)
             if final.get('state') != 'stopped':
