@@ -6463,44 +6463,28 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     first_run['refusal_failure_utc'] = dt.datetime.fromtimestamp(
                         failed_events[0]['timestamp'], dt.timezone.utc).isoformat()
                 if refusal_continuation:
-                    second_label = 'run-02'
-                    second_run = {'label': second_label, 'started_at': utc_now(),
-                                  'five_sections_before': None}
-                    try:
-                        captures[second_label] = (self._start_probe_on_shared_capture(
-                            guest, runtime_profile, nonce, second_label, captures[first_label])
-                            if shared_physical else self._start_capture_and_probe(
-                                guest, runtime_profile, nonce, second_label))
-                        evidence.write(second_label + '-capture-start.json', captures[second_label])
-                    except (RecoveredCaptureStart, UnsettledCaptureStart):
-                        raise
-                    evidence.write(second_label + '-probe-release.json',
-                                   self._release_probe(captures[second_label], 'restart-window'))
+                    # The refused start leaves no active run, so the plan's
+                    # restart is deterministically refused by the product's
+                    # own contract ('restart requires an active run'); the
+                    # call is recorded and the plan tail continues, exactly
+                    # as the start-stop refusal family records its refused
+                    # start (sst-043, 2026-09-29).
                     first_run['refusal_status_samples'] = [self._status() for _ in range(3)]
                     evidence.write('run-01-probe-pre-restart-stop.json',
                                    self._pre_restart_probe_stop(captures[first_label]))
-                    restart_context, restart_context_raw = self._capture_sections()
-                    evidence.write(second_label + '-pre-restart-context.json',
-                                   {'sections': restart_context, 'raw': restart_context_raw,
-                                    'role': 'refusal-continuation-context'})
-                    second_run['five_sections_before'] = restart_context
-                    restarted = call('restart', {}, mutation=True)
-                    second_run['start_response'] = restarted
-                    second_run['run_id'] = restarted.get('run_id')
-                    runs.append(second_run)
-                    if (runtime_profile.get('bucket') == 'B3' and
-                            interleave in ('restart-window', 'during-start', 'after-healthy',
-                                           'before-start')):
-                        evidence.write('run-02-engine-ok.json',
-                                       self._signal_engine_ok(captures[second_label]))
+                    try:
+                        call('restart', {}, mutation=True)
+                    except SuiteError as restart_exc:
+                        if 'not_allowed_in_state' not in repr(restart_exc):
+                            raise
+                        evidence.write('restart-refused-expected.json',
+                                       {'reason': repr(restart_exc)})
                     for _ in range(3):
                         call('get_status')
-                    second_run['events'] = call('get_events', {'limit': 100})
+                    call('get_events', {'limit': 100})
                     call('list_artifacts')
                     first_run['stop_response'] = call('stop', {}, mutation=True)
-                    finish_capture(second_label, second_run)
-                else:
-                    finish_capture(first_label, first_run)
+                finish_capture(first_label, first_run)
                 if not fault:
                     refusal = self._expected_quiescence_refusal(
                         started, runtime_profile, run=first_run, nonce=nonce)
