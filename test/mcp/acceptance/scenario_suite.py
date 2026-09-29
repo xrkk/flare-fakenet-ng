@@ -2332,9 +2332,10 @@ class Suite:
         is serving, so the probe's connections are redirected, not leaked.
         """
         assert self.vm
+        engine_ok = PureWindowsPath(str(capture['stop'])).with_name('probe.engine-ok')
         value, raw = self._vm_json(
             "$ErrorActionPreference='Stop';$p=" +
-            quote_ps(str(capture['probe']) + '.engine-ok') + ";"
+            quote_ps(str(engine_ok)) + ";"
             "if(Test-Path $p){throw 'engine-ok signal already exists'};"
             "[IO.File]::WriteAllText($p,'ok',[Text.UTF8Encoding]::new($false));"
             "@{path=$p;written_utc=[DateTimeOffset]::UtcNow.ToString('o')}"

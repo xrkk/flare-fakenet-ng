@@ -125,7 +125,7 @@ def test_driver_signals_engine_ok_after_a_healthy_restart():
         r'def _signal_engine_ok\(.*?\n(?=    def _pre_restart_probe_stop)', SUITE, re.S)
     assert helper, 'engine-ok helper missing'
     body = helper.group(0)
-    assert ".engine-ok" in body and 'WriteAllText' in body
+    assert "with_name('probe.engine-ok')" in body and 'WriteAllText' in body
     call_site = re.search(
         r"evidence\.write\('run-02-engine-ok\.json',\s*"
         r"self\._signal_engine_ok\(captures\[second_label\]\)", SUITE)
