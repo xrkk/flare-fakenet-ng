@@ -6470,6 +6470,16 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # as the start-stop refusal family records its refused
                     # start (sst-043, 2026-09-29).
                     first_run['refusal_status_samples'] = [self._status() for _ in range(3)]
+                    # Validate and store the refusal NOW: the plan's trailing
+                    # stop is an idempotent cleanup that clears the service's
+                    # failure_reason, after which the marker is no longer
+                    # observable (sst-043, 2026-09-30).
+                    refusal = self._expected_quiescence_refusal(
+                        started, runtime_profile, run=first_run, nonce=nonce)
+                    if refusal is None:
+                        raise SuiteError('benign scenario did not publish healthy')
+                    first_run['expected_refusal'] = refusal
+                    evidence.write(first_label + '-expected-refusal.json', refusal)
                     evidence.write('run-01-probe-pre-restart-stop.json',
                                    self._pre_restart_probe_stop(captures[first_label]))
                     try:
@@ -6485,7 +6495,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     call('list_artifacts')
                     first_run['stop_response'] = call('stop', {}, mutation=True)
                 finish_capture(first_label, first_run)
-                if not fault:
+                if not fault and not refusal_continuation:
                     refusal = self._expected_quiescence_refusal(
                         started, runtime_profile, run=first_run, nonce=nonce)
                     if refusal is None:
