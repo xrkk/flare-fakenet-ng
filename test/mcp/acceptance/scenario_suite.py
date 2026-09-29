@@ -2002,10 +2002,11 @@ class Suite:
             params.update(CaptureRunId=capture_run_id,
                           CandidateId=self.identity.candidate_id,
                           DiagnosticIdentity=True)
-        if (run_label == 'run-02' and profile['interleave'] == 'restart-window'):
+        if (run_label == 'run-02' and profile['bucket'] == 'B3' and
+                profile['interleave'] in ('restart-window', 'during-start')):
             # Only this probe is released before the restart while the engine
-            # is going down; it must wait for the restarted engine's marker
-            # (sst-041 option A, 2026-09-29).
+            # is going down; it must hold its first connection until the
+            # launcher's signal (sst-041/048 option A follow-up, 2026-09-29).
             params['EngineWait'] = True
         splat = ';'.join(key + '=' + ('$true' if value is True else '$false' if value is False
                                      else str(value) if isinstance(value, int) else quote_ps(value))
@@ -2153,10 +2154,11 @@ class Suite:
         if self.native_clock_diagnostic:
             params.update(CaptureRunId=capture_run_id, CandidateId=self.identity.candidate_id,
                           DiagnosticIdentity=True)
-        if (run_label == 'run-02' and profile['interleave'] == 'restart-window'):
+        if (run_label == 'run-02' and profile['bucket'] == 'B3' and
+                profile['interleave'] in ('restart-window', 'during-start')):
             # Only this probe is released before the restart while the engine
-            # is going down; it must wait for the restarted engine's marker
-            # (sst-041 option A, 2026-09-29).
+            # is going down; it must hold its first connection until the
+            # launcher's signal (sst-041/048 option A follow-up, 2026-09-29).
             params['EngineWait'] = True
         splat = ';'.join(key + '=' + ('$true' if value is True else '$false' if value is False
                                      else str(value) if isinstance(value, int) else quote_ps(value))
@@ -6240,18 +6242,17 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # stop-window combination).
                     second_release = None if interleave == 'stop-window' else \
                         self._release_probe(captures[second_label], 'restart-window')
-                    if (interleave == 'restart-window' and
-                            runtime_profile.get('bucket') == 'B3' and
-                            runtime_profile['probe_target'].get('process_mode') == 'match'):
-                        # The first run's match probe is the same reviewed
-                        # image the second start must adopt.  Keep it running
-                        # through the restart and its gap SYN retries would
-                        # leave live A rows that the restart quiescence gate
-                        # (correctly) refuses; its run-01 traffic evidence is
-                        # already complete, so stop it cooperatively BEFORE
-                        # the restart while the engine can still close its
-                        # held connection into TIME_WAIT (sst-041 option A,
-                        # 2026-09-28).
+                    if (interleave in ('restart-window', 'during-start') and
+                            runtime_profile.get('bucket') == 'B3'):
+                        # The first run's B3 probe keeps targeting A through
+                        # the restart gap: its live SYN rows are exactly what
+                        # the restart quiescence gate (correctly) refuses --
+                        # for match the held reviewed image, for nonmatch the
+                        # unredirected direct rows (sst-048, 2026-09-29).  Its
+                        # run-01 traffic evidence is already complete, so stop
+                        # it cooperatively BEFORE the restart while the engine
+                        # can still close its held connection (sst-041 option
+                        # A, 2026-09-28).
                         first_stop = self._pre_restart_probe_stop(captures[first_label])
                         evidence.write('run-01-probe-pre-restart-stop.json', first_stop)
                     if interleave == 'stop-window':
@@ -6289,13 +6290,12 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                             if restart_attempt == 2:
                                 raise
                             time.sleep(30)
-                    if (interleave == 'restart-window' and
-                            runtime_profile.get('bucket') == 'B3' and
-                            runtime_profile['probe_target'].get('process_mode') == 'match'):
+                    if (interleave in ('restart-window', 'during-start') and
+                            runtime_profile.get('bucket') == 'B3'):
                         # The held probe cannot read the live run.log (the
                         # managed process refuses concurrent readers), so
                         # signal it directly now that the restart returned
-                        # healthy and the adopted engine is serving.
+                        # healthy and the engine is serving.
                         evidence.write('run-02-engine-ok.json',
                                        self._signal_engine_ok(captures[second_label]))
                     if interleave == 'stop-window':

@@ -903,8 +903,11 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
     if (-not (Test-Path $Start)) { throw 'probe start control was not released' }
     Write-JsonLine $Path @{ event = 'released'; nonce = $Token; profile = $Bucket; interleave = $Interleave }
     # Only the during-start interleave races the engine; every other
-    # interleave is released after the engine is already proven up.
-    if ($Interleave -eq 'during-start') {
+    # interleave is released after the engine is already proven up.  An
+    # EngineWait probe's client holds its own first connection until the
+    # launcher's signal file (the live run.log lags its writer), so the
+    # log-based wait is skipped for exactly those probes.
+    if ($Interleave -eq 'during-start' -and -not $EngineWait) {
         Wait-EngineReadiness -Path $Path -Token $Token -Bucket $Bucket -ProcessMode $ProcessMode -BudgetSeconds $StartupRetrySeconds -LauncherStartUtc ([Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime() + [TimeSpan]::FromSeconds(-2))
     }
     # Startup/release waiting has its own bounded budgets. The traffic
@@ -940,7 +943,7 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
         # rule marker (see client source).  The launcher passes -EngineWait
         # for exactly that probe.
         $clientArgs = @($endpoint.host, $endpoint.port, $Stop, $Cadence, $Token, $StartupRetrySeconds)
-        if ($Interleave -eq 'restart-window' -and $EngineWait) { $clientArgs += @('engine-wait') }
+        if (($Interleave -eq 'restart-window' -or $Interleave -eq 'during-start') -and $EngineWait) { $clientArgs += @('engine-wait') }
         $process = Start-Process -FilePath $identity.path -ArgumentList $clientArgs -RedirectStandardOutput $stdout -PassThru -WindowStyle Hidden
         $childCreation = (Get-Process -Id $process.Id).StartTime.ToUniversalTime().Ticks
         $childReady = @{ event = 'process_ready'; nonce = $Token; profile = $Bucket; variant = $Variant; tempo = $Tempo; interleave = $Interleave; pid = $process.Id; worker = 1; seq = 0; creation_ticks = $childCreation; stopwatch_frequency = [Diagnostics.Stopwatch]::Frequency }
