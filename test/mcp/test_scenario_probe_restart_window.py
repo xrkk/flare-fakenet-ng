@@ -27,33 +27,27 @@ def test_client_accepts_six_or_seven_arguments():
     assert 'if (a.Length != 6 && a.Length != 7) return 2;' in client_source()
 
 
-def test_client_engine_wait_holds_first_connection_until_rule_marker():
+def test_client_engine_wait_holds_first_connection_until_launcher_signal():
     source = client_source()
     assert 'a[6] == "engine-wait"' in source
-    assert 'PROCESS_REDIRECT_RULE_READY' in source
+    # The signal file is derived from the probe's own stop control.
+    assert 'Path.Combine(Path.GetDirectoryName(a[2]), "probe.engine-ok")' in source
     # The wait is bounded by its own budget and by the stop control.
     assert re.search(
-        r'while \(DateTime\.UtcNow < markerDeadline && !File\.Exists\(a\[2\]\)\)', source)
-    # An engine that never publishes the marker is a distinct failure.
-    assert re.search(r'if \(!markerSeen\) \{.*?MARKER_MISSED.*?return 4;', source, re.S)
-    # The marker wait has its own extended budget: the restart transition
-    # plus the run log's block-buffered flush can consume nearly the whole
-    # startup budget before the marker line reaches disk.
+        r'while \(DateTime\.UtcNow < engineDeadline && !File\.Exists\(a\[2\]\)\)', source)
+    # A launcher that never signals is a distinct, observable failure.
+    assert re.search(r'if \(!engineSeen\) \{.*?ENGINE_OK_MISSED.*?return 4;', source, re.S)
+    assert 'ENGINE_WAIT|' in source and '"ENGINE_OK|" + engineOk' in source
+    # Connection attempts get a fresh budget after the signal.
     assert re.search(
-        r'var markerDeadline = DateTime\.UtcNow\.AddSeconds\(retrySeconds \+ 60\);', source)
-    assert 'if (!markerSeen) {' in source and 'MARKER_MISSED|' in source
-    assert '"MARKER|" + markerDir' in source and 'ENGINE_WAIT|' in source
-    # Connection attempts get a fresh budget after the marker.
-    assert re.search(
-        r'MARKER\|" \+ markerDir.*?\s*'
+        r'ENGINE_OK\|" \+ engineOk.*?\s*'
         r'retryDeadline = DateTime\.UtcNow\.AddSeconds\(retrySeconds\);',
         source, re.S)
-
-
-def test_client_engine_wait_only_accepts_run_dirs_created_after_launch():
-    source = client_source()
-    assert 'Process.GetCurrentProcess().StartTime.ToUniversalTime()' in source
-    assert 'Directory.GetCreationTimeUtc(d) > launchUtc' in source
+    # The managed run.log is deliberately NOT read: its writer refuses
+    # concurrent readers until exit, which made the marker invisible for
+    # the whole live window (sst-041 option A verification, 2026-09-29).
+    assert 'PROCESS_REDIRECT_RULE_READY' not in source
+    assert 'ReadAllText' not in source
 
 
 def test_spawn_passes_engine_wait_only_for_second_restart_window_probe():
@@ -124,3 +118,18 @@ def test_driver_stops_run01_probe_before_b3_match_restart():
     assert "runtime_profile.get('bucket') == 'B3'" in site
     assert "runtime_profile['probe_target'].get('process_mode') == 'match'" in site
     assert "interleave == 'restart-window'" in site
+
+
+def test_driver_signals_engine_ok_after_a_healthy_restart():
+    helper = re.search(
+        r'def _signal_engine_ok\(.*?\n(?=    def _pre_restart_probe_stop)', SUITE, re.S)
+    assert helper, 'engine-ok helper missing'
+    body = helper.group(0)
+    assert ".engine-ok" in body and 'WriteAllText' in body
+    call_site = re.search(
+        r"evidence\.write\('run-02-engine-ok\.json',\s*"
+        r"self\._signal_engine_ok\(captures\[second_label\]\)", SUITE)
+    assert call_site, 'engine-ok call site missing'
+    # The signal is written only after the restart call converged.
+    restart_pos = SUITE.index("restarted = call('restart', {}, mutation=True)")
+    assert call_site.start() > restart_pos

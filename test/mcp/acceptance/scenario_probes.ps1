@@ -322,36 +322,21 @@ public static class ScenarioProbeClient {
       // A restart-window match probe is released BEFORE the restart, so the
       // engine is by definition going down.  Stay alive (the reviewed image
       // must be adoptable at the second start's quiescence gate) but hold
-      // the first connection until the restarted engine publishes its rule
-      // marker, mirroring the launcher-side readiness rule: only run
-      // directories created after this process started qualify.  The whole
-      // restart transition (stop + settle + second start) can consume
-      // nearly the full startup budget before the marker appears, so the
-      // marker wait gets its own extended budget.
-      var runsRoot = @"C:\ProgramData\FakeNet-NG-MCP\artifacts\runs";
-      var launchUtc = Process.GetCurrentProcess().StartTime.ToUniversalTime().AddSeconds(-2);
-      var markerDeadline = DateTime.UtcNow.AddSeconds(retrySeconds + 60);
-      var markerSeen = false; var markerDir = "";
+      // the first connection until the launcher signals that the restarted
+      // engine is serving: it writes probe.engine-ok beside this probe's
+      // stop control once the restart RPC returned healthy.  The managed
+      // run.log cannot serve as that signal -- the managed process holds it
+      // open and concurrent readers are refused until it exits.
+      var engineOk = Path.Combine(Path.GetDirectoryName(a[2]), "probe.engine-ok");
+      var engineDeadline = DateTime.UtcNow.AddSeconds(retrySeconds + 60);
+      var engineSeen = false;
       Console.WriteLine("ENGINE_WAIT|" + retrySeconds + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush();
-      while (DateTime.UtcNow < markerDeadline && !File.Exists(a[2])) {
-        try {
-          var fresh = new System.Collections.Generic.List<string>();
-          foreach (var d in Directory.GetDirectories(runsRoot)) {
-            try { if (Directory.GetCreationTimeUtc(d) > launchUtc) fresh.Add(d); } catch { }
-          }
-          fresh.Sort((x, y) => Directory.GetCreationTimeUtc(y).CompareTo(Directory.GetCreationTimeUtc(x)));
-          foreach (var d in fresh) {
-            var log = Path.Combine(d, "run.log");
-            try {
-              if (File.Exists(log) && File.ReadAllText(log).Contains("PROCESS_REDIRECT_RULE_READY")) { markerSeen = true; markerDir = d; break; }
-            } catch { }
-          }
-        } catch { }
-        if (markerSeen) break;
+      while (DateTime.UtcNow < engineDeadline && !File.Exists(a[2])) {
+        if (File.Exists(engineOk)) { engineSeen = true; break; }
         Thread.Sleep(200);
       }
-      if (!markerSeen) { Console.WriteLine("MARKER_MISSED|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush(); return 4; }
-      Console.WriteLine("MARKER|" + markerDir + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush();
+      if (!engineSeen) { Console.WriteLine("ENGINE_OK_MISSED|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush(); return 4; }
+      Console.WriteLine("ENGINE_OK|" + engineOk + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush();
       // The connection attempts get a fresh full budget so the probe still
       // establishes inside the same launcher-side envelope.
       retryDeadline = DateTime.UtcNow.AddSeconds(retrySeconds);

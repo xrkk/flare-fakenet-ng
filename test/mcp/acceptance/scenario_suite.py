@@ -2321,6 +2321,27 @@ class Suite:
         value['raw'] = raw
         return value
 
+    def _signal_engine_ok(self, capture: dict[str, Any]) -> dict[str, Any]:
+        """Release the restart-window probe's held first connection.
+
+        The restarted engine's run.log is held open by the managed process
+        and concurrent readers are refused until it exits, so the probe
+        cannot observe the rule marker itself.  Write probe.engine-ok beside
+        the probe's stop control once the restart RPC returned healthy: by
+        then the quiescence gate has adopted the held image and the engine
+        is serving, so the probe's connections are redirected, not leaked.
+        """
+        assert self.vm
+        value, raw = self._vm_json(
+            "$ErrorActionPreference='Stop';$p=" +
+            quote_ps(str(capture['probe']) + '.engine-ok') + ";"
+            "if(Test-Path $p){throw 'engine-ok signal already exists'};"
+            "[IO.File]::WriteAllText($p,'ok',[Text.UTF8Encoding]::new($false));"
+            "@{path=$p;written_utc=[DateTimeOffset]::UtcNow.ToString('o')}"
+            "|ConvertTo-Json -Compress", 60)
+        value['raw'] = raw
+        return value
+
     def _pre_restart_probe_stop(self, capture: dict[str, Any]) -> dict[str, Any]:
         """Cooperatively end run-01's probe before a restart adopts the image.
 
@@ -6267,6 +6288,15 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                             if restart_attempt == 2:
                                 raise
                             time.sleep(30)
+                    if (interleave == 'restart-window' and
+                            runtime_profile.get('bucket') == 'B3' and
+                            runtime_profile['probe_target'].get('process_mode') == 'match'):
+                        # The held probe cannot read the live run.log (the
+                        # managed process refuses concurrent readers), so
+                        # signal it directly now that the restart returned
+                        # healthy and the adopted engine is serving.
+                        evidence.write('run-02-engine-ok.json',
+                                       self._signal_engine_ok(captures[second_label]))
                     if interleave == 'stop-window':
                         # The probe has now overlapped run-01's stop portion
                         # (the restart). Close run-01's capture BEFORE
