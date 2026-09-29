@@ -2003,7 +2003,7 @@ class Suite:
                           CandidateId=self.identity.candidate_id,
                           DiagnosticIdentity=True)
         if (run_label == 'run-02' and profile['bucket'] == 'B3' and
-                profile['interleave'] in ('restart-window', 'during-start')):
+                profile['interleave'] in ('restart-window', 'during-start', 'after-healthy')):
             # Only this probe is released before the restart while the engine
             # is going down; it must hold its first connection until the
             # launcher's signal (sst-041/048 option A follow-up, 2026-09-29).
@@ -2155,7 +2155,7 @@ class Suite:
             params.update(CaptureRunId=capture_run_id, CandidateId=self.identity.candidate_id,
                           DiagnosticIdentity=True)
         if (run_label == 'run-02' and profile['bucket'] == 'B3' and
-                profile['interleave'] in ('restart-window', 'during-start')):
+                profile['interleave'] in ('restart-window', 'during-start', 'after-healthy')):
             # Only this probe is released before the restart while the engine
             # is going down; it must hold its first connection until the
             # launcher's signal (sst-041/048 option A follow-up, 2026-09-29).
@@ -6242,7 +6242,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # stop-window combination).
                     second_release = None if interleave == 'stop-window' else \
                         self._release_probe(captures[second_label], 'restart-window')
-                    if (interleave in ('restart-window', 'during-start') and
+                    if (interleave in ('restart-window', 'during-start', 'after-healthy') and
                             runtime_profile.get('bucket') == 'B3'):
                         # The first run's B3 probe keeps targeting A through
                         # the restart gap: its live SYN rows are exactly what
@@ -6290,7 +6290,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                             if restart_attempt == 2:
                                 raise
                             time.sleep(30)
-                    if (interleave in ('restart-window', 'during-start') and
+                    if (interleave in ('restart-window', 'during-start', 'after-healthy') and
                             runtime_profile.get('bucket') == 'B3'):
                         # The held probe cannot read the live run.log (the
                         # managed process refuses concurrent readers), so

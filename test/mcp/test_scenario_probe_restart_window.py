@@ -54,7 +54,7 @@ def test_spawn_passes_engine_wait_only_for_second_restart_window_probe():
     assert re.search(
         r"\$clientArgs = @\(\$endpoint\.host, \$endpoint\.port, \$Stop, "
         r"\$Cadence, \$Token, \$StartupRetrySeconds\)\r?\n"
-        r"\s*if \(\(\$Interleave -eq 'restart-window' -or \$Interleave -eq 'during-start'\) -and \$EngineWait\) \{ \$clientArgs \+= @\('engine-wait'\) \}",
+        r"\s*if \(\(\$Interleave -eq 'restart-window' -or \$Interleave -eq 'during-start' -or \$Interleave -eq 'after-healthy'\) -and \$EngineWait\) \{ \$clientArgs \+= @\('engine-wait'\) \}",
         PROBES)
     # The launcher-side log wait is skipped exactly for EngineWait probes:
     # the client holds its own first connection until the signal file.
@@ -69,7 +69,7 @@ def test_spawn_passes_engine_wait_only_for_second_restart_window_probe():
 def test_suite_marks_only_the_second_probe_engine_wait():
     matches = re.findall(
         r"if \(run_label == 'run-02' and profile\['bucket'\] == 'B3' and\s*"
-        r"profile\['interleave'\] in \('restart-window', 'during-start'\)\):\s*"
+        r"profile\['interleave'\] in \('restart-window', 'during-start', 'after-healthy'\)\):\s*"
         r"#\s*Only this probe is released before the restart.*?\s*"
         r"params\['EngineWait'\] = True", SUITE, re.S)
     assert len(matches) == 2, 'expected EngineWait gating at both probe launch sites'
@@ -125,7 +125,7 @@ def test_driver_stops_run01_probe_before_b3_match_restart():
     # Both match and nonmatch B3 probes leave live A rows through the gap
     # (sst-048); the mode gate is deliberately gone.
     assert "process_mode" not in site
-    assert "interleave in ('restart-window', 'during-start')" in site
+    assert "interleave in ('restart-window', 'during-start', 'after-healthy')" in site
 
 
 def test_driver_signals_engine_ok_after_a_healthy_restart():

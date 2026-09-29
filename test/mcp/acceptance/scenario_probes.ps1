@@ -943,7 +943,7 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
         # rule marker (see client source).  The launcher passes -EngineWait
         # for exactly that probe.
         $clientArgs = @($endpoint.host, $endpoint.port, $Stop, $Cadence, $Token, $StartupRetrySeconds)
-        if (($Interleave -eq 'restart-window' -or $Interleave -eq 'during-start') -and $EngineWait) { $clientArgs += @('engine-wait') }
+        if (($Interleave -eq 'restart-window' -or $Interleave -eq 'during-start' -or $Interleave -eq 'after-healthy') -and $EngineWait) { $clientArgs += @('engine-wait') }
         $process = Start-Process -FilePath $identity.path -ArgumentList $clientArgs -RedirectStandardOutput $stdout -PassThru -WindowStyle Hidden
         $childCreation = (Get-Process -Id $process.Id).StartTime.ToUniversalTime().Ticks
         $childReady = @{ event = 'process_ready'; nonce = $Token; profile = $Bucket; variant = $Variant; tempo = $Tempo; interleave = $Interleave; pid = $process.Id; worker = 1; seq = 0; creation_ticks = $childCreation; stopwatch_frequency = [Diagnostics.Stopwatch]::Frequency }
@@ -1055,6 +1055,22 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
     }
     if ($ExitControlFile -and ($Bucket -ne 'B3' -or $Interleave -ne 'stop-window' -or $ProcessMode -ne 'nonmatch' -or $endpoint.protocol -ne 'tcp')) {
         throw 'managed exit control is limited to B3 nonmatch TCP stop-window'
+    }
+    if ($EngineWait -and -not ($Bucket -eq 'B3' -and $ProcessMode -eq 'match')) {
+        # This launcher IS the traffic source for nonmatch probes (no client
+        # executable), so the held first connection is implemented here: the
+        # restarted engine's live run.log lags its writer, and gap connects
+        # leave live A rows that the restart quiescence gate refuses
+        # (sst-048, 2026-09-29).  Wait for the launcher-side signal file.
+        $engineOkPath = Join-Path (Split-Path -Parent $Stop) 'probe.engine-ok'
+        $engineOkDeadline = [DateTime]::UtcNow.AddSeconds($StartupRetrySeconds + 60)
+        while ([DateTime]::UtcNow -lt $engineOkDeadline -and -not (Test-Path $Stop) -and -not (Test-Path $engineOkPath)) {
+            Start-Sleep -Milliseconds 200
+        }
+        if (-not (Test-Path $engineOkPath)) { throw 'engine-ok signal absent before deadline' }
+        # The traffic window restarts from the signal: the original release
+        # consumed most of the restart transition.
+        $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
     }
     $managedExit = if ($ExitControlFile) { Open-ManagedExitWatch $ExitControlFile $Path $Token } else { $null }
     $exitDetected = $false
