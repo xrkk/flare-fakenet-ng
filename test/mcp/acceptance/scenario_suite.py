@@ -2002,7 +2002,7 @@ class Suite:
             params.update(CaptureRunId=capture_run_id,
                           CandidateId=self.identity.candidate_id,
                           DiagnosticIdentity=True)
-        if (run_label == 'run-02' and profile['bucket'] == 'B3' and
+        if (run_label == 'run-02' and profile['bucket'] in ('B3', 'B4') and
                 profile['interleave'] in ('restart-window', 'during-start', 'after-healthy', 'before-start')):
             # Only this probe is released before the restart while the engine
             # is going down; it must hold its first connection until the
@@ -2154,7 +2154,7 @@ class Suite:
         if self.native_clock_diagnostic:
             params.update(CaptureRunId=capture_run_id, CandidateId=self.identity.candidate_id,
                           DiagnosticIdentity=True)
-        if (run_label == 'run-02' and profile['bucket'] == 'B3' and
+        if (run_label == 'run-02' and profile['bucket'] in ('B3', 'B4') and
                 profile['interleave'] in ('restart-window', 'during-start', 'after-healthy', 'before-start')):
             # Only this probe is released before the restart while the engine
             # is going down; it must hold its first connection until the
@@ -5807,7 +5807,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                            runtime_profile['interleave'] != 'stop-window')
         exit_driven = (scenario.get('lifecycle_chain') == 'restart' and
                        runtime_profile['interleave'] == 'stop-window' and
-                       runtime_profile['bucket'] == 'B3' and
+                       runtime_profile['bucket'] in ('B3', 'B4') and
                        runtime_profile['probe_target'].get('process_mode') == 'nonmatch' and
                        runtime_profile['probe_target']['protocol'] == 'tcp')
         if shared_physical:
@@ -6243,16 +6243,16 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     second_release = None if interleave == 'stop-window' else \
                         self._release_probe(captures[second_label], 'restart-window')
                     if (interleave in ('restart-window', 'during-start', 'after-healthy') and
-                            runtime_profile.get('bucket') == 'B3'):
-                        # The first run's B3 probe keeps targeting A through
-                        # the restart gap: its live SYN rows are exactly what
-                        # the restart quiescence gate (correctly) refuses --
-                        # for match the held reviewed image, for nonmatch the
-                        # unredirected direct rows (sst-048, 2026-09-29).  Its
-                        # run-01 traffic evidence is already complete, so stop
-                        # it cooperatively BEFORE the restart while the engine
-                        # can still close its held connection (sst-041 option
-                        # A, 2026-09-28).
+                            runtime_profile.get('bucket') in ('B3', 'B4')):
+                        # The first run's probe keeps targeting the network
+                        # through the restart gap: B3 leaves live SYN rows
+                        # that the quiescence gate refuses (sst-041/048), B4
+                        # leaves a live UDP socket that the stop-phase
+                        # restoration audit reports as dirty listen_ports
+                        # (sst-058, 2026-10-01).  Its run-01 traffic evidence
+                        # is already complete, so stop it cooperatively
+                        # BEFORE the restart while the engine can still close
+                        # its held connection.
                         first_stop = self._pre_restart_probe_stop(captures[first_label])
                         evidence.write('run-01-probe-pre-restart-stop.json', first_stop)
                     if interleave == 'stop-window':
@@ -6291,7 +6291,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                                 raise
                             time.sleep(30)
                     if (interleave in ('restart-window', 'during-start', 'after-healthy') and
-                            runtime_profile.get('bucket') == 'B3'):
+                            runtime_profile.get('bucket') in ('B3', 'B4')):
                         # The held probe cannot read the live run.log (the
                         # managed process refuses concurrent readers), so
                         # signal it directly now that the restart returned

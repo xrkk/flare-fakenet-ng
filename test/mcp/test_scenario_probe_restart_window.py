@@ -68,7 +68,7 @@ def test_spawn_passes_engine_wait_only_for_second_restart_window_probe():
 
 def test_suite_marks_only_the_second_probe_engine_wait():
     matches = re.findall(
-        r"if \(run_label == 'run-02' and profile\['bucket'\] == 'B3' and\s*"
+        r"if \(run_label == 'run-02' and profile\['bucket'\] in \('B3', 'B4'\) and\s*"
         r"profile\['interleave'\] in \('restart-window', 'during-start', 'after-healthy', 'before-start'\)\):\s*"
         r"#\s*Only this probe is released before the restart.*?\s*"
         r"params\['EngineWait'\] = True", SUITE, re.S)
@@ -121,7 +121,7 @@ def test_driver_stops_run01_probe_before_b3_match_restart():
     assert call_site, 'restart-chain call site not found'
     site = call_site.group(1)
     assert "_pre_restart_probe_stop(captures[first_label])" in site
-    assert "runtime_profile.get('bucket') == 'B3'" in site
+    assert "runtime_profile.get('bucket') in ('B3', 'B4')" in site
     # Both match and nonmatch B3 probes leave live A rows through the gap
     # (sst-048); the mode gate is deliberately gone.
     assert "process_mode" not in site
