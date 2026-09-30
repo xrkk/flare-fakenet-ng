@@ -141,3 +141,17 @@ def test_driver_signals_engine_ok_after_a_healthy_restart():
     # The signal is written only after the restart call converged.
     restart_pos = SUITE.index("restarted = call('restart', {}, mutation=True)")
     assert call_site.start() > restart_pos
+
+
+def test_restart_window_probe_window_spans_the_restart_transition():
+    """A restart-window probe's traffic window extends by the startup budget.
+
+    The probe is released before the restart; the launcher releases the
+    auxiliary cases only after the restart converged and the health checks
+    completed -- with the plain connection window the probe expired before
+    the cases file appeared (sst-058, 2026-09-30).
+    """
+    assert re.search(
+        r"\$windowSeconds = if \(\$Interleave -eq 'restart-window'\) "
+        r"\{ \$Seconds \+ \$StartupRetrySeconds \} else \{ \$Seconds \}",
+        PROBES)

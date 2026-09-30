@@ -912,7 +912,14 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
     }
     # Startup/release waiting has its own bounded budgets. The traffic
     # window starts only when this probe is allowed and ready to connect.
-    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    # A restart-window probe is released BEFORE the restart: its window must
+    # span the whole restart transition (stop + settle + second start +
+    # convergence + health checks) before the launcher releases the
+    # auxiliary cases and curl, so the deadline extends by the startup
+    # retry budget (sst-058: the 90-second window expired 45 seconds
+    # before the cases file was written, 2026-09-30).
+    $windowSeconds = if ($Interleave -eq 'restart-window') { $Seconds + $StartupRetrySeconds } else { $Seconds }
+    $deadline = [DateTime]::UtcNow.AddSeconds($windowSeconds)
     $casesInvoked = [ref]$false
     $curlInvoked = [ref]$false
     function Invoke-ReleasedCases {
