@@ -14,6 +14,7 @@ from pathlib import Path
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 ROOT=Path(__file__).resolve().parents[3]
 SOURCE='ade1059e99e654bf7a263e3b133afd61de67f314'
 CANDIDATE='mcp-cade1059e-0ef21513488c'
@@ -31,14 +32,15 @@ def write_new(path,value):
 def release_receipt(ready):
     return {k:ready[k] for k in ('run_id','controller','nonce','pid','creation_time')}|{'action':'release'}
 def release_matches(receipt,ready):return receipt==release_receipt(ready)
-def independent_product_job(proof):
+def independent_product_job(proof,expected=None):
+    expected=expected or {"pid":7484,"filetime":"134335767401378067"}
     jobs=proof.get('jobs') or []
-    return (proof.get('supervisor_pid')==7484 and proof.get('supervisor_creation')=='134335767401378067' and proof.get('target_pid') and proof.get('target_creation') and proof.get('duplicates_closed') is True and proof.get('probe_job_closed') is True and len(jobs)==1 and jobs[0].get('worker_member') is False and str(proof['target_pid']) in jobs[0].get('members',[]))
+    return (proof.get('supervisor_pid')==expected['pid'] and proof.get('supervisor_creation')==str(expected['filetime']) and proof.get('target_pid') and proof.get('target_creation') and proof.get('duplicates_closed') is True and proof.get('probe_job_closed') is True and len(jobs)==1 and jobs[0].get('worker_member') is False and str(proof['target_pid']) in jobs[0].get('members',[]))
 
-def fixture_valid(ready,run,controller,nonce,elapsed):
+def fixture_valid(ready,run,controller,nonce,elapsed,expected=None):
     return (ready.get('run_id')==run and ready.get('controller')==controller and ready.get('nonce')==nonce and
             ready.get('address')=='127.0.0.1' and type(ready.get('port')) is int and 0<ready['port']<65536 and
-            type(ready.get('pid')) is int and bool(ready.get('creation_time')) and independent_product_job(ready.get('managed_job_proof',{})) and 0<=elapsed<1800)
+            type(ready.get('pid')) is int and bool(ready.get('creation_time')) and independent_product_job(ready.get('managed_job_proof',{}),expected) and 0<=elapsed<1800)
 def preparation_eligible(previous_result,observation,fixture_or_operator_entered):
     return (previous_result.get('status')=='FAILED' and not fixture_or_operator_entered and observation.get('observer') is None and observation.get('service',{}).get('State')=='Running' and observation.get('prestop',{}).get('phase')=='idle' and observation.get('prestop',{}).get('attempt')==0 and any(('Get-FileHash' in (f.get('raw') or '') or 'external listener must not inherit any Job' in (f.get('raw') or '')) for row in observation.get('own',[]) for f in row.get('files',[]) if f.get('name')=='worker-err.txt'))
 
@@ -87,12 +89,15 @@ def verdict(p):
     return {'passed':all(checks.values()),'checks':checks,'nature':'must be backed by indexed native originals; self-contained proofs are logical only'}
 
 class Runner:
-    def __init__(self,out):
+    def __init__(self,out,contract=None):
         sys.path.insert(0,str(ROOT));sys.path.insert(0,str(Path(__file__).parent))
         import p14_single
         self.suite=p14_single.suite;self.j=p14_single.Journal(out)
         self.j.channel=self.suite.VmMcp('http://192.168.204.233:28787/mcp')
         self.j.service=self.suite.RawMcp('http://192.168.204.233:28788/mcp',controller_id=str(uuid.uuid4()))
+        import bounded_mcp
+        bounded_mcp.install(self.j.channel,out/'transport-vm');bounded_mcp.install(self.j.service,out/'transport-product')
+        self.contract=contract or {};self.identity=self.contract.get('service_identity',{});self.phase='not_started';self.business_entered=False
         self.j.run_id=None;self.out=out;self.n=0;self.root=None;self.ready=None;self.launched=False;self.released=False
         self.retry_sent=False;self.last_mutation_terminal=True;self.records=[];self.proof={};self.started=time.monotonic()
         original=self.j.service._post
@@ -102,16 +107,31 @@ class Runner:
             except Exception as e:row['error']=repr(e);raise
             finally:row['elapsed']=time.monotonic()-t;self.j.append(row)
         self.j.service._post=recorded
-    def stage(self,text):print(json.dumps({'stage':text,'elapsed':time.monotonic()-self.started}),flush=True)
+    def stage(self,text):
+        self.phase=text;self.checkpoint();print(json.dumps({'stage':text,'elapsed':time.monotonic()-self.started}),flush=True)
+    def checkpoint(self):
+        import bounded_mcp
+        bounded_mcp.save(self.out/'execution-state.json',{'status':'IN_PROGRESS','stage':self.phase,'business_entered':self.business_entered,'run_id':self.j.run_id,'controller':self.j.service.controller_id,'launched':self.launched,'retry_sent':self.retry_sent,'mutation_terminal':self.last_mutation_terminal})
+    @contextmanager
+    def scope(self,seconds):
+        clients=[self.j.channel,self.j.service];previous=[getattr(c,'_absolute_deadline',float('inf')) for c in clients];deadline=time.monotonic()+seconds
+        for c,old in zip(clients,previous):c._absolute_deadline=min(old,deadline)
+        try:yield
+        finally:
+            for c,old in zip(clients,previous):c._absolute_deadline=old
     def vm(self,cmd,timeout=60):return self.j.vm(cmd,timeout)
     def ps(self,x):return self.suite.quote_ps(str(x))
     def vm_json(self,cmd,timeout=60):return json.loads(self.vm(cmd,timeout)['output'])
     def save(self,name,value):self.j.save(name,value)
     def status(self):return self.j.value('get_status')
     def mutate(self,name,**args):
-        status=self.status();args.update(command_id='r07-'+uuid.uuid4().hex,expected_state_version=status['state_version'])
+        with self.scope(120 if name=='start' and self.j.run_id else 480):return self._mutate(name,**args)
+    def _mutate(self,name,**args):
+        status=self.status();args.update(command_id='r08-'+uuid.uuid4().hex,expected_state_version=status['state_version'])
         self.last_mutation_terminal=False
-        try:r=self.j.call(name,args,480)
+        if name=='start' and not self.j.run_id:self.business_entered='UNKNOWN'
+        self.phase='mutation_sent:'+name;self.checkpoint()
+        try:r=self.j.call(name,args,120 if name=='start' and self.j.run_id else 480)
         except Exception:
             # Journal.call performs only command-ID reconciliation, never resend.
             raise
@@ -150,7 +170,7 @@ class Runner:
         roots_ps='@('+','.join(self.ps(x) for x in roots)+')'
         plan=export_plan(label)
         select=(";$files=@($files|Where-Object {$_.Name -in @('creation.jsonl','active-config.ini')});" if plan['sealed_only'] else ';')
-        cmd=r'''$ErrorActionPreference='Stop';$files=@();foreach($d in '''+roots_ps+r'''){if(Test-Path -LiteralPath $d){$files+=@(Get-ChildItem -LiteralPath $d -Recurse -File)}}'''+select+r'''$files+=@(Get-ChildItem 'C:\ProgramData\FakeNet-NG-MCP\logs' -File -Filter '''+self.ps('recovery-audit-'+run+'-*')+r''');$files+=Get-Item '''+self.ps('C:\\ProgramData\\FakeNet-NG-MCP\\baselines\\'+run+'.json')+r''';$files+=Get-Item 'C:\ProgramData\FakeNet-NG-MCP\logs\service-stop-result.json';$files+=Get-Item 'C:\ProgramData\FakeNet-NG-MCP\state\state.json';$total=0;$rows=@();$binary=@();foreach($f in $files){if($f.Extension -notin @('.json','.jsonl','.log','.ini','.txt')){$binary+=@{path=$f.FullName;size=$f.Length;sha256=(Get-FileHash $f.FullName).Hash.ToLower();retained_guest=$true};continue};if($f.Length -gt 8MB){throw 'single original exceeds 8MiB cap'};$total+=$f.Length;if($total -gt 64MB){throw 'export exceeds 64MiB cap'};$bytes=[IO.File]::ReadAllBytes($f.FullName);$rows+=@{path=$f.FullName;size=$bytes.Length;sha256=(Get-FileHash $f.FullName).Hash.ToLower();base64=[Convert]::ToBase64String($bytes)}};@{files=$rows;total=$total;binary_retained_guest=$binary}|ConvertTo-Json -Depth 6 -Compress'''
+        cmd=r'''$ErrorActionPreference='Stop';$files=@();foreach($d in '''+roots_ps+r'''){if(Test-Path -LiteralPath $d){$files+=@(Get-ChildItem -LiteralPath $d -Recurse -File)}}'''+select+r'''$files+=@(Get-ChildItem 'C:\ProgramData\FakeNet-NG-MCP\logs' -File -Filter '''+self.ps('recovery-audit-'+run+'-*')+r''');$files+=Get-Item '''+self.ps('C:\\ProgramData\\FakeNet-NG-MCP\\baselines\\'+run+'.json')+r''';$files+=Get-Item 'C:\ProgramData\FakeNet-NG-MCP\logs\service-stop-result.json';$files+=Get-Item 'C:\ProgramData\FakeNet-NG-MCP\state\state.json';$total=0;$rows=@();$binary=@();foreach($f in $files){if($f.Extension -notin @('.json','.jsonl','.log','.ini','.txt')){$binary+=@{path=$f.FullName;size=$f.Length;sha256=(Get-FileHash $f.FullName).Hash.ToLower();retained_guest=$true};continue};if($f.Length -gt 8MB){$binary+=@{path=$f.FullName;size=$f.Length;sha256=(Get-FileHash $f.FullName).Hash.ToLower();retained_guest=$true;reason='text exceeds8MiB, not exported or endpoint verified'};continue};$total+=$f.Length;if($total -gt 64MB){throw 'export exceeds 64MiB cap'};$bytes=[IO.File]::ReadAllBytes($f.FullName);$rows+=@{path=$f.FullName;size=$bytes.Length;sha256=(Get-FileHash $f.FullName).Hash.ToLower();base64=[Convert]::ToBase64String($bytes)}};@{files=$rows;total=$total;binary_retained_guest=$binary}|ConvertTo-Json -Depth 6 -Compress'''
         data=self.vm_json(cmd,120);directory=self.out/label;directory.mkdir();records=[]
         for i,f in enumerate(data['files']):
             raw=base64.b64decode(f['base64'],validate=True);assert len(raw)==f['size'] and sha(raw)==f['sha256']
@@ -169,7 +189,7 @@ class Runner:
                     rows=[json.loads(x) for x in (self.out/f['local']).read_text().splitlines()]
                     target=next(r['child'] for r in rows if r['stage']=='after_api')
             assert target and target['pid'] and target['creation_time'], 'own product target native creation missing'
-        script=WORKER.read_bytes();manifest={'run_id':self.j.run_id,'controller':self.j.service.controller_id,'nonce':self.nonce,'lease_seconds':1800,'directory':directory,'worker_sha256':sha(script),'exe_sha256':EXE,'service_pid':7484,'service_filetime':'134335767401378067','target_pid':target.get('pid'),'target_creation_time':target.get('creation_time')}
+        script=WORKER.read_bytes();manifest={'run_id':self.j.run_id,'controller':self.j.service.controller_id,'nonce':self.nonce,'lease_seconds':1800,'directory':directory,'worker_sha256':sha(script),'exe_sha256':EXE,'mode':mode,'service_pid':self.identity.get('pid'),'service_filetime':str(self.identity.get('filetime','')),'target_pid':target.get('pid'),'target_creation_time':target.get('creation_time')}
         raw=json.dumps(manifest).encode();payload={ 'worker.ps1':script,'manifest.json':raw }
         once(self.vm,"$ErrorActionPreference='Stop';$dir="+self.ps(directory)+";if(Test-Path $dir){throw 'own directory collision'};New-Item -ItemType Directory -Path $dir|Out-Null;'own directory created'",30)
         for name,b in payload.items():
@@ -181,8 +201,19 @@ class Runner:
                 once(self.vm,cmd,30)
             self.vm("if((Get-FileHash "+self.ps(path)+").Hash.ToLower() -cne '"+sha(b)+"'){throw 'transfer SHA drift'};'own file SHA verified'",30)
         # At most one launch. Unknown result is reconciled only through own files.
-        launch="$ErrorActionPreference='Stop';$dir="+self.ps(directory)+";$engine="+self.ps(PS_ENGINE)+";if((Get-FileHash $engine).Hash.ToLower() -cne '"+PS_ENGINE_SHA+"'){throw 'PowerShell engine drift'};$p=Start-Process $engine -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $dir 'worker.ps1'),'-Manifest',(Join-Path $dir 'manifest.json'),'-Mode','"+mode+"') -PassThru -RedirectStandardOutput (Join-Path $dir 'worker-out.txt') -RedirectStandardError (Join-Path $dir 'worker-err.txt');@{pid=$p.Id;creation_time=[string]$p.StartTime.ToUniversalTime().ToFileTimeUtc()}|ConvertTo-Json -Compress"
-        return once(self.vm_json,launch,30)
+        command_line='"'+PS_ENGINE+'" -NoProfile -ExecutionPolicy Bypass -File "'+directory+'\\worker.ps1" -Manifest "'+directory+'\\manifest.json" -Mode '+mode
+        launch="$ErrorActionPreference='Stop';$engine="+self.ps(PS_ENGINE)+";if((Get-FileHash $engine).Hash.ToLower() -cne '"+PS_ENGINE_SHA+"'){throw 'PowerShell engine drift'};$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine="+self.ps(command_line)+"};if($r.ReturnValue -ne 0){throw ('native launch refused '+$r.ReturnValue)};$p=Get-Process -Id $r.ProcessId;@{pid=$p.Id;creation_time=[string]$p.StartTime.ToUniversalTime().ToFileTimeUtc();launcher='Win32_Process.Create';native_return=$r.ReturnValue}|ConvertTo-Json -Compress"
+        self.save('launch-intent-'+str(uuid.uuid4())+'.json',{'directory':directory,'mode':mode,'nonce':self.nonce,'worker_sha256':sha(script),'command':launch,'sent':'possibly_sent','budget':30});self.phase='launch_sent';self.checkpoint()
+        try:result=once(self.vm_json,launch,30)
+        except Unknown:
+            # Launch may have happened: one independent receipt read, no relaunch.
+            receipt=self.wait_file(directory+r'\launch-receipt.json',30)
+            assert receipt['run_id']==self.j.run_id and receipt['controller']==self.j.service.controller_id and receipt['nonce']==self.nonce and receipt['mode']==mode and receipt['worker_sha256']==sha(script)
+            result={k:receipt[k] for k in ('pid','creation_time')};result['launch_response_unknown_reconciled']=True
+        receipt=self.wait_file(directory+r'\launch-receipt.json',30)
+        assert (result['pid'],result['creation_time'])==(receipt['pid'],receipt['creation_time']) and receipt['worker_sha256']==sha(script) and receipt['nonce']==self.nonce
+        self.save('launch-native-receipt-'+str(uuid.uuid4())+'.json',receipt)
+        return result
     def wait_file(self,path,seconds):
         end=time.monotonic()+seconds
         while time.monotonic()<end:
@@ -191,10 +222,13 @@ class Runner:
             time.sleep(2)
         raise Unknown('own output not published before original deadline: '+path)
     def release(self):
+        if self.released:return
+        with self.scope(60):return self._release()
+    def _release(self):
         if not self.launched or self.released:return
         if not self.ready:
             self.ready=self.wait_file(self.root+r'\ready.json',60)
-        assert fixture_valid(self.ready,self.j.run_id,self.j.service.controller_id,self.nonce,0)
+        assert fixture_valid(self.ready,self.j.run_id,self.j.service.controller_id,self.nonce,0,self.identity)
         receipt=release_receipt(self.ready);raw=base64.b64encode(json.dumps(receipt).encode()).decode()
         path=self.root+r'\release.json'
         cmd="$ErrorActionPreference='Stop';$p="+self.ps(path)+";$b=[Convert]::FromBase64String('"+raw+"');if(Test-Path $p){$old=[IO.File]::ReadAllBytes($p);if([Convert]::ToBase64String($old) -cne '"+raw+"'){throw 'foreign release receipt'}}else{$s=[IO.File]::Open($p,[IO.FileMode]::CreateNew);try{$s.Write($b,0,$b.Length);$s.Flush($true)}finally{$s.Dispose()}};'own release published'"
@@ -204,12 +238,16 @@ class Runner:
         cmd="$p=Get-Process -Id "+str(self.ready['pid'])+" -ErrorAction SilentlyContinue;if($p -and [string]$p.StartTime.ToUniversalTime().ToFileTimeUtc() -ceq '"+self.ready['creation_time']+"'){if(!$p.WaitForExit(10000)){throw 'fixture worker not ended'}};'native fixture ended'"
         ended=self.vm(cmd,15);self.save('fixture-native-ended.json',ended);self.proof.update(fixture_native_ended=True,three_absent_samples=True,fixture_did_not_expire=closed['seconds']<1800);self.released=True
     def cli(self,label):
+        with self.scope(510):return self._cli(label)
+    def _cli(self,label):
         directory=self.root+'\\'+label;begin=time.monotonic();launch=self.setup_worker(directory,'Cli');self.save(label+'-launch.json',launch)
         r=self.wait_file(directory+r'\result.json',max(0,510-(time.monotonic()-begin)));self.save(label+'-cli-original.json',r)
         # Also join the CLI observer; never kill a live CLI or observer.
         self.vm('$p=Get-Process -Id '+str(launch['pid'])+" -ErrorAction SilentlyContinue;if($p -and [string]$p.StartTime.ToUniversalTime().ToFileTimeUtc() -ceq '"+launch['creation_time']+"'){if(!$p.WaitForExit(5000)){throw 'CLI observer remains alive'}};'CLI observer ended'",10)
         return r,begin
     def wait_prestop_terminal(self,initial,deadline):
+        with self.scope(max(0,deadline-time.monotonic())):return self._wait_prestop_terminal(initial,deadline)
+    def _wait_prestop_terminal(self,initial,deadline):
         while time.monotonic()<deadline:
             s=self.scene('prestop-readonly')
             if new_attempt(initial,s['prestop']) and s['prestop']['phase'] in ('failed','succeeded'):
@@ -221,49 +259,26 @@ class Runner:
             time.sleep(3)
         raise Unknown('PRESTOP new attempt did not reach terminal within original budget')
     def execute(self,resume=None):
-        if resume is None:
-            self.stage('live admission');g=self.j.gate();scene=self.scene('admission');assert scene['prestop']['phase']=='idle'
-            cfg=self.read_guest_json(r'C:\ProgramData\FakeNet-NG-MCP\configs\service.json');assert cfg['stop_grace_seconds']==60
-            # Exact inherited six native cap originals, not a new cap operation.
-            cap=ROOT/'Logs/fakenet-completion-20261001/r02/current-instance-final/9c984802-137a-4b15-bbf2-7e1c4f44c32c'
-            inherited=json.loads((ROOT/'Logs/fakenet-completion-20261001/r06/specialty-consolidated.json').read_text())['instance_map']['latest_inherited']
-            for r in inherited['six_originals']:assert sha((ROOT/r['path']).read_bytes())==r['sha256']
-            self.save('cap-inheritance.json',inherited)
-            r=self.mutate('start');assert r['ok'] and r['value']['state']=='healthy',r
-        else:
-            self.stage('same run preparation-only continuation')
-            previous=Path(resume);old=json.loads(next(previous.glob('*admission-scene.json')).read_text()) if list(previous.glob('*resumed-admission-scene.json')) else json.loads((previous/'03-finally-scene.json').read_text())
-            assert (previous/'result.json').exists(), 'previous writer must have ended'
-            previous_result=json.loads((previous/'result.json').read_text())
-            observation_path=previous.parent/('fixture-native-reconcile.json' if (previous/'fixture-launch.json').exists() else 'native-reconcile-01.json')
-            observation=json.loads(json.loads(observation_path.read_text())['output'])
-            if 'process' in observation:
-                observation['observer']=observation['process'];observation['own']=[{'files':observation['files']}]
-                assert not any(f['name'] in ('ready.json','closed.json') for f in observation['files']), 'cannot repeat a listener that was started'
-            assert preparation_eligible(previous_result,observation,(previous/'fixture-ready.json').exists() or (previous/'operator-cli-original.json').exists()), 'only proven pre-CLI tool preparation errors may continue'
-            self.save('preparation-reconciliation.json',observation)
-            assert previous_result['status']=='FAILED' and not (previous/'fixture-ready.json').exists() and not (previous/'operator-cli-original.json').exists()
-            self.j.service.controller_id=old['product']['controller']
-            self.j.run_id=old['product']['run_id']
-            snap=self.j.snapshot();assert (snap['pid'],snap['creation_filetime'])==(7484,134335767401378067)
-            assert snap['exe_sha']==EXE and snap['default_sha']=='71e530fa54710c8c6e4f6644f99858b514e3e724d7957e7bdbaa6de0029cac1a' and not snap['fault_env']
-            current=self.scene('resumed-admission');assert current['prestop']['attempt']==0 and current['prestop']['phase']=='idle'
-            assert current['product']['state']=='healthy' and current['product']['run_id']==self.j.run_id and current['product']['controller']==self.j.service.controller_id
-            self.resource_gate('resumed-admission')
-            inherited=json.loads((previous/'cap-inheritance.json').read_text())
-            for f in inherited['six_originals']:assert sha((ROOT/f['path']).read_bytes())==f['sha256']
-            self.save('cap-inheritance.json',inherited)
-            cfg=self.read_guest_json(r'C:\ProgramData\FakeNet-NG-MCP\configs\service.json');assert cfg['stop_grace_seconds']==60
-            assert sha(self.baseline())==sha((previous/'baseline-original.json').read_bytes()), 'same original baseline required'
-            self.save('preparation-continuation.json',{'previous':str(previous),'same_run':self.j.run_id,'controller':self.j.service.controller_id,'new_business_start':False,'reason':'proven immutable export and old PowerShell engine preparation faults; no fixture/public stop/operator/actual CLI was executed; PRESTOP still idle0'})
-            r={'value':{'run_id':self.j.run_id}}
-        self.j.run_id=r['value']['run_id'];self.nonce=str(uuid.uuid4());self.root='E:\\FakeNetEvidence\\r07\\'+self.j.run_id+'\\'+self.nonce
+        assert resume is None, 'R08 cannot reuse any R07 run'
+        self.stage('live new instance admission');snap=self.j.snapshot()
+        assert snap['computer']=='DESKTOP-3FI41GR' and snap['uuid']=='D9FD4D56-3DC4-C64B-19F1-411EEBC1CA49' and any(x['MacAddress']=='00-0C-29-C1-CA-49' for x in snap['mac'])
+        assert (snap['pid'],str(snap['creation_filetime']))==(self.identity['pid'],str(self.identity['filetime']))
+        assert snap['exe_sha']==EXE and snap['default_sha']=='71e530fa54710c8c6e4f6644f99858b514e3e724d7957e7bdbaa6de0029cac1a' and not snap['fault_env'] and not snap['marker']['needs_recovery']
+        status=self.status();assert status['state']=='stopped' and not status['run_id'] and not status['controller'] and status['config_identity']['name']=='default.ini'
+        self.resource_gate('admission');scene=self.scene('admission');assert scene['prestop']['phase']=='idle' and scene['prestop']['attempt']==0
+        cfg=self.read_guest_json(r'C:\ProgramData\FakeNet-NG-MCP\configs\service.json');assert cfg['stop_grace_seconds']==60
+        cap=self.contract['native_first_selfcheck'];assert cap['passed'] and cap['service_identity']==self.identity and len(cap['six_originals'])==6
+        for item in cap['six_originals']:assert sha((ROOT/item['path']).read_bytes())==item['sha256']
+        self.save('native-first-selfcheck-admission.json',cap)
+        r=self.mutate('start');assert r['ok'] and r['value']['state']=='healthy',r
+        self.business_entered=True;self.j.run_id=r['value']['run_id'];self.checkpoint()
+        self.j.run_id=r['value']['run_id'];self.nonce=str(uuid.uuid4());self.root='E:\\FakeNetEvidence\\r08\\'+self.j.run_id+'\\'+self.nonce
         self.stage('healthy baseline sealed');raw=self.baseline();self.save('baseline-sealed.json',{'sha256':sha(raw),'run_id':self.j.run_id});(self.out/'baseline-original.json').write_bytes(raw)
         b=json.loads(raw);assert set(b['sections'])==SECTIONS
         self.collect('healthy-originals');self.launched=True
         launch=self.setup_worker(self.root,'Listener');self.save('fixture-launch.json',launch)
         self.ready=self.wait_file(self.root+r'\ready.json',60);self.save('fixture-ready.json',self.ready)
-        assert fixture_valid(self.ready,self.j.run_id,self.j.service.controller_id,self.nonce,time.monotonic()-self.started)
+        assert fixture_valid(self.ready,self.j.run_id,self.j.service.controller_id,self.nonce,time.monotonic()-self.started,self.identity)
         assert (launch['pid'],launch['creation_time'])==(self.ready['pid'],self.ready['creation_time'])
         assert ('127.0.0.1:'+str(self.ready['port'])) not in b['sections']['listen_ports']
         self.samples(True);self.stage('public stop with own TCP held');stopped=self.mutate('stop')
@@ -275,7 +290,7 @@ class Runner:
         self.stage('operator CLI once');op,begin=self.cli('operator');self.proof['operator']=op
         s=self.wait_prestop_terminal(self.proof['prestop_before'],begin+480)
         self.proof['prestop_failed']=s['prestop'];assert cli_valid(op,1)
-        assert s['prestop']['phase']=='failed' and (s['pid'],s['creation_time'])==(7484,'134335767401378067') and s['service']['State']=='Running'
+        assert s['prestop']['phase']=='failed' and (s['pid'],s['creation_time'])==(self.identity['pid'],str(self.identity['filetime'])) and s['service']['State']=='Running'
         assert s['marker']['needs_recovery'] and s['product']['run_id']==self.j.run_id and s['product']['controller']==self.j.service.controller_id
         self.samples(True);self.collect('operator-held-originals')
         self.proof.update(held=dict(self.proof['before'],needs_recovery=s['marker']['needs_recovery']),service_alive_at_CLI1=True)
@@ -317,11 +332,11 @@ def rejudge(out):
     p['operator']=sidecars.get('operator-cli-original.json',{})
     p['retry']=sidecars.get('retry-cli-original.json',{})
     p['prestop_before']=initial['prestop'];p['prestop_failed']=held['prestop'];p['prestop_final']=final.get('prestop',{})
-    p['service_alive_at_CLI1']=(held['service']['State']=='Running' and held['pid']==7484 and str(held['creation_time'])=='134335767401378067')
+    p['service_alive_at_CLI1']=(held['service']['State']=='Running' and held['pid']==initial['pid'] and str(held['creation_time'])==str(initial['creation_time']))
     p['before']={'run_id':initial['product']['run_id'],'controller':initial['product']['controller'],'baseline_sha256':sidecars['baseline-sealed.json']['sha256'],'failure_reason':initial['product']['failure_reason'],'audit_tcp_difference':False,'needs_recovery':initial['marker']['needs_recovery']}
     p['held']={'run_id':held['product']['run_id'],'controller':held['product']['controller'],'baseline_sha256':p['before']['baseline_sha256'],'needs_recovery':held['marker']['needs_recovery']}
     p['start_owner_preserved']=(refused['product']['run_id']==p['before']['run_id'] and refused['product']['controller']==p['before']['controller'] and refused['marker']['needs_recovery'] is True)
-    starts=[v for name,v in sidecars.items() if name.startswith('start-r07-')]
+    starts=[v for name,v in sidecars.items() if name.startswith(('start-r07-','start-r08-'))]
     errors=[v.get('error') for v in starts if not v.get('ok')]
     p['start_error']=next((e.get('code') for e in errors if isinstance(e,dict)),None)
     p['service_stopped']=final.get('service',{}).get('State')=='Stopped';p['final_marker']=final.get('marker',{})
@@ -333,7 +348,7 @@ def rejudge(out):
             rows=[json.loads(x) for x in raw.decode().splitlines()];audits.append((f,rows))
         if name=='owner-result.json':owners.append(json.loads(raw))
         if name=='versions.json':versions.append(json.loads(raw))
-    ready=sidecars['fixture-ready.json'];p['fixture_product_job_independent']=independent_product_job(ready.get('managed_job_proof',{}));endpoint='127.0.0.1:'+str(ready['port'])
+    ready=sidecars['fixture-ready.json'];p['fixture_product_job_independent']=independent_product_job(ready.get('managed_job_proof',{}),{'pid':initial['pid'],'filetime':initial['creation_time']});endpoint='127.0.0.1:'+str(ready['port'])
     failed=[rows for f,rows in audits if f['local'].startswith('operator-held-originals/') and rows and any(endpoint in x['current']['listen_ports'] and 'listen_ports' in x['differences'] for x in rows)]
     # Native object-end reports are accepted only for same run and original budget.
     ended=[r for r in owners if r.get('target',{}).get('run_id')==p['before']['run_id'] and r.get('target',{}).get('budget_seconds')==60 and r.get('completed_monotonic',float('inf'))<=r.get('deadline_monotonic',-1) and r.get('helper_ended') is True and r.get('retained_target_handle_closed') is True and r.get('complete') is True]
@@ -358,19 +373,19 @@ def rejudge(out):
     return verdict(p)|{'derivation':{'bound_files':len(files),'failed_TCP_audits':len(failed),'same_run_native_end_reports':len(ended),'two_clean_audits':len(final)}}
 
 def main(argv=None):
-    ap=argparse.ArgumentParser();ap.add_argument('--output',type=Path,default=ROOT/'Logs/fakenet-completion-20261001/r07/native-case')
+    ap=argparse.ArgumentParser();ap.add_argument('--output',type=Path,default=ROOT/'Logs/fakenet-completion-20261001/r08/native-case')
     ap.add_argument('--rejudge',type=Path);ap.add_argument('--contract',type=Path);ap.add_argument('--resume-preparation',type=Path);a=ap.parse_args(argv)
     if a.rejudge:print(json.dumps(rejudge(a.rejudge),ensure_ascii=False));return 0 if rejudge(a.rejudge)['passed'] else 1
     assert a.contract, 'approved execution contract required'
     contract=json.loads(a.contract.read_text())
-    assert contract['status']=='APPROVED_R07' and contract['candidate']==CANDIDATE and contract['product_source']==SOURCE and contract['zip_sha256']==ZIP
+    assert contract['status']=='APPROVED_R08' and contract['candidate']==CANDIDATE and contract['product_source']==SOURCE and contract['zip_sha256']==ZIP
     assert contract['budgets_seconds']=={'public_stop':480,'SCM_PRESTOP':480,'CLI':510,'original_exit':60,'fixture_lease':1800}
     for path,digest in contract['tools'].items():assert sha((ROOT/path).read_bytes())==digest, 'tool changed after freeze'
     a.output.resolve().relative_to((ROOT/'Logs').resolve());a.output.mkdir(parents=True,exist_ok=False)
-    r=Runner(a.output);outcome={'status':'BLOCKED','case':'operator-audit','new_native_case':False,'formal_new':0}
+    r=Runner(a.output,contract);outcome={'status':'BLOCKED','case':'operator-audit','new_native_case':False,'formal_new':0}
     try:r.execute(a.resume_preparation);outcome.update(status='COMPLETED',new_native_case=True)
-    except Exception as e:
-        outcome.update(status='FAILED' if r.j.run_id else 'BLOCKED',reason=repr(e),new_native_case=bool(r.j.run_id))
+    except BaseException as e:
+        outcome.update(status='FAILED',reason=repr(e),new_native_case=r.business_entered,stage=r.phase,exception_type=type(e).__name__)
         import traceback;outcome['traceback']=traceback.format_exc();print(json.dumps(outcome),flush=True)
     finally:
         try:
@@ -383,7 +398,7 @@ def main(argv=None):
                     r.wait_prestop_terminal(s['prestop'],begin+480) if not cli_valid(op,0) else None
                 r.collect('closure-originals')
                 r.save('closure-scene.json',r.scene('closed-final',product=False))
-        except Exception as e:outcome['closure_error']=repr(e)
+        except BaseException as e:outcome.update(closure_error=repr(e),status='FAILED')
         if not (r.out/'proof-input.json').exists():write_new(r.out/'proof-input.json',r.proof)
         if not (r.out/'original-index.json').exists():
             sidecars=[{'local':str(f.relative_to(r.out)),'size':f.stat().st_size,'sha256':sha(f.read_bytes())} for f in r.out.glob('*.json') if f.name not in ('proof-input.json','original-index.json')]

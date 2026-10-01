@@ -165,3 +165,16 @@ def test_exact_native_product_job_witness_fail_closed(change):
 def test_job_gate_preparation_failure_before_listener_can_be_reconciled():
  o=prep();o['own'][0]['files'][0]['raw']='external listener must not inherit any Job'
  assert p.preparation_eligible({'status':'FAILED'},o,False)
+def test_new_native_identity_is_explicit_and_old_identity_cannot_substitute():
+ r=ready()['managed_job_proof'];new={'pid':991,'filetime':'134335767401378099'}
+ assert not p.independent_product_job(r,new)
+ r.update(supervisor_pid=new['pid'],supervisor_creation=new['filetime']);assert p.independent_product_job(r,new)
+
+def test_worker_preflight_requires_stopped_product_and_native_launch_receipt():
+ s=p.WORKER.read_text();assert "'Preflight'" in s and "preflight requires product service Stopped" in s and "launch-receipt.json" in s
+ assert "worker-error.json" in s
+
+def test_launcher_uses_independent_native_create_and_receipt_without_resending():
+ source=Path(p.__file__).read_text();assert 'Invoke-CimMethod -ClassName Win32_Process -MethodName Create' in source
+ assert 'launch_response_unknown_reconciled' in source and 'except BaseException as e:' in source
+ assert "APPROVED_R08" in source and 'R08 cannot reuse any R07 run' in source

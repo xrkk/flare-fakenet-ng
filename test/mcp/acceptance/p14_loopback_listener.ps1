@@ -1,10 +1,15 @@
 param([Parameter(Mandatory=$true)][string]$Manifest,
-      [ValidateSet('Listener','Cli')][string]$Mode='Listener')
+      [ValidateSet('Listener','Cli','Preflight')][string]$Mode='Listener')
 $ErrorActionPreference='Stop'
 function Write-NewJson($Path,$Value) {
     $bytes=[Text.Encoding]::UTF8.GetBytes(($Value|ConvertTo-Json -Depth 12 -Compress))
     $s=[IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
     try {$s.Write($bytes,0,$bytes.Length);$s.Flush($true)} finally {$s.Dispose()}
+}
+trap {
+    $errorRecord=@{pid=$PID;error=($_|Out-String);utc=[DateTime]::UtcNow.ToString('o');mode=$Mode}
+    Write-NewJson (Join-Path (Split-Path -Parent $Manifest) 'worker-error.json') $errorRecord
+    exit 1
 }
 function Test-Release($Receipt,$Ready) {
     return ($Receipt.run_id -ceq $Ready.run_id -and $Receipt.controller -ceq $Ready.controller -and
@@ -80,9 +85,14 @@ if($m.lease_seconds -ne 1800){throw 'fixed fixture lease required'}
 if((Get-FileHash -LiteralPath $PSCommandPath).Hash.ToLower() -cne $m.worker_sha256){throw 'worker hash mismatch'}
 $self=Get-Process -Id $PID;$created=[P14Native]::Created($self.Handle)
 $clock=[Diagnostics.Stopwatch]::StartNew();$ready=@{run_id=$m.run_id;controller=$m.controller;nonce=$m.nonce;pid=$PID;creation_time=[string]$created;mode=$Mode;utc=[DateTime]::UtcNow.ToString('o');qpc=[Diagnostics.Stopwatch]::GetTimestamp();frequency=[Diagnostics.Stopwatch]::Frequency}
-if($Mode -eq 'Listener') {
+Write-NewJson (Join-Path $root 'launch-receipt.json') ($ready + @{worker_sha256=$m.worker_sha256})
+if($Mode -in @('Listener','Preflight')) {
     $inJob=$false;if(![P14Native]::IsProcessInJob($self.Handle,[IntPtr]::Zero,[ref]$inJob)){throw 'job membership unavailable'}
-    $jobProof=[P14Jobs]::Witness([int]$m.service_pid,[string]$m.service_filetime,[int]$m.target_pid,[string]$m.target_creation_time)
+    if($Mode -eq 'Preflight') {
+        $service=Get-CimInstance Win32_Service -Filter "Name='fakenetng-mcp'"
+        if($service.State -ne 'Stopped' -or $service.ProcessId -ne 0 -or $m.service_pid -or $m.target_pid){throw 'preflight requires product service Stopped, no product target'}
+        $jobProof=@{preflight_service_stopped=$true}
+    } else {$jobProof=[P14Jobs]::Witness([int]$m.service_pid,[string]$m.service_filetime,[int]$m.target_pid,[string]$m.target_creation_time)}
     $ready.managed_job_proof=$jobProof
     $listener=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0);$listener.ExclusiveAddressUse=$true
     $reason='lease_expired'
