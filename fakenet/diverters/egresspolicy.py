@@ -25,6 +25,14 @@ class PolicyConfigError(ValueError):
     pass
 
 
+class RelayMappingQuotaExceeded(RuntimeError):
+    """Expected, atomic rejection of a new pending relay reservation."""
+
+    def __init__(self, scope):
+        super().__init__("relay mapping pending quota exceeded")
+        self.scope = scope
+
+
 class Verdict(Enum):
     REDIRECT_TLS_RELAY = "REDIRECT_TLS_RELAY"
     ALLOW_INTERNAL_UPSTREAM = "ALLOW_INTERNAL_UPSTREAM"
@@ -954,7 +962,9 @@ class EgressPolicy(object):
             if (self._nat_pending >= self.max_pending or
                     self._nat_pending_by_source[sample_ip] >=
                     self.max_pending_per_source):
-                raise RuntimeError("relay mapping pending quota exceeded")
+                scope = ('global' if self._nat_pending >= self.max_pending
+                         else 'per_source')
+                raise RelayMappingQuotaExceeded(scope)
             self._generation += 1
             mapping = RelayNatMapping(
                 self._generation, lease.domain, sample_ip, sample_port,

@@ -140,6 +140,7 @@ from fakenet.mcp.controlfilter import (
     ControlFilterError, apply_control_link_exclusion,
     apply_loopback_exclusion)
 from .egresspolicy import (EgressPolicy, PolicyConfigError,
+                           RelayMappingQuotaExceeded,
                            ReviewedPacketTuple, Verdict)
 from .processredirect import (
     PacketTuple, ProcessRedirectAction, ProcessRedirectEngine)
@@ -1669,7 +1670,18 @@ class Diverter(DiverterBase, WinUtilMixin):
                 if mapping:
                     redirected = True
                 elif self._is_new_tcp_syn(pkt):
-                    mapping, lease = self.redirect_domain_tls_syn(pkt)
+                    try:
+                        mapping, lease = self.redirect_domain_tls_syn(pkt)
+                    except RelayMappingQuotaExceeded as exc:
+                        # A full reservation table is an expected deny, not
+                        # an internal failure. Do not fall through to another
+                        # route or reinterpret unrelated RuntimeErrors.
+                        self.log_egress_event(
+                            'DROP_EXTERNAL', reason='relay_mapping_pending_quota',
+                            quota_scope=exc.scope, src=pkt.src_ip0,
+                            sport=pkt.sport0, original_ip=pkt.dst_ip0,
+                            original_port=pkt.dport0)
+                        return
                     if mapping:
                         new_mapping_generation = mapping.generation
                         redirected = True
