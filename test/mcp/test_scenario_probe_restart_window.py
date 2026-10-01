@@ -23,8 +23,8 @@ def client_source():
     return match.group(1)
 
 
-def test_client_accepts_six_or_seven_arguments():
-    assert 'if (a.Length != 6 && a.Length != 7) return 2;' in client_source()
+def test_client_accepts_normal_or_identity_bound_engine_wait_arguments():
+    assert 'if (a.Length != 6 && a.Length != 10) return 2;' in client_source()
 
 
 def test_client_engine_wait_holds_first_connection_until_launcher_signal():
@@ -32,12 +32,12 @@ def test_client_engine_wait_holds_first_connection_until_launcher_signal():
     assert 'a[6] == "engine-wait"' in source
     # The signal file is derived from the probe's own stop control.
     assert 'Path.Combine(Path.GetDirectoryName(a[2]), "probe.engine-ok")' in source
-    # The wait is bounded by its own budget and by the stop control.
-    assert re.search(
-        r'while \(DateTime\.UtcNow < engineDeadline && !File\.Exists\(a\[2\]\)\)', source)
-    # A launcher that never signals is a distinct, observable failure.
-    assert re.search(r'if \(!engineSeen\) \{.*?ENGINE_OK_MISSED.*?return 4;', source, re.S)
-    assert 'ENGINE_WAIT|' in source and '"ENGINE_OK|" + engineOk' in source
+    # Both executable and launcher use the same QPC/owner-bound gate.
+    assert 'ScenarioEngineGate.Evaluate(contract, signal, a[4], a[9]' in source
+    assert 'Stopwatch.GetTimestamp(), Stopwatch.Frequency, cancelled)' in source
+    assert 'owner.StartTime.ToUniversalTime().Ticks != Int64.Parse(a[8])' in source
+    assert 'ENGINE_OK_MISSED|' in source and 'return 4;' in source
+    assert 'ENGINE_WAIT|' in source and '\"ENGINE_OK|\" + engineOk' in source
     # Connection attempts get a fresh budget after the signal.
     assert re.search(
         r'ENGINE_OK\|" \+ engineOk.*?\s*'
@@ -47,14 +47,14 @@ def test_client_engine_wait_holds_first_connection_until_launcher_signal():
     # concurrent readers until exit, which made the marker invisible for
     # the whole live window (sst-041 option A verification, 2026-09-29).
     assert 'PROCESS_REDIRECT_RULE_READY' not in source
-    assert 'ReadAllText' not in source
+    assert '\"run.log\"' not in source
 
 
 def test_spawn_passes_engine_wait_only_for_second_restart_window_probe():
     assert re.search(
         r"\$clientArgs = @\(\$endpoint\.host, \$endpoint\.port, \$Stop, "
         r"\$Cadence, \$Token, \$StartupRetrySeconds\)\r?\n"
-        r"\s*if \(\(\$Interleave -eq 'restart-window' -or \$Interleave -eq 'during-start' -or \$Interleave -eq 'after-healthy' -or \$Interleave -eq 'before-start'\) -and \$EngineWait\) \{ \$clientArgs \+= @\('engine-wait'\) \}",
+        r"\s*if \(\(\$Interleave -eq 'restart-window' -or \$Interleave -eq 'during-start' -or \$Interleave -eq 'after-healthy' -or \$Interleave -eq 'before-start'\) -and \$EngineWait\) \{ \$clientArgs \+= @\('engine-wait', \$PID, \[Diagnostics\.Process\]::GetCurrentProcess\(\)\.StartTime\.ToUniversalTime\(\)\.Ticks, \$CaptureRunId\) \}",
         PROBES)
     # The launcher-side log wait is skipped exactly for EngineWait probes:
     # the client holds its own first connection until the signal file.

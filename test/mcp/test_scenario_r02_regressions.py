@@ -57,7 +57,7 @@ def test_restart_refusal_does_not_waive_arbitrary_failure(tmp_path, change):
 def test_healthy_restart_releases_every_held_second_probe(interleave, bucket):
     runner = suite.Suite.__new__(suite.Suite)
     seen = []
-    runner._signal_engine_ok = lambda capture: seen.append(capture) or {'signaled': True}
+    runner._signal_engine_ok = lambda capture, receipt: seen.append(capture) or {'signaled': True}
     capture = {'probe': 'new-attempt/run-02/probe.jsonl'}
     assert runner._release_restart_engine({'state': 'healthy'}, {'bucket': bucket, 'interleave': interleave}, capture) == {'signaled': True}
     assert seen == [capture]
@@ -65,7 +65,7 @@ def test_healthy_restart_releases_every_held_second_probe(interleave, bucket):
 @pytest.mark.parametrize('state', ['stopped', 'failed', 'starting', None])
 def test_unsuccessful_restart_never_releases_probe(state):
     runner = suite.Suite.__new__(suite.Suite)
-    runner._signal_engine_ok = lambda _: pytest.fail('unhealthy restart released traffic')
+    runner._signal_engine_ok = lambda *_: pytest.fail('unhealthy restart released traffic')
     assert runner._release_restart_engine({'state': state}, {'bucket': 'B4', 'interleave': 'before-start'}, {}) is None
 
 

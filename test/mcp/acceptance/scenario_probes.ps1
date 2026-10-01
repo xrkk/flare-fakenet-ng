@@ -41,6 +41,43 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Identity-bound preparation inherits the existing restart RPC deadline.
+$script:EngineGateSource = @'
+// Shared by the launcher and the separately compiled B3 client. No UTC clock.
+public static class ScenarioEngineGate {
+    public static int Evaluate(string contract, string signal, string nonce,
+        string capture, int ownerPid, long ownerCreation, long now,
+        long frequency, bool cancelled) {
+        if (cancelled) throw new System.OperationCanceledException("engine gate cancelled");
+        string[] c = contract.Split('|');
+        if (c.Length != 10 || c[0] != "engine-wait-v1" || c[1] != nonce ||
+            c[2] != capture || c[3] != ownerPid.ToString() ||
+            c[4] != ownerCreation.ToString())
+            throw new System.InvalidOperationException("engine gate owner/nonce differs");
+        long began = System.Int64.Parse(c[7]);
+        long deadline = System.Int64.Parse(c[8]);
+        long recordedFrequency = System.Int64.Parse(c[9]);
+        if (frequency <= 0 || frequency != recordedFrequency || began > now ||
+            deadline <= began || (deadline-began)/((double)frequency) > 960 ||
+            string.IsNullOrEmpty(c[5]) || string.IsNullOrEmpty(c[6]))
+            throw new System.InvalidOperationException("engine gate contract invalid");
+        if (now >= deadline) throw new System.TimeoutException("engine gate total deadline expired");
+        if (System.String.IsNullOrEmpty(signal)) return 0;
+        string[] s = signal.Split('|');
+        if (s.Length != 13 || s[10] != "healthy" || s[11] == c[5])
+            throw new System.InvalidOperationException("engine gate healthy run differs");
+        for (int i = 0; i < c.Length; i++)
+            if (s[i] != c[i]) throw new System.InvalidOperationException("engine gate signal identity differs");
+        System.Guid run;
+        long at = System.Int64.Parse(s[12]);
+        if (!System.Guid.TryParse(s[11], out run) || at < began || at > now || at >= deadline)
+            throw new System.InvalidOperationException("engine gate signal time/run invalid");
+        return 1;
+    }
+}
+'@
+if (-not ('ScenarioEngineGate' -as [type])) { Add-Type -TypeDefinition $script:EngineGateSource }
+
 # Use one native UTC sample for both JSON representations. WinPS5 DateTime.UtcNow
 # can remain unchanged across a complete short connection.
 if (-not ('ScenarioProbeClock' -as [type])) {
@@ -313,8 +350,8 @@ public static class ScenarioProbeClient {
     return value + 504911232000000000L;
   }
   public static int Main(string[] a) {
-    if (a.Length != 6 && a.Length != 7) return 2;
-    var engineWait = a.Length == 7 && a[6] == "engine-wait";
+    if (a.Length != 6 && a.Length != 10) return 2;
+    var engineWait = a.Length == 10 && a[6] == "engine-wait";
     var retrySeconds = Int32.Parse(a[5]);
     if (retrySeconds < 20 || retrySeconds > 120) return 2;
     var retryDeadline = DateTime.UtcNow.AddSeconds(retrySeconds); var attempt = 0;
@@ -328,17 +365,25 @@ public static class ScenarioProbeClient {
       // run.log cannot serve as that signal -- the managed process holds it
       // open and concurrent readers are refused until it exits.
       var engineOk = Path.Combine(Path.GetDirectoryName(a[2]), "probe.engine-ok");
-      var engineDeadline = DateTime.UtcNow.AddSeconds(retrySeconds + 60);
+      var contractPath = Path.Combine(Path.GetDirectoryName(a[2]), "probe.engine-wait");
+      var contract = File.ReadAllText(contractPath);
       var engineSeen = false;
-      Console.WriteLine("ENGINE_WAIT|" + retrySeconds + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush();
-      while (DateTime.UtcNow < engineDeadline && !File.Exists(a[2])) {
-        if (File.Exists(engineOk)) { engineSeen = true; break; }
-        Thread.Sleep(200);
+      Console.WriteLine("ENGINE_WAIT|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush();
+      try {
+        while (!engineSeen) {
+          bool cancelled;
+          using (var owner = Process.GetProcessById(Int32.Parse(a[7]))) {
+            cancelled = File.Exists(a[2]) || owner.HasExited || owner.StartTime.ToUniversalTime().Ticks != Int64.Parse(a[8]);
+          }
+          var signal = File.Exists(engineOk) ? File.ReadAllText(engineOk) : null;
+          engineSeen = ScenarioEngineGate.Evaluate(contract, signal, a[4], a[9],
+            Int32.Parse(a[7]), Int64.Parse(a[8]), Stopwatch.GetTimestamp(), Stopwatch.Frequency, cancelled) == 1;
+          if (!engineSeen) Thread.Sleep(200);
+        }
+      } catch (Exception ex) {
+        Console.WriteLine("ENGINE_OK_MISSED|" + ex.Message + "|" + Stopwatch.GetTimestamp()); Console.Out.Flush(); return 4;
       }
-      if (!engineSeen) { Console.WriteLine("ENGINE_OK_MISSED|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush(); return 4; }
       Console.WriteLine("ENGINE_OK|" + engineOk + "|" + UtcTicks() + "|" + Stopwatch.GetTimestamp() + "|" + Stopwatch.Frequency); Console.Out.Flush();
-      // The connection attempts get a fresh full budget so the probe still
-      // establishes inside the same launcher-side envelope.
       retryDeadline = DateTime.UtcNow.AddSeconds(retrySeconds);
     }
     while (!File.Exists(a[2]) && DateTime.UtcNow < retryDeadline) {
@@ -366,6 +411,7 @@ public static class ScenarioProbeClient {
   }
 }
 '@
+    $clientSource += [Environment]::NewLine + $script:EngineGateSource
     # Reuse a live previous build ONLY when it was compiled from the exact
     # current client source: recompiling into the SAME exe path requires
     # overwriting an image that antivirus routinely holds for many minutes
@@ -950,7 +996,7 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
         # rule marker (see client source).  The launcher passes -EngineWait
         # for exactly that probe.
         $clientArgs = @($endpoint.host, $endpoint.port, $Stop, $Cadence, $Token, $StartupRetrySeconds)
-        if (($Interleave -eq 'restart-window' -or $Interleave -eq 'during-start' -or $Interleave -eq 'after-healthy' -or $Interleave -eq 'before-start') -and $EngineWait) { $clientArgs += @('engine-wait') }
+        if (($Interleave -eq 'restart-window' -or $Interleave -eq 'during-start' -or $Interleave -eq 'after-healthy' -or $Interleave -eq 'before-start') -and $EngineWait) { $clientArgs += @('engine-wait', $PID, [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks, $CaptureRunId) }
         $process = Start-Process -FilePath $identity.path -ArgumentList $clientArgs -RedirectStandardOutput $stdout -PassThru -WindowStyle Hidden
         $childCreation = (Get-Process -Id $process.Id).StartTime.ToUniversalTime().Ticks
         $childReady = @{ event = 'process_ready'; nonce = $Token; profile = $Bucket; variant = $Variant; tempo = $Tempo; interleave = $Interleave; pid = $process.Id; worker = 1; seq = 0; creation_ticks = $childCreation; stopwatch_frequency = [Diagnostics.Stopwatch]::Frequency }
@@ -1039,11 +1085,16 @@ function Invoke-Traffic([string]$Bucket, [string]$Path, [string]$Token, [string]
         # leave live A rows that the restart quiescence gate refuses
         # (sst-048, 2026-09-29).  Wait for the launcher-side signal file.
         $engineOkPath = Join-Path (Split-Path -Parent $Stop) 'probe.engine-ok'
-        $engineOkDeadline = [DateTime]::UtcNow.AddSeconds($StartupRetrySeconds + 60)
-        while ([DateTime]::UtcNow -lt $engineOkDeadline -and -not (Test-Path $Stop) -and -not (Test-Path $engineOkPath)) {
-            Start-Sleep -Milliseconds 200
-        }
-        if (-not (Test-Path $engineOkPath)) { throw 'engine-ok signal absent before deadline' }
+        $engineContractPath = Join-Path (Split-Path -Parent $Stop) 'probe.engine-wait'
+        $contract = Get-Content -LiteralPath $engineContractPath -Raw -ErrorAction Stop
+        $ownerCreation = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks
+        do {
+            $signal = if (Test-Path $engineOkPath) { Get-Content -LiteralPath $engineOkPath -Raw -ErrorAction Stop } else { $null }
+            $allowed = [ScenarioEngineGate]::Evaluate($contract, $signal, $Token, $CaptureRunId,
+                $PID, $ownerCreation, [Diagnostics.Stopwatch]::GetTimestamp(),
+                [Diagnostics.Stopwatch]::Frequency, (Test-Path $Stop))
+            if ($allowed -eq 0) { Start-Sleep -Milliseconds 200 }
+        } while ($allowed -eq 0)
         # The traffic window restarts from the signal: the original release
         # consumed most of the restart transition.
         $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)

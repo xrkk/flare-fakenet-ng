@@ -1979,7 +1979,7 @@ class Suite:
         script = self.guest_work_root + r'\scenario-suite-20260912\scenario_probes.ps1'
         run_root = guest + '\\' + run_label
         capture_run_id = nonce + ':' + run_label
-        params = dict(Action='traffic', Profile=profile['bucket'], Nonce=nonce,
+        params = dict(Action='traffic', Profile=profile['bucket'], Nonce=nonce, CaptureRunId=capture_run_id,
             Output=run_root + r'\probe.jsonl', StopFile=run_root + r'\probe.stop',
             StartFile=run_root + r'\probe.start', CaseFile=run_root + r'\probe.cases',
             Tempo=profile['tempo'], Variant=profile['variant'], Interleave=profile['interleave'],
@@ -2139,7 +2139,7 @@ class Suite:
         script = self.guest_work_root + r'\scenario-suite-20260912\scenario_probes.ps1'
         run_root = guest + '\\' + run_label
         capture_run_id = nonce + ':' + run_label
-        params = dict(Action='traffic', Profile=profile['bucket'], Nonce=nonce,
+        params = dict(Action='traffic', Profile=profile['bucket'], Nonce=nonce, CaptureRunId=capture_run_id,
             Output=run_root + r'\probe.jsonl', StopFile=run_root + r'\probe.stop',
             StartFile=run_root + r'\probe.start', CaseFile=run_root + r'\probe.cases',
             Tempo=profile['tempo'], Variant=profile['variant'], Interleave=profile['interleave'],
@@ -2330,10 +2330,58 @@ class Suite:
                 profile.get('bucket') in ('B3', 'B4') and
                 profile.get('interleave') in ('restart-window', 'during-start',
                                               'after-healthy', 'before-start')):
-            return self._signal_engine_ok(capture)
+            return self._signal_engine_ok(capture, restarted)
         return None
 
-    def _signal_engine_ok(self, capture: dict[str, Any]) -> dict[str, Any]:
+    def _prepare_restart_engine(self, capture: dict[str, Any], profile: dict[str, Any],
+                                old_run_id: str, command_id: str) -> dict[str, Any] | None:
+        """Bind a held probe to the existing restart total deadline, before release.
+
+        QPC is shared by processes on this guest. Preparation precedes the RPC,
+        so this deadline ends no later than the unchanged 960s RPC deadline.
+        Traffic/auxiliary windows still start only after the healthy receipt.
+        """
+        if not (profile.get('bucket') in ('B3', 'B4') and
+                profile.get('interleave') in ('restart-window', 'during-start',
+                                               'after-healthy', 'before-start')):
+            return None
+        assert self.vm
+        if capture.get('engine_gate'):
+            raise SuiteError('restart engine gate already prepared')
+        nonce, run = capture['nonce'], capture['capture_run_id']
+        fields = ['engine-wait-v1', nonce, run, str(capture['pid']),
+                  str(capture['probe_creation_ticks']), old_run_id, command_id]
+        if any(not x or '|' in x or '\n' in x or '\r' in x for x in fields):
+            raise SuiteError('restart engine gate identity invalid')
+        path = str(PureWindowsPath(capture['stop']).with_name('probe.engine-wait'))
+        value, raw = self._vm_json(
+            "$ErrorActionPreference='Stop';$p=" + quote_ps(path) + ";"
+            "$owner=Get-Process -Id " + str(capture['pid']) + ";"
+            "if($owner.StartTime.ToUniversalTime().Ticks -ne " + str(capture['probe_creation_ticks']) +
+            "){throw 'engine gate launcher identity changed'};"
+            "if(Test-Path $p){throw 'engine gate collision'};"
+            "$frequency=[Diagnostics.Stopwatch]::Frequency;$began=[Diagnostics.Stopwatch]::GetTimestamp();"
+            "$deadline=$began+" + str(lifecycle_rpc_timeout('restart')) + "*$frequency;"
+            "$contract=" + quote_ps('|'.join(fields)) + "+'|'+$began+'|'+$deadline+'|'+$frequency;"
+            "[IO.File]::WriteAllText($p+'.tmp',$contract,[Text.UTF8Encoding]::new($false));"
+            "Move-Item -LiteralPath ($p+'.tmp') -Destination $p;"
+            "@{path=$p;contract=$contract;began=$began;deadline=$deadline;frequency=$frequency;"
+            "budget_seconds=" + str(lifecycle_rpc_timeout('restart')) + ";command_id=" +
+            quote_ps(command_id) + ";old_run_id=" + quote_ps(old_run_id) +
+            "}|ConvertTo-Json -Compress", 60)
+        value['raw'] = raw
+        if (value.get('path') != path or value.get('budget_seconds') != lifecycle_rpc_timeout('restart') or
+                value.get('command_id') != command_id or value.get('old_run_id') != old_run_id or
+                value.get('frequency', 0) <= 0 or
+                value.get('deadline', 0) - value.get('began', 0) !=
+                lifecycle_rpc_timeout('restart') * value.get('frequency', 0) or
+                value.get('contract') != '|'.join(fields + [str(value.get('began')),
+                    str(value.get('deadline')), str(value.get('frequency'))])):
+            raise SuiteError('restart engine gate preparation receipt differs')
+        capture['engine_gate'] = value
+        return value
+
+    def _signal_engine_ok(self, capture: dict[str, Any], restarted: dict[str, Any]) -> dict[str, Any]:
         """Release the restart-window probe's held first connection.
 
         The restarted engine's run.log is held open by the managed process
@@ -2344,13 +2392,27 @@ class Suite:
         is serving, so the probe's connections are redirected, not leaked.
         """
         assert self.vm
+        gate = capture.get('engine_gate')
+        if (not gate or restarted.get('state') != 'healthy' or
+                restarted.get('command_id') != gate['command_id'] or
+                restarted.get('bound_run_id') != gate['old_run_id'] or
+                not restarted.get('run_id') or restarted['run_id'] == gate['old_run_id']):
+            raise SuiteError('engine signal is not the bound healthy restart receipt')
         engine_ok = PureWindowsPath(str(capture['stop'])).with_name('probe.engine-ok')
         value, raw = self._vm_json(
             "$ErrorActionPreference='Stop';$p=" +
             quote_ps(str(engine_ok)) + ";"
             "if(Test-Path $p){throw 'engine-ok signal already exists'};"
-            "[IO.File]::WriteAllText($p,'ok',[Text.UTF8Encoding]::new($false));"
-            "@{path=$p;written_utc=[DateTimeOffset]::UtcNow.ToString('o')}"
+            "if(Test-Path " + quote_ps(str(capture['stop'])) + "){throw 'engine gate cancelled'};"
+            "$owner=Get-Process -Id " + str(capture['pid']) + ";"
+            "if($owner.StartTime.ToUniversalTime().Ticks -ne " + str(capture['probe_creation_ticks']) +
+            "){throw 'engine gate launcher identity changed'};"
+            "$now=[Diagnostics.Stopwatch]::GetTimestamp();"
+            "if($now -ge " + str(gate['deadline']) + "){throw 'engine gate total deadline expired'};"
+            "$signal=" + quote_ps(gate['contract'] + '|healthy|' + restarted['run_id']) + "+'|'+$now;"
+            "[IO.File]::WriteAllText($p+'.tmp',$signal,[Text.UTF8Encoding]::new($false));"
+            "Move-Item -LiteralPath ($p+'.tmp') -Destination $p;"
+            "@{path=$p;written_qpc=$now;written_utc=[DateTimeOffset]::UtcNow.ToString('o')}"
             "|ConvertTo-Json -Compress", 60)
         value['raw'] = raw
         return value
@@ -6271,6 +6333,12 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     # the stop-window branch throw 'probe start control was
                     # already released' (fakenet100 r09 sst-005: restart +
                     # stop-window combination).
+                    if interleave != 'stop-window':
+                        engine_contract = self._prepare_restart_engine(
+                            captures[second_label], runtime_profile, first_run['run_id'],
+                            self._command_id(scenario_id, attempt, sequence + 1))
+                        if engine_contract is not None:
+                            evidence.write('run-02-engine-wait-contract.json', engine_contract)
                     second_release = None if interleave == 'stop-window' else \
                         self._release_probe(captures[second_label], 'restart-window')
                     if (interleave in ('restart-window', 'during-start', 'after-healthy') and
