@@ -125,3 +125,23 @@ def test_full_raw_rejudge_positive_is_selfcontained_logical_only(tmp_path):asser
 @pytest.mark.parametrize('change',['CLI_RPC_only','old_retry_attempt','owner_overwrite','service_alive_on_final','start_not_rejected','late_native_end','Job_not_ended','no_TCP_diff'])
 def test_raw_rejudge_negative_uses_actual_bound_sources_not_cached_booleans(tmp_path,change):
  assert not p.rejudge(raw_case(tmp_path,change))['passed']
+
+def test_healthy_export_uses_only_sealed_exact_paths_not_live_capture_or_logs():
+ plan=p.export_plan('healthy-originals');assert plan['sealed_only'] and not plan['binary_inventory']
+ assert set(plan['names'])=={'creation.jsonl','active-config.ini'}
+ for name in ['packets.pcap','endpoint.etl','run.log','stdout_stderr.log','endpoint-events.json']:assert name not in plan['names']
+def test_closed_stage_can_inventory_formal_binary_originals():
+ assert p.export_plan('closure-originals')['binary_inventory']
+
+def prep():return dict(observer=None,service=dict(State='Running'),prestop=dict(phase='idle',attempt=0),own=[dict(files=[dict(name='worker-err.txt',raw='Get-FileHash CommandNotFoundException')])])
+def test_proven_pre_cli_preparation_only_continuation():assert p.preparation_eligible({'status':'FAILED'},prep(),False)
+@pytest.mark.parametrize('change',['already_entered','live_observer','prestop_active','prestop_attempt','service_stopped','no_proven_error'])
+def test_preparation_continuation_never_replays_entered_or_unknown_business(change):
+ o=prep();entered=False
+ if change=='already_entered':entered=True
+ elif change=='live_observer':o['observer']={'pid':42}
+ elif change=='prestop_active':o['prestop']['phase']='failed'
+ elif change=='prestop_attempt':o['prestop']['attempt']=1
+ elif change=='service_stopped':o['service']['State']='Stopped'
+ else:o['own']=[]
+ assert not p.preparation_eligible({'status':'FAILED'},o,entered)

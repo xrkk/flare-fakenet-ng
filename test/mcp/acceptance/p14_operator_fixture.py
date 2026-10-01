@@ -18,6 +18,8 @@ ROOT=Path(__file__).resolve().parents[3]
 SOURCE='ade1059e99e654bf7a263e3b133afd61de67f314'
 CANDIDATE='mcp-cade1059e-0ef21513488c'
 ZIP='0ef21513488c2645fd9924cba1499c9113454644616922b2f823050d86ecec64'
+PS_ENGINE=r'C:\Program Files\PowerShell\7\pwsh.exe'
+PS_ENGINE_SHA='db6dd81183fe57d22e03b911ec9a30a2fd7c40542e97743615355a6fb44f458f'
 EXE='1dc9ab9bff26d3aeabedbae98c0c4e737025fb591f39edd96c9fdfcff9ca312c'
 SECTIONS={'dns_servers','routes','listen_ports','windivert_processes','services'}
 WORKER=Path(__file__).with_name('p14_loopback_listener.ps1')
@@ -33,6 +35,13 @@ def fixture_valid(ready,run,controller,nonce,elapsed):
     return (ready.get('run_id')==run and ready.get('controller')==controller and ready.get('nonce')==nonce and
             ready.get('address')=='127.0.0.1' and type(ready.get('port')) is int and 0<ready['port']<65536 and
             type(ready.get('pid')) is int and bool(ready.get('creation_time')) and ready.get('in_any_job') is False and 0<=elapsed<1800)
+def preparation_eligible(previous_result,observation,fixture_or_operator_entered):
+    return (previous_result.get('status')=='FAILED' and not fixture_or_operator_entered and observation.get('observer') is None and observation.get('service',{}).get('State')=='Running' and observation.get('prestop',{}).get('phase')=='idle' and observation.get('prestop',{}).get('attempt')==0 and any('Get-FileHash' in (f.get('raw') or '') for row in observation.get('own',[]) for f in row.get('files',[]) if f.get('name')=='worker-err.txt'))
+
+def export_plan(label):
+    if label=='healthy-originals':return {'sealed_only':True,'binary_inventory':False,'names':['creation.jsonl','active-config.ini']}
+    return {'sealed_only':False,'binary_inventory':True,'names':None}
+
 def once(call,*args,**kwargs):
     try:return call(*args,**kwargs)
     except Exception as exc:raise Unknown('mutation/launch outcome unknown; read-only reconciliation only') from exc
@@ -134,7 +143,9 @@ class Runner:
         roots=[r'C:\ProgramData\FakeNet-NG-MCP\artifacts'+'\\'+run,'C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\runs\\'+run,'C:\\ProgramData\\FakeNet-NG-MCP\\logs\\exit-evidence\\'+run]
         if self.root:roots.append(self.root)
         roots_ps='@('+','.join(self.ps(x) for x in roots)+')'
-        cmd=r'''$ErrorActionPreference='Stop';$files=@();foreach($d in '''+roots_ps+r'''){if(Test-Path -LiteralPath $d){$files+=@(Get-ChildItem -LiteralPath $d -Recurse -File)}};$files+=@(Get-ChildItem 'C:\ProgramData\FakeNet-NG-MCP\logs' -File -Filter '''+self.ps('recovery-audit-'+run+'-*')+r''');$files+=Get-Item '''+self.ps('C:\\ProgramData\\FakeNet-NG-MCP\\baselines\\'+run+'.json')+r''';$files+=Get-Item 'C:\ProgramData\FakeNet-NG-MCP\logs\service-stop-result.json';$files+=Get-Item 'C:\ProgramData\FakeNet-NG-MCP\state\state.json';$total=0;$rows=@();$binary=@();foreach($f in $files){if($f.Extension -notin @('.json','.jsonl','.log','.ini','.txt')){$binary+=@{path=$f.FullName;size=$f.Length;sha256=(Get-FileHash $f.FullName).Hash.ToLower();retained_guest=$true};continue};if($f.Length -gt 8MB){throw 'single original exceeds 8MiB cap'};$total+=$f.Length;if($total -gt 64MB){throw 'export exceeds 64MiB cap'};$bytes=[IO.File]::ReadAllBytes($f.FullName);$rows+=@{path=$f.FullName;size=$bytes.Length;sha256=(Get-FileHash $f.FullName).Hash.ToLower();base64=[Convert]::ToBase64String($bytes)}};@{files=$rows;total=$total;binary_retained_guest=$binary}|ConvertTo-Json -Depth 6 -Compress'''
+        plan=export_plan(label)
+        select=(";$files=@($files|Where-Object {$_.Name -in @('creation.jsonl','active-config.ini')});" if plan['sealed_only'] else ';')
+        cmd=r'''$ErrorActionPreference='Stop';$files=@();foreach($d in '''+roots_ps+r'''){if(Test-Path -LiteralPath $d){$files+=@(Get-ChildItem -LiteralPath $d -Recurse -File)}}'''+select+r'''$files+=@(Get-ChildItem 'C:\ProgramData\FakeNet-NG-MCP\logs' -File -Filter '''+self.ps('recovery-audit-'+run+'-*')+r''');$files+=Get-Item '''+self.ps('C:\\ProgramData\\FakeNet-NG-MCP\\baselines\\'+run+'.json')+r''';$files+=Get-Item 'C:\ProgramData\FakeNet-NG-MCP\logs\service-stop-result.json';$files+=Get-Item 'C:\ProgramData\FakeNet-NG-MCP\state\state.json';$total=0;$rows=@();$binary=@();foreach($f in $files){if($f.Extension -notin @('.json','.jsonl','.log','.ini','.txt')){$binary+=@{path=$f.FullName;size=$f.Length;sha256=(Get-FileHash $f.FullName).Hash.ToLower();retained_guest=$true};continue};if($f.Length -gt 8MB){throw 'single original exceeds 8MiB cap'};$total+=$f.Length;if($total -gt 64MB){throw 'export exceeds 64MiB cap'};$bytes=[IO.File]::ReadAllBytes($f.FullName);$rows+=@{path=$f.FullName;size=$bytes.Length;sha256=(Get-FileHash $f.FullName).Hash.ToLower();base64=[Convert]::ToBase64String($bytes)}};@{files=$rows;total=$total;binary_retained_guest=$binary}|ConvertTo-Json -Depth 6 -Compress'''
         data=self.vm_json(cmd,120);directory=self.out/label;directory.mkdir();records=[]
         for i,f in enumerate(data['files']):
             raw=base64.b64decode(f['base64'],validate=True);assert len(raw)==f['size'] and sha(raw)==f['sha256']
@@ -153,7 +164,7 @@ class Runner:
             cmd+="$b=[Convert]::FromBase64String('"+base64.b64encode(b).decode()+"');$p=Join-Path $dir '"+name+"';$s=[IO.File]::Open($p,[IO.FileMode]::CreateNew);try{$s.Write($b,0,$b.Length)}finally{$s.Dispose()};if((Get-FileHash $p).Hash.ToLower() -ne '"+sha(b)+"'){throw 'transfer SHA mismatch'};"
         cmd+="'SHA verified own tools';";self.vm(cmd,30)
         # At most one launch. Unknown result is reconciled only through own files.
-        launch="$ErrorActionPreference='Stop';$dir="+self.ps(directory)+";$p=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $dir 'worker.ps1'),'-Manifest',(Join-Path $dir 'manifest.json'),'-Mode','"+mode+"') -PassThru -RedirectStandardOutput (Join-Path $dir 'worker-out.txt') -RedirectStandardError (Join-Path $dir 'worker-err.txt');@{pid=$p.Id;creation_time=[string]$p.StartTime.ToUniversalTime().ToFileTimeUtc()}|ConvertTo-Json -Compress"
+        launch="$ErrorActionPreference='Stop';$dir="+self.ps(directory)+";$engine="+self.ps(PS_ENGINE)+";if((Get-FileHash $engine).Hash.ToLower() -cne '"+PS_ENGINE_SHA+"'){throw 'PowerShell engine drift'};$p=Start-Process $engine -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $dir 'worker.ps1'),'-Manifest',(Join-Path $dir 'manifest.json'),'-Mode','"+mode+"') -PassThru -RedirectStandardOutput (Join-Path $dir 'worker-out.txt') -RedirectStandardError (Join-Path $dir 'worker-err.txt');@{pid=$p.Id;creation_time=[string]$p.StartTime.ToUniversalTime().ToFileTimeUtc()}|ConvertTo-Json -Compress"
         return once(self.vm_json,launch,30)
     def wait_file(self,path,seconds):
         end=time.monotonic()+seconds
@@ -192,15 +203,39 @@ class Runner:
                 time.sleep(1);return s
             time.sleep(3)
         raise Unknown('PRESTOP new attempt did not reach terminal within original budget')
-    def execute(self):
-        self.stage('live admission');g=self.j.gate();scene=self.scene('admission');assert scene['prestop']['phase']=='idle'
-        cfg=self.read_guest_json(r'C:\ProgramData\FakeNet-NG-MCP\configs\service.json');assert cfg['stop_grace_seconds']==60
-        # Exact inherited six native cap originals, not a new cap operation.
-        cap=ROOT/'Logs/fakenet-completion-20261001/r02/current-instance-final/9c984802-137a-4b15-bbf2-7e1c4f44c32c'
-        inherited=json.loads((ROOT/'Logs/fakenet-completion-20261001/r06/specialty-consolidated.json').read_text())['instance_map']['latest_inherited']
-        for r in inherited['six_originals']:assert sha((ROOT/r['path']).read_bytes())==r['sha256']
-        self.save('cap-inheritance.json',inherited)
-        r=self.mutate('start');assert r['ok'] and r['value']['state']=='healthy',r
+    def execute(self,resume=None):
+        if resume is None:
+            self.stage('live admission');g=self.j.gate();scene=self.scene('admission');assert scene['prestop']['phase']=='idle'
+            cfg=self.read_guest_json(r'C:\ProgramData\FakeNet-NG-MCP\configs\service.json');assert cfg['stop_grace_seconds']==60
+            # Exact inherited six native cap originals, not a new cap operation.
+            cap=ROOT/'Logs/fakenet-completion-20261001/r02/current-instance-final/9c984802-137a-4b15-bbf2-7e1c4f44c32c'
+            inherited=json.loads((ROOT/'Logs/fakenet-completion-20261001/r06/specialty-consolidated.json').read_text())['instance_map']['latest_inherited']
+            for r in inherited['six_originals']:assert sha((ROOT/r['path']).read_bytes())==r['sha256']
+            self.save('cap-inheritance.json',inherited)
+            r=self.mutate('start');assert r['ok'] and r['value']['state']=='healthy',r
+        else:
+            self.stage('same run preparation-only continuation')
+            previous=Path(resume);old=json.loads((previous/'03-finally-scene.json').read_text())
+            assert (previous/'result.json').exists(), 'previous writer must have ended'
+            previous_result=json.loads((previous/'result.json').read_text())
+            observation=json.loads(json.loads((previous.parent/'native-reconcile-01.json').read_text())['output'])
+            assert preparation_eligible(previous_result,observation,(previous/'fixture-launch.json').exists() or (previous/'operator-cli-original.json').exists()), 'only proven pre-CLI tool preparation errors may continue'
+            self.save('preparation-reconciliation.json',observation)
+            assert previous_result['status']=='FAILED' and not (previous/'fixture-launch.json').exists() and not (previous/'operator-cli-original.json').exists()
+            self.j.service.controller_id=old['product']['controller']
+            self.j.run_id=old['product']['run_id']
+            snap=self.j.snapshot();assert (snap['pid'],snap['creation_filetime'])==(7484,134335767401378067)
+            assert snap['exe_sha']==EXE and snap['default_sha']=='71e530fa54710c8c6e4f6644f99858b514e3e724d7957e7bdbaa6de0029cac1a' and not snap['fault_env']
+            current=self.scene('resumed-admission');assert current['prestop']['attempt']==0 and current['prestop']['phase']=='idle'
+            assert current['product']['state']=='healthy' and current['product']['run_id']==self.j.run_id and current['product']['controller']==self.j.service.controller_id
+            self.resource_gate('resumed-admission')
+            inherited=json.loads((previous/'cap-inheritance.json').read_text())
+            for f in inherited['six_originals']:assert sha((ROOT/f['path']).read_bytes())==f['sha256']
+            self.save('cap-inheritance.json',inherited)
+            cfg=self.read_guest_json(r'C:\ProgramData\FakeNet-NG-MCP\configs\service.json');assert cfg['stop_grace_seconds']==60
+            assert sha(self.baseline())==sha((previous/'baseline-original.json').read_bytes()), 'same original baseline required'
+            self.save('preparation-continuation.json',{'previous':str(previous),'same_run':self.j.run_id,'controller':self.j.service.controller_id,'new_business_start':False,'reason':'proven immutable export and old PowerShell engine preparation faults; no fixture/public stop/operator/actual CLI was executed; PRESTOP still idle0'})
+            r={'value':{'run_id':self.j.run_id}}
         self.j.run_id=r['value']['run_id'];self.nonce=str(uuid.uuid4());self.root='E:\\FakeNetEvidence\\r07\\'+self.j.run_id+'\\'+self.nonce
         self.stage('healthy baseline sealed');raw=self.baseline();self.save('baseline-sealed.json',{'sha256':sha(raw),'run_id':self.j.run_id});(self.out/'baseline-original.json').write_bytes(raw)
         b=json.loads(raw);assert set(b['sections'])==SECTIONS
@@ -303,7 +338,7 @@ def rejudge(out):
 
 def main(argv=None):
     ap=argparse.ArgumentParser();ap.add_argument('--output',type=Path,default=ROOT/'Logs/fakenet-completion-20261001/r07/native-case')
-    ap.add_argument('--rejudge',type=Path);ap.add_argument('--contract',type=Path);a=ap.parse_args(argv)
+    ap.add_argument('--rejudge',type=Path);ap.add_argument('--contract',type=Path);ap.add_argument('--resume-preparation',type=Path);a=ap.parse_args(argv)
     if a.rejudge:print(json.dumps(rejudge(a.rejudge),ensure_ascii=False));return 0 if rejudge(a.rejudge)['passed'] else 1
     assert a.contract, 'approved execution contract required'
     contract=json.loads(a.contract.read_text())
@@ -312,7 +347,7 @@ def main(argv=None):
     for path,digest in contract['tools'].items():assert sha((ROOT/path).read_bytes())==digest, 'tool changed after freeze'
     a.output.resolve().relative_to((ROOT/'Logs').resolve());a.output.mkdir(parents=True,exist_ok=False)
     r=Runner(a.output);outcome={'status':'BLOCKED','case':'operator-audit','new_native_case':False,'formal_new':0}
-    try:r.execute();outcome.update(status='COMPLETED',new_native_case=True)
+    try:r.execute(a.resume_preparation);outcome.update(status='COMPLETED',new_native_case=True)
     except Exception as e:
         outcome.update(status='FAILED' if r.j.run_id else 'BLOCKED',reason=repr(e),new_native_case=bool(r.j.run_id))
         import traceback;outcome['traceback']=traceback.format_exc();print(json.dumps(outcome),flush=True)
