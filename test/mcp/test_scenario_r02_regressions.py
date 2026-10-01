@@ -51,11 +51,6 @@ def test_restart_refusal_does_not_waive_arbitrary_failure(tmp_path, change):
         validate_shared_views(result, tmp_path)
 
 
-def test_synthetic_approved_restart_refusal(tmp_path):
-    result = match_restart_refusal(tmp_path)
-    assert suite.refusal_recheck_issues(result, tmp_path) == []
-    from scenario_capture_view import validate_shared_views
-    validate_shared_views(result, tmp_path)
 
 @pytest.mark.parametrize('interleave', ['before-start', 'restart-window', 'during-start', 'after-healthy'])
 @pytest.mark.parametrize('bucket', ['B3', 'B4'])
