@@ -6389,8 +6389,11 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                             if restart_attempt == 2:
                                 raise
                             time.sleep(30)
-                    engine_signal = self._release_restart_engine(
-                        restarted, runtime_profile, captures[second_label])
+                    # stop-window creates run-02 only after run-01's
+                    # capture closes below; no held second probe exists yet.
+                    engine_signal = (None if interleave == 'stop-window' else
+                                     self._release_restart_engine(
+                                         restarted, runtime_profile, captures[second_label]))
                     if engine_signal is not None:
                         evidence.write('run-02-engine-ok.json', engine_signal)
                     if interleave == 'stop-window':
