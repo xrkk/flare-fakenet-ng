@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import pytest
 from test_scenario_suite import suite
+from scenario_refusal_test_fixture import match_restart_refusal, nonmatch_refusal
 
 ROOT = Path(__file__).resolve().parents[2] / 'Logs/fakenetng-mcp/final100-20260920/formal-post-snapshot-20260930-22'
 
@@ -20,9 +21,16 @@ def test_approved_restart_refusal_from_original_bytes():
     from scenario_capture_view import validate_shared_views
     validate_shared_views(result, ROOT)
 
+
+def test_synthetic_approved_restart_refusal(tmp_path):
+    result = match_restart_refusal(tmp_path)
+    assert suite.refusal_recheck_issues(result, tmp_path) == []
+    from scenario_capture_view import validate_shared_views
+    validate_shared_views(result, tmp_path)
+
 @pytest.mark.parametrize('change', ['code', 'message', 'state', 'changed', 'run_id', 'other_call', 'family', 'healthy', 'extra_run', 'restart_success', 'version', 'status_reason'])
-def test_restart_refusal_does_not_waive_arbitrary_failure(change):
-    result = copy.deepcopy(original())
+def test_restart_refusal_does_not_waive_arbitrary_failure(tmp_path, change):
+    result = match_restart_refusal(tmp_path)
     restart = next(c for c in result['interface_calls'] if c['tool'] == 'restart')
     value = json.loads(restart['response']['result']['content'][0]['text'])
     if change == 'code': value['error']['code'] = 'operation_busy'
@@ -40,7 +48,14 @@ def test_restart_refusal_does_not_waive_arbitrary_failure(change):
     restart['response']['result']['content'][0]['text'] = json.dumps(value)
     from scenario_capture_view import validate_shared_views
     with pytest.raises(ValueError):
-        validate_shared_views(result, ROOT)
+        validate_shared_views(result, tmp_path)
+
+
+def test_synthetic_approved_restart_refusal(tmp_path):
+    result = match_restart_refusal(tmp_path)
+    assert suite.refusal_recheck_issues(result, tmp_path) == []
+    from scenario_capture_view import validate_shared_views
+    validate_shared_views(result, tmp_path)
 
 @pytest.mark.parametrize('interleave', ['before-start', 'restart-window', 'during-start', 'after-healthy'])
 @pytest.mark.parametrize('bucket', ['B3', 'B4'])
@@ -64,3 +79,44 @@ def test_bound_file_records_use_portable_producer_paths(tmp_path):
     path.parent.mkdir()
     path.write_bytes(b'raw bytes')
     assert suite.file_record(path, tmp_path)['path'] == 'nested/raw.json'
+
+
+@pytest.mark.parametrize('change', ['plan_missing', 'plan_reordered', 'controller', 'start_identity', 'file_hash', 'residue', 'receipt_missing'])
+def test_complete_contract_and_recovery_are_required(tmp_path, change):
+    result = match_restart_refusal(tmp_path)
+    if change == 'plan_missing': result['interface_calls'].pop(0)
+    elif change == 'plan_reordered': result['interface_calls'][0:2] = result['interface_calls'][1::-1]
+    elif change == 'controller': result['run_chain'][0]['refusal_status_samples'][0]['controller'] = 'wrong-owner'
+    elif change == 'start_identity': result['run_chain'][0]['start_response'] = dict(result['run_chain'][0]['start_response'], run_id='other')
+    elif change == 'file_hash': (tmp_path/'five-sections-after.json').write_text('{}')
+    elif change == 'residue': result['recovery']['cleanup_errors'] = ['writer remains']
+    elif change == 'receipt_missing': del result['interface_calls'][15]['response']
+    assert suite.refusal_recheck_issues(result, tmp_path)
+
+
+def test_nonmatch_requires_exact_synthetic_native_a_chain(tmp_path):
+    result = nonmatch_refusal(tmp_path)
+    assert suite.refusal_recheck_issues(result, tmp_path) == []
+    for change in ('nonce','tuple','pid_creation','healthy_event','missing_event','missing_proof'):
+        bad = copy.deepcopy(result)
+        if change == 'nonce': bad['traffic_evidence']['nonce']='wrong'
+        elif change == 'tuple': bad['traffic_evidence']['runtime_profile']['probe_target']['host']='203.0.113.1'
+        elif change == 'pid_creation': bad['run_chain'][0]['expected_refusal']['proof']['creation_ticks'] += 1
+        elif change == 'missing_proof': del bad['run_chain'][0]['expected_refusal']['proof']
+        else:
+            call = next(c for c in bad['interface_calls'] if c['tool']=='get_events')
+            value = json.loads(call['response']['result']['content'][0]['text'])
+            if change == 'missing_event': value['events']=[]
+            else: value['events'].append(dict(value['events'][0],state='healthy'))
+            call['response']['result']['content'][0]['text']=json.dumps(value)
+        assert suite.refusal_recheck_issues(bad,tmp_path),change
+
+
+def test_ordinary_healthy_restart_still_requires_two_runs(tmp_path):
+    from scenario_capture_view import validate_shared_views
+    result = match_restart_refusal(tmp_path)
+    run = result['run_chain'][0]
+    del run['expected_refusal']
+    run['start_response']['state']='healthy'
+    with pytest.raises(ValueError,match='exactly two'):
+        validate_shared_views(result,tmp_path)
