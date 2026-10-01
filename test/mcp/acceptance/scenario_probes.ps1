@@ -328,10 +328,8 @@ function Ensure-ProbeClient([string]$ResultPath) {
     $root = Split-Path -Parent $ResultPath
     New-Item -ItemType Directory -Path $root -Force | Out-Null
     # Each build writes under a unique name so csc never overwrites a file
-    # any scanner may hold; stale builds are swept best-effort.
-    Get-ChildItem -LiteralPath $root -Filter 'scenario-probe-client-*.exe' -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTimeUtc -lt [DateTime]::UtcNow.AddHours(-1) } |
-        Remove-Item -Force -ErrorAction SilentlyContinue
+    # any scanner may hold. Keep prior images: cleanup requires a separately
+    # reviewed exact manifest and retained-copy SHA, never an age sweep.
     $buildId = [Guid]::NewGuid().ToString('N')
     $exe = Join-Path $root ("scenario-probe-client-$buildId.exe")
     $source = Join-Path $root ("scenario-probe-client-$buildId.cs")
