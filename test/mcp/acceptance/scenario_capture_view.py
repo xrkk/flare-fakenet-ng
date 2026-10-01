@@ -32,6 +32,17 @@ def validate_shared_views(result: dict, suite_root: Path) -> None:
     """Fail closed before the per-run traffic oracle consumes a shared ETL."""
     root = Path(suite_root).resolve()
     runs = result.get('run_chain') or []
+    if len(runs) == 1 and runs[0].get('expected_refusal'):
+        # A refused start publishes no run and therefore owns no second run
+        # view. Require the complete approved raw refusal proof instead.
+        from scenario_suite import refusal_recheck_issues
+        issues = refusal_recheck_issues(result, root)
+        if issues:
+            raise ValueError('; '.join(issues))
+        if (runs[0].get('label') != 'run-01' or
+                runs[0].get('capture', {}).get('observation_contract') != 'con008'):
+            raise ValueError('refusal independent capture contract differs')
+        return
     if len(runs) != 2 or [x.get('label') for x in runs] != ['run-01', 'run-02']:
         raise ValueError('shared capture requires exactly two ordered run labels')
     traffic = result.get('traffic_evidence') or {}

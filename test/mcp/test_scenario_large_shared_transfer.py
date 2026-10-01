@@ -40,7 +40,7 @@ def test_shared_text_can_exceed_ordinary_bound(transfer, tmp_path):
     destination = tmp_path / 'run-01' / 'pktmon.txt'
     expected = hashlib.sha256(transfer.vm.payload).hexdigest()
     record = transfer._transfer_guest_file(source, 16, expected, destination)
-    assert record == {'path': str(Path('run-01') / 'pktmon.txt'),
+    assert record == {'path': 'run-01/pktmon.txt',
                       'size': 16, 'sha256': expected}
     assert destination.read_bytes() == transfer.vm.payload
     assert transfer.vm.calls == [(0, 16)]

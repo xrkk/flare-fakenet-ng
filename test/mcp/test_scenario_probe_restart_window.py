@@ -135,8 +135,8 @@ def test_driver_signals_engine_ok_after_a_healthy_restart():
     body = helper.group(0)
     assert "with_name('probe.engine-ok')" in body and 'WriteAllText' in body
     call_site = re.search(
-        r"evidence\.write\('run-02-engine-ok\.json',\s*"
-        r"self\._signal_engine_ok\(captures\[second_label\]\)", SUITE)
+        r"engine_signal = self\._release_restart_engine\(\s*"
+        r"restarted, runtime_profile, captures\[second_label\]\)", SUITE)
     assert call_site, 'engine-ok call site missing'
     # The signal is written only after the restart call converged.
     restart_pos = SUITE.index("restarted = call('restart', {}, mutation=True)")

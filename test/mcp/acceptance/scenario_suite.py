@@ -315,7 +315,7 @@ def file_record(path: Path, root: Path | None = None) -> dict[str, Any]:
     with path.open('rb') as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             hashed.update(block)
-    return {'path': str(path.relative_to(root) if root else path),
+    return {'path': path.relative_to(root).as_posix() if root else str(path),
             'size': size, 'sha256': hashed.hexdigest()}
 
 
@@ -2323,6 +2323,16 @@ class Suite:
         value['raw'] = raw
         return value
 
+    def _release_restart_engine(self, restarted: dict[str, Any],
+                                profile: dict[str, Any], capture: dict[str, Any]) -> dict[str, Any] | None:
+        """Release the same held run-02 probes selected at the launch sites."""
+        if (restarted.get('state') == 'healthy' and
+                profile.get('bucket') in ('B3', 'B4') and
+                profile.get('interleave') in ('restart-window', 'during-start',
+                                              'after-healthy', 'before-start')):
+            return self._signal_engine_ok(capture)
+        return None
+
     def _signal_engine_ok(self, capture: dict[str, Any]) -> dict[str, Any]:
         """Release the restart-window probe's held first connection.
 
@@ -3758,7 +3768,8 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                         if key != 'traffic_oracle'))
         return all(value is True for value in verdict.values())
 
-    def _is_quiescence_refusal_family(self, profile: dict[str, Any]) -> bool:
+    @staticmethod
+    def _is_quiescence_refusal_family(profile: dict[str, Any]) -> bool:
         target = profile.get('probe_target', {})
         return (profile.get('bucket') == 'B3' and
                 target.get('process_mode') in ('match', 'nonmatch') and
@@ -6290,14 +6301,10 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                             if restart_attempt == 2:
                                 raise
                             time.sleep(30)
-                    if (interleave in ('restart-window', 'during-start', 'after-healthy') and
-                            runtime_profile.get('bucket') in ('B3', 'B4')):
-                        # The held probe cannot read the live run.log (the
-                        # managed process refuses concurrent readers), so
-                        # signal it directly now that the restart returned
-                        # healthy and the engine is serving.
-                        evidence.write('run-02-engine-ok.json',
-                                       self._signal_engine_ok(captures[second_label]))
+                    engine_signal = self._release_restart_engine(
+                        restarted, runtime_profile, captures[second_label])
+                    if engine_signal is not None:
+                        evidence.write('run-02-engine-ok.json', engine_signal)
                     if interleave == 'stop-window':
                         # The probe has now overlapped run-01's stop portion
                         # (the restart). Close run-01's capture BEFORE
@@ -7349,17 +7356,47 @@ def refusal_recheck_issues(result: dict[str, Any], root: Path) -> list[str]:
         calls = result['interface_calls']
         planned = [(item['tool'], item['expect'])
                    for item in result['scenario']['interface_call_plan']]
-        if ([(item.get('tool'), item.get('expect')) for item in calls] != planned or
-                any(item.get('ok') is not True for item in calls
-                    if item.get('expect') == 'success')):
-            raise ValueError('refusal interface plan was not fully executed')
         def value(item: dict[str, Any]) -> dict[str, Any]:
             return json.loads(item['response']['result']['content'][0]['text'])
+        if len(result.get('run_chain') or []) != 1 or not Suite._is_quiescence_refusal_family(profile):
+            raise ValueError('refusal attempted run/family differs')
+        if [(item.get('tool'), item.get('expect')) for item in calls] != planned:
+            raise ValueError('refusal interface plan was not fully executed')
+        restart_calls = [item for item in calls if item.get('tool') == 'restart']
+        continuation = result['scenario'].get('lifecycle_chain') == 'restart'
+        if len(restart_calls) != int(continuation):
+            raise ValueError('refusal restart plan differs')
+        if continuation:
+            receipt = value(restart_calls[0])
+            if (restart_calls[0].get('ok') is not False or
+                    receipt.get('state') != 'stopped' or receipt.get('run_id') is not None or
+                    receipt.get('changed') is not False or receipt.get('command_id') is not None or
+                    receipt.get('error') != {'code': 'not_allowed_in_state',
+                        'message': 'restart requires an active run bound to its run_id'}):
+                raise ValueError('refusal restart receipt differs')
+        if any(item.get('ok') is not True for item in calls
+               if item.get('expect') == 'success' and item.get('tool') != 'restart'):
+            raise ValueError('refusal interface plan was not fully executed')
         starts = [value(item) for item in calls if item['tool'] == 'start']
         statuses = [value(item) for item in calls if item['tool'] == 'get_status']
         stops = [value(item) for item in calls if item['tool'] == 'stop']
+        stored_statuses = run.get('refusal_status_samples') or []
+        statuses_match = statuses == stored_statuses
+        if continuation and len(statuses) == len(stored_statuses) == 3:
+            restart_receipt = value(restart_calls[0])
+            # Internal refusal samples precede the plan's rejected restart;
+            # its state publication can advance only the version, not run,
+            # config, failure, health, or controller identity.
+            statuses_match = all(
+                {k: v for k, v in actual.items() if k != 'state_version'} ==
+                {k: v for k, v in before.items() if k != 'state_version'} and
+                before.get('state_version') == starts[0].get('state_version') and
+                actual.get('state_version') == restart_receipt.get('state_version') and
+                isinstance(actual.get('state_version'), int) and
+                actual['state_version'] >= before['state_version']
+                for actual, before in zip(statuses, stored_statuses))
         if (len(starts) != 1 or starts[0] != run.get('start_response') or
-                len(statuses) != 3 or statuses != run.get('refusal_status_samples') or
+                len(statuses) != 3 or not statuses_match or
                 len(stops) != 1 or stops[0] != run.get('stop_response') or
                 stops[0].get('state') != 'stopped'):
             raise ValueError('refusal start/status/stop receipts differ')
