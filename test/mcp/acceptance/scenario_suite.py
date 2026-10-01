@@ -2923,6 +2923,25 @@ if(!(Test-Path $envbackup)){throw 'ipc-evidence original snapshot is absent'};$s
 & 'C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe' stop;if($LASTEXITCODE -ne 0){throw 'ipc-evidence controlled stop failed'};
 $saved=Import-Clixml $envbackup;if($saved.present){New-ItemProperty $key -Name Environment -PropertyType MultiString -Value @($saved.values) -Force|Out-Null}else{Remove-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue};Start-Service fakenetng-mcp;
 $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyContinue;$current=@($currentProperty.Environment);$currentPresent=$null -ne $currentProperty -and $null -ne $currentProperty.Environment;$same=if($saved.present){$currentPresent -and @(Compare-Object @($saved.values) $current).Count -eq 0}else{-not $currentPresent};@{enabled=$false;backup=$envbackup;environment_restored=$same;stop_path=$stopPath;state=(Get-Service fakenetng-mcp).Status.ToString()}|ConvertTo-Json -Compress"""
+        receipt = getattr(self, 'ipc_cycle_receipt', None)
+        if receipt:
+            prefix = ("$receipt=" + quote_ps(receipt) + ";"
+                      "if(Test-Path $receipt){throw 'IPC receipt collision'};"
+                      "New-Item -ItemType Directory -Force (Split-Path $receipt)|Out-Null;"
+                      "function Write-IpcPhase($stage,$answer){"
+                      "$v=@{stage=$stage;enabled=" + ("$true" if enabled else "$false") +
+                      ";utc=[DateTime]::UtcNow.ToString('o');observer_pid=$PID;"
+                      "observer_filetime=[string](Get-Process -Id $PID).StartTime.ToUniversalTime().ToFileTimeUtc();answer=$answer};"
+                      "$tmp=$receipt+'.tmp';[IO.File]::WriteAllText($tmp,($v|ConvertTo-Json -Depth 8 -Compress));"
+                      "Move-Item -LiteralPath $tmp -Destination $receipt -Force};Write-IpcPhase 'entered' $null;")
+            body = body.replace(";& 'C:", ";Write-IpcPhase 'stop_intent' $null;& 'C:")
+            body = body.replace("\n& 'C:", "\nWrite-IpcPhase 'stop_intent' $null;& 'C:")
+            body = body.replace("throw 'controlled stop failed'};", "throw 'controlled stop failed'};Write-IpcPhase 'stop_completed' $null;")
+            body = body.replace("throw 'ipc-evidence controlled stop failed'};", "throw 'ipc-evidence controlled stop failed'};Write-IpcPhase 'stop_completed' $null;")
+            body = body.replace(";Start-Service fakenetng-mcp;", ";Write-IpcPhase 'environment_completed' $null;Write-IpcPhase 'start_intent' $null;Start-Service fakenetng-mcp;Write-IpcPhase 'start_completed' $null;")
+            body = body.replace("@{enabled=$true;backup=", "$answer=@{enabled=$true;backup=").replace("@{enabled=$false;backup=", "$answer=@{enabled=$false;backup=")
+            body = body.replace("}|ConvertTo-Json -Compress", "};Write-IpcPhase 'completed' $answer;$answer|ConvertTo-Json -Compress")
+            body = prefix + body
         value, raw = self._vm_json("$ErrorActionPreference='Stop';" + body, 180)
         if value.get('state') != 'Running':
             raise SuiteError('ipc-evidence service did not restart')
@@ -2934,6 +2953,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
         # _fault_mode so no scenario observes a half-recovered endpoint.
         deadline = time.monotonic() + 60
         observations = []
+        from bounded_mcp import TransportUnknown
         while time.monotonic() < deadline:
             try:
                 status = self._status(timeout=max(0.01, deadline - time.monotonic()))
@@ -2945,7 +2965,7 @@ $currentProperty=Get-ItemProperty $key -Name Environment -ErrorAction SilentlyCo
                     return value
                 if status.get('state') != 'recovering':
                     raise SuiteError('ipc-evidence endpoint unexpected state: %r' % status)
-            except urllib.error.URLError as exc:
+            except (urllib.error.URLError, TransportUnknown) as exc:
                 observations.append({'transport_error': repr(exc)})
             time.sleep(0.25)
         raise SuiteError('ipc-evidence endpoint readiness deadline: %r' % observations)

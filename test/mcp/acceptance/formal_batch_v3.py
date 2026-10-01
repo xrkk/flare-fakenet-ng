@@ -112,15 +112,19 @@ def _inside(path: Path, root: Path) -> bool:
 
 
 def validate_inputs(runner: Any, args: argparse.Namespace, batch_id: str,
-                    scenario_ids: list[str]) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+                    scenario_ids: list[str], *, evidence_root: Path | None = None,
+                    defer_preflight: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     if not BATCH_ID_RE.fullmatch(batch_id):
         raise SystemExit("batch-id must match " + BATCH_ID_RE.pattern)
     if not 1 <= len(scenario_ids) <= 5:
         raise SystemExit("a formal batch contains one to five explicit scenario IDs")
     if len(set(scenario_ids)) != len(scenario_ids):
         raise SystemExit("scenario IDs must be unique within a formal batch")
-    if runner.root.resolve() == FINAL_ROOT.resolve() or not _inside(runner.root, FINAL_ROOT):
-        raise SystemExit("suite-root must be a new child directory under " + str(FINAL_ROOT))
+    allowed = evidence_root.resolve() if evidence_root else FINAL_ROOT.resolve()
+    if not _inside(allowed, REPO / 'Logs'):
+        raise SystemExit('evidence-root must be under repository Logs')
+    if runner.root.resolve() == allowed or not _inside(runner.root, allowed):
+        raise SystemExit("suite-root must be a new child directory under " + str(allowed))
     manifest = runner.manifest()
     rows = {str(row.get("scenario_id")): row for row in manifest.get("scenarios", [])}
     selected: list[dict[str, Any]] = []
@@ -142,7 +146,10 @@ def validate_inputs(runner: Any, args: argparse.Namespace, batch_id: str,
     # Use Suite's actual gates.  The fault gate is intentionally not reimplemented
     # here; this preserves candidate/manifest/hash validation in scenario_suite.
     runner.require_clients()
-    preflight = runner._require_preflight()
+    # A controlled IPC restart changes the native instance. The opt-in
+    # gate must produce a current preflight inside that cycle, before rows.
+    preflight = ({'passed': False, 'deferred_until_enabled_instance': True}
+                 if defer_preflight else runner._require_preflight())
     if args.filter == "fault":
         runner._require_fault_spike()
     return selected, manifest, preflight
@@ -150,7 +157,7 @@ def validate_inputs(runner: Any, args: argparse.Namespace, batch_id: str,
 
 def run_batch(runner: Any, suite_args: argparse.Namespace, suite_argv_path: Path,
               batch_id: str, selected: list[dict[str, Any]], manifest: dict[str, Any],
-              preflight: dict[str, Any]) -> dict[str, Any]:
+              preflight: dict[str, Any], *, instance_gate=None) -> dict[str, Any]:
     """Run selected rows, returning only a record of their stored outcomes.
 
     This function is intentionally independent from VM construction so the
@@ -168,7 +175,8 @@ def run_batch(runner: Any, suite_args: argparse.Namespace, suite_argv_path: Path
         "identity": runner.identity.as_dict(),
         "suite_argv": record(suite_argv_path, REPO),
         "manifest": manifest_before,
-        "preflight": record(runner.preflight_path, runner.root),
+        "preflight": (record(runner.preflight_path, runner.root)
+                      if runner.preflight_path.is_file() else None),
         "preflight_passed": bool(preflight.get("passed")),
         "driver": driver_record,
         "fault_spike_result": (record(Path(suite_args.fault_spike_result), REPO)
@@ -197,6 +205,16 @@ def run_batch(runner: Any, suite_args: argparse.Namespace, suite_argv_path: Path
         ipc_evidence["attempted"] = True
         ipc_evidence["enabled"] = runner._ipc_evidence_mode(True)
         write_new_json(batch_root / "ipc-evidence-enabled.json", ipc_evidence["enabled"])
+        if instance_gate is not None:
+            gated = instance_gate(runner, 'enabled', ipc_evidence['enabled'])
+            if not isinstance(gated, dict) or gated.get('passed') is not True:
+                raise RuntimeError('enabled native instance gate did not pass')
+            current = runner._require_preflight()
+            write_new_json(batch_root / 'ipc-instance-enabled-gate.json', {
+                'gate': gated, 'preflight': record(runner.preflight_path, runner.root),
+                'preflight_passed': bool(current.get('passed'))})
+        elif preflight.get('deferred_until_enabled_instance'):
+            raise RuntimeError('deferred preflight requires a native instance gate')
     except BaseException as exc:
         event = {"event": "not-executed", "classification": "tool_error",
                  "reason": "IPC evidence enable failed: " + repr(exc),
@@ -315,7 +333,15 @@ def run_batch(runner: Any, suite_args: argparse.Namespace, suite_argv_path: Path
         # even when restore also fails.
         if ipc_attempted:
             try:
+                permitted = getattr(runner, '_ipc_restore_allowed', lambda: True)()
+                if permitted is not True:
+                    raise RuntimeError('IPC outcome unresolved; blind restore mutation withheld')
                 ipc_evidence["disabled"] = runner._ipc_evidence_mode(False)
+                if instance_gate is not None:
+                    gated = instance_gate(runner, 'disabled', ipc_evidence['disabled'])
+                    if not isinstance(gated, dict) or gated.get('passed') is not True:
+                        raise RuntimeError('restored native instance gate did not pass')
+                    write_new_json(batch_root / 'ipc-instance-disabled-gate.json', gated)
             except BaseException as exc:
                 ipc_evidence["disabled"] = {"error": repr(exc),
                                              "traceback": traceback.format_exc(limit=8)}
