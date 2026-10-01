@@ -7,12 +7,12 @@ import socket
 import pytest
 spec=importlib.util.spec_from_file_location('p14_operator',Path(__file__).parent/'acceptance/p14_operator_fixture.py')
 p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p)
-def ready():return dict(run_id='own-run',controller='own-controller',nonce='own-nonce',pid=42,creation_time='134335767401378067',address='127.0.0.1',port=49153,in_any_job=False)
+def ready():return dict(run_id='own-run',controller='own-controller',nonce='own-nonce',pid=42,creation_time='134335767401378067',address='127.0.0.1',port=49153,in_any_job=False,managed_job_proof=dict(supervisor_pid=7484,supervisor_creation='134335767401378067',target_pid=8848,target_creation='134353424763296015',duplicates_closed=True,probe_job_closed=True,jobs=[dict(worker_member=False,members=['8848'])]))
 def cli(code):return dict(native_ended=True,exit_code=code,seconds=151,cli=dict(pid=22,creation_time='134335767401378067',semantic='fakenetng-mcp.exe stop'))
 def proof():
  b=dict(run_id='own-run',controller='own-controller',baseline_sha256='rawhash',failure_reason='environment restoration audit failed',audit_tcp_difference=True,needs_recovery=True)
  pre=dict(instance_id='same',pid=7484,creation_time='native',attempt=0)
- return dict(operator=cli(1),retry=cli(0),before=b,held=copy.deepcopy(b),resources=dict(native_ended=True),service_alive_at_CLI1=True,prestop_before=pre,prestop_failed=dict(pre,attempt=1,phase='failed'),prestop_final=dict(pre,attempt=2,phase='succeeded'),start_error='not_allowed_in_state',start_owner_preserved=True,fixture_closed=dict(reason='cooperative_release'),fixture_native_ended=True,three_absent_samples=True,service_stopped=True,final_marker=dict(needs_recovery=False),baseline_sha_before='rawhash',baseline_sha_after='rawhash',two_clean_audit_samples=True,original_failure_preserved=True,fixture_did_not_expire=True)
+ return dict(operator=cli(1),retry=cli(0),before=b,held=copy.deepcopy(b),resources=dict(native_ended=True),service_alive_at_CLI1=True,prestop_before=pre,prestop_failed=dict(pre,attempt=1,phase='failed'),prestop_final=dict(pre,attempt=2,phase='succeeded'),start_error='not_allowed_in_state',start_owner_preserved=True,fixture_closed=dict(reason='cooperative_release'),fixture_native_ended=True,three_absent_samples=True,service_stopped=True,final_marker=dict(needs_recovery=False),baseline_sha_before='rawhash',baseline_sha_after='rawhash',two_clean_audit_samples=True,original_failure_preserved=True,fixture_did_not_expire=True,fixture_product_job_independent=True)
 def test_audit_only_does_not_require_live_helper_or_job():assert p.verdict(proof())['passed']
 @pytest.mark.parametrize('change',['run_id','controller','nonce','pid','creation_time','action'])
 def test_release_requires_exact_own_receipt(change):
@@ -25,7 +25,7 @@ def test_fixture_identity_and_lease_fail_closed(change):
  elif change=='nonce':nonce='foreign'
  elif change=='expired':elapsed=1800
  elif change=='other_address':r['address']='0.0.0.0'
- elif change=='in_job':r['in_any_job']=True
+ elif change=='in_job':r['managed_job_proof']['jobs'][0]['worker_member']=True
  elif change=='missing_native':r['creation_time']=None
  else:r['port']=0
  assert not p.fixture_valid(r,run,controller,nonce,elapsed)
@@ -145,3 +145,23 @@ def test_preparation_continuation_never_replays_entered_or_unknown_business(chan
  elif change=='service_stopped':o['service']['State']='Stopped'
  else:o['own']=[]
  assert not p.preparation_eligible({'status':'FAILED'},o,entered)
+
+def test_inherited_foreign_job_is_allowed_only_with_exact_closed_product_job_witness():
+ r=ready();r['in_any_job']=True
+ assert p.fixture_valid(r,r['run_id'],r['controller'],r['nonce'],20)
+ r.pop('managed_job_proof');assert not p.fixture_valid(r,r['run_id'],r['controller'],r['nonce'],20)
+@pytest.mark.parametrize('change',['service_pid_reuse','service_creation_reuse','missing_target','worker_is_member','duplicate_still_open','probe_still_open','wrong_target_list','multiple_candidate_jobs'])
+def test_exact_native_product_job_witness_fail_closed(change):
+ r=ready()['managed_job_proof']
+ if change=='service_pid_reuse':r['supervisor_pid']=99
+ elif change=='service_creation_reuse':r['supervisor_creation']='reused'
+ elif change=='missing_target':r['target_creation']=None
+ elif change=='worker_is_member':r['jobs'][0]['worker_member']=True
+ elif change=='duplicate_still_open':r['duplicates_closed']=False
+ elif change=='probe_still_open':r['probe_job_closed']=False
+ elif change=='wrong_target_list':r['jobs'][0]['members']=[]
+ else:r['jobs'].append(copy.deepcopy(r['jobs'][0]))
+ assert not p.independent_product_job(r)
+def test_job_gate_preparation_failure_before_listener_can_be_reconciled():
+ o=prep();o['own'][0]['files'][0]['raw']='external listener must not inherit any Job'
+ assert p.preparation_eligible({'status':'FAILED'},o,False)

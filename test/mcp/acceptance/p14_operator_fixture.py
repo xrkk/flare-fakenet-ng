@@ -31,12 +31,16 @@ def write_new(path,value):
 def release_receipt(ready):
     return {k:ready[k] for k in ('run_id','controller','nonce','pid','creation_time')}|{'action':'release'}
 def release_matches(receipt,ready):return receipt==release_receipt(ready)
+def independent_product_job(proof):
+    jobs=proof.get('jobs') or []
+    return (proof.get('supervisor_pid')==7484 and proof.get('supervisor_creation')=='134335767401378067' and proof.get('target_pid') and proof.get('target_creation') and proof.get('duplicates_closed') is True and proof.get('probe_job_closed') is True and len(jobs)==1 and jobs[0].get('worker_member') is False and str(proof['target_pid']) in jobs[0].get('members',[]))
+
 def fixture_valid(ready,run,controller,nonce,elapsed):
     return (ready.get('run_id')==run and ready.get('controller')==controller and ready.get('nonce')==nonce and
             ready.get('address')=='127.0.0.1' and type(ready.get('port')) is int and 0<ready['port']<65536 and
-            type(ready.get('pid')) is int and bool(ready.get('creation_time')) and ready.get('in_any_job') is False and 0<=elapsed<1800)
+            type(ready.get('pid')) is int and bool(ready.get('creation_time')) and independent_product_job(ready.get('managed_job_proof',{})) and 0<=elapsed<1800)
 def preparation_eligible(previous_result,observation,fixture_or_operator_entered):
-    return (previous_result.get('status')=='FAILED' and not fixture_or_operator_entered and observation.get('observer') is None and observation.get('service',{}).get('State')=='Running' and observation.get('prestop',{}).get('phase')=='idle' and observation.get('prestop',{}).get('attempt')==0 and any('Get-FileHash' in (f.get('raw') or '') for row in observation.get('own',[]) for f in row.get('files',[]) if f.get('name')=='worker-err.txt'))
+    return (previous_result.get('status')=='FAILED' and not fixture_or_operator_entered and observation.get('observer') is None and observation.get('service',{}).get('State')=='Running' and observation.get('prestop',{}).get('phase')=='idle' and observation.get('prestop',{}).get('attempt')==0 and any(('Get-FileHash' in (f.get('raw') or '') or 'external listener must not inherit any Job' in (f.get('raw') or '')) for row in observation.get('own',[]) for f in row.get('files',[]) if f.get('name')=='worker-err.txt'))
 
 def export_plan(label):
     if label=='healthy-originals':return {'sealed_only':True,'binary_inventory':False,'names':['creation.jsonl','active-config.ini']}
@@ -78,6 +82,7 @@ def verdict(p):
       'two_clean_audit_samples':p.get('two_clean_audit_samples') is True,
       'original_failure_preserved':p.get('original_failure_preserved') is True,
       'fixture_did_not_expire':p.get('fixture_did_not_expire') is True,
+      'exact_product_Job_independence':p.get('fixture_product_job_independent') is True,
     }
     return {'passed':all(checks.values()),'checks':checks,'nature':'must be backed by indexed native originals; self-contained proofs are logical only'}
 
@@ -157,12 +162,24 @@ class Runner:
         v=self.vm_json('$p='+self.ps(path)+";$b=[IO.File]::ReadAllBytes($p);@{sha256=(Get-FileHash $p).Hash.ToLower();base64=[Convert]::ToBase64String($b)}|ConvertTo-Json -Compress")
         raw=base64.b64decode(v['base64'],validate=True);assert sha(raw)==v['sha256'];return raw
     def setup_worker(self,directory,mode):
-        script=WORKER.read_bytes();manifest={'run_id':self.j.run_id,'controller':self.j.service.controller_id,'nonce':self.nonce,'lease_seconds':1800,'directory':directory,'worker_sha256':sha(script),'exe_sha256':EXE,'service_pid':7484,'service_filetime':'134335767401378067'}
+        target={}
+        if mode=='Listener':
+            for f in self.records:
+                if f['path'].endswith('creation.jsonl'):
+                    rows=[json.loads(x) for x in (self.out/f['local']).read_text().splitlines()]
+                    target=next(r['child'] for r in rows if r['stage']=='after_api')
+            assert target and target['pid'] and target['creation_time'], 'own product target native creation missing'
+        script=WORKER.read_bytes();manifest={'run_id':self.j.run_id,'controller':self.j.service.controller_id,'nonce':self.nonce,'lease_seconds':1800,'directory':directory,'worker_sha256':sha(script),'exe_sha256':EXE,'service_pid':7484,'service_filetime':'134335767401378067','target_pid':target.get('pid'),'target_creation_time':target.get('creation_time')}
         raw=json.dumps(manifest).encode();payload={ 'worker.ps1':script,'manifest.json':raw }
-        cmd="$ErrorActionPreference='Stop';$dir="+self.ps(directory)+";if(Test-Path $dir){throw 'own directory collision'};New-Item -ItemType Directory -Path $dir|Out-Null;"
+        once(self.vm,"$ErrorActionPreference='Stop';$dir="+self.ps(directory)+";if(Test-Path $dir){throw 'own directory collision'};New-Item -ItemType Directory -Path $dir|Out-Null;'own directory created'",30)
         for name,b in payload.items():
-            cmd+="$b=[Convert]::FromBase64String('"+base64.b64encode(b).decode()+"');$p=Join-Path $dir '"+name+"';$s=[IO.File]::Open($p,[IO.FileMode]::CreateNew);try{$s.Write($b,0,$b.Length)}finally{$s.Dispose()};if((Get-FileHash $p).Hash.ToLower() -ne '"+sha(b)+"'){throw 'transfer SHA mismatch'};"
-        cmd+="'SHA verified own tools';";self.vm(cmd,30)
+            path=directory+'\\'+name
+            once(self.vm,"$s=[IO.File]::Open("+self.ps(path)+",[IO.FileMode]::CreateNew);$s.Dispose();'own file created'",30)
+            for offset in range(0,len(b),2048):
+                chunk=base64.b64encode(b[offset:offset+2048]).decode()
+                cmd="$ErrorActionPreference='Stop';$s=[IO.File]::Open("+self.ps(path)+",[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{if($s.Length -ne "+str(offset)+"){throw 'chunk offset drift'};[void]$s.Seek("+str(offset)+",[IO.SeekOrigin]::Begin);$b=[Convert]::FromBase64String('"+chunk+"');$s.Write($b,0,$b.Length);$s.Flush($true)}finally{$s.Dispose()};'own chunk written'"
+                once(self.vm,cmd,30)
+            self.vm("if((Get-FileHash "+self.ps(path)+").Hash.ToLower() -cne '"+sha(b)+"'){throw 'transfer SHA drift'};'own file SHA verified'",30)
         # At most one launch. Unknown result is reconciled only through own files.
         launch="$ErrorActionPreference='Stop';$dir="+self.ps(directory)+";$engine="+self.ps(PS_ENGINE)+";if((Get-FileHash $engine).Hash.ToLower() -cne '"+PS_ENGINE_SHA+"'){throw 'PowerShell engine drift'};$p=Start-Process $engine -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $dir 'worker.ps1'),'-Manifest',(Join-Path $dir 'manifest.json'),'-Mode','"+mode+"') -PassThru -RedirectStandardOutput (Join-Path $dir 'worker-out.txt') -RedirectStandardError (Join-Path $dir 'worker-err.txt');@{pid=$p.Id;creation_time=[string]$p.StartTime.ToUniversalTime().ToFileTimeUtc()}|ConvertTo-Json -Compress"
         return once(self.vm_json,launch,30)
@@ -215,13 +232,17 @@ class Runner:
             r=self.mutate('start');assert r['ok'] and r['value']['state']=='healthy',r
         else:
             self.stage('same run preparation-only continuation')
-            previous=Path(resume);old=json.loads((previous/'03-finally-scene.json').read_text())
+            previous=Path(resume);old=json.loads(next(previous.glob('*admission-scene.json')).read_text()) if list(previous.glob('*resumed-admission-scene.json')) else json.loads((previous/'03-finally-scene.json').read_text())
             assert (previous/'result.json').exists(), 'previous writer must have ended'
             previous_result=json.loads((previous/'result.json').read_text())
-            observation=json.loads(json.loads((previous.parent/'native-reconcile-01.json').read_text())['output'])
-            assert preparation_eligible(previous_result,observation,(previous/'fixture-launch.json').exists() or (previous/'operator-cli-original.json').exists()), 'only proven pre-CLI tool preparation errors may continue'
+            observation_path=previous.parent/('fixture-native-reconcile.json' if (previous/'fixture-launch.json').exists() else 'native-reconcile-01.json')
+            observation=json.loads(json.loads(observation_path.read_text())['output'])
+            if 'process' in observation:
+                observation['observer']=observation['process'];observation['own']=[{'files':observation['files']}]
+                assert not any(f['name'] in ('ready.json','closed.json') for f in observation['files']), 'cannot repeat a listener that was started'
+            assert preparation_eligible(previous_result,observation,(previous/'fixture-ready.json').exists() or (previous/'operator-cli-original.json').exists()), 'only proven pre-CLI tool preparation errors may continue'
             self.save('preparation-reconciliation.json',observation)
-            assert previous_result['status']=='FAILED' and not (previous/'fixture-launch.json').exists() and not (previous/'operator-cli-original.json').exists()
+            assert previous_result['status']=='FAILED' and not (previous/'fixture-ready.json').exists() and not (previous/'operator-cli-original.json').exists()
             self.j.service.controller_id=old['product']['controller']
             self.j.run_id=old['product']['run_id']
             snap=self.j.snapshot();assert (snap['pid'],snap['creation_filetime'])==(7484,134335767401378067)
@@ -312,7 +333,7 @@ def rejudge(out):
             rows=[json.loads(x) for x in raw.decode().splitlines()];audits.append((f,rows))
         if name=='owner-result.json':owners.append(json.loads(raw))
         if name=='versions.json':versions.append(json.loads(raw))
-    ready=sidecars['fixture-ready.json'];endpoint='127.0.0.1:'+str(ready['port'])
+    ready=sidecars['fixture-ready.json'];p['fixture_product_job_independent']=independent_product_job(ready.get('managed_job_proof',{}));endpoint='127.0.0.1:'+str(ready['port'])
     failed=[rows for f,rows in audits if f['local'].startswith('operator-held-originals/') and rows and any(endpoint in x['current']['listen_ports'] and 'listen_ports' in x['differences'] for x in rows)]
     # Native object-end reports are accepted only for same run and original budget.
     ended=[r for r in owners if r.get('target',{}).get('run_id')==p['before']['run_id'] and r.get('target',{}).get('budget_seconds')==60 and r.get('completed_monotonic',float('inf'))<=r.get('deadline_monotonic',-1) and r.get('helper_ended') is True and r.get('retained_target_handle_closed') is True and r.get('complete') is True]
