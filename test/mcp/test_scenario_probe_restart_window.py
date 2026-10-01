@@ -155,3 +155,16 @@ def test_restart_window_probe_window_spans_the_restart_transition():
         r"\$windowSeconds = if \(\$Interleave -eq 'restart-window'\) "
         r"\{ \$Seconds \+ \$StartupRetrySeconds \} else \{ \$Seconds \}",
         PROBES)
+
+
+def test_engine_wait_precedes_udp_socket_creation():
+    """The held second UDP socket must not pollute run-01 restoration.
+
+    R02 sst-058 originals bind the extra listen port to run-02's native UDP
+    source. The real WinPS loop verifies silence before engine-ok, emission
+    afterwards, and cooperative close; this guard catches moving the wait
+    back behind the UDP branch's unconditional return.
+    """
+    wait = PROBES.index("    if ($EngineWait -and -not ($Bucket -eq 'B3' -and $ProcessMode -eq 'match'))")
+    udp = PROBES.index("    if ($endpoint.protocol -eq 'udp') {")
+    assert wait < udp
