@@ -29,7 +29,22 @@ def _make_snapshot(dirs):
 def _make_baseline_store(dirs):
     from fakenet.mcp.baseline import BaselineStore
 
-    return BaselineStore(dirs['baselines'])
+    store = BaselineStore(dirs['baselines'])
+    if os.environ.get('FAKENET_MCP_OWNED_DRIVER_DIAGNOSTICS') == '1':
+        try:
+            from fakenet.mcp import owned_driver_diagnostics
+            store.owned_driver_observer = owned_driver_diagnostics.create(dirs['logs'])
+        except Exception as exc:
+            # Preparation/import failures must not turn diagnostics into a
+            # service-start or compensation dependency. No exception data/env.
+            import logging
+            try:
+                logging.getLogger(__name__).warning(
+                    'owned-driver-diagnostics incomplete: factory %s',
+                    type(exc).__name__)
+            except Exception:
+                pass
+    return store
 
 
 def _builtin_configs_root():

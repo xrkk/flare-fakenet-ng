@@ -19,6 +19,8 @@ import sys
 import uuid
 import re
 import ntpath
+
+from fakenet.mcp import owned_driver_diagnostics
 from pathlib import Path
 
 BASELINE_FIELDS = ('routes', 'dns_servers', 'windivert_processes',
@@ -74,6 +76,10 @@ def _run(command, timeout=60):
     """Section capture primitive: text on success, the UNKNOWN sentinel
     when the command itself failed — the auditor must treat a failed
     section as unverifiable (never silently equal; CHK-018/CHK-042)."""
+    observation = owned_driver_diagnostics.current()
+    completed = exception = None
+    if observation is not None:
+        observation.begin()
     try:
         encoding = 'utf-8'
         if os.name == 'nt':
@@ -86,8 +92,15 @@ def _run(command, timeout=60):
         completed = subprocess.run(
             command, capture_output=True, text=True, timeout=timeout,
             encoding=encoding, errors='strict')
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        exception = exc
         return COLLECTION_FAILED
+    except Exception as exc:
+        exception = exc
+        raise
+    finally:
+        if observation is not None:
+            observation.finish(command, timeout, completed, exception)
     if completed.returncode != 0 or not (completed.stdout or '').strip():
         return COLLECTION_FAILED
     return completed.stdout or ''
@@ -550,6 +563,20 @@ class BaselineStore:
             "{throw 'owned driver still registered'} }; "
             "Write-Output 'owned driver compensation complete'")
         remaining = min(60, deadline - time.monotonic())
-        if remaining <= 0 or _run(['powershell', '-NoProfile', '-Command', script],
-                                  timeout=remaining) == COLLECTION_FAILED:
+        observer = getattr(self, 'owned_driver_observer', None)
+        observation = (observer.prepare(baseline.get('run_id'), deadline)
+                       if observer is not None else None)
+        command = ['powershell', '-NoProfile', '-Command', script]
+        if remaining <= 0:
+            if observation is not None:
+                observation.begin()
+                observation.finish(command, remaining, before_dispatch=True)
+            raise RuntimeError('owned driver compensation failed')
+        if observation is None:
+            # Preserve the original two-argument contract for callers/test seams.
+            result = _run(command, timeout=remaining)
+        else:
+            with owned_driver_diagnostics.scope(observation):
+                result = _run(command, timeout=remaining)
+        if result == COLLECTION_FAILED:
             raise RuntimeError('owned driver compensation failed')
