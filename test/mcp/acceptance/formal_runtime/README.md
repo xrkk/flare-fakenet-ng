@@ -28,3 +28,13 @@ This module is the input-binding component. Full offline preparation, resource
 admission, trusted historical selections, original package checks, orchestration,
 and independent source auditing are subsequent components; this module alone
 does not validate those conditions or constitute a runnable acceptance entry.
+
+`runner.check_preparation_inputs(context)` checks the original P2 local identity
+gate, actual 199-member archive, original deterministic 100-row manifest,
+indexed/protected selected-source metadata, exact remaining one-to-five-row
+batches, and fresh host/tmp capacity. Its plan needs explicit `candidate_files`
+records named `manifest`, `verification`, `deployment`, and `archive`, plus the
+`original_manifest` record and original batch policy. No archive name is inferred.
+The returned input report explicitly grants no business authority. Metadata
+checks are followed by independent original raw-source/Spike adjudication and
+the configuration/instance gates when the full runner is assembled.
