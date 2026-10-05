@@ -38,3 +38,16 @@ records named `manifest`, `verification`, `deployment`, and `archive`, plus the
 The returned input report explicitly grants no business authority. Metadata
 checks are followed by independent original raw-source/Spike adjudication and
 the configuration/instance gates when the full runner is assembled.
+
+`command_transport.StageFileVm(client, context, responsibility)` keeps short
+commands on the original client and stages long commands under the explicit
+physical namespace. The caller supplies `refuse()` and `unknown(error)` for its
+current mutation responsibility; a loaded context alone grants no mutation
+authority. Staging retains the original 32767 UTF16-unit projection, 2048-unit
+wrapper reserve, 1024-byte chunks and 4 MiB script limit. All calls share the
+original deadline, and exact UTF8-BOM script bytes are SHA-verified before
+dot-sourcing in the original remote executor. File-location automatic variables
+are refused for staged scripts. Unknown results retain a command fingerprint
+under the current output root and cannot be replayed by a new adapter there.
+This is an offline-verified component; full runner, source-export, instance and
+Windows acceptance gates remain necessary.
