@@ -280,3 +280,8 @@ Sources and fresh capacity are checked again after audits before a preparation
 result can be written. Preparation grants no live instance admission or formal
 credit. Actual complete old-five/Spike audits remain capacity blocked, and
 run-batch/export-source CLI assembly is still pending.
+
+Preparation also checks the original producer's clean-r/date/32-hex nonce/
+output-SHA scope namespace and exact SCM cycle upper bound of 70, before
+capacity or audit dispatch. A generic E-drive path is insufficient to bind
+a future execution, even when material and plan fingerprints are consistent.

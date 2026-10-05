@@ -1,6 +1,7 @@
 """Original offline config planning and separate preparation failure chain."""
 import copy
 import json
+import hashlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -60,6 +61,10 @@ def test_self_rehashed_config_plan_cannot_change_original_lifecycle(config_prepa
 @pytest.fixture
 def entry_material(config_prepared):
     repo, material, _, data, plan = config_prepared
+    nonce = 'a'*32
+    data['physical_namespace'] = (r'E:\FakeNet-NG-MCP-test-work\clean-r5-20261005'+'\\'+nonce+'\\'+
+                                 hashlib.sha256(data['evidence_root'].encode()).hexdigest()[:12])
+    plan.update(physical_namespace=data['physical_namespace'], nonce=nonce, cycles_bound=70)
     entry = REAL/'test/mcp/acceptance/run_formal_completion.py'
     wanted = runtime_sources.expected_sources(REAL, entry)
     for source in wanted:
@@ -217,3 +222,18 @@ def test_audit_child_cannot_change_parent_contract_or_reuse_output(entry_materia
     data['plan'] = write_json(Path(data['plan']['path']), plan)
     context = load_context(material, write_json(material,data)['sha256'], repository_root=repo)
     with pytest.raises(MaterialError, match=reason): preparation.audit_jobs(context)
+
+
+@pytest.mark.parametrize('change,reason', [('namespace','nonce/scope'), ('scope','nonce/scope'),
+                                         ('nonce','nonce/scope'), ('cycles','cycle bound')])
+def test_preparation_cannot_grant_wrong_producer_namespace_or_cycle_bound(entry_material, change, reason):
+    repo, material, _, data, plan = entry_material
+    if change == 'namespace': data['physical_namespace'] = r'E:\other-namespace'
+    elif change == 'scope': data['physical_namespace'] = data['physical_namespace'][:-12]+'0'*12
+    elif change == 'nonce': plan['nonce'] = 'b'*32
+    else: plan['cycles_bound'] = True
+    plan['physical_namespace'] = data['physical_namespace']
+    data['plan'] = write_json(Path(data['plan']['path']), plan)
+    context = load_context(material, write_json(material,data)['sha256'], repository_root=repo)
+    with pytest.raises(MaterialError, match=reason): preparation.execution_plan(context)
+    assert not context.evidence_root.exists() and not context.audit_root.exists()

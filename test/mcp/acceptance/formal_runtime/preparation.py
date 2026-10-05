@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import hashlib
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -17,6 +18,22 @@ from .config_ownership import selection_plan
 from .command_transport import write_new_json
 from .runner import check_preparation_inputs, require, _capacity
 from .runtime_sources import qualify, loaded_sources
+from .source import NAMESPACE
+
+
+def execution_plan(context):
+    """Check the original producer's physical identity before preparation."""
+    context.revalidate()
+    plan = read_json(checked_record(dict(context.materials['plan'])))
+    match = NAMESPACE.fullmatch(context.physical_namespace)
+    scope = hashlib.sha256(str(context.evidence_root).encode()).hexdigest()[:12]
+    require(match is not None and match['scope'] == scope
+            and plan.get('nonce') == match['nonce'],
+            'preparation producer namespace nonce/scope differs from original output')
+    require(type(plan.get('cycles_bound')) is int and plan['cycles_bound'] == 70,
+            'original controlled SCM cycle bound differs')
+    return {'physical_namespace': context.physical_namespace,
+            'nonce': match['nonce'], 'scope': scope, 'cycles_bound': 70}
 
 
 def configuration_plan(context):
@@ -110,6 +127,7 @@ def prepare(context, entry):
     context.revalidate()
     qualified = qualify(context, entry)
     modules = loaded_sources(context, qualified)
+    execution = execution_plan(context)
     inputs = check_preparation_inputs(context)
     config = configuration_plan(context)
     jobs = audit_jobs(context)
@@ -166,6 +184,7 @@ def prepare(context, entry):
         capacity = _capacity(context, max(len(row['scenario_ids']) for row in inputs['batches']))
         result = {'schema': 'fakenetng.formal-runtime.preparation.v1', 'passed': True,
                   'materials_sha256': context.materials_sha256, 'inputs': inputs,
+                  'execution_plan': execution,
                   'configuration_plan': _record(root/'configuration-plan.json'),
                   'source_map': _record(root/'source-map.json'), 'audits': rows,
                   'fresh_capacity_after_audits': capacity,
