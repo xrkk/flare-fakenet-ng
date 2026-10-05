@@ -289,6 +289,7 @@ class ReadOnlySourceVm:
         require(dict(binding.values['identity']) == dict(context.candidate_identity), 'read-only source candidate differs')
 
     def powershell(self, command, timeout=30):
+        self.context.revalidate()
         from .command_transport import LIMIT, map_command, wire_units, write_new_json
         require(type(timeout) is int and timeout > 0, 'read-only timeout invalid')
         require(not re.search(r'(?i)WriteAll|Set-Content|Out-File|Export-Clixml|Invoke-CimMethod|'

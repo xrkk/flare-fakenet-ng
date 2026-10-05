@@ -140,6 +140,18 @@ def test_unknown_read_stops_without_retry_and_retains_terminal(exporting):
     assert len(client.calls) == calls
 
 
+def test_readonly_adapter_rechecks_independent_material_pin_before_every_rpc(exporting):
+    context, _, binding, _ = exporting
+    client = SourceClient(binding)
+    root = context.evidence_root / 'read-adapter'
+    adapter = source.ReadOnlySourceVm(client, context, binding, root)
+    context.materials_path.write_bytes(context.materials_path.read_bytes() + b'\n')
+    from formal_runtime.context import MaterialError
+    with pytest.raises(MaterialError, match='independent materials SHA256 mismatch'):
+        adapter.powershell('Get-Content owned-source', 30)
+    assert not client.calls and not root.exists()
+
+
 def test_exact_supervisor_lineage_is_queried_without_broad_native_export(exporting):
     context, root, _, instance = exporting
     # Add the frozen exact PID/FILETIME witness and repin this controlled source.
