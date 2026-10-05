@@ -346,7 +346,7 @@ def source_capture_gate(instance, binding: SourceBinding, destination: Path):
     return value
 
 
-def export_source(instance, context: RunContext, source_root: Path, destination: Path):
+def export_source(instance, context: RunContext, source_root: Path, destination: Path, *, close_check=None):
     """Export a stable, bounded inventory via the original Suite transfer method.
 
 Writers must have stopped, all required capture/backup/receipt bytes must exist,
@@ -354,7 +354,7 @@ and both complete inventories must agree. Unknown calls are never retried.
 """
     authority = SourceAuthority(context, source_root)
     binding = resolve_source(context, authority.root)
-    return _export_source(instance, context, authority, binding, destination)
+    return _export_source(instance, context, authority, binding, destination, close_check=close_check)
 
 
 def export_current_source(instance, context: RunContext, service_client, destination: Path):

@@ -17,6 +17,8 @@ def main(argv=None):
     run.add_argument('--preparation-json', type=Path,
                      help='previous exact preparation result; requires its independently frozen SHA')
     run.add_argument('--preparation-sha256')
+    export = actions.add_parser('export-source', help='read-only export from one independently indexed source')
+    export.add_argument('--source-root', type=Path, required=True)
     args = parser.parse_args(argv)
     if args.action == 'run-batch' and bool(args.preparation_json) != bool(args.preparation_sha256):
         parser.error('--preparation-json and --preparation-sha256 must be supplied together')
@@ -32,7 +34,7 @@ def main(argv=None):
             result = prepare(context, entry)
             print(json.dumps({'passed': result['passed'], 'VM_calls': 0,
                               'business_authorized': False, 'output': str(context.audit_root)}, ensure_ascii=False))
-        else:
+        elif args.action == 'run-batch':
             from formal_runtime.execution import run_batch
             from formal_runtime.preparation_receipt import load_preparation
             from formal_runtime.context import file_sha256, read_json
@@ -55,6 +57,11 @@ def main(argv=None):
             print(json.dumps({'independently_rejudged': verdict['passed'], 'batch_id': args.batch_id,
                               'new_formal_credit': 0,
                               'output': str(context.evidence_root)}, ensure_ascii=False))
+        else:
+            from formal_runtime.export_entry import run as export_source
+            result = export_source(context, args.source_root, entry)
+            print(json.dumps({'exported': result['passed'], 'read_only': True,
+                              'new_formal_credit': 0, 'output': str(context.evidence_root)}, ensure_ascii=False))
         return 0
     except Exception as error:
         print(json.dumps({'passed': False, 'error': repr(error),

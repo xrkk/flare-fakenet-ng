@@ -279,8 +279,7 @@ Raw stdout/stderr, waited process completion and preparation terminal remain.
 Sources and fresh capacity are checked again after audits before a preparation
 result can be written. Preparation grants no live instance admission or formal
 credit. Actual complete old-five/Spike audits remain capacity blocked, and
-successful full preparation is still unverified. The separate export-source
-CLI is pending.
+successful full preparation is still unverified.
 
 Preparation also checks the original producer's clean-r/date/32-hex nonce/
 output-SHA scope namespace and exact SCM cycle upper bound of 70, before
@@ -321,3 +320,15 @@ proof outputs are rechecked; failures retain sealed originals and raw process
 outputs. Successful real full preparation, positive sealing and the complete
 normal/failure chain remain unverified while required original audits and VM
 acceptance are capacity blocked.
+
+`run_formal_completion.py ... export-source --source-root ABS` reads one
+explicitly indexed/protected producer. Source/package qualification and fresh
+original host/tmp capacity precede Suite/output/RPC creation. The original
+VM/candidate/native/default/worker/drive gates run before and after export;
+only status and read-only PowerShell are dispatched through actual Fresh
+bounded sessions. Source closure, inventory, transfer classes, sizes and
+double SHA use the original backend. Capacity is rechecked before each source
+RPC. Actual transport closure precedes index publication; received responses
+survive local audit failure, with writer completion and audit safety recorded
+separately. Failed/unknown exports retain partials and cannot retry that output.
+This action grants no instance admission or formal credit.
