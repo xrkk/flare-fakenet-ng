@@ -279,7 +279,8 @@ Raw stdout/stderr, waited process completion and preparation terminal remain.
 Sources and fresh capacity are checked again after audits before a preparation
 result can be written. Preparation grants no live instance admission or formal
 credit. Actual complete old-five/Spike audits remain capacity blocked, and
-run-batch/export-source CLI assembly is still pending.
+successful full preparation is still unverified. The separate export-source
+CLI is pending.
 
 Preparation also checks the original producer's clean-r/date/32-hex nonce/
 output-SHA scope namespace and exact SCM cycle upper bound of 70, before
@@ -296,5 +297,19 @@ bytes, copy bytes and independent inodes without importing/installing Mapper.
 Unknown, failed, altered, self-reported or differently bound preparation is
 refused before clients or business output; an existing business root always
 prevents retry. The resulting frozen handle grants no live instance admission.
-Successful real full-preparation consumption and wiring into the single-batch
-CLI/normal chain remain unverified while actual original audits are blocked.
+Successful real full-preparation consumption and the normal chain remain
+unverified while actual original audits are blocked.
+
+`run_formal_completion.py ... run-batch --batch-id ID` assembles exactly one
+original Suite/Batch with Fresh/Protected clients, configuration inventory,
+scoped Coordinator and physical namespace. It either prepares new materials
+in this invocation or consumes the explicitly supplied pair
+`--preparation-json ABS --preparation-sha256 SHA`. Construction sends no RPC
+and grants no admission; original live gates still precede every instance.
+Original Batch stops at its first nonpass. Exact owned capture shutdown,
+configuration/default and actual transport closure precede current-source
+export; unknown closure withholds export and retains the primary error and
+partial originals. The handoff always records zero new formal credit and
+requires independent original rejudging in a separate interpreter. That
+new-batch audit/seal integration and complete failure chain are still pending;
+online success alone is insufficient for acceptance.
