@@ -76,3 +76,14 @@ is never retried. The original Suite client and source binding are restored on
 every terminal path. These environment-boundary tests provide component
 coverage; actual guest export and independent original-proof adjudication
 remain separate acceptance gates.
+
+`config_ownership.prestart_gate(suite, context)` keeps the original Suite's
+planned names and default restoration. It compares the product list against a
+complete native physical inventory before wrapping the service; conflicts are
+retained and never pruned. `ConfigOwnedService` records only successful changed
+mutations with exact request names and UTF8-byte hashes. Identical edits retain
+existing ownership. Builtins and other executions' files cannot be edited or
+cleaned. An unknown response, inflight mutation, or failed local audit prevents
+further writes while preserving read access and the actual known response.
+Tests exercise the actual ConfigStore through the RPC boundary; they grant no
+new Windows instance admission or formal scene credit.
