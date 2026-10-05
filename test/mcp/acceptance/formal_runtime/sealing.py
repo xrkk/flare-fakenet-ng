@@ -63,6 +63,9 @@ def seal(execution, handoff):
             and not execution.row_audits.errors
             and set(execution.row_audits.records) == set(execution.request.scenario_ids),
             'seal requires independently rejudged original rows and ended audit writers')
+    require(execution.spike_audits is not None and execution.spike_audits.writers_ended
+            and (execution.request.kind != 'fault' or execution.spike_audits.records),
+            'seal requires original Spike gate and closed independent audit writers')
     require(handoff.get('original_primary_error') is None and not handoff.get('secondary_errors')
             and handoff.get('final_original_status') is not None
             and handoff.get('current_export', {}).get('passed') is True

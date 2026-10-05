@@ -92,6 +92,9 @@ def run(context, selection_path, scope, entry):
         report = read_json(report_path)
         expected = {case['scenario_id']:str(report_path.parent) for case in report['cases']}
         require(selection==expected and len(expected)==len(report['cases']), 'selection differs from original Spike cases')
+        if read_json(checked_record(dict(context.materials['plan']))).get('runtime_spike_audit') is not None:
+            from .spike_gate import selection as runtime_spike_selection
+            require(selection == runtime_spike_selection(context), 'runtime original Spike lineage differs')
     guard = AuditGuard(context)
     qualified = qualify_sources(context,entry,guard)
     initial_modules = loaded_sources(context,qualified)

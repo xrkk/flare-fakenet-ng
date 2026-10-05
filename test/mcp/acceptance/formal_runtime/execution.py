@@ -10,7 +10,7 @@ import scenario_suite as suite
 
 from .clients import FreshClient
 from .config_ownership import prestart_gate
-from .context import checked_record
+from .context import checked_record, read_json
 from .coordinator import Coordinator
 from .dns_capture import Captures
 from .instance import Responsibility, ProtectedVm, ProtectedService, bind_namespace
@@ -34,6 +34,7 @@ class Execution:
     captures: Captures
     coordinator: Coordinator
     row_audits: object = None
+    spike_audits: object = None
 
 
 def _assemble(context, request):
@@ -94,14 +95,20 @@ separate interpreter; successful online storage/export alone is not credit.
     _capacity(context, len(request.scenario_ids))
     configuration_plan(context)
     execution, primary, terminal, exported, final_status = None, None, None, None, None
+    initial_scene, final_scene = None, None
     closures, secondary_errors = [], []
     try:
         execution = _assemble(context, request)
         runner = execution.runner
+        from .historical_capture import gate as historical_capture_gate, native_gate
+        initial_scene = native_gate(execution,'initial')
+        historical_capture_gate(execution,'initial',unused_namespace=True)
         prestart_gate(runner, context)
         from .row_audit import RowAudits
+        from .spike_gate import SpikeAudits
         execution.row_audits = RowAudits(execution)
-        with execution.row_audits.installed(), execution.coordinator.installed():
+        execution.spike_audits = SpikeAudits(context,runner)
+        with execution.row_audits.installed(), execution.spike_audits.installed(), execution.coordinator.installed():
             selected, manifest, preflight = batch.validate_inputs(runner, runner.args, request.batch_id,
                 list(request.scenario_ids), evidence_root=context.evidence_root.parent, defer_preflight=True)
             terminal = batch.run_batch(runner, runner.args, checked_record(dict(request.argv_record)),
@@ -110,6 +117,8 @@ separate interpreter; successful online storage/export alone is not credit.
             primary = suite.SuiteError('original batch stopped: '+str(terminal.get('stop_reason')))
         execution.captures.close()
         final_status = _configuration_closed(execution)
+        final_scene = native_gate(execution,'final',initial=initial_scene)
+        historical_capture_gate(execution,'final')
     except BaseException as error:
         if primary is None: primary = error
         else:
@@ -136,6 +145,8 @@ separate interpreter; successful online storage/export alone is not credit.
                 require(not execution.captures.owned, 'owned host capture writer remains active')
                 require(execution.row_audits is not None and execution.row_audits.writers_ended,
                         'independent row audit writer remains unresolved; export withheld')
+                require(execution.spike_audits is not None and execution.spike_audits.writers_ended,
+                        'independent Spike audit writer remains unresolved; export withheld')
                 require(final_status is not None,
                         'guest business/default/owner closure unresolved; current export withheld')
                 _transport_closed(execution.vm, context, 'vm')
@@ -144,6 +155,11 @@ separate interpreter; successful online storage/export alone is not credit.
                 # never makes unknown captures closed. Original gates apply.
                 exported = export_current_source(execution.runner, context, execution.service,
                                                  context.evidence_root/'source-originals')
+                historical_capture_gate(execution,'post-export')
+                require(initial_scene is not None and final_scene is not None,
+                        'original initial/final scene closure unresolved')
+                native_gate(execution,'post-export',initial=initial_scene,
+                            expected_identity=read_json(checked_record(final_scene))['identity'])
             except BaseException as error:
                 secondary_errors.append({'phase': 'exact-current-export', 'error': repr(error)})
                 if primary is None: primary = error
@@ -154,12 +170,15 @@ separate interpreter; successful online storage/export alone is not credit.
                 'original_primary_error': repr(primary) if primary else None,
                 'secondary_errors': secondary_errors, 'current_export': exported,
                 'final_original_status': final_status, 'host_capture_close': closures,
+                'initial_original_scene': initial_scene, 'final_original_scene': final_scene,
                 'host_capture_writers_ended': not bool(execution.captures.owned),
                 'VM_responsibility_safe': execution.state.safe,
                 'admission_ready': execution.state.admission_ready,
                 'row_audits': execution.row_audits.records if execution.row_audits else {},
                 'row_audit_errors': execution.row_audits.errors if execution.row_audits else {},
                 'row_audit_writers_ended': bool(execution.row_audits and execution.row_audits.writers_ended),
+                'spike_audits': execution.spike_audits.records if execution.spike_audits else [],
+                'spike_audit_writers_ended': bool(execution.spike_audits and execution.spike_audits.writers_ended),
                 'independent_original_rejudge_required': True, 'new_formal_credit': 0}
             try: write_new_json(context.evidence_root/'batch-handoff.json', record)
             except BaseException as error:

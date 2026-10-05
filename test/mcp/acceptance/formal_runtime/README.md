@@ -354,3 +354,21 @@ next row; no retry or business Mapper is installed. Batch sealing additionally
 requires all requested rows audited and all owned audit processes ended.
 The incomplete-metadata negative test reaches the actual original verifier;
 positive real row auditing and the complete Windows chain remain unverified.
+
+`spike_gate.SpikeAudits` keeps the original business `_require_fault_spike`
+seam isolated. Each invocation freezes a new parent-bound child context and
+executes the full original five-class Spike validator in its own interpreter;
+no preparation summary or inline business Mapper substitutes for that gate.
+Original source/copy/output bytes and process completion are rechecked.
+Failure retains the original child output and only its owned process may be
+terminated. The test's incomplete five-case claim reaches and fails the actual
+original Spike validator; positive real rejudging remains capacity blocked.
+
+`historical_capture` reads actual capture ownership and inherited session
+names from independently indexed original baselines. Initial, final and
+post-export read-only queries require all those sessions and pktmon stopped;
+there is no hard-coded historical session. The initial physical guest namespace
+must be absent. Original scene gates bind VM/package/native/default ownership
+and service configuration bytes before business and after restoration; after
+export the native PID/FILETIME must still match the final gate. These checks
+grant no live instance admission or new formal credit.
