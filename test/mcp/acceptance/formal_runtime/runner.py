@@ -208,7 +208,7 @@ def _capacity(context: RunContext, largest_batch: int) -> dict[str, Any]:
             "guest_capacity_not_checked": True}
 
 
-def check_preparation_inputs(context: RunContext) -> dict[str, Any]:
+def check_preparation_inputs(context: RunContext, *, prepared_audit=False) -> dict[str, Any]:
     """Validate local inputs only; complete prepare still needs the audit lane."""
     context = context.revalidate()
     plan = read_json(checked_record(dict(context.materials["plan"])))
@@ -230,7 +230,7 @@ def check_preparation_inputs(context: RunContext) -> dict[str, Any]:
     sources = _sources(context, selection, manifest)
     batches = _batches(plan, manifest, selection)
     capacity = _capacity(context, max(len(item["scenario_ids"]) for item in batches))
-    require(not context.evidence_root.exists() and not context.audit_root.exists(),
+    require(not context.evidence_root.exists() and (prepared_audit or not context.audit_root.exists()),
             "offline preparation requires unused output roots")
     return {"schema": "fakenetng.formal-runtime.input-check.v1", "materials_sha256": context.materials_sha256,
             "package": package, "manifest_count": len(manifest["scenarios"]),

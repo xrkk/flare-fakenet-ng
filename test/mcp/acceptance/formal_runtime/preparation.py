@@ -12,13 +12,14 @@ import hashlib
 import subprocess
 import sys
 from types import SimpleNamespace
+from collections.abc import Mapping
 
 from .context import checked_record, load_context, read_json, file_sha256, _overlap
 from .config_ownership import selection_plan
 from .command_transport import write_new_json
 from .runner import check_preparation_inputs, require, _capacity
 from .runtime_sources import qualify, loaded_sources
-from .source import NAMESPACE
+from .source import NAMESPACE, SourceAuthority
 
 
 def execution_plan(context):
@@ -54,7 +55,7 @@ def configuration_plan(context):
     return expected
 
 
-def audit_jobs(context):
+def audit_jobs(context, *, require_unused=True):
     """Bind both independently pinned audit lanes before creating any output."""
     context.revalidate()
     plan = read_json(checked_record(dict(context.materials['plan'])))
@@ -95,7 +96,8 @@ def audit_jobs(context):
         require(child.audit_root == context.audit_root/'preparation-audits'/expected_scope
                 and not _overlap(child.evidence_root, context.evidence_root)
                 and not _overlap(child.evidence_root, context.audit_root)
-                and not child.evidence_root.exists() and not child.audit_root.exists(),
+                and not child.evidence_root.exists()
+                and (not require_unused or not child.audit_root.exists()),
                 'preparation audit must own distinct unused output roots')
         for source in (material, selection_path):
             require(not source.is_relative_to(context.evidence_root)
@@ -120,6 +122,52 @@ def audit_jobs(context):
 
 def _record(path):
     return {'path': str(path), 'size': path.stat().st_size, 'sha256': file_sha256(path)}
+
+
+def output_inventory(root):
+    from .context import exact_path
+    root = exact_path(str(root))
+    records = []
+    for path in sorted(root.rglob('*')):
+        exact_path(str(path))
+        if path.is_file(): records.append(_record(path))
+        else: require(path.is_dir(), 'audit output contains a nonregular dependency')
+    return records
+
+
+def check_audit_copies(context, verdict):
+    """Read the original authority as data; install no projection or guard."""
+    from .context import exact_path
+    path = exact_path(verdict['authority'])
+    require(path == context.audit_root/'authorities/selected.json'
+            and file_sha256(path) == verdict['authority_sha256'],
+            'original audit copy authority fingerprint/path differs')
+    authority = read_json(path)
+    view = context.audit_root/'view'
+    require(authority.get('schema') == 'fakenetng.formal-runtime.source-bijection.v1'
+            and authority.get('runtime_view') == str(view)
+            and authority.get('scope') == verdict['scope'], 'original audit copy authority identity differs')
+    rows = authority.get('records')
+    require(isinstance(rows, dict) and bool(rows), 'original audit copy dependencies missing')
+    sources = {}
+    for target, row in rows.items():
+        require(isinstance(row, dict) and row.get('target') == target,
+                'original audit copy target differs')
+        target = exact_path(target); source = exact_path(row['source_path'])
+        origin = exact_path(row['source_root'])
+        require(source.is_relative_to(origin) and target == view/source.relative_to(origin),
+                'original audit copy relative source differs')
+        if origin not in sources: sources[origin] = SourceAuthority(context, origin)
+        original = sources[origin]; index = dict(original.index_record)
+        require(row.get('source_seal') == {'root': str(origin), 'index': index['path'], 'sha256': index['sha256']},
+                'original audit copy source seal differs')
+        sealed = original.rows.get(source.relative_to(origin).as_posix())
+        require(isinstance(sealed, Mapping) and sealed.get('size') == row['size']
+                and sealed.get('sha256') == row['sha256'], 'original audit copy is not exact indexed source')
+        checked_record({'path': str(source), 'size': row['size'], 'sha256': row['sha256']})
+        checked_record({'path': str(target), 'size': row['size'], 'sha256': row['sha256']})
+        require((source.stat().st_dev, source.stat().st_ino) != (target.stat().st_dev, target.stat().st_ino),
+                'original audit copy shares source inode')
 
 
 def prepare(context, entry):
@@ -163,6 +211,8 @@ def prepare(context, entry):
                    'audit_materials': job['materials'], 'selection': job['selection']}
             rows.append(row)
             write_new_json(prefix.with_suffix('.completion.json'), row)
+            row.update(intent=_record(prefix.with_suffix('.intent.json')),
+                       completion=_record(prefix.with_suffix('.completion.json')))
             require(completed.returncode == 0, 'original independent preparation audit failed: '+job['scope'])
             audit_path = child.audit_root/'audit-result.json'
             terminal_path = child.audit_root/'audit-terminal.json'
@@ -177,7 +227,19 @@ def prepare(context, entry):
                     and terminal.get('host_audit_writers_ended') is True,
                     'independent original audit result/terminal incomplete')
             row.update(result=_record(audit_path), terminal=_record(terminal_path))
+            check_audit_copies(child, verdict)
+            index_path = prefix.with_suffix('.output-index.json')
+            write_new_json(index_path, {'audit_root': str(child.audit_root),
+                'audit_materials_sha256': child.materials_sha256,
+                'audit_process_waited': True, 'files': output_inventory(child.audit_root)})
+            row['output_index'] = _record(index_path)
         context.revalidate()
+        for row, (_, child) in zip(rows, jobs):
+            verdict = read_json(checked_record(row['result']))
+            check_audit_copies(child, verdict)
+            inventory = read_json(checked_record(row['output_index']))
+            require(inventory['files'] == output_inventory(child.audit_root),
+                    'original audit outputs changed before preparation publication')
         qualify(context, entry)
         loaded_sources(context, qualified)
         # Audit copies have consumed space since the first input check.

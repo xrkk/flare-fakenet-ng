@@ -285,3 +285,16 @@ Preparation also checks the original producer's clean-r/date/32-hex nonce/
 output-SHA scope namespace and exact SCM cycle upper bound of 70, before
 capacity or audit dispatch. A generic E-drive path is insufficient to bind
 a future execution, even when material and plan fingerprints are consistent.
+
+`preparation_receipt.load_preparation(context, result_path, independently_frozen_sha,
+entry)` consumes the exact owned preparation result with the same main material
+SHA. Its expected SHA comes from the caller, never a neighbouring file. It
+rechecks original inputs and fresh capacity, complete source/config/execution
+plans, each original audit argv/completion and all indexed output/proof bytes.
+Both producer and consumer recheck the original authority's indexed source
+bytes, copy bytes and independent inodes without importing/installing Mapper.
+Unknown, failed, altered, self-reported or differently bound preparation is
+refused before clients or business output; an existing business root always
+prevents retry. The resulting frozen handle grants no live instance admission.
+Successful real full-preparation consumption and wiring into the single-batch
+CLI/normal chain remain unverified while actual original audits are blocked.
