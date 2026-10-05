@@ -2856,30 +2856,15 @@ class Suite:
                              ) -> dict[str, Any]:
         assert self.vm
         guest = PureWindowsPath(guest_path)
-        guest_root = PureWindowsPath(self.guest_work_root)
         if (not guest.is_absolute() or '..' in guest.parts or
                 not destination.resolve().is_relative_to(self.root.resolve())):
             raise SuiteError('guest evidence path outside transfer scope: ' + guest_path)
-        guest_parts = tuple(part.casefold() for part in guest.parts)
-        root_parts = tuple(part.casefold() for part in guest_root.parts)
-        shared_text = (self.capture_contract == 'scenario-shared-v2' and
-                       guest_parts[:len(root_parts)] == root_parts and
-                       len(guest_parts) == len(root_parts) + 4 and
-                       guest_parts[len(root_parts)] == 'scenario-suite-20260912' and
-                       guest_parts[-2:] == ('run-01', 'pktmon.txt') and
-                       PureWindowsPath(destination).name == 'pktmon.txt' and
-                       destination.parent.name == 'run-01')
-        native_zip = (auxiliary_v2_output and
-                      guest_parts[:len(root_parts)] == root_parts and
-                      len(guest_parts) == len(root_parts) + 2 and
-                      guest_parts[len(root_parts)].startswith('qpc-contract-') and
-                      guest_parts[-1] == 'output.zip' and
-                      destination.name == 'qpc-output.zip' and
-                      destination.parent.name == 'auxiliary-qpc')
-        if auxiliary_v2_output and not native_zip:
-            raise SuiteError('auxiliary v2 output transfer scope differs')
-        limit = (MAX_SHARED_PKTMON_TEXT_TRANSFER if shared_text else
-                 MAX_AUX_V2_ZIP_TRANSFER if native_zip else MAX_GUEST_TRANSFER)
+        from formal_runtime.source import SourceError, transfer_limit
+        try:
+            limit = transfer_limit(self, guest_path, destination,
+                                   auxiliary_v2_output=auxiliary_v2_output)
+        except SourceError as error:
+            raise SuiteError(str(error)) from error
         if not 0 <= int(size) <= limit:
             raise SuiteError('guest evidence outside transfer bound: ' + guest_path)
         destination.parent.mkdir(parents=True, exist_ok=True)

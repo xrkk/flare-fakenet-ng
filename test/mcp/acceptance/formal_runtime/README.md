@@ -51,3 +51,15 @@ are refused for staged scripts. Unknown results retain a command fingerprint
 under the current output root and cannot be replayed by a new adapter there.
 This is an offline-verified component; full runner, source-export, instance and
 Windows acceptance gates remain necessary.
+
+`source.resolve_source(context, protected_source_root)` reads the explicitly
+pinned source index, frozen original execution, and actual capture/ETW witness
+bytes. Historical driver files are only fingerprinted data. The returned
+immutable `SourceBinding` preserves the original namespace, nonce and run-01
+producer even when the new context has a different output namespace. Set this
+binding as the original Suite's `physical_source_binding` before reading that
+source. Suite transfer and export inventory share `source.transfer_limit`;
+ordinary 192 MiB, owned shared text 512 MiB, and original E-root auxiliary ZIP
+256 MiB budgets remain separate. An incorrect owner or namespace is refused.
+The source-read/classification component does not run an independent raw-proof
+audit or grant existing pass credit, and full read-only source export follows.
