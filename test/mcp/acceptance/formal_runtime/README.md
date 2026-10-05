@@ -160,3 +160,15 @@ Import installs no hook. Scoped auditing permits only the exact pinned read-only
 Git blob subprocesses needed for context revalidation and denies network and
 business subprocesses. Minimal source-copy construction, independent CLI and
 actual old-five/Spike proof rebuilding remain separate pending steps.
+
+`audit_view.plan_view(context, scope)` inventories only the exact indexed
+selected attempts, results, canonical manifest and (for Spike) original report.
+Every relative nested result/report reference must match that source graph;
+unindexed temporary files stay untouched in the source and are not copied.
+`build_view` requires unused audit output, the original fresh host/tmp floors
+plus measured copy bytes and the frozen derivation reserve. It copies actual
+bytes to independent inodes, checks pre/post source and target SHA, freezes a
+validated Mapper authority, and retains partial files and terminal on failure.
+Unclosed transport writers prevent authority publication. A completed copy
+grants no proof or formal-scene credit. Independent entry and actual original
+five/Spike rejudging are still required.
