@@ -524,3 +524,106 @@ and both complete inventories must agree. Unknown calls are never retried.
         terminal['local_writers_ended'] = True
         write_new_json(destination / 'source-export-terminal.json', terminal)
     return dict(terminal)
+
+
+def export_closed_run(instance, context: RunContext, run_id: str, cleanup: dict, destination: Path):
+    """Read the original P7's already-closed exact UUID through Suite transfers.
+
+The actual original probe's cleanup is required; this does not extend a
+historical SourceAuthority or grant business/instance admission.
+"""
+    from scenario_suite import quote_ps, MAX_GUEST_TRANSFER
+    from .command_transport import write_new_json
+    context.revalidate()
+    require(type(run_id) is str and str(uuid.UUID(run_id)) == run_id, 'closed-run UUID invalid')
+    final = cleanup.get('final') or {}
+    require(not cleanup.get('errors') and final.get('state') == 'stopped'
+            and not final.get('run_id') and not final.get('controller')
+            and (final.get('config_identity') or {}).get('name') == 'default.ini',
+            'original P7 cleanup is unresolved; closed-run export withheld')
+    destination = exact_path(str(destination))
+    require(exact_path(str(instance.root)).is_relative_to(context.evidence_root)
+            and destination.is_relative_to(exact_path(str(instance.root))) and destination != instance.root,
+            'closed-run export outside original Suite/context')
+    require(not destination.exists(), 'closed-run export output exists; no retry')
+    roots = [prefix + '\\' + run_id for prefix in (
+        r'C:\ProgramData\FakeNet-NG-MCP\artifacts', r'C:\ProgramData\FakeNet-NG-MCP\artifacts\runs',
+        r'C:\ProgramData\FakeNet-NG-MCP\logs\exit-evidence')]
+    logs_root = r'C:\ProgramData\FakeNet-NG-MCP\logs'
+    audit_prefix = 'recovery-audit-' + run_id + '-'
+    required = {roots[1] + '\\run.log', roots[1] + '\\relay-native-events.jsonl'}
+    command = (
+        "$ErrorActionPreference='Stop';$files=@();$missing=@();function Add-Original($file,$root){"
+        "if($file.PSIsContainer -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'closed-run unsafe file'};"
+        "$first=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLower();"
+        "$size=$file.Length;$last=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLower();"
+        "if($first -cne $last -or $size -ne (Get-Item -LiteralPath $file.FullName).Length){throw 'closed-run unstable file'};"
+        "@{root=$root;path=$file.FullName;size=$size;sha256=$first;sha256_after=$last}};"
+        "foreach($root in @(" + ','.join(quote_ps(root) for root in roots) +
+        ")){if(-not(Test-Path -LiteralPath $root)){$missing+=$root;continue};"
+        "$dir=Get-Item -LiteralPath $root -Force;"
+        "if(-not $dir.PSIsContainer -or ($dir.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'closed-run unsafe root'};"
+        "foreach($item in @(Get-ChildItem -LiteralPath $root -Recurse -Force)){"
+        "if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'closed-run reparse descendant'};"
+        "if(-not $item.PSIsContainer){$files+=Add-Original $item $root}}};"
+        "foreach($file in @(Get-ChildItem -LiteralPath " + quote_ps(logs_root) +
+        " -File -Force -Filter " + quote_ps(audit_prefix + '*') +
+        ")){$files+=Add-Original $file " + quote_ps(logs_root) + "};"
+        "@{run_id=" + quote_ps(run_id) + ";files=$files;missing=$missing}|ConvertTo-Json -Depth 6 -Compress")
+    original_vm = instance.vm
+    require(original_vm is not None, 'closed-run export client missing')
+    # Use the raw transport: unknown general responsibility permits bounded
+    # reads, but never permits a staging write as a fallback for a long read.
+    client = original_vm.client.client if hasattr(original_vm, 'context') and hasattr(original_vm, 'state') else original_vm
+    binding = SourceBinding(_freeze({'identity': dict(context.candidate_identity),
+        'physical_namespace': context.physical_namespace, 'captures': []}))
+    destination.mkdir(parents=True, exist_ok=False)
+    instance.vm = ReadOnlySourceVm(client, context, binding, destination)
+    terminal = {'passed': False, 'run_id': run_id, 'guest_writes': 0, 'no_replay': True}
+
+    def inventory(label):
+        raw = instance.vm.powershell(command, 30)
+        write_new_json(destination / (label + '-original.json'), raw)
+        value = json.loads(raw['output'])
+        write_new_json(destination / (label + '-value.json'), value)
+        require(value.get('run_id') == run_id and isinstance(value.get('files'), list), 'closed-run inventory identity invalid')
+        records = {}
+        for row in value['files']:
+            require(isinstance(row, dict) and isinstance(row.get('path'), str), 'closed-run invalid row')
+            path = PureWindowsPath(row['path'])
+            require(path.is_absolute() and '..' not in path.parts and type(row.get('size')) is int
+                    and 0 <= row['size'] <= MAX_GUEST_TRANSFER and isinstance(row.get('sha256'), str)
+                    and re.fullmatch('[a-f0-9]{64}', row['sha256'])
+                    and row.get('sha256_after') == row['sha256'], 'closed-run invalid size/double SHA')
+            allowed = any(parts(path)[:len(parts(root))] == parts(root) and len(parts(path)) > len(parts(root))
+                          and row.get('root') == root for root in roots)
+            allowed = allowed or (parts(path.parent) == parts(logs_root)
+                                  and path.name.startswith(audit_prefix) and row.get('root') == logs_root)
+            require(allowed, 'closed-run cross-UUID/unowned path')
+            require(parts(path) not in records, 'closed-run duplicate/case-aliased path')
+            records[parts(path)] = row
+        require({parts(path) for path in required}.issubset(records), 'closed-run original log/native bytes missing')
+        require(sum(row['size'] for row in records.values()) <= 4 * 2**30, 'closed-run total export over-bound')
+        return sorted(records.values(), key=lambda row: parts(row['path']))
+
+    try:
+        before = inventory('closed-run-inventory')
+        copied = []
+        for number, row in enumerate(before):
+            path = destination / 'guest-originals' / ('%05d' % number) / PureWindowsPath(row['path']).name
+            record = instance._transfer_guest_file(row['path'], row['size'], row['sha256'], path)
+            require(file_sha256(path) == row['sha256'], 'closed-run copied SHA differs')
+            copied.append({'guest': row, 'host_path': str(path), 'record': record})
+        after = inventory('closed-run-post-inventory')
+        require(before == after, 'closed-run originals changed during export')
+        write_new_json(destination / 'guest-original-index.json', copied)
+        terminal.update(passed=True, full_SHA=True, files=len(copied),
+                        bytes=sum(row['size'] for row in before), before_after_size_double_SHA=True)
+    except BaseException as error:
+        terminal.update(error=repr(error), export_withheld_or_incomplete=True)
+        raise
+    finally:
+        instance.vm = original_vm
+        terminal['local_writers_ended'] = True
+        write_new_json(destination / 'closed-run-export-terminal.json', terminal)
+    return terminal

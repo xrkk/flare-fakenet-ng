@@ -117,3 +117,12 @@ intent and cannot replay it through a new adapter. Controlled native-six bytes,
 the actual original P1-P7 methods and real ConfigStore lifecycle are exercised
 offline; SCM cycle orchestration, live DNS capture/export and full Windows
 acceptance remain necessary.
+
+`source.export_closed_run(suite, context, run_id, original_P7_cleanup, output)`
+reads the exact UUID's original artifact/native/recovery directories only after
+the original P7 cleanup reaches default, stopped and owner-free. It preserves
+the original Suite byte-copy path and ordinary/total budgets, requires run-log
+and relay-native originals, and compares complete pre/post size and double-SHA
+inventories. Its bounded read adapter never stages or mutates guest files;
+failures retain partial copies and revoke the adapter without retry. This
+current-run path does not extend historical source-index authority.
