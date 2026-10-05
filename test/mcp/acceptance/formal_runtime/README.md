@@ -235,3 +235,14 @@ caller-supplied stopped flags and changed witnesses are refused. The metadata
 snapshot checks every read and never admits later files. It has no historical
 source index and grants neither business admission nor guest business-writer
 closure; current export must still pass the original capture/inventory gates.
+
+`source.export_current_source(suite, context, service_fresh_client, output)`
+uses that exact handoff and the same backend as historical export. Original
+capture/ETW closure, native UUIDs from actual service responses, file budgets,
+Suite byte copies and complete pre/post double-SHA inventories remain active.
+Original metadata witnesses are checked again; actual host transport/journal
+closure is required before publishing the guest-original index. A received
+last response with failed local audit cannot publish it. Failures retain partial
+copies, preserve the primary exception and restore adapters without replay.
+The terminal distinguishes synchronous file closure from actual Fresh closure;
+neither export grants guest business closure or formal-scene credit.

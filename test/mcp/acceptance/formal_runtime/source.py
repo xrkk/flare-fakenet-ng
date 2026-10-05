@@ -352,10 +352,30 @@ def export_source(instance, context: RunContext, source_root: Path, destination:
 Writers must have stopped, all required capture/backup/receipt bytes must exist,
 and both complete inventories must agree. Unknown calls are never retried.
 """
-    from scenario_suite import MAX_GUEST_TRANSFER, quote_ps
-    from .command_transport import write_new_json
     authority = SourceAuthority(context, source_root)
     binding = resolve_source(context, authority.root)
+    return _export_source(instance, context, authority, binding, destination)
+
+
+def export_current_source(instance, context: RunContext, service_client, destination: Path):
+    """Current owned source uses the same inventory/copy/original-budget path."""
+    from .current_source import resolve_current, _transport_closed
+    authority, binding = resolve_current(context, instance.vm, service_client)
+    protected = instance.vm
+
+    def closed():
+        require(protected.journal.audit_safe, 'current export VM witness audit unresolved')
+        witnesses = _transport_closed(protected.client.client, context, 'vm')
+        witnesses.extend(_transport_closed(service_client, context, 'service'))
+        return {'host_writers_ended': True, 'actual_terminal_and_completion_witnesses': witnesses,
+                'vm_journal_audit_safe': True, 'guest_business_writer_closure_not_granted': True}
+
+    return _export_source(instance, context, authority, binding, destination, close_check=closed)
+
+
+def _export_source(instance, context, authority, binding, destination, *, close_check=None):
+    from scenario_suite import MAX_GUEST_TRANSFER, quote_ps
+    from .command_transport import write_new_json
     destination = exact_path(str(destination))
     require(destination.is_relative_to(context.evidence_root) and destination != context.evidence_root,
             'source export must use a distinct child of the explicit output')
@@ -369,6 +389,7 @@ and both complete inventories must agree. Unknown calls are never retried.
     instance.vm = ReadOnlySourceVm(original_vm, context, binding, destination)
     instance.physical_source_binding = binding
     terminal = {'passed': False, 'guest_writes': 0, 'deletions': 0, 'no_replay': True}
+    primary = None
 
     def read(relative):
         return authority.read(authority.root / relative)
@@ -405,7 +426,8 @@ and both complete inventories must agree. Unknown calls are never retried.
             elif len(path.parts) == 2 and path.parts[0] == 'results' and path.name.startswith('scenario-'):
                 for value in read(relative).get('run_chain', []):
                     add_run(value.get('run_id'))
-            elif path.name == 'request.json' and 'transport-product' in path.parts:
+            elif path.name == 'request.json' and ('transport-product' in path.parts or
+                    ('transport' in path.parts and 'service' in path.parts)):
                 response = str(path.with_name('response.json'))
                 if response not in authority.rows:
                     continue
@@ -518,12 +540,19 @@ and both complete inventories must agree. Unknown calls are never retried.
         after = inventory('after')
         write_new_json(destination / 'source-post-inventory-value.json', after)
         require(after == before, 'source originals changed during export')
+        for record in (*binding.values['witnesses'], *authority.witnesses):
+            checked_record(dict(record))
+        if close_check is not None:
+            closure = close_check()
+            write_new_json(destination / 'host-transport-closure.json', closure)
+            terminal['host_transport_writer_closure'] = str(destination / 'host-transport-closure.json')
         write_new_json(destination / 'guest-original-index.json', exported)
         terminal.update(passed=True, files=len(exported), bytes=sum(file['size'] for file in before['files'].values()),
                         required_files=len(required), required_missing=[], optional_missing=before['optional_missing'],
                         alternative_layout_missing=before['alternative_layout_missing'], full_SHA=True,
                         before_after_size_double_SHA=True, source_namespace=namespace)
     except BaseException as error:
+        primary = error
         terminal.update(error=repr(error), exception_type=type(error).__name__, export_withheld_or_incomplete=True)
         raise
     finally:
@@ -533,7 +562,30 @@ and both complete inventories must agree. Unknown calls are never retried.
         else:
             instance.physical_source_binding = original_binding
         terminal['local_writers_ended'] = True
-        write_new_json(destination / 'source-export-terminal.json', terminal)
+        terminal['local_writer_scope'] = ('actual Fresh transport and synchronous source-export files'
+                                          if close_check else 'synchronous source-export files')
+        late_error = None
+        if close_check is not None:
+            try:
+                close_check()
+            except BaseException as error:
+                terminal.update(local_writers_ended=False, passed=False,
+                                closure_error=repr(error), export_withheld_or_incomplete=True)
+                if primary is not None:
+                    primary.add_note('independent current-export closure failure: '+repr(error))
+                else:
+                    late_error = error
+        try:
+            write_new_json(destination / 'source-export-terminal.json', terminal)
+        except BaseException as error:
+            if primary is not None:
+                primary.add_note('independent source-export terminal audit failure: '+repr(error))
+            elif late_error is not None:
+                late_error.add_note('independent source-export terminal audit failure: '+repr(error))
+            else:
+                raise
+        if late_error is not None:
+            raise late_error
     return dict(terminal)
 
 
