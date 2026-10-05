@@ -265,3 +265,18 @@ actual module origins against those qualified bytes and refuses Logs code.
 The shared AST graph does not import or execute inspected sources, and the
 independent audit entry retains its narrower three-script map. Qualification
 creates no clients or output and grants no preparation or scene credit.
+
+`run_formal_completion.py --materials-json ABS --materials-sha256 SHA prepare`
+is the offline preparation entry. The pinned plan supplies an exact
+`configuration_plan` file record and two ordered `preparation_audits` jobs
+(`credited-selection`, then `spike-only`), each with independent material and
+selection file records. Config planning calls the original lifecycle selector
+without constructing Suite/clients and preserves all 401 names plus default
+restoration. Audit jobs preserve candidate/tool/source/resource and original
+argv bindings, differing only in owned unused roots. Each qualified audit CLI
+runs in its own interpreter; its first failure prevents the second dispatch.
+Raw stdout/stderr, waited process completion and preparation terminal remain.
+Sources and fresh capacity are checked again after audits before a preparation
+result can be written. Preparation grants no live instance admission or formal
+credit. Actual complete old-five/Spike audits remain capacity blocked, and
+run-batch/export-source CLI assembly is still pending.

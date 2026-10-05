@@ -15,7 +15,7 @@ from .runner import require
 from .source_graph import source_closure
 
 
-DYNAMIC = ('scenario_pktmon.py','scenario_fault_evidence.py','sst_fault_evidence.py',
+DYNAMIC = ('run_formal_source_audit.py','scenario_pktmon.py','scenario_fault_evidence.py','sst_fault_evidence.py',
     'scenario_probes.ps1','scenario_qpc_diagnostic.py','scenario_aux_qpc_diagnostic.py',
     'scenario_qpc_identity.py','etl_raw_clock.py','tdh_metadata.py','scenario_tcpip.py',
     'scenario_clock.py','scenario_qpc_offline.py','scenario_aux_qpc_v2.py',
