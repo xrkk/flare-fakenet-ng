@@ -50,8 +50,10 @@ def main(argv=None):
                 receipt, expected = args.preparation_json, args.preparation_sha256
             prepared = load_preparation(context, receipt, expected, entry)
             result = run_batch(prepared, args.batch_id)
-            print(json.dumps({'online_batch_exported': True, 'batch_id': args.batch_id,
-                              'independent_original_rejudge_required': True, 'new_formal_credit': 0,
+            from formal_runtime.batch_rejudge import run as rejudge
+            verdict = rejudge(context, args.batch_id, result['source_index'], entry)
+            print(json.dumps({'independently_rejudged': verdict['passed'], 'batch_id': args.batch_id,
+                              'new_formal_credit': 0,
                               'output': str(context.evidence_root)}, ensure_ascii=False))
         return 0
     except Exception as error:

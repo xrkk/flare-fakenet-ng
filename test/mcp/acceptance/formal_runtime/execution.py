@@ -161,4 +161,7 @@ separate interpreter; successful online storage/export alone is not credit.
         raise primary
     require(terminal is not None and terminal.get('passed') is True,
             'original batch stopped on a nonpass; no later batch or new credit')
-    return record
+    from .sealing import seal
+    index = seal(execution, record)
+    # No further writes to the business root occur after sealing.
+    return {'handoff': record, 'source_index': index}

@@ -78,9 +78,12 @@ def run(context, selection_path, scope, entry):
     selection_path = exact_path(str(selection_path))
     require(selection_path.is_file(), 'explicit selection file missing')
     selection = read_json(selection_path)
-    if scope=='credited-selection':
+    if scope in ('credited-selection','batch-selection'):
         pinned = checked_record(dict(context.materials['credited_selection']))
         require(selection_path==pinned and selection==read_json(pinned), 'selection is not independently pinned credited material')
+        if scope == 'batch-selection':
+            from .batch_selection import selection as batch_selection
+            require(selection == batch_selection(context), 'new batch original selection differs')
     else:
         report_path = checked_record(dict(context.materials['spike_source']))
         report = read_json(report_path)
@@ -95,7 +98,7 @@ def run(context, selection_path, scope, entry):
     try:
         mapper = build_view(context,scope)
         args = copy.copy(batch.load_suite_args(checked_record(dict(context.materials['suite_argv']['benign']))))
-        args.suite_root = str(mapper.view if scope=='credited-selection' else context.audit_root/'matrix-view')
+        args.suite_root = str(context.audit_root/'matrix-view' if scope=='spike-only' else mapper.view)
         args.target_base_url = args.win10vm_mcp = None
         runner = suite.Suite(args)
         if scope=='spike-only':

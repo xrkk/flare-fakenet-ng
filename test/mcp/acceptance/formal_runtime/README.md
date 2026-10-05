@@ -309,7 +309,15 @@ and grants no admission; original live gates still precede every instance.
 Original Batch stops at its first nonpass. Exact owned capture shutdown,
 configuration/default and actual transport closure precede current-source
 export; unknown closure withholds export and retains the primary error and
-partial originals. The handoff always records zero new formal credit and
-requires independent original rejudging in a separate interpreter. That
-new-batch audit/seal integration and complete failure chain are still pending;
-online success alone is insufficient for acceptance.
+partial originals. The handoff always records zero new formal credit. After
+actual current transport/journal/capture closure, `sealing` hashes the complete
+owned host tree into a write-once index and rechecks its exact file set and
+bytes. No later business-root writes occur. `batch_rejudge` freezes a different
+audit material SHA with the exact parent material/index/batch and original
+argv, then invokes the qualified original audit CLI in a separate interpreter
+with `--scope batch-selection`. Original verify/replay/summary gates remain.
+Incomplete or nonpass originals cannot acquire credit. Copies and all indexed
+proof outputs are rechecked; failures retain sealed originals and raw process
+outputs. Successful real full preparation, positive sealing and the complete
+normal/failure chain remain unverified while required original audits and VM
+acceptance are capacity blocked.

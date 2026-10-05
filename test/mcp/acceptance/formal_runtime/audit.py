@@ -143,7 +143,10 @@ class Mapper:
         require(isinstance(self.records, dict) and isinstance(self.contexts, dict)
                 and isinstance(self.selected, dict) and bool(self.selected), 'authority fields invalid')
         scope = self.authority.get('scope')
-        if scope == 'credited-selection':
+        if scope == 'batch-selection':
+            from .batch_selection import selection
+            expected_selection = selection(self.context)
+        elif scope == 'credited-selection':
             expected_selection = read_json(checked_record(dict(self.context.materials['credited_selection'])))
         elif scope == 'spike-only':
             report_path = checked_record(dict(self.context.materials['spike_source']))

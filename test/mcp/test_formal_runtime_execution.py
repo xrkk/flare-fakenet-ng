@@ -36,6 +36,10 @@ def test_actual_original_assembly_creates_no_rpc_and_grants_no_instance_admissio
     assert built.runner.physical_namespace == context.physical_namespace
     assert built.runner.manifest_path.read_bytes() == Path(requested.manifest_record['path']).read_bytes()
     assert (context.evidence_root/'execution-binding.json').exists()
+    from formal_runtime.sealing import seal
+    with pytest.raises(MaterialError,match='native/restoration responsibility'):
+        seal(built,{})
+    assert not (context.evidence_root/'host-source-index.json').exists()
     with pytest.raises(MaterialError,match='business output exists'):
         execution._assemble(context,requested)
 

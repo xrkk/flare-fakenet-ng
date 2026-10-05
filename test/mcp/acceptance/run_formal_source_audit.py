@@ -11,7 +11,7 @@ def main(argv=None):
     parser.add_argument('--materials-json',type=Path,required=True)
     parser.add_argument('--materials-sha256',required=True)
     parser.add_argument('--selection-json',type=Path,required=True)
-    parser.add_argument('--scope',choices=('credited-selection','spike-only'),default='credited-selection')
+    parser.add_argument('--scope',choices=('credited-selection','spike-only','batch-selection'),default='credited-selection')
     parser.add_argument('--repository-root',type=Path,default=Path(__file__).resolve().parents[3])
     args=parser.parse_args(argv)
     # Imports and helpers are qualified against the caller's independent

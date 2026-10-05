@@ -45,7 +45,11 @@ def plan_view(context, scope):
     original = checked_record(plan['original_manifest'])
     manifest = read_json(original)
     require(not suite.manifest_issues(manifest), 'original manifest contract invalid')
-    if scope == 'credited-selection':
+    if scope == 'batch-selection':
+        from .batch_selection import selection as batch_selection
+        selection = batch_selection(context)
+        report = None
+    elif scope == 'credited-selection':
         selection = read_json(checked_record(dict(context.materials['credited_selection'])))
         report = None
     elif scope == 'spike-only':
