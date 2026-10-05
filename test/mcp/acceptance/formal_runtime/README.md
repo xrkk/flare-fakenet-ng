@@ -246,3 +246,11 @@ last response with failed local audit cannot publish it. Failures retain partial
 copies, preserve the primary exception and restore adapters without replay.
 The terminal distinguishes synchronous file closure from actual Fresh closure;
 neither export grants guest business closure or formal-scene credit.
+
+`runner.single_batch_request(context, explicit_batch_id)` resolves exactly one
+original planned group of one to five rows. It checks the complete remaining
+matrix, credited exclusions, filter and first-nonpass stop, and uses the pinned
+original argv. Its immutable request rechecks inputs before producing a fresh
+args object. It creates no Suite/client/output and grants no prepare or business
+permission. The full entry must retain original Batch validation with the
+owned evidence parent, followed by complete preparation and instance gates.

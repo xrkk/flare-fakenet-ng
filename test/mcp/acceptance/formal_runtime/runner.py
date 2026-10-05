@@ -7,6 +7,7 @@ Independent raw-source adjudication and instance admission remain separate.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 from pathlib import Path, PurePosixPath
 import re
@@ -17,7 +18,7 @@ import zipfile
 import formal_batch_v3 as batch
 import scenario_suite as suite
 
-from .context import MaterialError, RunContext, checked_record, exact_path, read_json
+from .context import MaterialError, RunContext, checked_record, exact_path, read_json, _freeze
 
 
 def require(condition: bool, message: str) -> None:
@@ -239,3 +240,53 @@ def check_preparation_inputs(context: RunContext) -> dict[str, Any]:
             "VM_calls": 0, "business_authorized": False,
             "pending": ["complete tool dependency/entry binding", "independent original credited/Spike rejudge",
                         "configuration plan integration", "instance and fresh guest admission before execution"]}
+
+
+@dataclass(frozen=True)
+class BatchRequest:
+    context: RunContext
+    batch_id: str
+    kind: str
+    scenario_ids: tuple[str, ...]
+    argv_record: object
+    manifest_record: object
+    original_manifest: object
+
+    def suite_args(self):
+        self.context.revalidate()
+        checked_record(dict(self.manifest_record))
+        return batch.load_suite_args(checked_record(dict(self.argv_record)))
+
+
+def single_batch_request(context: RunContext, batch_id: str) -> BatchRequest:
+    """Select one frozen original batch only; this does not prepare or run it."""
+    context = context.revalidate()
+    require(isinstance(batch_id,str) and batch.BATCH_ID_RE.fullmatch(batch_id) is not None,
+            'one explicit original batch ID is required; no default all-scenes execution')
+    plan = read_json(checked_record(dict(context.materials['plan'])))
+    manifest_record = plan.get('original_manifest')
+    manifest = read_json(_record(manifest_record))
+    args = {kind: batch.load_suite_args(checked_record(dict(row)))
+            for kind,row in context.materials['suite_argv'].items()}
+    require(vars(args['benign']) | {'filter':'fault'} == vars(args['fault']),
+            'benign/fault argv differ beyond the filter')
+    require(not suite.manifest_issues(manifest) and suite.canonical_bytes(manifest) ==
+            suite.canonical_bytes(suite.build_manifest(args['benign'].seed,args['benign'].count)),
+            'original manifest differs from original generator/contract')
+    credited = read_json(checked_record(dict(context.materials['credited_selection'])))
+    require(isinstance(credited,dict), 'credited selection must be an explicit object')
+    planned = _batches(plan,manifest,credited)
+    chosen = [item for item in planned if item['batch_id'] == batch_id]
+    require(len(chosen) == 1, 'explicit batch ID is absent from the frozen remaining plan')
+    item = chosen[0]
+    require(args[item['kind']].stop_on_first_failure is True,
+            'original selected argv must stop after the first nonpass')
+    # formal_batch_v3 requires runner.root to be a new *child* of its allowed
+    # evidence root. The full entry must pass this owned parent, retaining the
+    # original validator rather than rewriting its scheduling contract.
+    parent = context.evidence_root.parent
+    require(parent.is_relative_to(context.repository_root/'Logs'),
+            'formal batch allowed parent must remain repository Logs')
+    return BatchRequest(context,batch_id,item['kind'],tuple(item['scenario_ids']),
+                        _freeze(dict(context.materials['suite_argv'][item['kind']])),
+                        _freeze(manifest_record),_freeze(manifest))
