@@ -66,8 +66,15 @@ def _package(context: RunContext, plan: dict[str, Any], args: argparse.Namespace
             and verification.get("size_hash_match") is True, "package verification inconsistent")
     with zipfile.ZipFile(paths["archive"]) as archive:
         entries = [entry for entry in archive.infolist() if not entry.is_dir()]
-        require(len(entries) == 199 and {entry.filename for entry in entries} == set(names),
+        # The builder's verify_package_zip includes the manifest envelope in addition
+        # to the 199 payload members; it is deliberately absent from its own
+        # files list. Bind that envelope byte-for-byte rather than ignoring it.
+        expected_entries = set(names) | {"mcp-candidate-manifest.json"}
+        require(len(entries) == len(expected_entries) and
+                {entry.filename for entry in entries} == expected_entries,
                 "archive members differ from manifest")
+        require(archive.read("mcp-candidate-manifest.json") == paths["manifest"].read_bytes(),
+                "embedded candidate manifest differs from pinned manifest")
         for row in rows:
             require(type(row.get("size")) is int and row["size"] >= 0 and
                     isinstance(row.get("sha256"), str) and

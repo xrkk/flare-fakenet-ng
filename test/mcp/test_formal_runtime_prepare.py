@@ -21,18 +21,19 @@ def prepared(materials, monkeypatch):
     payloads.update({"dependencies/file-%03d.bin" % n: ("fixture-%03d" % n).encode()
                      for n in range(197)})
     archive = inputs / "package.zip"
-    with zipfile.ZipFile(archive, "w") as bundle:
-        for name, body in payloads.items():
-            bundle.writestr(name, body)
     identity = data["candidate_identity"]
-    identity.update(zip_sha256=record(archive)["sha256"],
-                    exe_sha256=hashlib.sha256(payloads["fakenetng-mcp.exe"]).hexdigest(),
+    identity.update(exe_sha256=hashlib.sha256(payloads["fakenetng-mcp.exe"]).hexdigest(),
                     default_sha256=hashlib.sha256(payloads["configs/default.ini"]).hexdigest())
     package = {"schema": "fakenet.mcp-candidate-manifest.v1", "source_commit": identity["source"],
                "files": [{"path": name, "size": len(body), "sha256": hashlib.sha256(body).hexdigest()}
                          for name, body in payloads.items()]}
     package_record = write_json(inputs / "package-manifest.json", package)
     identity["manifest_sha256"] = package_record["sha256"]
+    with zipfile.ZipFile(archive, "w") as bundle:
+        for name, body in payloads.items():
+            bundle.writestr(name, body)
+        bundle.writestr("mcp-candidate-manifest.json", Path(package_record["path"]).read_bytes())
+    identity["zip_sha256"] = record(archive)["sha256"]
     verification = write_json(inputs / "verification.json", {"zip_sha256": identity["zip_sha256"],
         "verdict": "PASS", "verified_files": 199, "manifest_match": True, "size_hash_match": True})
     deployment = write_json(inputs / "deployment.json", {"source": identity["source"],
@@ -138,12 +139,18 @@ def test_original_p2_rejects_wrong_deployment(prepared):
         check(repin(prepared))
 
 
-def test_zip_bytes_are_checked_beyond_selfreported_verification(prepared):
+@pytest.mark.parametrize("change,reason", [
+    (lambda bodies: bodies.update({"dependencies/file-001.bin": b"altered"}), "archive member (size|SHA) mismatch"),
+    (lambda bodies: bodies.pop("mcp-candidate-manifest.json"), "archive members differ"),
+    (lambda bodies: bodies.update({"mcp-candidate-manifest.json": b"{}"}), "embedded candidate manifest differs"),
+    (lambda bodies: bodies.update({"extra.bin": b"unexpected"}), "archive members differ"),
+])
+def test_zip_bytes_are_checked_beyond_selfreported_verification(prepared, change, reason):
     plan = prepared[4]
     path = Path(plan["candidate_files"]["archive"]["path"])
     with zipfile.ZipFile(path) as old:
         bodies = {name: old.read(name) for name in old.namelist()}
-    bodies["dependencies/file-001.bin"] = b"altered"
+    change(bodies)
     with zipfile.ZipFile(path, "w") as altered:
         for name, body in bodies.items():
             altered.writestr(name, body)
@@ -162,7 +169,7 @@ def test_zip_bytes_are_checked_beyond_selfreported_verification(prepared):
         value = json.loads(source.read_text())
         value["argv"][value["argv"].index("--package-sha256") + 1] = identity["zip_sha256"]
         row.update(write_json(source, value))
-    with pytest.raises(MaterialError, match="archive member (size|SHA) mismatch"):
+    with pytest.raises(MaterialError, match=reason):
         check(repin(prepared))
 
 
