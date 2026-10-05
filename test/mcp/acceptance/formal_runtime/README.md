@@ -190,3 +190,14 @@ proofs, provenance and failed terminal paths are retained. CLI help/import
 start no audit or output. Separate-interpreter regressions preserve real
 original verify/Spike failures. Actual historical five/Spike rejudging through
 this CLI remains blocked until its fresh capacity gate is satisfied.
+
+`clients.FreshClient(original_client, context, responsibility)` creates an
+original MCP session for each call, retaining the same controller and the
+earliest original absolute deadline across initialization and tool dispatch.
+Original status and mutation timeout caps remain 30 and 480 seconds.
+Each actual bounded transport child supplies its own completion evidence;
+missing or unreadable completion never counts as a terminated writer.
+Terminal audit failures block subsequent mutations but preserve a received
+original response, allowing configuration ownership to retain its exact SHA.
+Unknown calls are never replayed. This transport component grants no business
+admission and still requires wiring into the complete single-batch entry.
