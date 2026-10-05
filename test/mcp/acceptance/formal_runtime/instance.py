@@ -61,6 +61,8 @@ class ProtectedVm:
         self.client = StageFileVm(client, context, state)
         self.state, self.root = state, context.evidence_root
         self.number, self.replacements, self.p7_binding = 0, {}, None
+        from .producer import VmJournal
+        self.journal = VmJournal(context, state)
 
     def powershell(self, command, timeout=120):
         self.context.revalidate()
@@ -89,13 +91,13 @@ class ProtectedVm:
         transaction = receipt and 'Start-Service fakenetng-mcp' in command
         if transaction:
             command = receipt_command(command, receipt, self.state.expected_enabled)
-        save(self.root / 'VM-final-intents' / (uuid.uuid4().hex + '.json'), {
-            'command': command, 'timeout': timeout, 'receipt': receipt, 'no_replay': True})
-        try:
-            raw = self.client.powershell(command, timeout)
+        def dispatch(text, budget):
+            raw = self.client.powershell(text, budget)
             if transaction:
                 self.state.applied()
             return raw
+        try:
+            return self.journal.dispatch(dispatch, command, timeout, receipt=receipt)
         except (bounded.TransportUnknown, suite.VmCommandError) as error:
             if changing:
                 self.state.unknown(error)
@@ -106,16 +108,19 @@ class ProtectedVm:
             record = {'original_error': repr(error), 'original_transport': getattr(
                 error, 'record', getattr(error, 'vm_record', {})), 'receipt': receipt, 'no_mutation_replay': True}
             try:
-                raw = self.client.powershell(
+                raw = self.journal.dispatch(self.client.powershell,
                     "$ErrorActionPreference='Stop';$r=" + suite.quote_ps(receipt) +
-                    ";if(Test-Path $r){Get-Content $r -Raw}else{@{stage='absent'}|ConvertTo-Json -Compress}", 30)
+                    ";if(Test-Path $r){Get-Content $r -Raw}else{@{stage='absent'}|ConvertTo-Json -Compress}",
+                    30, receipt=receipt)
                 phase = json.loads(raw['output'])
                 record.update(raw=raw, phase=phase)
                 if (phase.get('stage') == 'completed' and phase.get('enabled') is self.state.expected_enabled
                         and phase.get('dispatch_nonce') == hashlib.sha256(receipt.encode()).hexdigest()):
-                    self.state.safe = True
+                    local_audit_safe = self.journal.audit_safe and getattr(self.client.client, 'audit_safe', True)
+                    self.state.safe = local_audit_safe
                     self.state.applied()
                     record['settled'] = True
+                    record['safe_to_mutate'] = local_audit_safe
                     save(path, record)
                     return dict(raw, output=json.dumps(phase['answer']), original_response_unknown=True,
                                 receipt_reconciliation=raw, projection='completed receipt.answer')

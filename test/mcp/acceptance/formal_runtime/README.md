@@ -201,3 +201,16 @@ Terminal audit failures block subsequent mutations but preserve a received
 original response, allowing configuration ownership to retain its exact SHA.
 Unknown calls are never replayed. This transport component grants no business
 admission and still requires wiring into the complete single-batch entry.
+
+`producer.register_execution(context)` records the explicit material SHA,
+separate tool commit and candidate, original output and frozen physical nonce
+and scope. Its namespace scope must match the original output's SHA prefix;
+the record is write-once and grants no admission or sealed source authority.
+`ProtectedVm.journal` pairs each exact mapped final command with its actual
+short or staged response and terminal. Unknown capture/ETW intents stay visible;
+SCM receipt reconciliation has a separate actual read response. Local witness
+failure retains known responses in memory and blocks subsequent mutations,
+including after a completed SCM receipt. Successful payloads and large command
+texts remain in evidence files rather than accumulating in the memory ledger.
+Current-source reading/export and independent sealed-index qualification still
+remain necessary before this identity record can support a full batch.
