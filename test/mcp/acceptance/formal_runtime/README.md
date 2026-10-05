@@ -87,3 +87,14 @@ cleaned. An unknown response, inflight mutation, or failed local audit prevents
 further writes while preserving read access and the actual known response.
 Tests exercise the actual ConfigStore through the RPC boundary; they grant no
 new Windows instance admission or formal scene credit.
+
+`dns_evidence.bind_dns_native(pcap, run_log, native_records, probe, run_id, p4,
+source=guest_address)` retains the original same-capture UDP request/answer,
+CNAME/A TTL, stopped-run lease/redirect/SNI/native mapping checks. It reads
+explicit original bytes and preserves byte offsets; the P4 route IP is not a
+runtime lease. `selected_p7_command` returns the registered original command
+unchanged and requires its PowerShell probe in the independently pinned tool
+dependencies. Fixed remote-IP/resolve substitutions are refused. The binding
+is supplementary evidence and cannot replace formal traffic/fault oracles.
+Live capture, closed-run export and complete runner integration remain separate
+implementation and Windows acceptance steps.
