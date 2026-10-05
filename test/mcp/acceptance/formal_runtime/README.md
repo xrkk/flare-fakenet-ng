@@ -332,3 +332,10 @@ RPC. Actual transport closure precedes index publication; received responses
 survive local audit failure, with writer completion and audit safety recorded
 separately. Failed/unknown exports retain partials and cannot retry that output.
 This action grants no instance admission or formal credit.
+
+`test_formal_runtime_chain.py` covers public preparation failure before all
+business, actual original first-nonpass stopping, and unknown SCM withholding
+blind restoration, with actual native/P1/P7/DNS and owned-writer restoration.
+These failure slices complement the original transport/export/audit tests;
+they do not establish successful complete preparation or the positive full
+Windows chain, which still needs the original sources and resource gate.
