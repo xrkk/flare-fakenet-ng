@@ -49,7 +49,7 @@ def _original_tool_data(authority, binding, material):
     require(PRODUCER_FILES <= seen, 'original producer dependency closure incomplete')
 
 
-def resolve_indexed(authority):
+def resolve_indexed(authority, *, capture_only=False):
     """An explicit v1 binding cannot fall back to the historical driver schema."""
     root = authority.root
     binding = authority.read(root/'execution-binding.json')
@@ -88,10 +88,10 @@ def resolve_indexed(authority):
             and match['scope'] == hashlib.sha256(str(original).encode()).hexdigest()[:12],
             'original producer nonce/scope differs')
     _original_tool_data(authority, binding, material)
-    return _dispatch_binding(authority, binding, material_record['sha256'])
+    return _dispatch_binding(authority, binding, material_record['sha256'], capture_only=capture_only)
 
 
-def _dispatch_binding(authority, execution, material_sha):
+def _dispatch_binding(authority, execution, material_sha, *, capture_only=False):
     root = authority.root
     namespace = execution['physical_namespace']
     original = exact_path(execution['original_execution_root'])
@@ -175,6 +175,14 @@ def _dispatch_binding(authority, execution, material_sha):
         if capture['required'][0] != capture['run']+r'\pktmon.etl':
             require(any(owner['run_label'] == 'run-01' and owner['required'][0] == capture['required'][0]
                         for owner in captures), 'shared source has no actual owner response')
+    if capture_only:
+        # A closed row has no final execution-context.json yet. This narrow
+        # handoff is sufficient only for the original readonly capture gate;
+        # it deliberately has no required_files/export inventory authority.
+        return SourceBinding(_freeze({'identity': execution['identity'],
+            'physical_namespace': namespace, 'captures': captures, 'kernels': kernels,
+            'unresolved_capture_intents': unresolved, 'capture_query_only': True,
+            'witnesses': authority.witnesses, 'no_business_admission': True}))
     required = {path for row in captures for path in row['required']}
     required.update(path for row in kernels for path in (row['metadata'],row['etl']))
     optional = {path for row in captures for path in row['optional']}

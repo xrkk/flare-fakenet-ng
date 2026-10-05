@@ -143,7 +143,10 @@ class Mapper:
         require(isinstance(self.records, dict) and isinstance(self.contexts, dict)
                 and isinstance(self.selected, dict) and bool(self.selected), 'authority fields invalid')
         scope = self.authority.get('scope')
-        if scope == 'batch-selection':
+        if scope == 'row-selection':
+            from .row_selection import selection
+            expected_selection = selection(self.context)
+        elif scope == 'batch-selection':
             from .batch_selection import selection
             expected_selection = selection(self.context)
         elif scope == 'credited-selection':
@@ -190,6 +193,12 @@ class Mapper:
         original_manifest = read_json(checked_record(dict(read_json(checked_record(
             dict(self.context.materials['plan'])))['original_manifest'])))
         require(not suite.manifest_issues(original_manifest), 'original manifest contract invalid')
+        canonical = checked_record(dict(read_json(checked_record(
+            dict(self.context.materials['plan'])))['original_manifest'])).read_bytes()
+        for authority in authorities.values():
+            require(authority.read(authority.root/'scenario-manifest.json') == original_manifest
+                    and (authority.root/'scenario-manifest.json').read_bytes() == canonical,
+                    'selected producer canonical manifest differs')
         expected_contexts = set()
         for sid, selected in self.selected.items():
             authority = authorities[Path(selected['root'])]

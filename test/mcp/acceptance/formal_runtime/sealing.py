@@ -59,6 +59,10 @@ def seal(execution, handoff):
             and execution.state.safe and execution.state.admission_ready
             and not execution.coordinator.fault_restore_pending,
             'seal requires resolved native/restoration responsibility')
+    require(execution.row_audits is not None and execution.row_audits.writers_ended
+            and not execution.row_audits.errors
+            and set(execution.row_audits.records) == set(execution.request.scenario_ids),
+            'seal requires independently rejudged original rows and ended audit writers')
     require(handoff.get('original_primary_error') is None and not handoff.get('secondary_errors')
             and handoff.get('final_original_status') is not None
             and handoff.get('current_export', {}).get('passed') is True

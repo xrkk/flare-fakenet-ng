@@ -339,3 +339,18 @@ blind restoration, with actual native/P1/P7/DNS and owned-writer restoration.
 These failure slices complement the original transport/export/audit tests;
 they do not establish successful complete preparation or the positive full
 Windows chain, which still needs the original sources and resource gate.
+
+`row_audit.RowAudits` wraps the original `_traffic_recheck_issues` seam.
+After the original traffic recheck accepts a stored pass, actual same-context
+native, owned capture, journal and bounded transport closure are required.
+A read-only original guest capture query must show stopped capture sessions
+and no probe writers. A write-once index pins the closed batch prefix and its
+actual closure witnesses while the batch is paused. Original frozen credits
+stay selected so cross-scenario checks retain the cumulative scope. A separate original
+audit CLI performs verify/replay/summary with `--scope row-selection`; its
+independent copies and outputs are rechecked before the seam returns success.
+Failure joins the original traffic issues so Original Batch stops before the
+next row; no retry or business Mapper is installed. Batch sealing additionally
+requires all requested rows audited and all owned audit processes ended.
+The incomplete-metadata negative test reaches the actual original verifier;
+positive real row auditing and the complete Windows chain remain unverified.

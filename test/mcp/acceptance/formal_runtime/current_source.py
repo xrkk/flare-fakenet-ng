@@ -114,3 +114,9 @@ def resolve_current(context, protected_vm, service_client):
                   guest_business_writer_closure_not_granted=True)
     from .source import SourceBinding
     return authority,SourceBinding(_freeze(values))
+
+
+def resolve_current_capture(context, protected_vm, service_client):
+    """Actual closed journals for a row's readonly query, without final export."""
+    authority = CurrentAuthority(context, protected_vm, service_client)
+    return authority, resolve_indexed(authority, capture_only=True)

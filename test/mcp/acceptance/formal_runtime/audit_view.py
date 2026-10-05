@@ -45,7 +45,11 @@ def plan_view(context, scope):
     original = checked_record(plan['original_manifest'])
     manifest = read_json(original)
     require(not suite.manifest_issues(manifest), 'original manifest contract invalid')
-    if scope == 'batch-selection':
+    if scope == 'row-selection':
+        from .row_selection import selection as row_selection
+        selection = row_selection(context)
+        report = None
+    elif scope == 'batch-selection':
         from .batch_selection import selection as batch_selection
         selection = batch_selection(context)
         report = None
@@ -90,6 +94,15 @@ def plan_view(context, scope):
         wanted += ['scenario-manifest.json', relative_result]
         for relative in wanted:
             record = _source_record(authority, relative)
+            if relative == 'scenario-manifest.json' and relative in files:
+                # All producers were separately checked against the pinned
+                # canonical bytes above; the view has one canonical manifest.
+                # Scenario/proof dependencies still require unique producers.
+                checked_record(record)
+                require(record['size'] == files[relative]['source']['size']
+                        and record['sha256'] == files[relative]['source']['sha256'],
+                        'canonical source manifest differs across producers')
+                continue
             require(relative not in files or files[relative]['source'] == record,
                     'source-copy target collision across selected producers')
             files[relative] = {'source': record, 'root': str(root),
@@ -98,7 +111,7 @@ def plan_view(context, scope):
         # belong to its exact indexed attempt (or canonical manifest/result).
         for ref in _references(result):
             item = files.get(ref['path'])
-            require(item is not None and item['root'] == str(root)
+            require(item is not None and (item['root'] == str(root) or ref['path'] == 'scenario-manifest.json')
                     and item['source']['size'] == ref['size'] and item['source']['sha256'] == ref['sha256'],
                     'nested selected source reference missing/wrong attempt/SHA: ' + ref['path'])
         results[sid] = result

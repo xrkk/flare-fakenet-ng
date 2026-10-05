@@ -78,12 +78,15 @@ def run(context, selection_path, scope, entry):
     selection_path = exact_path(str(selection_path))
     require(selection_path.is_file(), 'explicit selection file missing')
     selection = read_json(selection_path)
-    if scope in ('credited-selection','batch-selection'):
+    if scope in ('credited-selection','batch-selection','row-selection'):
         pinned = checked_record(dict(context.materials['credited_selection']))
         require(selection_path==pinned and selection==read_json(pinned), 'selection is not independently pinned credited material')
         if scope == 'batch-selection':
             from .batch_selection import selection as batch_selection
             require(selection == batch_selection(context), 'new batch original selection differs')
+        elif scope == 'row-selection':
+            from .row_selection import selection as row_selection
+            require(selection == row_selection(context), 'original closed row selection differs')
     else:
         report_path = checked_record(dict(context.materials['spike_source']))
         report = read_json(report_path)
@@ -133,6 +136,7 @@ def run(context, selection_path, scope, entry):
         for row in mapper.records.values():
             checked_record({'path':row['source_path'],'size':row['size'],'sha256':row['sha256']})
             checked_record({'path':row['target'],'size':row['size'],'sha256':row['sha256']})
+        mapper.verify_snapshot()
         require(file_sha256(mapper.path)==mapper.sha256, 'authority changed after audit')
         qualify_sources(context,entry,guard)
         modules = loaded_sources(context,qualified)

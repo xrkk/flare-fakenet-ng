@@ -33,6 +33,7 @@ class Execution:
     service: FreshClient
     captures: Captures
     coordinator: Coordinator
+    row_audits: object = None
 
 
 def _assemble(context, request):
@@ -98,7 +99,9 @@ separate interpreter; successful online storage/export alone is not credit.
         execution = _assemble(context, request)
         runner = execution.runner
         prestart_gate(runner, context)
-        with execution.coordinator.installed():
+        from .row_audit import RowAudits
+        execution.row_audits = RowAudits(execution)
+        with execution.row_audits.installed(), execution.coordinator.installed():
             selected, manifest, preflight = batch.validate_inputs(runner, runner.args, request.batch_id,
                 list(request.scenario_ids), evidence_root=context.evidence_root.parent, defer_preflight=True)
             terminal = batch.run_batch(runner, runner.args, checked_record(dict(request.argv_record)),
@@ -131,6 +134,8 @@ separate interpreter; successful online storage/export alone is not credit.
                     'final_original_status': final_status,
                     'no_formal_credit': True})
                 require(not execution.captures.owned, 'owned host capture writer remains active')
+                require(execution.row_audits is not None and execution.row_audits.writers_ended,
+                        'independent row audit writer remains unresolved; export withheld')
                 require(final_status is not None,
                         'guest business/default/owner closure unresolved; current export withheld')
                 _transport_closed(execution.vm, context, 'vm')
@@ -152,6 +157,9 @@ separate interpreter; successful online storage/export alone is not credit.
                 'host_capture_writers_ended': not bool(execution.captures.owned),
                 'VM_responsibility_safe': execution.state.safe,
                 'admission_ready': execution.state.admission_ready,
+                'row_audits': execution.row_audits.records if execution.row_audits else {},
+                'row_audit_errors': execution.row_audits.errors if execution.row_audits else {},
+                'row_audit_writers_ended': bool(execution.row_audits and execution.row_audits.writers_ended),
                 'independent_original_rejudge_required': True, 'new_formal_credit': 0}
             try: write_new_json(context.evidence_root/'batch-handoff.json', record)
             except BaseException as error:
