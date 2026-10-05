@@ -79,10 +79,11 @@ def test_actual_fresh_query_keeps_inherited_capture_and_unused_namespace_gate(in
     assert vm.responsibility()['host_writers_ended'] and not state.admission_ready
 
 
-@pytest.mark.parametrize('failure',['closed','config','identity','post-export-instance'])
+@pytest.mark.parametrize('failure',['closed','closed-null','config','identity','post-export-instance'])
 def test_original_native_scene_and_service_config_bytes_are_bound(export_material,failure):
     context,_,_,scene,_,_=export_material
     scene['config_sha']='f'*64
+    if failure=='closed-null':scene['env']=[None]
     data=json.loads(context.materials_path.read_bytes())
     import scenario_suite as suite
     for row in data['suite_argv'].values():
@@ -102,10 +103,21 @@ def test_original_native_scene_and_service_config_bytes_are_bound(export_materia
         final=historical_capture.native_gate(execution,'final',initial=initial)
         identity=json.loads(Path(final['path']).read_bytes())['identity']
         if failure=='post-export-instance':scene['pid']+=1
-        if failure=='closed':
+        if failure in ('closed','closed-null'):
             historical_capture.native_gate(execution,'post-export',initial=initial,expected_identity=identity)
         else:
             with pytest.raises(MaterialError,match='instance changed'):
                 historical_capture.native_gate(execution,'post-export',initial=initial,expected_identity=identity)
     assert not execution.state.admission_ready and not execution.coordinator.admitted
     assert execution.vm.responsibility()['host_writers_ended']
+
+
+@pytest.mark.parametrize('presence,values',[(True,[None]),(False,['']),(False,[None,None]),(False,['FAULT=1']),(0,[])])
+def test_absent_environment_keeps_presence_and_nonempty_content_rejection(export_material,presence,values):
+    context,_,_,scene,_,_=export_material
+    from formal_runtime.coordinator import validate_scene
+    plan=json.loads(Path(context.materials['plan']['path']).read_bytes())
+    manifest=json.loads(Path(plan['candidate_files']['manifest']['path']).read_bytes())
+    status={'state':'stopped','run_id':None,'controller':None,'config_identity':{'sha256':context.candidate_identity['default_sha256']}}
+    scene.update(env_present=presence,env=values)
+    with pytest.raises(AssertionError):validate_scene(scene,status,context.candidate_identity,manifest,{'present':False,'values':[]})

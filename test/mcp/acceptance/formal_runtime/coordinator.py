@@ -52,7 +52,15 @@ def validate_scene(x, status, identity, manifest, env, grace=60):
     assert len(expected) == len(x['members']) == 199
     assert {f['path']: (f['size'], f['sha256']) for f in x['members']} == expected
     assert not x['marker']['needs_recovery'] and (not x['workers']) and (not x['fault']) and (not x['fault_gate']) and (x['grace'] == grace)
-    assert {'present': x['env_present'], 'values': x['env']} == env
+    assert type(x['env_present']) is bool and type(env['present']) is bool
+    assert x['env_present'] is env['present']
+    if env['present']:
+        assert x['env'] == env['values']
+    else:
+        # Real indexed PowerShell @($prop.Environment) responses encode the
+        # absent registry value as [null]. An empty array is equivalent only
+        # when presence is explicitly false; other content stays invalid.
+        assert env['values'] in ([], [None]) and x['env'] in ([], [None])
     assert status['state'] == 'stopped' and (not status['controller']) and (not status['run_id']) and (status['config_identity']['sha256'] == identity['default_sha256'])
     for drive, min_gib in [('C', 4), ('E', 11)]:
         assert next((t['Free'] for t in x['space'] if t['Name'] == drive)) >= min_gib * 2 ** 30

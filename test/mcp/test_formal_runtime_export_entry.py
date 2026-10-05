@@ -91,6 +91,15 @@ def test_public_export_capacity_refuses_all_RPC_and_output_before_source_reads(e
     assert not server.received and not context.evidence_root.exists()
 
 
+def test_real_absent_environment_null_array_keeps_readonly_export_gate(export_material,tmp_path):
+    context,_,_,scene,_,_=export_material
+    scene['env']=[None]
+    result=invoke(export_material,tmp_path)
+    assert result.returncode==0,result.stdout+result.stderr
+    terminal=json.loads((context.evidence_root/'source-export-entry-terminal.json').read_bytes())
+    assert terminal['passed'] and terminal['host_writers_ended'] and terminal['guest_mutations']==0
+
+
 @pytest.mark.parametrize('failure',['identity','active-capture','native-drift','unknown-transfer'])
 def test_public_export_keeps_original_failure_partial_and_no_retry(export_material,tmp_path,failure):
     context,_,boundary,scene,observed,server=export_material
