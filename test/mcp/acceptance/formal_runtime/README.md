@@ -146,3 +146,17 @@ and relay-native originals, and compares complete pre/post size and double-SHA
 inventories. Its bounded read adapter never stages or mutates guest files;
 failures retain partial copies and revoke the adapter without retry. This
 current-run path does not extend historical source-index authority.
+
+`audit.Mapper(context, authority_path, independent_authority_sha256)` accepts
+only a source-index-authorized independent view and the pinned credited or
+Spike selection. Actual selected result, attempt, nonce, candidate, run and
+parser dependency keys are checked against the source bytes. Copies must have
+independent inodes. Projection changes only `inputs_before/after` keys;
+all values and every other proof field stay intact, including incomplete status.
+`installed(output)` temporarily wraps the actual original derive, records raw
+and projected proofs, confines writes and temporary files to the audit root,
+refuses source fallback during derive, and restores the original on every exit.
+Import installs no hook. Scoped auditing permits only the exact pinned read-only
+Git blob subprocesses needed for context revalidation and denies network and
+business subprocesses. Minimal source-copy construction, independent CLI and
+actual old-five/Spike proof rebuilding remain separate pending steps.
