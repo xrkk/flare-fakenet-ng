@@ -12,6 +12,7 @@ import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 from types import MappingProxyType
+import uuid
 
 from .context import RunContext, checked_record, exact_path, file_sha256, read_json, _freeze
 
@@ -276,3 +277,249 @@ def export_destination(binding: SourceBinding, destination: Path, index: int, gu
     if shared_source(binding, guest_path):
         path /= 'run-01'
     return path / PureWindowsPath(guest_path).name
+
+
+class ReadOnlySourceVm:
+    """Only the tool's bounded source-read commands; no remote staging fallback."""
+
+    def __init__(self, client, context: RunContext, binding: SourceBinding, root: Path):
+        self.client, self.context, self.binding = client, context, binding
+        self.root = exact_path(str(root))
+        require(self.root.is_relative_to(context.evidence_root), 'read-only evidence outside explicit output')
+        require(dict(binding.values['identity']) == dict(context.candidate_identity), 'read-only source candidate differs')
+
+    def powershell(self, command, timeout=30):
+        from .command_transport import LIMIT, map_command, wire_units, write_new_json
+        require(type(timeout) is int and timeout > 0, 'read-only timeout invalid')
+        require(not re.search(r'(?i)WriteAll|Set-Content|Out-File|Export-Clixml|Invoke-CimMethod|'
+                              r'Start-Service|Stop-Service|(?:New|Remove|Set|Move)-Item|'
+                              r'(?:pktmon|logman)\s+(?:start|stop)|Stop-Process| -Action (?!identity)', command),
+                'read-only source adapter refuses guest mutation/staging')
+        logical = r'E:\FakeNet-NG-MCP-test-work\scenario-suite-20260912'
+        physical = self.binding.physical_namespace + r'\scenario-suite-20260912'
+        command = map_command(command, ((logical, physical),))
+        require(wire_units(command) <= LIMIT, 'read-only command exceeds wire bound; split locally, never guest stage')
+        for namespace in re.findall(r'E:\\FakeNet-NG-MCP-test-work\\clean-r\d+-\d{8}\\[a-f0-9]{32}\\[a-f0-9]{12}', command):
+            require(namespace == self.binding.physical_namespace, 'command cross-source namespace')
+        directory = self.root / 'readonly-final-intents'
+        directory.mkdir(parents=True, exist_ok=True)
+        write_new_json(directory / (uuid.uuid4().hex + '.json'), {
+            'command': command, 'timeout': min(timeout, 30), 'physical_namespace': self.binding.physical_namespace,
+            'guest_writes': 0, 'no_staging': True})
+        return self.client.powershell(command, min(timeout, 30))
+
+
+def source_capture_gate(instance, binding: SourceBinding, destination: Path):
+    from scenario_suite import Suite, quote_ps
+    from .command_transport import write_new_json
+    names = sorted({kernel['name'] for kernel in binding.values['kernels']})
+    ids = sorted({capture['pid'] for capture in binding.values['captures']})
+    command = (
+        "$ErrorActionPreference='Stop';$sessions=@();foreach($n in @(" + ','.join(quote_ps(name) for name in names) +
+        ")){$q=(& logman query $n -ets 2>&1|Out-String);$sessions+=@{name=$n;exit=$LASTEXITCODE;query=$q}};"
+        "$probe=@();foreach($id in @(" + ','.join(str(pid) for pid in ids) +
+        ")){$p=Get-Process -Id $id -ErrorAction SilentlyContinue;if($p){$probe+=@{pid=$p.Id;"
+        "creation_ticks=[string]$p.StartTime.ToUniversalTime().Ticks}}};"
+        "$children=@(Get-CimInstance Win32_Process|Where-Object{$_.ParentProcessId -in @(" +
+        ','.join(str(pid) for pid in ids) + ")}|Select-Object ProcessId,ParentProcessId,CreationDate);"
+        "@{sessions=$sessions;probe=$probe;children=$children;pktmon=(& pktmon status|Out-String)}"
+        "|ConvertTo-Json -Depth 6 -Compress")
+    raw = instance.vm.powershell(command, 30)
+    write_new_json(destination / 'source-capture-gate-original.json', raw)
+    value = json.loads(raw['output'])
+    require({row['name'] for row in value['sessions']} == set(names) and len(value['sessions']) == len(names)
+            and not value['probe'] and not value['children'] and Suite._pktmon_stopped(value['pktmon'])
+            and all(row['exit'] == -2144337918 and 'Data Collector Set was not found.' in row['query']
+                    for row in value['sessions']), 'source owned capture/ETW active or UNKNOWN; export withheld')
+    return value
+
+
+def export_source(instance, context: RunContext, source_root: Path, destination: Path):
+    """Export a stable, bounded inventory via the original Suite transfer method.
+
+Writers must have stopped, all required capture/backup/receipt bytes must exist,
+and both complete inventories must agree. Unknown calls are never retried.
+"""
+    from scenario_suite import MAX_GUEST_TRANSFER, quote_ps
+    from .command_transport import write_new_json
+    authority = SourceAuthority(context, source_root)
+    binding = resolve_source(context, authority.root)
+    destination = exact_path(str(destination))
+    require(destination.is_relative_to(context.evidence_root) and destination != context.evidence_root,
+            'source export must use a distinct child of the explicit output')
+    require(not destination.exists(), 'source export output exists; never retry')
+    require(exact_path(str(instance.root)) == context.evidence_root and instance.vm is not None,
+            'source export Suite/client differs from explicit output context')
+    destination.mkdir(parents=True, exist_ok=False)
+    original_vm = instance.vm
+    sentinel = object()
+    original_binding = getattr(instance, 'physical_source_binding', sentinel)
+    instance.vm = ReadOnlySourceVm(original_vm, context, binding, destination)
+    instance.physical_source_binding = binding
+    terminal = {'passed': False, 'guest_writes': 0, 'deletions': 0, 'no_replay': True}
+
+    def read(relative):
+        return authority.read(authority.root / relative)
+
+    def invoke(label, command):
+        raw = instance.vm.powershell(command, 30)
+        write_new_json(destination / (label + '-original.json'), raw)
+        return json.loads(raw['output'])
+
+    try:
+        source_capture_gate(instance, binding, destination)
+        namespace = binding.physical_namespace
+        required, optional = set(binding.values['required_files']), set(binding.values['optional_files'])
+        runs, supervisors = set(), []
+
+        def add_run(value):
+            try:
+                runs.add(str(uuid.UUID(str(value))))
+            except (ValueError, TypeError, AttributeError):
+                pass  # Only actual UUID identities add native export authority.
+
+        for relative in sorted(authority.rows):
+            path = PurePosixPath(relative)
+            if path.name == 'result.json' and 'instance-gates' in path.parts:
+                value = read(relative)
+                add_run(value.get('admission_run')); add_run(value.get('native_run'))
+            elif path.name == 'six-native-verdict.json':
+                add_run(read(relative).get('run_id'))
+            elif path.name == 'new-instance-identity.json':
+                value = read(relative)
+                require(type(value.get('pid')) is int and value['pid'] > 0
+                        and re.fullmatch(r'[0-9]+', str(value.get('filetime', ''))), 'supervisor source identity invalid')
+                supervisors.append(value)
+            elif len(path.parts) == 2 and path.parts[0] == 'results' and path.name.startswith('scenario-'):
+                for value in read(relative).get('run_chain', []):
+                    add_run(value.get('run_id'))
+            elif path.name == 'request.json' and 'transport-product' in path.parts:
+                response = str(path.with_name('response.json'))
+                if response not in authority.rows:
+                    continue
+                value = read(relative)['body'].get('params', {})
+                if value.get('name') not in ('start', 'restart'):
+                    continue
+                for content in read(response)['value'].get('result', {}).get('content', []):
+                    if content.get('type') == 'text':
+                        try:
+                            add_run(json.loads(content['text']).get('run_id'))
+                        except ValueError:
+                            pass
+        ids = set(runs)
+        for offset in range(0, len(supervisors), 4):
+            data = json.dumps(supervisors[offset:offset + 4], separators=(',', ':'))
+            command = (
+                "$ErrorActionPreference='Stop';$sup=ConvertFrom-Json " + quote_ps(data) +
+                ";$ids=@();foreach($d in @(Get-ChildItem 'C:\\ProgramData\\FakeNet-NG-MCP\\logs\\exit-evidence' -Directory)){"
+                "if(Test-Path (Join-Path $d.FullName 'capability.json')){$e=Get-Content (Join-Path $d.FullName 'entry.json') -Raw|ConvertFrom-Json;"
+                "foreach($v in $sup){if($e.target.supervisor_pid -eq $v.pid -and "
+                "[string]$e.target.supervisor_creation_time -ceq [string]$v.filetime){$ids+=@($d.Name)}}}};"
+                "@{ids=@($ids|Sort-Object -Unique)}|ConvertTo-Json -Compress")
+            for value in invoke('lineage-%d' % offset, command)['ids']:
+                require(str(uuid.UUID(value)) == value, 'native lineage UUID invalid')
+                ids.add(value)
+        logical = r'E:\FakeNet-NG-MCP-test-work'
+        for relative in sorted(authority.rows):
+            path = PurePosixPath(relative)
+            if path.name == 'p5-probe-stage.json':
+                extra = [read(relative)['path']]
+            elif path.name == 'p7-probe-wire.json':
+                probe = read(relative).get('probe') or {}
+                extra = [probe[key] for key in ('stdout_path', 'stderr_path') if probe.get(key)]
+            else:
+                continue
+            for value in extra:
+                if value.startswith(logical + '\\scenario-suite-20260912\\'):
+                    value = namespace + value[len(logical):]
+                require(value.startswith(namespace + '\\') and '..' not in PureWindowsPath(value).parts,
+                        'probe cross-source reference')
+                required.add(value)
+        roots = [namespace] + [r'C:\ProgramData\FakeNet-NG-MCP' + '\\' + base + '\\' + rid
+                               for rid in sorted(ids) for base in ('artifacts', r'artifacts\runs', r'logs\exit-evidence')]
+
+        def check_file(value, audit=False):
+            require(isinstance(value, dict) and set(value) == {'path', 'size', 'sha256'}, 'inventory file fields invalid')
+            path = value['path']
+            require(isinstance(path, str) and PureWindowsPath(path).is_absolute() and '..' not in PureWindowsPath(path).parts,
+                    'inventory source path invalid')
+            if audit:
+                require(PureWindowsPath(path).parent == PureWindowsPath(r'C:\ProgramData\FakeNet-NG-MCP\logs')
+                        and any(PureWindowsPath(path).name.startswith('recovery-audit-' + rid + '-') for rid in ids),
+                        'inventory unowned recovery audit')
+                limit = MAX_GUEST_TRANSFER
+            else:
+                require(any(path.startswith(root + '\\') for root in roots), 'inventory cross-source/unowned path')
+                limit = transfer_limit(instance, path, export_destination(binding, destination, 0, path))
+            require(type(value['size']) is int and 0 <= value['size'] <= limit
+                    and isinstance(value['sha256'], str) and re.fullmatch('[a-f0-9]{64}', value['sha256']),
+                    'source inventory outside original transfer bound/SHA')
+
+        def inventory(label):
+            files, missing = {}, []
+            for offset in range(0, len(roots), 12):
+                command = (
+                    "$ErrorActionPreference='Stop';$paths=@();$missing=@();foreach($root in @(" +
+                    ','.join(quote_ps(root) for root in roots[offset:offset + 12]) +
+                    ")){if(Test-Path -LiteralPath $root){$paths+=@(Get-ChildItem -LiteralPath $root -File -Recurse"
+                    "|Select-Object -ExpandProperty FullName)}else{$missing+=@($root)}};"
+                    "$files=@();foreach($p in @($paths|Sort-Object -Unique)){$f=Get-Item -LiteralPath $p;"
+                    "$h=(Get-FileHash -LiteralPath $p).Hash.ToLower();$h2=(Get-FileHash -LiteralPath $p).Hash.ToLower();"
+                    "if($h -cne $h2 -or $f.Length -ne (Get-Item -LiteralPath $p).Length){throw 'source original unstable'};"
+                    "$files+=@{path=$p;size=$f.Length;sha256=$h}};@{files=$files;missing=$missing}|ConvertTo-Json -Depth 5 -Compress")
+                value = invoke(label + '-%d' % offset, command)
+                missing.extend(value['missing'])
+                for file in value['files']:
+                    check_file(file)
+                    require(file['path'] not in files or files[file['path']] == file, 'duplicate source inventory conflict')
+                    files[file['path']] = file
+            for offset in range(0, len(ids), 12):
+                command = (
+                    "$ErrorActionPreference='Stop';$files=@();foreach($id in @(" +
+                    ','.join(quote_ps(rid) for rid in sorted(ids)[offset:offset + 12]) +
+                    ")){foreach($f in @(Get-ChildItem 'C:\\ProgramData\\FakeNet-NG-MCP\\logs' -File -Filter "
+                    "('recovery-audit-'+$id+'-*'))){$h=(Get-FileHash $f.FullName).Hash.ToLower();"
+                    "if($h -cne (Get-FileHash $f.FullName).Hash.ToLower()){throw 'audit unstable'};"
+                    "$files+=@{path=$f.FullName;size=$f.Length;sha256=$h}}};@{files=$files}|ConvertTo-Json -Depth 5 -Compress")
+                for file in invoke(label + '-audit-%d' % offset, command)['files']:
+                    check_file(file, audit=True)
+                    require(file['path'] not in files or files[file['path']] == file, 'duplicate audit inventory conflict')
+                    files[file['path']] = file
+            require(namespace not in missing and not required.difference(files), 'required originals missing')
+            require(files and sum(file['size'] for file in files.values()) <= 4 * 2 ** 30,
+                    'empty/over-bound source inventory')
+            for rid in runs:
+                require(any(path.startswith(r'C:\ProgramData\FakeNet-NG-MCP' + '\\' + base + '\\' + rid + '\\')
+                            for path in files for base in ('artifacts', r'artifacts\runs', r'logs\exit-evidence')),
+                        'owned run originals absent: ' + rid)
+            return {'files': files, 'required': sorted(required), 'optional_missing': sorted(optional.difference(files)),
+                    'alternative_layout_missing': sorted(set(missing) - required - optional), 'source_namespace': namespace}
+
+        before = inventory('before')
+        write_new_json(destination / 'source-inventory-value.json', before)
+        exported = []
+        for index, file in enumerate(before['files'].values()):
+            target = export_destination(binding, destination, index, file['path'])
+            record = instance._transfer_guest_file(file['path'], file['size'], file['sha256'], target)
+            require(file_sha256(target) == file['sha256'], 'export host SHA differs')
+            exported.append({'guest': file, 'host_path': str(target), 'record': record})
+        after = inventory('after')
+        write_new_json(destination / 'source-post-inventory-value.json', after)
+        require(after == before, 'source originals changed during export')
+        write_new_json(destination / 'guest-original-index.json', exported)
+        terminal.update(passed=True, files=len(exported), bytes=sum(file['size'] for file in before['files'].values()),
+                        required_files=len(required), required_missing=[], optional_missing=before['optional_missing'],
+                        alternative_layout_missing=before['alternative_layout_missing'], full_SHA=True,
+                        before_after_size_double_SHA=True, source_namespace=namespace)
+    except BaseException as error:
+        terminal.update(error=repr(error), exception_type=type(error).__name__, export_withheld_or_incomplete=True)
+        raise
+    finally:
+        instance.vm = original_vm
+        if original_binding is sentinel:
+            del instance.physical_source_binding
+        else:
+            instance.physical_source_binding = original_binding
+        terminal['local_writers_ended'] = True
+        write_new_json(destination / 'source-export-terminal.json', terminal)
+    return dict(terminal)

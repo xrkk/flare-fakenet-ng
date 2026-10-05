@@ -62,4 +62,17 @@ source. Suite transfer and export inventory share `source.transfer_limit`;
 ordinary 192 MiB, owned shared text 512 MiB, and original E-root auxiliary ZIP
 256 MiB budgets remain separate. An incorrect owner or namespace is refused.
 The source-read/classification component does not run an independent raw-proof
-audit or grant existing pass credit, and full read-only source export follows.
+audit or grant existing pass credit.
+
+`source.export_source(suite, context, protected_source_root, destination)` uses
+a fresh child of the context's output root. It requires the original exact
+capture/ETW stopped gate, derives native UUIDs only from indexed run responses
+or exact supervisor PID/FILETIME lineage, checks all required files and the
+original 4 GiB total export budget, copies via Suite's original transfer method,
+and compares complete pre/post size and double-SHA inventories. Read commands
+are bounded to 30 seconds and never fall back to remote script staging. A
+failure retains its raw inventory, partial copies and terminal; existing output
+is never retried. The original Suite client and source binding are restored on
+every terminal path. These environment-boundary tests provide component
+coverage; actual guest export and independent original-proof adjudication
+remain separate acceptance gates.
