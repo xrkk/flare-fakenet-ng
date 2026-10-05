@@ -118,6 +118,26 @@ the actual original P1-P7 methods and real ConfigStore lifecycle are exercised
 offline; SCM cycle orchestration, live DNS capture/export and full Windows
 acceptance remain necessary.
 
+`coordinator.Coordinator(...).installed()` scopes the original Suite/Batch SCM,
+fault-instance profile freeze, precise fault restoration and continuation
+seams to one context. Each completed original SCM command revokes admission;
+only that new instance's original native-six and P1-P7 gate enables business.
+Fresh host/tmp and original C/E floors, complete candidate members and exact
+PID/FILETIME are checked. The original Batch stops after its first nonpass;
+unknown SCM is not replayed or blindly restored. All seams are revoked on exit.
+
+`dns_capture.Captures(...).probe_hooks()` scopes capture to the actual original
+P7 command after its healthy start. Host-only routing is required; dumpcap is
+bounded to exact-domain UDP DNS, 180 seconds and 16 MiB. Owned host writers
+must exit before closed-run export and original DNS/native binding. Failures
+retain originals, unresolved writer handles and the primary exception even
+when terminal cleanup/audit fails. An absent original stopped/owner-free status
+cannot be recorded as a closed managed capture. These composed tests exercise
+the actual original SCM bodies, native/preflight, copy, ConfigStore and Batch
+functions with environment boundaries controlled. They grant no real Windows
+credit; the full formal entry, independent source audit and final prepare are
+still pending.
+
 `source.export_closed_run(suite, context, run_id, original_P7_cleanup, output)`
 reads the exact UUID's original artifact/native/recovery directories only after
 the original P7 cleanup reaches default, stopped and owner-free. It preserves

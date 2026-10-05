@@ -7,7 +7,8 @@ import copy
 import hashlib
 import json
 import re
-from pathlib import Path
+import uuid
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -46,7 +47,7 @@ class NativeService:
     def tool_outcome(self, name, args=None, timeout=120):
         self.calls.append((name, args))
         if name == 'start':
-            self.state, self.run_id = 'healthy', 'controlled-run'
+            self.state, self.run_id = 'healthy', str(uuid.uuid5(uuid.NAMESPACE_URL, 'controlled-%d' % len(self.calls)))
         if name == 'stop':
             self.state, self.run_id = 'stopped', None
         if name in instance.MUTATIONS:
@@ -93,7 +94,8 @@ class NativeVm:
         if '$runs=@()' in command:
             value = {'pid': 2716, 'filetime': '134353511031206360', 'runs': [{
                 'run_id': 'controlled-native', 'files': [{'path': path, 'size': len(raw),
-                    'sha256': hashlib.sha256(raw).hexdigest()} for path, raw in self.bytes.items()]}]}
+                    'sha256': hashlib.sha256(raw).hexdigest()} for path, raw in self.bytes.items()
+                    if path.startswith(r'C:\ProgramData\FakeNet-NG-MCP\logs\exit-evidence')]}]}
         elif 'Import-Clixml' in command:
             value = {'present': True, 'values': ['FAKENETNG_MCP_FAULT_INJECTION=1']}
         elif 'Win32_Service' in command:
@@ -165,7 +167,7 @@ def test_original_P1_P7_preflight_failure_blocks_after_native_six(materials, mon
     assert (r.root / 'instance-gates/enabled/six-native-verdict.json').is_file()
 
 
-def test_native_six_then_actual_original_P1_P7_preserves_probe_and_config_cleanup(prepared, monkeypatch):
+def full_preflight_environment(prepared, monkeypatch):
     repo, material, pin, _, plan = prepared
     context = load_context(material, pin, repository_root=repo)
     r = subject(context)
@@ -182,15 +184,25 @@ def test_native_six_then_actual_original_P1_P7_preserves_probe_and_config_cleanu
 
         def tool_outcome(self, name, args=None, timeout=120):
             args = args or {}
-            if name in ('create_config', 'read_config', 'delete_config'):
+            if name in instance.MUTATIONS and args.get('expected_state_version') != self.version:
+                self.calls.append((name, args))
+                return {'ok': False, 'value': None, 'error': {'code': 'state_conflict'}}
+            if name == 'list_configs':
+                self.calls.append((name, args))
+                return {'ok': True, 'error': None, 'value': {'configs': store.list(), 'error': None}}
+            if name in ('create_config', 'import_config', 'edit_config', 'rename_config', 'read_config', 'delete_config'):
                 self.calls.append((name, args))
                 if name == 'read_config':
                     value = store.read(args['name'])
                 else:
                     fields = {key: value for key, value in args.items() if key in
-                              ('name', 'content', 'expected_sha256', 'command_id')}
-                    value = getattr(store, 'create' if name == 'create_config' else 'delete')(
-                        controller=self.controller_id, **fields)
+                              ('name', 'new_name', 'content', 'expected_sha256', 'command_id')}
+                    operation = {'create_config': 'create', 'import_config': 'create', 'edit_config': 'edit',
+                                 'rename_config': 'rename', 'delete_config': 'delete'}[name]
+                    try:
+                        value = getattr(store, operation)(controller=self.controller_id, **fields)
+                    except errors.McpError as error:
+                        return {'ok': False, 'value': None, 'error': {'code': error.code, 'message': str(error)}}
                     self.version += 1
                 return {'ok': True, 'value': value, 'error': None}
             if name == 'load_config': self.selected = args['name']
@@ -226,14 +238,14 @@ def test_native_six_then_actual_original_P1_P7_preserves_probe_and_config_cleanu
                          'external_dns_server': '8.8.8.8', 'api_ipv4': '1.1.1.1'}
             elif 'DownloadFile' in command:
                 value = {'sha256': hashlib.sha256(script).hexdigest(), 'bytes': len(script),
-                         'path': suite.E_GUEST_WORK_ROOT + r'\scenario-suite-20260912\scenario_probes.ps1'}
+                         'path': re.search(r"\$p='([^']+)'", command)[1]}
             elif 'Test-NetConnection' in command:
                 value = {'computer': 'DESKTOP-3FI41GR', 'tcp': False, 'remote': '198.51.100.77'}
             elif '& $p -Action preflight-b1 -Nonce $n' in command:
                 value = {'actual_curl_exit': 0, 'exit_code': 0, 'http_code': '401',
                          'nonce': 'preflight-controlled', 'url': 'https://api.deepseek.com/preflight-controlled'}
                 for stream, body in [('stdout', b'401'), ('stderr', b'')]:
-                    path = suite.E_GUEST_WORK_ROOT + '\\p7-' + stream + '.raw'
+                    path = str(PureWindowsPath(re.search(r"\$p='([^']+)'", command)[1]).parent / ('p7-' + stream + '.raw'))
                     self.bytes[path] = body
                     value.update({stream + '_path': path, stream + '_size': len(body),
                                   stream + '_sha256': hashlib.sha256(body).hexdigest()})
@@ -244,9 +256,15 @@ def test_native_six_then_actual_original_P1_P7_preserves_probe_and_config_cleanu
     monkeypatch.setattr(suite, 'HostOnlyFileTransfer', ControlledTransfer)
     monkeypatch.setattr(instance.time, 'sleep', lambda _: None)
     r.vm, r.service = FullPreflightVm(context), ProductBoundary(context)
+    r.vm.product_boundary = r.service
     r.bootstrap_environment = ['FAKENETNG_MCP_FAULT_INJECTION=1']
     r.bootstrap_grace, r.bootstrap_preflight = 60, True
     state = instance.Responsibility()
+    return context, r, store, state
+
+
+def test_native_six_then_actual_original_P1_P7_preserves_probe_and_config_cleanup(prepared, monkeypatch):
+    context, r, store, state = full_preflight_environment(prepared, monkeypatch)
     verdict = instance.FirstSpikeInstanceGate(context, state)(r, 'enabled', {'backup': 'controlled.xml'})
     assert verdict['passed']
     preflight = r._require_preflight()
