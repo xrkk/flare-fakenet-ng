@@ -47,6 +47,7 @@ class AuditGuard:
         self.active = False
         self.deriving = False
         self.trace = []
+        self.qualified_files = None
         self.git_reads = {
             ('git', '-C', str(context.source_root), 'cat-file', 'blob',
              context.tool_source['commit'] + ':' + Path(row['path']).relative_to(context.source_root).as_posix())
@@ -57,6 +58,17 @@ class AuditGuard:
             return
         if event.startswith('socket.'):
             raise AuditError('independent audit forbids network')
+        if event == 'exec':
+            filename = args[0].co_filename
+            if Path(filename).is_absolute():
+                path = Path(filename).resolve()
+                require(not path.is_relative_to(self.context.repository_root / 'Logs'),
+                        'audit refuses code execution from Logs')
+                if self.qualified_files is not None and (path.is_relative_to(self.context.source_root / 'test/mcp')
+                        or path.is_relative_to(self.context.source_root / 'fakenet')):
+                    require(path in self.qualified_files and file_sha256(path) == self.qualified_files[path],
+                            'audit code outside qualified source closure')
+            return
         if event == 'subprocess.Popen':
             require(tuple(args[1]) in self.git_reads, 'independent audit forbids business subprocess')
             return

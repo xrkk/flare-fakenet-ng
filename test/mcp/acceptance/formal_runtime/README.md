@@ -172,3 +172,21 @@ validated Mapper authority, and retains partial files and terminal on failure.
 Unclosed transport writers prevent authority publication. A completed copy
 grants no proof or formal-scene credit. Independent entry and actual original
 five/Spike rejudging are still required.
+
+`run_formal_source_audit.py --materials-json ABS --materials-sha256 SHA
+--selection-json ABS [--scope credited-selection|spike-only]` is the separate
+audit CLI. It qualifies its static local import closure, three original
+file-loaded audit scripts and actual module paths against the pinned Git tool
+commit. Product helpers must match the separate candidate source commit.
+Code from Logs, unpinned dependencies, network and business subprocesses are
+refused. The credited selection must be the pinned selection file; Spike
+selection must exactly match the indexed original report.
+
+The CLI builds a fresh independent view, calls original verify and each
+selected replay, then original summary; missing unselected coverage is kept
+explicit and the full-100 gate stays false until complete. Spike uses the
+original complete five-class gate in a distinct matrix root. Raw verdicts,
+proofs, provenance and failed terminal paths are retained. CLI help/import
+start no audit or output. Separate-interpreter regressions preserve real
+original verify/Spike failures. Actual historical five/Spike rejudging through
+this CLI remains blocked until its fresh capacity gate is satisfied.

@@ -204,3 +204,12 @@ def test_copies_cannot_alias_or_swap_exact_source(authority, kind):
         if kind == 'symlink': target.symlink_to(source)
         else: target.hardlink_to(source)
         with pytest.raises((audit.AuditError, MaterialError)): audit.Mapper(context, path, pin)
+
+
+def test_scoped_guard_refuses_code_execution_from_historical_Logs(authority):
+    m = mapper(authority)
+    historical = m.context.repository_root / 'Logs/inputs/forbidden.py'
+    payload = compile('raise AssertionError("must never execute")',str(historical),'exec')
+    with m.installed(m.context.audit_root / 'exec-scope'):
+        with pytest.raises(audit.AuditError,match='code execution from Logs'): exec(payload,{})
+    assert not m.guard.active
