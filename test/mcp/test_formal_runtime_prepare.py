@@ -53,7 +53,7 @@ def prepared(materials, monkeypatch):
         write_json(result_dir / ("scenario-" + sid + ".json"), {
             "scenario_id": sid, "state": "pass", "identity": product_identity,
             "scenario": next(row for row in generated["scenarios"] if row["scenario_id"] == sid),
-            "attempt": 1, "traffic_evidence": {"nonce": "d" * 32},
+            "attempt": 1, "traffic_evidence": {"nonce": sid + "-a1-" + "d" * 32},
             "run_chain": [{"run_id": sid + "-one"}]})
     spike = history / "fault-spike-result.json"
     data["spike_source"] = write_json(spike, {"schema": "sst.fault-spike.v1", "identity": product_identity})
@@ -204,6 +204,17 @@ def test_source_manifest_and_generated_contract_must_agree(prepared):
     value["scenarios"][0]["scenario_id"] = "made-up"
     prepared[4]["original_manifest"] = write_json(source, value)
     with pytest.raises(MaterialError, match="original manifest differs"):
+        check(repin(prepared))
+
+
+def test_credited_nonce_belongs_to_exact_scenario_and_attempt(prepared):
+    history = Path(prepared[3]["source_indices"][0]["path"]).parent
+    source = history / "results/scenario-sst-005.json"
+    result = json.loads(source.read_text())
+    result["traffic_evidence"]["nonce"] = "sst-006-a1-" + "d" * 32
+    write_json(source, result)
+    reseal_history(prepared)
+    with pytest.raises(MaterialError, match="credited result attempt/nonce invalid"):
         check(repin(prepared))
 
 

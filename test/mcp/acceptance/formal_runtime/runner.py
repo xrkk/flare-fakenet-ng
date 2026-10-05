@@ -143,7 +143,8 @@ def _sources(context: RunContext, selection: dict[str, str], manifest: dict[str,
         require(type(result.get("attempt")) is int and result["attempt"] > 0 and
                 isinstance(result.get("traffic_evidence"), dict) and
                 isinstance(result["traffic_evidence"].get("nonce"), str) and
-                re.fullmatch(r"[0-9a-f]{32}", result["traffic_evidence"]["nonce"]) is not None,
+                re.fullmatch(re.escape(sid) + r"-a%d-[0-9a-f]{32}" % result["attempt"],
+                             result["traffic_evidence"]["nonce"]) is not None,
                 "credited result attempt/nonce invalid")
         runs = result.get("run_chain")
         require(isinstance(runs, list) and bool(runs) and all(isinstance(row, dict) and
