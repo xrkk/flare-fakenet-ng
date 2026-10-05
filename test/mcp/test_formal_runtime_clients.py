@@ -29,7 +29,12 @@ def server():
             response={'jsonrpc':'2.0','id':request.get('id'),'result':{}}
             if request['method']=='tools/call':
                 params=request['params']
-                if params['name']=='PowerShell': value='Response: original stdout\nStatus Code: 0'
+                if params['name']=='PowerShell':
+                    boundary=getattr(self.server,'vm_boundary',None)
+                    if boundary:
+                        raw=boundary(params['arguments']['command'],params['arguments']['timeout'])
+                        value='Response: '+raw['output']+'\nStatus Code: '+str(raw.get('exit_code',0))
+                    else:value='Response: original stdout\nStatus Code: 0'
                 elif self.server.store is not None:
                     self.server.store.controller_id=self.headers['X-FakeNet-Controller-ID']
                     result=self.server.store.tool_outcome(params['name'],params['arguments'])

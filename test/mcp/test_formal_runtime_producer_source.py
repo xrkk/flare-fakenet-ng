@@ -16,8 +16,7 @@ from formal_runtime import instance, producer, producer_source, source
 from bounded_mcp import TransportUnknown
 
 
-@pytest.fixture
-def versioned(current):
+def pin_source(current):
     repo = current.repository_root
     data = json.loads(current.materials_path.read_bytes())
     originals = Path(__file__).parent/'acceptance'
@@ -31,18 +30,26 @@ def versioned(current):
     data['tool_source']={'commit':git(repo,'rev-parse','HEAD'),
                          'files':[record(repo/p) for p in sorted(producer_source.PRODUCER_FILES)]}
     pin = write_json(current.materials_path,data)['sha256']
-    original_context = load_context(current.materials_path,pin,repository_root=repo)
+    return load_context(current.materials_path,pin,repository_root=repo)
+
+
+class ExactCaptureClient(CaptureClient):
+    def powershell(self, command, timeout):
+        raw=super().powershell(command,timeout)
+        if 'logman start $s -ets' in command:
+            run=re.search(r"\$r='([^']+)'",command)[1]
+            raw={'output':json.dumps({'session_name':re.search(r"\$s='([^']+)'",command)[1],
+                'guest':run,'metadata':run+r'\kernel-network.metadata.json'}),'exit_code':0}
+        return raw
+
+
+@pytest.fixture
+def versioned(current):
+    original_context=pin_source(current)
+    repo=original_context.repository_root
     root = original_context.evidence_root
     producer.register_execution(original_context)
     r = subject(original_context)
-    class ExactCaptureClient(CaptureClient):
-        def powershell(self, command, timeout):
-            raw=super().powershell(command,timeout)
-            if 'logman start $s -ets' in command:
-                run=re.search(r"\$r='([^']+)'",command)[1]
-                raw={'output':json.dumps({'session_name':re.search(r"\$s='([^']+)'",command)[1],
-                    'guest':run,'metadata':run+r'\kernel-network.metadata.json'}),'exit_code':0}
-            return raw
     r.vm = instance.ProtectedVm(ExactCaptureClient(original_context,success=True),original_context,instance.Responsibility())
     instance.bind_namespace(r,original_context)
     guest = r._guest_scenario_root('sst-001',1)

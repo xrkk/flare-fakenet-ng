@@ -226,3 +226,12 @@ its paired intent and indexed terminal fingerprint; known ETW responses must
 match the exact session intent. Unknown ETW stays in the closure query, and an
 unresolved capture start prevents export until exact recovery is established.
 This sealed historical path does not grant current-run source authority.
+
+`current_source.resolve_current(context, protected_vm, service_fresh_client)`
+hands off only the actual same-context VM journal and Fresh transports. Their
+terminal and bounded-completion bytes are re-read, and disk dispatches must
+exactly match the in-memory owner ledger. Active or unresolved host writers,
+caller-supplied stopped flags and changed witnesses are refused. The metadata
+snapshot checks every read and never admits later files. It has no historical
+source index and grants neither business admission nor guest business-writer
+closure; current export must still pass the original capture/inventory gates.
