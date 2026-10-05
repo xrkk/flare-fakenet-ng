@@ -20,6 +20,15 @@ Penetration testers and bug hunters will find FakeNet-NG's configurable
 interception engine and modular framework highly useful when testing
 application's specific functionality and prototyping PoCs.
 
+Windows MCP daily use
+=====================
+
+For the existing Windows MCP package, see the
+[daily-use and issue-reporting guide](docs/实际使用与问题反馈.md).
+The [current remaining-work list](PLAN/2026.10/2026.10.06/2026.10.06-01-评估与剩余任务清单-停止场景测试转入实际使用.md)
+records the October 6 decision to prioritize actual use and defer further
+scenario testing. Full formal release acceptance remains incomplete.
+
 Windows domain allow-list egress mode
 =====================================
 
