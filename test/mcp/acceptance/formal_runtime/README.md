@@ -254,3 +254,14 @@ original argv. Its immutable request rechecks inputs before producing a fresh
 args object. It creates no Suite/client/output and grants no prepare or business
 permission. The full entry must retain original Batch validation with the
 owned evidence parent, followed by complete preparation and instance gates.
+
+`runtime_sources.qualify(context, entry)` records the original runtime's static
+imports, explicitly loaded QPC/capture scripts and staged PowerShell bytes.
+The original FNPR subprocess is pinned by the plan's exact
+`additional_tool_files` record for repository-root `fnpr_sentinel.py`; all
+host tools must match the tool Git commit, while copied/imported product
+helpers match the separate candidate source commit. `loaded_sources` checks
+actual module origins against those qualified bytes and refuses Logs code.
+The shared AST graph does not import or execute inspected sources, and the
+independent audit entry retains its narrower three-script map. Qualification
+creates no clients or output and grants no preparation or scene credit.

@@ -1,7 +1,6 @@
 """Independent original Suite verification; never imported by business runner."""
 from __future__ import annotations
 
-import ast
 import copy
 import hashlib
 from pathlib import Path
@@ -13,58 +12,18 @@ import formal_batch_v3 as batch
 import scenario_suite as suite
 from .audit import AuditError, AuditGuard, require, save
 from .audit_view import build_view
-from .context import checked_record, exact_path, read_json, file_sha256
+from .context import MaterialError, checked_record, exact_path, read_json, file_sha256
 
 
 AUDIT_DYNAMIC = ('scenario_pktmon.py', 'scenario_fault_evidence.py', 'sst_fault_evidence.py')
 
 
 def source_closure(source_root, entry):
-    """Local static imports plus original audit's three file-loaded scripts."""
-    local = source_root / 'test/mcp/acceptance'
-    def module(name):
-        base = source_root if name == 'fakenet' or name.startswith('fakenet.') else local
-        path = base.joinpath(*name.split('.'))
-        if path.with_suffix('.py').is_file(): return path.with_suffix('.py')
-        if (path / '__init__.py').is_file(): return path / '__init__.py'
-        if name.startswith(('fakenet.', 'formal_runtime.', 'scenario_', 'sst_', 'etl_', 'tdh_')):
-            raise AuditError('local static source dependency missing: ' + name)
-        return None
-    pending = [entry, *(local / name for name in AUDIT_DYNAMIC)]
-    seen = set()
-    while pending:
-        path = exact_path(str(pending.pop()))
-        if path in seen: continue
-        require(path.is_file(), 'entry dependency missing: ' + str(path))
-        seen.add(path)
-        root = source_root if path.is_relative_to(source_root / 'fakenet') else local
-        relative = path.relative_to(root)
-        parts = list(relative.with_suffix('').parts)
-        package = parts[:-1]
-        for i in range(1,len(package)+1):
-            parent = root.joinpath(*package[:i]) / '__init__.py'
-            if parent.is_file(): pending.append(parent)
-        tree = ast.parse(path.read_bytes(), filename=str(path))
-        names = []
-        for node in ast.walk(tree):
-            if isinstance(node,ast.Import): names.extend(row.name for row in node.names)
-            elif isinstance(node,ast.ImportFrom):
-                if node.level:
-                    base = package[:len(package)-node.level+1]
-                    name = '.'.join(base + ([node.module] if node.module else []))
-                else: name = node.module or ''
-                if name: names.append(name)
-                # A from-import can name a module or a value. Only an actual
-                # sibling file/package is a further local dependency.
-                for row in node.names:
-                    child = name + '.' + row.name if name else row.name
-                    base = source_root if child.startswith('fakenet.') else local
-                    test = base.joinpath(*child.split('.'))
-                    if test.with_suffix('.py').is_file() or (test/'__init__.py').is_file(): names.append(child)
-        for name in names:
-            path = module(name)
-            if path is not None: pending.append(path)
-    return seen
+    from .source_graph import source_closure as closure
+    try:
+        return closure(source_root, entry, dynamic=AUDIT_DYNAMIC)
+    except MaterialError as error:
+        raise AuditError(str(error)) from error
 
 
 def qualify_sources(context, entry, guard):
