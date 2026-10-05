@@ -214,3 +214,15 @@ including after a completed SCM receipt. Successful payloads and large command
 texts remain in evidence files rather than accumulating in the memory ledger.
 Current-source reading/export and independent sealed-index qualification still
 remain necessary before this identity record can support a full batch.
+
+`source.resolve_source` also accepts an independently indexed versioned
+execution binding. `producer_source` checks its original material/plan SHA,
+candidate, nonce and output scope, then checks the historical producer's
+dependency blobs against its own immutable Git commit as data. Later consumer
+worktree changes do not redefine the original producer. Historical code is
+never imported. The shared capture parser retains original owner/namespace,
+PID/creation and ordinary/shared transfer rules. Each known response must match
+its paired intent and indexed terminal fingerprint; known ETW responses must
+match the exact session intent. Unknown ETW stays in the closure query, and an
+unresolved capture start prevents export until exact recovery is established.
+This sealed historical path does not grant current-run source authority.

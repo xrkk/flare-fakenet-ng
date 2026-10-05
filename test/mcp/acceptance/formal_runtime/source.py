@@ -95,6 +95,9 @@ class SourceBinding:
 def resolve_source(context: RunContext, source: Path) -> SourceBinding:
     authority = SourceAuthority(context, source)
     root = authority.root
+    if 'execution-binding.json' in authority.rows:
+        from .producer_source import resolve_indexed
+        return resolve_indexed(authority)
     declared = None
     if (root / 'exact-argv.json').exists():
         argv = authority.read(root / 'exact-argv.json')
@@ -157,33 +160,9 @@ def resolve_source(context: RunContext, source: Path) -> SourceBinding:
             continue
         intent = authority.read((root / relative).with_name('intent.json'))
         command = intent.get('original_command')
-        run = value['guest']
-        require(isinstance(run, str) and isinstance(command, str), 'capture request/response type invalid')
-        namespace = run.split('\\scenario-suite-20260912\\')[0]
-        match = NAMESPACE.fullmatch(namespace)
-        require(match is not None and match['nonce'] == nonce
-                and match['scope'] == hashlib.sha256(str(original).encode()).hexdigest()[:12]
-                and '..' not in PureWindowsPath(run).parts, 'source capture nonce/scope/path conflict')
-        label = value.get('run_label')
-        require(label in ('run-01', 'run-02') and PureWindowsPath(run).name == label
-                and len(parts(run)) == len(parts(namespace)) + 3, 'capture producer path/label invalid')
-        etl = run + r'\pktmon.etl'
-        if value.get('shared_physical'):
-            require(label == 'run-02' and value.get('nonce')
-                    and value.get('physical_owner_id') == value['nonce'] + ':pktmon'
-                    and value['physical_owner_id'] in command, 'shared source capture owner mismatch')
-            etl = str(PureWindowsPath(run).parent / 'run-01' / 'pktmon.etl')
-        require(value['etl'] == etl and value['probe'] == run + r'\probe.jsonl'
-                and namespace in command, 'source capture request/response mismatch')
-        require(type(value.get('pid')) is int and value['pid'] > 0
-                and type(value.get('probe_creation_ticks')) is int and value['probe_creation_ticks'] > 0,
-                'source probe ownership missing')
+        namespace, capture = capture_witness(value, command, nonce, original, root / relative)
         namespaces.add(namespace)
-        captures.append({'run': run, 'pid': value['pid'], 'creation_ticks': value['probe_creation_ticks'],
-                         'run_label': label, 'response': str(root / relative),
-                         'required': [etl, value['probe'], value['pktmon_nic']],
-                         'optional': [value[key] for key in ('stdout', 'stderr', 'start', 'case', 'stop', 'exit_control')
-                                      if value.get(key)]})
+        captures.append(capture)
     require(len(namespaces) == 1 and captures, 'missing or ambiguous actual source namespace')
     physical = namespaces.pop()
     for capture in captures:
@@ -239,6 +218,36 @@ def resolve_source(context: RunContext, source: Path) -> SourceBinding:
         'optional_files': sorted(optional - required), 'witnesses': authority.witnesses,
         'source_index': authority.index_record, 'derived_from_actual_immutable_source': True,
         'original_response_unchanged': True}))
+
+
+def capture_witness(value, command, nonce, original, response_path):
+    """One producer-ownership parser for both original and versioned sources."""
+    run = value['guest']
+    require(isinstance(run, str) and isinstance(command, str), 'capture request/response type invalid')
+    namespace = run.split('\\scenario-suite-20260912\\')[0]
+    match = NAMESPACE.fullmatch(namespace)
+    require(match is not None and match['nonce'] == nonce
+            and match['scope'] == hashlib.sha256(str(original).encode()).hexdigest()[:12]
+            and '..' not in PureWindowsPath(run).parts, 'source capture nonce/scope/path conflict')
+    label = value.get('run_label')
+    require(label in ('run-01', 'run-02') and PureWindowsPath(run).name == label
+            and len(parts(run)) == len(parts(namespace)) + 3, 'capture producer path/label invalid')
+    etl = run + r'\pktmon.etl'
+    if value.get('shared_physical'):
+        require(label == 'run-02' and value.get('nonce')
+                and value.get('physical_owner_id') == value['nonce'] + ':pktmon'
+                and value['physical_owner_id'] in command, 'shared source capture owner mismatch')
+        etl = str(PureWindowsPath(run).parent / 'run-01' / 'pktmon.etl')
+    require(value['etl'] == etl and value['probe'] == run + r'\probe.jsonl'
+            and namespace in command, 'source capture request/response mismatch')
+    require(type(value.get('pid')) is int and value['pid'] > 0
+            and type(value.get('probe_creation_ticks')) is int and value['probe_creation_ticks'] > 0,
+            'source probe ownership missing')
+    return namespace, {'run': run, 'pid': value['pid'], 'creation_ticks': value['probe_creation_ticks'],
+        'run_label': label, 'response': str(response_path),
+        'required': [etl, value['probe'], value['pktmon_nic']],
+        'optional': [value[key] for key in ('stdout', 'stderr', 'start', 'case', 'stop', 'exit_control')
+                     if value.get(key)]}
 
 
 def shared_source(binding: SourceBinding, guest_path: str) -> bool:
@@ -313,6 +322,8 @@ class ReadOnlySourceVm:
 def source_capture_gate(instance, binding: SourceBinding, destination: Path):
     from scenario_suite import Suite, quote_ps
     from .command_transport import write_new_json
+    require(not binding.values.get('unresolved_capture_intents'),
+            'source unresolved capture-start ownership; accurate original recovery required')
     names = sorted({kernel['name'] for kernel in binding.values['kernels']})
     ids = sorted({capture['pid'] for capture in binding.values['captures']})
     command = (
