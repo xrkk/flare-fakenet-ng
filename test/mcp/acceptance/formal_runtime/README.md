@@ -98,3 +98,22 @@ dependencies. Fixed remote-IP/resolve substitutions are refused. The binding
 is supplementary evidence and cannot replace formal traffic/fault oracles.
 Live capture, closed-run export and complete runner integration remain separate
 implementation and Windows acceptance steps.
+
+`instance.FirstSpikeInstanceGate(context, responsibility)` runs the original
+current-SCM identity/environment, native-six original transfers and checks,
+then the original Suite P1-P7 preflight. Each PID/FILETIME is admitted once;
+the candidate manifest and default SHA come from the pinned context. It does
+not enable business by itself. `ProtectedService` refuses unadmitted business
+and unresolved mutation replay; `ProtectedVm` preserves the original single
+SCM command and reconciles only its exact completed receipt. A transaction
+completion always invalidates instance admission.
+
+`instance.bind_namespace(suite, context)` maps the original E-root producer
+before capture creation and binds the transfer budget only after its original
+validated response. `recovery.bind_recovery` keeps the original snapshot and
+cooperative stop validators, granting only exact capture recovery while general
+responsibility remains unknown. Exact recovery writes an immutable command
+intent and cannot replay it through a new adapter. Controlled native-six bytes,
+the actual original P1-P7 methods and real ConfigStore lifecycle are exercised
+offline; SCM cycle orchestration, live DNS capture/export and full Windows
+acceptance remain necessary.
