@@ -67,6 +67,43 @@ state_version、controller 或命令缓存，产物枚举始终在固定的诊�
   顶层 `partial=true` 并在 `error` 里点名失败的子查询；失败产生的空
   列表不会被当作完整成功。
 
+## get_command_status(command_id)
+
+一次只读对账：这条命令在**本进程**的命令缓存里是什么状态，避免为确认
+提交结果而重复执行命令。
+
+- 需要有效的 `X-FakeNet-Controller-ID`；当前有 run 时必须是该 run 的
+  controller，且缓存记录必须属于同一 controller——他人查不到你的
+  response、describe 或异常。
+- 返回 `status`：`in_progress`（命令已接受仍在执行，附接受时的原始
+  响应）、`completed`（保存的最终响应）、`failed`（命令自身的错误：
+  `McpError` 按原结构，其他异常只给安全的 `internal_error` 概要，不带
+  堆栈）、`unknown`。`cache_scope='process'`、`cache_epoch` 每个
+  Coordinator 实例唯一、`persistent=false`。
+- **`unknown` 只说明当前进程缓存没有这条记录**（从未提交、被更新的
+  命令淘汰、或服务重启）——不能推断命令没执行过，也不能推断重放安全；
+  重放前按命令语义自行评估副作用。
+- 查询本身零副作用：不调用 submit/execute、不增长 state_version、
+  不刷新 LRU、不改重放语义；返回内容是与缓存隔离的深拷贝。
+
+## wait_status(states, after_state_version, timeout_seconds)
+
+一次有界等待：等到 state 属于 `states` 和/或 `state_version` 超过
+`after_state_version`，最多等 `timeout_seconds`（0..30 秒，必须有限；
+非法值直接拒绝，不会悄悄无限等）。两个条件都给时是 AND。
+
+- 至少给一个条件；`states` 必须是状态机已知状态的非空列表。
+- 只给 `states` 时能观察到**不增长版本号的健康变化**（如
+  healthy→degraded）；注意 `state_version` 是"已接受变更"的版本，
+  不是健康转移计数，`after_state_version` 不会因健康变化而满足。
+- `timeout_seconds=0` 表示只立即观察一次。超时是正常的有界结果
+  （`timed_out=true`），绝不冒充条件达成；`matched=true` 时返回的
+  `status` 就是判定所用的同一次末次观察，不会混入更新状态。
+- 单次 RPC 内部以约 100ms 间隔异步轮询：不阻塞服务循环（等待期间
+  get_status 和真实变更照常完成），不持有协调器/监管锁跨等待，返回
+  后没有残留线程；请求被取消立即停止观察，且绝不取消任何在途命令。
+- 只读：不生成事件、不增长版本、不取得所有权、不自动恢复。
+
 ## 边界
 
 - 三个工具都是只读，可被任何可达连接调用；不触发 FakeNet、WinDivert
