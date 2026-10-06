@@ -267,8 +267,10 @@ AI 调用次数优化、Token 消费优化: `/home/adminn/projects/flare-fakenet
 2. 清理 dist 目录下的文件, 只留下最新版.
 3. `/home/adminn/projects/MalTrace/AI辅助逆向/提示词/工具知识/FakeNetNG` 目录下的文件和 `/home/adminn/projects/MalTrace/AI辅助逆向/提示词/样本分析任务` 目录下的关于 fakenetng 的说明内容, 有需要更新的吗?
 
-
 在 .149 虚拟机上部署新版的 fakenet
+
+1. 将 allow_legacy_protocol 默认设置为 true.
+2. 如何设置此 MCP 开机自动启动、服务关闭后自动重启?
 
 
 
