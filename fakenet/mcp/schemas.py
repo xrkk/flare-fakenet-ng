@@ -83,9 +83,16 @@ class ConfigsResponse(_Open):
     error: ErrorObject | None = None
 
 
+class ConfigSections(_Open):
+    """The parser's real section mapping (values stay open dicts)."""
+    fakenet: dict = Field(default_factory=dict)
+    diverter: dict = Field(default_factory=dict)
+    listeners: dict = Field(default_factory=dict)
+
+
 class ValidateResponse(_Open):
     valid: bool | None = None
-    sections: list[str] | None = None
+    sections: ConfigSections | None = None
     error: ErrorObject | None = None
 
 
