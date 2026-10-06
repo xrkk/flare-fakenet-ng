@@ -246,6 +246,12 @@ P05: 真实 Win10 发布门禁与交付证据
 
 GLM 执行此清单.
 
+> 2026.09.30:
+
+评估: 把添加 Windows防火墙规则作为 fakenetng 安装的 post-script
+
+AI 调用次数优化、Token 消费优化: `/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.30/2026.09.30-01-产品后续改进TODO清单.md`
+
 
 
 
