@@ -220,9 +220,36 @@ def register_tools(server, ctx):
         return snap
 
     @server.tool()
+    def get_command_status(command_id: str) -> dict:
+        """Read-only reconciliation for one submitted command.
+
+        Answers from the in-process command cache only: in_progress,
+        completed, failed (with the command's own error) or unknown (this
+        process has no record — never submitted, evicted, or after a
+        restart). Requires the caller's controller identity and respects
+        the current run's controller ownership; the reply is an isolated
+        copy and never mutates cache, replay, versions or state.
+        """
+        controller, classification = ctx.controller_identity()
+        try:
+            return ctx.coordinator.command_status(
+                command_id=command_id, controller=controller,
+                controller_valid=classification == 'valid_uuid')
+        except errors.McpError as exc:
+            return {
+                'command_id': command_id if isinstance(command_id, str)
+                else None,
+                'status': None,
+                'cache_scope': 'process',
+                'persistent': False,
+                'response': None,
+                'command_error': None,
+                'error': exc.to_dict(),
+            }
+
+    @server.tool()
     def get_events(limit: int = 100, cursor: str = None,
-                   run_id: str = None) -> dict:
-        from fakenet.mcp import queries
+                   run_id: str = None) -> dict:        from fakenet.mcp import queries
         limit = max(1, min(int(limit), 500))
         try:
             _validated_run_id(run_id)

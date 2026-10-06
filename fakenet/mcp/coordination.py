@@ -83,6 +83,10 @@ class Coordinator:
         self._lock = threading.RLock()
         self._runner = runner
         self._events = event_log or EventLog()
+        # Unique per instance: the command cache lives only as long as this
+        # coordinator object (process scope), and a new instance means a new
+        # epoch — never a claim of persistent recovery.
+        self._cache_epoch = uuid.uuid4().hex
         self._state = 'stopped'
         self._state_version = 1
         self._run_id = None
@@ -173,6 +177,80 @@ class Coordinator:
         """Consistent event-log window for incremental cursor queries."""
         with self._lock:
             return self._events.window()
+
+    def command_status(self, *, command_id, controller, controller_valid):
+        """Read-only reconciliation view over the in-process command cache.
+
+        Identity gates mirror the mutation surface: a valid controller is
+        required, the current run's controller (when one owns a run) must
+        be the caller, and the cached record must belong to that same
+        controller — never leaking another controller's response, describe
+        or exception. The read touches nothing: no submit/execute, no
+        state_version change, no LRU refresh, no replay mutation; returned
+        structures are deep copies so a caller can never poison a later
+        replay through the query result. ``unknown`` states exactly that
+        the id is not in THIS process cache (never submitted, evicted, or
+        after a restart) — it is not evidence that the command did not run
+        or that a replay is safe.
+        """
+        import copy as _copy
+
+        with self._lock:
+            if not controller_valid:
+                raise errors.McpError(
+                    errors.CONTROLLER_IDENTITY_MISSING,
+                    'command queries require a valid '
+                    'X-FakeNet-Controller-ID header')
+            if self._controller is not None and controller != self._controller:
+                raise errors.McpError(
+                    errors.CONTROLLER_CONFLICT,
+                    'another controller owns the active run')
+            base = {
+                'command_id': command_id,
+                'cache_scope': 'process',
+                'cache_epoch': self._cache_epoch,
+                'persistent': False,
+                'error': None,
+            }
+            if (not isinstance(command_id, str) or not command_id):
+                raise errors.McpError(
+                    errors.INVALID_REQUEST,
+                    'command_id must be a non-empty string')
+            cached = self._commands.get(command_id)
+            if cached is None:
+                base.update(status='unknown', response=None,
+                            command_error=None)
+                base['unknown_detail'] = (
+                    'not in this process cache: never submitted, evicted '
+                    'by newer commands, or after a service restart; this '
+                    'is not evidence about execution or replay safety')
+                return base
+            if cached.get('controller') != controller:
+                raise errors.McpError(
+                    errors.CONTROLLER_CONFLICT,
+                    'command_id belongs to another controller')
+            if 'exception' in cached:
+                exc = cached['exception']
+                if isinstance(exc, errors.McpError):
+                    command_error = exc.to_dict()
+                else:
+                    # A safe summary only: never the exception object,
+                    # trace or message of an arbitrary failure.
+                    command_error = {
+                        'code': 'internal_error',
+                        'message': 'command failed with an internal error',
+                    }
+                base.update(status='failed', response=None,
+                            command_error=command_error)
+                return base
+            response = _copy.deepcopy(cached.get('response'))
+            if isinstance(response, dict) and response.get('in_progress'):
+                status = 'in_progress'
+            else:
+                status = 'completed'
+            base.update(status=status, response=response,
+                        command_error=None)
+            return base
 
     @property
     def running(self):
