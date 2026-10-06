@@ -11,6 +11,9 @@ import os
 import sys
 import uuid
 from pathlib import Path
+from typing import Optional, Union
+
+from pydantic import StrictFloat, StrictInt
 
 from fakenet.mcp import MCP_PACKAGE_NAME, MCP_PACKAGE_VERSION
 from fakenet.mcp import errors
@@ -274,13 +277,17 @@ def register_tools(server, ctx):
         return payload
 
     @server.tool()
-    async def wait_status(states: list = None, after_state_version: int = None,
-                          timeout_seconds: float = 10) -> dict:
+    async def wait_status(states: list = None,
+                          after_state_version: Optional[StrictInt] = None,
+                          timeout_seconds: Union[StrictInt, StrictFloat] = 10) -> dict:
         """Bounded single-call wait for a service-state condition.
 
         Waits until the state is one of ``states`` (when given) AND the
         state version exceeds ``after_state_version`` (when given), for at
-        most ``timeout_seconds`` (0..30, finite). The wait is read-only:
+        most ``timeout_seconds`` (0..30, finite). Numeric arguments are
+        strictly typed at the registration boundary: booleans, numeric
+        strings and float versions never reach the tool, let alone the
+        domain validation. The wait is read-only:
         no version growth, no events, no ownership, no state changes —
         and it never blocks the service loop (bounded async polling, no
         locks held across sleeps, nothing left running after the reply).

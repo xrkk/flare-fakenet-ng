@@ -75,6 +75,15 @@ def envelope():
 
 def raw_call(endpoint_url, tool, arguments=None, controller=CONTROLLER,
              timeout=20):
+    outer = raw_outer(endpoint_url, tool, arguments, controller, timeout)
+    if outer.get('error'):
+        return {'transport_error': outer['error']}
+    return json.loads(outer['result']['content'][0]['text'])
+
+
+def raw_outer(endpoint_url, tool, arguments=None, controller=CONTROLLER,
+              timeout=20):
+    """Full JSON-RPC envelope, untouched — rejection typing stays visible."""
     body = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
             'params': {'name': tool, 'arguments': arguments or {},
                        '_meta': envelope()}}
@@ -91,14 +100,14 @@ def raw_call(endpoint_url, tool, arguments=None, controller=CONTROLLER,
         endpoint_url, data=json.dumps(body).encode('utf-8'),
         method='POST', headers=headers)
     with urllib.request.urlopen(request, timeout=timeout) as response:
-        raw = response.read().decode('utf-8', 'replace')
-    outer = json.loads(raw)
-    if outer.get('error'):
-        return {'transport_error': outer['error']}
-    return json.loads(outer['result']['content'][0]['text'])
+        return json.loads(response.read().decode('utf-8', 'replace'))
 
 
 def list_tools(endpoint_url):
+    return [tool['name'] for tool in list_tools_schema(endpoint_url)]
+
+
+def list_tools_schema(endpoint_url):
     body = {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list',
             'params': {'_meta': envelope()}}
     request = urllib.request.Request(
@@ -110,7 +119,7 @@ def list_tools(endpoint_url):
             'Mcp-Method': 'tools/list', 'Mcp-Name': 'tools/list'})
     with urllib.request.urlopen(request, timeout=20) as response:
         outer = json.loads(response.read().decode('utf-8', 'replace'))
-    return [tool['name'] for tool in outer['result']['tools']]
+    return outer['result']['tools']
 
 
 def test_new_tools_discoverable_and_callable(endpoint):
@@ -162,6 +171,41 @@ def test_wait_status_validation_envelope(endpoint):
     payload = raw_call(endpoint, 'wait_status',
                        {'states': ['stopped'], 'timeout_seconds': 999})
     assert payload['error']['code'] == 'invalid_request'
+
+
+def test_wait_status_strict_numeric_boundary(endpoint):
+    # The SDK registration boundary (StrictInt / StrictInt|StrictFloat)
+    # rejects booleans, numeric strings and float versions BEFORE the tool
+    # runs. The raw envelope shows an isError tool result naming the
+    # parameter — a proper rejection, not a connection failure and not a
+    # business payload pretending success.
+    for bad in ({'after_state_version': True, 'timeout_seconds': 0},
+                {'after_state_version': False, 'timeout_seconds': 0},
+                {'after_state_version': '1', 'timeout_seconds': 0},
+                {'after_state_version': 1.0, 'timeout_seconds': 0},
+                {'states': ['stopped'], 'timeout_seconds': True},
+                {'states': ['stopped'], 'timeout_seconds': '1'}):
+        outer = raw_outer(endpoint, 'wait_status', bad)
+        assert outer.get('error') is None  # tool-level rejection, not transport
+        result = outer['result']
+        assert result['isError'] is True
+        text = result['content'][0]['text']
+        assert ('after_state_version' in text or
+                'timeout_seconds' in text), text[:200]
+    # Legal numerics flow through per contract: int versions, int and float
+    # timeouts, and the zero-observe-once form.
+    for good in ({'after_state_version': 0, 'timeout_seconds': 0},
+                 {'after_state_version': 1, 'timeout_seconds': 0},
+                 {'states': ['stopped'], 'timeout_seconds': 0},
+                 {'states': ['stopped'], 'timeout_seconds': 1},
+                 {'states': ['stopped'], 'timeout_seconds': 0.1}):
+        payload = raw_call(endpoint, 'wait_status', good)
+        assert payload['error'] is None
+        assert payload['matched'] is True or payload['timed_out'] is True
+    # The public schema keeps numeric typing (integer/number), not an
+    # untyped Any that would mask the boundary.
+    schema_text = json.dumps(list_tools_schema(endpoint))
+    assert 'integer' in schema_text and 'number' in schema_text
 
 
 def test_pending_wait_does_not_block_service_loop(endpoint):
