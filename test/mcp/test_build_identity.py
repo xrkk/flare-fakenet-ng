@@ -1,0 +1,123 @@
+# Copyright 2026 Google LLC
+"""ping build_identity: strict whitelist reads of the candidate manifest.
+
+Valid manifests (temporary fixtures only — the real package and the
+repository's historical manifests are untouched) surface the fixed
+interface revision, the manifest's own SHA and its hex source_commit;
+missing manifests answer unknown without failing; invalid JSON, wrong
+schemas, malformed commits, oversize files and symlinks are refused with
+a short reason; nothing beyond the whitelist (files arrays, paths,
+credentials) is ever echoed; the answer is cached per process.
+"""
+
+import hashlib
+import json
+
+import pytest
+
+from fakenet.mcp import build_identity as bi
+
+
+@pytest.fixture(autouse=True)
+def fresh_cache(monkeypatch):
+    monkeypatch.setattr(bi, '_cache', None)
+
+
+def write_manifest(root, *, schema='fakenet.mcp-candidate-manifest.v1',
+                   source_commit='a' * 40, extra=None):
+    data = {'schema': schema, 'package_version': 'v9',
+            'source_commit': source_commit,
+            'mcp_sdk': 'pin', 'files': ['do-not-leak.bin']}
+    if extra:
+        data.update(extra)
+    raw = json.dumps(data).encode('utf-8')
+    (root / bi.MANIFEST_NAME).write_bytes(raw)
+    return hashlib.sha256(raw).hexdigest()
+
+
+def point_at(tmp_path, monkeypatch):
+    monkeypatch.setattr(bi, 'manifest_path', lambda: tmp_path / bi.MANIFEST_NAME)
+    return tmp_path
+
+
+def test_valid_manifest_whitelist_only(tmp_path, monkeypatch):
+    digest = write_manifest(point_at(tmp_path, monkeypatch))
+    identity = bi.build_identity()
+    assert identity == {
+        'interface_revision': '2026-10-06.1',
+        'source_commit': 'a' * 40,
+        'source': 'candidate_manifest',
+        'manifest_sha256': digest,
+        'error': None,
+    }
+    # The whitelist never leaks manifest internals.
+    assert 'do-not-leak' not in json.dumps(identity)
+
+
+def test_sixtyfour_hex_commit_accepted(tmp_path, monkeypatch):
+    write_manifest(point_at(tmp_path, monkeypatch), source_commit='b' * 64)
+    assert bi.build_identity()['source_commit'] == 'b' * 64
+
+
+def test_missing_manifest_is_unknown_not_failure(tmp_path, monkeypatch):
+    point_at(tmp_path, monkeypatch)
+    identity = bi.build_identity()
+    assert identity['source'] == 'unknown'
+    assert identity['source_commit'] is None
+    assert identity['manifest_sha256'] is None
+    assert identity['error'] is None
+    assert identity['interface_revision'] == '2026-10-06.1'
+
+
+@pytest.mark.parametrize('blob,reason', [
+    (b'{ not json', 'manifest is not valid JSON'),
+    (b'[]', 'manifest schema mismatch'),
+    (json.dumps({'schema': 'other.v1', 'source_commit': 'a' * 40}).encode(),
+     'manifest schema mismatch'),
+    (json.dumps({'schema': 'fakenet.mcp-candidate-manifest.v1'}).encode(),
+     'manifest carries no source_commit'),
+    (json.dumps({'schema': 'fakenet.mcp-candidate-manifest.v1',
+                 'source_commit': 'zz'}).encode(),
+     'manifest source_commit malformed'),
+    (json.dumps({'schema': 'fakenet.mcp-candidate-manifest.v1',
+                 'source_commit': 'HEAD'}).encode(),
+     'manifest source_commit malformed'),
+])
+def test_malformed_manifests_refused_with_short_reason(
+        tmp_path, monkeypatch, blob, reason):
+    root = point_at(tmp_path, monkeypatch)
+    (root / bi.MANIFEST_NAME).write_bytes(blob)
+    identity = bi.build_identity()
+    assert identity['source'] == 'unknown'
+    assert identity['source_commit'] is None
+    assert identity['error'] == reason
+    # The digest of the (read) bytes is still reportable evidence.
+    assert identity['manifest_sha256'] == hashlib.sha256(blob).hexdigest()
+
+
+def test_oversize_manifest_refused(tmp_path, monkeypatch):
+    root = point_at(tmp_path, monkeypatch)
+    blob = b' ' * (bi.MANIFEST_MAX_BYTES + 1)
+    (root / bi.MANIFEST_NAME).write_bytes(blob)
+    identity = bi.build_identity()
+    assert identity['error'] == 'manifest exceeds 4 MiB bound'
+    assert identity['source'] == 'unknown'
+
+
+def test_symlinked_manifest_refused(tmp_path, monkeypatch):
+    root = point_at(tmp_path, monkeypatch)
+    real = root / 'real.json'
+    real.write_text('{}', encoding='utf-8')
+    (root / bi.MANIFEST_NAME).symlink_to(real)
+    identity = bi.build_identity()
+    assert identity['error'] == 'manifest is not a regular file'
+    assert identity['source_commit'] is None
+
+
+def test_identity_is_cached_per_process(tmp_path, monkeypatch):
+    root = point_at(tmp_path, monkeypatch)
+    write_manifest(root, source_commit='c' * 40)
+    first = bi.build_identity()
+    # The manifest changes afterwards; the cached answer must not.
+    write_manifest(root, source_commit='d' * 40)
+    assert bi.build_identity() == first

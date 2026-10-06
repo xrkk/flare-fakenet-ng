@@ -42,11 +42,13 @@ def build_mcp_server(config=None, context=None):
         """No-side-effect probe: service identity, protocol and controller
         header judgment for the calling connection."""
         controller = controller_header_state.get()
+        from fakenet.mcp.build_identity import build_identity
         return {
             'service': MCP_PACKAGE_NAME,
             'version': MCP_PACKAGE_VERSION,
             'protocol': MCP_PROTOCOL_VERSION,
             'controller_header': classify_controller_header(controller),
+            'build_identity': build_identity(),
         }
 
     if context is None and config is not None:
