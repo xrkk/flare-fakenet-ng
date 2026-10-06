@@ -256,6 +256,19 @@ AI 调用次数优化、Token 消费优化: `/home/adminn/projects/flare-fakenet
 
 剩余任务清单: `/home/adminn/projects/flare-fakenet-ng/PLAN/2026.10/2026.10.05/2026.10.05-06-任务清单-剩余实施与验收总清单.md`
 
+> 2026.10.06:
+
+发现最近的提交依然集中在 "测试系统", 评估: 不再处理场景测试, 对工具进行收尾并投入实际使用, 在实际使用中发现问题再改.
+(注: 依然把剩余内容写入到一个剩余任务清单).
+
+剩余任务清单: `/home/adminn/projects/flare-fakenet-ng/PLAN/2026.10/2026.10.06/2026.10.06-01-评估与剩余任务清单-停止场景测试转入实际使用.md`
+
+1. Log 目录下的文件, 能全部删除吗?
+2. 清理 dist 目录下的文件, 只留下最新版.
+3. `/home/adminn/projects/MalTrace/AI辅助逆向/提示词/工具知识/FakeNetNG` 目录下的文件和 `/home/adminn/projects/MalTrace/AI辅助逆向/提示词/样本分析任务` 目录下的关于 fakenetng 的说明内容, 有需要更新的吗?
+
+
+在 .149 虚拟机上部署新版的 fakenet
 
 
 
