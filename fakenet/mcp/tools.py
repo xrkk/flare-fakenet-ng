@@ -605,7 +605,24 @@ def register_tools(server, ctx):
             controller, classification = ctx.controller_identity()
 
             def execute(coord):
-                return mutate(controller)
+                stored = mutate(controller)
+                result = dict(stored)
+                # The stored receipt comes from THIS completed commit's own
+                # return value — the actually stored name and the hash of
+                # the bytes on disk — never a post-commit re-read of a file
+                # another writer may have replaced, and never the caller's
+                # input string or expected_sha256.
+                if kind == 'delete_config':
+                    result['config_result'] = {
+                        'name': stored.get('name'), 'sha256': None,
+                        'builtin': False, 'deleted': True}
+                else:
+                    result['config_result'] = {
+                        'name': stored.get('name'),
+                        'sha256': stored.get('sha256'),
+                        'builtin': bool(stored.get('builtin', False)),
+                        'deleted': False}
+                return result
 
             def audit_rejected(exc):
                 # CHK-047: every real attempt — including rejections —

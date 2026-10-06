@@ -446,6 +446,16 @@ class Coordinator:
                 # The instance this request was bound to, reported next to
                 # the instance that actually exists now.
                 response['bound_run_id'] = result['bound_run_id']
+            # Explicit receipt passthrough (and nothing else from the
+            # internal result): the committed config identity a load
+            # pinned, and the exact stored-receipt a config mutation's
+            # single completed commit produced. Both land in the cached
+            # final response, so replays and command_status later return
+            # the SAME identity even if the file changed since.
+            if 'config_identity' in result:
+                response['config_identity'] = result['config_identity']
+            if 'config_result' in result:
+                response['config_result'] = result['config_result']
             self._commands[command_id] = {
                 'controller': controller, 'response': response,
                 'describe': describe,
