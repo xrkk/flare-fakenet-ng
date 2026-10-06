@@ -1,0 +1,468 @@
+{
+  "workflow_id": "12-glm",
+  "role": "作者/执行方",
+  "stage": "IMPLEMENT",
+  "status": "用户暂缓",
+  "plan": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.10/2026.10.05/2026.10.05-01-修复方案-正式验收工具回迁.md",
+    "sha256": "7a9c706a2d486cae9a71a276bf80661bb49a537276a2c4f5dd77cce0feeb00c3",
+    "blob": "211c3db4d152f1d220a194f0e49ba5a487fea834",
+    "version": "v1",
+    "status": "已审核, 可以实施"
+  },
+  "repository": "/home/adminn/projects/flare-fakenet-ng",
+  "branch": "master",
+  "head": "c953734bda609af8f30dbde8a48f493b7eb79c9b",
+  "parent_run": "fakenet-completion-20261001",
+  "parent_coordination": "/home/adminn/projects/flare-fakenet-ng/.tmp/fakenet-completion-20261001/coordination.md",
+  "parameters": {
+    "文档写入目录": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.10/2026.10.05",
+    "GLM 指导文件": "/home/adminn/projects/flare-fakenet-ng/.tmp/fakenet-completion-20261001/glm-tool-recovery/00-给GLM的指导提示词.md",
+    "正式审核模型": "gpt-6-astra",
+    "正式审核推理强度": "medium",
+    "CODEX_WATCH_MODEL": "gpt-6-luna",
+    "CODEX_WATCH_REASONING": "max",
+    "实施后独立核验": "否",
+    "付费外发授权": "用户在当前FakeNet任务范围明确选择GLM协作；仅最小必要项目材料，不含秘密或无关数据",
+    "已授权服务": "用户指定的GLM业务执行服务",
+    "允许外发的数据范围": "本任务需处理的FakeNet验收工具源码/测试、差异清单、对应已验结果摘要及必要精确证据引用；不默认发送完整PCAP/ETL/全历史Logs",
+    "授权用途": "已验工具回迁的有界资料、编码和测试协作；正式审核和最终验收由Codex承担"
+  },
+  "authorization": {
+    "source": "用户采用12-glm及继续指令",
+    "local_investigation": true,
+    "implementation": "本流程已授权，首次审核通过及作者引入完成；严格限定本方案范围",
+    "push": false
+  },
+  "main_binding": {
+    "pane": "w7:p1",
+    "tab": "w7:t1",
+    "terminal_id": "term_65d128b4cf1401e",
+    "foreground_pids": [
+      25566,
+      25573
+    ],
+    "native_session": null,
+    "evidence": [
+      "本次用户确认当前对话w7:p1",
+      "live目标目录/标题/前台client匹配"
+    ],
+    "herdr_native_session_exposed": false
+  },
+  "review_model_preflight": {
+    "source": "本机models_cache.json",
+    "astra_medium_available": true,
+    "luna_max_available": true
+  },
+  "checkpoint": "用户暂缓正式工作保持；dist只最新/旧39ZIP退役，MalTrace使用说明及固定资料已更新。宿主约145GiB解除旧容量不足事实，未恢复正式审计或业务；Logs原件不删，正式5/100不变。",
+  "blockers": [
+    "当前剩余正式工作按2026-10-06用户方向暂缓，不自动恢复场景或测试系统扩展。",
+    "旧5/Spike新独立重判和完整正向prepare→row→export→audit仍未验，当前VM/实例/来宾及峰值未fresh核验。",
+    "先前宿主容量不足已过期，当前预算满足不代表正式准入；恢复时需重新冻结来源材料且不可依赖已退役旧dist ZIP。"
+  ],
+  "inherited_credit": {
+    "formal_pass": 5,
+    "failed_id": "010",
+    "not_run": 94,
+    "r59": "STOP已验，未封存业务未验收",
+    "audit_budget": "从父记录及有效方案祖先继承，未重置"
+  },
+  "updated_at": "2026-10-06T07:29:04.800457+08:00",
+  "definition_snapshot": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/.tmp/fakenet-completion-20261001/glm-tool-recovery/rules/definition.json",
+    "definition_sha256": "ad000d847852e19981568b288d15587cfc07fa618a1fd3ad9e3be388f7b70c24"
+  },
+  "investigation": {
+    "status": "边界盘点已完成；工具源码组件已回迁，剩余实施验收于2026-10-06按用户指令暂缓",
+    "record": "/home/adminn/projects/flare-fakenet-ng/Logs/maintenance/tool-source-recovery-20261005/2026.10.05-01-调查记录-正式验收工具回迁.md",
+    "inventory": "/home/adminn/projects/flare-fakenet-ng/Logs/maintenance/tool-source-recovery-20261005/runtime-source-inventory.json",
+    "verification": "/home/adminn/projects/flare-fakenet-ng/Logs/maintenance/tool-source-recovery-20261005/verification.json",
+    "runtime_modules": 15,
+    "preparation_modules": 3,
+    "source_seal_match": true
+  },
+  "self_review": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.10/2026.10.05/2026.10.05-02-自评-正式验收工具回迁.md",
+    "blob": "955d790077792a54c47a69ed4410d3f33144e01b",
+    "admission": "通过",
+    "formal_audit_required": true
+  },
+  "audit": {
+    "AUDIT_ID": "fakenet-tool-source-audit-20261005-01",
+    "batch": "formal-tool-source-recovery-v1",
+    "mode": "首次全面",
+    "full_budget_used": 1,
+    "directed_budget_used": 0,
+    "pane": "w7:p2S",
+    "terminal_id": "term_65d0f11ac3bfc48",
+    "created_by": "本轮主控",
+    "native_session": "01a10a00-e234-7063-85eb-cf35b556767c",
+    "model": "gpt-6-astra",
+    "reasoning": "medium",
+    "status": "已核停写并正式引入：审计通过",
+    "task": "/home/adminn/projects/flare-fakenet-ng/.tmp/fakenet-completion-20261001/glm-tool-recovery/audit-01.task.md",
+    "result": "/home/adminn/projects/flare-fakenet-ng/.tmp/fakenet-completion-20261001/glm-tool-recovery/audit-01.result.md",
+    "audit_path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.10/2026.10.05/2026.10.05-03-审核-正式验收工具回迁.md",
+    "freeze": "/home/adminn/projects/flare-fakenet-ng/.tmp/fakenet-completion-20261001/glm-tool-recovery/audit-01-frozen-inputs.json",
+    "freeze_sha256": "136f7f04c3ee41e358c8fc91a845ac29a12e4665855748469afb1030f5c1346b",
+    "dispatch": "/home/adminn/projects/flare-fakenet-ng/.tmp/fakenet-completion-20261001/glm-tool-recovery/audit-01-dispatch.json",
+    "submitted_at": "2026-10-05T11:04:14.139237+08:00",
+    "full_attempt_dispatched": 1,
+    "effective_full_conclusions": 1,
+    "foreground_pids": [
+      70518,
+      70526
+    ],
+    "task_sha256": "4d950c95212f0d2614dde5c3d673248d95b3b8fd0d381d4e249953cb1a29fe8e",
+    "work_stopped": true,
+    "audit_blob": "b1999003693a1526387f6d8fbb3fe03ae8ca08d1",
+    "result_sha256": "328b202c27eb3898c1e17844428bba9bf13caa5f0392972e770a589d9a75acb2",
+    "pane_reclaimed": true,
+    "reclaim_response": "Herdr pane close w7:p2S -> type ok; native已核后执行"
+  },
+  "audit_import": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.10/2026.10.05/2026.10.05-04-审核处理-正式验收工具回迁.md",
+    "at": "2026-10-05T11:17:39.397557+08:00",
+    "contract_changed": false,
+    "qualification": "已审核, 可以实施",
+    "directed_review_required": false
+  },
+  "implementation": {
+    "record": "/home/adminn/projects/flare-fakenet-ng/PLAN/2026.10/2026.10.05/2026.10.05-05-实施记录-正式验收工具回迁.md",
+    "writer": "Codex主控",
+    "components": [
+      {
+        "component": "input_binding",
+        "status": "已验且已提交；IMP-001部分",
+        "commit": "e845652802567d5d4eb190cd2d9148737f0bcc08",
+        "files": [
+          "test/mcp/acceptance/formal_runtime/__init__.py",
+          "test/mcp/acceptance/formal_runtime/context.py",
+          "test/mcp/acceptance/formal_runtime/README.md",
+          "test/mcp/test_formal_runtime_context.py"
+        ],
+        "tests": {
+          "passed": 15,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/context-02/pytest.log"
+        },
+        "ACC": "ACC-001/002部分，非完整prepare/源码闭包准入"
+      },
+      {
+        "component": "original_input_checks",
+        "status": "源码已验且提交；真实材料在容量门拒绝",
+        "commits": [
+          "a1ab71e",
+          "a372a11",
+          "a49fd31adb3fbe2ed69a9e0f5cbadcbb54d08b35"
+        ],
+        "tests": {
+          "passed": 34,
+          "log": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenet-completion-20261001/tool-source-recovery/prepare-inputs-04/pytest.log"
+        },
+        "real_result": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenet-completion-20261001/tool-source-recovery/prepare-inputs-final-verification.json",
+        "ACC": "ACC-001/002部分，非完整prepare/独立重判或正式信用"
+      },
+      {
+        "component": "command_transport",
+        "commit": "c8c50ad",
+        "status": "源码组件已验/已提交，完整工具ACC仍未通过",
+        "tests": {
+          "passed": 52,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/transport-20261005-05/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "source_binding",
+        "commit": "607bf4b",
+        "status": "源码组件已验/已提交，完整工具ACC仍未通过",
+        "tests": {
+          "passed": 123,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/source-20261005-02/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "source_export",
+        "commit": "b989349",
+        "status": "源码组件已验/已提交，完整工具ACC仍未通过",
+        "tests": {
+          "passed": 135,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/export-20261005-03/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "configuration_ownership",
+        "commit": "91494233f5d3ca84ec892479fbdc4010a05e9c34",
+        "status": "源码组件已验/已提交，完整工具ACC仍未通过",
+        "tests": {
+          "passed": 136,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/ownership-20261005-05/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "DNS_byte_binding",
+        "commit": "4bb1d78",
+        "status": "源码组件已验/已提交，完整ACC仍未通过",
+        "tests": {
+          "passed": 112,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/dns-20261005-01/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "native_instance_exact_recovery",
+        "commit": "9ca3067",
+        "status": "源码组件已验/已提交，完整ACC仍未通过",
+        "tests": {
+          "passed": 134,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/instance-20261005-05/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "source_pin_revalidation",
+        "commit": "484a609ecd19c9e3b040b9973bbb9cd17f6b70f1",
+        "status": "源码组件已验/已提交，完整ACC仍未通过",
+        "tests": {
+          "passed": 13,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/source-pin-20261005-01/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "closed_P7_original_export",
+        "commit": "0331b66c13597b96ef288ed2e2b2b549a0a8559e",
+        "status": "源码组件已验/已提交，完整ACC仍未通过",
+        "tests": {
+          "passed": 23,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/closed-run-20261005-02/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "SCM_P7_DNS_composition",
+        "commit": "6a48f7f716c8e7e8e95796f9b75b237f7b339936",
+        "status": "源码组合组件已验/已提交，完整入口及实机ACC未验",
+        "tests": {
+          "related_passed": 129,
+          "final_changed_passed": 10,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/coordinator-20261005-05/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "source_bijection_mapper",
+        "commit": "055c6430e943721eb5c3163fee67ef3120b0d6c0",
+        "status": "源码组件已验/已提交，真实原5/Spike重建未执行",
+        "tests": {
+          "passed": 44,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/audit-mapper-20261005-02/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "minimal_independent_source_view",
+        "commit": "b271c7cb2fec2b1e584ef11fddd0b01ba0deaa6e",
+        "status": "源码组件已验/已提交，实际旧5/Spike重建容量受阻",
+        "tests": {
+          "passed": 51,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/audit-view-20261005-02/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "independent_source_audit_entry",
+        "commit": "02f732d333d84ccf1010b6eb1072835b5d548f06",
+        "status": "源码入口已验/提交，真实旧5/Spike在容量门拒绝，ACC-005未通过",
+        "tests": {
+          "related_passed": 58,
+          "final_changed_passed": 6,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/audit-entry-20261005-03/pytest.log"
+        },
+        "real_materials_pin": "e8f4533bdae53b9406b8a8d14ff6230fb95d872e55fb0aad4de532bf28ef3df9",
+        "vm_calls": 0
+      },
+      {
+        "component": "fresh_original_mcp_client",
+        "commit": "05d77d39cb435561e5f102fa6f2d0a72b2c55253",
+        "status": "源码组件已验/提交，单批入口尚待接入",
+        "tests": {
+          "passed": 73,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/clients-20261005-03/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "current_producer_binding_and_vm_journal",
+        "commit": "2a9577523dc7541e1462d26255a56333efa05671",
+        "status": "源码组件已验/提交，准确来源读取和导出尚待",
+        "tests": {
+          "related_passed": 118,
+          "final_changed_passed": 28,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/producer-20261005-05/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "sealed_versioned_producer_source",
+        "commit": "6b8c3bfad86d024082f29570e2a52bad3a2df245",
+        "status": "源码组件已验/提交，当前source authority待接入",
+        "tests": {
+          "passed": 120,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/producer-source-20261005-03/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "current_source_transport_and_journal_handoff",
+        "commit": "6002ca11425421f7c67f1fb3d90ddb157ddba35f",
+        "status": "源码组件已验/提交，当前export backend尚待接入",
+        "tests": {
+          "passed": 65,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/current-source-20261005-02/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "current_source_original_export_and_host_writer_publication_gate",
+        "commit": "20dc06f822cb1eb64b2b6438e0e1366b6dd45112",
+        "status": "源码组件已验/提交，正式单批及完整链尚待",
+        "tests": {
+          "related_passed": 126,
+          "final_changed_passed": 8,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/current-export-20261005-03/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "explicit_original_single_batch_request",
+        "commit": "7d019614e8668963b989e1617d2082736344fdd1",
+        "status": "纯请求源码组件已验/提交，完整正式入口与prepare未完成",
+        "tests": {
+          "passed": 49,
+          "log": "Logs/fakenet-completion-20261001/tool-source-recovery/batch-request-20261005-01/pytest.log"
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "original_single_batch_assembly",
+        "commit": "1ed877e",
+        "status": "组装组件已提交，未授完整prepare/实机",
+        "tests": {
+          "passed": 26,
+          "not_additive": true
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "sealed_batch_independent_audit",
+        "commit": "60b4586",
+        "status": "实际原verify负例已验，正向seal全链未验",
+        "tests": {
+          "passed": 58,
+          "not_additive": true
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "readonly_export_entry",
+        "commit": "ddb2022",
+        "status": "只读组件与实际本机原传输已验，真实VM导出未验",
+        "tests": {
+          "passed": 61,
+          "not_additive": true
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "original_failure_chain",
+        "commit": "6f627ec",
+        "status": "原失败切片已验，完整正向链未验",
+        "tests": {
+          "passed": 3,
+          "not_additive": true
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "cumulative_row_audit",
+        "commit": "4486e91",
+        "status": "原累计per-row独立门组件已验，真实每行normal未验",
+        "tests": {
+          "passed": 53,
+          "not_additive": true
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "isolated_spike_historical_native_closure",
+        "commit": "8c49a1b",
+        "status": "原full Spike拒绝/closure组件已验，真实positive未验",
+        "tests": {
+          "passed": 30,
+          "not_additive": true
+        },
+        "vm_calls": 0
+      },
+      {
+        "component": "actual_absent_environment_semantics",
+        "commit": "1aa2620",
+        "status": "actual indexed raw [null]语义保留/严格误拒绝修正，component已验",
+        "tests": {
+          "passed": 34,
+          "not_additive": true
+        },
+        "vm_calls": 0
+      }
+    ],
+    "next": "T04显式单批正式入口/独立audit失败恢复全链；T05 fullprepare和T06-08后续；真实5/Spike重建与实机因容量受阻",
+    "work_stopped": false,
+    "formal_progress": "5/100，010历史失败，94未执行",
+    "head": "7d019614e8668963b989e1617d2082736344fdd1",
+    "current_materials": {
+      "path": "/home/adminn/projects/flare-fakenet-ng/Logs/fakenet-completion-20261001/tool-source-recovery/real-prepare-entry-20261005-06/materials.json",
+      "sha256": "f16c15b57c98513d0770aa864b8d35d20af9b5a96c19428b3cbc3aeed3afb727",
+      "tool_commit": "1aa2620713bd2eab9dfad3e3c4b0861e35ec887c",
+      "actual_prepare_exit": 4,
+      "VM_calls": 0,
+      "business_output_created": false,
+      "audit_output_created": false,
+      "positive_full_chain_verified": false
+    }
+  },
+  "task_board": {
+    "owner_epoch": 1,
+    "content_version": 159,
+    "revision": 270,
+    "waiting_for_user": "",
+    "ai_reported_done": false
+  },
+  "root12_definition_snapshot": {
+    "path": "/home/adminn/projects/flare-fakenet-ng/.tmp/fakenet-completion-20261001/rules-root12-20261005/definition.json",
+    "definition_sha256": "37d829ee308c65b011360e24cd6a2b8fdbe0fb51fafa4ecc49e066339992d70d"
+  },
+  "execution_change": {
+    "at": "2026-10-06T07:07:37.427310+08:00",
+    "source": "本轮用户指令",
+    "direction": "现有产品收尾与实际使用优先，真实问题驱动修复",
+    "formal_work_deferred": true,
+    "resume_condition": "用户重新要求正式验收/发布，或真实问题指定必要受影响验证；不得自动恢复全场景",
+    "remaining_list": "PLAN/2026.10/2026.10.06/2026.10.06-01-评估与剩余任务清单-停止场景测试转入实际使用.md",
+    "tool_material_frozen_commit": "1aa2620713bd2eab9dfad3e3c4b0861e35ec887c"
+  },
+  "storage_and_prompt_closeout": {
+    "at": "2026-10-06T07:25:54.652106+08:00",
+    "evidence": "Logs/maintenance/closeout-20261006",
+    "fakenet_commit": "e0b1ee51990d76d4e10912320a5d77effd1ca2be",
+    "maltrace_commit": "c915b703caca33e5105a2e93ce3961457dbe92f0",
+    "logs_deleted": 0,
+    "dist_latest_only": true,
+    "old_zips_retired": 39,
+    "old_metadata_archived": 125,
+    "fresh_host_bytes": 156103344128,
+    "targeted_prompt_audit": "FakeNet knowledge/affected workflow closure checks passed; unrelated issues excluded from this task by user"
+  }
+}
