@@ -252,6 +252,10 @@ GLM 执行此清单.
 
 AI 调用次数优化、Token 消费优化: `/home/adminn/projects/flare-fakenet-ng/PLAN/2026.09/2026.09.30/2026.09.30-01-产品后续改进TODO清单.md`
 
+> 2026.10.05:
+
+剩余任务清单: `/home/adminn/projects/flare-fakenet-ng/PLAN/2026.10/2026.10.05/2026.10.05-06-任务清单-剩余实施与验收总清单.md`
+
 
 
 
