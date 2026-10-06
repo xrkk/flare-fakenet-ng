@@ -152,6 +152,25 @@ def start_run(endpoint_url, name):
     return started
 
 
+def test_event_cursor_continuity_over_http(endpoint, local_diagnostics):
+    # First test on this endpoint: the event log may still be empty, and
+    # even then the initial get_events answer carries a non-null epoch/0
+    # cursor that continues reading once events appear — the tool surface,
+    # not just the helper, must hand back that starting point.
+    before = call(endpoint, 'get_events', {'limit': 1})
+    assert before['error'] is None
+    token = before['next_cursor']
+    assert token
+    coordinator = server_module._active_context.coordinator
+    coordinator._events.record('http.note', marker='cursor-continuity')
+    follow = call(endpoint, 'get_events', {'limit': 10, 'cursor': token})
+    assert follow['error'] is None
+    assert [event['kind'] for event in follow['events']] == ['http.note']
+    assert follow['next_cursor']
+    assert all('epoch' in event and 'seq' in event
+               for event in follow['events'])
+
+
 def test_no_current_run_overview(endpoint, local_diagnostics):
     payload = call(endpoint, 'get_run_overview')
     assert payload['error'] is None

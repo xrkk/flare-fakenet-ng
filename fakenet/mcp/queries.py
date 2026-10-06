@@ -8,10 +8,12 @@ mutates coordinator state, state_version, controller or commands.
 
 Cursor contract (fakenet.query.cursor.v1):
 
-* a cursor is an opaque token encoding the epoch and the last scanned seq;
-  callers never assemble or parse it themselves;
+* a cursor is an opaque token encoding the epoch and the last scanned seq
+  (0 is the seq floor of an epoch, so even an empty log yields a usable
+  epoch/0 starting cursor); callers never assemble or parse it themselves;
 * without a cursor the page is the most recent ``limit`` matching entries
-  and the returned cursor marks the current tail (matched or not);
+  and the returned cursor marks the current tail (matched or not; an empty
+  log marks the epoch/0 floor, never null);
 * with a cursor the page is the entries after it, ascending, bounded by
   ``limit``; entries skipped by a run filter still advance the scan so an
   empty page cannot loop forever;
@@ -35,8 +37,8 @@ class InvalidCursor(ValueError):
 def encode_cursor(epoch, seq):
     if not isinstance(epoch, str) or not epoch:
         raise ValueError('cursor epoch must be a non-empty string')
-    if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
-        raise ValueError('cursor seq must be a positive integer')
+    if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+        raise ValueError('cursor seq must be a non-negative integer')
     raw = json.dumps({'v': 1, 'epoch': epoch, 'seq': seq},
                      separators=(',', ':')).encode('utf-8')
     padded = base64.urlsafe_b64encode(raw).decode('ascii').rstrip('=')
@@ -58,7 +60,7 @@ def decode_cursor(token):
     seq = payload.get('seq')
     if not isinstance(epoch, str) or not epoch:
         raise InvalidCursor('cursor epoch is malformed')
-    if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
+    if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
         raise InvalidCursor('cursor seq is malformed')
     return epoch, seq
 
@@ -74,9 +76,18 @@ def events_page(entries, epoch, oldest_seq, latest_seq, *,
     """Compute one incremental event page over a consistent window snapshot.
 
     ``entries`` is the ascending seq-ordered snapshot of the retained log;
-    ``epoch``/``oldest_seq``/``latest_seq`` describe that same snapshot.
-    Returns the response fields for get_events (events plus the cursor
-    bookkeeping); never mutates anything.
+    ``epoch``/``oldest_seq``/``latest_seq`` describe that same snapshot
+    (latest_seq=0 means nothing is retained in this epoch). Returns the
+    response fields for get_events (events plus the cursor bookkeeping);
+    never mutates anything.
+
+    Same-epoch cursors resume with every retained entry after the cursor:
+    a cursor below the window resumes from the earliest retained match, so
+    paging always covers the retained window without duplicates or drops.
+    ``gap`` is reported only when retention provably dropped entries after
+    the cursor (cursor_seq < oldest_seq - 1). An epoch change reports
+    ``reset_required`` and likewise resumes from the earliest retained
+    match of the new epoch.
     """
     if limit is None or limit < 1:
         limit = 100
@@ -85,38 +96,48 @@ def events_page(entries, epoch, oldest_seq, latest_seq, *,
     if cursor_token is not None:
         cursor_epoch, cursor_seq = decode_cursor(cursor_token)
         if cursor_epoch != epoch:
-            # The log was rebuilt: continuity cannot be claimed. Answer as a
-            # fresh initial page over the retained window with the new epoch.
+            # The log was rebuilt: continuity cannot be claimed. Resume
+            # from the earliest retained match of the new epoch so paging
+            # covers the retained window; the returned cursor then walks
+            # forward normally within this epoch.
             reset_required = True
-        elif latest_seq is not None and cursor_seq > latest_seq:
-            raise InvalidCursor('cursor seq is beyond the current tail')
-        elif oldest_seq is not None and cursor_seq < oldest_seq:
-            # Retention already dropped the cursor position: report the
-            # retained portion instead of a fabricated continuity.
-            gap = True
-        else:
-            # Incremental scan: everything after the cursor, in seq order,
-            # first ``limit`` matches; the cursor advances past skipped
-            # entries so unmatched pages never loop.
-            matched = [entry for entry in entries
-                       if entry['seq'] > cursor_seq and _matches(entry, run_id)]
+            matched = [entry for entry in entries if _matches(entry, run_id)]
             page = matched[:limit]
-            if len(matched) > limit:
-                next_seq = page[-1]['seq']
-                has_more = True
-            else:
-                next_seq = latest_seq if latest_seq is not None else cursor_seq
-                has_more = False
+            has_more = len(matched) > limit
+            next_seq = (page[-1]['seq'] if page
+                        else (latest_seq if latest_seq is not None else 0))
             return _page_response(page, epoch, oldest_seq, latest_seq,
                                   next_seq, has_more, gap, reset_required)
+        if latest_seq is not None and cursor_seq > latest_seq:
+            raise InvalidCursor('cursor seq is beyond the current tail')
+        # Retention provably dropped entries after the cursor only when the
+        # oldest retained seq is not the cursor's immediate successor.
+        gap = oldest_seq is not None and cursor_seq < oldest_seq - 1
+        # Resume scan: everything after the cursor, in seq order, first
+        # ``limit`` matches. A cursor below the window naturally resumes
+        # from the earliest retained entry; entries skipped by a run filter
+        # still advance the scan so unmatched pages never loop.
+        matched = [entry for entry in entries
+                   if entry['seq'] > cursor_seq and _matches(entry, run_id)]
+        page = matched[:limit]
+        if len(matched) > limit:
+            next_seq = page[-1]['seq']
+            has_more = True
+        else:
+            next_seq = latest_seq if latest_seq is not None else cursor_seq
+            has_more = False
+        return _page_response(page, epoch, oldest_seq, latest_seq,
+                              next_seq, has_more, gap, reset_required)
     # Initial page (no cursor, epoch reset, or retention gap): the most
     # recent ``limit`` matches, ascending, cursor at the current tail. The
     # cursor only walks forward, so a tail cursor has nothing more ahead;
-    # events older than this page stay observable through oldest_seq.
+    # events older than this page stay observable through oldest_seq. An
+    # empty log reports the epoch/0 floor so the incremental start exists
+    # before the first event is ever recorded.
     matched = [entry for entry in entries if _matches(entry, run_id)]
     page = matched[-limit:] if limit else matched
     has_more = False
-    next_seq = latest_seq if latest_seq is not None else None
+    next_seq = latest_seq if latest_seq is not None else 0
     return _page_response(page, epoch, oldest_seq, latest_seq, next_seq,
                           has_more, gap, reset_required)
 

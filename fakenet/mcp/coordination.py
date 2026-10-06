@@ -64,11 +64,16 @@ class EventLog:
             return items[-limit:] if limit else items
 
     def window(self):
-        """One consistent (epoch, entries, oldest_seq, latest_seq) snapshot."""
+        """One consistent (epoch, entries, oldest_seq, latest_seq) snapshot.
+
+        An empty retention window reports latest_seq=0 (the seq floor of the
+        epoch) so an initial query still yields a usable epoch/0 cursor,
+        while oldest_seq stays None — nothing is retained.
+        """
         with self._lock:
             items = list(self._entries)
             oldest = items[0]['seq'] if items else None
-            latest = items[-1]['seq'] if items else None
+            latest = items[-1]['seq'] if items else 0
             return self._epoch, items, oldest, latest
 
 

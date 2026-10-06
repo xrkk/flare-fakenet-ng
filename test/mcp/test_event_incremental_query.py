@@ -89,33 +89,87 @@ def test_incremental_pages_cover_everything_exactly_once():
     assert settled['events'] == [] and settled['has_more'] is False
 
 
-def test_retention_gap_reported_with_retained_portion():
+def _drain(log, cursor, *, limit, run_id=None):
+    """Page forward from a cursor until settled; returns (seqs, last_page)."""
+    collected = []
+    result = None
+    has_more = True
+    guard = 0
+    while has_more:
+        guard += 1
+        assert guard < 30, 'pagination did not converge'
+        result = page(log, limit=limit, cursor=cursor, run_id=run_id)
+        collected.extend(entry['seq'] for entry in result['events'])
+        cursor = result['next_cursor']
+        has_more = result['has_more']
+    return collected, result
+
+
+def test_retention_boundary_cursor_is_contiguous_not_gap():
+    # Retained 16..20; a cursor at 15 means seq 16 is its immediate
+    # successor — nothing was dropped after it, so no gap, and the page
+    # resumes from the earliest retained entries.
     log = EventLog(limit=5)
-    fill(log, 20)  # retained: seq 16..20
-    stale = queries.encode_cursor(log.epoch, 3)
-    result = page(log, limit=2, cursor=stale)
-    assert result['gap'] is True
-    assert result['reset_required'] is False
+    fill(log, 20)
+    result = page(log, limit=2,
+                  cursor=queries.encode_cursor(log.epoch, 15))
     assert result['oldest_seq'] == 16 and result['latest_seq'] == 20
-    assert [entry['seq'] for entry in result['events']] == [19, 20]
+    assert [entry['seq'] for entry in result['events']] == [16, 17]
+    assert result['gap'] is False
+    assert result['has_more'] is True
     _, next_seq = queries.decode_cursor(result['next_cursor'])
-    assert next_seq == 20
+    assert next_seq == 17
+    # Continuing two more pages covers 18..20 with no duplicates or drops.
+    second = page(log, limit=2, cursor=result['next_cursor'])
+    assert [entry['seq'] for entry in second['events']] == [18, 19]
+    assert second['has_more'] is True
+    third = page(log, limit=2, cursor=second['next_cursor'])
+    assert [entry['seq'] for entry in third['events']] == [20]
+    assert third['has_more'] is False
+    assert queries.decode_cursor(third['next_cursor'])[1] == 20
 
 
-def test_rebuilt_log_resets_epoch_instead_of_continuity():
+def test_real_gap_resumes_from_earliest_retained_and_covers_all():
+    # A cursor two below the window (14 vs oldest 16) provably lost seq 15:
+    # gap=true, but the response still resumes from the earliest retained
+    # entries and paging covers everything retained — no jump to the tail.
+    for cursor_seq in (14, 3):
+        log = EventLog(limit=5)
+        fill(log, 20)
+        result = page(log, limit=2,
+                      cursor=queries.encode_cursor(log.epoch, cursor_seq))
+        assert result['gap'] is True
+        assert result['reset_required'] is False
+        assert [entry['seq'] for entry in result['events']] == [16, 17]
+        collected, last = _drain(log, result['next_cursor'], limit=2)
+        assert collected == [18, 19, 20]
+        assert last['has_more'] is False
+        assert queries.decode_cursor(last['next_cursor'])[1] == 20
+
+
+def test_rebuilt_log_resets_and_recovers_from_earliest_retained():
     old_log = EventLog(limit=500)
     fill(old_log, 10)
     stale = old_log.snapshot()[3]  # seq 4
     cursor = queries.encode_cursor(stale['epoch'], stale['seq'])
     new_log = EventLog(limit=500)
-    fill(new_log, 3)
+    fill(new_log, 5)
     result = page(new_log, limit=2, cursor=cursor)
     assert result['reset_required'] is True
     assert result['gap'] is False
-    assert [entry['seq'] for entry in result['events']] == [2, 3]
+    # The reset page resumes from the earliest retained match of the new
+    # epoch (not the latest tail), so three limit-2 pages recover all of it.
+    assert [entry['seq'] for entry in result['events']] == [1, 2]
+    assert result['has_more'] is True
     assert result['epoch'] == new_log.epoch
-    _, next_seq = queries.decode_cursor(result['next_cursor'])
-    assert next_seq == 3
+    collected, last = _drain(new_log, result['next_cursor'], limit=2)
+    assert [1, 2] + collected == [1, 2, 3, 4, 5]
+    assert last['has_more'] is False
+    # After the reset recovery the returned cursor is a normal same-epoch
+    # cursor: new events continue incrementally.
+    new_log.record('post-reset')
+    follow = page(new_log, cursor=last['next_cursor'])
+    assert [entry['kind'] for entry in follow['events']] == ['post-reset']
 
 
 def test_run_filter_matches_own_field_and_empty_pages_advance():
@@ -161,10 +215,10 @@ def test_invalid_and_future_cursors_rejected():
     for bad in ('garbage', 'fnev1.!!!', 'fnev1', 'ev1.abc'):
         with pytest.raises(queries.InvalidCursor):
             page(log, cursor=bad)
-    # Malformed payloads under a valid prefix are rejected at decode time;
-    # the encoder refuses to produce them at all.
+    # Malformed payloads under a valid prefix are rejected at decode time.
     import base64 as _base64
-    for payload in ({'v': 1, 'epoch': log.epoch, 'seq': 0},
+    for payload in ({'v': 1, 'epoch': log.epoch, 'seq': -1},
+                    {'v': 1, 'epoch': log.epoch, 'seq': True},
                     {'v': 1, 'epoch': '', 'seq': 1},
                     {'v': 2, 'epoch': log.epoch, 'seq': 1},
                     {'epoch': log.epoch, 'seq': 1}):
@@ -178,6 +232,43 @@ def test_invalid_and_future_cursors_rejected():
     # Equal to the tail is valid (settled page); only beyond is rejected.
     tail = queries.encode_cursor(log.epoch, 5)
     assert page(log, cursor=tail)['events'] == []
+
+
+def test_empty_log_yields_epoch_floor_starting_cursor():
+    # An empty log still produces a usable incremental start: a non-null
+    # epoch/0 cursor, with oldest_seq=None and latest_seq=0.
+    log = EventLog(limit=500)
+    result = page(log)
+    assert result['events'] == []
+    assert result['oldest_seq'] is None and result['latest_seq'] == 0
+    assert result['next_cursor'] is not None
+    epoch, seq = queries.decode_cursor(result['next_cursor'])
+    assert epoch == log.epoch and seq == 0
+    # Consuming that cursor on the still-empty log stays an empty page and
+    # never falls back to a null cursor.
+    settled = page(log, cursor=result['next_cursor'])
+    assert settled['events'] == []
+    assert settled['next_cursor'] is not None
+    assert queries.decode_cursor(settled['next_cursor']) == (log.epoch, 0)
+    # A future seq is rejected on the empty log too.
+    future = queries.encode_cursor(log.epoch, 1)
+    with pytest.raises(queries.InvalidCursor, match='beyond the current tail'):
+        page(log, cursor=future)
+
+
+def test_floor_cursor_reads_new_events_in_pages():
+    log = EventLog(limit=500)
+    start = page(log)['next_cursor']
+    fill(log, 5)
+    pages = []
+    cursor = start
+    has_more = True
+    while has_more:
+        result = page(log, limit=2, cursor=cursor)
+        pages.append([entry['seq'] for entry in result['events']])
+        cursor = result['next_cursor']
+        has_more = result['has_more']
+    assert pages == [[1, 2], [3, 4], [5]]
 
 
 def test_concurrent_record_and_read_never_tear_or_duplicate():
@@ -232,8 +323,11 @@ def test_coordinator_reads_do_not_bump_state_version():
 def test_cursor_roundtrip_rejects_malformed_payloads():
     token = queries.encode_cursor('abc123', 7)
     assert queries.decode_cursor(token) == ('abc123', 7)
+    # seq 0 is the legal epoch floor (empty-log starting cursors).
+    assert queries.decode_cursor(queries.encode_cursor('abc123', 0)) == \
+        ('abc123', 0)
     for bad_epoch, bad_seq in ((None, 7), ('abc', '7'), ('abc', True),
-                               ('abc', 0), ('abc', -3)):
+                               ('abc', -3), ('abc', 1.5)):
         with pytest.raises(ValueError):
             queries.encode_cursor(bad_epoch, bad_seq)
 
