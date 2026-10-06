@@ -156,28 +156,34 @@ def test_timeout_is_normal_outcome_with_final_observation():
 
 
 def test_cancellation_stops_observations_immediately():
-    released = threading.Event()
-
-    def observe():
-        # The first observation blocks until the test releases it; the
-        # waiter is cancelled while inside this call and must not observe
-        # again afterwards.
-        released.wait(timeout=10)
-        return {'state': 'stopped', 'state_version': 1}
+    # The waiter runs the PRODUCTION wait_for_status over the real
+    # asyncio.sleep; cancellation is delivered while the coroutine is
+    # parked in that async yield point (never by blocking the loop), and
+    # observe calls must stop growing once the task is cancelled.
+    script = ObservationScript([{'state': 'stopped', 'state_version': 1}])
 
     async def scenario():
         waiter = asyncio.ensure_future(queries.wait_for_status(
-            observe=observe, states=['healthy'], timeout_seconds=30))
-        await asyncio.sleep(0.05)
+            observe=script, states=['healthy'], timeout_seconds=30))
+        # Let the waiter observe at least once and settle into its poll
+        # sleep (the async yield point where cancellation lands).
+        await asyncio.sleep(0.15)
         assert not waiter.done()
+        assert script.calls >= 1
         waiter.cancel()
-        released.set()
         with pytest.raises(asyncio.CancelledError):
             await waiter
+        # Give the loop real scheduling opportunities after cancellation:
+        # the observation count must not move.
+        settled = script.calls
+        for _ in range(10):
+            await asyncio.sleep(0.01)
+        assert script.calls == settled
+        # No helper task outlives the cancelled waiter.
+        assert [task for task in asyncio.all_tasks()
+                if task is not asyncio.current_task()] == []
 
     run(scenario())
-    # Nothing keeps running after the loop ends: the waiter task completed
-    # (cancelled) inside scenario().
 
 
 def test_real_coordinator_health_wait_without_version_bump():
