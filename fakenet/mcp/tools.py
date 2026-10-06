@@ -220,9 +220,30 @@ def register_tools(server, ctx):
         return snap
 
     @server.tool()
-    def get_events(limit: int = 100) -> dict:
+    def get_events(limit: int = 100, cursor: str = None,
+                   run_id: str = None) -> dict:
+        from fakenet.mcp import queries
         limit = max(1, min(int(limit), 500))
-        return {'events': ctx.coordinator.events(limit), 'error': None}
+        try:
+            _validated_run_id(run_id)
+        except errors.McpError as exc:
+            return {'events': [], 'error': exc.to_dict()}
+        epoch, entries, oldest, latest = ctx.coordinator.events_window()
+        try:
+            page = queries.events_page(
+                entries, epoch, oldest, latest,
+                limit=limit, cursor_token=cursor, run_id=run_id)
+        except queries.InvalidCursor as exc:
+            return {'events': [], 'error': errors.McpError(
+                errors.INVALID_REQUEST,
+                'invalid cursor: %s' % exc).to_dict()}
+        payload = dict(page)
+        payload['limit'] = limit
+        payload['run_id'] = run_id
+        payload['error'] = None
+        # Read-only by construction: snapshot/events_window never touch
+        # state_version, controller or commands.
+        return payload
 
     @server.tool()
     def list_configs() -> dict:

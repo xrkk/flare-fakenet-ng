@@ -31,19 +31,45 @@ EVENT_BUFFER_LIMIT = 500
 
 
 class EventLog:
+    """Bounded event retention with per-log epoch and strictly increasing seq.
+
+    The epoch is unique per EventLog instance (a rebuilt log answers with a
+    new epoch, never a fabricated continuity); every entry carries its
+    ``epoch`` and ``seq``. Recording and reading take the same lock so a
+    concurrent record can never tear a snapshot or duplicate a seq.
+    """
 
     def __init__(self, limit=EVENT_BUFFER_LIMIT):
+        self._lock = threading.Lock()
         self._entries = deque(maxlen=limit)
+        self._epoch = uuid.uuid4().hex
+        self._seq = 0
+
+    @property
+    def epoch(self):
+        return self._epoch
 
     def record(self, event_type, **fields):
-        entry = {'timestamp': time.time(), 'kind': event_type}
-        entry.update(fields)
-        self._entries.append(entry)
-        return entry
+        with self._lock:
+            self._seq += 1
+            entry = {'timestamp': time.time(), 'kind': event_type,
+                     'epoch': self._epoch, 'seq': self._seq}
+            entry.update(fields)
+            self._entries.append(entry)
+            return entry
 
     def snapshot(self, limit=None):
-        items = list(self._entries)
-        return items[-limit:] if limit else items
+        with self._lock:
+            items = list(self._entries)
+            return items[-limit:] if limit else items
+
+    def window(self):
+        """One consistent (epoch, entries, oldest_seq, latest_seq) snapshot."""
+        with self._lock:
+            items = list(self._entries)
+            oldest = items[0]['seq'] if items else None
+            latest = items[-1]['seq'] if items else None
+            return self._epoch, items, oldest, latest
 
 
 class Coordinator:
@@ -137,6 +163,11 @@ class Coordinator:
     def events(self, limit=None):
         with self._lock:
             return self._events.snapshot(limit)
+
+    def events_window(self):
+        """Consistent event-log window for incremental cursor queries."""
+        with self._lock:
+            return self._events.window()
 
     @property
     def running(self):
