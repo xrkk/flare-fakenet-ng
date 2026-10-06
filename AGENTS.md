@@ -8,6 +8,23 @@ build diagnostics, replay output, and acceptance evidence under repository-root
 `Logs/`, which is local and gitignored. New launchers and test runners must default
 to `Logs/`; an active plan may name a more specific evidence subdirectory there.
 
+## Logs cleanup after each run
+
+After business, capture, transfer, and derived-evidence writers have exited, audit
+`Logs/` for disposable intermediate files. Clean only paths on a reviewed, exact
+manifest after rechecking each file's identity, references, and any retained
+copy's SHA-256; record the deletion and disk-space results. Keep formal pass and
+failure originals and every indexed or nested-path dependency. Cleanup tools
+default to audit mode; execution requires an explicit guarded manifest and any
+applicable approval. Do not schedule unattended scans or delete by age or broad
+directory pattern.
+
+Historical evidence listed in `Logs/maintenance/primary-space-01/dedup-manifest.json`
+shares hard-linked storage after user-approved deduplication. Keep those files
+immutable. Write reprocessing output to new independent files; if a historical
+path must be replaced under explicit authorization, use an independent file and
+atomic replacement rather than truncating or editing its shared inode.
+
 ## Ubuntu Docker/Wine Windows build environment
 
 When work involves Windows executables, PyInstaller, GUI VM packages, or Windows-Python tests, inspect and reuse the repository's Docker/Wine builder before declaring that Ubuntu lacks a Windows build environment.
