@@ -1,4 +1,4 @@
-"""Opt-in legacy HTTP compatibility through the real assembled SDK app."""
+"""Default legacy HTTP compatibility through the real assembled SDK app."""
 import json
 
 import pytest
@@ -10,9 +10,7 @@ from fakenet.mcp.server import build_app
 
 
 def config():
-    cfg = ServiceConfig('127.0.0.1', 28788, ['127.0.0.1'])
-    cfg.allow_legacy_protocol = True
-    return cfg
+    return ServiceConfig('127.0.0.1', 28788, ['127.0.0.1'])
 
 
 def app_client():
@@ -116,7 +114,7 @@ def test_compat_rejects_unknown_version():
 def test_config_compat_flag_roundtrip_and_validation():
     cfg = config()
     assert ServiceConfig.from_dict(cfg.to_dict()).allow_legacy_protocol is True
-    assert ServiceConfig('127.0.0.1', 28788, ['127.0.0.1']).allow_legacy_protocol is False
+    assert ServiceConfig('127.0.0.1', 28788, ['127.0.0.1']).allow_legacy_protocol is True
     for value in ('true', 1, None):
         data = cfg.to_dict()
         data['allow_legacy_protocol'] = value

@@ -482,9 +482,10 @@ README_SECURITY = """# fakenetng-mcp candidate — security deviation note
 %s
 
 Endpoint: /mcp (single MCP endpoint, POST only, MCP protocol 2026-07-28).
-Optional legacy HTTP compatibility: set allow_legacy_protocol=true in
-ProgramData/FakeNet-NG-MCP/configs/service.json, then restart the service.
-Default: false. No separate SSE endpoint or persistent sessions are added.
+Legacy HTTP compatibility defaults to true. Set allow_legacy_protocol=false
+in ProgramData/FakeNet-NG-MCP/configs/service.json for modern-only clients,
+then restart the service. No separate SSE endpoint or persistent sessions
+are added. Explicit existing values are preserved when loading config.
 Service name: fakenetng-mcp (LocalSystem, auto start).
 """ % SECURITY_DEVIATION
 
@@ -590,8 +591,8 @@ def build(repo, source_commit, output_root, output_directory=None):
             'windows_test_gate': test_gate,
             'frozen_smoke': smoke,
             'target_client_identity': TARGET_CLIENT_IDENTITY,
-            'protocol': 'MCP 2026-07-28 Streamable HTTP; opt-in legacy compatibility',
-            'allow_legacy_protocol_default': False,
+            'protocol': 'MCP 2026-07-28 Streamable HTTP; legacy compatibility enabled by default',
+            'allow_legacy_protocol_default': True,
             'endpoint_path': '/mcp',
             'default_port': 28788,
             'service_name': 'fakenetng-mcp',

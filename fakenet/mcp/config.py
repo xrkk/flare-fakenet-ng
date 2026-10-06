@@ -23,7 +23,7 @@ class ServiceConfig:
     def __init__(self, listen_ip, listen_port, allowed_host_ips,
                  log_level='INFO', extra_control_ports=None,
                  stop_grace_seconds=60, source=None,
-                 allow_legacy_protocol=False):
+                 allow_legacy_protocol=True):
         if not isinstance(listen_ip, str) or not listen_ip.strip():
             raise ConfigError('listen_ip must be a non-empty string')
         listen_ip = listen_ip.strip()
@@ -95,7 +95,7 @@ class ServiceConfig:
             extra_control_ports=data.get('extra_control_ports', []),
             stop_grace_seconds=data.get('stop_grace_seconds', 60),
             source=source,
-            allow_legacy_protocol=data.get('allow_legacy_protocol', False),
+            allow_legacy_protocol=data.get('allow_legacy_protocol', True),
         )
 
     @classmethod

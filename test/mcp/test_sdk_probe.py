@@ -34,7 +34,8 @@ def _free_port():
 def endpoint():
     port = _free_port()
     config = ServiceConfig(listen_ip='127.0.0.1', listen_port=port,
-                           allowed_host_ips=['127.0.0.1'])
+                           allowed_host_ips=['127.0.0.1'],
+                           allow_legacy_protocol=False)
     ready = threading.Event()
     failure = {}
 

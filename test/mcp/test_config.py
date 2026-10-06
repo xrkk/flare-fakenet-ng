@@ -19,6 +19,26 @@ def test_valid_config_roundtrip(tmp_path):
     assert loaded.allowed_host_ips == ['192.168.204.1']
 
 
+def test_missing_compat_flag_defaults_to_enabled(tmp_path):
+    path = tmp_path / 'service.json'
+    path.write_text(json.dumps({
+        'listen_ip': '192.168.204.149', 'listen_port': 28788,
+        'allowed_host_ips': ['192.168.204.1'],
+    }), encoding='utf-8')
+    loaded = ServiceConfig.load(path)
+    assert loaded.allow_legacy_protocol is True
+    loaded.save(path)
+    assert ServiceConfig.load(path).allow_legacy_protocol is True
+
+
+def test_explicit_modern_only_flag_is_preserved(tmp_path):
+    cfg = ServiceConfig('192.168.204.149', 28788, ['192.168.204.1'],
+                        allow_legacy_protocol=False)
+    path = tmp_path / 'service.json'
+    cfg.save(path)
+    assert ServiceConfig.load(path).allow_legacy_protocol is False
+
+
 def test_zero_wildcard_listen_rejected():
     with pytest.raises(ConfigError):
         ServiceConfig(listen_ip='0.0.0.0', listen_port=28788,

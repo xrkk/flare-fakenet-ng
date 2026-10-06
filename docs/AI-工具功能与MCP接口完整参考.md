@@ -90,7 +90,7 @@ MCP不提供：任意shell/PowerShell、任意路径文件读写、PCAP正文下
 - HTTP POST `/mcp`，默认端口28788；具体IP由安装`listen_ip`确定，禁止监听`0.0.0.0`或`::`。
 - 项目历史测试端点为`http://192.168.204.233:28788/mcp`；28787是另一套VM管理服务，不是本产品。地址示例不是当前操作授权，使用用户指定机器。
 - 服务名`fakenetng-mcp`，软件版本`0.1.0`；协议版本为仓库当前常量`2026-07-28`。这里描述仓库实现，不宣称其它MCP服务也采用该协议。
-- 默认现代模式无持久MCP session、无GET SSE端点，不先发传统`initialize`。GET/DELETE `/mcp`返回405。
+- 无持久MCP session、无GET SSE端点。现代请求不先发传统`initialize`；默认启用的兼容模式接受受支持版本的初始化握手。GET/DELETE `/mcp`返回405。
 - `X-FakeNet-Controller-ID`为标准带连字符UUID字符串；只读接口可以缺省，所有变更必须携带。它是合作身份，不是认证密码；权限边界还依赖host-only地址、防火墙和允许宿主IP。此实现不校验Origin。
 
 ### 3.2 现代请求
@@ -117,9 +117,9 @@ X-FakeNet-Controller-ID: 550e8400-e29b-41d4-a716-446655440000
 
 默认返回JSON-RPC外层`result`中的MCP工具结果；常见为`content:[{type:"text",text:"{...业务JSON...}"}]`。优先遵循客户端SDK解包；手写客户端解析text中的JSON，并同时检查JSON-RPC error、MCP isError及业务error/state，不因HTTP200或error=null就认定业务成功。若响应为SSE，解析data帧并按请求id关联，不能直接把整段当JSON。
 
-### 3.3 可选旧协议模式
+### 3.3 旧协议兼容模式
 
-仅当service.json显式`allow_legacy_protocol=true`，才允许SDK处理旧协议initialize及后续调用。支持的旧版本为2024-11-05、2025-03-26、2025-06-18、2025-11-25。initialize的params.protocolVersion必须受支持；后续请求携带一致版本header。仍是stateless HTTP，没有额外GET SSE端点。不要遇协议错误就猜测降级或远程修改服务配置。
+`allow_legacy_protocol` 自2026-10-06起默认`true`，允许SDK处理旧协议initialize及后续调用；已有配置的显式`false`仍关闭兼容。支持的旧版本为2024-11-05、2025-03-26、2025-06-18、2025-11-25。initialize的params.protocolVersion必须受支持；后续请求携带一致版本header。仍是stateless HTTP，没有额外GET SSE端点。修改部署配置后需受控重启服务。
 
 ## 4. 所有变更工具共用的合同
 
@@ -254,7 +254,7 @@ service.json位于`%ProgramData%\FakeNet-NG-MCP\configs\service.json`。字段�
 | log_level | string，INFO | 日志等级配置 |
 | extra_control_ports | integer数组，[] | 1..65535，去重并排除自身端口；控制链豁免 |
 | stop_grace_seconds | 5..600，60 | 优雅停止阶段预算，不等于完整恢复总耗时 |
-| allow_legacy_protocol | boolean，false | 显式开启旧协议兼容 |
+| allow_legacy_protocol | boolean，true | 默认兼容旧式 initialize；显式 false 关闭兼容 |
 
 MCP数据根下包括configs、configs/custom、state、baselines、logs、artifacts；部署内置INI在安装目录configs。服务日志、配置审计、恢复状态和退出诊断用途不同；不要把用户分析数据路径作为可任意删除缓存。
 

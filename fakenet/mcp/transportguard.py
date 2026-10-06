@@ -1,28 +1,21 @@
 # Copyright 2026 Google LLC
-"""ASGI guard: strict modern protocol, optional SDK-backed legacy support.
+"""ASGI guard: strict modern protocol and SDK-backed legacy support.
 
-The 2026-09-08 compatibility decision adds allow_legacy_protocol (default
-False). When enabled, supported legacy requests are delegated to the SDK's
-stateless HTTP implementation. No extra SSE endpoint or persistent session
-is introduced. Modern requests retain all checks below in either mode.
-
-The official SDK server is dual-era by default (it answers legacy
-``initialize``).  The P01 contract freezes this service to the modern era
-only (REQ-002: no legacy GET SSE/session as the core protocol), so this
-pure-ASGI middleware enforces, before the SDK app runs:
+Legacy compatibility is enabled by default so initialize-based clients can
+connect. Explicit allow_legacy_protocol=False retains modern-only behavior.
+Supported legacy requests use the SDK's stateless HTTP implementation; no
+extra SSE endpoint or persistent session is introduced. This middleware
+enforces the following checks for modern requests in either mode:
 
 * only POST reaches the MCP endpoint (GET/DELETE -> 405, per spec);
 * every request carries ``MCP-Protocol-Version: 2026-07-28`` (missing or
-  unknown -> 400 with UnsupportedProtocolVersionError(-32022) listing
-  supported versions; spec allows rejecting header-less requests because
-  pre-2025-06-18 clients are not supported);
+  unknown -> 400 listing supported versions);
 * header version must equal the body ``_meta`` protocol version when both
   are present (mismatch -> 400 HeaderMismatch(-32020));
 * ``Mcp-Method`` is required and must match the body method; ``Mcp-Name`` is
   required for ``tools/call`` and must match the body tool name (-32020);
-* legacy ``initialize``/``notifications/initialized`` are not served: the
-  server answers a modern error naming its supported versions so legacy
-  clients surface an actionable message (spec compatibility matrix);
+* legacy handshake methods with a modern version header are rejected;
+  supported legacy initialize requests follow the compatibility path;
 * ``Origin`` is never read and never validated (user-adjudicated deviation
   from the 2026-07-28 security clause, see CON-003/NON-004/FB-014);
 * ``X-FakeNet-Controller-ID`` is captured (validated UUID format) into a
@@ -73,7 +66,7 @@ def _error_body(request_id, code, message, data=None):
 class TransportGuardMiddleware:
 
     def __init__(self, app, endpoint_path='/mcp', logger=None,
-                 allow_legacy_protocol=False):
+                 allow_legacy_protocol=True):
         self.app = app
         self.endpoint_path = endpoint_path
         self.logger = logger
