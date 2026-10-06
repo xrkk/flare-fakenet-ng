@@ -10,6 +10,7 @@
 
 import datetime
 import logging
+import locale
 import logging.handlers
 import os
 import sys
@@ -171,7 +172,12 @@ class Fakenet(object):
 
         self.fakenet_config_dir = os.path.dirname(config_filename)
         config = ConfigParser()
-        config.read(config_filename)
+        # MCP writes UTF-8; keep the GUI's legacy local-encoding fallback.
+        try:
+            config.read(config_filename, encoding='utf-8-sig')
+        except UnicodeDecodeError:
+            config = ConfigParser()
+            config.read(config_filename, encoding=locale.getpreferredencoding(False))
 
         self.logger.info('Loaded configuration file: %s', config_filename)
 
