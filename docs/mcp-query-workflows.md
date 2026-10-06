@@ -18,23 +18,34 @@ state_version、controller 或命令缓存，产物枚举始终在固定的诊�
   没有匹配产物，不代表 run 成功或完成。
 - 完整性语义不变：每个选中产物每次请求都重算 SHA-256，`complete=false`
   表示发布声明与当前字节不一致（篡改或未完成）；deadline 到期以
-  TimeoutError 结构化失败，绝不返回半截清单。
+  TimeoutError 结构化失败，绝不返回半截清单——**筛选阶段同样受预算
+  约束**：类型过滤进行中预算耗尽会结构化失败，不会被伪装成零匹配的
+  空清单。
 
 ## get_events(limit=100, cursor=None, run_id=None)
 
-- 每条事件自带 `epoch`（事件日志实例唯一）和严格递增 `seq`。
+- 每条事件自带 `epoch`（事件日志实例唯一）和严格递增 `seq`；`seq=0`
+  是每个 epoch 的合法起点（日志仍为空时的游标位置）。
 - 不带 `cursor`：返回最近 `limit`（1..500 钳制）条事件的旧语义，另给
-  当前末端 cursor。游标只向前走，更早的事件通过 `oldest_seq` 观察，
-  不提供往回翻页。
+  当前末端 cursor——**空日志也返回非空的 epoch/0 起点 cursor**，
+  `latest_seq=0`、`oldest_seq=null`；拿这个起点 cursor 之后新增的事件
+  可以从 1 开始逐页续读，空页的 cursor 也不会退回 null。游标只向前
+  走，更早的事件通过 `oldest_seq` 观察，不提供往回翻页。
 - 带 `cursor`：返回该位置之后按 `seq` 升序的最多 `limit` 条事件；
-  `next_cursor` 指向本次扫描到的末端。被 `run_id` 过滤跳过的事件同样
-  推进游标，所以"没有新匹配事件"的空页不会死循环——下一次调用只扫
-  真正的新事件。
-- `gap=true`：cursor 早于保留窗口（日志只留最近 500 条），返回现存
-  部分并明确缺口；`reset_required=true`：事件日志重建（epoch 变化），
-  返回当前保留部分，不宣称连续。
-- 非法 cursor、伪造格式或超过当前末端的 seq 都是结构化拒绝，不会被
-  当作初始查询。
+  `next_cursor` 指向本次扫描到的末端（未匹配满一页时推进到当前末端，
+  匹配被截断时指向最后一条返回事件且 `has_more=true`）。被 `run_id`
+  过滤跳过的事件同样推进游标，所以"没有新匹配事件"的空页不会死循环
+  ——下一次调用只扫真正的新事件。
+- `gap` 只在保留窗口**确证丢失**时为 true：同 epoch 且
+  `cursor_seq < oldest_seq - 1`。cursor 恰在保留窗口前一项
+  （`cursor_seq = oldest_seq - 1`）是连续的，不算 gap；例：保留
+  16..20、cursor 15 → 返回 [16,17]、gap=false、has_more=true，续页
+  [18,19]、[20] 覆盖全部保留项。
+- 真实 gap 与 epoch 重建（`reset_required=true`）都**从保留窗口最早的
+  匹配开始分页恢复**，逐页覆盖全部保留项，不直接跳到最新尾部；恢复
+  返回的 cursor 之后按同 epoch 正常续读。
+- 非法 cursor、伪造格式或超过当前末端的 seq（空日志时即 ≥1）都是
+  结构化拒绝，不会被当作初始查询。
 - `run_id` 用同一规范 UUID 规则，只匹配事件自身的 `run_id` 字段；没有
   `run_id` 字段的事件（如 command/health 事件）不猜归属，不匹配任何
   具体过滤。
