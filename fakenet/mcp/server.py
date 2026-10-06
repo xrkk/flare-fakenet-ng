@@ -27,8 +27,18 @@ def build_mcp_server(config=None, context=None):
 
     server = MCPServer(name=MCP_PACKAGE_NAME, version=MCP_PACKAGE_VERSION)
 
-    @server.tool()
-    def ping() -> dict:
+    from mcp.types import ToolAnnotations
+
+    from fakenet.mcp import schemas
+
+    @server.tool(
+        description="No-side-effect probe: service/protocol identity, "
+        "controller-header judgment and build identity.",
+        annotations=ToolAnnotations(readOnlyHint=True,
+                                    destructiveHint=False,
+                                    openWorldHint=False),
+        structured_output=True)
+    def ping() -> schemas.PingResult:
         """No-side-effect probe: service identity, protocol and controller
         header judgment for the calling connection."""
         controller = controller_header_state.get()

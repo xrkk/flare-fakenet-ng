@@ -15,8 +15,11 @@ from typing import Optional, Union
 
 from pydantic import StrictFloat, StrictInt
 
+from mcp.types import ToolAnnotations
+
 from fakenet.mcp import MCP_PACKAGE_NAME, MCP_PACKAGE_VERSION
 from fakenet.mcp import errors
+from fakenet.mcp import schemas
 from fakenet.mcp.configstore import ConfigStore
 from fakenet.mcp.coordination import Coordinator
 from fakenet.mcp.testdouble import LifecycleDouble
@@ -215,15 +218,21 @@ def register_tools(server, ctx):
         return payload
 
     # -- read-only diagnostics --------------------------------------------
-    @server.tool()
-    def get_status() -> dict:
+    @server.tool(
+        description='Current service snapshot: state, version, run/controller identity, config identity, health.',
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+        structured_output=True)
+    def get_status() -> schemas.StatusResponse:
         snap = ctx.coordinator.snapshot()
         snap['service'] = MCP_PACKAGE_NAME
         snap['error'] = None
         return snap
 
-    @server.tool()
-    def get_command_status(command_id: str) -> dict:
+    @server.tool(
+        description='Reconcile one submitted command against the in-process cache: in_progress, completed, failed or unknown.',
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+        structured_output=True)
+    def get_command_status(command_id: str) -> schemas.CommandStatusResponse:
         """Read-only reconciliation for one submitted command.
 
         Answers from the in-process command cache only: in_progress,
@@ -250,9 +259,12 @@ def register_tools(server, ctx):
                 'error': exc.to_dict(),
             }
 
-    @server.tool()
+    @server.tool(
+        description="Recent or cursor-continued service events; an optional run_id filters to that run's own events.",
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+        structured_output=True)
     def get_events(limit: int = 100, cursor: str = None,
-                   run_id: str = None) -> dict:
+                   run_id: str = None) -> schemas.EventsResponse:
         from fakenet.mcp import queries
         limit = max(1, min(int(limit), 500))
         try:
@@ -276,10 +288,13 @@ def register_tools(server, ctx):
         # state_version, controller or commands.
         return payload
 
-    @server.tool()
+    @server.tool(
+        description='Bounded single-call wait until the state and/or version condition holds, or the finite timeout ends.',
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+        structured_output=True)
     async def wait_status(states: list = None,
                           after_state_version: Optional[StrictInt] = None,
-                          timeout_seconds: Union[StrictInt, StrictFloat] = 10) -> dict:
+                          timeout_seconds: Union[StrictInt, StrictFloat] = 10) -> schemas.WaitStatusResponse:
         """Bounded single-call wait for a service-state condition.
 
         Waits until the state is one of ``states`` (when given) AND the
@@ -316,10 +331,13 @@ def register_tools(server, ctx):
                 'elapsed_seconds': round(result['elapsed_seconds'], 3),
                 'status': status, 'error': None}
 
-    @server.tool()
+    @server.tool(
+        description="One read-only aggregate: current service status plus the selected run's event page and filtered artifacts.",
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+        structured_output=True)
     def get_run_overview(run_id: str = None, event_limit: int = 100,
                          event_cursor: str = None,
-                         artifact_type: str = None) -> dict:
+                         artifact_type: str = None) -> schemas.RunOverviewResponse:
         """One read-only aggregate: current service status plus the run's
         events page and filtered artifacts for the selected run.
 
@@ -424,12 +442,18 @@ def register_tools(server, ctx):
             'error': ('; '.join(problems) + ' failed') if problems else None,
         }
 
-    @server.tool()
-    def list_configs() -> dict:
+    @server.tool(
+        description='List builtin and custom configuration names with identity metadata.',
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+        structured_output=True)
+    def list_configs() -> schemas.ConfigsResponse:
         return {'configs': ctx.store.list(), 'error': None}
 
-    @server.tool()
-    def validate_config(name: str = None, content: str = None) -> dict:
+    @server.tool(
+        description='Validate a configuration by name or content without storing it.',
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+        structured_output=True)
+    def validate_config(name: str = None, content: str = None) -> schemas.ValidateResponse:
         try:
             if content is not None:
                 result = ctx.store.validate_content(content)
@@ -445,8 +469,11 @@ def register_tools(server, ctx):
         except errors.McpError as exc:
             return {'error': exc.to_dict()}
 
-    @server.tool()
-    def read_config(name: str) -> dict:
+    @server.tool(
+        description="Read one configuration's content and stored identity.",
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+        structured_output=True)
+    def read_config(name: str) -> schemas.ReadConfigResponse:
         try:
             record = ctx.store.read(name)
             record['error'] = None
@@ -454,8 +481,11 @@ def register_tools(server, ctx):
         except errors.McpError as exc:
             return {'error': exc.to_dict()}
 
-    @server.tool()
-    def list_artifacts(run_id: str = None, artifact_type: str = None) -> dict:
+    @server.tool(
+        description='List registered run artifacts (path/type/size/complete/sha256), optionally filtered by run and exact type.',
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+        structured_output=True)
+    def list_artifacts(run_id: str = None, artifact_type: str = None) -> schemas.ArtifactsResponse:
         import time
 
         from fakenet.mcp.diagnostic_process import DiagnosticError
@@ -483,9 +513,12 @@ def register_tools(server, ctx):
                 'matched_count': len(items)}
 
     # -- lifecycle mutations ----------------------------------------------
-    @server.tool()
+    @server.tool(
+        description='Pin the run configuration identity after validating it; requires a stopped service.',
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+        structured_output=True)
     def load_config(name: str, command_id: str,
-                    expected_state_version: int) -> dict:
+                    expected_state_version: int) -> schemas.MutationResponse:
         controller, classification = ctx.controller_identity()
 
         def execute(coord):
@@ -517,8 +550,11 @@ def register_tools(server, ctx):
         except errors.McpError as exc:
             return ctx.error_response(exc)
 
-    @server.tool()
-    def start(command_id: str, expected_state_version: int) -> dict:
+    @server.tool(
+        description='Start FakeNet-NG with the loaded configuration; host-only network effects begin and end with the run.',
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True),
+        structured_output=True)
+    def start(command_id: str, expected_state_version: int) -> schemas.MutationResponse:
         controller, classification = ctx.controller_identity()
 
         def execute(coord):
@@ -544,8 +580,11 @@ def register_tools(server, ctx):
         except errors.McpError as exc:
             return ctx.error_response(exc)
 
-    @server.tool()
-    def stop(command_id: str, expected_state_version: int) -> dict:
+    @server.tool(
+        description='Stop the active run and release run-scoped ownership.',
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True),
+        structured_output=True)
+    def stop(command_id: str, expected_state_version: int) -> schemas.MutationResponse:
         controller, classification = ctx.controller_identity()
 
         def execute(coord):
@@ -570,8 +609,11 @@ def register_tools(server, ctx):
         except errors.McpError as exc:
             return ctx.error_response(exc)
 
-    @server.tool()
-    def restart(command_id: str, expected_state_version: int) -> dict:
+    @server.tool(
+        description='Restart the active run bound to its run_id; host-only network effects.',
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True),
+        structured_output=True)
+    def restart(command_id: str, expected_state_version: int) -> schemas.MutationResponse:
         controller, classification = ctx.controller_identity()
 
         def execute(coord):
@@ -656,9 +698,12 @@ def register_tools(server, ctx):
                 return ctx.error_response(exc)
         return invoke
 
-    @server.tool()
+    @server.tool(
+        description='Create a custom configuration; the reply carries the stored-receipt config_result (actual name and byte SHA).',
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+        structured_output=True)
     def create_config(name: str, content: str, command_id: str,
-                      expected_state_version: int) -> dict:
+                      expected_state_version: int) -> schemas.MutationResponse:
         try:
             ctx.store.validate_content(content)
         except errors.McpError as exc:
@@ -679,9 +724,12 @@ def register_tools(server, ctx):
                 content=content), conflict_names=frozenset((name,)))(
             command_id, expected_state_version)
 
-    @server.tool()
+    @server.tool(
+        description='Import a custom configuration; the reply carries the stored-receipt config_result.',
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+        structured_output=True)
     def import_config(name: str, content: str, command_id: str,
-                      expected_state_version: int) -> dict:
+                      expected_state_version: int) -> schemas.MutationResponse:
         try:
             ctx.store.validate_content(content)
         except errors.McpError as exc:
@@ -702,9 +750,12 @@ def register_tools(server, ctx):
                 content=content), conflict_names=frozenset((name,)))(
             command_id, expected_state_version)
 
-    @server.tool()
+    @server.tool(
+        description='Replace a custom configuration under its expected SHA; the reply carries the new stored receipt.',
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+        structured_output=True)
     def edit_config(name: str, content: str, expected_sha256: str,
-                    command_id: str, expected_state_version: int) -> dict:
+                    command_id: str, expected_state_version: int) -> schemas.MutationResponse:
         try:
             ctx.store.validate_content(content)
         except errors.McpError as exc:
@@ -725,9 +776,12 @@ def register_tools(server, ctx):
                 content=content, expected_sha256=expected_sha256), conflict_names=frozenset((name,)))(
             command_id, expected_state_version)
 
-    @server.tool()
+    @server.tool(
+        description='Rename a custom configuration under its expected SHA; the reply carries the receipt under the new name.',
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+        structured_output=True)
     def rename_config(name: str, new_name: str, expected_sha256: str,
-                      command_id: str, expected_state_version: int) -> dict:
+                      command_id: str, expected_state_version: int) -> schemas.MutationResponse:
         return config_mutation(
             'rename_config', {'name': name, 'new_name': new_name},
             lambda controller: ctx.store.rename(
@@ -736,9 +790,12 @@ def register_tools(server, ctx):
             conflict_names=frozenset((name, new_name)))(
             command_id, expected_state_version)
 
-    @server.tool()
+    @server.tool(
+        description='Delete a custom configuration under its expected SHA; the receipt marks it deleted.',
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+        structured_output=True)
     def delete_config(name: str, expected_sha256: str, command_id: str,
-                      expected_state_version: int) -> dict:
+                      expected_state_version: int) -> schemas.MutationResponse:
         return config_mutation(
             'delete_config', {'name': name},
             lambda controller: ctx.store.delete(
