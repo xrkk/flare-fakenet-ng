@@ -46,7 +46,7 @@ def _unknown(reason=None):
     return identity
 
 
-def _read_manifest(path):
+def _read_manifest(path, opener=open):
     import stat
 
     try:
@@ -57,8 +57,14 @@ def _read_manifest(path):
         return None, 'manifest is not a regular file'
     if info.st_size > MANIFEST_MAX_BYTES:
         return None, 'manifest exceeds 4 MiB bound'
+    # Bounded read: exactly one request of MAX+1 bytes as the oversize
+    # sentinel — never an unbounded read()/read_bytes(). A file that grew
+    # past the bound between stat and read (len > MAX) is refused; no
+    # trusted identity is cached from a size that lied. ``opener`` is the
+    # narrow seam the bounded-read tests wrap to observe read sizes.
     try:
-        raw = path.read_bytes()
+        with opener(path, 'rb') as stream:
+            raw = stream.read(MANIFEST_MAX_BYTES + 1)
     except OSError:
         return None, 'manifest unreadable'
     if len(raw) > MANIFEST_MAX_BYTES:

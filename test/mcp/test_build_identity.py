@@ -121,3 +121,76 @@ def test_identity_is_cached_per_process(tmp_path, monkeypatch):
     # The manifest changes afterwards; the cached answer must not.
     write_manifest(root, source_commit='d' * 40)
     assert bi.build_identity() == first
+
+
+class ObservingOpener:
+    """Wraps the real file stream and records every read(size) request."""
+
+    def __init__(self, real_open, reads):
+        self.real_open = real_open
+        self.reads = reads
+
+    def __call__(self, path, mode):
+        stream = self.real_open(path, mode)
+        outer = self
+
+        class Wrapped:
+            def __enter__(self):
+                outer.stream = stream.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return stream.__exit__(*exc)
+
+            def read(self, size=-1):
+                outer.reads.append(size)
+                return outer.stream.read(size)
+
+        return Wrapped()
+
+
+def test_read_requests_are_bounded_never_unbounded(tmp_path, monkeypatch):
+    root = tmp_path
+    write_manifest(root)
+    reads = []
+    opener = ObservingOpener(open, reads)
+    digest, commit = bi._read_manifest(root / bi.MANIFEST_NAME, opener=opener)
+    assert commit == 'a' * 40
+    # Exactly one read, capped at MAX+1 as the oversize sentinel — never
+    # read() without an explicit bound.
+    assert reads == [bi.MANIFEST_MAX_BYTES + 1]
+
+
+def test_file_growing_past_stat_is_refused_not_trusted(tmp_path, monkeypatch):
+    root = tmp_path
+    write_manifest(root)  # small on disk per stat...
+
+    class GrowingStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, size=-1):
+            assert size == bi.MANIFEST_MAX_BYTES + 1
+            return b' ' * (bi.MANIFEST_MAX_BYTES + 2)  # ...but it grew
+
+    digest, outcome = bi._read_manifest(
+        root / bi.MANIFEST_NAME,
+        opener=lambda path, mode: GrowingStream())
+    assert outcome == 'manifest exceeds 4 MiB bound'
+    assert digest is None  # nothing trusted is cached from a lying size
+
+
+def test_open_failure_is_unknown_not_fatal(tmp_path, monkeypatch):
+    root = tmp_path
+    write_manifest(root)
+
+    def failing_open(path, mode):
+        raise OSError('device gone')
+
+    digest, outcome = bi._read_manifest(
+        root / bi.MANIFEST_NAME, opener=failing_open)
+    assert outcome == 'manifest unreadable'
+    assert digest is None
