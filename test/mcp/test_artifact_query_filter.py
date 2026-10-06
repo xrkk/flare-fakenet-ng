@@ -156,6 +156,37 @@ def test_filtered_deadline_still_fails_closed(tmp_path):
         registry.metadata(run_id=RUN_A, deadline=time.monotonic() - 1)
 
 
+def test_type_filter_deadline_raises_instead_of_empty_success(tmp_path, monkeypatch):
+    # Row-context reads that outrun the budget while filtering must fail
+    # structurally — a deadline consumed by the filter can never surface as
+    # a zero-match success, even when the filtered type matches nothing.
+    _build_tree(tmp_path)
+    registry = artifacts.ArtifactRegistry(tmp_path)
+    original = registry._row_context
+
+    def slow(*args, **kwargs):
+        time.sleep(0.02)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(registry, '_row_context', slow)
+    # run_a holds log/report rows only, so 'pcap' matches nothing there;
+    # the old behavior returned [] after the budget had long expired.
+    with pytest.raises(TimeoutError, match='deadline exceeded'):
+        registry.metadata(time.monotonic() + 0.01,
+                          run_id=RUN_A, artifact_type='pcap')
+    # The same overrun with a matching type fails identically: the filter
+    # stage owns the failure, independent of the match outcome.
+    with pytest.raises(TimeoutError, match='deadline exceeded'):
+        registry.metadata(time.monotonic() + 0.01,
+                          run_id=RUN_A, artifact_type='log')
+    # With a real budget the filtered query still succeeds and never
+    # hashes an unselected type's bytes.
+    monkeypatch.setattr(registry, '_row_context', original)
+    rows = registry.metadata(time.monotonic() + 30,
+                             run_id=RUN_A, artifact_type='log')
+    assert len(rows) == 12
+
+
 # -- diagnostic-worker boundary (the real task code the IPC process runs) ----
 
 def test_diagnostic_worker_validates_and_applies_filters(tmp_path, monkeypatch):

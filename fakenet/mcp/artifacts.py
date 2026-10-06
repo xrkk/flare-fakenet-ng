@@ -257,11 +257,17 @@ class ArtifactRegistry:
         if artifact_type is not None:
             # Type is known from the (cached-index) row context alone; rows
             # of another type are dropped here, before either hash path, so
-            # their bytes are never opened.
+            # their bytes are never opened. The filter loop keeps the
+            # enumeration budget: a deadline that expires while filtering
+            # fails structurally, never masquerading as an empty match.
             kept = []
             for path, entry in ordered:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError('artifact enumeration deadline exceeded')
                 if self._row_context(path, entry, publications)[1] == artifact_type:
                     kept.append((path, entry))
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError('artifact enumeration deadline exceeded')
             ordered = kept
         if len(ordered) < SERIAL_FILE_THRESHOLD:
             for path, entry in ordered:
