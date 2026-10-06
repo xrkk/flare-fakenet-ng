@@ -105,6 +105,63 @@ def tool_list(endpoint_url):
     return outer['result']['tools']
 
 
+def test_real_validate_read_list_configs_success_paths(endpoint):
+    """The entries R01's schema mismatch hid, now over real SDK output."""
+    CONTROLLER = '11111111-2222-4333-8444-555555555555'
+    VALID_INI = '[FakeNet]\nDumpPackets = No\nLogConsole = No\n'
+
+    def call(name, arguments):
+        body = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'name': name, 'arguments': arguments,
+                           '_meta': envelope()}}
+        request = urllib.request.Request(
+            endpoint, data=json.dumps(body).encode('utf-8'), method='POST',
+            headers={'Content-Type': 'application/json',
+                     'Accept': 'application/json, text/event-stream',
+                     'MCP-Protocol-Version': '2026-07-28',
+                     'Mcp-Method': 'tools/call', 'Mcp-Name': name,
+                     'X-FakeNet-Controller-ID': CONTROLLER})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            outer = json.loads(response.read().decode('utf-8', 'replace'))
+        assert outer['result']['isError'] is False
+        return outer['result']['structuredContent']
+
+    version = call('get_status', {})['state_version']
+    created = call('create_config', {
+        'name': 'meta-cover.ini', 'content': VALID_INI,
+        'command_id': 'mc-create', 'expected_state_version': version})
+    assert created['error'] is None
+
+    # validate by content and by name: real sections mapping (an object,
+    # not a list), both through the typed schema.
+    by_content = call('validate_config', {'content': VALID_INI})
+    assert by_content['valid'] is True
+    sections = by_content['sections']
+    assert set(sections) == {'fakenet', 'diverter', 'listeners'}
+    assert isinstance(sections['fakenet'], dict) and sections['fakenet']
+    by_name = call('validate_config', {'name': 'meta-cover.ini'})
+    assert by_name['valid'] is True
+    assert isinstance(by_name['sections']['listeners'], dict)
+
+    # read_config: non-empty content plus stored identity matching the
+    # creation receipt.
+    record = call('read_config', {'name': 'meta-cover.ini'})
+    assert record['content'] == VALID_INI
+    assert record['name'] == 'meta-cover.ini'
+    assert record['sha256'] == created['config_result']['sha256']
+    assert record['builtin'] is False
+
+    # list_configs: non-empty listing containing the created name.
+    listing = call('list_configs', {})
+    assert any(entry.get('name') == 'meta-cover.ini'
+               for entry in listing['configs'])
+
+    # Invalid content stays a domain error, never a success default.
+    rejected = call('validate_config', {'content': '[Broken\ngarbage'})
+    assert rejected['error'] is not None
+    assert rejected['valid'] is None
+
+
 def test_all_nineteen_tools_have_full_metadata(endpoint):
     tools = {tool['name']: tool for tool in tool_list(endpoint)}
     assert set(tools) == EXPECTED_TOOLS

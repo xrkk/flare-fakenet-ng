@@ -42,8 +42,9 @@ manifest_sha256, error}`：
 - 其余字段来自正式 exe 同目录（源码模式为项目包根）的
   `mcp-candidate-manifest.json` 白名单读取：`source_commit` 仅接受
   40/64 位十六进制；`manifest_sha256` 是 manifest 文件自身哈希；
-  只读、上限 4 MiB、拒绝符号链接与非普通文件；不运行 git、不联网、
-  不回显 files 数组/路径/凭据。
+  只读、上限 4 MiB（单次 `read(MAX+1)` 有界请求，stat 后增长到超界
+  即拒绝、不缓存可信身份）、拒绝符号链接与非普通文件；不运行
+  git、不联网、不回显 files 数组/路径/凭据。
 - 缺失 → `source:'unknown'`、`error:null`（不失败 ping）；损坏 →
   `unknown` + 一句简短原因，绝不冒充可信版本。unknown 时不得宣称
   缓存匹配。
