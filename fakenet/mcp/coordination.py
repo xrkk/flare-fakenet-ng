@@ -232,7 +232,11 @@ class Coordinator:
             if 'exception' in cached:
                 exc = cached['exception']
                 if isinstance(exc, errors.McpError):
-                    command_error = exc.to_dict()
+                    # The full failure payload stays structurally faithful,
+                    # but every level (detail included) is a copy: a reader
+                    # mutating the reply can never reach the cached
+                    # exception that later queries and replays re-raise.
+                    command_error = _copy.deepcopy(exc.to_dict())
                 else:
                     # A safe summary only: never the exception object,
                     # trace or message of an arbitrary failure.

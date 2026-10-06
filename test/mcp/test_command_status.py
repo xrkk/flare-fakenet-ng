@@ -129,6 +129,36 @@ def test_arbitrary_exception_reports_safe_internal_summary():
     assert status['command_error'].get('traceback') is None
 
 
+def test_failed_detail_isolated_between_queries_and_replay():
+    coordinator = Coordinator(LifecycleDouble())
+    action = BlockedAction()
+    action.result = McpError('validation_failed', 'rejected',
+                             {'nested': {'value': 'original'}})
+    thread, _ = run_blocked(coordinator, 'cmd-detail', action)
+    action.release.set()
+    thread.join(timeout=10)
+    assert action.calls == 1
+    first = query(coordinator, 'cmd-detail')
+    assert first['status'] == 'failed'
+    assert first['command_error']['code'] == 'validation_failed'
+    assert first['command_error']['detail']['nested']['value'] == 'original'
+    # The reader mutates every level of the returned failure payload.
+    first['command_error']['detail']['nested']['value'] = 'changed_by_reader'
+    first['command_error']['detail']['injected'] = True
+    # A second query still sees the pristine cached failure.
+    second = query(coordinator, 'cmd-detail')
+    assert second['command_error']['detail']['nested']['value'] == 'original'
+    assert 'injected' not in second['command_error']['detail']
+    # And the replayed command re-raises the ORIGINAL detail without ever
+    # re-executing (execute stays at exactly one call).
+    with pytest.raises(McpError) as excinfo:
+        submit_async(coordinator, 'cmd-detail', lambda coord: {},
+                     version=999999)
+    assert excinfo.value.detail['nested']['value'] == 'original'
+    assert 'injected' not in excinfo.value.detail
+    assert action.calls == 1
+
+
 def test_identity_and_controller_gates():
     coordinator = Coordinator(LifecycleDouble())
     submit_async(coordinator, 'cmd-owned', lambda coord: {'changed': False})
