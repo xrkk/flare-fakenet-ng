@@ -246,6 +246,114 @@ def register_tools(server, ctx):
         return payload
 
     @server.tool()
+    def get_run_overview(run_id: str = None, event_limit: int = 100,
+                         event_cursor: str = None,
+                         artifact_type: str = None) -> dict:
+        """One read-only aggregate: current service status plus the run's
+        events page and filtered artifacts for the selected run.
+
+        The three pieces are NOT one atomic transaction: the response
+        reports the state versions observed before and after and
+        ``consistent`` is false when a mutation landed in between. The
+        service_status block is always the CURRENT service snapshot — a
+        selected historical run never inherits its health or recovery
+        fields. Each sub-query failure keeps the other results and is
+        surfaced through ``partial`` plus the sub-query's own error; a
+        failed or empty sub-list is never presented as complete success.
+        """
+        import time
+
+        from fakenet.mcp import queries
+        from fakenet.mcp.diagnostic_process import DiagnosticError
+        event_limit = max(1, min(int(event_limit), 500))
+        try:
+            run_id = _validated_run_id(run_id)
+            artifact_type = _validated_artifact_type(artifact_type)
+        except errors.McpError as exc:
+            return {'error': exc.to_dict()}
+
+        # Metadata-lock-held reads only: the coordinator snapshot and event
+        # window release the lock immediately; artifact hashing stays in the
+        # diagnostic task, never inline under this aggregate.
+        status_before = ctx.coordinator.snapshot()
+        if run_id is None:
+            current = status_before.get('run_id')
+            if current is None:
+                selected, selection = None, 'no_current_run'
+            else:
+                selected, selection = current, 'current'
+        else:
+            selected, selection = run_id, 'explicit'
+
+        partial = False
+        problems = []
+
+        if selected is None:
+            events_query = {
+                'events': [], 'error': None, 'limit': event_limit,
+                'run_id': None, 'selection_note': 'no_current_run',
+            }
+            artifacts_query = {
+                'artifacts': [], 'error': None, 'matched_count': 0,
+                'query': {'run_id': None, 'artifact_type': artifact_type},
+                'selection_note': 'no_current_run',
+            }
+        else:
+            try:
+                epoch, entries, oldest, latest = ctx.coordinator.events_window()
+                page = queries.events_page(
+                    entries, epoch, oldest, latest, limit=event_limit,
+                    cursor_token=event_cursor, run_id=selected)
+                events_query = dict(page)
+                events_query['limit'] = event_limit
+                events_query['run_id'] = selected
+                events_query['error'] = None
+            except queries.InvalidCursor as exc:
+                partial = True
+                problems.append('events_query')
+                events_query = {'events': [], 'error': errors.McpError(
+                    errors.INVALID_REQUEST,
+                    'invalid cursor: %s' % exc).to_dict()}
+            payload = {'run_id': selected}
+            if artifact_type is not None:
+                payload['artifact_type'] = artifact_type
+            try:
+                items = ctx.diagnostics.call(
+                    'list-artifacts', payload, time.monotonic() + 60)
+                artifacts_query = {
+                    'artifacts': items, 'error': None,
+                    'matched_count': len(items),
+                    'query': {'run_id': selected,
+                              'artifact_type': artifact_type},
+                }
+            except (DiagnosticError, AttributeError) as exc:
+                partial = True
+                problems.append('artifacts_query')
+                artifacts_query = {
+                    'artifacts': [], 'error': str(exc), 'matched_count': 0,
+                    'query': {'run_id': selected,
+                              'artifact_type': artifact_type},
+                }
+
+        status_after = ctx.coordinator.snapshot()
+        service_status = dict(status_after)
+        service_status['service'] = MCP_PACKAGE_NAME
+        service_status['error'] = None
+        return {
+            'selected_run_id': selected,
+            'selection': selection,
+            'service_status': service_status,
+            'events_query': events_query,
+            'artifacts_query': artifacts_query,
+            'status_before_version': status_before['state_version'],
+            'status_after_version': status_after['state_version'],
+            'consistent': (status_before['state_version']
+                           == status_after['state_version']),
+            'partial': partial,
+            'error': ('; '.join(problems) + ' failed') if problems else None,
+        }
+
+    @server.tool()
     def list_configs() -> dict:
         return {'configs': ctx.store.list(), 'error': None}
 
