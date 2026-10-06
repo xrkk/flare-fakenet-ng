@@ -4,7 +4,7 @@
 
 ## 1. 服务配置 service.json
 
-路径：`C:\ProgramData\FakeNet-NG-MCP\configs\service.json`。修改后重启服务生效（`sc.exe stop fakenetng-mcp && sc.exe start fakenetng-mcp`）。字段校验 fail-closed：任何非法值拒绝启动。
+路径：`C:\ProgramData\FakeNet-NG-MCP\configs\service.json`。修改后通过安装目录下的 `fakenetng-mcp.exe stop` 受控退出服务，再运行 `fakenetng-mcp.exe start` 生效。字段校验 fail-closed：任何非法值拒绝启动。
 
 | 字段 | 必填 | 类型/范围 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -34,11 +34,31 @@
 
 安装时的对应参数：`install-fakenetng-mcp.ps1 -ListenIp <ip> -Port <port> -AllowedHost <ip> [-ExtraExcludePort @(28787,28790)]`。
 
-## 2. 受管 FakeNet INI
-
 2026-10-06 起，新安装及未声明该字段的配置默认
 `allow_legacy_protocol=true`；已有配置中显式的 `false` 保持有效，需手动修改。
 host-only 绑定、防火墙和恢复门禁不变。显式 `false` 可关闭旧式兼容。
+
+### Windows 服务自动启动和故障恢复
+
+安装器将 `fakenetng-mcp` 注册为自动启动的 Windows 服务，并配置进程崩溃后
+延迟 30 秒重启。管理员 PowerShell 可查看或重新设置：
+
+```powershell
+sc.exe config fakenetng-mcp start= auto
+sc.exe failure fakenetng-mcp reset= 0 actions= restart/30000
+sc.exe qc fakenetng-mcp
+sc.exe qfailure fakenetng-mcp
+sc.exe qfailureflag fakenetng-mcp
+```
+
+若还需在服务报告非零退出错误时触发恢复，可另行设置
+`sc.exe failureflag fakenetng-mcp 1`；Microsoft 文档注明此标志更改在下次系统启动时生效。
+正常受控停止或管理员停止服务不会触发该故障恢复，
+MCP 工具 `stop` 停止的是受管 FakeNet 核心，主管服务仍运行。
+恢复规则及标志语义见 [sc failure](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/cc742019(v=ws.11))
+和 [SERVICE_FAILURE_ACTIONS_FLAG](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_failure_actions_flag)。
+
+## 2. 受管 FakeNet INI
 
 - 内置：`configs\default.ini`（只读，`delete_config`/`edit_config` 均拒绝）。
 - 自定义：`configs\custom\*.ini`，经 MCP 工具管理（`create_config`/`import_config`/`edit_config`/`rename_config`/`delete_config`），每次变更（含被拒尝试）写审计日志 `configs\audit.jsonl`。路径穿越/符号链接逃逸被阻断。
