@@ -168,16 +168,19 @@ class ArtifactRegistry:
                                        else source / p.name for p in copied])
         return copied
 
-    def _enumeration_entries(self, deadline):
+    def _enumeration_entries(self, deadline, run_id=None):
         """Every candidate file as (Path, DirEntry), unordered.
 
         Same kept-set rule as the previous ``sorted(root.rglob('*'))`` walk:
         regular non-symlink files only, publication records excluded, no
         descent into symlinked directories. scandir supplies the type and
         size attributes with the directory listing itself instead of one
-        native stat per is_file/is_symlink/stat call.
+        native stat per is_file/is_symlink/stat call. With ``run_id`` the
+        walk is anchored to that run's registered subtree
+               (``root/<run_id>``) so unselected runs are never even opened.
         """
-        stack = [str(self.root)]
+        stack = [str(self.root / str(run_id)) if run_id is not None
+                 else str(self.root)]
         while stack:
             directory = stack.pop()
             if deadline is not None and time.monotonic() >= deadline:
@@ -216,7 +219,7 @@ class ArtifactRegistry:
                 entry.stat(follow_symlinks=False).st_size,
                 publications[path.parent].get(path.name))
 
-    def metadata(self, deadline=None):
+    def metadata(self, deadline=None, run_id=None, artifact_type=None):
         """All registered artifacts as metadata-only entries.
 
         Enumeration is bounded: when ``deadline`` (monotonic) is supplied and
@@ -225,14 +228,41 @@ class ArtifactRegistry:
         while walking directories, before every pool submission and result
         consumption, and between hash chunks of large files, so one huge
         capture cannot run far past the budget before failing.
+
+        ``run_id`` anchors the walk to that run's registered subtree, and
+        ``artifact_type`` drops rows after their type is known; both filter
+        BEFORE any hash work is submitted, so unselected files are never
+        opened or hashed. Neither filter changes row shape, sorted(Path)
+        order, per-request byte verification or deadline semantics; an
+        unknown-but-valid run is an empty match, never a fallback to the
+        full set.
         """
         items = []
+        if run_id is not None:
+            anchor = self.root / str(run_id)
+            # The anchored walk may never leave the registry root through a
+            # link: a symlinked run directory is not descended at all.
+            try:
+                if anchor.is_symlink() or not anchor.is_dir():
+                    return items
+            except OSError:
+                return items
         if not self.root.is_dir():
             return items
         # Snapshot each producer index once for this enumeration only. Every
         # artifact still has its current bytes hashed on every API request.
         publications = {}
-        ordered = sorted(self._enumeration_entries(deadline), key=lambda pair: pair[0])
+        ordered = sorted(self._enumeration_entries(deadline, run_id=run_id),
+                         key=lambda pair: pair[0])
+        if artifact_type is not None:
+            # Type is known from the (cached-index) row context alone; rows
+            # of another type are dropped here, before either hash path, so
+            # their bytes are never opened.
+            kept = []
+            for path, entry in ordered:
+                if self._row_context(path, entry, publications)[1] == artifact_type:
+                    kept.append((path, entry))
+            ordered = kept
         if len(ordered) < SERIAL_FILE_THRESHOLD:
             for path, entry in ordered:
                 if deadline is not None and time.monotonic() >= deadline:

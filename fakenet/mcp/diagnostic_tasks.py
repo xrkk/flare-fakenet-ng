@@ -94,7 +94,17 @@ def execute(operation, payload, deadline, watchdog=None):
     if operation == 'list-artifacts':
         from fakenet.mcp.paths import data_directories
         from fakenet.mcp.artifacts import ArtifactRegistry
-        return ArtifactRegistry(data_directories()['artifacts']).metadata(deadline)
+        run_id = payload.get('run_id')
+        artifact_type = payload.get('artifact_type')
+        # The worker validates its own inputs: only a canonical UUID and a
+        # non-empty type string ever reach the registry walk.
+        if run_id is not None:
+            run_id = _run_id(run_id)
+        if artifact_type is not None and (
+                not isinstance(artifact_type, str) or not artifact_type):
+            raise ValueError('invalid artifact type filter')
+        return ArtifactRegistry(data_directories()['artifacts']).metadata(
+            deadline, run_id=run_id, artifact_type=artifact_type)
     if operation == 'register-artifacts':
         from fakenet.mcp.paths import data_directories
         from fakenet.mcp.artifacts import ArtifactRegistry

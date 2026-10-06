@@ -9,6 +9,7 @@ in the ``error`` field per the master-plan §6.1 response contract.
 
 import os
 import sys
+import uuid
 from pathlib import Path
 
 from fakenet.mcp import MCP_PACKAGE_NAME, MCP_PACKAGE_VERSION
@@ -18,6 +19,39 @@ from fakenet.mcp.coordination import Coordinator
 from fakenet.mcp.testdouble import LifecycleDouble
 from fakenet.mcp.transportguard import (classify_controller_header,
                                         controller_header_state)
+
+
+def _validated_run_id(value):
+    """Canonical-UUID gate shared by the read-only query filters.
+
+    Mirrors the diagnostic worker's ``_run_id`` rule (str(uuid.UUID(value))
+    == value): non-strings, non-UUIDs and non-canonical spellings are
+    structured rejections, never a silent fallback to the full set.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise errors.McpError(
+            errors.INVALID_REQUEST, 'run_id must be a canonical UUID')
+    try:
+        canonical = str(uuid.UUID(value))
+    except (ValueError, AttributeError):
+        raise errors.McpError(
+            errors.INVALID_REQUEST, 'run_id must be a canonical UUID') from None
+    if canonical != value:
+        raise errors.McpError(
+            errors.INVALID_REQUEST, 'run_id must be a canonical UUID')
+    return value
+
+
+def _validated_artifact_type(value):
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise errors.McpError(
+            errors.INVALID_REQUEST,
+            'artifact_type must be a non-empty string')
+    return value
 
 
 def _make_snapshot(dirs):
@@ -221,17 +255,32 @@ def register_tools(server, ctx):
             return {'error': exc.to_dict()}
 
     @server.tool()
-    def list_artifacts() -> dict:
+    def list_artifacts(run_id: str = None, artifact_type: str = None) -> dict:
         import time
 
         from fakenet.mcp.diagnostic_process import DiagnosticError
         try:
-            items = ctx.diagnostics.call('list-artifacts', {}, time.monotonic() + 60)
+            run_id = _validated_run_id(run_id)
+            artifact_type = _validated_artifact_type(artifact_type)
+        except errors.McpError as exc:
+            return {'artifacts': [], 'error': exc.to_dict()}
+        payload = {}
+        if run_id is not None:
+            payload['run_id'] = run_id
+        if artifact_type is not None:
+            payload['artifact_type'] = artifact_type
+        try:
+            items = ctx.diagnostics.call(
+                'list-artifacts', payload, time.monotonic() + 60)
         except DiagnosticError as exc:
             return {'artifacts': [], 'error': str(exc)}
         except AttributeError:
             return {'artifacts': [], 'error': 'artifact enumeration unavailable'}
-        return {'artifacts': items, 'error': None}
+        # A zero match is exactly that: it never claims the run itself
+        # succeeded or completed.
+        return {'artifacts': items, 'error': None,
+                'query': {'run_id': run_id, 'artifact_type': artifact_type},
+                'matched_count': len(items)}
 
     # -- lifecycle mutations ----------------------------------------------
     @server.tool()
