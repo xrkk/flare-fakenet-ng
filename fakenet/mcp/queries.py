@@ -26,8 +26,93 @@ Cursor contract (fakenet.query.cursor.v1):
 
 import base64
 import json
+import math
 
 CURSOR_PREFIX = 'fnev1.'
+
+# Service states the state machine actually uses; wait_status only accepts
+# these (source: coordination/supervisor transitions).
+VALID_SERVICE_STATES = frozenset(
+    ('stopped', 'starting', 'healthy', 'degraded', 'failed', 'recovering'))
+WAIT_POLL_INTERVAL = 0.1
+WAIT_TIMEOUT_MAX_SECONDS = 30.0
+
+
+class InvalidWaitRequest(ValueError):
+    """Raised for malformed wait_status arguments; mapped to invalid_request."""
+
+
+def validate_wait_request(states, after_state_version, timeout_seconds):
+    """Validate wait_status arguments per the frozen contract.
+
+    At least one condition is required; ``states`` must be a non-empty
+    list of known service states, ``after_state_version`` a non-bool
+    non-negative integer, and ``timeout_seconds`` a finite number within
+    0..30 — no silent clamping to an unbounded wait.
+    """
+    if states is None and after_state_version is None:
+        raise InvalidWaitRequest(
+            'states or after_state_version is required')
+    if states is not None:
+        if (not isinstance(states, list) or not states or
+                any(not isinstance(state, str) or
+                    state not in VALID_SERVICE_STATES for state in states)):
+            raise InvalidWaitRequest(
+                'states must be a non-empty list of known service states')
+    if after_state_version is not None:
+        if (not isinstance(after_state_version, int) or
+                isinstance(after_state_version, bool) or
+                after_state_version < 0):
+            raise InvalidWaitRequest(
+                'after_state_version must be a non-negative integer')
+    if (not isinstance(timeout_seconds, (int, float)) or
+            isinstance(timeout_seconds, bool) or
+            not math.isfinite(timeout_seconds) or
+            not 0 <= timeout_seconds <= WAIT_TIMEOUT_MAX_SECONDS):
+        raise InvalidWaitRequest(
+            'timeout_seconds must be a finite number within 0..30 seconds')
+    return None
+
+
+async def wait_for_status(*, observe, states=None, after_state_version=None,
+                          timeout_seconds, poll_interval=WAIT_POLL_INTERVAL,
+                          sleep=None, monotonic=None):
+    """One bounded single-RPC wait over successive observations.
+
+    ``observe()`` returns a snapshot dict; matched requires the state to be
+    in ``states`` (when given) AND ``state_version`` to exceed
+    ``after_state_version`` (when given) — state-only waits therefore
+    observe health transitions that never bump the version. The returned
+    observation is exactly the last one used for the decision, never a
+    fresher re-read. Hitting the timeout is a normal bounded outcome
+    (``timed_out=True``), never a fabricated match; cancellation stops
+    immediately after the current observation with nothing left running.
+    """
+    import asyncio
+
+    if sleep is None:
+        sleep = asyncio.sleep
+    if monotonic is None:
+        import time
+        monotonic = time.monotonic
+    start = monotonic()
+    deadline = start + timeout_seconds
+    while True:
+        observation = observe()
+        matched = (
+            (states is None or observation.get('state') in states) and
+            (after_state_version is None or
+             observation.get('state_version', 0) > after_state_version))
+        if matched:
+            return {'matched': True, 'timed_out': False,
+                    'elapsed_seconds': monotonic() - start,
+                    'observation': observation}
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return {'matched': False, 'timed_out': True,
+                    'elapsed_seconds': monotonic() - start,
+                    'observation': observation}
+        await sleep(min(poll_interval, remaining))
 
 
 class InvalidCursor(ValueError):

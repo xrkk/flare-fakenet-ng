@@ -249,7 +249,8 @@ def register_tools(server, ctx):
 
     @server.tool()
     def get_events(limit: int = 100, cursor: str = None,
-                   run_id: str = None) -> dict:        from fakenet.mcp import queries
+                   run_id: str = None) -> dict:
+        from fakenet.mcp import queries
         limit = max(1, min(int(limit), 500))
         try:
             _validated_run_id(run_id)
@@ -271,6 +272,42 @@ def register_tools(server, ctx):
         # Read-only by construction: snapshot/events_window never touch
         # state_version, controller or commands.
         return payload
+
+    @server.tool()
+    async def wait_status(states: list = None, after_state_version: int = None,
+                          timeout_seconds: float = 10) -> dict:
+        """Bounded single-call wait for a service-state condition.
+
+        Waits until the state is one of ``states`` (when given) AND the
+        state version exceeds ``after_state_version`` (when given), for at
+        most ``timeout_seconds`` (0..30, finite). The wait is read-only:
+        no version growth, no events, no ownership, no state changes —
+        and it never blocks the service loop (bounded async polling, no
+        locks held across sleeps, nothing left running after the reply).
+        The returned ``status`` is exactly the last observation the
+        decision used; ``timed_out=true`` is a normal bounded outcome,
+        never a claim the condition held.
+        """
+        from fakenet.mcp import queries
+        try:
+            queries.validate_wait_request(states, after_state_version,
+                                          timeout_seconds)
+        except queries.InvalidWaitRequest as exc:
+            return {'matched': False, 'timed_out': False,
+                    'elapsed_seconds': 0.0, 'status': None,
+                    'error': errors.McpError(
+                        errors.INVALID_REQUEST, str(exc)).to_dict()}
+        result = await queries.wait_for_status(
+            observe=ctx.coordinator.snapshot, states=states,
+            after_state_version=after_state_version,
+            timeout_seconds=timeout_seconds)
+        status = dict(result['observation'])
+        status['service'] = MCP_PACKAGE_NAME
+        status['error'] = None
+        return {'matched': result['matched'],
+                'timed_out': result['timed_out'],
+                'elapsed_seconds': round(result['elapsed_seconds'], 3),
+                'status': status, 'error': None}
 
     @server.tool()
     def get_run_overview(run_id: str = None, event_limit: int = 100,
