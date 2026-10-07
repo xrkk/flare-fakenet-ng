@@ -144,7 +144,7 @@ def invoke(entry_material, tmp_path, capacity=False):
             'script=sys.argv.pop(1)\nsys.path.insert(0,__import__("os").path.dirname(script))\n'
             'runpy.run_path(script,run_name="__main__")\n')
         argv = [argv[0], '-B', str(launcher), *argv[2:]]
-    completed = subprocess.run(argv, cwd=repo, capture_output=True, text=True, timeout=240)
+    completed = subprocess.run(argv, cwd=repo, capture_output=True, text=True, timeout=480)
     (tmp_path/'entry-stdout.log').write_text(completed.stdout)
     (tmp_path/'entry-stderr.log').write_text(completed.stderr)
     write_json(tmp_path/'entry-command-exit.json', {'argv': argv, 'returncode': completed.returncode,

@@ -25,7 +25,7 @@ def server():
             request=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             self.server.received.append({'body':request,'headers':{key.casefold():value for key,value in self.headers.items()}})
             if self.server.mode=='slow': time.sleep(.2)
-            if self.server.mode=='unknown' and request['method']=='tools/call': self.server.stop_event.wait(2)
+            if self.server.mode=='unknown' and request['method']=='tools/call': self.server.stop_event.wait(8)
             response={'jsonrpc':'2.0','id':request.get('id'),'result':{}}
             if request['method']=='tools/call':
                 params=request['params']
@@ -102,9 +102,9 @@ def test_service_original_controller_and_timeout_caps_are_preserved(materials,se
 def test_unknown_product_mutation_is_not_replayed_and_host_child_is_ended(materials,server):
     state=Responsibility();state.admission_ready=True
     c=client(server,load(materials),state=state);protected=ProtectedService(c,c.context,state);server.mode='unknown'
-    with pytest.raises(MutationUnknown): protected.tool_outcome('start',{'command_id':'exact-own'},30)
+    with pytest.raises(MutationUnknown): protected.tool_outcome('start',{'command_id':'exact-own'},6)
     assert not state.safe
-    with pytest.raises(RuntimeError): protected.tool_outcome('start',{'command_id':'exact-own'},30)
+    with pytest.raises(RuntimeError): protected.tool_outcome('start',{'command_id':'exact-own'},6)
     assert len(server.received)==1 and c.responsibility()['host_writers_ended']
 
 

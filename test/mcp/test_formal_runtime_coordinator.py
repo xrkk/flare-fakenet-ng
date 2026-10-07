@@ -147,7 +147,7 @@ def environment(prepared, monkeypatch):
     monkeypatch.setattr(subprocess, 'Popen', popen)
     monkeypatch.setattr(subprocess, 'run', run)
     monkeypatch.setattr(subprocess, 'check_output', check_output)
-    monkeypatch.setattr(coordinator.os, 'statvfs', lambda _: SimpleNamespace(f_bavail=100 * 2**30, f_frsize=1))
+    monkeypatch.setattr(coordinator.shutil, 'disk_usage', lambda _: SimpleNamespace(free=100 * 2**30))
     return context, r, store, state, caps, co, model, operations, processes
 
 

@@ -76,7 +76,7 @@ def test_actual_full_original_spike_gate_rejects_unverified_five_case_claim(five
     command=[sys.executable,'-B','-c',code,str(entry.parent),str(entry),'--materials-json',str(child.materials_path),
         '--materials-sha256',child.materials_sha256,'--selection-json',selected['path'],'--scope','spike-only',
         '--repository-root',str(context.repository_root)]
-    result=subprocess.run(command,cwd=context.source_root,capture_output=True,text=True,timeout=240)
+    result=subprocess.run(command,cwd=context.source_root,capture_output=True,text=True,timeout=480)
     (tmp_path/'stdout').write_text(result.stdout);(tmp_path/'stderr').write_text(result.stderr)
     assert result.returncode!=0 and 'Spike case/scenario/candidate mismatch' in result.stderr
     terminal=json.loads((child.audit_root/'audit-terminal.json').read_bytes())

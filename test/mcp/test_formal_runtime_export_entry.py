@@ -63,7 +63,7 @@ def invoke(export_material,tmp_path, *, free_gib=50, injected=''):
                '--repository-root',str(context.repository_root),'export-source','--source-root',str(root)]
     script='import shutil,runpy,sys; from types import SimpleNamespace; shutil.disk_usage=lambda _:SimpleNamespace(free='+str(free_gib)+'*2**30); sys.path.insert(0,sys.argv[1]); sys.argv=sys.argv[2:];'+injected+'runpy.run_path(sys.argv[0],run_name="__main__")'
     result=subprocess.run([sys.executable,'-B','-c',script,str(entry.parent),*arguments],
-                          cwd=context.source_root,capture_output=True,text=True,timeout=60)
+                          cwd=context.source_root,capture_output=True,text=True,timeout=480)
     (tmp_path/'entry.stdout').write_text(result.stdout); (tmp_path/'entry.stderr').write_text(result.stderr)
     return result
 

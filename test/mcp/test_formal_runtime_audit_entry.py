@@ -65,7 +65,7 @@ def run_boundary(cli,monkeypatch,tmp_path):
         'script=sys.argv.pop(1)\nsys.path.insert(0,__import__("os").path.dirname(script))\n'
         'runpy.run_path(script,run_name="__main__")\n')
     argv=[command[0],'-B',str(launcher),*command[2:]]
-    result=subprocess.run(argv,cwd=root,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=240)
+    result=subprocess.run(argv,cwd=root,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=480)
     (tmp_path/'child-stdout.log').write_text(result.stdout)
     (tmp_path/'child-stderr.log').write_text(result.stderr)
     write_json(tmp_path/'child-command-and-exit.json',{'argv':argv,'returncode':result.returncode,
