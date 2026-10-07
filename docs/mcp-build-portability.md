@@ -77,3 +77,42 @@ Windows Python 门禁中通过真实 HTTP 回执链验证 (`test_config_receipts
 本门禁通过不等于实机验收。WinDivert、Windows GUI/进程句柄行为、路由恢复、
 端到端 Windows-to-Ubuntu 交付仍需真实 Windows VM 证据; Wine-only 结果不作为
 上述运行时条件的替代。
+
+## 2026-10-07 分层执行和凭证绑定
+
+`LAYER=core SHARDS=0` 与分片入口均把确定的产品测试文件列表传给实际
+Windows Python pytest。完整 `test_formal_runtime_*` 宿主证据编排回归转到
+现有 `.venv-mcp-runners` 的 Linux Python；该层也执行构建门禁正反例。
+其余原全库用例全部留在 Wine，包括 GUI、diverter、SDK 真实 HTTP、配置
+编码和路径、构建身份、服务边界及 HTTP listener 隔离组。它们的运行性质
+仍由原测试决定：受控 VM/网络替身的通过不增加原生业务验收信用。
+
+| 原门禁 | 本轮环境和证据 | 保留的断言及限制 |
+| --- | --- | --- |
+| 每个 `test_formal_runtime_*` 节点 | Linux host receipt 的收集清单、JUnit、原始日志 | 全部宿主编排、封存、篡改、独立子进程、恢复断言；VM/SCM 替身保持原性质 |
+| formal context 源码绑定 | Wine sentinel receipt | 真实 Windows Python + MinGit 对 pinned blob 的读取、重校验、工作树篡改拒绝 |
+| formal audit argv | Wine sentinel receipt | 列表和 Windows 命令行字符串匹配；真实 `sys.addaudithook` 放行 pinned git、拒绝未列举 git 子进程 |
+| 原全库其余节点 | Wine main receipt，HTTP 独立 receipt | 产品相关断言与已知 skip 的精确节点和原因保留 |
+| 冻结 EXE | package manifest 的 frozen_smoke、原始 smoke-exe 日志 | 实际冻结程序的协议、控制器、角色边界；不启动 FakeNet 引擎 |
+| WinDivert、真实 symlink、SCM 安装/重启/恢复 | 后续原生 Windows `.149` 验收 | 本轮候选和资格凭证显式 PARTIAL，未取得原生信用 |
+
+每组先真实 `--collect-only`，再执行同一选择；JUnit 必须与收集节点一一
+对应。每次运行保存独立目录，旧 XML、失败包和合并目录均保留。
+`gate-receipt.json` 绑定源 commit、镜像内容 ID、层、分片 index/count、
+测试选择、全部收集节点、原始 XML/收集输出/日志 SHA-256。合并要求所有
+分片恰好一次、HTTP 组恰好在 shard 0、core 的 Wine 哨兵和完整 Linux receipt
+齐全，并重新核对 XML 的失败/错误及精确 skip 台账。任意 XML 拼合不产生资格。
+
+`--package-only` 必须显式提供 `--qualification` 与
+`--qualification-sha256`，并在任何 Wine 安装/冻结动作之前验证凭证。
+验证重读全部 receipt 和原始证据，按归档源码重新推导测试文件选择，拒绝
+缺片、重复、异 commit/镜像/层、修改的哈希、失败及未知 skip。凭证是本地
+构建证据绑定，不是跨信任域签名；主控仍需审核证据来源。
+包 manifest 保留 `build_gate=PASS` 与 `qualification_status=PARTIAL`、原生
+缺口和各构建阶段真实用时。普通及分片 shell 入口都先取得绑定凭证再打包。
+
+独立执行示例：`--host-only --layer core --builder-image-id sha256:...` 产生
+Linux receipt；`--gate-only --layer core` 产生 Wine receipt；`--gate-merge`
+需要显式 `--receipt`、`--host-receipt`、`--shard-count`、源 commit 和镜像
+内容 ID，输出到全新 `--qualification` 文件。合并时工作树必须干净且 HEAD
+等于指定源码；文档提交后已有固定源码候选无需重复技术验证。

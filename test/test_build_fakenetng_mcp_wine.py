@@ -8,6 +8,9 @@ not) fail the gate, and failures/errors still fail it.
 import importlib.util
 import sys
 import unittest
+import tempfile
+import json
+from unittest.mock import patch
 from pathlib import Path
 import xml.etree.ElementTree as ElementTree
 
@@ -162,3 +165,131 @@ class ShardLayerTests(unittest.TestCase):
                 case.find('skipped').set('message', message)
             summary = gate.evaluate_gate_group('main', main)
             self.assertEqual(2, len(summary['skips']))
+
+
+class QualificationTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name).resolve()
+        self.commit = 'a' * 40
+        self.image = 'sha256:' + 'b' * 64
+        for name in ('test/mcp/test_config.py', 'test/mcp/test_other.py',
+                     'test/mcp/test_formal_runtime_context.py',
+                     'test/test_http_listener_stop.py', 'test/test_build_fakenetng_mcp_wine.py'):
+            path = self.repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('')
+        self.receipts = []
+        for index in range(2):
+            selections = {'main': gate.gate_selection(self.repo, 'core', (index, 2))}
+            if index == 0:
+                selections.update(http=list(gate.HTTP_CONFLICT_TESTS), sentinel=list(gate.WINDOWS_SENTINELS))
+            self.receipts.append(self.receipt('shard-%d' % index, selections, (index, 2)))
+        self.host = self.receipt('host', {'host': gate.gate_selection(self.repo, 'core', host=True)}, None, True)
+
+    def receipt(self, directory, selections, shard, host=False):
+        validation = self.repo / directory
+        validation.mkdir()
+        groups = {}
+        for name, selection in selections.items():
+            nodes = [item if '::' in item else item + '::test_actual' for item in selection]
+            root = ElementTree.Element('testsuite')
+            for node in nodes:
+                classname, case = gate.junit_node(node).split('::')
+                ElementTree.SubElement(root, 'testcase', classname=classname, name=case)
+            xml = validation / (name + '.xml')
+            ElementTree.ElementTree(root).write(xml)
+            collection = validation / (name + '-collection.txt')
+            collection.write_text('\n'.join(nodes))
+            log = validation / (name + '.txt')
+            log.write_text('actual command output')
+            groups[name] = dict(selection=selection, nodes=sorted(map(gate.junit_node, nodes)),
+                                summary=gate.evaluate_gate_group(name, root), seconds=1,
+                                xml_path=xml, collection_path=collection, log_path=log)
+        return gate.write_receipt(self.repo, self.repo, validation, self.commit, self.image,
+                                  'core', shard, groups, host)
+
+    def qualification(self, receipts=None, host=True):
+        return gate.qualify(self.repo, self.repo, self.commit, self.image, 'core', 2,
+                            self.receipts if receipts is None else receipts, self.host if host else None)
+
+    def test_complete_evidence_can_package_only_with_exact_pin(self):
+        credential = self.qualification()
+        self.assertEqual('PARTIAL', credential['verdict'])
+        self.assertEqual('PASS', credential['build_gate'])
+        path = self.repo / 'qualification.json'
+        path.write_text(json.dumps(credential))
+        self.assertEqual(credential, gate.validate_qualification(
+            self.repo, self.repo, self.commit, self.image, 'core', path, gate.sha256(path)))
+        with self.assertRaises(RuntimeError):
+            gate.validate_qualification(self.repo, self.repo, self.commit, self.image, 'core', path, '0' * 64)
+
+    def test_missing_duplicate_and_absent_host_receipts_refused(self):
+        for receipts in (self.receipts[:1], [self.receipts[0]] * 2):
+            with self.assertRaises(RuntimeError):
+                self.qualification(receipts)
+        with self.assertRaises(RuntimeError):
+            self.qualification(host=False)
+
+    def test_changed_identity_selection_and_missing_group_refused(self):
+        path = self.receipts[0]
+        original = json.loads(path.read_text())
+        for field, value in (('source_commit', 'c' * 40), ('builder_image_id', 'sha256:wrong'),
+                             ('layer', 'full'), ('shard', [1, 2])):
+            altered = dict(original, **{field: value})
+            path.write_text(json.dumps(altered))
+            with self.assertRaises(RuntimeError):
+                self.qualification()
+        for mutation in ('selection', 'group'):
+            altered = json.loads(json.dumps(original))
+            if mutation == 'selection':
+                altered['groups']['main']['selection'] = ['test/mcp/test_config.py']
+            else:
+                del altered['groups']['http']
+            path.write_text(json.dumps(altered))
+            with self.assertRaises(RuntimeError):
+                self.qualification()
+
+    def test_result_tampering_failure_unknown_skip_and_duplicate_refused(self):
+        path = self.receipts[0]
+        original = path.read_text()
+        original_xml = (self.repo / json.loads(original)['groups']['main']['xml']['path']).read_bytes()
+        for outcome in ('failure', 'skipped', 'duplicate', 'missing'):
+            receipt = json.loads(original)
+            entry = receipt['groups']['main']
+            xml = self.repo / entry['xml']['path']
+            xml.write_bytes(original_xml)
+            root = ElementTree.parse(xml).getroot()
+            case = next(root.iter('testcase'))
+            if outcome == 'duplicate':
+                root.append(ElementTree.fromstring(ElementTree.tostring(case)))
+            elif outcome == 'missing':
+                root.remove(case)
+            else:
+                ElementTree.SubElement(case, outcome, message='unknown skip')
+            ElementTree.ElementTree(root).write(xml)
+            entry['xml'] = gate.evidence_record(self.repo, xml)
+            path.write_text(json.dumps(receipt))
+            expected = 'rejected_skips' if outcome == 'skipped' else (
+                'gate failed' if outcome == 'failure' else 'testcase coverage')
+            with self.assertRaisesRegex(RuntimeError, expected):
+                self.qualification()
+
+    def test_nonsharded_core_selection_reaches_actual_gate(self):
+        wheel = self.repo / 'wheelhouse' / gate.PYDIVERT_WHEEL
+        wheel.parent.mkdir()
+        import zipfile
+        with zipfile.ZipFile(wheel, 'w'):
+            pass
+        build_root = self.repo / 'build'
+        build_root.mkdir()
+        with patch.object(gate, 'wine_path', side_effect=str), \
+                patch.object(gate, 'collect_and_run', return_value={'summary': {}}) as execute, \
+                patch.object(gate, 'write_receipt', return_value=self.receipts[0]):
+            gate.run_windows_test_gate(self.repo, build_root, layer='core', repo=self.repo,
+                                        resolved=self.commit, image_id=self.image)
+        main_selection = execute.call_args_list[0].args[3]
+        self.assertTrue(main_selection)
+        self.assertFalse(any('test_formal_runtime_' in name for name in main_selection))
+        self.assertEqual(list(gate.WINDOWS_SENTINELS), execute.call_args_list[2].args[3])

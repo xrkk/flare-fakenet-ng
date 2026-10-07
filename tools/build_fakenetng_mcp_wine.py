@@ -33,6 +33,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+import sys
 import xml.etree.ElementTree as ElementTree
 
 PACKAGE_VERSION = 'p01-v1'
@@ -157,12 +158,15 @@ SECURITY_DEVIATION = (
 
 def run(command, cwd=None, capture=False, env=None):
     print('+ ' + ' '.join(str(item) for item in command), flush=True)
-    return subprocess.run(
+    started = time.monotonic()
+    completed = subprocess.run(
         [str(item) for item in command], cwd=str(cwd) if cwd else None,
         env=env,
         check=True, text=True,
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.STDOUT if capture else None)
+    print('Elapsed: %.3fs' % (time.monotonic() - started), flush=True)
+    return completed
 
 
 def captured(command, cwd=None, env=None):
@@ -258,6 +262,179 @@ def offline_install_sdk(stage, build_root):
 
 
 FORMAL_RUNTIME_PREFIX = 'test_formal_runtime_'
+WINDOWS_SENTINELS = (
+    'test/mcp/test_formal_runtime_context.py::test_explicit_context_is_readonly_and_does_not_create_output',
+    'test/mcp/test_formal_runtime_context.py::test_worktree_fingerprint_cannot_replace_pinned_git_blob',
+    'test/mcp/test_formal_runtime_audit.py::test_audit_guard_accepts_windows_string_argv_for_allowlisted_git',
+    'test/mcp/test_formal_runtime_audit.py::test_audit_guard_allows_real_pinned_git_and_refuses_unlisted_process',
+)
+NATIVE_GAPS = ('WinDivert and route restoration', 'native symlink refusal',
+               'Windows service installation, restart and recovery')
+
+
+def gate_selection(stage, layer, shard=None, host=False):
+    if host:
+        return sorted(str(path.relative_to(stage)) for path in
+                      (stage / 'test' / 'mcp').glob('test_formal_runtime_*.py')) + [
+                          'test/test_build_fakenetng_mcp_wine.py']
+    files = gate_test_files(stage, layer)
+    return shard_files(files, *shard) if shard is not None else files
+
+
+def junit_node(node):
+    parts = node.split('::')
+    return parts[0][:-3].replace('/', '.') + (
+        '.' + '.'.join(parts[1:-1]) if len(parts) > 2 else '') + '::' + parts[-1]
+
+
+def evidence_record(repo, path):
+    path = Path(path).resolve()
+    return {'path': path.relative_to(repo).as_posix(), 'sha256': sha256(path)}
+
+
+def check_record(repo, record):
+    path = repo / record['path']
+    if path.resolve() != path or not path.is_relative_to(repo) or not path.is_file():
+        raise RuntimeError('Invalid evidence path: %s' % path)
+    if sha256(path) != record['sha256']:
+        raise RuntimeError('Evidence hash mismatch: %s' % path)
+    return path
+
+
+def collect_and_run(stage, validation, group, selection, env, windows=True):
+    command = wine_command if windows else lambda arguments: [sys.executable] + arguments
+    collect_log = validation / (group + '-collection.txt')
+    collected = run(command(['-m', 'pytest', '--collect-only', '-q'] + selection),
+                    cwd=stage, capture=True, env=env).stdout
+    collect_log.write_text(collected, encoding='utf-8')
+    nodes = [junit_node(line.strip()) for line in collected.splitlines()
+             if line.startswith('test/') and '::' in line]
+    if not nodes or len(nodes) != len(set(nodes)):
+        raise RuntimeError('Empty or duplicate collection: ' + group)
+    xml = validation / (group + '.xml')
+    log = validation / (group + '.txt')
+    xml_argument = wine_path(xml) if windows else str(xml)
+    arguments = ['-m', 'pytest', '-q', '--disable-warnings', '--capture=sys',
+                 '--durations=20', '--junitxml', xml_argument] + selection
+    started = time.monotonic()
+    completed = subprocess.run(command(arguments), cwd=stage, env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    log.write_text(completed.stdout or '', encoding='utf-8')
+    if completed.returncode:
+        raise RuntimeError('Test group failed (%d): %s' % (completed.returncode, log))
+    summary = evaluate_gate_group(group, ElementTree.parse(xml).getroot())
+    actual = ['%s::%s' % (case.get('classname', ''), case.get('name', ''))
+              for case in ElementTree.parse(xml).getroot().iter('testcase')]
+    if sorted(actual) != sorted(nodes):
+        raise RuntimeError('Collection/result coverage mismatch: ' + group)
+    return {'selection': selection, 'nodes': sorted(nodes), 'summary': summary,
+            'seconds': time.monotonic() - started, 'xml_path': xml,
+            'collection_path': collect_log, 'log_path': log}
+
+
+def write_receipt(repo, stage, validation, resolved, image_id, layer, shard, groups, host=False):
+    receipt = {'schema': 'fakenet.gate-receipt.v1', 'source_commit': resolved,
+               'builder_image_id': image_id, 'layer': layer,
+               'shard': list(shard) if shard is not None else None,
+               'environment': 'linux-host' if host else 'wine-windows', 'groups': {}}
+    for name, result in groups.items():
+        entry = {key: value for key, value in result.items() if not key.endswith('_path')}
+        for kind in ('xml', 'collection', 'log'):
+            entry[kind] = evidence_record(repo, result[kind + '_path'])
+        receipt['groups'][name] = entry
+    path = validation / 'gate-receipt.json'
+    path.write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+    return path
+
+
+def qualify(repo, stage, resolved, image_id, layer, count, receipt_paths, host_receipt=None):
+    if not image_id.startswith('sha256:') or count < 1:
+        raise RuntimeError('Explicit image identity and positive shard count required')
+    if len(receipt_paths) != count or len(set(receipt_paths)) != count:
+        raise RuntimeError('Missing or duplicate shard receipts')
+    records, seen_shards, seen_nodes = [], set(), set()
+    paths = list(receipt_paths)
+    if layer == 'core':
+        if host_receipt is None:
+            raise RuntimeError('Core qualification requires complete Linux host regression')
+        paths.append(host_receipt)
+    for path in paths:
+        receipt = json.loads(Path(path).read_text(encoding='utf-8'))
+        if (receipt.get('schema') != 'fakenet.gate-receipt.v1' or
+                receipt.get('source_commit') != resolved or
+                receipt.get('builder_image_id') != image_id or receipt.get('layer') != layer):
+            raise RuntimeError('Receipt source/image/layer mismatch')
+        host = receipt.get('environment') == 'linux-host'
+        if receipt.get('environment') not in ('linux-host', 'wine-windows'):
+            raise RuntimeError('Unknown receipt execution environment')
+        if host:
+            if host_receipt is None or Path(path) != Path(host_receipt) or receipt.get('shard') is not None:
+                raise RuntimeError('Unexpected host receipt')
+            expected = {'host': gate_selection(stage, layer, host=True)}
+        else:
+            shard = receipt.get('shard')
+            if shard is None and count == 1:
+                index, shard_selection = 0, None
+            elif (isinstance(shard, list) and len(shard) == 2 and
+                  type(shard[0]) is int and shard[1] == count and 0 <= shard[0] < count):
+                index, shard_selection = shard[0], tuple(shard)
+            else:
+                raise RuntimeError('Invalid shard identity')
+            if index in seen_shards:
+                raise RuntimeError('Duplicate shard index')
+            seen_shards.add(index)
+            expected = {'main': gate_selection(stage, layer, shard_selection)}
+            if index == 0:
+                expected['http'] = list(HTTP_CONFLICT_TESTS)
+                if layer == 'core':
+                    expected['sentinel'] = list(WINDOWS_SENTINELS)
+        if set(receipt['groups']) != set(expected):
+            raise RuntimeError('Missing or unexpected test groups')
+        for group, selection in expected.items():
+            entry = receipt['groups'][group]
+            if entry['selection'] != selection:
+                raise RuntimeError('Test selection mismatch')
+            xml = check_record(repo, entry['xml'])
+            collection = check_record(repo, entry['collection'])
+            check_record(repo, entry['log'])
+            collected = sorted(junit_node(line.strip()) for line in
+                               collection.read_text(encoding='utf-8').splitlines()
+                               if line.startswith('test/') and '::' in line)
+            actual = sorted('%s::%s' % (case.get('classname', ''), case.get('name', ''))
+                            for case in ElementTree.parse(xml).getroot().iter('testcase'))
+            if not actual or len(actual) != len(set(actual)) or actual != collected or actual != entry['nodes']:
+                raise RuntimeError('Incomplete or duplicate testcase coverage')
+            summary = evaluate_gate_group(group, ElementTree.parse(xml).getroot())
+            if summary != entry['summary']:
+                raise RuntimeError('Receipt verdict differs from raw XML')
+            if not host:
+                if seen_nodes.intersection(actual):
+                    raise RuntimeError('Duplicate testcase across shards')
+                seen_nodes.update(actual)
+        records.append(evidence_record(repo, Path(path)))
+    if seen_shards != set(range(count)):
+        raise RuntimeError('Incomplete shard indices')
+    return {'schema': 'fakenet.build-qualification.v1', 'source_commit': resolved,
+            'builder_image_id': image_id, 'layer': layer, 'shard_count': count,
+            'receipts': records, 'host_receipt': evidence_record(repo, Path(host_receipt))
+            if layer == 'core' else None, 'verdict': 'PARTIAL',
+            'build_gate': 'PASS', 'native_gaps': list(NATIVE_GAPS)}
+
+
+def validate_qualification(repo, stage, resolved, image_id, layer, path, expected_sha):
+    if not path or not expected_sha or sha256(Path(path)) != expected_sha:
+        raise RuntimeError('Package-only requires a pinned qualification credential')
+    supplied = json.loads(Path(path).read_text(encoding='utf-8'))
+    records = supplied.get('receipts', [])
+    receipt_paths = [check_record(repo, row) for row in records]
+    host = supplied.get('host_receipt')
+    host_path = check_record(repo, host) if host else None
+    wine_paths = [path for path in receipt_paths if path != host_path]
+    expected = qualify(repo, stage, resolved, image_id, layer,
+                       supplied['shard_count'], wine_paths, host_path)
+    if supplied != expected:
+        raise RuntimeError('Qualification credential does not match verified evidence')
+    return expected
 
 
 def gate_test_files(stage, layer):
@@ -298,7 +475,8 @@ def merge_gate_xml(xml_paths):
     return main, http
 
 
-def run_windows_test_gate(stage, build_root, shard=None, layer='full'):
+def run_windows_test_gate(stage, build_root, shard=None, layer='full',
+                          repo=None, resolved=None, image_id=None):
     """Full-repo Windows-Python regression (the candidate touches shared
     diverter code), grouped like the formal v35 gate: the port-owning HTTP
     group runs isolated, everything else in the main pass.
@@ -326,40 +504,17 @@ def run_windows_test_gate(stage, build_root, shard=None, layer='full'):
     # UTF-8 mode keeps the gate aligned with the Unix default.
     env['PYTHONUTF8'] = '1'
 
-    main_xml = validation / 'windows-pytest-main.xml'
-    main_log = validation / 'windows-pytest-main.txt'
-    # The main group creates multiple Tcl interpreters. On Windows, pytest's
-    # fd capture replaces native standard handles and can disrupt Tcl file
-    # channels (including init.tcl reads). Keep native handles stable; the
-    # outer subprocess still records native stdout/stderr in the build log.
-    main_args = ['-m', 'pytest', '-q', '--disable-warnings', '--capture=sys']
-    main_args.extend('--ignore=%s' % path for path in HTTP_CONFLICT_TESTS)
-    if shard is not None:
-        index, count = shard
-        files = shard_files(gate_test_files(stage, layer), index, count)
-        if not files:
-            raise RuntimeError('empty gate shard %d/%d (layer=%s)' % (index, count, layer))
-        main_args.extend(files)
-        main_xml = validation / ('windows-pytest-main-shard-%d.xml' % index)
-        main_log = validation / ('windows-pytest-main-shard-%d.txt' % index)
-    main_args.extend(['--junitxml', wine_path(main_xml)])
-    wine_python_logged(main_args, stage, main_log, env=env)
-
+    groups = {'main': collect_and_run(stage, validation, 'main',
+                                      gate_selection(stage, layer, shard), env)}
     if shard is None or shard[0] == 0:
-        http_xml = validation / 'windows-pytest-http.xml'
-        http_log = validation / 'windows-pytest-http.txt'
-        http_args = ['-m', 'pytest', '-q', '--disable-warnings']
-        http_args.extend(HTTP_CONFLICT_TESTS)
-        http_args.extend(['--junitxml', wine_path(http_xml)])
-        wine_python_logged(http_args, stage, http_log, env=env)
-
-    summaries = {}
-    for group, xml in (('main', main_xml), ('http', validation / 'windows-pytest-http.xml')):
-        if not xml.is_file():
-            continue
-        root = ElementTree.parse(xml).getroot()
-        summaries[group] = evaluate_gate_group(group, root)
-    return {'verdict': 'PASS', 'shard': shard, 'layer': layer, 'groups': summaries}
+        groups['http'] = collect_and_run(stage, validation, 'http', list(HTTP_CONFLICT_TESTS), env)
+        if layer == 'core':
+            groups['sentinel'] = collect_and_run(stage, validation, 'sentinel',
+                                                list(WINDOWS_SENTINELS), env)
+    receipt = write_receipt(repo, stage, validation, resolved, image_id, layer, shard, groups)
+    return {'verdict': 'PASS', 'shard': shard, 'layer': layer,
+            'groups': {name: result['summary'] for name, result in groups.items()},
+            'receipt': evidence_record(repo, receipt)}
 
 
 def smoke_frozen_exe(onedir, build_root):
@@ -623,15 +778,19 @@ def build_gate_marker_dir(repo, source_commit, shard, layer):
     return path
 
 def build(repo, source_commit, output_root, output_directory=None,
-          shard=None, layer='full', gate_only=False, package_only=False):
+          shard=None, layer='full', gate_only=False, package_only=False,
+          image_id='', qualification=None, qualification_sha256=None, host_only=False):
     resolved = captured(['git', '-C', str(repo), 'rev-parse',
                          source_commit + '^{commit}'])
+    timings = {}
     output_root = Path(output_root).resolve()
     destination_dir = (Path(output_directory).resolve()
                        if output_directory else next_output_directory(output_root))
-    if gate_only:
-        destination_dir = build_gate_marker_dir(repo, source_commit, shard, layer)
-    elif destination_dir.exists():
+    if not image_id.startswith('sha256:'):
+        raise RuntimeError('Explicit builder image content ID required')
+    if package_only and (not qualification or not qualification_sha256):
+        raise RuntimeError('Package-only requires a pinned qualification credential')
+    if destination_dir.exists():
         raise RuntimeError('Refusing to overwrite output directory: %s' %
                            destination_dir)
     destination = destination_dir / 'fakenetng-mcp-candidate.zip'
@@ -651,33 +810,52 @@ def build(repo, source_commit, output_root, output_directory=None,
         shutil.rmtree(stage / 'dist', ignore_errors=True)
         verify_source(stage)
 
+        if host_only:
+            validation = build_root / 'build-validation'
+            validation.mkdir()
+            env = os.environ.copy()
+            env['PYTHONDONTWRITEBYTECODE'] = '1'
+            groups = {'host': collect_and_run(stage, validation, 'host',
+                                              gate_selection(stage, layer, host=True), env, windows=False)}
+            receipt = write_receipt(repo, stage, validation, resolved, image_id,
+                                    layer, None, groups, host=True)
+            print('Host receipt: %s' % receipt)
+            return receipt
+        if package_only:
+            test_gate = validate_qualification(repo, stage, resolved, image_id, layer,
+                                               qualification, qualification_sha256)
+            validation = build_root / 'build-validation'
+            validation.mkdir()
+            shutil.copy2(qualification, validation / 'qualification.json')
+        started = time.monotonic()
         sdk_versions = offline_install_sdk(stage, build_root)
+        timings['sdk_install_seconds'] = time.monotonic() - started
         env = os.environ.copy()
         env['PYTHONDONTWRITEBYTECODE'] = '1'
         env['PYTHONIOENCODING'] = 'utf-8'
 
-        if package_only:
-            test_gate = {'verdict': 'SKIPPED', 'reason': 'package-only run after a green sharded gate'}
-        else:
-            test_gate = run_windows_test_gate(stage, build_root, shard=shard, layer=layer)
+        if not package_only:
+            started = time.monotonic()
+            test_gate = run_windows_test_gate(stage, build_root, shard=shard, layer=layer,
+                                              repo=repo, resolved=resolved, image_id=image_id)
+            timings['windows_gate_seconds'] = time.monotonic() - started
         if gate_only:
-            # Copy the shard XMLs next to the caller's output directory so the
-            # host-side merge finds them in one deterministic place.
-            for xml in (build_root / 'build-validation').glob('windows-pytest-*.xml'):
-                shutil.copy2(xml, destination_dir / xml.name)
             print(json.dumps({'gate': test_gate, 'build_root': str(build_root)}))
-            return
+            return build_root / 'build-validation' / 'gate-receipt.json'
 
         stage_windows = wine_path(stage)
         work = build_root / 'work-mcp'
         work.mkdir()
+        started = time.monotonic()
         wine_python(['-m', 'PyInstaller', 'fakenet-mcp.spec',
                      '--distpath', stage_windows,
                      '--workpath', wine_path(work), '--noconfirm'],
                     cwd=stage, env=env)
+        timings['pyinstaller_seconds'] = time.monotonic() - started
         onedir = stage / 'fakenetng-mcp-dist'
         if not onedir.is_dir():
             raise RuntimeError('PyInstaller onedir output missing')
+        started = time.monotonic()
         smoke = smoke_frozen_exe(onedir, build_root)
         role_smoke = []
         for executable, arguments, expected in (
@@ -692,6 +870,7 @@ def build(repo, source_commit, output_root, output_directory=None,
                 raise RuntimeError('frozen exit role boundary failed: %r' % role_smoke[-1])
         (build_root / 'exit-role-smoke.json').write_text(json.dumps(role_smoke, indent=2), encoding='utf-8')
         smoke['exit_role_boundaries'] = role_smoke
+        timings['frozen_smoke_seconds'] = time.monotonic() - started
 
         package = stage / 'candidate-package'
         package.mkdir()
@@ -727,6 +906,11 @@ def build(repo, source_commit, output_root, output_directory=None,
             'source_snapshot_mode': 'commit',
             'plan_doc': PLAN_DOC,
             'builder': 'docker-wine-windows-python',
+            'builder_image_id': image_id,
+            'qualification_status': 'PARTIAL',
+            'qualification_sha256': qualification_sha256,
+            'native_gaps': list(NATIVE_GAPS),
+            'stage_timings': timings,
             'python_version': captured(wine_command(
                 ['-c', 'import platform;print(platform.python_version())'])),
             'pyinstaller_version': captured(wine_command(
@@ -801,28 +985,43 @@ def main():
                         help='host-side merge of shard XMLs plus verdict')
     parser.add_argument('--merge-dir',
                         help='directory containing windows-pytest-main-shard-*.xml and http xml')
+    parser.add_argument('--builder-image-id', default=os.environ.get('BUILDER_IMAGE_ID', ''))
+    parser.add_argument('--qualification')
+    parser.add_argument('--qualification-sha256')
+    parser.add_argument('--host-only', action='store_true')
+    parser.add_argument('--receipt', action='append', default=[])
+    parser.add_argument('--host-receipt')
     args = parser.parse_args()
     if args.gate_merge:
-        merge_dir = Path(args.merge_dir).resolve()
-        xmls = sorted(merge_dir.glob('windows-pytest-main-shard-*.xml'))
-        xmls += sorted(merge_dir.glob('windows-pytest-http.xml'))
-        if not xmls:
-            raise SystemExit('no shard XMLs under %s' % merge_dir)
-        main_root, http_root = merge_gate_xml(xmls)
-        summary = {'main': evaluate_gate_group('main', main_root)}
-        if any(http_root.iter('testcase')):
-            summary['http'] = evaluate_gate_group('http', http_root)
-        print(json.dumps({'verdict': 'PASS', 'groups': summary}, indent=2))
+        repo = Path(args.repo).resolve()
+        resolved = captured(['git', '-C', str(repo), 'rev-parse', args.source_commit + '^{commit}'])
+        if captured(['git', '-C', str(repo), 'status', '--porcelain', '--untracked-files=no']):
+            raise RuntimeError('Qualification requires a clean committed source tree')
+        if captured(['git', '-C', str(repo), 'rev-parse', 'HEAD']) != resolved:
+            raise RuntimeError('Qualification source must match the checked source tree')
+        summary = qualify(repo, repo, resolved, args.builder_image_id, args.layer,
+                          args.shard_count or 1, [Path(path) for path in args.receipt],
+                          Path(args.host_receipt) if args.host_receipt else None)
+        output = Path(args.qualification)
+        with output.open('x', encoding='utf-8') as stream:
+            stream.write(json.dumps(summary, indent=2) + '\n')
+        print(json.dumps(summary, indent=2))
         return
     shard = None
     if args.shard_index is not None or args.shard_count is not None:
         if args.shard_index is None or args.shard_count is None:
             raise SystemExit('--shard-index and --shard-count go together')
+        if args.shard_count < 1 or not 0 <= args.shard_index < args.shard_count:
+            raise SystemExit('invalid shard index/count')
         shard = (args.shard_index, args.shard_count)
+    if sum((args.gate_only, args.package_only, args.host_only)) > 1:
+        raise SystemExit('gate-only, package-only and host-only are exclusive')
     build(Path(args.repo).resolve(), args.source_commit,
           Path(args.output).resolve(), args.output_directory,
           shard=shard, layer=args.layer,
-          gate_only=args.gate_only, package_only=args.package_only)
+          gate_only=args.gate_only, package_only=args.package_only,
+          image_id=args.builder_image_id, qualification=args.qualification,
+          qualification_sha256=args.qualification_sha256, host_only=args.host_only)
 
 
 if __name__ == '__main__':

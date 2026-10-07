@@ -243,3 +243,26 @@ def test_audit_guard_accepts_windows_string_argv_for_allowlisted_git():
     with pytest.raises(AuditError, match='business subprocess'):
         guard('subprocess.Popen',
               (None, list2cmdline(['git', '-C', str(source_root), 'status']), None, None))
+
+
+def test_audit_guard_allows_real_pinned_git_and_refuses_unlisted_process(materials):
+    import sys
+    context = load_context(materials[1], materials[2], repository_root=materials[0])
+    guard = audit.AuditGuard(context)
+    observed = []
+
+    def hook(event, arguments):
+        if guard.active and event == 'subprocess.Popen':
+            observed.append(arguments[1])
+        guard(event, arguments)
+
+    sys.addaudithook(hook)
+    guard.active = True
+    try:
+        assert context.revalidate().materials_sha256 == context.materials_sha256
+        assert len(observed) == 1
+        assert isinstance(observed[0], str if sys.platform == 'win32' else list)
+        with pytest.raises(audit.AuditError, match='business subprocess'):
+            subprocess.run(['git', '-C', str(materials[0]), 'status'], check=True)
+    finally:
+        guard.active = False

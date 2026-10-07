@@ -49,25 +49,34 @@ echo "Builder image: $IMAGE_NAME ($BUILDER_IMAGE_ID)"
 # the classic single serial build.
 SHARDS="${SHARDS:-0}"
 LAYER="${LAYER:-full}"
+if [[ ! "$SHARDS" =~ ^[0-9]+$ ]]; then
+    echo "SHARDS must be a nonnegative integer" >&2
+    exit 2
+fi
 
 run_builder() {
     docker run --rm \
         --user "$(id -u):$(id -g)" \
         --env HOME=/tmp \
+        --env BUILDER_IMAGE_ID="$BUILDER_IMAGE_ID" \
         --volume "$SCRIPT_DIR:/workspace" \
         "$IMAGE_NAME" python3 /workspace/tools/build_fakenetng_mcp_wine.py "$@"
 }
 
-if [[ "$SHARDS" -gt 0 ]]; then
+if [[ "$SHARDS" -ge 0 ]]; then
+    SOURCE_COMMIT="$(git -C "$SCRIPT_DIR" rev-parse "$SOURCE_COMMIT^{commit}")"
+    gate_count="$SHARDS"
+    if [[ "$gate_count" -eq 0 ]]; then gate_count=1; fi
     echo "Building fakenetng-mcp candidate with $IMAGE_NAME from immutable source $SOURCE_COMMIT ($SHARDS gate shards, layer=$LAYER)"
-    shard_dir="$SCRIPT_DIR/Logs/fakenetng-mcp/builds/merged-$SOURCE_COMMIT-$LAYER"
-    rm -rf "$shard_dir"; mkdir -p "$shard_dir"
+    mkdir -p "$SCRIPT_DIR/Logs/fakenetng-mcp/builds"
+    shard_dir="$(mktemp -d "$SCRIPT_DIR/Logs/fakenetng-mcp/builds/merged-${SOURCE_COMMIT:0:8}-$LAYER-XXXXXXXX")"
     pids=()
-    for ((i = 0; i < SHARDS; i++)); do
-        out="$(to_container_path "$shard_dir")/shard-$i"
+    for ((i = 0; i < gate_count; i++)); do
+        shard_args=()
+        if [[ "$SHARDS" -gt 0 ]]; then shard_args=(--shard-index "$i" --shard-count "$SHARDS"); fi
         run_builder --repo /workspace --source-commit "$SOURCE_COMMIT" \
-            --output "$(to_container_path "$shard_dir")" --output-directory "$out" \
-            --gate-only --layer "$LAYER" --shard-index "$i" --shard-count "$SHARDS" \
+            --output "$(to_container_path "$shard_dir")" \
+            --gate-only --layer "$LAYER" "${shard_args[@]}" \
             > "$shard_dir/shard-$i.log" 2>&1 &
         pids+=($!)
     done
@@ -77,28 +86,31 @@ if [[ "$SHARDS" -gt 0 ]]; then
         echo "Gate shards failed; see $shard_dir/shard-*.log" >&2
         exit 1
     fi
-    find "$shard_dir" -name 'windows-pytest-main-shard-*.xml' -exec mv {} "$shard_dir/" \;
-    find "$shard_dir" -name 'windows-pytest-http.xml' -exec mv {} "$shard_dir/" \;
+    merge_args=(--repo "$SCRIPT_DIR" --source-commit "$SOURCE_COMMIT" --gate-merge
+                --layer "$LAYER" --shard-count "$gate_count" --builder-image-id "$BUILDER_IMAGE_ID"
+                --qualification "$shard_dir/qualification.json")
+    for ((i = 0; i < gate_count; i++)); do
+        receipt="$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).read().splitlines()[-1])["gate"]["receipt"]["path"])' "$shard_dir/shard-$i.log")"
+        merge_args+=(--receipt "$SCRIPT_DIR/$receipt")
+    done
+    if [[ "$LAYER" == core ]]; then
+        "$SCRIPT_DIR/.venv-mcp-runners/bin/python" "$SCRIPT_DIR/tools/build_fakenetng_mcp_wine.py" \
+            --repo "$SCRIPT_DIR" --source-commit "$SOURCE_COMMIT" --host-only --layer core \
+            --builder-image-id "$BUILDER_IMAGE_ID" > "$shard_dir/host.log" 2>&1
+        host_receipt="$(sed -n 's/^Host receipt: //p' "$shard_dir/host.log")"
+        merge_args+=(--host-receipt "$host_receipt")
+    fi
     python3 "$SCRIPT_DIR/tools/build_fakenetng_mcp_wine.py" \
-        --repo "$SCRIPT_DIR" --gate-merge --merge-dir "$shard_dir" \
+        "${merge_args[@]}" \
         | tee "$shard_dir/gate-merged.json"
+    qualification_sha="$(sha256sum "$shard_dir/qualification.json")"
+    qualification_sha="${qualification_sha%% *}"
     echo "Gate green; packaging once from $SOURCE_COMMIT"
-    run_builder --repo /workspace --source-commit "$SOURCE_COMMIT" \
-        --output "$(to_container_path "$OUTPUT_ROOT")" \
-        $(if [[ -n "$OUTPUT_DIRECTORY" ]]; then echo --output-directory "$(to_container_path "$OUTPUT_DIRECTORY")"; fi) \
-        --package-only
+    package_args=(--repo /workspace --source-commit "$SOURCE_COMMIT"
+                  --output "$(to_container_path "$OUTPUT_ROOT")" --layer "$LAYER" --package-only
+                  --qualification "$(to_container_path "$shard_dir/qualification.json")"
+                  --qualification-sha256 "$qualification_sha")
+    if [[ -n "$OUTPUT_DIRECTORY" ]]; then package_args+=(--output-directory "$(to_container_path "$OUTPUT_DIRECTORY")"); fi
+    run_builder "${package_args[@]}"
     exit $?
 fi
-
-args=(--repo /workspace --source-commit "$SOURCE_COMMIT"
-      --output "$(to_container_path "$OUTPUT_ROOT")")
-if [[ -n "$OUTPUT_DIRECTORY" ]]; then
-    args+=(--output-directory "$(to_container_path "$OUTPUT_DIRECTORY")")
-fi
-
-echo "Building fakenetng-mcp candidate with $IMAGE_NAME from immutable source $SOURCE_COMMIT"
-docker run --rm \
-    --user "$(id -u):$(id -g)" \
-    --env HOME=/tmp \
-    --volume "$SCRIPT_DIR:/workspace" \
-    "$IMAGE_NAME" python3 /workspace/tools/build_fakenetng_mcp_wine.py "${args[@]}"
