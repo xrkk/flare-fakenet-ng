@@ -293,3 +293,23 @@ class QualificationTests(unittest.TestCase):
         self.assertTrue(main_selection)
         self.assertFalse(any('test_formal_runtime_' in name for name in main_selection))
         self.assertEqual(list(gate.WINDOWS_SENTINELS), execute.call_args_list[2].args[3])
+
+    def test_host_only_never_creates_distributable_output(self):
+        import zipfile
+
+        def archive(command):
+            with zipfile.ZipFile(command[command.index('--output') + 1], 'w') as bundle:
+                bundle.writestr('test/mcp/test_formal_runtime_context.py', '')
+
+        output = self.repo / 'must-not-create-dist'
+        with patch.object(gate, 'captured', return_value=self.commit), \
+                patch.object(gate, 'run', side_effect=archive), \
+                patch.object(gate, 'verify_source'), \
+                patch.object(gate, 'collect_and_run', return_value={}), \
+                patch.object(gate, 'write_receipt', return_value=self.host), \
+                patch.object(gate, 'offline_install_sdk') as install:
+            result = gate.build(self.repo, self.commit, output, host_only=True,
+                                layer='core', image_id=self.image)
+        self.assertEqual(self.host, result)
+        self.assertFalse(output.exists())
+        install.assert_not_called()

@@ -784,16 +784,16 @@ def build(repo, source_commit, output_root, output_directory=None,
                          source_commit + '^{commit}'])
     timings = {}
     output_root = Path(output_root).resolve()
-    destination_dir = (Path(output_directory).resolve()
+    destination_dir = None if gate_only or host_only else (Path(output_directory).resolve()
                        if output_directory else next_output_directory(output_root))
     if not image_id.startswith('sha256:'):
         raise RuntimeError('Explicit builder image content ID required')
     if package_only and (not qualification or not qualification_sha256):
         raise RuntimeError('Package-only requires a pinned qualification credential')
-    if destination_dir.exists():
+    if destination_dir is not None and destination_dir.exists():
         raise RuntimeError('Refusing to overwrite output directory: %s' %
                            destination_dir)
-    destination = destination_dir / 'fakenetng-mcp-candidate.zip'
+    destination = destination_dir / 'fakenetng-mcp-candidate.zip' if destination_dir else None
 
     diagnostics_root = repo / 'Logs' / 'fakenetng-mcp' / 'builds'
     diagnostics_root.mkdir(parents=True, exist_ok=True)
