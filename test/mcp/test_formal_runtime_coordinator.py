@@ -217,7 +217,7 @@ def test_DNS_lease_conflict_preserves_original_preflight_failure_and_revokes_hoo
 def test_fresh_low_capacity_refuses_every_VM_call_before_SCM(environment, monkeypatch):
     _, r, _, state, _, co, model, commands, _ = environment
     initial = len(commands)
-    monkeypatch.setattr(coordinator.os, 'statvfs', lambda _: SimpleNamespace(f_bavail=23 * 2**30, f_frsize=1))
+    monkeypatch.setattr(coordinator.shutil, 'disk_usage', lambda _: SimpleNamespace(free=23 * 2**30))
     with co.installed():
         with pytest.raises(AssertionError): r._ipc_evidence_mode(True)
     assert len(commands) == initial and model['scm_calls'] == 0 and co.seq == 0 and not state.admission_ready
