@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 import subprocess
 import sys
@@ -122,11 +124,27 @@ def test_invalid_material_contract_refused(materials, change, reason):
         load_context(path, pin, repository_root=root)
 
 
+def _can_symlink():
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, 't')
+            link = os.path.join(tmp, 'l')
+            os.mkdir(target)
+            os.symlink(target, link, target_is_directory=True)
+            # Some Wine configurations silently materialize a copy instead
+            # of a real link; refusing a symlink requires a true link.
+            return os.path.islink(link)
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not _can_symlink(), reason='symlink creation unavailable')
 def test_output_symlink_refused(materials):
     root, path, _, data = materials
     outside = root.parent / "outside"
     outside.mkdir()
     (root / "Logs/link").symlink_to(outside, target_is_directory=True)
+    assert (root / "Logs/link").is_symlink()
     data["audit_root"] = str(root / "Logs/link/new")
     pin = write_json(path, data)["sha256"]
     with pytest.raises(MaterialError, match="symlink path refused"):

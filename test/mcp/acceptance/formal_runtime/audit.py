@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+from subprocess import list2cmdline
 import threading
 
 import scenario_aux_qpc_contract as contract
@@ -70,7 +71,16 @@ class AuditGuard:
                             'audit code outside qualified source closure')
             return
         if event == 'subprocess.Popen':
-            require(tuple(args[1]) in self.git_reads, 'independent audit forbids business subprocess')
+            argv = args[1]
+            if isinstance(argv, str):
+                # Windows Python converts the argv list with list2cmdline
+                # before auditing, so compare against the same rendering of
+                # each allowlisted git read.
+                allowed = any(list2cmdline(list(read)) == argv
+                              for read in self.git_reads)
+            else:
+                allowed = tuple(argv) in self.git_reads
+            require(allowed, 'independent audit forbids business subprocess')
             return
         paths, write = [], False
         if event == 'open' and isinstance(args[0], (str, bytes, os.PathLike)):

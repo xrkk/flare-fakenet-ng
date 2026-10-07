@@ -1,0 +1,61 @@
+# Incremental builder image: the verified pinned Wine + Windows Python base
+# plus the native Windows git required by the formal_runtime acceptance gate.
+#
+# Base identity is fixed by content, not by tag drift: the parent is the
+# locally verified image sha256:1b33b518a7c71ecd13264f0d1c41faf254e301b8702e2
+# da8ca11376cff700a5e (re-read it before building). The result gets a NEW tag
+# and never overwrites the base image.
+FROM flare-fakenet-ng/gui-vm-diagnostic-builder:py3119-pyi6220
+
+ARG MINGIT_VERSION=2.47.1
+ARG MINGIT_SHA256=50b04b55425b5c465d076cdb184f63a0cd0f86f6ec8bb4d5860114a713d2c29a
+
+ENV WINEARCH=win64 \
+    WINEPREFIX=/opt/fakenet-wine \
+    WINEDEBUG=-all \
+    WINEDLLOVERRIDES=mscoree,mshtml= \
+    DISPLAY=:99
+
+COPY MinGit-${MINGIT_VERSION}-64-bit.zip /tmp/mingit.zip
+
+# The base image hands the Wine prefix to the runtime user; this layer needs
+# root to edit the prefix registry, so it records and restores the ownership.
+RUN wine_owner="$(stat -c %u /opt/fakenet-wine)" \
+    && wine_group="$(stat -c %g /opt/fakenet-wine)" \
+    && chown -R root:root /opt/fakenet-wine \
+    && echo "${MINGIT_SHA256}  /tmp/mingit.zip" | sha256sum -c - \
+    && mkdir -p /opt/git/mingit \
+    && unzip -q /tmp/mingit.zip -d /opt/git/mingit \
+    && test -f /opt/git/mingit/cmd/git.exe \
+    && current_path="$(xvfb-run -a wine reg query \
+        'HKLM\System\CurrentControlSet\Control\Session Manager\Environment' \
+        /v PATH | tr -d '\r' | grep -E '^ *PATH ' \
+        | sed -E 's/^ *PATH +REG_EXPAND_SZ +//')" \
+    && xvfb-run -a wine reg add \
+        'HKLM\System\CurrentControlSet\Control\Session Manager\Environment' \
+        /v PATH /t REG_EXPAND_SZ /d "${current_path};Z:\\opt\\git\\mingit\\cmd" /f \
+    # MinGit ships core.autocrlf=true; the acceptance fixtures hash working
+    # trees against repository blobs, so line-ending conversion must stay
+    # off exactly like the Unix git the contract was pinned on.
+    && xvfb-run -a wine Z:\\opt\\git\\mingit\\cmd\\git.exe \
+        config --system core.autocrlf false \
+    && rm -f /tmp/mingit.zip \
+    # Self-check: build a tiny repo with the host git, then prove Windows
+    # Python resolves the native git.exe through PATH and reads repository
+    # bytes over the Z: drive mapping — exactly how the formal_runtime
+    # materials fixtures invoke git.
+    && git init -q /tmp/gitselfcheck \
+    && printf 'selfcheck-blob\n' > /tmp/gitselfcheck/blob.txt \
+    && git -C /tmp/gitselfcheck add blob.txt \
+    && git -C /tmp/gitselfcheck -c user.name=build -c user.email=build@local \
+        commit -qm selfcheck \
+    && xvfb-run -a wine C:\\Python311\\python.exe -c \
+       "import subprocess; \
+        r = subprocess.run(['git', '--version'], capture_output=True, text=True); \
+        assert r.returncode == 0, r.stderr; \
+        c = subprocess.run(['git', '-C', r'Z:\tmp\gitselfcheck', 'cat-file', \
+        'blob', 'HEAD:blob.txt'], capture_output=True); \
+        assert c.returncode == 0 and c.stdout.strip() == b'selfcheck-blob', c.stderr; \
+        print('git self-check ok:', r.stdout.strip())" \
+    && rm -rf /tmp/gitselfcheck /tmp/wine-* \
+    && chown -R "${wine_owner}:${wine_group}" /opt/fakenet-wine
