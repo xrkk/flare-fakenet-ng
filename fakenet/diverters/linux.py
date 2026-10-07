@@ -63,6 +63,34 @@ class Diverter(DiverterBase, LinUtilMixin):
         # Track iptables rules not associated with any nfqueue object
         self.rules_added = []
 
+        # LNX-FN net policy: verifiable IPv6 blocking, control-link
+        # exclusion and isolation/real mode switching.  Optional; absent
+        # control endpoints means an IPv6-block-only policy (loopback kept).
+        from fakenet.diverters.linuxnetpolicy import NetPolicy
+        control_eps = []
+        raw_eps = self.getconfigval('LinuxControlEndpoints')
+        # fnconfig may hand back the value exploded into characters or as a
+        # plain string; normalize both to comma-separated host:port items.
+        if isinstance(raw_eps, str):
+            items = raw_eps
+        else:
+            try:
+                items = ''.join(str(x) for x in (raw_eps or []))
+            except Exception:
+                items = str(raw_eps or '')
+        try:
+            for item in (x.strip() for x in items.split(',')):
+                if not item:
+                    continue
+                ip, _, port = item.rpartition(':')
+                control_eps.append((ip, int(port)))
+        except ValueError:
+            raise ValueError(
+                'LinuxControlEndpoints must be host:port strings, got %r'
+                % (items,))
+        self.net_policy = NetPolicy(control_endpoints=control_eps,
+                                    logger=self.logger)
+
         # NOTE: Constraining cache size via LRU or similar is a non-requirement
         # due to the short anticipated runtime of FakeNet-NG. If you see your
         # FakeNet-NG consuming large amounts of memory, contact your doctor to
@@ -215,6 +243,22 @@ class Diverter(DiverterBase, LinUtilMixin):
             self.logger.critical('Failed to process interface redirection')
             raise RuntimeError('Failed to process interface redirection')
 
+        # LNX-FN: adopt leftovers from an unclean prior stop, then install
+        # control-link exclusions ahead of the takeover rules and the
+        # verifiable IPv6 block.  Policy failure is fatal: no silent bypass.
+        try:
+            adopted = self.net_policy.adopt_leftovers()
+            if adopted:
+                self.logger.warning(
+                    'NET_POLICY_ADOPTED_LEFTOVERS %s', adopted)
+            self.net_policy.install_control_exclusions_v4()
+            applied_v6 = self.net_policy.block_ipv6()
+            self.net_policy.mode = 'isolated'
+            self.logger.info('NET_POLICY_ISOLATED v6_rules=%d', len(applied_v6))
+        except Exception:
+            self.logger.critical('NET_POLICY_INSTALL_FAILED')
+            raise
+
         return True
 
     def stopCallback(self):
@@ -234,6 +278,16 @@ class Diverter(DiverterBase, LinUtilMixin):
         except Exception:
             healthy = False
             self.logger.exception('Failed removing Linux diversion rules')
+
+        try:
+            policy_result = self.net_policy.stop()
+            if policy_result.get('ipv6_block_leftover'):
+                healthy = False
+                self.logger.critical('NET_POLICY_IPV6_LEFTOVER')
+            self.logger.info('NET_POLICY_STOPPED %s', policy_result)
+        except Exception:
+            healthy = False
+            self.logger.exception('Failed stopping net policy')
 
         for q in self.nfqueues:
             self.pdebug(DNFQUEUE, 'Stopping NFQUEUE for %s' % (str(q)))

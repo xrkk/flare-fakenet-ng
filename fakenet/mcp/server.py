@@ -60,8 +60,14 @@ def build_mcp_server(config=None, context=None):
     return server
 
 
-def build_app(config: ServiceConfig, logger=None, context=None):
-    """Return the guarded ASGI app bound to the configured endpoint path."""
+def build_app(config: ServiceConfig, logger=None, context=None,
+              bearer_token=None):
+    """Return the guarded ASGI app bound to the configured endpoint path.
+
+    bearer_token: optional (LNX-FN Linux deployments).  When set, requests
+    must carry the matching Bearer token; without it the gate is absent and
+    behavior is identical to existing Windows deployments.
+    """
     server = build_mcp_server(config, context=context)
     starlette_app = server.streamable_http_app(
         streamable_http_path=MCP_ENDPOINT_PATH,
@@ -69,9 +75,14 @@ def build_app(config: ServiceConfig, logger=None, context=None):
         stateless_http=True,
         host=config.listen_ip,
     )
-    return TransportGuardMiddleware(
+    app = TransportGuardMiddleware(
         starlette_app, endpoint_path=MCP_ENDPOINT_PATH, logger=logger,
         allow_legacy_protocol=config.allow_legacy_protocol)
+    if bearer_token:
+        from fakenet.mcp.bearerauth import BearerAuthMiddleware
+        app = BearerAuthMiddleware(app, bearer_token,
+                                   endpoint_path=MCP_ENDPOINT_PATH)
+    return app
 
 
 _active_server = None

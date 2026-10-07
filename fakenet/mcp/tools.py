@@ -121,6 +121,15 @@ class AppContext:
 
             if os.environ.get('FAKENETNG_MCP_TESTDOUBLE') == '1':
                 self.runner = LifecycleDouble()
+            elif os.environ.get('FAKENETNG_MCP_LINUX_RUNNER') == '1':
+                # LNX-FN opt-in: Linux deployments set this so the real
+                # lifecycle drives the native process and verifies network
+                # state directly.  Default behavior (Windows service and the
+                # existing supervisor tests) is unchanged.
+                from fakenet.mcp.linuxrunner import LinuxRunner
+                self.runner = LinuxRunner(
+                    config_path_resolver=self._default_config_resolver)
+                self._linux_runner_active = True
             else:
                 from fakenet.mcp.supervisor import RealSupervisor
 
@@ -174,10 +183,13 @@ class AppContext:
                 supervisor._log_size_probe = log_size
                 self.runner = supervisor
         self.coordinator = coordinator or Coordinator(self.runner)
+        if getattr(self, '_linux_runner_active', False):
+            self._linux_recovery_verdict()
         if store is None:
             self.coordinator.on_run_end(lambda: self.store.set_active(None))
         if (runner is None and real_supervisor is None and
-                os.environ.get('FAKENETNG_MCP_TESTDOUBLE') != '1'):
+                os.environ.get('FAKENETNG_MCP_TESTDOUBLE') != '1' and
+                not getattr(self, '_linux_runner_active', False)):
             self.coordinator.update_health_state('recovering')
         self.artifacts_root = dirs['artifacts']
         # Artifact enumeration reads and hashes evidence files; it runs in the
@@ -187,6 +199,30 @@ class AppContext:
         package = Path(sys.executable).parent if getattr(sys, 'frozen', False) \
             else Path(__file__).resolve().parents[2]
         self.diagnostics = DiagnosticOwner(package)
+
+    def _linux_recovery_verdict(self):
+        """Linux startup recovery: real rule state decides, no marker file.
+
+        Clean rules mean no inherited run responsibility -> 'stopped' and
+        mutations may proceed; leftover takeover rules keep 'recovering'
+        until the next start adopts and removes them (diverter policy).
+        """
+        adopted = []
+        try:
+            from fakenet.mcp.linuxrunner import adopt_orphan_rules
+            adopted = adopt_orphan_rules()
+        except Exception:
+            pass
+        dirty = True
+        try:
+            from fakenet.mcp.linuxrunner import _ipt_has
+            dirty = _ipt_has('NFQUEUE') or _ipt_has('-j DROP', 'ip6tables')
+        except Exception:
+            dirty = True
+        if adopted and not dirty:
+            dirty = False  # adoption already restored a clean state
+        self.coordinator.update_health_state(
+            'recovering' if dirty else 'stopped')
 
     def _default_config_resolver(self, name, builtin):
         if builtin:

@@ -1,0 +1,16 @@
+[Unit]
+Description=FakeNet-NG Linux MCP service (LNX-FN)
+After=network.target
+
+[Service]
+Type=simple
+Environment=FAKENETNG_LISTEN_IP=127.0.0.1
+Environment=FAKENETNG_LISTEN_PORT=28788
+ExecStart=/opt/fakenet-ng/venv/bin/python -B /opt/fakenet-ng/lnxfn-serve.py
+Restart=on-failure
+RestartSec=3
+User=root
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
