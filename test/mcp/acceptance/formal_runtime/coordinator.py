@@ -2,7 +2,7 @@
 
 This module reuses Suite methods and never schedules a second formal matrix.
 """
-import copy, hashlib, json, os, time, traceback, uuid
+import copy, hashlib, json, os, shutil, time, traceback, uuid
 from contextlib import contextmanager
 from pathlib import Path
 import bounded_mcp as b
