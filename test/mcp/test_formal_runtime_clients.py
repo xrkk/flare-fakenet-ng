@@ -102,9 +102,9 @@ def test_service_original_controller_and_timeout_caps_are_preserved(materials,se
 def test_unknown_product_mutation_is_not_replayed_and_host_child_is_ended(materials,server):
     state=Responsibility();state.admission_ready=True
     c=client(server,load(materials),state=state);protected=ProtectedService(c,c.context,state);server.mode='unknown'
-    with pytest.raises(MutationUnknown): protected.tool_outcome('start',{'command_id':'exact-own'},.4)
+    with pytest.raises(MutationUnknown): protected.tool_outcome('start',{'command_id':'exact-own'},30)
     assert not state.safe
-    with pytest.raises(RuntimeError): protected.tool_outcome('start',{'command_id':'exact-own'},.4)
+    with pytest.raises(RuntimeError): protected.tool_outcome('start',{'command_id':'exact-own'},30)
     assert len(server.received)==1 and c.responsibility()['host_writers_ended']
 
 

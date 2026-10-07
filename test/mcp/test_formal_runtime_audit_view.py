@@ -86,7 +86,7 @@ def test_unindexed_nested_source_reference_is_not_filled_from_filesystem(copy_co
     index = Path(data['source_indices'][0]['path'])
     sealed = json.loads(index.read_bytes())
     for row in sealed['rows']:
-        if row['path'] == str(result_path.relative_to(root)):
+        if row['path'].replace('\\', '/') == result_path.relative_to(root).as_posix():
             row.update({k:v for k,v in record(result_path).items() if k != 'path'})
     data['source_indices'] = [write_json(index, sealed)]
     context = load_context(copy_context.materials_path, write_json(copy_context.materials_path,data)['sha256'],
