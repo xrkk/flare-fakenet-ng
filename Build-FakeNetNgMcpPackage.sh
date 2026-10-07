@@ -2,7 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE_NAME='flare-fakenet-ng/gui-vm-diagnostic-builder:py3119-pyi6220'
+# The pinned base image; BUILDER_IMAGE may explicitly select the incremental
+# MinGit gate image built by ./Build-GuiVmDiagnosticPackage.sh --image-mingit.
+IMAGE_NAME="${BUILDER_IMAGE:-flare-fakenet-ng/gui-vm-diagnostic-builder:py3119-pyi6220}"
 SOURCE_COMMIT="${SOURCE_COMMIT:-HEAD}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$SCRIPT_DIR/dist}"
 
@@ -34,9 +36,13 @@ to_container_path() {
 
 if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
     echo "Pinned builder image is unavailable: $IMAGE_NAME" >&2
-    echo "Run ./Build-GuiVmDiagnosticPackage.sh --image-only, then retry." >&2
+    echo "Run ./Build-GuiVmDiagnosticPackage.sh --image-only (or --image-mingit), then retry." >&2
     exit 2
 fi
+# Record the resolved content identity so the build log pins the image by
+# digest, not just by tag.
+BUILDER_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$IMAGE_NAME")"
+echo "Builder image: $IMAGE_NAME ($BUILDER_IMAGE_ID)"
 
 args=(python3 /workspace/tools/build_fakenetng_mcp_wine.py
       --repo /workspace --source-commit "$SOURCE_COMMIT"
