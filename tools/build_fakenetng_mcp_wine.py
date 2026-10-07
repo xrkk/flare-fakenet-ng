@@ -262,6 +262,7 @@ def offline_install_sdk(stage, build_root):
 
 
 FORMAL_RUNTIME_PREFIX = 'test_formal_runtime_'
+HOST_ONLY_TESTS = ('test/test_linuxnetpolicy.py',)
 WINDOWS_SENTINELS = (
     'test/mcp/test_formal_runtime_context.py::test_explicit_context_is_readonly_and_does_not_create_output',
     'test/mcp/test_formal_runtime_context.py::test_worktree_fingerprint_cannot_replace_pinned_git_blob',
@@ -274,9 +275,9 @@ NATIVE_GAPS = ('WinDivert and route restoration', 'native symlink refusal',
 
 def gate_selection(stage, layer, shard=None, host=False):
     if host:
-        return sorted(str(path.relative_to(stage)) for path in
+        return sorted(path.relative_to(stage).as_posix() for path in
                       (stage / 'test' / 'mcp').glob('test_formal_runtime_*.py')) + [
-                          'test/test_build_fakenetng_mcp_wine.py']
+                          'test/test_build_fakenetng_mcp_wine.py'] + list(HOST_ONLY_TESTS)
     files = gate_test_files(stage, layer)
     return shard_files(files, *shard) if shard is not None else files
 
@@ -444,11 +445,12 @@ def gate_test_files(stage, layer):
     the fast Linux run and by Windows sentinel shards); ``full`` keeps
     everything. Files are sorted so shard assignment is reproducible.
     """
-    files = sorted(str(path.relative_to(stage))
+    files = sorted(path.relative_to(stage).as_posix()
                    for path in (stage / 'test').rglob('test_*.py')
                    if path.name != 'test_http_listener_stop.py')
     if layer == 'core':
-        files = [f for f in files if Path(f).name.startswith(FORMAL_RUNTIME_PREFIX) is False]
+        files = [f for f in files if not Path(f).name.startswith(FORMAL_RUNTIME_PREFIX)
+                 and f not in HOST_ONLY_TESTS]
     return files
 
 

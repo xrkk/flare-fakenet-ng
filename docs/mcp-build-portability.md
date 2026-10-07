@@ -83,6 +83,14 @@ Windows Python 门禁中通过真实 HTTP 回执链验证 (`test_config_receipts
 `LAYER=core SHARDS=0` 与分片入口均把确定的产品测试文件列表传给实际
 Windows Python pytest。完整 `test_formal_runtime_*` 宿主证据编排回归转到
 现有 `.venv-mcp-runners` 的 Linux Python；该层也执行构建门禁正反例。
+Linux 专属 `test/test_linuxnetpolicy.py` 七项迁至同一 Linux host receipt：
+其幂等证据查询实际调用宿主 `ip6tables`，Windows 无此命令；Linux 原断言
+完整执行，产品和测试源码保持原样。测试文件和节点统一使用 POSIX 相对路径
+绑定，使凭证逻辑在 Windows Python 自身的回归中也保持相同身份。
+独立审计入口在激活写入守卫前完成标准库 `tempfile.gettempdir()` 初始化；
+否则首次只读容量查询会先创建默认临时目录探测文件，被守卫拒绝，掩盖
+真正的原始 verifier 拒绝。初始化后仍使用原守卫、原容量阈值和每次源
+重校验，未放行审计作用域内的外部写入。
 其余原全库用例全部留在 Wine，包括 GUI、diverter、SDK 真实 HTTP、配置
 编码和路径、构建身份、服务边界及 HTTP listener 隔离组。它们的运行性质
 仍由原测试决定：受控 VM/网络替身的通过不增加原生业务验收信用。
@@ -90,6 +98,7 @@ Windows Python pytest。完整 `test_formal_runtime_*` 宿主证据编排回归�
 | 原门禁 | 本轮环境和证据 | 保留的断言及限制 |
 | --- | --- | --- |
 | 每个 `test_formal_runtime_*` 节点 | Linux host receipt 的收集清单、JUnit、原始日志 | 全部宿主编排、封存、篡改、独立子进程、恢复断言；VM/SCM 替身保持原性质 |
+| Linux NetPolicy 七项 | Linux host receipt | 原始 Linux 防火墙策略/幂等证据断言，真实只读宿主命令；受控规则修改仍为替身 |
 | formal context 源码绑定 | Wine sentinel receipt | 真实 Windows Python + MinGit 对 pinned blob 的读取、重校验、工作树篡改拒绝 |
 | formal audit argv | Wine sentinel receipt | 列表和 Windows 命令行字符串匹配；真实 `sys.addaudithook` 放行 pinned git、拒绝未列举 git 子进程 |
 | 原全库其余节点 | Wine main receipt，HTTP 独立 receipt | 产品相关断言与已知 skip 的精确节点和原因保留 |

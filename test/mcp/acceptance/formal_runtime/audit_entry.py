@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import traceback
 
 import formal_batch_v3 as batch
@@ -98,6 +99,7 @@ def run(context, selection_path, scope, entry):
     guard = AuditGuard(context)
     qualified = qualify_sources(context,entry,guard)
     initial_modules = loaded_sources(context,qualified)
+    tempfile.gettempdir()
     sys.addaudithook(guard)
     guard.active = True
     mapper, failure, verify, replay, summary, passed = None, None, None, None, None, False

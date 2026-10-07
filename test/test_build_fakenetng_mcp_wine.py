@@ -176,7 +176,8 @@ class QualificationTests(unittest.TestCase):
         self.image = 'sha256:' + 'b' * 64
         for name in ('test/mcp/test_config.py', 'test/mcp/test_other.py',
                      'test/mcp/test_formal_runtime_context.py',
-                     'test/test_http_listener_stop.py', 'test/test_build_fakenetng_mcp_wine.py'):
+                     'test/test_http_listener_stop.py', 'test/test_build_fakenetng_mcp_wine.py',
+                     'test/test_linuxnetpolicy.py'):
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('')
@@ -292,6 +293,8 @@ class QualificationTests(unittest.TestCase):
         main_selection = execute.call_args_list[0].args[3]
         self.assertTrue(main_selection)
         self.assertFalse(any('test_formal_runtime_' in name for name in main_selection))
+        self.assertNotIn('test/test_linuxnetpolicy.py', main_selection)
+        self.assertIn('test/test_linuxnetpolicy.py', gate.gate_selection(self.repo, 'core', host=True))
         self.assertEqual(list(gate.WINDOWS_SENTINELS), execute.call_args_list[2].args[3])
 
     def test_host_only_never_creates_distributable_output(self):
