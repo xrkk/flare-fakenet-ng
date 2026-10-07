@@ -287,9 +287,20 @@ def test_mutation_during_aggregate_reports_inconsistent(endpoint, local_diagnost
     assert run_id
 
 
-def test_one_subquery_failure_keeps_other_results(endpoint):
-    # No diagnostic monkeypatch: on this host the real IPC edge fails fast,
-    # which exercises the partial path — the events side must survive.
+def test_one_subquery_failure_keeps_other_results(endpoint, monkeypatch):
+    # Deterministic failure injection through the real HTTP tool path: the
+    # artifacts diagnostic sub-query raises a real McpError inside
+    # DiagnosticOwner.call while the events side keeps the real diagnostic
+    # task code, so partial=true and the surviving side are both asserted
+    # without relying on platform-specific IPC failure behaviour.
+    from fakenet.mcp.diagnostic_process import DiagnosticError
+
+    def injected_call(self, operation, payload, deadline, wait=None):
+        if operation == 'list-artifacts':
+            raise DiagnosticError('injected artifacts sub-query failure')
+        return diagnostic_tasks.execute(operation, payload, deadline)
+
+    monkeypatch.setattr(diagnostic_process.DiagnosticOwner, 'call', injected_call)
     started = start_run(endpoint, 'overview-partial.ini')
     run_id = started['run_id']
     seed_artifacts(run_id)

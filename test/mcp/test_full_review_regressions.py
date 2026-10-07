@@ -25,7 +25,10 @@ from fakenet.mcp.tools import register_tools
 def surface(coord, runner=None, store=None, artifacts=None):
     functions = {}
 
-    def tool():
+    def tool(**_registration):
+        # The production registrar passes description/annotations/
+        # structured_output metadata for the typed 19-tool surface; this
+        # harness only collects functions and accepts those kwargs.
         def register(fn):
             functions[fn.__name__] = fn
             return fn

@@ -5,6 +5,8 @@ The producer's actual separate-audit failure chain is exercised alongside.
 """
 from pathlib import Path
 import hashlib
+import os
+import tempfile
 
 import pytest
 
@@ -93,9 +95,25 @@ def test_audit_inventory_fingerprints_nested_outputs_and_detects_changes(tmp_pat
     assert len(output_inventory(tmp_path)) == 2
 
 
+def _can_symlink():
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, 't.json')
+            link = os.path.join(tmp, 'l.json')
+            open(target, 'w').close()
+            os.symlink(target, link)
+            # Some Wine configurations silently materialize a copy instead
+            # of a real link; refusing a symlink requires a true link.
+            return os.path.islink(link)
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not _can_symlink(), reason='symlink creation unavailable')
 def test_audit_inventory_refuses_symlink_dependency_even_with_same_bytes(tmp_path):
     original = tmp_path/'actual.json'; original.write_text('{}')
     (tmp_path/'alias.json').symlink_to(original)
+    assert (tmp_path/'alias.json').is_symlink()
     with pytest.raises(MaterialError, match='symlink path refused'): output_inventory(tmp_path)
 
 

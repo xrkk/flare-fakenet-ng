@@ -12,10 +12,26 @@ credentials) is ever echoed; the answer is cached per process.
 
 import hashlib
 import json
+import os
+import tempfile
 
 import pytest
 
 from fakenet.mcp import build_identity as bi
+
+
+def _can_symlink():
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, 't.json')
+            link = os.path.join(tmp, 'l.json')
+            open(target, 'w').close()
+            os.symlink(target, link)
+            # Some Wine configurations silently materialize a copy instead
+            # of a real link; refusing a symlink requires a true link.
+            return os.path.islink(link)
+    except OSError:
+        return False
 
 
 @pytest.fixture(autouse=True)
@@ -104,11 +120,13 @@ def test_oversize_manifest_refused(tmp_path, monkeypatch):
     assert identity['source'] == 'unknown'
 
 
+@pytest.mark.skipif(not _can_symlink(), reason='symlink creation unavailable')
 def test_symlinked_manifest_refused(tmp_path, monkeypatch):
     root = point_at(tmp_path, monkeypatch)
     real = root / 'real.json'
     real.write_text('{}', encoding='utf-8')
     (root / bi.MANIFEST_NAME).symlink_to(real)
+    assert (root / bi.MANIFEST_NAME).is_symlink()
     identity = bi.build_identity()
     assert identity['error'] == 'manifest is not a regular file'
     assert identity['source_commit'] is None

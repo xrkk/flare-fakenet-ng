@@ -5,7 +5,9 @@ from fakenet.mcp.tools import register_tools
 
 def test_failed_stop_retains_active_config_until_clean_recovery():
     tools = {}
-    def register():
+    def register(**_registration):
+        # Production @server.tool passes description/annotations metadata;
+        # the harness registrar accepts and discards it.
         def decorate(function):
             tools[function.__name__] = function
             return function

@@ -204,12 +204,35 @@ def test_tools_list_frozen_surface(endpoint):
                          {'MCP-Protocol-Version': '2026-07-28',
                           'Mcp-Method': 'tools/list'})
     assert status == 200
-    names = sorted(tool['name']
-                   for tool in json.loads(text)['result']['tools'])
-    # P01 probe surface plus the P02 domain tools (sub-plan P02 §3).
+    tools_listing = json.loads(text)['result']['tools']
+    names = sorted(tool['name'] for tool in tools_listing)
+    # P01 probe surface plus the P02 domain tools and the T003 read-only
+    # additions: the frozen 19-tool surface (sub-plan P02 §3; mcp-query
+    # workflows contract). Original 16 names keep their parameters.
     assert names == sorted([
-        'ping', 'get_status', 'get_events', 'list_configs',
+        'ping', 'get_status', 'get_events', 'get_command_status',
+        'wait_status', 'get_run_overview', 'list_configs',
         'validate_config', 'read_config', 'list_artifacts', 'load_config',
         'start', 'stop', 'restart', 'create_config', 'import_config',
         'edit_config', 'rename_config', 'delete_config',
     ])
+    schemas_by_name = {tool['name']: tool for tool in tools_listing}
+    # Original tool parameters are preserved...
+    assert set(schemas_by_name['stop']['inputSchema']['properties']) == {
+        'command_id', 'expected_state_version'}
+    assert set(schemas_by_name['edit_config']['inputSchema']['properties']) == {
+        'name', 'content', 'expected_sha256', 'command_id',
+        'expected_state_version'}
+    # ...while the read-only additions carry their contracted parameters.
+    assert set(
+        schemas_by_name['get_events']['inputSchema']['properties']) == {
+        'limit', 'cursor', 'run_id'}
+    assert set(
+        schemas_by_name['get_run_overview']['inputSchema']['properties']) == {
+        'run_id', 'event_limit', 'event_cursor', 'artifact_type'}
+    assert set(
+        schemas_by_name['get_command_status']['inputSchema']['properties']) == {
+        'command_id'}
+    assert set(
+        schemas_by_name['wait_status']['inputSchema']['properties']) == {
+        'states', 'after_state_version', 'timeout_seconds'}
