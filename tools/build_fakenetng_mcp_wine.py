@@ -267,6 +267,10 @@ def run_windows_test_gate(stage, build_root):
     env['PYTHONPATH'] = pydivert_prefix
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
+    # Windows Python defaults text decoding to the cp1252 locale, which
+    # breaks fixtures that read UTF-8 sources with the platform default;
+    # UTF-8 mode keeps the gate aligned with the Unix default.
+    env['PYTHONUTF8'] = '1'
 
     main_xml = validation / 'windows-pytest-main.xml'
     main_log = validation / 'windows-pytest-main.txt'

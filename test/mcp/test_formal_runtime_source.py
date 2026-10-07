@@ -30,7 +30,7 @@ def historical(materials):
     freeze = driver.parent / 'frozen-plan2.json'
     freeze_rec = write_json(freeze, {
         'identity': data['candidate_identity'], 'root': str(root), 'physical_namespace': namespace,
-        'dependencies': {str(path.relative_to(repo)): record(path)['sha256'] for path in (driver, start)}})
+        'dependencies': {path.relative_to(repo).as_posix(): record(path)['sha256'] for path in (driver, start)}})
     files = {}
     files['guest-namespace-binding.json'] = {
         'schema': 'source-namespace-binding.v1', 'original_execution_root': str(root),

@@ -162,7 +162,7 @@ def test_exact_supervisor_lineage_is_queried_without_broad_native_export(exporti
     witness = write_json(path, {'pid': 812, 'filetime': '134355786888519306'})
     index_path = Path(data['source_indices'][0]['path'])
     index = json.loads(index_path.read_bytes())
-    index['rows'].append(dict(witness, path=str(path.relative_to(root))))
+    index['rows'].append(dict(witness, path=path.relative_to(root).as_posix()))
     data['source_indices'][0] = write_json(index_path, index)
     pin = write_json(material_path, data)['sha256']
     from formal_runtime.context import load_context

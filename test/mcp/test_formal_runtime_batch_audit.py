@@ -1,6 +1,8 @@
 """New-batch lineage/copies with actual original rejection, never fake proof PASS."""
 import copy
 import json
+import os
+import tempfile
 from pathlib import Path
 import subprocess
 import sys
@@ -56,6 +58,21 @@ def declared_batch(entry_material):
     return context, request, record(index_path)
 
 
+def _can_symlink():
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, 't')
+            link = os.path.join(tmp, 'l')
+            open(target, 'w').close()
+            os.symlink(target, link)
+            # Some Wine configurations silently materialize a copy instead
+            # of a real link; refusing a symlink requires a true link.
+            return os.path.islink(link)
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not _can_symlink(), reason='symlink creation unavailable')
 def test_streamed_inventory_refuses_symlinks_and_seal_requires_actual_execution(declared_batch):
     context, request, index = declared_batch
     assert sealing.check_index(context.evidence_root, index)['batch_id'] == request.batch_id
