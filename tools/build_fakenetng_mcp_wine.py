@@ -257,10 +257,55 @@ def offline_install_sdk(stage, build_root):
     return versions
 
 
-def run_windows_test_gate(stage, build_root):
+FORMAL_RUNTIME_PREFIX = 'test_formal_runtime_'
+
+
+def gate_test_files(stage, layer):
+    """Deterministically list the gate's test files for a layer.
+
+    ``core`` excludes the formal_runtime acceptance family (it is covered by
+    the fast Linux run and by Windows sentinel shards); ``full`` keeps
+    everything. Files are sorted so shard assignment is reproducible.
+    """
+    files = sorted(str(path.relative_to(stage))
+                   for path in (stage / 'test').rglob('test_*.py')
+                   if path.name != 'test_http_listener_stop.py')
+    if layer == 'core':
+        files = [f for f in files if Path(f).name.startswith(FORMAL_RUNTIME_PREFIX) is False]
+    return files
+
+
+def shard_files(files, index, count):
+    """Round-robin shard assignment; adjacent (same-family) files spread
+    across shards, which balances the slow formal_runtime files."""
+    return [f for position, f in enumerate(files) if position % count == index]
+
+
+def merge_gate_xml(xml_paths):
+    """Merge shard JUnit XMLs into two roots: (main, http).
+
+    Every testcase element is reparented unchanged; evaluation happens on the
+    merged documents so skip/failure semantics stay identical to a single
+    serial run.
+    """
+    main = ElementTree.Element('testsuite')
+    http = ElementTree.Element('testsuite')
+    for path in xml_paths:
+        root = ElementTree.parse(path).getroot()
+        target = http if 'http' in Path(path).name else main
+        for case in root.iter('testcase'):
+            target.append(case)
+    return main, http
+
+
+def run_windows_test_gate(stage, build_root, shard=None, layer='full'):
     """Full-repo Windows-Python regression (the candidate touches shared
     diverter code), grouped like the formal v35 gate: the port-owning HTTP
-    group runs isolated, everything else in the main pass."""
+    group runs isolated, everything else in the main pass.
+
+    ``shard=(index, count)`` restricts the main group to a deterministic
+    file shard; shard 0 also runs the HTTP group. ``layer='core'`` excludes
+    the formal_runtime acceptance family from the main group."""
     validation = build_root / 'build-validation'
     validation.mkdir(parents=True, exist_ok=True)
     wheel = stage / 'wheelhouse' / PYDIVERT_WHEEL
@@ -289,21 +334,32 @@ def run_windows_test_gate(stage, build_root):
     # outer subprocess still records native stdout/stderr in the build log.
     main_args = ['-m', 'pytest', '-q', '--disable-warnings', '--capture=sys']
     main_args.extend('--ignore=%s' % path for path in HTTP_CONFLICT_TESTS)
+    if shard is not None:
+        index, count = shard
+        files = shard_files(gate_test_files(stage, layer), index, count)
+        if not files:
+            raise RuntimeError('empty gate shard %d/%d (layer=%s)' % (index, count, layer))
+        main_args.extend(files)
+        main_xml = validation / ('windows-pytest-main-shard-%d.xml' % index)
+        main_log = validation / ('windows-pytest-main-shard-%d.txt' % index)
     main_args.extend(['--junitxml', wine_path(main_xml)])
     wine_python_logged(main_args, stage, main_log, env=env)
 
-    http_xml = validation / 'windows-pytest-http.xml'
-    http_log = validation / 'windows-pytest-http.txt'
-    http_args = ['-m', 'pytest', '-q', '--disable-warnings']
-    http_args.extend(HTTP_CONFLICT_TESTS)
-    http_args.extend(['--junitxml', wine_path(http_xml)])
-    wine_python_logged(http_args, stage, http_log, env=env)
+    if shard is None or shard[0] == 0:
+        http_xml = validation / 'windows-pytest-http.xml'
+        http_log = validation / 'windows-pytest-http.txt'
+        http_args = ['-m', 'pytest', '-q', '--disable-warnings']
+        http_args.extend(HTTP_CONFLICT_TESTS)
+        http_args.extend(['--junitxml', wine_path(http_xml)])
+        wine_python_logged(http_args, stage, http_log, env=env)
 
     summaries = {}
-    for group, xml in (('main', main_xml), ('http', http_xml)):
+    for group, xml in (('main', main_xml), ('http', validation / 'windows-pytest-http.xml')):
+        if not xml.is_file():
+            continue
         root = ElementTree.parse(xml).getroot()
         summaries[group] = evaluate_gate_group(group, root)
-    return {'verdict': 'PASS', 'groups': summaries}
+    return {'verdict': 'PASS', 'shard': shard, 'layer': layer, 'groups': summaries}
 
 
 def smoke_frozen_exe(onedir, build_root):
@@ -555,13 +611,27 @@ Service name: fakenetng-mcp (LocalSystem, auto start).
 """ % SECURITY_DEVIATION
 
 
-def build(repo, source_commit, output_root, output_directory=None):
+
+def build_gate_marker_dir(repo, source_commit, shard, layer):
+    """Dedicated Logs directory for one gate shard run (no dist output)."""
+    name = 'gate-%s' % source_commit[:8]
+    if shard is not None:
+        name += '-shard%dof%d' % shard
+    name += '-' + layer
+    path = repo / 'Logs' / 'fakenetng-mcp' / 'builds' / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+def build(repo, source_commit, output_root, output_directory=None,
+          shard=None, layer='full', gate_only=False, package_only=False):
     resolved = captured(['git', '-C', str(repo), 'rev-parse',
                          source_commit + '^{commit}'])
     output_root = Path(output_root).resolve()
     destination_dir = (Path(output_directory).resolve()
                        if output_directory else next_output_directory(output_root))
-    if destination_dir.exists():
+    if gate_only:
+        destination_dir = build_gate_marker_dir(repo, source_commit, shard, layer)
+    elif destination_dir.exists():
         raise RuntimeError('Refusing to overwrite output directory: %s' %
                            destination_dir)
     destination = destination_dir / 'fakenetng-mcp-candidate.zip'
@@ -586,7 +656,17 @@ def build(repo, source_commit, output_root, output_directory=None):
         env['PYTHONDONTWRITEBYTECODE'] = '1'
         env['PYTHONIOENCODING'] = 'utf-8'
 
-        test_gate = run_windows_test_gate(stage, build_root)
+        if package_only:
+            test_gate = {'verdict': 'SKIPPED', 'reason': 'package-only run after a green sharded gate'}
+        else:
+            test_gate = run_windows_test_gate(stage, build_root, shard=shard, layer=layer)
+        if gate_only:
+            # Copy the shard XMLs next to the caller's output directory so the
+            # host-side merge finds them in one deterministic place.
+            for xml in (build_root / 'build-validation').glob('windows-pytest-*.xml'):
+                shutil.copy2(xml, destination_dir / xml.name)
+            print(json.dumps({'gate': test_gate, 'build_root': str(build_root)}))
+            return
 
         stage_windows = wine_path(stage)
         work = build_root / 'work-mcp'
@@ -710,9 +790,39 @@ def main():
     parser.add_argument('--source-commit', default='HEAD')
     parser.add_argument('--output', default='/workspace/dist')
     parser.add_argument('--output-directory')
+    parser.add_argument('--gate-only', action='store_true',
+                        help='run only the Windows test gate, no packaging')
+    parser.add_argument('--shard-index', type=int, default=None)
+    parser.add_argument('--shard-count', type=int, default=None)
+    parser.add_argument('--layer', choices=('full', 'core'), default='full')
+    parser.add_argument('--package-only', action='store_true',
+                        help='skip the gate (used after a green sharded gate)')
+    parser.add_argument('--gate-merge', action='store_true',
+                        help='host-side merge of shard XMLs plus verdict')
+    parser.add_argument('--merge-dir',
+                        help='directory containing windows-pytest-main-shard-*.xml and http xml')
     args = parser.parse_args()
+    if args.gate_merge:
+        merge_dir = Path(args.merge_dir).resolve()
+        xmls = sorted(merge_dir.glob('windows-pytest-main-shard-*.xml'))
+        xmls += sorted(merge_dir.glob('windows-pytest-http.xml'))
+        if not xmls:
+            raise SystemExit('no shard XMLs under %s' % merge_dir)
+        main_root, http_root = merge_gate_xml(xmls)
+        summary = {'main': evaluate_gate_group('main', main_root)}
+        if any(http_root.iter('testcase')):
+            summary['http'] = evaluate_gate_group('http', http_root)
+        print(json.dumps({'verdict': 'PASS', 'groups': summary}, indent=2))
+        return
+    shard = None
+    if args.shard_index is not None or args.shard_count is not None:
+        if args.shard_index is None or args.shard_count is None:
+            raise SystemExit('--shard-index and --shard-count go together')
+        shard = (args.shard_index, args.shard_count)
     build(Path(args.repo).resolve(), args.source_commit,
-          Path(args.output).resolve(), args.output_directory)
+          Path(args.output).resolve(), args.output_directory,
+          shard=shard, layer=args.layer,
+          gate_only=args.gate_only, package_only=args.package_only)
 
 
 if __name__ == '__main__':

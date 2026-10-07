@@ -117,3 +117,48 @@ class SkipLedgerTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ShardLayerTests(unittest.TestCase):
+    def test_core_layer_excludes_formal_runtime_family(self):
+        files = ['test/mcp/test_config.py',
+                 'test/mcp/test_formal_runtime_audit.py',
+                 'test/test_gui_configmodel.py',
+                 'test/mcp/test_formal_runtime_z.py']
+        core = [f for f in files
+                if not Path(f).name.startswith(gate.FORMAL_RUNTIME_PREFIX)]
+        self.assertEqual(['test/mcp/test_config.py',
+                          'test/test_gui_configmodel.py'], core)
+
+    def test_shards_partition_without_overlap(self):
+        files = ['f%d.py' % i for i in range(10)]
+        parts = [gate.shard_files(files, i, 4) for i in range(4)]
+        self.assertEqual(sorted(files), sorted(f for p in parts for f in p))
+        for a in range(4):
+            for b in range(a + 1, 4):
+                self.assertFalse(set(parts[a]) & set(parts[b]))
+
+    def test_merge_gate_xml_keeps_cases_and_verdict(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, cls in (('windows-pytest-main-shard-0.xml', 'm.test_a'),
+                              ('windows-pytest-main-shard-1.xml', 'm.test_b'),
+                              ('windows-pytest-http.xml', 'h.test_http')):
+                Path(tmp, name).write_text(
+                    '<testsuite><testcase classname="%s" name="t" /></testsuite>' % cls)
+            main, http = gate.merge_gate_xml(
+                sorted(Path(tmp).glob('windows-pytest-main-shard-*.xml')) +
+                sorted(Path(tmp).glob('windows-pytest-http.xml')))
+            self.assertEqual(2, len(list(main.iter('testcase'))))
+            self.assertEqual(1, len(list(http.iter('testcase'))))
+            # a merged skip ledger still evaluates normally
+            known = [('test.mcp.test_singleinstance', 'test_second_acquire_fails',
+                      'posix flock path tested here'),
+                     ('test.mcp.test_singleinstance', 'test_guard_holds_both_locks',
+                      'posix flock path tested here')]
+            for case, (cls, name, message) in zip(main.iter('testcase'), known):
+                case.set('classname', cls); case.set('name', name)
+                case.append(ElementTree.Element('skipped'))
+                case.find('skipped').set('message', message)
+            summary = gate.evaluate_gate_group('main', main)
+            self.assertEqual(2, len(summary['skips']))
