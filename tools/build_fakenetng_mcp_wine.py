@@ -45,30 +45,39 @@ MCP_SDK_PIN = 'mcp==2.1.1'
 PYDIVERT_WHEEL = 'pydivert-2.1.0-py2.py3-none-any.whl'
 HTTP_CONFLICT_TESTS = ('test/test_http_listener_stop.py',)
 # Finite Wine-platform skip allowlist at test-node granularity. Every skip
-# observed in the gate must be listed here with its reason; module-level
-# blanket permissions are deliberately not used so a new unexpected skip
-# fails the build instead of passing silently. Wine symlink skips are native
+# observed in the gate must match BOTH its nodeid and the exact pytest skip
+# message recorded from the real baseline run (see
+# Logs/fakenetng-mcp/builds/6118c6e0-s3to0qbu/build-validation/); any unknown
+# node, unknown reason or empty reason fails the build. Module-level blanket
+# permissions are deliberately not used. Wine symlink skips are native
 # Windows qualification gaps, not verified negative cases.
 WINE_ALLOWED_SKIPS = {
     'test.mcp.test_singleinstance::test_second_acquire_fails':
-        'posix flock path tested here (native Windows qualification pending)',
+        'posix flock path tested here',
     'test.mcp.test_singleinstance::test_acquire_or_exit_exits_with_3':
-        'posix flock path tested here (native Windows qualification pending)',
+        'posix flock path tested here',
     'test.mcp.test_singleinstance::test_shared_operator_mutex_conflict_reports_gui':
-        'posix flock path tested here (native Windows qualification pending)',
+        'posix flock path tested here',
     'test.mcp.test_singleinstance::test_guard_holds_both_locks':
-        'posix flock path tested here (native Windows qualification pending)',
+        'posix flock path tested here',
     'test.mcp.test_configstore_links::test_symlink_inside_root_rejected':
-        'symlink creation unavailable in Wine (native Windows gap)',
+        'symlink creation unavailable',
     'test.mcp.test_configstore_links::test_symlink_edit_target_rejected':
-        'symlink creation unavailable in Wine (native Windows gap)',
+        'symlink creation unavailable',
     'test.mcp.test_build_identity::test_symlinked_manifest_refused':
-        'symlink creation unavailable in Wine (native Windows gap)',
+        'symlink creation unavailable',
     'test.mcp.test_formal_runtime_preparation_receipt::'
     'test_audit_inventory_refuses_symlink_dependency_even_with_same_bytes':
-        'symlink creation unavailable in Wine (native Windows gap)',
+        'symlink creation unavailable',
     'test.mcp.test_formal_runtime_context::test_output_symlink_refused':
-        'symlink creation unavailable in Wine (native Windows gap)',
+        'symlink creation unavailable',
+    # sealing.check_index must refuse symlinks inside the evidence root
+    # (test_formal_runtime_batch_audit.py:64-66); Wine cannot create a true
+    # link, so the guarded test skips with the same reason — same
+    # escape-prevention requirement as test_configstore_links above.
+    'test.mcp.test_formal_runtime_batch_audit::'
+    'test_streamed_inventory_refuses_symlinks_and_seal_requires_actual_execution':
+        'symlink creation unavailable',
     'test.mcp.test_scenario_r02_regressions::'
     'test_approved_restart_refusal_from_original_bytes':
         'sealed sst-043 originals unavailable in this checkout',
@@ -78,25 +87,25 @@ WINE_ALLOWED_SKIPS = {
     'test.test_gui_configmodel::test_gbk_source_round_trip':
         'host locale is not GBK family',
     'test.test_gui_vm_acceptance::test_export_logs_collects_package_root_artifacts':
-        'Wine powershell.exe stub does not execute the script',
+        'Wine powershell.exe stub did not execute the script',
 }
 
 
 def classify_skips(skipped):
-    """Return (allowed, unknown) nodeid lists for the observed skips.
+    """Return (allowed, rejected) for the observed (nodeid, message) skips.
 
-    ``skipped`` is an iterable of (nodeid, message) pairs; an observed skip is
-    allowed only when its nodeid is explicitly allowlisted. Unknown skips are
-    returned so the gate can fail with the full identities instead of
-    silently dropping them.
+    A skip is allowed only when BOTH the nodeid is allowlisted AND its
+    message equals the exact reason recorded from the real baseline run;
+    unknown nodes, mismatched or empty reasons are all rejected so the gate
+    fails with the full identities instead of silently dropping them.
     """
-    allowed, unknown = [], []
-    for nodeid, _message in skipped:
-        if nodeid in WINE_ALLOWED_SKIPS:
+    allowed, rejected = [], []
+    for nodeid, message in skipped:
+        if nodeid in WINE_ALLOWED_SKIPS and message == WINE_ALLOWED_SKIPS[nodeid]:
             allowed.append(nodeid)
         else:
-            unknown.append(nodeid)
-    return allowed, unknown
+            rejected.append((nodeid, message))
+    return allowed, rejected
 
 
 def evaluate_gate_group(group, root):
@@ -117,11 +126,11 @@ def evaluate_gate_group(group, root):
             nodeid = '%s::%s' % (item.attrib.get('classname', ''),
                                  item.attrib.get('name', ''))
             skipped.append((nodeid, skipped_element.get('message', '')))
-    allowed, unknown = classify_skips(skipped)
-    if failures or errors or unknown:
+    allowed, rejected = classify_skips(skipped)
+    if failures or errors or rejected:
         raise RuntimeError(
             'Windows-Python gate failed (%s): failures=%d errors=%d '
-            'unknown_skips=%s' % (group, failures, errors, unknown))
+            'rejected_skips=%s' % (group, failures, errors, rejected))
     return {
         'tests': len(testcases), 'failures': failures, 'errors': errors,
         'skips': [{'nodeid': nodeid, 'message': message,

@@ -213,3 +213,33 @@ def test_scoped_guard_refuses_code_execution_from_historical_Logs(authority):
     with m.installed(m.context.audit_root / 'exec-scope'):
         with pytest.raises(audit.AuditError,match='code execution from Logs'): exec(payload,{})
     assert not m.guard.active
+
+
+def test_audit_guard_accepts_windows_string_argv_for_allowlisted_git():
+    """Windows Python audits the joined command line, not the argv list.
+
+    The guard must accept the list2cmdline rendering of an allowlisted git
+    read (string form) as well as the original list form, and refuse any
+    non-whitelisted string such as an echo command.
+    """
+    from types import SimpleNamespace
+    from formal_runtime.audit import AuditGuard, AuditError
+    from subprocess import list2cmdline
+
+    source_root = Path('C:/repository')
+    context = SimpleNamespace(
+        source_root=source_root,
+        tool_source={'commit': 'c' * 40,
+                     'files': [{'path': str(source_root / 'test/mcp/acceptance/helper.py')}]})
+    guard = AuditGuard(context)
+    guard.active = True
+    allowed = next(iter(guard.git_reads))
+
+    guard('subprocess.Popen', (None, list(allowed), None, None))
+    guard('subprocess.Popen', (None, list2cmdline(list(allowed)), None, None))
+
+    with pytest.raises(AuditError, match='business subprocess'):
+        guard('subprocess.Popen', (None, 'echo forbidden', None, None))
+    with pytest.raises(AuditError, match='business subprocess'):
+        guard('subprocess.Popen',
+              (None, list2cmdline(['git', '-C', str(source_root), 'status']), None, None))

@@ -44,19 +44,41 @@ class SkipLedgerTests(unittest.TestCase):
              'skip', 'posix flock path tested here'),
             ('test.mcp.test_build_identity', 'test_symlinked_manifest_refused',
              'skip', 'symlink creation unavailable'),
+            ('test.mcp.test_formal_runtime_batch_audit',
+             'test_streamed_inventory_refuses_symlinks_and_seal_requires_actual_execution',
+             'skip', 'symlink creation unavailable'),
             ('test.mcp.test_anything', 'test_plain_pass', 'pass'),
         ])
         summary = gate.evaluate_gate_group('main', root)
         self.assertEqual(0, summary['failures'])
-        self.assertEqual(2, len(summary['skips']))
+        self.assertEqual(3, len(summary['skips']))
         ledger = {item['nodeid']: item for item in summary['skips']}
-        self.assertIn('native Windows qualification pending',
-                      ledger['test.mcp.test_singleinstance::'
-                             'test_second_acquire_fails']['allowlist_reason'])
         self.assertEqual(
-            'symlink creation unavailable in Wine (native Windows gap)',
+            'posix flock path tested here',
+            ledger['test.mcp.test_singleinstance::'
+                   'test_second_acquire_fails']['allowlist_reason'])
+        self.assertEqual(
+            'symlink creation unavailable',
             ledger['test.mcp.test_build_identity::'
                    'test_symlinked_manifest_refused']['allowlist_reason'])
+
+    def test_known_node_with_unknown_reason_is_rejected(self):
+        root = junit_xml([
+            ('test.mcp.test_build_identity', 'test_symlinked_manifest_refused',
+             'skip', 'required dependency BROKEN'),
+        ])
+        with self.assertRaises(RuntimeError) as caught:
+            gate.evaluate_gate_group('main', root)
+        self.assertIn('rejected_skips', str(caught.exception))
+        self.assertIn('required dependency BROKEN', str(caught.exception))
+
+    def test_known_node_with_empty_reason_is_rejected(self):
+        root = junit_xml([
+            ('test.mcp.test_singleinstance', 'test_second_acquire_fails',
+             'skip', ''),
+        ])
+        with self.assertRaises(RuntimeError):
+            gate.evaluate_gate_group('main', root)
 
     def test_unknown_module_skip_is_rejected(self):
         root = junit_xml([

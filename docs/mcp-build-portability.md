@@ -77,4 +77,3 @@ Windows Python 门禁中通过真实 HTTP 回执链验证 (`test_config_receipts
 本门禁通过不等于实机验收。WinDivert、Windows GUI/进程句柄行为、路由恢复、
 端到端 Windows-to-Ubuntu 交付仍需真实 Windows VM 证据; Wine-only 结果不作为
 上述运行时条件的替代。
-
