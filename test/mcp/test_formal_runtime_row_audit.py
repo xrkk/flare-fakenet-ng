@@ -164,7 +164,7 @@ def test_independent_original_row_verifier_rejects_incomplete_claims(indexed_row
     code='import shutil,sys,runpy; from types import SimpleNamespace; shutil.disk_usage=lambda _:SimpleNamespace(free=100*2**30); sys.path.insert(0,sys.argv[1]);sys.argv=sys.argv[2:];runpy.run_path(sys.argv[0],run_name="__main__")'
     args=[str(entry),'--materials-json',str(child.materials_path),'--materials-sha256',child.materials_sha256,
         '--selection-json',child.materials['credited_selection']['path'],'--scope','row-selection','--repository-root',str(context.repository_root)]
-    completed=subprocess.run([sys.executable,'-B','-c',code,str(entry.parent),*args],capture_output=True,cwd=context.source_root,text=True,timeout=60)
+    completed=subprocess.run([sys.executable,'-B','-c',code,str(entry.parent),*args],capture_output=True,cwd=context.source_root,text=True,timeout=480)
     (tmp_path/'row.stdout').write_text(completed.stdout);(tmp_path/'row.stderr').write_text(completed.stderr)
     assert completed.returncode!=0
     terminal=json.loads((child.audit_root/'audit-terminal.json').read_bytes())

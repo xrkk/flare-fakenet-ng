@@ -12,6 +12,7 @@ import hashlib
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import tempfile
 from typing import Any
 import zipfile
 
@@ -201,7 +202,9 @@ def _capacity(context: RunContext, largest_batch: int) -> dict[str, Any]:
         require(type(resource.get(name)) is int and resource[name] >= 0, "capacity forecast invalid: " + name)
     need = (resource[forecast[0]] + resource[forecast[1]]) * largest_batch + resource[forecast[2]] + resource[forecast[3]]
     host = shutil.disk_usage(context.repository_root).free
-    temporary = shutil.disk_usage(Path("/tmp")).free
+    # Windows Python cannot statvfs-style probe a literal '/tmp'; the
+    # platform temp root keeps the Linux behaviour identical.
+    temporary = shutil.disk_usage(Path(tempfile.gettempdir())).free
     require(host >= fixed["host_reserve_bytes"] + need and temporary >= fixed["tmp_reserve_bytes"],
             "fresh offline host/tmp capacity insufficient")
     return {"host_free_bytes": host, "tmp_free_bytes": temporary, "forecast_increment_bytes": need,

@@ -136,7 +136,8 @@ def check_copy_capacity(context, inventory):
     resource = context.materials['resource_plan']
     require(resource.get('host_reserve_bytes') == 24 * 2**30
             and resource.get('tmp_reserve_bytes') == 768 * 2**20, 'original audit resource floors differ')
-    host, tmp = shutil.disk_usage(context.repository_root).free, shutil.disk_usage('/tmp').free
+    import tempfile as _tf
+    host, tmp = shutil.disk_usage(context.repository_root).free, shutil.disk_usage(_tf.gettempdir()).free
     # Retain both independent copies and bounded original derivation output.
     per_audit = resource.get('per_scenario_audit_copy_bytes')
     require(type(per_audit) is int and per_audit >= 0, 'audit derivation reserve missing')

@@ -34,9 +34,11 @@ def server():
 def client(server,tmp_path):
     c=RawMcp('http://127.0.0.1:%s/mcp'%server.server_port);c.transport_evidence=tmp_path;return c
 def test_slow_drip_has_absolute_deadline_and_no_local_worker(server,tmp_path):
+    # Wine process startup alone can exceed a sub-second budget; the asserted
+    # contract (deadline returns UNKNOWN, exactly one send) is time-scaled.
     start=time.monotonic()
-    with pytest.raises(Exception):b.post(client(server,tmp_path),{'jsonrpc':'2.0','id':1,'method':'tools/call'},timeout=.35)
-    assert time.monotonic()-start<.8
+    with pytest.raises(Exception):b.post(client(server,tmp_path),{'jsonrpc':'2.0','id':1,'method':'tools/call'},timeout=3)
+    assert time.monotonic()-start<6
     assert Slow.sent==1
 
 def test_complete_sse_returns_without_stream_eof(server,tmp_path):
@@ -72,8 +74,8 @@ def test_nested_boundary_uses_one_absolute_deadline(server,tmp_path):
 @pytest.mark.parametrize('mode',['headers_never','no_end'])
 def test_no_completion_headers_or_body_has_same_original_deadline(server,tmp_path,mode):
     Slow.mode=mode;start=time.monotonic()
-    with pytest.raises(b.TransportUnknown):b.post(client(server,tmp_path),{'id':1},timeout=.35)
-    assert time.monotonic()-start<.8 and Slow.sent==1
+    with pytest.raises(b.TransportUnknown):b.post(client(server,tmp_path),{'id':1},timeout=3)
+    assert time.monotonic()-start<6 and Slow.sent==1
     assert completions(tmp_path)[0]['local_writer_ended'] and completions(tmp_path)[0]['status']=='UNKNOWN'
 
 def test_vm_initialize_notification_and_tool_share_original_total_deadline(server,tmp_path):

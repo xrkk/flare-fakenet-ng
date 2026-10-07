@@ -24,10 +24,10 @@ def host_capacity(context):
     assert resource['tmp_reserve_bytes'] == 768 * 2 ** 20
     # shutil.disk_usage is the cross-platform free-space probe; os.statvfs
     # does not exist on Windows Python.
-    tmp_key = str(Path('/tmp'))
-    free = {str(path): shutil.disk_usage(path).free for path in (context.repository_root, Path('/tmp'))}
+    import tempfile as _tf
+    free = {str(path): shutil.disk_usage(path).free for path in (context.repository_root, Path(_tf.gettempdir()))}
     assert free[str(context.repository_root)] >= resource['host_reserve_bytes']
-    assert free[tmp_key] >= resource['tmp_reserve_bytes']
+    assert free[str(Path(_tf.gettempdir()))] >= resource['tmp_reserve_bytes']
     return free
 SCENE = '$ErrorActionPreference=\'Stop\';$s=Get-CimInstance Win32_Service -Filter "Name=\'fakenetng-mcp\'";$p=if($s.ProcessId){Get-Process -Id $s.ProcessId};$root=\'C:\\Program Files\\FakeNet-NG-MCP\';$m=Get-Content (Join-Path $root \'mcp-candidate-manifest.json\') -Raw|ConvertFrom-Json;$prop=Get-ItemProperty \'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\fakenetng-mcp\' -Name Environment -ErrorAction SilentlyContinue;@{computer=$env:COMPUTERNAME;uuid=(Get-CimInstance Win32_ComputerSystemProduct).UUID;mac=@(Get-NetAdapter|Select-Object -ExpandProperty MacAddress);service=$s.State;pid=$s.ProcessId;filetime=if($p){[string]$p.StartTime.ToUniversalTime().ToFileTimeUtc()};source=$m.source_commit;manifest_sha=(Get-FileHash (Join-Path $root \'mcp-candidate-manifest.json\')).Hash.ToLower();members=@($m.files|ForEach-Object{$f=Get-Item (Join-Path $root $_.path);@{path=$_.path;size=$f.Length;sha256=(Get-FileHash $f.FullName).Hash.ToLower()}});marker=(Get-Content \'C:\\ProgramData\\FakeNet-NG-MCP\\state\\state.json\' -Raw|ConvertFrom-Json);env_present=($null -ne $prop -and $null -ne $prop.Environment);env=@($prop.Environment);config_sha=(Get-FileHash \'C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json\').Hash.ToLower();grace=(Get-Content \'C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json\' -Raw|ConvertFrom-Json).stop_grace_seconds;fault=Test-Path \'C:\\ProgramData\\FakeNet-NG-MCP\\logs\\fault-injection.json\';fault_gate=Test-Path \'C:\\ProgramData\\FakeNet-NG-MCP\\logs\\fault-injection-gate.json\';workers=@(Get-CimInstance Win32_Process|Where-Object{$_.ProcessId -ne $PID -and ($_.Name -match \'fakenetng-mcp-managed|exit-monitor|scenario-probe|pktmon\' -or $_.CommandLine -match \'scenario_probes\\.ps1|scenario-probe-client\\.exe|managed-(?:child|fault-hang)|scenario_aux.*\\.py\')}|Select-Object ProcessId,Name,CreationDate);space=@(Get-PSDrive C,E|Select-Object Name,Free)}|ConvertTo-Json -Depth 8 -Compress'
 
