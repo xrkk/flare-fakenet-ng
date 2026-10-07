@@ -35,9 +35,8 @@ class FreshClient:
             raise ValueError('original timeout must be positive and finite')
         cap = 30 if not self.vm and values[0]=='get_status' else 480 if not self.vm and values[0] in MUTATIONS else timeout
         budget=min(timeout,cap)
-        deadline=min(start+budget,self._absolute_deadline)
         self.context.revalidate()
-        if deadline<=time.monotonic():
+        if self._absolute_deadline<=time.monotonic():
             raise bounded.TransportUnknown('original absolute deadline before fresh client start',{'sent':'not_sent','local_writer_ended':True})
         with self._lock:
             if not self.audit_safe and (self.vm or values[0] in MUTATIONS):
@@ -45,6 +44,14 @@ class FreshClient:
         nonce=uuid.uuid4().hex
         directory=exact_path(str(self.root/nonce))
         directory.mkdir(parents=True,exist_ok=False)
+        # The bounded window starts only after preparation (revalidation and
+        # evidence writes); on slow hosts the preparation must not consume
+        # the per-call budget, while the outer absolute deadline still caps.
+        deadline=min(time.monotonic()+budget,self._absolute_deadline)
+        if deadline<=time.monotonic():
+            try: directory.rmdir()
+            except OSError: pass
+            raise bounded.TransportUnknown('original absolute deadline before fresh client start',{'sent':'not_sent','local_writer_ended':True})
         call={'call_id':nonce,'kind':'vm' if self.vm else 'service','method':method,
               'url':self.url,'controller_id':self.controller_id,'timeout_requested':timeout,
               'effective_budget':budget,'deadline':deadline,'materials_sha256':self.context.materials_sha256,

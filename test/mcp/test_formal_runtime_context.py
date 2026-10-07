@@ -15,7 +15,10 @@ from formal_runtime.context import MaterialError, SCHEMA, load_context
 
 
 def write_json(path, data):
-    path.write_text(json.dumps(data), encoding="utf-8")
+    # newline="\n" keeps the JSON bytes platform-identical: the default
+    # text mode would translate LF to CRLF on Windows Python and desync
+    # recorded sizes/hashes from the pinned material fingerprints.
+    path.write_text(json.dumps(data), encoding="utf-8", newline="\n")
     return record(path)
 
 

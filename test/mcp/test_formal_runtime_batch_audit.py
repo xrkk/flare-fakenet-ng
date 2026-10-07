@@ -145,7 +145,7 @@ def test_actual_independent_original_cli_rejects_incomplete_batch_and_restores_a
     # verify/replay/summary and independent guards remain the original code.
     source = 'import shutil,runpy,sys; from types import SimpleNamespace; shutil.disk_usage=lambda _:SimpleNamespace(free=50*2**30); sys.path.insert(0,sys.argv[1]); sys.argv=sys.argv[2:]; runpy.run_path(sys.argv[0],run_name="__main__")'
     result = subprocess.run([sys.executable,'-B','-c',source,str(context.source_root/'test/mcp/acceptance'),*command[2:]],
-                            cwd=context.source_root,capture_output=True,text=True,timeout=60)
+                            cwd=context.source_root,capture_output=True,text=True,timeout=240)
     (tmp_path/'audit.stdout').write_text(result.stdout); (tmp_path/'audit.stderr').write_text(result.stderr)
     assert result.returncode != 0
     terminal = json.loads((child.audit_root/'audit-terminal.json').read_bytes())

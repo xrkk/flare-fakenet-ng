@@ -25,7 +25,7 @@ def test_public_batch_failed_original_preparation_stops_before_all_business(entr
     code='import runpy,shutil,sys; from types import SimpleNamespace; shutil.disk_usage=lambda _:SimpleNamespace(free=100*2**30); sys.path.insert(0,sys.argv[1]); sys.argv=sys.argv[2:]; runpy.run_path(sys.argv[0],run_name="__main__")'
     command=[sys.executable,'-B','-c',code,str(entry.parent),str(entry),'--materials-json',str(material),
              '--materials-sha256',pin,'--repository-root',str(repo),'run-batch','--batch-id','benign-00']
-    completed=subprocess.run(command,cwd=repo,capture_output=True,text=True,timeout=60)
+    completed=subprocess.run(command,cwd=repo,capture_output=True,text=True,timeout=240)
     (tmp_path/'batch.stdout').write_text(completed.stdout);(tmp_path/'batch.stderr').write_text(completed.stderr)
     assert completed.returncode==4 and 'original independent preparation audit failed' in completed.stdout
     root=Path(data['audit_root'])

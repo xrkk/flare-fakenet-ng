@@ -91,7 +91,7 @@ def test_real_separate_entry_keeps_original_verifier_failure_and_no_credit(cli,m
 def test_separate_entry_rejects_missing_static_tool_before_output(cli,monkeypatch,tmp_path):
     _,material,data,command=cli
     data['tool_source']['files']=[row for row in data['tool_source']['files']
-                                if not row['path'].endswith('/scenario_pktmon.py')]
+                                if not row['path'].replace('\\', '/').endswith('/scenario_pktmon.py')]
     command[command.index('--materials-sha256')+1]=write_json(material,data)['sha256']
     result=run_boundary(cli,monkeypatch,tmp_path)
     assert result.returncode==4 and 'unpinned tool dependencies' in result.stderr

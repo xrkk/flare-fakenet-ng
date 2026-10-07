@@ -22,7 +22,9 @@ def host_capacity(context):
     resource = context.materials['resource_plan']
     assert resource['host_reserve_bytes'] == 24 * 2 ** 30
     assert resource['tmp_reserve_bytes'] == 768 * 2 ** 20
-    free = {str(path): os.statvfs(path).f_bavail * os.statvfs(path).f_frsize for path in (context.repository_root, Path('/tmp'))}
+    # shutil.disk_usage is the cross-platform free-space probe; os.statvfs
+    # does not exist on Windows Python.
+    free = {str(path): shutil.disk_usage(path).free for path in (context.repository_root, Path('/tmp'))}
     assert free[str(context.repository_root)] >= resource['host_reserve_bytes']
     assert free['/tmp'] >= resource['tmp_reserve_bytes']
     return free
