@@ -283,9 +283,10 @@ def gate_selection(stage, layer, shard=None, host=False):
 
 
 def junit_node(node):
-    parts = node.split('::')
+    identity, bracket, parameters = node.partition('[')
+    parts = identity.split('::')
     return parts[0][:-3].replace('/', '.') + (
-        '.' + '.'.join(parts[1:-1]) if len(parts) > 2 else '') + '::' + parts[-1]
+        '.' + '.'.join(parts[1:-1]) if len(parts) > 2 else '') + '::' + parts[-1] + bracket + parameters
 
 
 def evidence_record(repo, path):
@@ -317,8 +318,10 @@ def collect_and_run(stage, validation, group, selection, env, windows=True):
     xml_argument = wine_path(xml) if windows else str(xml)
     arguments = ['-m', 'pytest', '-q', '--disable-warnings', '--capture=sys',
                  '--durations=20', '--junitxml', xml_argument] + selection
+    execution_command = command(arguments)
+    print('+ ' + ' '.join(execution_command), flush=True)
     started = time.monotonic()
-    completed = subprocess.run(command(arguments), cwd=stage, env=env,
+    completed = subprocess.run(execution_command, cwd=stage, env=env,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     log.write_text(completed.stdout or '', encoding='utf-8')
     if completed.returncode:
@@ -329,6 +332,7 @@ def collect_and_run(stage, validation, group, selection, env, windows=True):
     if sorted(actual) != sorted(nodes):
         raise RuntimeError('Collection/result coverage mismatch: ' + group)
     return {'selection': selection, 'nodes': sorted(nodes), 'summary': summary,
+            'command': execution_command,
             'seconds': time.monotonic() - started, 'xml_path': xml,
             'collection_path': collect_log, 'log_path': log}
 

@@ -123,6 +123,16 @@ if __name__ == '__main__':
 
 
 class ShardLayerTests(unittest.TestCase):
+    def test_junit_identity_preserves_double_colons_in_parameter_values(self):
+        for node, expected in (
+                ('test/mcp/test_supervisor_units.py::test_clause_fails_closed[::ffff:192.168.204.1-28788]',
+                 'test.mcp.test_supervisor_units::test_clause_fails_closed[::ffff:192.168.204.1-28788]'),
+                ('test/mcp/test_scenario_pktmon.py::test_packet[log[00]1374::timestamp]',
+                 'test.mcp.test_scenario_pktmon::test_packet[log[00]1374::timestamp]'),
+                ('test/test_config.py::ConfigTests::test_value[::1]',
+                 'test.test_config.ConfigTests::test_value[::1]')):
+            self.assertEqual(expected, gate.junit_node(node))
+
     def test_core_layer_excludes_formal_runtime_family(self):
         files = ['test/mcp/test_config.py',
                  'test/mcp/test_formal_runtime_audit.py',
