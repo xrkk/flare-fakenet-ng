@@ -8,7 +8,7 @@ import json
 import re
 import signal
 import subprocess
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePath, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -237,7 +237,7 @@ def test_actual_fault_instance_is_admitted_before_original_profile_freeze_and_re
     assert len(processes) == 4 and all(process.poll() == 0 for process in processes)
     note = json.loads((context.evidence_root / 'scenario-bindings' / (scenario['scenario_id'] + '-a1.json')).read_bytes())
     assert note['profile_freeze_after_fault_instance_admission'] and note['no_extra_SCM_enable']
-    assert '/instances/cycle-02/' in note['selected_preflight']['path']
+    assert PurePath(note['selected_preflight']['path']).as_posix().count('/instances/cycle-02/') == 1
     assert sum('$cfgObject.stop_grace_seconds=5' in command for command in calls) == 1
 
 
