@@ -6,9 +6,11 @@ Products (PCAPs, run logs, reports, incident packs) register under
 exposes ONLY normalized path/type/size/complete/sha256 — never content.
 """
 
+import configparser
 import hashlib
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
@@ -119,6 +121,39 @@ def _completion_from_entry(path, entry, deadline=None):
     return hexdigest if hexdigest == entry.get('sha256') else None
 
 
+def closed_http_post_paths(directory):
+    """Select only enabled HTTP producers in this run's retained config.
+
+    Called at the existing closed-writer registration boundary. Absolute or
+    directory prefixes are outside this registrar's run-owned scope; they
+    are deliberately not scanned. Unrelated text and staged files stay out.
+    """
+    directory = Path(directory)
+    config = directory / 'active-config.ini'
+    if not config.is_file() or config.is_symlink() or config.stat().st_size > 1024 * 1024:
+        return []
+    parser = configparser.RawConfigParser()
+    try:
+        parser.read_string(config.read_text(encoding='utf-8-sig'))
+    except (OSError, UnicodeError, configparser.Error):
+        return []
+    patterns = []
+    for section in parser.sections():
+        values = dict(parser.items(section))
+        if (values.get('enabled', '').lower() != 'true' or
+                values.get('listener', '') != 'HTTPListener' or
+                values.get('dumphttpposts', '').lower() != 'yes'):
+            continue
+        prefix = values.get('dumphttppostsfileprefix', 'http')
+        if (not prefix or any(char in prefix for char in '/\\:') or
+                prefix in ('.', '..')):
+            continue
+        patterns.append(re.compile(re.escape(prefix) + r'_[0-9]{8}_[0-9]{6}\.txt\Z'))
+    return sorted(path for path in directory.iterdir()
+                  if path.is_file() and not path.is_symlink() and
+                  any(pattern.fullmatch(path.name) for pattern in patterns))
+
+
 class ArtifactRegistry:
 
     def __init__(self, artifacts_root):
@@ -141,25 +176,28 @@ class ArtifactRegistry:
         run_dir.mkdir(parents=True, exist_ok=True)
         source = Path(package_root)
         copied = []
+        candidates = set(closed_http_post_paths(source))
         for pattern in ('*.pcap', '*.log', '*report*.html', '*.json') + RUN_EVIDENCE_FILES:
-            for path in sorted(source.glob(pattern)):
-                if path.parent != source or path.name == PUBLICATION_RECORD:
-                    continue
-                if keep is not None and not keep(path):
-                    continue
-                destination = run_dir / (prefix + path.name)
-                if not destination.exists():
-                    # Stage then replace: a reader never sees a half copy.
-                    fd, temporary = tempfile.mkstemp(dir=run_dir,
-                                                     prefix='.copy-')
-                    os.close(fd)
-                    try:
-                        shutil.copy2(path, temporary)
-                        os.replace(temporary, destination)
-                    finally:
-                        if os.path.exists(temporary):
-                            os.unlink(temporary)
-                copied.append(destination)
+            candidates.update(source.glob(pattern))
+        for path in sorted(candidates):
+            if (path.parent != source or path.name == PUBLICATION_RECORD or
+                    not path.is_file() or path.is_symlink()):
+                continue
+            if keep is not None and not keep(path):
+                continue
+            destination = run_dir / (prefix + path.name)
+            if not destination.exists():
+                # Stage then replace: a reader never sees a half copy.
+                fd, temporary = tempfile.mkstemp(dir=run_dir,
+                                                 prefix='.copy-')
+                os.close(fd)
+                try:
+                    shutil.copy2(path, temporary)
+                    os.replace(temporary, destination)
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+            copied.append(destination)
         if copied:
             write_publication(run_dir, copied)
             # These source files belong to the now-ended run as well. They

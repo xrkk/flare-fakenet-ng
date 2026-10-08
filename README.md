@@ -29,6 +29,16 @@ The [current remaining-work list](PLAN/2026.10/2026.10.06/2026.10.06-01-评估�
 records the October 6 decision to prioritize actual use and defer further
 scenario testing. Full formal release acceptance remains incomplete.
 
+Completed artifact handoff to Velo
+===================================
+
+After a managed run stops and publishes its artifacts, use the explicit
+[`tools/Export-VeloArtifacts.ps1` handoff](docs/artifact-handoff.md) to export
+selected registered complete outputs for a Velo pull. Export copies retain
+size/SHA-256 evidence and leave protected exit-evidence ACLs intact. The
+workflow and its remaining deployment gates are separate from formal FakeNet
+release acceptance and require no VM reboot or snapshot restore.
+
 Windows domain allow-list egress mode
 =====================================
 
