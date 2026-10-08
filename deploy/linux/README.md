@@ -80,3 +80,7 @@ MalTrace `.tmp/linux-master-20260930/lnxfn-deploy-20261006/seal-lnxfn.json`。
 stop 后规则条目为零, nft 保留无规则的 ACCEPT 表/链壳; 未执行全表 flush.
 DNS stub 已恢复, idle MCP 保留, 下次拦截仍须按上述规则准备并恢复 DNS.
 历史验收记录不能替代本次缺陷核定; P04 生产 provider 尚未接线.
+
+上游冻结快照的实际构建版本为 `NetfilterQueue 1.1.0+dev`; 锁表按此记录,
+不能与 PyPI 的 `1.1.0` sdist 混同. 已使用的 S0048-v2 包保留原字节,
+其版本标签少了 `+dev`; v3 只修正该锁元数据, 源码包哈希与部署脚本未变.

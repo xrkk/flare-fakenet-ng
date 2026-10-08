@@ -707,7 +707,7 @@
         "origin": "deploy/linux/netfilterqueue-upstream-master.tar.gz"
       },
       "name": "netfilterqueue",
-      "version": "1.1.0"
+      "version": "1.1.0+dev"
     },
     {
       "file": "sdists/netifaces-0.11.0.tar.gz",
