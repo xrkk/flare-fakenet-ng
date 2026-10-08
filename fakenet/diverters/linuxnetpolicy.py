@@ -17,6 +17,7 @@ import ipaddress
 import subprocess
 
 IP6_DEFAULT_CHAIN = 'OUTPUT'
+POLICY_COMMENT = 'fakenet-ng-linux'
 
 
 def _run(argv):
@@ -41,8 +42,11 @@ class OwnedRule:
     def exists(self):
         argv = list(self.argv)
         pos = argv.index('-I')
-        check = [argv[0], '-C'] + argv[pos + 1:]
-        return _run(check).returncode == 0
+        check = argv[:pos] + ['-C'] + argv[pos + 1:]
+        result = _run(check)
+        if result.returncode not in (0, 1):
+            raise RuntimeError('policy rule probe failed')
+        return result.returncode == 0
 
 
 class NetPolicy:
@@ -78,73 +82,73 @@ class NetPolicy:
                 ['iptables', '-S', 'OUTPUT']).stdout.decode('utf-8', 'replace'),
         }
 
-    # -- control-link exclusion (IPv4) ----------------------------------
-    def install_control_exclusions_v4(self):
-        """ACCEPT rules placed ahead of NFQUEUE takeover for control links.
+    @staticmethod
+    def _tagged(binary, table, chain, spec, target='ACCEPT'):
+        return OwnedRule([binary, '-t', table, '-I', chain] + list(spec) +
+                         ['-m', 'comment', '--comment', POLICY_COMMENT,
+                          '-j', target])
 
-        OUTPUT: management responses to the controller host must not be
-        captured.  INPUT (mangle, ahead of the diverter's NFQUEUE): packets
-        FROM the controller host must reach sshd/the MCP service even while
-        takeover is active — without this, a started run locks out all
-        management access (field-verified twice).
-        """
-        added = 0
-        # Loopback must never be captured: the MCP service itself listens
-        # on 127.0.0.1 and its own traffic through lo was taken over (the
-        # service stopped answering mid-run).  Both directions.
-        for rule in (
-            OwnedRule(['iptables', '-t', 'mangle', '-I', 'INPUT', '-i', 'lo',
-                       '-j', 'ACCEPT']),
-            OwnedRule(['iptables', '-t', 'raw', '-I', 'OUTPUT', '-o', 'lo',
-                       '-j', 'ACCEPT']),
-        ):
-            if not rule.exists():
-                _run(rule.argv)
-            self._owned.append(rule)
-            added += 1
+    def _v4_rules(self):
+        rules = [self._tagged('iptables', 'mangle', 'INPUT', ['-i', 'lo']),
+                 self._tagged('iptables', 'raw', 'OUTPUT', ['-o', 'lo'])]
         for ip, port in self.control_endpoints:
-            if ipaddress.ip_address(ip).version != 4:
-                continue
-            # OUTPUT exclusion must sit in the raw table: the diverter's
-            # NFQUEUE hook lives in raw OUTPUT, which is traversed BEFORE
-            # filter — a filter ACCEPT cannot rescue management traffic.
-            out_rule = OwnedRule(['iptables', '-t', 'raw', '-I', 'OUTPUT',
-                                  '-p', 'tcp', '-d', ip,
-                                  '--sport', str(port), '-j', 'ACCEPT'])
-            in_rule = OwnedRule(['iptables', '-t', 'mangle', '-I', 'INPUT',
-                                 '-s', ip, '-j', 'ACCEPT'])
-            for rule in (out_rule, in_rule):
-                if not rule.exists():
-                    _run(rule.argv)
-                self._owned.append(rule)
-                added += 1
-        return added
+            if ipaddress.ip_address(ip).version == 4:
+                rules.extend([
+                    self._tagged('iptables', 'raw', 'OUTPUT',
+                                 ['-p', 'tcp', '-d', ip, '--sport', str(port)]),
+                    self._tagged('iptables', 'mangle', 'INPUT',
+                                 ['-p', 'tcp', '-s', ip, '--dport', str(port)]),
+                ])
+        return rules
 
-    # -- IPv6 verifiable blocking --------------------------------------
-    def block_ipv6(self, allow=()):
-        """Block all IPv6 egress except loopback and allowed control links.
-
-        Returns the list of rule descriptions applied (evidence).
-        """
-        allowed_ips = {'::1'}
-        for ip, _port in self.control_endpoints:
+    def _v6_rules(self):
+        # -I inserts at the head: install the fallback FIRST, then exceptions.
+        rules = [self._tagged('ip6tables', 'filter', IP6_DEFAULT_CHAIN, [], 'DROP'),
+                 self._tagged('ip6tables', 'filter', IP6_DEFAULT_CHAIN,
+                              ['-d', '::1'])]
+        for ip, port in self.control_endpoints:
             if ipaddress.ip_address(ip).version == 6:
-                allowed_ips.add(ip.lower())
-        applied = []
-        for ip in sorted(allowed_ips):
-            rule = OwnedRule(['ip6tables', '-I', IP6_DEFAULT_CHAIN,
-                              '-d', ip, '-j', 'ACCEPT'])
-            if not rule.exists():
-                _run(rule.argv)
-            self._owned.append(rule)
-            applied.append(rule.argv)
-        block = OwnedRule(['ip6tables', '-I', IP6_DEFAULT_CHAIN,
-                           '-j', 'DROP'])
-        if not block.exists():
-            _run(block.argv)
-        self._owned.append(block)
-        applied.append(block.argv)
-        return applied
+                rules.append(self._tagged('ip6tables', 'filter', IP6_DEFAULT_CHAIN,
+                    ['-p', 'tcp', '-d', ip.lower(), '--sport', str(port)]))
+        return rules
+
+    def _refuse_legacy(self, family):
+        # Untagged old broad rules cannot prove ownership. Never adopt them
+        # or treat them as a successful new exact-endpoint rule.
+        candidates = []
+        if family == 4:
+            candidates.append(['iptables', '-t', 'raw', '-I', 'OUTPUT',
+                               '-p', 'tcp', '-j', 'ACCEPT'])
+            for ip, _port in self.control_endpoints:
+                if ipaddress.ip_address(ip).version == 4:
+                    candidates.append(['iptables', '-t', 'mangle', '-I', 'INPUT',
+                                       '-s', ip, '-j', 'ACCEPT'])
+        else:
+            candidates.append(['ip6tables', '-I', IP6_DEFAULT_CHAIN, '-j', 'DROP'])
+            for ip, _port in self.control_endpoints:
+                if ipaddress.ip_address(ip).version == 6:
+                    candidates.append(['ip6tables', '-I', IP6_DEFAULT_CHAIN,
+                                       '-d', ip.lower(), '-j', 'ACCEPT'])
+        if any(OwnedRule(argv).exists() for argv in candidates):
+            raise RuntimeError('unowned legacy policy rule; explicit recovery required')
+
+    def _install(self, rules):
+        for rule in rules:
+            if not rule.exists() and _run(rule.argv).returncode != 0:
+                raise RuntimeError('policy rule insertion failed')
+            if not any(old.argv == rule.argv for old in self._owned):
+                self._owned.append(rule)
+        return [rule.argv for rule in rules]
+
+    def install_control_exclusions_v4(self):
+        """Only loopback and the exact management TCP endpoint precede NFQUEUE."""
+        self._refuse_legacy(4)
+        return len(self._install(self._v4_rules()))
+
+    def block_ipv6(self, allow=()):
+        """Loopback/exact TCP management replies precede the default DROP."""
+        self._refuse_legacy(6)
+        return self._install(self._v6_rules())
 
     # -- isolation vs real network -------------------------------------
     def set_mode(self, mode, takeover_pause=None, takeover_resume=None):
@@ -171,70 +175,33 @@ class NetPolicy:
 
     # -- cleanup --------------------------------------------------------
     def _remove_all_owned(self):
+        remaining = []
         for rule in self._owned:
             try:
-                rule.remove()
+                if rule.exists():
+                    rule.remove()
+                if rule.exists():
+                    remaining.append(rule)
             except Exception:
+                remaining.append(rule)
                 if self.logger:
                     self.logger.exception('rule remove failed %s', rule.argv)
-        self._owned = []
+        self._owned = remaining
+        if remaining:
+            raise RuntimeError('owned policy rules remain after cleanup')
 
     def stop(self):
-        """Remove every owned rule; report leftovers (no orphaned rules)."""
+        """Delete only exact tagged owned rules; cleanup errors remain failures."""
         self._remove_all_owned()
-        leftover_block = _run(
-            ['ip6tables', '-C', IP6_DEFAULT_CHAIN, '-j', 'DROP']).returncode == 0
-        return {'stopped': True, 'ipv6_block_leftover': leftover_block}
+        leftover = self._v6_rules()[0].exists()
+        return {'stopped': not leftover, 'ipv6_block_leftover': leftover}
 
     def adopt_leftovers(self):
-        """After a crash/restart, drop any prior-generation policy rules.
-
-        A previous unclean stop may have left ip6tables DROP or control
-        ACCEPT rules.  We verify and remove them so a fresh start never
-        inherits unowned state; the removals are reported as evidence.
-        """
+        """Reconcile this policy's exact tagged rules; never remove legacy broad rules."""
         adopted = []
-
-        def probe_and_drop(check_argv, drop_argv, label):
-            # -C/-D at the rule's real table; probing the wrong table finds
-            # nothing and orphans survive a crash (field defect, AUD-006).
-            if _run(check_argv).returncode == 0:
-                _run(drop_argv)
-                adopted.append(label)
-
-        probe_and_drop(
-            ['iptables', '-t', 'mangle', '-C', 'INPUT', '-i', 'lo', '-j', 'ACCEPT'],
-            ['iptables', '-t', 'mangle', '-D', 'INPUT', '-i', 'lo', '-j', 'ACCEPT'],
-            'lo-input-mangle')
-        probe_and_drop(
-            ['iptables', '-t', 'raw', '-C', 'OUTPUT', '-o', 'lo', '-j', 'ACCEPT'],
-            ['iptables', '-t', 'raw', '-D', 'OUTPUT', '-o', 'lo', '-j', 'ACCEPT'],
-            'lo-output-raw')
-        for ip, port in self.control_endpoints:
-            if ipaddress.ip_address(ip).version != 4:
-                continue
-            probe_and_drop(
-                ['iptables', '-t', 'raw', '-C', 'OUTPUT', '-p', 'tcp', '-d', ip,
-                 '--sport', str(port), '-j', 'ACCEPT'],
-                ['iptables', '-t', 'raw', '-D', 'OUTPUT', '-p', 'tcp', '-d', ip,
-                 '--sport', str(port), '-j', 'ACCEPT'],
-                'control-out-raw %s:%s' % (ip, port))
-            probe_and_drop(
-                ['iptables', '-t', 'mangle', '-C', 'INPUT', '-s', ip, '-j', 'ACCEPT'],
-                ['iptables', '-t', 'mangle', '-D', 'INPUT', '-s', ip, '-j', 'ACCEPT'],
-                'control-in-mangle %s' % ip)
-        for ip, _port in self.control_endpoints:
-            if ipaddress.ip_address(ip).version == 6:
-                probe_and_drop(
-                    ['ip6tables', '-C', IP6_DEFAULT_CHAIN, '-d', ip.lower(), '-j', 'ACCEPT'],
-                    ['ip6tables', '-D', IP6_DEFAULT_CHAIN, '-d', ip.lower(), '-j', 'ACCEPT'],
-                    'ipv6-allow %s' % ip)
-        probe_and_drop(
-            ['ip6tables', '-C', IP6_DEFAULT_CHAIN, '-d', '::1', '-j', 'ACCEPT'],
-            ['ip6tables', '-D', IP6_DEFAULT_CHAIN, '-d', '::1', '-j', 'ACCEPT'],
-            'ipv6-allow ::1')
-        probe_and_drop(
-            ['ip6tables', '-C', IP6_DEFAULT_CHAIN, '-j', 'DROP'],
-            ['ip6tables', '-D', IP6_DEFAULT_CHAIN, '-j', 'DROP'],
-            'ipv6-DROP')
+        for rule in self._v4_rules() + self._v6_rules():
+            if rule.exists():
+                if not rule.remove() or rule.exists():
+                    raise RuntimeError('owned policy adoption failed')
+                adopted.append(' '.join(rule.argv))
         return adopted

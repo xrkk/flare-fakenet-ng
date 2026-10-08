@@ -84,3 +84,28 @@ DNS stub 已恢复, idle MCP 保留, 下次拦截仍须按上述规则准备并�
 上游冻结快照的实际构建版本为 `NetfilterQueue 1.1.0+dev`; 锁表按此记录,
 不能与 PyPI 的 `1.1.0` sdist 混同. 已使用的 S0048-v2 包保留原字节,
 其版本标签少了 `+dev`; v3 只修正该锁元数据, 源码包哈希与部署脚本未变.
+
+## 对已接受 idle 安装的有界更新
+
+`update-idle.py` 是 S0048 已接受安装的独立源文件更新入口, 不调用首次安装器.
+调用方先从已验收提交导出 `linuxrunner.py` 和 `linuxnetpolicy.py`, 在独占
+发行目录封装 `manifest.json` 与脚本. manifest 绑定完整提交、两份新源 SHA、
+S0048 独立旧文件指纹、原 unit/配置/解释器及 token inode. 包运输后核独立 SHA.
+
+```bash
+sudo python3 -I -B -S /private/update/update-idle.py \
+  --package /private/update --manifest-sha256 <verified-sha256> \
+  --operation <exclusive-update-id>
+```
+
+入口只接受固定 VM/boot/P01/P03/旧 FN 进程与 idle 状态、无规则及无活动
+管理请求, 在 root 私有事务逐份保存旧字节和 metadata 后停止 FN 服务,
+原子替换两个文件并重新启动. venv、token、unit、default.ini 和旧包/receipt
+不改. 成功重入只核新源, 失败阶段明确拒绝自动再写, 不隐式回滚或覆盖原件.
+更新后的 MCP 就绪/实际隔离行为须由调用方独立复验, 更新返回不代表业务验收.
+
+Linux 运行成功按既有协调器返回 healthy/controller/config_identity, 激活配置锁;
+stop 仅在规则确已清理时释放归属并返回空失败原因. 新管理策略只放行精确
+TCP 端点, IPv6 例外先于默认 DROP. 规则带 `fakenet-ng-linux` 注释标记,
+存在性检查保留表名; 只收养精确标记规则, 遇旧宽泛未标记规则要求显式恢复,
+不能将其他主体规则当作本服务的原件删除. Windows 协调器/工具契约未修改.

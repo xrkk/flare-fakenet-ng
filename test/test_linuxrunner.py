@@ -64,7 +64,7 @@ class LinuxRunnerTests(unittest.TestCase):
             with mock.patch.object(lr.time, 'sleep',
                                    side_effect=lambda s: ready_later()):
                 result = runner.start(None, None, {'name': 'x', 'builtin': True})
-        self.assertEqual(result['state'], 'started')
+        self.assertEqual(result['state'], 'healthy')
         argv = sp.Popen.call_args[0][0]
         self.assertIn('fakenet.fakenet', argv)
         self.assertIn('-f', argv)

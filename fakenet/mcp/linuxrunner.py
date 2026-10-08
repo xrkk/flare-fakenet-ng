@@ -25,13 +25,7 @@ ORPHAN_RULES = (
     ('iptables', ['-t', 'raw', '-D', 'OUTPUT', '-j', 'NFQUEUE', '--queue-num', '1']),
     ('iptables', ['-t', 'nat', '-D', 'PREROUTING', '-j', 'REDIRECT']),
     ('iptables', ['-t', 'nat', '-D', 'OUTPUT', '-p', 'icmp', '-j', 'REDIRECT']),
-    ('ip6tables', ['-D', 'OUTPUT', '-j', 'DROP']),
-    ('ip6tables', ['-D', 'OUTPUT', '-d', '::1/128', '-j', 'ACCEPT']),
-    ('iptables', ['-t', 'mangle', '-D', 'INPUT', '-i', 'lo', '-j', 'ACCEPT']),
-    ('iptables', ['-t', 'raw', '-D', 'OUTPUT', '-o', 'lo', '-j', 'ACCEPT']),
-    ('iptables', ['-t', 'raw', '-D', 'OUTPUT', '-p', 'tcp', '-j', 'ACCEPT']),
-    ('iptables', ['-t', 'mangle', '-D', 'INPUT', '-s', '192.168.204.1',
-                  '-j', 'ACCEPT']),
+
 )
 
 
@@ -52,6 +46,8 @@ def adopt_orphan_rules():
             subprocess.run([binary] + argv, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
             adopted.append(' '.join([binary] + argv))
+    from fakenet.diverters.linuxnetpolicy import NetPolicy
+    adopted.extend(NetPolicy([('192.168.204.1', 2222)]).adopt_leftovers())
     return adopted
 
 
@@ -96,7 +92,7 @@ class LinuxRunner:
         try:
             detail['nfqueue_present'] = _ipt_has('NFQUEUE')
             detail['ipv6_policy_drop'] = _ipt_has(
-                '-A OUTPUT -j DROP', 'ip6tables') or _ipt_has(
+                '-j DROP', 'ip6tables') or _ipt_has(
                 '-P OUTPUT DROP', 'ip6tables')
         except LinuxRunnerError as exc:
             detail['rule_probe_error'] = str(exc)
@@ -161,40 +157,43 @@ class LinuxRunner:
         with self._lock:
             self._health_cache = {'run_id': run_id, 'init_evidence': True,
                                   'probe': True, 'config': config_identity}
-        return {'state': 'started', 'changed': True, 'run_id': run_id,
+        return {'state': 'healthy', 'changed': True, 'run_id': run_id,
+                'controller': controller, 'config_identity': dict(config_identity),
                 'failure_reason': None, 'release_controller': False}
 
     def stop(self, coordinator, baseline_audit=True, deadline=None):
         with self._lock:
             proc, stop_flag = self._proc, self._stop_flag
-        if proc is None:
-            return {'state': 'stopped', 'changed': False, 'run_id': None,
-                    'failure_reason': None, 'release_controller': True}
-        if stop_flag:
-            open(stop_flag, 'w').close()
-        deadline = deadline or (time.monotonic() + 30.0)
-        while time.monotonic() < deadline and proc.poll() is None:
-            time.sleep(0.3)
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=10)
+        run_id = self._run_id
+        if proc is not None:
+            if stop_flag:
+                open(stop_flag, 'w').close()
+            deadline = deadline or (time.monotonic() + 30.0)
+            while time.monotonic() < deadline and proc.poll() is None:
+                time.sleep(0.3)
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=10)
         leftover = []
         try:
             if _ipt_has('NFQUEUE'):
                 leftover.append('NFQUEUE')
-            if _ipt_has('-A OUTPUT -j DROP', 'ip6tables'):
+            if _ipt_has('-j DROP', 'ip6tables'):
                 leftover.append('ipv6-DROP')
         except LinuxRunnerError as exc:
             leftover.append('probe-error:%s' % (exc,))
         self._teardown_state()
         state = 'stopped' if not leftover else 'failed'
+        if leftover:
+            # Keep run responsibility until a later clean rule observation.
+            self._run_id = run_id
         return {'state': state, 'changed': True,
                 'run_id': self._run_id,
-                'failure_reason': ('leftover rules: %s' % leftover) or None,
+                'failure_reason': ('leftover rules: %s' % leftover) if leftover else None,
                 'release_controller': state == 'stopped'}
 
     def restart(self, coordinator, controller, config_identity):
