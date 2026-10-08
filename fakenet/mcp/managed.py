@@ -349,9 +349,14 @@ def probe_instance(instance):
                                  name=getattr(provider, 'name', None)))
         if not live:
             listeners = False
+    # Only an explicit listener-only mode may omit the interception engine.
+    # Enabled/unknown modes keep the existing native capture requirement.
+    listener_only = (str(getattr(instance, 'fakenet_config', {}).get(
+        'diverttraffic', 'yes')).lower() == 'no' and diverter is None)
+    capture_ready = bool(handle and getattr(handle, 'is_open', False) and
+                         capture_alive and capture_error is None)
     return {'init_evidence': bool(providers),
-            'probe': bool(handle and getattr(handle, 'is_open', False) and listeners
-                          and capture_alive and capture_error is None),
+            'probe': bool(listeners and (listener_only or capture_ready)),
             'capture_threads_alive': capture_alive,
             'capture_error': str(capture_error) if capture_error is not None else None,
             'final_filter': str(getattr(diverter, 'filter', '')),

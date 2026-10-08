@@ -2560,8 +2560,11 @@ class DiverterListenerCallbacks():
         This method forwards the provided NBI information to the logNbi() method
         in the underlying diverter object. Called by all listeners to log NBIs.
         """
-        self.__diverter.logNbi(sport, nbi, proto, application_layer_proto,
-                               is_ssl_encrypted)
+        # DivertTraffic=No still serves/logs requests and saves HTTP POSTs.
+        # There is no intercepted session to attach an NBI to in this mode.
+        if self.__diverter is not None:
+            self.__diverter.logNbi(sport, nbi, proto, application_layer_proto,
+                                  is_ssl_encrypted)
 
     def mapProxySportToOrigSport(self, proto, orig_sport, proxy_sport,
             is_ssl_encrypted):
