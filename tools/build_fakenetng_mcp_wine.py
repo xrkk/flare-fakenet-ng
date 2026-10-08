@@ -262,7 +262,8 @@ def offline_install_sdk(stage, build_root):
 
 
 FORMAL_RUNTIME_PREFIX = 'test_formal_runtime_'
-HOST_ONLY_TESTS = ('test/test_linuxnetpolicy.py',)
+HOST_ONLY_TESTS = ('test/test_linuxnetpolicy.py', 'test/test_linux_deploy.py',
+                   'test/test_linux_update.py')
 WINDOWS_SENTINELS = (
     'test/mcp/test_formal_runtime_context.py::test_explicit_context_is_readonly_and_does_not_create_output',
     'test/mcp/test_formal_runtime_context.py::test_worktree_fingerprint_cannot_replace_pinned_git_blob',

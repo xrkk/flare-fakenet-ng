@@ -88,3 +88,11 @@ See `docs/artifact-export-handoff.md`, `docs/service-file-updates.md`,
 `docs/cross-account-handoff-source-audit.md` in the deployed Velo repository for
 the shared contract, separate private-file updates and implementation/acceptance
 status. No VM reboot or snapshot restore is needed for this workflow.
+
+For a service candidate built in the existing Docker/Wine workflow, use the
+MinGit image when the Windows qualification sentinels need native Git. The
+`core` gate retains the complete formal-runtime Linux host regression and
+Windows sentinels; Linux-only deploy/update tests also belong to that mandatory
+host receipt. Do not turn an environment failure into an allowlisted skip or
+package without the pinned qualification. Keep the resulting PARTIAL build
+qualification separate from native handoff acceptance.

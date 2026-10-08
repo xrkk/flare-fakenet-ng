@@ -326,3 +326,19 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(self.host, result)
         self.assertFalse(output.exists())
         install.assert_not_called()
+
+
+class HostPlatformSelectionTests(unittest.TestCase):
+    def test_linux_deployment_gates_execute_in_host_receipt_not_windows_core(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stage=Path(temporary)
+            names=('test/test_linux_deploy.py','test/test_linux_update.py',
+                   'test/test_linuxnetpolicy.py','test/mcp/test_no_divert_handoff.py')
+            for name in names:
+                path=stage/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('')
+            windows=gate.gate_selection(stage,'core')
+            host=gate.gate_selection(stage,'core',host=True)
+            self.assertIn('test/mcp/test_no_divert_handoff.py',windows)
+            for name in names[:3]:
+                self.assertNotIn(name,windows)
+                self.assertIn(name,host)
