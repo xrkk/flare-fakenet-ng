@@ -1,6 +1,7 @@
 # Copyright 2026 Google LLC
 """Ordered Linux policy model: no real firewall or network operations."""
 from types import SimpleNamespace
+import ipaddress
 import unittest
 from unittest import mock
 from fakenet.diverters import linuxnetpolicy as lnp
@@ -53,6 +54,52 @@ class NetPolicyTests(unittest.TestCase):
             endpoint = next(r for r in self.model.chains[key] if '192.168.204.1' in r)
             self.assertIn('tcp', endpoint)
             self.assertEqual(endpoint[endpoint.index(port)+1], '2222')
+
+    def input_verdict(self, packet):
+        rows = self.model.chains.get(('iptables', 'mangle', 'INPUT'), [])
+        for row in rows:
+            constraints = {'-i': 'interface', '-s': 'source', '-d': 'destination',
+                           '-p': 'protocol', '--sport': 'sport', '--dport': 'dport'}
+            matched = True
+            for option, field in constraints.items():
+                if option not in row:
+                    continue
+                wanted = row[row.index(option) + 1]
+                actual = packet[field]
+                if option in ('-s', '-d'):
+                    matched &= ipaddress.ip_address(actual) in ipaddress.ip_network(wanted)
+                else:
+                    matched &= str(actual) == wanted
+            if matched:
+                return row[row.index('-j') + 1]
+        return 'NFQUEUE'
+
+    def test_redirected_loopback_reply_reaches_nfqueue(self):
+        self.policy.install_control_exclusions_v4()
+        # Actual SingleHost SYN-ACK: redirected listener -> original local client.
+        reply = dict(interface='lo', source='127.0.0.1',
+                     destination='192.168.204.230', protocol='tcp',
+                     sport=80, dport=58844)
+        self.assertEqual(self.input_verdict(reply), 'NFQUEUE')
+        # Genuine local management/DNS endpoints remain excluded, including aliases.
+        for source, destination in [('127.0.0.1', '127.0.0.1'),
+                                    ('127.0.0.54', '127.0.0.53')]:
+            self.assertEqual(self.input_verdict(dict(reply, source=source,
+                                                   destination=destination)), 'ACCEPT')
+        self.assertEqual(self.input_verdict(dict(reply, interface='ens33',
+                                               source='192.168.204.1',
+                                               dport=2222)), 'ACCEPT')
+        self.assertEqual(self.input_verdict(dict(reply, interface='ens33',
+                                               source='192.168.204.1',
+                                               dport=80)), 'NFQUEUE')
+
+    def test_adopts_previous_tagged_broad_loopback_rule(self):
+        old = lnp.NetPolicy._tagged('iptables', 'mangle', 'INPUT', ['-i', 'lo'])
+        self.model(old.argv)
+        self.policy.install_control_exclusions_v4()
+        self.policy.block_ipv6()
+        lnp.NetPolicy([('192.168.204.1', 2222)]).adopt_leftovers()
+        self.assertFalse(any(self.model.chains.values()))
 
     def test_bad_inputs(self):
         for endpoint in [('not-an-ip',80), ('127.0.0.1',99999)]:

@@ -53,8 +53,8 @@ class NetPolicy:
     """IPv6 blocking + control-link exclusion + mode switch for one host.
 
     control_endpoints: list of (ip, port) management endpoints whose traffic
-    must never be taken over (MCP/host control links).  Loopback is always
-    excluded.  Rules are inserted BEFORE takeover rules by the diverter so
+    must never be taken over (MCP/host control links).  Genuine IPv4
+    loopback-to-loopback traffic is excluded.  Rules are inserted BEFORE takeover rules by the diverter so
     the exclusion wins.
     """
 
@@ -89,7 +89,11 @@ class NetPolicy:
                           '-j', target])
 
     def _v4_rules(self):
-        rules = [self._tagged('iptables', 'mangle', 'INPUT', ['-i', 'lo']),
+        # SingleHost rewrites foreign destinations to loopback. Replies to a
+        # non-loopback client must reach INPUT NFQUEUE to restore the source IP.
+        # Exclude genuine loopback-to-loopback traffic, not the whole interface.
+        rules = [self._tagged('iptables', 'mangle', 'INPUT',
+                             ['-i', 'lo', '-s', '127.0.0.0/8', '-d', '127.0.0.0/8']),
                  self._tagged('iptables', 'raw', 'OUTPUT', ['-o', 'lo'])]
         for ip, port in self.control_endpoints:
             if ipaddress.ip_address(ip).version == 4:
@@ -141,7 +145,7 @@ class NetPolicy:
         return [rule.argv for rule in rules]
 
     def install_control_exclusions_v4(self):
-        """Only loopback and the exact management TCP endpoint precede NFQUEUE."""
+        """Genuine loopback and the exact management endpoint precede NFQUEUE."""
         self._refuse_legacy(4)
         return len(self._install(self._v4_rules()))
 
@@ -199,7 +203,10 @@ class NetPolicy:
     def adopt_leftovers(self):
         """Reconcile this policy's exact tagged rules; never remove legacy broad rules."""
         adopted = []
-        for rule in self._v4_rules() + self._v6_rules():
+        # Retire the previous exact tagged INPUT exemption on crash/upgrade.
+        # Untagged or otherwise foreign rules remain untouched.
+        old_loopback = self._tagged('iptables', 'mangle', 'INPUT', ['-i', 'lo'])
+        for rule in self._v4_rules() + self._v6_rules() + [old_loopback]:
             if rule.exists():
                 if not rule.remove() or rule.exists():
                     raise RuntimeError('owned policy adoption failed')
