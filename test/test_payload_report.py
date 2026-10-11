@@ -4,13 +4,15 @@ import logging
 import os
 import re
 import socket
+import struct
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import dpkt
 
-from fakenet.diverters.pcapwriter import DualPcapWriter
+from fakenet.diverters.pcapwriter import DualPcapWriter, PcapWriteError
 from fakenet.diverters.diverterbase import DiverterBase
 from fakenet.payload_report import (CaptureObservationIndex,
                                      PayloadReportError, SessionFlowRegistry,
@@ -146,6 +148,53 @@ class PayloadReportTests(unittest.TestCase):
         self.assertEqual(b'server-response',
                          base64.b64decode(inbound['base64']))
 
+    def test_unknown_direction_bare_syn_keeps_tcp_sequence_spaces_separate(self):
+        # The Linux capture path records no per-packet direction.  The bare
+        # SYN still identifies the initiator, so the two sequence spaces must
+        # stay separate instead of merging into one unknown bucket.
+        local_ip = '192.168.204.216'
+        client_port = 45200
+        server_port = 53
+        paths = self.make_capture([
+            {'raw': tcp_packet(local_ip, local_ip, client_port, server_port,
+                               1602296955, flags=dpkt.tcp.TH_SYN)},
+            {'raw': tcp_packet(local_ip, local_ip, server_port, client_port,
+                               2046131497,
+                               flags=dpkt.tcp.TH_SYN | dpkt.tcp.TH_ACK)},
+            {'raw': tcp_packet(local_ip, local_ip, client_port, server_port,
+                               1602296956, b'client-request')},
+            {'raw': tcp_packet(local_ip, local_ip, server_port, client_port,
+                               2046131498, b'server-response')},
+        ])
+
+        model = build_payload_report(
+            paths[0], paths[2], paths[3], capture_health={
+                'writer_health': True, 'coverage_health': True,
+                'reassembly_health': True})
+
+        flow = model['flows'][0]
+        self.assertEqual(b'client-request',
+                         base64.b64decode(
+                             flow['directions']['outbound']['base64']))
+        self.assertEqual(b'server-response',
+                         base64.b64decode(
+                             flow['directions']['inbound']['base64']))
+
+    def test_unknown_direction_retransmitted_syn_keeps_one_generation(self):
+        syn = tcp_packet('192.0.2.1', '198.51.100.1', 123, 456, 100,
+                         flags=dpkt.tcp.TH_SYN)
+        registry = SessionFlowRegistry()
+        first = registry.observe_packet(syn, direction='unknown', timestamp=1.0,
+                                        logical_packet_id='syn-1')
+        second = registry.observe_packet(syn, direction='unknown', timestamp=2.0,
+                                         logical_packet_id='syn-2')
+        self.assertEqual(first, second)
+        self.assertEqual(1, len(registry.snapshot()))
+        self.assertEqual(
+            'outbound',
+            registry.direction_for(first, '192.0.2.1', 123,
+                                   '198.51.100.1', 456))
+
     def test_tcp_conflict_and_internal_gap_fail_closed(self):
         conflict = self.make_capture([
             {'raw': tcp_packet('192.0.2.10', '198.51.100.20', 1, 2, 100,
@@ -169,6 +218,41 @@ class PayloadReportTests(unittest.TestCase):
                                  capture_health={'writer_health': True,
                                                  'coverage_health': True,
                                                  'reassembly_health': True})
+
+    def test_pair_validation_rejects_count_and_byte_mismatch(self):
+        packet = tcp_packet('192.0.2.10', '198.51.100.20', 40000, 3585,
+                            100, b'paired-bytes')
+        paths = self.make_capture([{'raw': packet, 'logical': 'pair-1'}])
+        converted = bytearray(Path(paths[1]).read_bytes())
+        record_length = struct.unpack('<I', converted[32:36])[0]
+        missing = paths[1] + '.missing-record'
+        Path(missing).write_bytes(converted[:24])
+        with self.assertRaisesRegex(PayloadReportError, 'record count mismatch'):
+            build_payload_report(paths[0], paths[2], paths[3],
+                                 converted_pcap_path=missing)
+        converted[40 + record_length - 1] ^= 0xff
+        tampered = paths[1] + '.tampered'
+        Path(tampered).write_bytes(converted)
+        with self.assertRaisesRegex(PayloadReportError, 'does not embed'):
+            build_payload_report(paths[0], paths[2], paths[3],
+                                 converted_pcap_path=tampered)
+
+    def test_observation_index_ordinal_hash_and_length_drift_are_refused(self):
+        paths = self.make_capture([
+            {'raw': tcp_packet('192.0.2.10', '198.51.100.20', 40000, 3585,
+                               100, b'indexed', flags=dpkt.tcp.TH_ACK),
+             'logical': 'index-1'},
+        ])
+        entries = paths[2].snapshot()
+        for field, value, marker in (
+                ('sha256', '0' * 64, 'observation hash mismatch'),
+                ('ordinal', 2, 'observation ordinal mismatch'),
+                ('length', 1, 'observation length mismatch')):
+            wrong = [dict(entry) for entry in entries]
+            wrong[0][field] = value
+            with self.assertRaisesRegex(PayloadReportError, marker):
+                build_payload_report(paths[0], wrong, paths[3],
+                                     converted_pcap_path=paths[1])
 
     def test_tcp_sequence_wrap_is_reassembled_in_capture_order(self):
         before_wrap = tcp_packet(
@@ -368,6 +452,16 @@ class PayloadReportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'unsafe'):
                 verifier.verify(sink)
 
+            executable = os.path.join(security_directory, 'executable.html')
+            minimal = ('<html><head></head><body>'
+                       '<script type="application/json" id="payload-data">'
+                       '{}</script></body></html>')
+            with open(executable, 'w', encoding='utf-8') as stream:
+                stream.write(minimal.replace('type="application/json"',
+                                             'type="text/javascript"'))
+            with self.assertRaisesRegex(ValueError, 'unsafe'):
+                verifier.verify(executable)
+
     def test_diverter_report_publishes_only_after_sealed_pair(self):
         with tempfile.TemporaryDirectory() as directory:
             raw_path = os.path.join(directory, 'raw.pcap')
@@ -407,6 +501,34 @@ class PayloadReportTests(unittest.TestCase):
                 verifier = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(verifier)
                 self.assertEqual('PASS', verifier.verify(output)['verdict'])
+            finally:
+                os.chdir(current)
+
+    def test_generate_html_report_refuses_unsealed_or_failed_capture(self):
+        diverter = DiverterBase.__new__(DiverterBase)
+        diverter._initialize_capture_state()
+        diverter.logger = logging.getLogger('payload-report-test')
+        diverter.dump_packets = True
+        diverter.nbis = {}
+        with tempfile.TemporaryDirectory() as directory:
+            current = os.getcwd()
+            try:
+                os.chdir(directory)
+                with self.assertRaisesRegex(PayloadReportError,
+                                            'before paired PCAP closes'):
+                    diverter.generate_html_report()
+                diverter.dual_pcap = object()
+                diverter._capture_close_summary = SimpleNamespace(
+                    raw_filename='raw.pcap',
+                    ethernet_filename='converted.pcap',
+                    raw_write_count=0, ethernet_write_count=0,
+                    rejected_input_count=0, healthy=True)
+                diverter._capture_failure = PcapWriteError(
+                    'injected capture failure')
+                with self.assertRaisesRegex(PayloadReportError,
+                                            'after capture failure'):
+                    diverter.generate_html_report()
+                self.assertEqual([], os.listdir(directory))
             finally:
                 os.chdir(current)
 

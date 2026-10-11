@@ -317,20 +317,30 @@ class SessionFlowRegistry(object):
             new_syn_generation = (
                 facts['protocol'] == 'TCP' and syn and
                 known_syn is not None and syn_sequence != known_syn)
+            # The Linux capture path observes packets without recording a
+            # per-packet direction, but a bare SYN still identifies the
+            # connection initiator.  FakeNet's direction model calls the
+            # initiating (client) side outbound, so the endpoint-orientation
+            # mapping below can then assign the peer inbound and keep the two
+            # TCP sequence spaces separate instead of merging them.
+            origin_direction = direction
+            if (origin_direction == 'unknown' and facts['protocol'] == 'TCP'
+                    and syn and not facts['flags'] & dpkt.tcp.TH_ACK):
+                origin_direction = 'outbound'
             if (flow is None or
                     (facts['protocol'] == 'TCP' and
                      flow.get('closed') and syn) or
                     new_syn_generation):
-                flow = self._allocate(facts, timestamp, direction)
+                flow = self._allocate(facts, timestamp, origin_direction)
             reverse_key = (destination[0], destination[1], source[0], source[1])
             if endpoint_key not in flow['_directions']:
                 if reverse_key in flow['_directions']:
                     flow['_directions'][endpoint_key] = (
                         'inbound' if flow['_directions'][reverse_key] == 'outbound'
                         else 'outbound' if flow['_directions'][reverse_key] == 'inbound'
-                        else 'unknown')
+                        else origin_direction)
                 else:
-                    flow['_directions'][endpoint_key] = direction
+                    flow['_directions'][endpoint_key] = origin_direction
             if syn and endpoint_key not in flow['_syn_sequences']:
                 flow['_syn_sequences'][endpoint_key] = syn_sequence
             if timestamp is not None:
@@ -421,6 +431,9 @@ def _validate_pair(raw_records, converted_records):
         if not converted_raw or (converted_raw[0] >> 4) not in (4, 6):
             raise PayloadReportError(
                 'converted record %d is not an IP packet' % raw_ord)
+        if converted_raw != raw:
+            raise PayloadReportError(
+                'converted record %d does not embed the raw IP packet' % raw_ord)
         if abs(raw_ts - eth_ts) > 0.000001:
             raise PayloadReportError(
                 'raw/converted timestamp mismatch at ordinal %d' % raw_ord)
