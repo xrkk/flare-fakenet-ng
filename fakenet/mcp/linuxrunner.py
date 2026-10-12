@@ -138,7 +138,7 @@ class LinuxRunner:
         child_handle = open(child_log, 'wb')
         proc = subprocess.Popen(
             argv, stdin=subprocess.DEVNULL, stdout=child_handle,
-            stderr=subprocess.STDOUT, cwd=package_root, env=env)
+            stderr=subprocess.STDOUT, cwd=os.path.join(package_root, 'Logs'), env=env)
         child_handle.close()
         with self._lock:
             self._proc, self._stop_flag, self._run_id = proc, stop_flag, run_id

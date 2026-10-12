@@ -68,6 +68,14 @@ class LinuxRunnerTests(unittest.TestCase):
         argv = sp.Popen.call_args[0][0]
         self.assertIn('fakenet.fakenet', argv)
         self.assertIn('-f', argv)
+        # Relative PCAP/report outputs belong to Logs, while package/config
+        # imports remain fixed by the explicit PYTHONPATH and absolute path.
+        options = sp.Popen.call_args.kwargs
+        self.assertEqual(options['cwd'], lr.os.path.dirname(runner._child_log))
+        self.assertTrue(options['cwd'].endswith('/Logs'))
+        self.assertIn(lr.os.path.dirname(options['cwd']),
+                      options['env']['PYTHONPATH'].split(lr.os.pathsep))
+        self.assertEqual(argv[argv.index('-c') + 1], '/cfg/x')
         self.assertEqual(proc.poll(), None)
 
     def test_start_failure_when_process_dies_early(self):
