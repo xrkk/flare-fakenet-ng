@@ -16,6 +16,7 @@ Sub-plan P02 §3 frozen semantics:
 * no timers anywhere: controller ownership never times out (record 022).
 """
 
+import copy
 import logging
 import threading
 import time
@@ -28,6 +29,21 @@ logger = logging.getLogger('fakenetng-mcp.coordination')
 
 COMMAND_CACHE_LIMIT = 256
 EVENT_BUFFER_LIMIT = 500
+
+
+def _clone_receipt_fields(response):
+    """Deep-copy a nested receipt a response may hand to a caller.
+
+    A capture-only stop receipt carries one nested ``capture_checkpoint``;
+    the cached response, a fresh answer, a same-controller replay and a
+    command_status view must all be disjoint so no caller can poison a later
+    replay by mutating a returned structure.
+    """
+    if not isinstance(response, dict) or 'capture_checkpoint' not in response:
+        return response
+    response = dict(response)
+    response['capture_checkpoint'] = copy.deepcopy(response['capture_checkpoint'])
+    return response
 
 
 class EventLog:
@@ -348,7 +364,7 @@ class Coordinator:
                     raise cached['exception']
                 replay = dict(cached['response'])
                 replay['replayed'] = True
-                return replay
+                return _clone_receipt_fields(replay)
 
             if self._active_conflicts(conflict_names):
                 raise errors.McpError(
@@ -456,12 +472,27 @@ class Coordinator:
                 response['config_identity'] = result['config_identity']
             if 'config_result' in result:
                 response['config_result'] = result['config_result']
+            # A successful capture-only stop retains its committed checkpoint
+            # and its strict no-release posture in the immutable cached
+            # receipt. This is a narrow receipt for this one kind: a normal
+            # stop, a configuration mutation, a fenced or failed execution
+            # never gains these fields, and nothing else from the internal
+            # result is passed through.
+            if (not fenced and kind == 'capture_stop'
+                    and result.get('release_controller') is False
+                    and result.get('state') == 'healthy'
+                    and isinstance(result.get('capture_checkpoint'), dict)
+                    and result.get('run_id') is not None
+                    and result.get('run_id') == self._run_id):
+                response['capture_checkpoint'] = copy.deepcopy(
+                    result['capture_checkpoint'])
+                response['release_controller'] = False
             self._commands[command_id] = {
                 'controller': controller, 'response': response,
                 'describe': describe,
             }
             self._finish_operation(command_id)
-            return dict(response)
+            return _clone_receipt_fields(response)
 
     def _release_run_scope(self):
         hook = getattr(self, '_run_end_hook', None)
