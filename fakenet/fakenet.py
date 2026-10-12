@@ -665,13 +665,16 @@ class IfaceIpInfo():
         return [i.ip for i in downselect]
 
 
-def wait_for_shutdown(fakenet, stop_flag=None):
+def wait_for_shutdown(fakenet, stop_flag=None, capture_seal_root=None):
     """Wait for an operator stop flag or a capture-fatal event."""
     while True:
         if fakenet.wait_for_capture_failure(0.1):
             fakenet.logger.critical(
                 'Capture failed; initiating controlled shutdown')
             return 1
+        if capture_seal_root:
+            from fakenet.mcp.captureseal import service_capture_request
+            service_capture_request(fakenet, capture_seal_root)
         if stop_flag and os.path.exists(stop_flag):
             fakenet.logger.info('Stop flag found at %s' % stop_flag)
             return 0
@@ -710,6 +713,9 @@ _____________________________________________________________
         parser.add_option("-l", "--log-file", action="store", dest="log_file")
         parser.add_option("-s", "--log-syslog", action="store_true", dest="syslog",
                         default=False, help="Log to syslog via /dev/log  (default: False)")
+        parser.add_option("--capture-seal-root", action="store",
+                          dest="capture_seal_root", default=None,
+                          help="Run-owned Linux capture checkpoint control directory")
         parser.add_option("-f", "--stop-flag", action="store", dest="stop_flag",
                         help="terminate if stop flag file is created")
         parser.add_option("-p", "--no-pause", action="store_true", default=False,
@@ -781,7 +787,8 @@ _____________________________________________________________
         fakenet.start()
         logger.info('FakeNet-NG started successfully')
 
-        rc = wait_for_shutdown(fakenet, options.stop_flag)
+        rc = wait_for_shutdown(fakenet, options.stop_flag,
+                               options.capture_seal_root)
 
     except KeyboardInterrupt:
         if logger:

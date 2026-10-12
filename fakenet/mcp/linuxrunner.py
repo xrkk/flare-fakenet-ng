@@ -80,6 +80,7 @@ class LinuxRunner:
         self._proc = None
         self._stop_flag = None
         self._run_id = None
+        self._capture_seal_root = None
         self._health_cache = {}
         self.startup_timeout = startup_timeout
 
@@ -114,6 +115,18 @@ class LinuxRunner:
             os.unlink(stop_flag)
         argv = [self._python, '-m', 'fakenet.fakenet',
                 '-c', path, '-f', stop_flag, '-p']
+        from fakenet.mcp.captureseal import create_control
+        self._capture_seal_root = None
+        try:
+            capture_root = create_control(run_id)
+        except (ValueError, OSError):
+            # Developer/legacy layouts may have writable package parents.
+            # Default start/stop stays usable; the optional checkpoint is
+            # unavailable and never weakens its own protection boundary.
+            capture_root = None
+        if capture_root is not None:
+            argv += ['--capture-seal-root', str(capture_root)]
+            self._capture_seal_root = capture_root
         env = dict(os.environ)
         package_root = os.path.abspath(
             os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -195,6 +208,24 @@ class LinuxRunner:
                 'run_id': self._run_id,
                 'failure_reason': ('leftover rules: %s' % leftover) if leftover else None,
                 'release_controller': state == 'stopped'}
+
+    def seal_capture(self, coordinator):
+        """Finish the recording interval, retaining this run's isolation."""
+        from fakenet.mcp.captureseal import request_checkpoint
+        with self._lock:
+            proc, root, run_id = self._proc, self._capture_seal_root, self._run_id
+        if proc is None or root is None or proc.poll() is not None:
+            from fakenet.mcp import errors
+            raise errors.McpError(errors.NOT_ALLOWED_IN_STATE,
+                                  'capture checkpoint requires an active protected Linux process')
+        command_id = coordinator._operation_context.command_id
+        checkpoint = request_checkpoint(root, proc, command_id)
+        health = self.health_detail('healthy')
+        if not all(health.get(k) is True for k in
+                   ('process_alive', 'nfqueue_present', 'ipv6_policy_drop')):
+            raise LinuxRunnerError('capture checkpoint did not retain isolation')
+        return dict(state='healthy', changed=True, run_id=run_id,
+                    release_controller=False, capture_checkpoint=checkpoint)
 
     def restart(self, coordinator, controller, config_identity):
         stopped = self.stop(coordinator)

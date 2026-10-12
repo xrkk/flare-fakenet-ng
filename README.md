@@ -1257,3 +1257,28 @@ For bugs, crashes, or other comments please contact
 FakeNet@mandiant.com.
 
 Subscribe to the FLARE mailing list for community announcements! Email "subscribe" to [flare-external@google.com](mailto:flare-external@google.com?subject=subscribe).
+
+
+### Linux: seal a recording interval while retaining isolation
+
+The authenticated MCP `stop` operation accepts the optional strict boolean
+`capture_only=True`. Its default remains the existing full stop. On a healthy
+Linux run with a protected run-owned control directory, this option seals the
+PCAP pair, runtime observation and NBI journals, original-file seal and verified
+HTML without stopping the diverter or releasing its controller. Packet and NBI
+writers share one fence; subsequent traffic is explicitly outside that finished
+recording interval. The returned `capture_checkpoint` identifies the original
+files by path, size, SHA-256, device and inode, plus capture cutoff and the same
+live process birth. Its log product is an immutable stdout/stderr prefix; it
+explicitly does not claim a complete log for the still-running owner.
+
+The operation retains the existing controller, version, serialization and
+command replay gates. Unsupported runners, unprotected control directories,
+foreign process births, changed originals or an incomplete result are refused.
+An unknown submitted checkpoint must be reconciled through its original command
+ID; do not issue it again under a new ID. Ordinary final `stop` is still required
+for environment recovery. Developer layouts that cannot protect the new control
+root keep their previous default start/stop behavior, with checkpoint unavailable.
+
+Validation here is local producer/loader/HTML and execution-boundary testing;
+these tests do not certify a real VM or a complete native DynamicSession.

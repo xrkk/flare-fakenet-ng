@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Optional, Union
 
-from pydantic import StrictFloat, StrictInt
+from pydantic import StrictBool, StrictFloat, StrictInt
 
 from mcp.types import ToolAnnotations
 
@@ -620,10 +620,16 @@ def register_tools(server, ctx):
         description='Stop the active run and release run-scoped ownership.',
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True),
         structured_output=True)
-    def stop(command_id: str, expected_state_version: int) -> schemas.MutationResponse:
+    def stop(command_id: str, expected_state_version: int,
+             capture_only: StrictBool = False) -> schemas.MutationResponse:
         controller, classification = ctx.controller_identity()
 
         def execute(coord):
+            if capture_only:
+                if not coord.running or not hasattr(ctx.runner, 'seal_capture'):
+                    raise errors.McpError(errors.NOT_ALLOWED_IN_STATE,
+                                          'capture_only requires an active Linux run')
+                return ctx.runner.seal_capture(coord)
             if not coord.running and not coord.needs_recovery:
                 # Nothing is running and nothing is owned; the stop is a
                 # no-op, but it still releases any run-scoped config lock.
@@ -635,12 +641,16 @@ def register_tools(server, ctx):
             return result
 
         try:
+            if type(capture_only) is not bool:
+                raise errors.McpError(errors.INVALID_REQUEST,
+                                      'capture_only must be a boolean')
             return ctx.coordinator.submit(
                 command_id=command_id,
                 expected_version=int(expected_state_version),
                 controller=controller,
                 controller_valid=classification == 'valid_uuid',
-                kind='stop', describe={},
+                kind='capture_stop' if capture_only else 'stop',
+                describe={'capture_only': True} if capture_only else {},
                 execute=execute)
         except errors.McpError as exc:
             return ctx.error_response(exc)

@@ -820,7 +820,7 @@ class DiverterBase(fnconfig.Config):
         self._capture_observation_index = CaptureObservationIndex()
         self._capture_flow_registry = SessionFlowRegistry()
         self._capture_originals = None
-        self._capture_write_lock = threading.Lock()
+        self._capture_write_lock = threading.RLock()
         self._capture_queue_bindings = {}
         self._capture_queue_required = False
         # None means that the sealed-PCAP reassembly has not run yet.  It is
@@ -832,6 +832,9 @@ class DiverterBase(fnconfig.Config):
         self._stop_started = False
         self._stop_result = None
         self._stop_error = None
+        self._capture_checkpoint = None
+        self._capture_sealed = False
+        self._capture_write_lock = threading.RLock()
 
     def _capture_queue_bindings_complete(self):
         """Return whether every required capture handle has full readback.
@@ -981,7 +984,57 @@ class DiverterBase(fnconfig.Config):
             summary.rejected_input_count, writer_health, coverage_health,
             reassembly_text, overall, summary.healthy)
 
+    def seal_capture_outputs(self):
+        """Finish recording/report IO without removing network isolation.
+
+        The sole finished interval ends at this fence; later traffic is
+        deliberately NOT part of these artifacts. No stopCallback runs.
+        """
+        import datetime
+        from fakenet.capture_originals import (nbis_path, observations_path,
+                                               seal_path)
+        from fakenet.mcp.captureseal import file_fact, verify_files
+        if not hasattr(self, '_capture_write_lock'):
+            self._capture_write_lock = threading.RLock()
+        with self._capture_write_lock:
+            prior = getattr(self, '_capture_checkpoint', None)
+            if prior is not None:
+                verify_files(prior['files'])
+                return prior
+            if (not self.dump_packets or self.dual_pcap is None or
+                    self.capture_failure is not None or self._stop_started):
+                raise PayloadReportError('capture is unavailable, failed or stopping')
+            # All three writers share this fence. No subsequent callback
+            # can append to the streams or mutate the report's NBI cache.
+            self._capture_sealed = True
+            self._close_capture()
+            if self.capture_failure is not None:
+                raise self.capture_failure
+            loaded = self._report_capture_originals()
+            if loaded is None:
+                raise PayloadReportError('runtime originals producer required')
+            html = self.generate_html_report()
+            raw = Path(self._capture_close_summary.raw_filename).absolute()
+            converted = Path(self._capture_close_summary.ethernet_filename).absolute()
+            paths = [('raw', raw), ('converted', converted),
+                     ('observations', observations_path(raw)),
+                     ('nbis', nbis_path(raw)), ('seal', seal_path(raw)),
+                     ('html', Path(html).absolute())]
+            files = [dict(file_fact(path), role=role) for role, path in paths]
+            checkpoint = dict(schema='fakenet.capture-checkpoint.v1',
+                              capture_id=loaded.capture_id, files=files,
+                              closed_at_utc=datetime.datetime.now(
+                                  datetime.timezone.utc).isoformat(),
+                              capture_interval_complete=True,
+                              recording_continues=False)
+            self._capture_checkpoint = checkpoint
+            return checkpoint
+
     def _generate_reports(self):
+        if getattr(self, '_capture_checkpoint', None) is not None:
+            from fakenet.mcp.captureseal import verify_files
+            verify_files(self._capture_checkpoint['files'])
+            return None
         first_error = None
         for report in (self.prettyPrintNbi, self.generate_html_report):
             try:
@@ -1506,7 +1559,7 @@ class DiverterBase(fnconfig.Config):
         if not self.dual_pcap:
             return None
         if not hasattr(self, '_capture_write_lock'):
-            self._capture_write_lock = threading.Lock()
+            self._capture_write_lock = threading.RLock()
         try:
             with self._capture_write_lock:
                 return self._write_pcap_locked(pkt)
@@ -1518,6 +1571,8 @@ class DiverterBase(fnconfig.Config):
             raise self._record_capture_failure(failure) from exc
 
     def _write_pcap_locked(self, pkt):
+        if getattr(self, '_capture_sealed', False):
+            return False
         if not hasattr(self, '_capture_observation_index'):
             self._capture_observation_index = CaptureObservationIndex()
         if not hasattr(self, '_capture_flow_registry'):
@@ -1578,7 +1633,7 @@ class DiverterBase(fnconfig.Config):
         if not self.dual_pcap:
             return False
         if not hasattr(self, '_capture_write_lock'):
-            self._capture_write_lock = threading.Lock()
+            self._capture_write_lock = threading.RLock()
         try:
             with self._capture_write_lock:
                 return self._record_raw_capture_locked(
@@ -1595,6 +1650,8 @@ class DiverterBase(fnconfig.Config):
 
     def _record_raw_capture_locked(self, raw_bytes, observation_role,
                                    direction, logical_packet_id):
+        if getattr(self, '_capture_sealed', False):
+            return False
         # A few platform/unit seams construct a minimal Diverter object
         # without running the full constructor.  Keep the index lazy at
         # that seam; normal production construction initializes it before
@@ -2329,6 +2386,19 @@ class DiverterBase(fnconfig.Config):
 
     def logNbi(self, sport, nbi, proto, application_layer_proto,
             is_ssl_encrypted):
+        # The checkpoint shares the packet/NBI writer fence. Later traffic
+        # still routes, but is explicitly outside the finished interval.
+        if not hasattr(self, '_capture_write_lock'):
+            self._capture_write_lock = threading.RLock()
+        with self._capture_write_lock:
+            if getattr(self, '_capture_sealed', False):
+                return
+            return self._log_nbi_locked(sport, nbi, proto,
+                                        application_layer_proto,
+                                        is_ssl_encrypted)
+
+    def _log_nbi_locked(self, sport, nbi, proto, application_layer_proto,
+                        is_ssl_encrypted):
         """Collects the NBIs from all listeners into a dictionary.
 
         All listeners use this method to notify the diverter about any NBI
