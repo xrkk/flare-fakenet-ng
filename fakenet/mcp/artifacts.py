@@ -28,6 +28,12 @@ PUBLICATION_RECORD = 'published.json'
 RUN_EVIDENCE_FILES = ('active-config.ini', 'creation.jsonl', 'ipc-parent.jsonl',
                       'ipc-child.jsonl', 'stop-thread-stacks.txt',
                       'fault-child-stacks.txt', 'udp.etl')
+# Runtime capture-original sidecars are exact siblings of their paired PCAP.
+# They are candidates only next to the sealed producer of that same capture;
+# an unsealed journal is unfinished evidence, and no other ``*.ndjson`` name
+# becomes a registerable artifact.
+CAPTURE_ORIGINALS_SIDECAR_SUFFIXES = ('.observations.ndjson', '.nbis.ndjson')
+CAPTURE_ORIGINALS_SEAL_SUFFIX = '.capture-originals.json'
 # Published files are re-hashed on every metadata request; large captures
 # stream through one bounded chunk instead of one whole-file bytes object.
 HASH_CHUNK_BYTES = 1024 * 1024
@@ -179,6 +185,12 @@ class ArtifactRegistry:
         candidates = set(closed_http_post_paths(source))
         for pattern in ('*.pcap', '*.log', '*report*.html', '*.json') + RUN_EVIDENCE_FILES:
             candidates.update(source.glob(pattern))
+        for suffix in CAPTURE_ORIGINALS_SIDECAR_SUFFIXES:
+            for path in source.glob('*.pcap' + suffix):
+                seal = path.with_name(path.name[:-len(suffix)] +
+                                      CAPTURE_ORIGINALS_SEAL_SUFFIX)
+                if seal.is_file() and not seal.is_symlink():
+                    candidates.add(path)
         for path in sorted(candidates):
             if (path.parent != source or path.name == PUBLICATION_RECORD or
                     not path.is_file() or path.is_symlink()):

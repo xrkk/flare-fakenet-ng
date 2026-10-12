@@ -16,6 +16,7 @@ import os
 import re
 import socket
 import threading
+import uuid
 
 import dpkt
 
@@ -883,3 +884,204 @@ def validate_payload_model(model):
                     raise PayloadReportError(
                         'UDP datagram lengths mismatch for %s' % direction_id)
     return True
+
+
+class CaptureOriginals(object):
+    """Validated runtime originals decoded from one sealed capture."""
+
+    def __init__(self, *, capture_id, entries, nbis, seal, seal_path,
+                 raw_pcap_path, converted_pcap_path):
+        self.capture_id = capture_id
+        self.entries = entries
+        self.nbis = nbis
+        self.seal = seal
+        self.seal_path = seal_path
+        self.raw_pcap_path = raw_pcap_path
+        self.converted_pcap_path = converted_pcap_path
+
+
+def _strict_regular_file(path, what):
+    """A plain regular file whose whole path is free of symbolic links."""
+    current = os.path.abspath(os.fspath(path))
+    while True:
+        if os.path.islink(current):
+            raise PayloadReportError('%s path is a symlink' % what)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    if not os.path.isfile(path) or os.path.islink(path):
+        raise PayloadReportError('%s is not a plain file' % what)
+    return os.stat(path)
+
+
+def _sha256_path(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_original_facts(facts, path, what):
+    if not isinstance(facts, dict):
+        raise PayloadReportError('%s facts are missing from the seal' % what)
+    if facts.get('name') != os.path.basename(str(path)):
+        raise PayloadReportError('%s name is foreign to the seal' % what)
+    current = _strict_regular_file(path, what)
+    if int(facts.get('bytes', -1)) != current.st_size:
+        raise PayloadReportError('%s byte count differs from the seal' % what)
+    if facts.get('sha256') != _sha256_path(path):
+        raise PayloadReportError('%s SHA-256 differs from the seal' % what)
+    if (int(facts.get('device', -1)) != current.st_dev or
+            int(facts.get('inode', -1)) != current.st_ino):
+        raise PayloadReportError(
+            '%s file identity differs from the seal (physical replacement)'
+            % what)
+    return facts
+
+
+def _load_originals_journal(path, seal, journal, capture_id):
+    from fakenet.capture_originals import CAPTURE_ORIGINALS_JOURNAL_SCHEMA
+    facts = seal.get(journal)
+    _verify_original_facts(facts, path, journal + ' journal')
+    with open(path, 'rb') as stream:
+        raw = stream.read()
+    if raw and not raw.endswith(b'\n'):
+        raise PayloadReportError(
+            '%s journal is truncated (missing final newline)' % journal)
+    try:
+        text = raw.decode('utf-8')
+    except UnicodeDecodeError as exc:
+        raise PayloadReportError(
+            '%s journal is not valid UTF-8: %s' % (journal, exc)) from exc
+    lines = text.split('\n')[:-1]
+    if not lines:
+        raise PayloadReportError('%s journal header is missing' % journal)
+    records = []
+    for number, line in enumerate(lines, 0):
+        try:
+            record = json.loads(line)
+        except ValueError as exc:
+            raise PayloadReportError(
+                '%s journal line %d is not valid JSON' % (journal, number)) from exc
+        if not isinstance(record, dict):
+            raise PayloadReportError(
+                '%s journal line %d is not an object' % (journal, number))
+        if (record.get('schema') != CAPTURE_ORIGINALS_JOURNAL_SCHEMA or
+                record.get('journal') != journal or
+                record.get('capture_id') != capture_id):
+            raise PayloadReportError(
+                '%s journal header/line %d is foreign or invalid' %
+                (journal, number))
+        if number == 0:
+            continue
+        if int(record.get('ordinal', -1)) != number:
+            raise PayloadReportError(
+                '%s journal ordinal mismatch at line %d' % (journal, number))
+        records.append(record)
+    if int(facts.get('records', -1)) != len(records):
+        raise PayloadReportError(
+            '%s journal record count differs from the seal' % journal)
+    return records
+
+
+def load_capture_originals(raw_pcap_path, converted_pcap_path=None):
+    """Decode and validate one sealed capture's runtime originals.
+
+    The seal is the produced inventory: names, byte counts, SHA-256 and the
+    producer's file identity must all match the current files, so truncated,
+    replaced (even by identical bytes), foreign or unsealed captures are
+    refused with a specific reason.  The returned observations and NBIs are
+    the report's source of truth, validated against the paired PCAP.
+    """
+    from fakenet.capture_originals import (CAPTURE_ORIGINALS_SCHEMA,
+                                           nbis_path, observations_path,
+                                           seal_path)
+    raw = os.fspath(raw_pcap_path)
+    _strict_regular_file(raw, 'raw PCAP')
+    seal_file = seal_path(raw)
+    _strict_regular_file(seal_file, 'capture originals seal')
+    try:
+        with open(seal_file, 'r', encoding='utf-8') as stream:
+            seal = json.load(stream)
+    except (OSError, ValueError) as exc:
+        raise PayloadReportError(
+            'capture originals seal is not valid JSON: %s' % exc) from exc
+    if not isinstance(seal, dict) or seal.get('schema') != CAPTURE_ORIGINALS_SCHEMA:
+        raise PayloadReportError('capture originals seal schema is invalid')
+    capture_id = str(seal.get('capture_id') or '')
+    try:
+        uuid.UUID(capture_id)
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise PayloadReportError(
+            'capture originals seal lacks a valid capture id') from exc
+    if seal.get('pair_basename') != os.path.basename(raw):
+        raise PayloadReportError(
+            'capture originals seal belongs to a foreign capture')
+    raw_facts = _verify_original_facts(seal.get('raw_pcap'), raw, 'raw PCAP')
+    if converted_pcap_path is None:
+        if seal.get('converted_pcap') is not None:
+            raise PayloadReportError(
+                'seal lists a converted PCAP that was not supplied for '
+                'verification')
+        converted = None
+    else:
+        converted = os.fspath(converted_pcap_path)
+        _verify_original_facts(seal.get('converted_pcap'), converted,
+                               'converted PCAP')
+    raw_records = _read_pcap(raw)
+    converted_records = _read_pcap(converted) if converted else None
+    _validate_pair(raw_records, converted_records)
+
+    observation_path = observations_path(raw)
+    nbi_path = nbis_path(raw)
+    if (seal.get('observations') or {}).get('name') != os.path.basename(
+            observation_path) or (seal.get('nbis') or {}).get(
+                'name') != os.path.basename(nbi_path):
+        raise PayloadReportError(
+            'seal journal names are foreign to this capture')
+    observation_records = _load_originals_journal(
+        observation_path, seal, 'observations', capture_id)
+    nbi_records = _load_originals_journal(
+        nbi_path, seal, 'nbis', capture_id)
+
+    entries = []
+    for record in observation_records:
+        entry = {key: record[key] for key in
+                 ('ordinal', 'logical_packet_id', 'observation_role',
+                  'direction', 'length', 'sha256', 'flow_id', 'timestamp')
+                 if key in record}
+        entries.append(entry)
+    _validate_index(raw_records, entries)
+
+    nbis = {}
+    for number, record in enumerate(nbi_records, 1):
+        metrics = record.get('metrics')
+        if not isinstance(metrics, dict):
+            raise PayloadReportError(
+                'NBI original %d lacks its metrics object' % number)
+        session = record.get('session') or {}
+        if not isinstance(session, dict):
+            raise PayloadReportError(
+                'NBI original %d session mapping is invalid' % number)
+        protocol = str(record.get('application_layer_proto') or '').lower()
+        entry = {
+            'transport_layer_proto': session.get('transport_layer_proto'),
+            'sport': session.get('sport'),
+            'dst_ip': session.get('dst_ip'),
+            'dport': session.get('dport'),
+            'is_ssl_encrypted': record.get('is_ssl_encrypted'),
+            'network_mode': record.get('network_mode'),
+            'nbi': metrics,
+        }
+        nbis.setdefault((session.get('pid'), session.get('comm')),
+                        {}).setdefault(protocol, []).append(entry)
+
+    return CaptureOriginals(
+        capture_id=capture_id, entries=entries, nbis=nbis, seal=seal,
+        seal_path=seal_file, raw_pcap_path=raw,
+        converted_pcap_path=converted)

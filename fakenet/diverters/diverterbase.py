@@ -15,9 +15,12 @@ import subprocess
 from . import fnpacket
 from . import fnconfig
 from .pcapwriter import DualPcapWriter, PcapWriteError
+from ..capture_originals import (CaptureOriginalsError,
+                                 CaptureOriginalsWriter)
 from ..payload_report import (CaptureObservationIndex, PayloadReportError,
                               SessionFlowRegistry, _serialize_nbis,
-                              build_payload_report, safe_json_dumps,
+                              build_payload_report, load_capture_originals,
+                              safe_json_dumps,
                               validate_rendered_payload_report)
 from .debuglevels import *
 from collections import namedtuple
@@ -816,6 +819,7 @@ class DiverterBase(fnconfig.Config):
         self._capture_close_summary = None
         self._capture_observation_index = CaptureObservationIndex()
         self._capture_flow_registry = SessionFlowRegistry()
+        self._capture_originals = None
         self._capture_write_lock = threading.Lock()
         self._capture_queue_bindings = {}
         self._capture_queue_required = False
@@ -856,8 +860,26 @@ class DiverterBase(fnconfig.Config):
         self.logger.info(
             'Capturing traffic to %s and %s', self.pcap_filename,
             self.pcap_converted_filename)
-        self.dual_pcap = self._dual_pcap_factory(
-            self.pcap_filename, self.pcap_converted_filename, self.logger)
+        try:
+            # The runtime-original journals are created from the trusted
+            # writer path with O_EXCL: an existing or concurrent capture of
+            # the same name is refused, never overwritten.
+            self._capture_originals = CaptureOriginalsWriter(
+                self.pcap_filename, logger=self.logger)
+        except CaptureOriginalsError as exc:
+            raise self._record_capture_failure(PcapWriteError(
+                'capture originals journal refused: %s' % exc)) from exc
+        try:
+            self.dual_pcap = self._dual_pcap_factory(
+                self.pcap_filename, self.pcap_converted_filename, self.logger)
+        except BaseException:
+            # The aborted start removes its own unsealed journals; no
+            # capture producer exists to seal them.
+            try:
+                self._capture_originals.discard()
+            except OSError:
+                pass
+            raise
         self._capture_started = True
 
     @property
@@ -886,6 +908,13 @@ class DiverterBase(fnconfig.Config):
 
     def _close_capture(self, discard_if_empty=False):
         if self.dual_pcap is None:
+            originals = getattr(self, '_capture_originals', None)
+            if originals is not None and not originals.sealed:
+                try:
+                    originals.discard()
+                except OSError as exc:
+                    self._record_capture_failure(PcapWriteError(
+                        'aborted capture originals cleanup failed: %s' % exc))
             return self._capture_close_summary
         if not self._capture_writers_safe_to_close:
             self._record_capture_failure(PcapWriteError(
@@ -894,6 +923,29 @@ class DiverterBase(fnconfig.Config):
         summary = self.dual_pcap.close(
             discard_if_empty=discard_if_empty)
         self._capture_close_summary = summary
+        originals = getattr(self, '_capture_originals', None)
+        if originals is not None:
+            try:
+                if discard_if_empty or summary.discarded:
+                    # Startup rollback keeps only the pre-existing partial
+                    # PCAP pair; the aborted producer's unsealed journals are
+                    # its own output and are removed with it.
+                    originals.discard()
+                elif not originals.sealed:
+                    # The seal is published only after both writers stopped;
+                    # an unsealed or partial capture is diagnostic-only and
+                    # never becomes completed evidence.
+                    originals.seal(summary.raw_filename,
+                                   summary.ethernet_filename)
+            except Exception as exc:
+                self._record_capture_failure(PcapWriteError(
+                    'capture originals seal failed: %s' % exc))
+            finally:
+                try:
+                    originals.close()
+                except OSError as exc:
+                    self._record_capture_failure(PcapWriteError(
+                        'capture originals close failed: %s' % exc))
         self._log_capture_health_summary()
         writer_health = bool(summary.healthy)
         coverage_health = (self.capture_failure is None and
@@ -1513,6 +1565,9 @@ class DiverterBase(fnconfig.Config):
             timestamp=(writer_timestamp if isinstance(
                 writer_timestamp, (int, float)) else timestamp),
             record_ordinal=writer_ordinal)
+        originals = getattr(self, '_capture_originals', None)
+        if originals is not None:
+            originals.record_observation(entry)
         pkt._capture_flow_id = flow_id
         pkt._capture_observation = entry
         return True
@@ -1565,13 +1620,17 @@ class DiverterBase(fnconfig.Config):
         if not isinstance(writer_ordinal, int) or writer_ordinal <= 0:
             writer_ordinal = len(self._capture_observation_index) + 1
         writer_timestamp = getattr(self.dual_pcap, 'last_timestamp', None)
-        return self._capture_observation_index.record(
+        entry = self._capture_observation_index.record(
             raw_bytes, observation_role,
             logical_packet_id=logical_packet_id, flow_id=flow_id,
             direction=direction,
             timestamp=(writer_timestamp if isinstance(
                 writer_timestamp, (int, float)) else timestamp),
             record_ordinal=writer_ordinal)
+        originals = getattr(self, '_capture_originals', None)
+        if originals is not None:
+            originals.record_observation(entry)
+        return entry
 
     def handle_pkt(self, pkt, callbacks3, callbacks4,
                    raw_already_captured=False):
@@ -2327,6 +2386,28 @@ class DiverterBase(fnconfig.Config):
         # append the nbi, else create new key
         self.nbis.setdefault((pid, comm), {}).setdefault(application_layer_proto,
                                                          []).append(nbi_entry)
+        # Persist the real listener callback as an independent runtime
+        # original.  The metrics are stored verbatim (bytes keep an explicit
+        # Base64 encoding); the session mapping is what was actually
+        # resolved here, never re-derived from the sample's content.
+        originals = getattr(self, '_capture_originals', None)
+        if originals is not None:
+            try:
+                originals.record_nbi(
+                    session={
+                        'pid': pid, 'comm': comm,
+                        'transport_layer_proto': session.proto,
+                        'sport': orig_sport, 'dst_ip': session.dst_ip,
+                        'dport': session.dport0,
+                        'proxied': bool(proxied_nbi),
+                    },
+                    application_layer_proto=application_layer_proto,
+                    is_ssl_encrypted=is_ssl_encrypted,
+                    network_mode=self.network_mode.lower(),
+                    nbi=nbi)
+            except CaptureOriginalsError as exc:
+                raise self._record_capture_failure(PcapWriteError(
+                    'NBI runtime original write failed: %s' % exc)) from exc
 
     def prettyPrintNbi(self):
         """Convenience method to print all NBIs in appropriate format upon
@@ -2400,6 +2481,32 @@ class DiverterBase(fnconfig.Config):
 
             self.logger.info("\r")
 
+    def _report_capture_originals(self):
+        """Load the sealed runtime originals and refuse in-memory drift.
+
+        Returns ``None`` only for the legacy offline seam where this diverter
+        never created a capture-originals producer (e.g. a directly
+        constructed report consumer that supplies its own sealed pair).  A
+        real capture's report is decoded from the disk originals; the
+        in-memory callback state is only a cross-check.
+        """
+        if getattr(self, '_capture_originals', None) is None:
+            return None
+        loaded = load_capture_originals(
+            self._capture_close_summary.raw_filename,
+            self._capture_close_summary.ethernet_filename)
+        if loaded.entries != self._capture_observation_index.snapshot():
+            raise PayloadReportError(
+                'in-memory observation index differs from sealed originals')
+        memory_nbis = _serialize_nbis(
+            self.nbis, registry=self._capture_flow_registry)
+        if _serialize_nbis(
+                loaded.nbis,
+                registry=self._capture_flow_registry) != memory_nbis:
+            raise PayloadReportError(
+                'in-memory NBIs differ from sealed originals')
+        return loaded
+
     def generate_html_report(self):
         """Atomically publish an offline report after the paired PCAP is sealed."""
         if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
@@ -2422,11 +2529,18 @@ class DiverterBase(fnconfig.Config):
                     'cannot generate payload report after capture failure: %s' %
                     self.capture_failure)
             try:
+                # A production report consumes the sealed runtime originals
+                # decoded from disk, not the in-memory callbacks alone.  The
+                # in-memory facts must agree; a mismatch is a conflict, not a
+                # fallback.
+                originals = self._report_capture_originals()
                 payload_model = build_payload_report(
                     self._capture_close_summary.raw_filename,
-                    self._capture_observation_index,
+                    (originals.entries if originals is not None
+                     else self._capture_observation_index),
                     flow_registry=self._capture_flow_registry,
-                    nbis=self.nbis,
+                    nbis=(originals.nbis if originals is not None
+                          else self.nbis),
                     capture_health={
                         'writer_health': self._capture_close_summary.healthy,
                         'coverage_health': self._capture_queue_bindings_complete(),
@@ -2435,6 +2549,16 @@ class DiverterBase(fnconfig.Config):
                     converted_pcap_path=(
                         self._capture_close_summary.ethernet_filename),
                 )
+                if originals is not None:
+                    payload_model['capture']['originals'] = {
+                        'schema': originals.seal['schema'],
+                        'capture_id': originals.capture_id,
+                        'seal': os.path.basename(originals.seal_path),
+                        'raw_pcap': originals.seal['raw_pcap'],
+                        'converted_pcap': originals.seal['converted_pcap'],
+                        'observations': originals.seal['observations'],
+                        'nbis': originals.seal['nbis'],
+                    }
             except PayloadReportError as exc:
                 self._capture_reassembly_health = False
                 self._log_capture_health_summary()

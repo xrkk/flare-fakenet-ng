@@ -646,5 +646,108 @@ class PayloadReportTests(unittest.TestCase):
             verifier._payload_projection(expected))
 
 
+
+
+class CaptureOriginalsReportTests(unittest.TestCase):
+    def make_diverter(self, directory, session):
+        diverter = DiverterBase.__new__(DiverterBase)
+        diverter.logger = logging.getLogger('payload-report-test')
+        diverter._initialize_capture_state()
+        diverter.dump_packets = True
+        diverter.pcap_prefix = os.path.join(directory, 'packets')
+        diverter.pdebug = lambda *args: None
+        diverter.network_mode = 'SingleHost'
+        diverter.sessions = {40000: session}
+        diverter.proxy_sport_to_orig_sport_map = {}
+        diverter.is_proxied_pkt_ssl_encrypted = {}
+        diverter.nbis = {}
+        diverter._start_capture()
+        return diverter
+
+    def test_report_consumes_sealed_originals_and_references_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = SimpleNamespace(pid=321, comm='BENIGN_FIXTURE',
+                                      proto='TCP', dst_ip='198.51.100.20',
+                                      dport0=3585)
+            diverter = self.make_diverter(directory, session)
+            packet = tcp_packet('192.0.2.10', '198.51.100.20', 40000, 3585,
+                                100, b'sealed')
+            context = SimpleNamespace(
+                octets=packet, mangled=False, hdrToStr2=lambda: 'sealed',
+                _capture_direction='outbound',
+                _capture_logical_packet_id='packet-1')
+            self.assertTrue(diverter._write_pcap_locked(context))
+            diverter.logNbi(40000, {'Request URI': '/sealed'}, 'TCP', 'HTTP',
+                            'No')
+            current = os.getcwd()
+            try:
+                os.chdir(directory)
+                diverter._capture_writers_safe_to_close = True
+                diverter._close_capture()
+                output = diverter.generate_html_report()
+                html = Path(output).read_text(encoding='utf-8')
+                match = re.search(
+                    r'<script[^>]*id="payload-data"[^>]*>(.*?)</script>',
+                    html, re.S)
+                self.assertIsNotNone(match)
+                model = json.loads(match.group(1))
+                self.assertTrue(model['capture']['overall_health'])
+                originals = model['capture']['originals']
+                self.assertEqual(diverter._capture_originals.capture_id,
+                                 originals['capture_id'])
+                self.assertEqual(
+                    os.path.basename(diverter._capture_close_summary.raw_filename) +
+                    '.capture-originals.json', originals['seal'])
+                self.assertEqual(
+                    diverter._capture_originals.observation_count,
+                    originals['observations']['records'])
+                self.assertEqual('base64', model['encoding'])
+                self.assertEqual(1, len(model['flows']))
+                self.assertEqual(b'sealed', base64.b64decode(
+                    next(iter(model['flows'][0]['directions'].values()))
+                    ['base64']))
+                self.assertEqual(
+                    '/sealed',
+                    model['nbis'][0]['protocols'][0]['entries'][0]['nbi']
+                    ['Request URI'])
+                import importlib.util
+                verifier_path = (Path(__file__).parent / 'gui_vm' /
+                                 'verify_payload_report.py')
+                spec = importlib.util.spec_from_file_location(
+                    'sealed_originals_verifier', verifier_path)
+                verifier = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(verifier)
+                self.assertEqual('PASS', verifier.verify(output)['verdict'])
+            finally:
+                os.chdir(current)
+                diverter._capture_writers_safe_to_close = True
+
+    def test_offline_build_has_no_runtime_original_qualification(self):
+        # The direct offline replay interface keeps working on an in-memory
+        # index and must not claim a runtime-originals qualification.
+        with tempfile.TemporaryDirectory() as directory:
+            raw_path = os.path.join(directory, 'raw.pcap')
+            converted_path = os.path.join(directory, 'converted.pcap')
+            writer = DualPcapWriter(raw_path, converted_path,
+                                    logging.getLogger('payload-report-test'),
+                                    clock=lambda: 2.0)
+            packet = tcp_packet('192.0.2.10', '198.51.100.20', 40000, 3585,
+                                100, b'offline')
+            index = CaptureObservationIndex()
+            writer.write_ip_packet(packet)
+            index.record(packet, 'initial', logical_packet_id='packet-1',
+                         direction='outbound', timestamp=2.0,
+                         record_ordinal=writer.last_record_ordinal)
+            writer.close()
+            model = build_payload_report(
+                raw_path, index, nbis={},
+                capture_health={'writer_health': True,
+                                'coverage_health': True,
+                                'reassembly_health': True},
+                converted_pcap_path=converted_path)
+            self.assertNotIn('originals', model['capture'])
+            self.assertTrue(model['capture']['overall_health'])
+
+
 if __name__ == '__main__':
     unittest.main()
