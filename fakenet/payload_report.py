@@ -926,18 +926,29 @@ def _sha256_path(path):
     return digest.hexdigest()
 
 
+def _int_fact(value, what):
+    """Seal or journal metadata is rejected clearly, never crashes."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise PayloadReportError('%s is not an integer' % what)
+
+
 def _verify_original_facts(facts, path, what):
     if not isinstance(facts, dict):
         raise PayloadReportError('%s facts are missing from the seal' % what)
     if facts.get('name') != os.path.basename(str(path)):
         raise PayloadReportError('%s name is foreign to the seal' % what)
     current = _strict_regular_file(path, what)
-    if int(facts.get('bytes', -1)) != current.st_size:
+    if _int_fact(facts.get('bytes', -1),
+                 '%s byte count' % what) != current.st_size:
         raise PayloadReportError('%s byte count differs from the seal' % what)
     if facts.get('sha256') != _sha256_path(path):
         raise PayloadReportError('%s SHA-256 differs from the seal' % what)
-    if (int(facts.get('device', -1)) != current.st_dev or
-            int(facts.get('inode', -1)) != current.st_ino):
+    if (_int_fact(facts.get('device', -1), '%s device' % what)
+            != current.st_dev or
+            _int_fact(facts.get('inode', -1), '%s inode' % what)
+            != current.st_ino):
         raise PayloadReportError(
             '%s file identity differs from the seal (physical replacement)'
             % what)
@@ -979,11 +990,13 @@ def _load_originals_journal(path, seal, journal, capture_id):
                 (journal, number))
         if number == 0:
             continue
-        if int(record.get('ordinal', -1)) != number:
+        if _int_fact(record.get('ordinal', -1),
+                     '%s journal line %d ordinal' % (journal, number)) != number:
             raise PayloadReportError(
                 '%s journal ordinal mismatch at line %d' % (journal, number))
         records.append(record)
-    if int(facts.get('records', -1)) != len(records):
+    if _int_fact(facts.get('records', -1),
+                 '%s record count' % journal) != len(records):
         raise PayloadReportError(
             '%s journal record count differs from the seal' % journal)
     return records

@@ -34,6 +34,9 @@ RUN_EVIDENCE_FILES = ('active-config.ini', 'creation.jsonl', 'ipc-parent.jsonl',
 # becomes a registerable artifact.
 CAPTURE_ORIGINALS_SIDECAR_SUFFIXES = ('.observations.ndjson', '.nbis.ndjson')
 CAPTURE_ORIGINALS_SEAL_SUFFIX = '.capture-originals.json'
+# The producer's converted side of a pair is the raw stem plus this fixed
+# suffix; a seal may only confirm that name, never select another path.
+CAPTURE_ORIGINALS_CONVERTED_SUFFIX = '-converted.pcap'
 # Published files are re-hashed on every metadata request; large captures
 # stream through one bounded chunk instead of one whole-file bytes object.
 HASH_CHUNK_BYTES = 1024 * 1024
@@ -160,11 +163,118 @@ def closed_http_post_paths(directory):
                   any(pattern.fullmatch(path.name) for pattern in patterns))
 
 
+class CaptureOriginalsRejected(Exception):
+    """One capture's side originals did not qualify for publication."""
+
+
+def _plain_basename(name):
+    """A seal may only confirm a plain file name; it never selects a path."""
+    text = name if isinstance(name, str) else ''
+    return (bool(text) and text not in ('.', '..') and '/' not in text and
+            '\\' not in text and not os.path.isabs(text))
+
+
+def _sha256_and_size(path):
+    digest = hashlib.sha256()
+    size = 0
+    with open(path, 'rb') as stream:
+        while True:
+            chunk = stream.read(HASH_CHUNK_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+    return {'bytes': size, 'sha256': digest.hexdigest()}
+
+
+def _matches_facts(path, facts):
+    """True when the file's current bytes still equal approved facts."""
+    try:
+        return _sha256_and_size(path) == {'bytes': facts['bytes'],
+                                          'sha256': facts['sha256']}
+    except (OSError, KeyError):
+        return False
+
+
+def _qualify_capture_originals_group(source, raw_pcap):
+    """Qualify one capture's originals against the real seal.
+
+    Every member path is derived from the registry-trusted direct candidate
+    ``raw_pcap``; the user-writable seal may only confirm the fixed
+    basenames. The production loader re-verifies the seal schema, capture
+    id, byte counts, SHA-256 digests, producer file identity, both journals
+    and the PCAP pair, and its specific reason surfaces on rejection.
+    Returns ``(members, facts)`` mapping each role (raw, converted, both
+    journals, seal) to its Path and verified ``{'bytes', 'sha256'}``.
+    """
+    raw = Path(raw_pcap)
+    seal_file = raw.with_name(raw.name + CAPTURE_ORIGINALS_SEAL_SUFFIX)
+    try:
+        seal = json.loads(seal_file.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise CaptureOriginalsRejected(
+            'capture originals seal is missing or not valid JSON: %s' % exc)
+    if not isinstance(seal, dict):
+        raise CaptureOriginalsRejected(
+            'capture originals seal is not a JSON object')
+    converted = None
+    converted_facts = seal.get('converted_pcap')
+    if converted_facts is not None:
+        if not isinstance(converted_facts, dict):
+            raise CaptureOriginalsRejected(
+                'seal converted PCAP facts are invalid')
+        stem = (raw.name[:-len('.pcap')]
+                if raw.name.endswith('.pcap') else raw.name)
+        expected = stem + CAPTURE_ORIGINALS_CONVERTED_SUFFIX
+        name = converted_facts.get('name')
+        if not _plain_basename(name) or name != expected:
+            raise CaptureOriginalsRejected(
+                'seal converted PCAP name does not pair with this raw capture')
+        converted = Path(source) / expected
+        if converted.is_symlink() or not converted.is_file():
+            raise CaptureOriginalsRejected(
+                'converted PCAP named by the seal is missing or not a plain '
+                'file')
+    from fakenet.payload_report import (PayloadReportError,
+                                        load_capture_originals)
+    try:
+        loaded = load_capture_originals(raw, converted)
+    except PayloadReportError as exc:
+        raise CaptureOriginalsRejected(str(exc))
+    members = {
+        'raw': raw,
+        'observations': raw.with_name(
+            raw.name + CAPTURE_ORIGINALS_SIDECAR_SUFFIXES[0]),
+        'nbis': raw.with_name(
+            raw.name + CAPTURE_ORIGINALS_SIDECAR_SUFFIXES[1]),
+        'seal': seal_file,
+    }
+    facts = {
+        'raw': {'bytes': int(loaded.seal['raw_pcap']['bytes']),
+                'sha256': loaded.seal['raw_pcap']['sha256']},
+        'observations': {'bytes': int(loaded.seal['observations']['bytes']),
+                         'sha256': loaded.seal['observations']['sha256']},
+        'nbis': {'bytes': int(loaded.seal['nbis']['bytes']),
+                 'sha256': loaded.seal['nbis']['sha256']},
+        'seal': _sha256_and_size(seal_file),
+    }
+    if converted is not None:
+        members['converted'] = converted
+        facts['converted'] = {
+            'bytes': int(loaded.seal['converted_pcap']['bytes']),
+            'sha256': loaded.seal['converted_pcap']['sha256']}
+    return members, facts
+
+
 class ArtifactRegistry:
 
     def __init__(self, artifacts_root):
         self.root = Path(artifacts_root)
         self.root.mkdir(parents=True, exist_ok=True)
+        # Per-call record of capture groups refused publication, with the
+        # loader's specific reason; an empty list is not evidence that any
+        # capture existed, only that none was rejected.
+        self.last_registration_rejections = []
 
     def run_dir(self, run_id):
         return self.root / str(run_id)
@@ -181,18 +291,14 @@ class ArtifactRegistry:
         run_dir = self.run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
         source = Path(package_root)
+        self.last_registration_rejections = []
         copied = []
         candidates = set(closed_http_post_paths(source))
         for pattern in ('*.pcap', '*.log', '*report*.html', '*.json') + RUN_EVIDENCE_FILES:
             candidates.update(source.glob(pattern))
-        for suffix in CAPTURE_ORIGINALS_SIDECAR_SUFFIXES:
-            for path in source.glob('*.pcap' + suffix):
-                seal = path.with_name(path.name[:-len(suffix)] +
-                                      CAPTURE_ORIGINALS_SEAL_SUFFIX)
-                if seal.is_file() and not seal.is_symlink():
-                    candidates.add(path)
         for path in sorted(candidates):
             if (path.parent != source or path.name == PUBLICATION_RECORD or
+                    str(path.name).endswith(CAPTURE_ORIGINALS_SEAL_SUFFIX) or
                     not path.is_file() or path.is_symlink()):
                 continue
             if keep is not None and not keep(path):
@@ -210,6 +316,8 @@ class ArtifactRegistry:
                     if os.path.exists(temporary):
                         os.unlink(temporary)
             copied.append(destination)
+        copied.extend(self._publish_capture_originals_groups(
+            run_dir, source, keep, prefix))
         if copied:
             write_publication(run_dir, copied)
             # These source files belong to the now-ended run as well. They
@@ -217,6 +325,97 @@ class ArtifactRegistry:
             write_publication(source, [source / p.name[len(prefix):] if prefix
                                        else source / p.name for p in copied])
         return copied
+
+    def _publish_capture_originals_groups(self, run_dir, source, keep,
+                                          prefix):
+        """Publish sealed capture-originals groups that fully qualify.
+
+        Qualification follows the producer's seal through the production
+        loader — never the seal's mere existence — and the group's side
+        originals (both journals and the seal) publish only when every
+        member qualifies, survives ``keep``, meets an identical existing
+        destination, and still verifies at the source right before
+        publication. A rejected group never blocks another capture, an
+        HTTP original or any other artifact; each rejection and its
+        specific reason are recorded on ``last_registration_rejections``.
+        """
+        import shutil
+
+        published = []
+        for raw in sorted(path for path in source.glob('*.pcap')
+                          if not str(path.name).endswith(
+                              CAPTURE_ORIGINALS_CONVERTED_SUFFIX)):
+            try:
+                members, facts = _qualify_capture_originals_group(source, raw)
+            except CaptureOriginalsRejected as exc:
+                self.last_registration_rejections.append(
+                    {'capture': raw.name, 'stage': 'qualify',
+                     'reason': str(exc)})
+                continue
+            group = [(role, members[role]) for role in
+                     ('raw', 'observations', 'nbis', 'seal') +
+                     (('converted',) if 'converted' in members else ())]
+            side_originals = ('observations', 'nbis', 'seal')
+            if keep is not None:
+                excluded = [path.name for _, path in group if not keep(path)]
+                if excluded:
+                    self.last_registration_rejections.append(
+                        {'capture': raw.name, 'stage': 'keep',
+                         'reason': 'keep filter excluded group members: '
+                                   + ', '.join(excluded)})
+                    continue
+            conflicts = []
+            for role, path in group:
+                destination = run_dir / (prefix + path.name)
+                if (destination.exists() and
+                        not _matches_facts(destination, facts[role])):
+                    conflicts.append(destination.name)
+            if conflicts:
+                self.last_registration_rejections.append(
+                    {'capture': raw.name, 'stage': 'destination',
+                     'reason': 'existing destination differs from the '
+                               'qualified source: ' + ', '.join(conflicts)})
+                continue
+            created = []
+            try:
+                for role in side_originals:
+                    path = members[role]
+                    destination = run_dir / (prefix + path.name)
+                    if destination.exists():
+                        # Verified identical above; history is never
+                        # overwritten to re-export this capture.
+                        continue
+                    fd, temporary = tempfile.mkstemp(dir=run_dir,
+                                                     prefix='.copy-')
+                    os.close(fd)
+                    try:
+                        shutil.copy2(path, temporary)
+                        os.replace(temporary, destination)
+                    finally:
+                        if os.path.exists(temporary):
+                            os.unlink(temporary)
+                    if not _matches_facts(destination, facts[role]):
+                        raise CaptureOriginalsRejected(
+                            '%s copy does not match the qualified source'
+                            % role)
+                    created.append(destination)
+                # Re-verify the whole group at the source before it joins
+                # this publication: a change between approval and publish
+                # cannot manufacture success.
+                _qualify_capture_originals_group(source, raw)
+            except (CaptureOriginalsRejected, OSError) as exc:
+                for destination in created:
+                    try:
+                        os.unlink(destination)
+                    except OSError:
+                        pass
+                self.last_registration_rejections.append(
+                    {'capture': raw.name, 'stage': 'copy',
+                     'reason': str(exc)})
+                continue
+            published.extend(run_dir / (prefix + members[role].name)
+                             for role in side_originals)
+        return published
 
     def _enumeration_entries(self, deadline, run_id=None):
         """Every candidate file as (Path, DirEntry), unordered.
