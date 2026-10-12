@@ -32,17 +32,19 @@ EVENT_BUFFER_LIMIT = 500
 
 
 def _clone_receipt_fields(response):
-    """Deep-copy a nested receipt a response may hand to a caller.
+    """Return a caller-independent copy of a response a caller may mutate.
 
-    A capture-only stop receipt carries one nested ``capture_checkpoint``;
-    the cached response, a fresh answer, a same-controller replay and a
-    command_status view must all be disjoint so no caller can poison a later
-    replay by mutating a returned structure.
+    Every dictionary gets an independent top-level copy first (the preserved
+    default response behavior); when a capture-only stop receipt carries the
+    nested ``capture_checkpoint``, that structure is deep-copied too so the
+    cached response, a fresh answer, a same-controller replay and a
+    command_status view stay disjoint.
     """
-    if not isinstance(response, dict) or 'capture_checkpoint' not in response:
+    if not isinstance(response, dict):
         return response
     response = dict(response)
-    response['capture_checkpoint'] = copy.deepcopy(response['capture_checkpoint'])
+    if 'capture_checkpoint' in response:
+        response['capture_checkpoint'] = copy.deepcopy(response['capture_checkpoint'])
     return response
 
 

@@ -113,6 +113,27 @@ def test_exit_fenced_capture_stop_has_no_checkpoint():
     seal.assert_called_once()
 
 
+def test_normal_stop_fresh_response_is_isolated():
+    tools,c,stop,seal,active,caller,_=surface()
+    value=tools['stop']('normal-stop-fresh',1)
+    assert value['state']=='stopped' and value['command_id']=='normal-stop-fresh'
+    value['state']='caller_poison'
+    value['command_id']='caller-renamed'
+    status=c.command_status(command_id='normal-stop-fresh',controller=OWNER,controller_valid=True)
+    assert status['status']=='completed'
+    assert status['response']['state']=='stopped'
+    assert status['response']['command_id']=='normal-stop-fresh'
+    replay=tools['stop']('normal-stop-fresh',99)
+    assert replay['replayed'] is True
+    assert replay['state']=='stopped' and replay['command_id']=='normal-stop-fresh'
+    replay['state']='replay-poison'
+    status=c.command_status(command_id='normal-stop-fresh',controller=OWNER,controller_valid=True)
+    assert status['response']['state']=='stopped'
+    status['response']['state']='query-poison'
+    again=tools['stop']('normal-stop-fresh',99)
+    assert again['state']=='stopped'
+
+
 def test_foreign_controller_cannot_seal():
     tools,c,stop,seal,active,caller,_=surface();caller[0]=OTHER
     value=tools['stop']('foreign',1,capture_only=True)
