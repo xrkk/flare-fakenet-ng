@@ -196,6 +196,22 @@ def _matches_facts(path, facts):
         return False
 
 
+def _plain_directory(path, what, allow_missing=False):
+    """Reject linked roots and parents before scanning or copying content."""
+    path = Path(path)
+    current = path
+    while True:
+        if current.is_symlink():
+            raise CaptureOriginalsRejected('%s path is a symlink' % what)
+        if current.parent == current:
+            break
+        current = current.parent
+    if allow_missing and not path.exists():
+        return
+    if not path.is_dir():
+        raise CaptureOriginalsRejected('%s is not a plain directory' % what)
+
+
 def _plain_file_within(path, root, what):
     """A direct regular child of root with no symlink in its whole chain.
 
@@ -358,10 +374,22 @@ class ArtifactRegistry:
         import shutil
 
         run_dir = self.run_dir(run_id)
-        run_dir.mkdir(parents=True, exist_ok=True)
         source = Path(package_root)
         self.last_registration_rejections = []
         copied = []
+        try:
+            # Check the whole roots before even enumerating a source or
+            # creating/copying through a linked destination directory.
+            # Checking only the final file does not detect linked parents.
+            _plain_directory(source, 'source package root')
+            _plain_directory(self.root, 'artifact registry root')
+            _plain_directory(run_dir, 'artifact run root', allow_missing=True)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            _plain_directory(run_dir, 'artifact run root')
+        except (CaptureOriginalsRejected, OSError) as exc:
+            self.last_registration_rejections.append(
+                {'capture': '', 'stage': 'boundary', 'reason': str(exc)})
+            return copied
         candidates = set(closed_http_post_paths(source))
         for pattern in ('*.pcap', '*.log', '*report*.html', '*.json') + RUN_EVIDENCE_FILES:
             candidates.update(source.glob(pattern))

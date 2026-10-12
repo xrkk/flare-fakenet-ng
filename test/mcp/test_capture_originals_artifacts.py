@@ -730,3 +730,63 @@ def test_plain_publication_skips_symlinked_destination_without_reading(
                'destination is a symlink' in item['reason'] for item in
                registry.last_registration_rejections)
     assert raw_destination.is_symlink()
+
+
+@pytest.mark.parametrize('linked_side', ['source', 'destination'])
+def test_linked_registration_root_rejected_before_content_io(
+        monkeypatch, tmp_path, linked_side):
+    import builtins
+    source = tmp_path / 'package'
+    source.mkdir()
+    build_sealed_capture(source)
+    registry = ArtifactRegistry(tmp_path / 'artifacts')
+    outside = tmp_path / 'controlled-outside'
+    outside.mkdir()
+    if linked_side == 'source':
+        # Source is real producer output, reached through a linked root.
+        linked_source = tmp_path / 'source-link'
+        linked_source.symlink_to(source, target_is_directory=True)
+        guarded_root = source
+        source = linked_source
+    else:
+        registry.run_dir('run-1').symlink_to(outside,
+                                            target_is_directory=True)
+        guarded_root = outside
+    content_reads = []
+    copies = []
+    real_open = builtins.open
+    real_path_open = Path.open
+    real_copy = shutil.copy2
+
+    def record_read(file):
+        try:
+            path = Path(file)
+        except TypeError:
+            return
+        if path.is_absolute() and path.resolve().is_relative_to(guarded_root):
+            content_reads.append(str(path))
+
+    def spy_open(file, *args, **kwargs):
+        record_read(file)
+        return real_open(file, *args, **kwargs)
+
+    def spy_path_open(self, *args, **kwargs):
+        record_read(self)
+        return real_path_open(self, *args, **kwargs)
+
+    def spy_copy(src, dst, *args, **kwargs):
+        copies.append((str(src), str(dst)))
+        return real_copy(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, 'open', spy_open)
+    monkeypatch.setattr(Path, 'open', spy_path_open)
+    monkeypatch.setattr(shutil, 'copy2', spy_copy)
+    assert registry.register_fakenet_outputs('run-1', source, prefix=PREFIX) == []
+    assert content_reads == []
+    assert copies == []
+    assert not list(outside.iterdir())
+    assert registry.last_registration_rejections == [
+        {'capture': '', 'stage': 'boundary',
+         'reason': ('source package root' if linked_side == 'source'
+                    else 'artifact run root') + ' path is a symlink'}]
+    assert not (source / 'published.json').exists()
