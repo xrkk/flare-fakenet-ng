@@ -326,7 +326,7 @@ def test_seal_cannot_select_converted_paths_or_names(tmp_path):
     registry2 = ArtifactRegistry(tmp_path / 'artifacts2')
     registry2.register_fakenet_outputs('run-1', source2, prefix=PREFIX)
     no_side_originals(registry2, 'run-1', paths2)
-    assert any('missing or not a plain file' in item['reason'] for item in
+    assert any('is missing' in item['reason'] for item in
                rejections_for(registry2, paths2['raw'].name))
 
     # Unrelated ndjson and an unsealed orphan's sidecar never register.
@@ -355,7 +355,7 @@ def test_symlinked_originals_are_rejected(tmp_path):
     registry = ArtifactRegistry(tmp_path / 'artifacts')
     registry.register_fakenet_outputs('run-1', source, prefix=PREFIX)
     no_side_originals(registry, 'run-1', paths)
-    assert any('missing or not a plain file' in item['reason'] for item in
+    assert any('symlink' in item['reason'] for item in
                rejections_for(registry, paths['raw'].name))
 
     source2 = tmp_path / 'package2'
@@ -508,7 +508,10 @@ def test_same_bytes_swap_after_qualification_rejects_publication(
     for role in ('observations', 'nbis', 'seal'):
         assert PREFIX + paths[role].name not in names, role
     no_side_originals(registry, 'run-1', paths)
-    assert any('physical replacement' in item['reason'] for item in
+    # The identical-bytes swap no longer equals the first approval record:
+    # the group is refused before publication instead of re-validating a
+    # different physical file.
+    assert any('changed after approval' in item['reason'] for item in
                registry.last_registration_rejections)
 
 
@@ -573,3 +576,157 @@ def test_invalid_seal_metadata_is_rejected_clearly_not_a_crash(tmp_path):
     paths2['seal'].write_text(json.dumps(seal2, indent=2) + '\n')
     with pytest.raises(PayloadReportError, match='ordinal is not an integer'):
         load_capture_originals(raw2, paths2['converted'])
+
+
+def test_seal_symlink_is_refused_before_any_content_read(monkeypatch,
+                                                          tmp_path):
+    source = tmp_path / 'package'
+    source.mkdir()
+    raw = build_sealed_capture(source)
+    paths = group_paths(raw)
+    outside = tmp_path / 'outside-seal.json'
+    outside.write_bytes(paths['seal'].read_bytes())
+    paths['seal'].unlink()
+    paths['seal'].symlink_to(outside)
+    seal_reads = []
+    original_read_text = Path.read_text
+
+    def spy(self, *args, **kwargs):
+        if self == paths['seal']:
+            seal_reads.append(str(self))
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', spy)
+    registry = ArtifactRegistry(tmp_path / 'artifacts')
+    copied = registry.register_fakenet_outputs('run-1', source, prefix=PREFIX)
+    # Refusal is by identity alone: the out-of-root seal content behind the
+    # link is never read, not even once before the rejection.
+    assert seal_reads == []
+    no_side_originals(registry, 'run-1', paths)
+    assert any('symlink' in item['reason'] for item in
+               rejections_for(registry, paths['raw'].name))
+    assert outside.read_bytes()  # the controlled target stays untouched
+
+
+def test_changed_source_with_valid_updated_seal_rejected_by_first_record(
+        monkeypatch, tmp_path):
+    from fakenet.payload_report import load_capture_originals
+    source = tmp_path / 'package'
+    source.mkdir()
+    raw = build_sealed_capture(source)
+    paths = group_paths(raw)
+    registry = ArtifactRegistry(tmp_path / 'artifacts')
+    real_copy2 = shutil.copy2
+
+    def change_after_copy(source_path, destination_path, *args, **kwargs):
+        result = real_copy2(source_path, destination_path, *args, **kwargs)
+        if Path(source_path) == paths['seal']:
+            # Rewrite one NBI metric and re-seal the source in place, so a
+            # fresh loader would accept a DIFFERENT valid version.
+            records = [json.loads(line) for line in
+                       paths['nbis'].read_text().splitlines()]
+            records[1]['metrics']['revision'] = \
+                'changed-after-first-qualification'
+            data = ('\n'.join(json.dumps(value, separators=(',', ':'))
+                              for value in records) + '\n').encode()
+            paths['nbis'].write_bytes(data)
+            seal = json.loads(paths['seal'].read_text())
+            seal['nbis']['bytes'] = len(data)
+            seal['nbis']['sha256'] = hashlib.sha256(data).hexdigest()
+            paths['seal'].write_text(json.dumps(seal, indent=2) + '\n')
+        return result
+
+    monkeypatch.setattr(shutil, 'copy2', change_after_copy)
+    copied = registry.register_fakenet_outputs('run-1', source, prefix=PREFIX)
+    names = {Path(item).name for item in copied}
+    # The current source is a freshly valid capture...
+    load_capture_originals(raw, paths['converted'])
+    # ...but it is a different version than the first approval, so no side
+    # original of the approved one publishes or reports complete.
+    for role in ('observations', 'nbis', 'seal'):
+        assert PREFIX + paths[role].name not in names, role
+    no_side_originals(registry, 'run-1', paths)
+    assert any('changed after approval' in item['reason'] for item in
+               rejections_for(registry, paths['raw'].name))
+
+
+def test_equal_bytes_destination_symlink_rejects_group_without_reads(
+        monkeypatch, tmp_path):
+    import builtins
+    source = tmp_path / 'package'
+    source.mkdir()
+    raw = build_sealed_capture(source)
+    paths = group_paths(raw)
+    registry = ArtifactRegistry(tmp_path / 'artifacts')
+    run_dir = registry.run_dir('run-1')
+    run_dir.mkdir()
+    outside = tmp_path / 'outside-observation.ndjson'
+    outside.write_bytes(paths['observations'].read_bytes())
+    destination = run_dir / (PREFIX + paths['observations'].name)
+    destination.symlink_to(outside)
+    outside_opens = []
+    real_open = builtins.open
+
+    def open_spy(file, *args, **kwargs):
+        if str(file) == str(outside):
+            outside_opens.append(str(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, 'open', open_spy)
+    copied = registry.register_fakenet_outputs('run-1', source, prefix=PREFIX)
+    # Identical bytes do not exempt a link: nothing is read through it, no
+    # member of the group publishes, and the link target is untouched.
+    assert outside_opens == []
+    names = {Path(item).name for item in copied}
+    for role in ('observations', 'nbis', 'seal'):
+        assert PREFIX + paths[role].name not in names, role
+    run_dir = registry.run_dir('run-1')
+    for role in ('nbis', 'seal'):
+        assert not (run_dir / (PREFIX + paths[role].name)).exists(), role
+    assert destination.is_symlink()  # never replaced by a real copy
+    assert not any(row['path'].endswith(
+        ('.observations.ndjson', '.nbis.ndjson',
+         '.capture-originals.json'))
+        for row in registry.metadata(run_id='run-1'))
+    assert any('destination differs' in item['reason'] and 'symlink' in
+               item['reason'] for item in
+               rejections_for(registry, paths['raw'].name))
+    assert destination.read_bytes() == outside.read_bytes()
+
+
+def test_plain_publication_skips_symlinked_destination_without_reading(
+        monkeypatch, tmp_path):
+    import builtins
+    source = tmp_path / 'package'
+    source.mkdir()
+    raw = build_sealed_capture(source)
+    paths = group_paths(raw)
+    registry = ArtifactRegistry(tmp_path / 'artifacts')
+    run_dir = registry.run_dir('run-1')
+    run_dir.mkdir()
+    outside = tmp_path / 'outside-raw.pcap'
+    outside.write_bytes(paths['raw'].read_bytes())
+    raw_destination = run_dir / (PREFIX + paths['raw'].name)
+    raw_destination.symlink_to(outside)
+    outside_opens = []
+    real_open = builtins.open
+
+    def open_spy(file, *args, **kwargs):
+        if str(file) == str(outside):
+            outside_opens.append(str(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, 'open', open_spy)
+    copied = registry.register_fakenet_outputs('run-1', source, prefix=PREFIX)
+    names = {Path(item).name for item in copied}
+    # The general publication never reads through the linked destination,
+    # and the group (whose raw member's destination is that link) refuses
+    # its side originals instead of publishing a partial group.
+    assert PREFIX + paths['raw'].name not in names
+    for role in ('observations', 'nbis', 'seal'):
+        assert PREFIX + paths[role].name not in names, role
+    assert outside_opens == []
+    assert any(item['capture'] == paths['raw'].name and
+               'destination is a symlink' in item['reason'] for item in
+               registry.last_registration_rejections)
+    assert raw_destination.is_symlink()

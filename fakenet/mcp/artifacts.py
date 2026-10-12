@@ -196,19 +196,68 @@ def _matches_facts(path, facts):
         return False
 
 
+def _plain_file_within(path, root, what):
+    """A direct regular child of root with no symlink in its whole chain.
+
+    Checked BEFORE any content read, hash or copy: a link is refused by
+    identity alone — the registry never reads through it to find out.
+    """
+    path = Path(path)
+    current = path
+    while True:
+        if current.is_symlink():
+            raise CaptureOriginalsRejected('%s path is a symlink' % what)
+        if current.parent == current:
+            break
+        current = current.parent
+    if path.parent != Path(root):
+        raise CaptureOriginalsRejected(
+            '%s is not a direct child of the trusted package root' % what)
+    if not path.exists():
+        raise CaptureOriginalsRejected('%s is missing' % what)
+    if not path.is_file():
+        raise CaptureOriginalsRejected('%s is not a plain file' % what)
+    return path.stat()
+
+
+def _member_facts(seal_facts, path, what):
+    """Bind the loader-verified seal facts to the file's live identity.
+
+    The device and inode are captured immediately after the loader agreed,
+    so the approval record cannot silently adopt a different physical file.
+    """
+    try:
+        current = path.stat()
+    except OSError as exc:
+        raise CaptureOriginalsRejected('%s is unreachable: %s' % (what, exc))
+    record = {'bytes': int(seal_facts['bytes']),
+              'sha256': seal_facts['sha256'],
+              'device': int(seal_facts['device']),
+              'inode': int(seal_facts['inode'])}
+    if (record['device'] != current.st_dev or record['inode'] != current.st_ino
+            or record['bytes'] != current.st_size):
+        raise CaptureOriginalsRejected(
+            '%s file identity differs from the seal' % what)
+    return record
+
+
 def _qualify_capture_originals_group(source, raw_pcap):
     """Qualify one capture's originals against the real seal.
 
-    Every member path is derived from the registry-trusted direct candidate
-    ``raw_pcap``; the user-writable seal may only confirm the fixed
-    basenames. The production loader re-verifies the seal schema, capture
-    id, byte counts, SHA-256 digests, producer file identity, both journals
-    and the PCAP pair, and its specific reason surfaces on rejection.
-    Returns ``(members, facts)`` mapping each role (raw, converted, both
-    journals, seal) to its Path and verified ``{'bytes', 'sha256'}``.
+    Every member is first verified — by identity, before any content is
+    read — to be a plain non-link direct child of the trusted package
+    root. The production loader then re-verifies the seal schema, capture
+    id, byte counts, SHA-256 digests, producer file identity, both
+    journals and the PCAP pair, and its specific reason surfaces on
+    rejection. Returns ``(members, facts)``: ``members`` maps each role
+    (raw, converted, both journals, seal) to its Path, and ``facts`` is
+    the immutable first approval record — the capture id plus, per role,
+    the verified ``bytes``/``sha256`` and the live ``device``/``inode`` —
+    which every later check must equal exactly.
     """
     raw = Path(raw_pcap)
     seal_file = raw.with_name(raw.name + CAPTURE_ORIGINALS_SEAL_SUFFIX)
+    _plain_file_within(seal_file, source, 'capture originals seal')
     try:
         seal = json.loads(seal_file.read_text(encoding='utf-8'))
     except (OSError, UnicodeError, ValueError) as exc:
@@ -231,39 +280,59 @@ def _qualify_capture_originals_group(source, raw_pcap):
             raise CaptureOriginalsRejected(
                 'seal converted PCAP name does not pair with this raw capture')
         converted = Path(source) / expected
-        if converted.is_symlink() or not converted.is_file():
-            raise CaptureOriginalsRejected(
-                'converted PCAP named by the seal is missing or not a plain '
-                'file')
+        _plain_file_within(converted, source, 'converted PCAP named by the seal')
+    observations = raw.with_name(
+        raw.name + CAPTURE_ORIGINALS_SIDECAR_SUFFIXES[0])
+    nbis = raw.with_name(raw.name + CAPTURE_ORIGINALS_SIDECAR_SUFFIXES[1])
+    _plain_file_within(raw, source, 'raw PCAP')
+    _plain_file_within(observations, source, 'observations journal')
+    _plain_file_within(nbis, source, 'nbis journal')
     from fakenet.payload_report import (PayloadReportError,
                                         load_capture_originals)
     try:
         loaded = load_capture_originals(raw, converted)
     except PayloadReportError as exc:
         raise CaptureOriginalsRejected(str(exc))
-    members = {
-        'raw': raw,
-        'observations': raw.with_name(
-            raw.name + CAPTURE_ORIGINALS_SIDECAR_SUFFIXES[0]),
-        'nbis': raw.with_name(
-            raw.name + CAPTURE_ORIGINALS_SIDECAR_SUFFIXES[1]),
-        'seal': seal_file,
-    }
-    facts = {
-        'raw': {'bytes': int(loaded.seal['raw_pcap']['bytes']),
-                'sha256': loaded.seal['raw_pcap']['sha256']},
-        'observations': {'bytes': int(loaded.seal['observations']['bytes']),
-                         'sha256': loaded.seal['observations']['sha256']},
-        'nbis': {'bytes': int(loaded.seal['nbis']['bytes']),
-                 'sha256': loaded.seal['nbis']['sha256']},
-        'seal': _sha256_and_size(seal_file),
-    }
+    members = {'raw': raw, 'observations': observations, 'nbis': nbis,
+               'seal': seal_file}
+    facts = {'capture_id': str(loaded.seal['capture_id']),
+             'raw': _member_facts(loaded.seal['raw_pcap'], raw, 'raw PCAP'),
+             'observations': _member_facts(
+                 loaded.seal['observations'], observations,
+                 'observations journal'),
+             'nbis': _member_facts(loaded.seal['nbis'], nbis, 'nbis journal'),
+             'seal': dict(_sha256_and_size(seal_file))}
+    facts['seal'].update({'device': seal_file.stat().st_dev,
+                          'inode': seal_file.stat().st_ino})
     if converted is not None:
         members['converted'] = converted
-        facts['converted'] = {
-            'bytes': int(loaded.seal['converted_pcap']['bytes']),
-            'sha256': loaded.seal['converted_pcap']['sha256']}
+        facts['converted'] = _member_facts(
+            loaded.seal['converted_pcap'], converted,
+            'converted PCAP named by the seal')
     return members, facts
+
+
+def _unchanged_since_approval(members, facts):
+    """The source must still equal the first approval, byte for byte.
+
+    A freshly valid seal over rewritten originals is a different version,
+    not the approved one: publication compares the current device, inode
+    and digest of every member against the first record instead of
+    re-accepting whatever is valid now.
+    """
+    for role, path in members.items():
+        record = facts[role]
+        try:
+            current = path.stat()
+        except OSError as exc:
+            raise CaptureOriginalsRejected(
+                'source %s changed after approval: %s' % (role, exc))
+        if (current.st_dev != record['device'] or
+                current.st_ino != record['inode'] or
+                current.st_size != record['bytes'] or
+                _sha256_and_size(path)['sha256'] != record['sha256']):
+            raise CaptureOriginalsRejected(
+                'source %s changed after approval' % role)
 
 
 class ArtifactRegistry:
@@ -304,6 +373,13 @@ class ArtifactRegistry:
             if keep is not None and not keep(path):
                 continue
             destination = run_dir / (prefix + path.name)
+            if destination.is_symlink():
+                # A linked destination is never read through, overwritten
+                # at its target, or published as this run's artifact.
+                self.last_registration_rejections.append(
+                    {'capture': path.name, 'stage': 'destination',
+                     'reason': 'existing destination is a symlink'})
+                continue
             if not destination.exists():
                 # Stage then replace: a reader never sees a half copy.
                 fd, temporary = tempfile.mkstemp(dir=run_dir,
@@ -331,10 +407,13 @@ class ArtifactRegistry:
         """Publish sealed capture-originals groups that fully qualify.
 
         Qualification follows the producer's seal through the production
-        loader — never the seal's mere existence — and the group's side
-        originals (both journals and the seal) publish only when every
-        member qualifies, survives ``keep``, meets an identical existing
-        destination, and still verifies at the source right before
+        loader — never the seal's mere existence — after every member and
+        destination has been verified by identity, before any content IO,
+        to be a plain non-link file inside its trusted root. The group's
+        side originals (both journals and the seal) publish only when every
+        member qualifies, survives ``keep``, meets a real plain-file
+        destination (identical bytes do not exempt a link), and the source
+        still equals the immutable first approval record right before
         publication. A rejected group never blocks another capture, an
         HTTP original or any other artifact; each rejection and its
         specific reason are recorded on ``last_registration_rejections``.
@@ -367,7 +446,13 @@ class ArtifactRegistry:
             conflicts = []
             for role, path in group:
                 destination = run_dir / (prefix + path.name)
-                if (destination.exists() and
+                if destination.is_symlink():
+                    # Identical bytes do not exempt a link: the group's
+                    # destination must be a real plain file in the run root
+                    # before any hash, read, copy or publication, and the
+                    # whole group is refused without one real side copy.
+                    conflicts.append('%s (symlink)' % destination.name)
+                elif (destination.exists() and
                         not _matches_facts(destination, facts[role])):
                     conflicts.append(destination.name)
             if conflicts:
@@ -399,10 +484,10 @@ class ArtifactRegistry:
                             '%s copy does not match the qualified source'
                             % role)
                     created.append(destination)
-                # Re-verify the whole group at the source before it joins
-                # this publication: a change between approval and publish
-                # cannot manufacture success.
-                _qualify_capture_originals_group(source, raw)
+                # The source must still equal the FIRST approval — same
+                # capture, same seal bytes, same physical members — not
+                # merely be a different currently-valid version.
+                _unchanged_since_approval(members, facts)
             except (CaptureOriginalsRejected, OSError) as exc:
                 for destination in created:
                     try:
