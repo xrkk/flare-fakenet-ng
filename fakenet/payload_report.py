@@ -423,12 +423,20 @@ def _validate_pair(raw_records, converted_records):
             raw_records, converted_records):
         if raw_ord != eth_ord:
             raise PayloadReportError('raw/converted ordinal mismatch at %d' % raw_ord)
-        try:
-            frame = dpkt.ethernet.Ethernet(ethernet)
-            converted_raw = bytes(frame.data)
-        except Exception as exc:
+        # DualPcapWriter prepends one fixed, untagged Ethernet header.
+        # Compare the captured bytes, not dpkt's IP serialization: __bytes__
+        # fills zero checksum/offload fields and changes a valid original.
+        if len(ethernet) < 14 or ethernet[12:14] not in (b'\x08\x00', b'\x86\xdd'):
             raise PayloadReportError(
-                'unable to decode converted record %d: %s' % (raw_ord, exc)) from exc
+                'unable to decode converted record %d: invalid Ethernet header'
+                % raw_ord)
+        converted_raw = ethernet[14:]
+        if not raw or raw[0] >> 4 not in (4, 6):
+            raise PayloadReportError('raw record %d is not an IP packet' % raw_ord)
+        expected_type = b'\x08\x00' if raw[0] >> 4 == 4 else b'\x86\xdd'
+        if ethernet[12:14] != expected_type:
+            raise PayloadReportError(
+                'converted record %d has the wrong IP EtherType' % raw_ord)
         if not converted_raw or (converted_raw[0] >> 4) not in (4, 6):
             raise PayloadReportError(
                 'converted record %d is not an IP packet' % raw_ord)
@@ -677,6 +685,8 @@ def build_payload_report(raw_pcap_path, observation_index, flow_registry=None,
     registry_flows = {item['id']: item for item in registry.snapshot()}
     flow_models = {}
     tcp_segments = {}
+    tcp_sent_ends = {}
+    tcp_peer_acks = {}
     udp_datagrams = {}
     for (ordinal, timestamp, raw), entry in selected:
         facts = _packet_parts(raw)
@@ -721,8 +731,30 @@ def build_payload_report(raw_pcap_path, observation_index, flow_registry=None,
         direction_model['ended_at'] = max(direction_model['ended_at'], timestamp)
         if facts['protocol'] == 'TCP':
             start = facts['seq'] + (1 if facts['flags'] & dpkt.tcp.TH_SYN else 0)
+            side = (flow_id, direction_key)
+            reverse = (flow_id, (facts['dst'], facts['dport'],
+                                 facts['src'], facts['sport']))
+            sent_end = tcp_sent_ends.get(side)
+            # RFC 1122 4.2.3.6 permits a garbage octet at SND.NXT-1.
+            # Require the already-observed peer ACK AND data boundary; a
+            # one-byte overlap alone must never waive a genuine conflict.
+            keepalive = (len(facts['payload']) == 1 and
+                         facts['flags'] == dpkt.tcp.TH_ACK and
+                         sent_end is not None and
+                         start % TCP_SEQUENCE_MODULUS ==
+                         (sent_end - 1) % TCP_SEQUENCE_MODULUS and
+                         tcp_peer_acks.get(side) == sent_end)
+            if keepalive:
+                direction_model.setdefault('tcp_keepalive_probe_ordinals', []).append(ordinal)
+            elif facts['payload']:
+                end = (start + len(facts['payload'])) % TCP_SEQUENCE_MODULUS
+                if (sent_end is None or
+                        0 < (end - sent_end) % TCP_SEQUENCE_MODULUS < TCP_SEQUENCE_HALF):
+                    tcp_sent_ends[side] = end
+            if facts['flags'] & dpkt.tcp.TH_ACK:
+                tcp_peer_acks[reverse] = facts['ack']
             tcp_segments.setdefault((flow_id, direction), []).append({
-                'start': start, 'payload': facts['payload'],
+                'start': start, 'payload': b'' if keepalive else facts['payload'],
                 'fin': bool(facts['flags'] & dpkt.tcp.TH_FIN),
                 'ordinal': ordinal,
             })
