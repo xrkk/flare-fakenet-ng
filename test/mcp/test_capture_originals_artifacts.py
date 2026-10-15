@@ -20,6 +20,11 @@ from pathlib import Path
 import dpkt
 import pytest
 
+from tools.testing_symlinks import can_symlink
+
+requires_symlink = pytest.mark.skipif(
+    not can_symlink(), reason='symlink creation unavailable')
+
 from fakenet.mcp.artifacts import ArtifactRegistry
 
 PREFIX = 'fakenet-'
@@ -343,6 +348,7 @@ def test_seal_cannot_select_converted_paths_or_names(tmp_path):
     assert PREFIX + orphan.name + '.observations.ndjson' not in names2
 
 
+@requires_symlink
 def test_symlinked_originals_are_rejected(tmp_path):
     source = tmp_path / 'package'
     source.mkdir()
@@ -578,6 +584,7 @@ def test_invalid_seal_metadata_is_rejected_clearly_not_a_crash(tmp_path):
         load_capture_originals(raw2, paths2['converted'])
 
 
+@requires_symlink
 def test_seal_symlink_is_refused_before_any_content_read(monkeypatch,
                                                           tmp_path):
     source = tmp_path / 'package'
@@ -650,6 +657,7 @@ def test_changed_source_with_valid_updated_seal_rejected_by_first_record(
                rejections_for(registry, paths['raw'].name))
 
 
+@requires_symlink
 def test_equal_bytes_destination_symlink_rejects_group_without_reads(
         monkeypatch, tmp_path):
     import builtins
@@ -694,6 +702,7 @@ def test_equal_bytes_destination_symlink_rejects_group_without_reads(
     assert destination.read_bytes() == outside.read_bytes()
 
 
+@requires_symlink
 def test_plain_publication_skips_symlinked_destination_without_reading(
         monkeypatch, tmp_path):
     import builtins
@@ -733,6 +742,7 @@ def test_plain_publication_skips_symlinked_destination_without_reading(
 
 
 @pytest.mark.parametrize('linked_side', ['source', 'destination'])
+@requires_symlink
 def test_linked_registration_root_rejected_before_content_io(
         monkeypatch, tmp_path, linked_side):
     import builtins

@@ -15,9 +15,9 @@ two callback streams that only existed in memory before:
 
 All paths are derived from the trusted writer's actual PCAP path; nothing in
 an NBI or sample payload can select a path.  Journals are created with
-``O_CREAT|O_EXCL|O_NOFOLLOW`` so an existing or concurrently created capture
-is never overwritten, and every append is flushed before it is considered
-successful.  A failed write leaves the first error with the caller, which
+``O_CREAT|O_EXCL`` (plus ``O_NOFOLLOW`` where available) so an existing
+or concurrently created capture is never overwritten, and every append is
+flushed before it is considered successful.  A failed write leaves the first error with the caller, which
 routes it into the existing capture-failure handling; an unsealed or partial
 capture never becomes a completed artifact.
 """
@@ -95,8 +95,25 @@ def _json_safe(value):
 
 
 def _open_exclusive(path):
-    return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
-                   os.O_NOFOLLOW, 0o600)
+    # Windows has no O_NOFOLLOW; O_CREAT|O_EXCL still refuses an existing
+    # destination, including a link, rather than following or truncating it.
+    # O_BINARY prevents CRT newline/control-byte translation below fdopen.
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+             getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0))
+    return os.open(path, flags, 0o600)
+
+
+def _sync_directory(path):
+    # The Windows CRT cannot open directories for fsync. File descriptors
+    # are still flushed/fsynced before atomic publication on both platforms;
+    # POSIX additionally syncs the containing directory and propagates errors.
+    if os.name == 'nt':
+        return
+    directory = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 class CaptureOriginalsWriter(object):
@@ -266,8 +283,7 @@ class CaptureOriginalsWriter(object):
             }
             target = seal_path(self.raw_pcap_path)
             temporary = target + '.tmp-%s' % os.getpid()
-            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
-                         os.O_NOFOLLOW, 0o600)
+            fd = _open_exclusive(temporary)
             try:
                 with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as out:
                     json.dump(seal, out, ensure_ascii=False, indent=2)
@@ -281,12 +297,7 @@ class CaptureOriginalsWriter(object):
                 except OSError:
                     pass
                 raise
-            directory = os.open(os.path.dirname(os.path.abspath(target)),
-                                os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            _sync_directory(os.path.dirname(os.path.abspath(target)))
             self._sealed = True
             return seal
 

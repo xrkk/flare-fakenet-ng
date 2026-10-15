@@ -53,6 +53,22 @@ HTTP_CONFLICT_TESTS = ('test/test_http_listener_stop.py',)
 # permissions are deliberately not used. Wine symlink skips are native
 # Windows qualification gaps, not verified negative cases.
 WINE_ALLOWED_SKIPS = {
+    # These guards require a real symlink. Wine may silently fail to
+    # create one; exact nodes stay native qualification gaps, never passes.
+    'test.test_capture_originals.CaptureOriginalsLoaderGuardTests::test_symlink_and_append_after_seal_refused':
+        'symlink creation unavailable',
+    'test.mcp.test_capture_originals_artifacts::test_symlinked_originals_are_rejected':
+        'symlink creation unavailable',
+    'test.mcp.test_capture_originals_artifacts::test_seal_symlink_is_refused_before_any_content_read':
+        'symlink creation unavailable',
+    'test.mcp.test_capture_originals_artifacts::test_equal_bytes_destination_symlink_rejects_group_without_reads':
+        'symlink creation unavailable',
+    'test.mcp.test_capture_originals_artifacts::test_plain_publication_skips_symlinked_destination_without_reading':
+        'symlink creation unavailable',
+    'test.mcp.test_capture_originals_artifacts::test_linked_registration_root_rejected_before_content_io[source]':
+        'symlink creation unavailable',
+    'test.mcp.test_capture_originals_artifacts::test_linked_registration_root_rejected_before_content_io[destination]':
+        'symlink creation unavailable',
     'test.mcp.test_singleinstance::test_second_acquire_fails':
         'posix flock path tested here',
     'test.mcp.test_singleinstance::test_acquire_or_exit_exits_with_3':
@@ -263,7 +279,9 @@ def offline_install_sdk(stage, build_root):
 
 FORMAL_RUNTIME_PREFIX = 'test_formal_runtime_'
 HOST_ONLY_TESTS = ('test/test_linuxnetpolicy.py', 'test/test_linux_deploy.py',
-                   'test/test_linux_update.py')
+                   'test/test_linux_update.py', 'test/test_linuxrunner.py',
+                   'test/test_linux_owner_rules.py',
+                   'test/test_capture_checkpoint.py')
 WINDOWS_SENTINELS = (
     'test/mcp/test_formal_runtime_context.py::test_explicit_context_is_readonly_and_does_not_create_output',
     'test/mcp/test_formal_runtime_context.py::test_worktree_fingerprint_cannot_replace_pinned_git_blob',

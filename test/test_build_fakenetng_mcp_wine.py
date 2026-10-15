@@ -333,12 +333,15 @@ class HostPlatformSelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             stage=Path(temporary)
             names=('test/test_linux_deploy.py','test/test_linux_update.py',
-                   'test/test_linuxnetpolicy.py','test/mcp/test_no_divert_handoff.py')
+                   'test/test_linuxnetpolicy.py','test/test_linuxrunner.py',
+                   'test/test_linux_owner_rules.py','test/test_capture_checkpoint.py',
+                   'test/mcp/test_no_divert_handoff.py','test/test_capture_originals.py')
             for name in names:
                 path=stage/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('')
             windows=gate.gate_selection(stage,'core')
             host=gate.gate_selection(stage,'core',host=True)
             self.assertIn('test/mcp/test_no_divert_handoff.py',windows)
-            for name in names[:3]:
+            self.assertIn('test/test_capture_originals.py', windows)
+            for name in names[:6]:
                 self.assertNotIn(name,windows)
                 self.assertIn(name,host)

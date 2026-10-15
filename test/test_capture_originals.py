@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import dpkt
 
+from tools.testing_symlinks import can_symlink
+
 from fakenet.capture_originals import (CaptureOriginalsError,
                                        CaptureOriginalsWriter,
                                        nbis_path, observations_path,
@@ -346,6 +348,7 @@ class CaptureOriginalsLoaderGuardTests(unittest.TestCase):
             with self.assertRaisesRegex(PayloadReportError, 'foreign capture'):
                 load_capture_originals(raw, summary.ethernet_filename)
 
+    @unittest.skipUnless(can_symlink(), 'symlink creation unavailable')
     def test_symlink_and_append_after_seal_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             raw, summary = build_sealed_capture(directory)
@@ -353,6 +356,19 @@ class CaptureOriginalsLoaderGuardTests(unittest.TestCase):
             os.symlink(raw, link)
             with self.assertRaisesRegex(PayloadReportError, 'symlink'):
                 load_capture_originals(str(link), summary.ethernet_filename)
+            # Exclusive creation must refuse an already-linked journal,
+            # including on Windows where O_NOFOLLOW does not exist.
+            raw2 = Path(directory) / 'new.pcap'
+            protected = Path(directory) / 'protected'
+            protected.write_bytes(b'must remain unchanged')
+            os.symlink(protected, observations_path(raw2))
+            with self.assertRaises(CaptureOriginalsError):
+                CaptureOriginalsWriter(raw2)
+            self.assertEqual(b'must remain unchanged', protected.read_bytes())
+            self.assertTrue(os.path.islink(observations_path(raw2)))
+            self.assertFalse(Path(nbis_path(raw2)).exists())
+
+    def test_append_after_seal_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             raw = str(Path(directory) / 'append.pcap')
             Path(raw).write_bytes(b'\x45\x00')

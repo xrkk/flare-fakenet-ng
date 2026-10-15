@@ -208,7 +208,8 @@ def test_tools_list_frozen_surface(endpoint):
     names = sorted(tool['name'] for tool in tools_listing)
     # P01 probe surface plus the P02 domain tools and the T003 read-only
     # additions: the frozen 19-tool surface (sub-plan P02 §3; mcp-query
-    # workflows contract). Original 16 names keep their parameters.
+    # workflows contract). The existing stop tool adds the optional Linux
+    # capture_only flag; the two original required parameters stay required.
     assert names == sorted([
         'ping', 'get_status', 'get_events', 'get_command_status',
         'wait_status', 'get_run_overview', 'list_configs',
@@ -219,7 +220,11 @@ def test_tools_list_frozen_surface(endpoint):
     schemas_by_name = {tool['name']: tool for tool in tools_listing}
     # Original tool parameters are preserved...
     assert set(schemas_by_name['stop']['inputSchema']['properties']) == {
-        'command_id', 'expected_state_version'}
+        'command_id', 'expected_state_version', 'capture_only'}
+    stop_schema = schemas_by_name['stop']['inputSchema']
+    assert set(stop_schema['required']) == {'command_id', 'expected_state_version'}
+    assert stop_schema['properties']['capture_only']['type'] == 'boolean'
+    assert stop_schema['properties']['capture_only']['default'] is False
     assert set(schemas_by_name['edit_config']['inputSchema']['properties']) == {
         'name', 'content', 'expected_sha256', 'command_id',
         'expected_state_version'}
