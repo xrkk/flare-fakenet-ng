@@ -46,7 +46,12 @@ def test_complete_sse_returns_without_stream_eof(server,tmp_path):
     assert r['result']['ok'] and time.monotonic()-start<.8
 def completions(tmp_path):return [json.loads(p.read_text()) for p in tmp_path.glob('*/completion.json')]
 def test_actual_launch_sent_but_missing_receipt_is_unknown_without_replay(server,tmp_path):
-    with pytest.raises(b.TransportUnknown) as ex:b.post(client(server,tmp_path),{'jsonrpc':'2.0','id':1,'method':'launch-own-test'},timeout=.4)
+    # A sub-second budget may expire during Windows child startup, before
+    # the intended sent-but-unacknowledged branch is entered. Keep a real
+    # partial stream open beyond the deadline and allow startup headroom;
+    # the same one-send/UNKNOWN/no-writer/partial-byte assertions still apply.
+    Slow.mode='no_end'
+    with pytest.raises(b.TransportUnknown) as ex:b.post(client(server,tmp_path),{'jsonrpc':'2.0','id':1,'method':'launch-own-test'},timeout=3)
     rows=completions(tmp_path);assert Slow.sent==1 and len(rows)==1 and rows[0]['sent']=='possibly_sent' and rows[0]['local_writer_ended']
     assert rows[0]['status']=='UNKNOWN' and (next(tmp_path.glob('*/partial.bin'))).stat().st_size>0
 
