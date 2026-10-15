@@ -11,6 +11,23 @@ from fakenet.mcp.endpoint_attribution import (closed_udp_changes, event_ns,
 from fakenet.mcp.baseline import BASELINE_FIELDS
 
 
+
+def capture_two_samples(monkeypatch, module, current):
+    """Model two observation intervals without depending on fsync latency."""
+    import time
+    from types import SimpleNamespace
+    clock = {'now': 1000.0}
+
+    def capture(deadline=None):
+        clock['now'] += 0.012
+        return current
+
+    monkeypatch.setattr(module, 'capture', capture)
+    # Replace only baseline's clock, leaving other threads/pytest untouched.
+    monkeypatch.setattr(module, 'time', SimpleNamespace(
+        monotonic=lambda: clock['now'], time=time.time, sleep=lambda _: None))
+
+
 def case():
     source = json.loads((Path(__file__).parent/'fixtures/native_afd_udp_52623.json').read_text())
     run = source['run_id']
@@ -70,8 +87,7 @@ def test_full_audit_preserves_raw_difference_and_requires_two_complete_proofs(tm
     store.save(base['run_id'], sections)
     current = module.CapturedSections(sample['current'])
     current.windows = sample['observation_windows']
-    monkeypatch.setattr(module, 'capture', lambda deadline: current)
-    monkeypatch.setattr(module.time, 'sleep', lambda seconds: None)
+    capture_two_samples(monkeypatch, module, current)
     observed = SimpleNamespace(audit_proof=lambda deadline: proof)
     result = store.full_audit_diff(base['run_id'], settle_seconds=0.02, observation=observed)
     assert (result == {}) is complete
@@ -195,8 +211,7 @@ def test_full_audit_accepts_foreign_preexisting_udp_owner(tmp_path, monkeypatch)
     store.save(baseline['run_id'], sections)
     current = module.CapturedSections(sample['current'])
     current.windows = sample['observation_windows']
-    monkeypatch.setattr(module, 'capture', lambda deadline: current)
-    monkeypatch.setattr(module.time, 'sleep', lambda seconds: None)
+    capture_two_samples(monkeypatch, module, current)
     observed = SimpleNamespace(audit_proof=lambda deadline: proof)
     result = store.full_audit_diff(baseline['run_id'], settle_seconds=0.02, observation=observed)
     assert result == {}
@@ -249,8 +264,7 @@ def test_full_audit_uses_start_only_proof_when_audit_proof_fails(tmp_path, monke
     store.save(baseline['run_id'], sections)
     current = module.CapturedSections(sample['current'])
     current.windows = sample['observation_windows']
-    monkeypatch.setattr(module, 'capture', lambda deadline: current)
-    monkeypatch.setattr(module.time, 'sleep', lambda seconds: None)
+    capture_two_samples(monkeypatch, module, current)
 
     def broken_audit_proof(deadline):
         raise ValueError('endpoint observation is incomplete')
@@ -354,8 +368,7 @@ def test_full_audit_accepts_restarted_service_rebind(tmp_path, monkeypatch):
     store.save(baseline['run_id'], sections)
     current = module.CapturedSections(sample['current'])
     current.windows = sample['observation_windows']
-    monkeypatch.setattr(module, 'capture', lambda deadline: current)
-    monkeypatch.setattr(module.time, 'sleep', lambda seconds: None)
+    capture_two_samples(monkeypatch, module, current)
     monkeypatch.setattr(endpoint_attribution, 'dnscache_host_pid',
                         lambda: (2336, True))
     observed = SimpleNamespace(audit_proof=lambda deadline: proof)
