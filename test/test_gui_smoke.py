@@ -11,6 +11,17 @@ import pytest
 tkinter = pytest.importorskip('tkinter')
 
 
+@pytest.fixture(autouse=True)
+def collect_tk_cycles_on_the_owner_thread():
+    # Tk variables/widgets can survive root.destroy() in reference cycles.
+    # If a later listener thread triggers cyclic GC while bootstrapping,
+    # Variable.__del__ waits for Tcl's owner thread, which is itself waiting
+    # in Thread.start(). Collect after each GUI test on the Tk owner thread.
+    yield
+    import gc
+    gc.collect()
+
+
 def test_import_app_module():
     from fakenet.gui import app, main, widgets  # noqa: F401
 
