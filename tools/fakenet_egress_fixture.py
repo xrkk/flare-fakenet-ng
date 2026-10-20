@@ -222,8 +222,17 @@ def spawn(spec,directory,tag):
 def current_nat(config):
     value=proc(config['natd_pid'])
     if value['birth_ticks']!=config['natd_birth_ticks'] or value['comm']!='vmnet-natd':raise RuntimeError('NAT birth/name mismatch')
-    pidfiles=[Path(arg).resolve() for arg in value['argv'] if arg.endswith('vmnet8.pid')]
-    if len(pidfiles)!=1 or int(secure(pidfiles[0]).read_text().strip())!=value['pid']:
+    # Workstation's Linux daemon does not advertise its PID file in argv.
+    # Bind its fixed vmnet8 configuration and kernel birth identity first;
+    # then stable-read the canonical root-owned runtime file. Never infer a
+    # PID path from an arbitrary argv suffix or trust a bare file PID alone.
+    argv=value.get('argv')
+    if argv!=['/usr/bin/vmnet-natd','-s','6','-m',
+              '/etc/vmware/vmnet8/nat.mac','-c',
+              '/etc/vmware/vmnet8/nat/nat.conf']:
+        raise RuntimeError('NAT vmnet8 argv identity mismatch')
+    pid=read_root('/run/vmnet-natd-8.pid')
+    if type(pid) is not int or pid!=value['pid']:
         raise RuntimeError('NAT pidfile identity mismatch')
     return value
 
