@@ -11,7 +11,7 @@ class Slow(BaseHTTPRequestHandler):
     def do_POST(self):
         request=json.loads(self.rfile.read(int(self.headers['Content-Length'])));type(self).sent+=1
         if self.mode=='vm':
-            time.sleep(.3);self.send_response(200);self.send_header('Mcp-Session-Id','own-test-session');payload=json.dumps({'jsonrpc':'2.0','id':request.get('id'),'result':{}}).encode() if 'id' in request else b'';self.send_header('Content-Length',str(len(payload)));self.end_headers()
+            time.sleep(1.1);self.send_response(200);self.send_header('Mcp-Session-Id','own-test-session');payload=json.dumps({'jsonrpc':'2.0','id':request.get('id'),'result':{}}).encode() if 'id' in request else b'';self.send_header('Content-Length',str(len(payload)));self.end_headers()
             try:self.wfile.write(payload)
             except (BrokenPipeError,ConnectionResetError):pass
             return
@@ -21,7 +21,7 @@ class Slow(BaseHTTPRequestHandler):
             if self.mode=='no_end':
                 self.wfile.write(b'1\r\nx\r\n');self.wfile.flush();self.server.stop_event.wait(3);return
             if self.mode=='complete':
-                data=b'data: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n';self.wfile.write(('%x\r\n'%len(data)).encode()+data+b'\r\n');self.wfile.flush()
+                data=b'data: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n';self.wfile.write(('%x\r\n'%len(data)).encode()+data+b'\r\n');self.wfile.flush();self.server.stop_event.wait(8);return
             for _ in range(25):
                 self.wfile.write(b'3\r\n: \n\r\n');self.wfile.flush();time.sleep(.04)
             self.wfile.write(b'0\r\n\r\n');self.wfile.flush()
@@ -42,8 +42,10 @@ def test_slow_drip_has_absolute_deadline_and_no_local_worker(server,tmp_path):
     assert Slow.sent==1
 
 def test_complete_sse_returns_without_stream_eof(server,tmp_path):
-    Slow.mode='complete';start=time.monotonic();r,h=b.post(client(server,tmp_path),{'jsonrpc':'2.0','id':1,'method':'tools/call'},timeout=.5)
-    assert r['result']['ok'] and time.monotonic()-start<.8
+    # Keep EOF beyond the entire request deadline: increasing startup headroom
+    # must not let an implementation which waits for EOF pass this test.
+    Slow.mode='complete';start=time.monotonic();r,h=b.post(client(server,tmp_path),{'jsonrpc':'2.0','id':1,'method':'tools/call'},timeout=3)
+    assert r['result']['ok'] and time.monotonic()-start<4
 def completions(tmp_path):return [json.loads(p.read_text()) for p in tmp_path.glob('*/completion.json')]
 def test_actual_launch_sent_but_missing_receipt_is_unknown_without_replay(server,tmp_path):
     # A sub-second budget may expire during Windows child startup, before
@@ -86,6 +88,7 @@ def test_no_completion_headers_or_body_has_same_original_deadline(server,tmp_pat
 def test_vm_initialize_notification_and_tool_share_original_total_deadline(server,tmp_path):
     from scenario_suite import VmMcp
     Slow.mode='vm';c=b.install(VmMcp('http://127.0.0.1:%s/mcp'%server.server_port),tmp_path);start=time.monotonic()
-    with pytest.raises(b.TransportUnknown):c.powershell('own local test, not actual guest',timeout=.75)
-    assert time.monotonic()-start<1.1 and all(r['local_writer_ended'] for r in completions(tmp_path))
-    requests=[json.loads(p.read_text()) for p in tmp_path.glob('*/request.json')];assert len(requests)>=2 and min(r['budget'] for r in requests)<.5
+    with pytest.raises(b.TransportUnknown):c.powershell('own local test, not actual guest',timeout=3)
+    assert time.monotonic()-start<4 and all(r['local_writer_ended'] for r in completions(tmp_path))
+    requests=[json.loads(p.read_text()) for p in tmp_path.glob('*/request.json')];assert len(requests)>=2 and min(r['budget'] for r in requests)<2
+    assert max(r['deadline_monotonic'] for r in requests)-min(r['deadline_monotonic'] for r in requests)<.05
