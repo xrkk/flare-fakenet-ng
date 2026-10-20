@@ -1,6 +1,10 @@
 """Whole-action budgets and nonblocking ownership at the real host entry."""
+import base64
+import gzip
+import hashlib
 import importlib.util
 import multiprocessing
+import re
 from pathlib import Path
 import time
 from types import SimpleNamespace
@@ -10,7 +14,7 @@ import anyio
 import httpx2 as httpx
 import pytest
 
-from fakenet.mcp import host_stdio
+from fakenet.mcp import host_probe, host_stdio
 from fakenet.mcp.host_state import HostStateStore, HostStateError
 
 
@@ -120,3 +124,92 @@ def test_facade_passes_remaining_budget_to_discovery(tmp_path):
     assert result['verdict'] == 'pass', result
     assert len(timeouts) == 2
     assert all(value is not None and 0 < value <= 20 for value in timeouts)
+
+
+def _window_client_and_capture(monkeypatch, response='MALTRACE_JSON:{}\n\nStatus Code: 0'):
+    calls = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def call_tool(self, name, arguments):
+            calls.append((name, arguments))
+            return SimpleNamespace(
+                content=[SimpleNamespace(text=response)],
+                is_error=False,
+            )
+
+    monkeypatch.setattr(host_stdio, 'Client', FakeClient)
+    return host_stdio.WindowsMcpClient({
+        'url': 'http://127.0.0.1:9/mcp', 'timeout_seconds': 5,
+    }), calls
+
+
+def test_windows_probe_compresses_fixed_script_and_preserves_bytes(monkeypatch):
+    nonce = 'T006-boundary-nonce'
+    script = host_probe.probe_script(
+        nonce, host_probe.matrix_steps(49152, 49153, nonce=nonce))
+    assert len(host_probe.matrix_steps(49152, 49153, nonce=nonce)) == 30
+    client, calls = _window_client_and_capture(monkeypatch)
+    result, raw = client.probe(script, timeout=5)
+    assert result == {}
+    assert raw.endswith('Status Code: 0')
+    assert len(calls) == 1
+    name, arguments = calls[0]
+    assert name == 'PowerShell'
+    command = arguments['command']
+    match = re.search(r"FromBase64String\('([^']+)'\)", command)
+    assert match
+    assert gzip.decompress(base64.b64decode(match.group(1))).decode('utf-8') == script
+    assert hashlib.sha256(script.encode('utf-8')).hexdigest() in command
+    direct = len(command.encode('utf-16-le')) // 2
+    encoded = len(base64.b64encode(command.encode('utf-16-le')))
+    assert direct < host_stdio.WINDOWS_COMMAND_LIMIT - host_stdio.WINDOWS_COMMAND_MARGIN
+    assert encoded < host_stdio.WINDOWS_COMMAND_LIMIT - host_stdio.WINDOWS_COMMAND_MARGIN
+
+
+def test_windows_probe_oversize_rejects_before_client(monkeypatch):
+    client, calls = _window_client_and_capture(monkeypatch)
+    oversized = ''.join(hashlib.sha256(str(i).encode()).hexdigest()
+                        for i in range(5000))
+    monkeypatch.setattr(host_stdio, 'Client', lambda *a, **k:
+                        pytest.fail('Client must not start for oversize input'))
+    with pytest.raises(host_stdio.HostFacadeError) as exc:
+        client.probe(oversized, timeout=5)
+    assert exc.value.code == 'windows_command_too_long'
+    assert calls == []
+
+
+def test_windows_probe_encoding_budget_exhausted_before_client(monkeypatch):
+    client, calls = _window_client_and_capture(monkeypatch)
+    clock = [0.0]
+    monkeypatch.setattr(host_stdio.time, 'monotonic', lambda: clock[0])
+    original = host_stdio._windows_probe_command
+
+    def slow_command(script):
+        clock[0] += 6.0
+        return original(script)
+
+    monkeypatch.setattr(host_stdio, '_windows_probe_command', slow_command)
+    monkeypatch.setattr(host_stdio, 'Client', lambda *a, **k:
+                        pytest.fail('Client must not start after encode budget'))
+    with pytest.raises(host_stdio.HostFacadeError) as exc:
+        client.probe('Write-Output 1', timeout=5)
+    assert exc.value.code == 'windows_timeout'
+    assert calls == []
+
+
+def test_windows_probe_nonzero_status_never_passes(monkeypatch):
+    client, calls = _window_client_and_capture(
+        monkeypatch, response='MALTRACE_JSON:{}\n\nStatus Code: 206')
+    with pytest.raises(host_stdio.HostFacadeError) as exc:
+        client.probe('Write-Output 1', timeout=5)
+    assert exc.value.code == 'windows_probe_failed'
+    assert len(calls) == 1

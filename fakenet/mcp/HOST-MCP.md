@@ -49,6 +49,12 @@ configuration/scope is rejected.
   image hash.
 - The AI cannot pass a URL, shell, executable, arbitrary path, nonce, matrix,
   port list, host evidence or `isolated=true`.
+- The Windows PowerShell payload is transported as one gzip-compressed UTF-8
+  in-memory base64 value. The fixed wrapper decompresses it in PowerShell
+  memory, verifies the original UTF-8 SHA-256, then uses the original
+  `ScriptBlock`; it creates no file, daemon or extra tool round trip. The
+  wrapper rejects an oversized command before constructing a client. This is
+  an internal transport detail, not a public MCP argument.
 - The Windows PowerShell probe is a fixed v2 template with a pinned template
   hash, explicit IPv4/IPv6 sockets, per-step nonce/transaction/status checks,
   a separate positive and an instance PID/creation/script identity. It records

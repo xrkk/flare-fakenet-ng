@@ -10,6 +10,7 @@ import argparse
 import base64
 import configparser
 from datetime import datetime, timedelta, timezone
+import gzip
 import hashlib
 import json
 import os
@@ -1476,6 +1477,44 @@ class FakeNetHttpClient:
         }, timeout=timeout)
 
 
+WINDOWS_COMMAND_LIMIT = 32767
+WINDOWS_COMMAND_MARGIN = 4096
+
+
+def _gzip_base64(script):
+    raw = script.encode('utf-8')
+    compressed = gzip.compress(raw, mtime=0)
+    return base64.b64encode(compressed).decode('ascii'), raw
+
+
+def _windows_probe_command(script):
+    encoded, raw = _gzip_base64(script)
+    expected = hashlib.sha256(raw).hexdigest()
+    command = (
+        "$b=[Convert]::FromBase64String('" + encoded + "');"
+        "$ms=[IO.MemoryStream]::new($b);"
+        "$gz=[IO.Compression.GZipStream]::new($ms,"
+        "[IO.Compression.CompressionMode]::Decompress);"
+        "$sr=[IO.StreamReader]::new($gz,[Text.Encoding]::UTF8);"
+        "try{$s=$sr.ReadToEnd()}finally{$sr.Dispose();$gz.Dispose();"
+        "$ms.Dispose()};"
+        "$h=[Security.Cryptography.SHA256]::Create().ComputeHash("
+        "[Text.Encoding]::UTF8.GetBytes($s));"
+        "$x=(([BitConverter]::ToString($h)).Replace('-',''))."
+        "ToLowerInvariant();"
+        "if($x -ne '" + expected + "'){throw 'script hash mismatch'};"
+        "& ([ScriptBlock]::Create($s))")
+    utf16 = command.encode('utf-16-le')
+    direct_units = len(utf16) // 2
+    encoded_command = base64.b64encode(utf16)
+    if (direct_units > WINDOWS_COMMAND_LIMIT - WINDOWS_COMMAND_MARGIN or
+            len(encoded_command) > WINDOWS_COMMAND_LIMIT - WINDOWS_COMMAND_MARGIN):
+        raise HostFacadeError(
+            'windows_command_too_long',
+            'compressed Windows probe command exceeds the fixed command limit')
+    return command
+
+
 class WindowsMcpClient:
     def __init__(self, specification):
         self.specification = specification or {}
@@ -1515,15 +1554,22 @@ class WindowsMcpClient:
         return tools
 
     def probe(self, script, timeout=None):
-        encoded = base64.b64encode(script.encode('utf-8')).decode('ascii')
-        command = (
-            "$b=[Convert]::FromBase64String('" + encoded + "');"
-            "$s=[Text.Encoding]::UTF8.GetString($b);"
-            "& ([ScriptBlock]::Create($s))")
         timeout = self.timeout if timeout is None else float(timeout)
         timeout = min(timeout, self.timeout)
         if timeout <= 0:
             raise HostFacadeError('windows_timeout', 'no Windows probe budget')
+        started = time.monotonic()
+        try:
+            command = _windows_probe_command(script)
+        except HostFacadeError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - report encoding failure
+            raise HostFacadeError('windows_encoding_error', repr(exc)) from None
+        remaining = timeout - (time.monotonic() - started)
+        if remaining <= 0:
+            raise HostFacadeError('windows_timeout',
+                                  'Windows probe encoding exhausted budget')
+        timeout = remaining
 
         async def call():
             with anyio.fail_after(timeout):
