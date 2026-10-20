@@ -248,7 +248,7 @@ class HostProvider:
         nics = self._vmx_nics(vmx_fields)
         if observer_record and observer_record.get('available'):
             observer_config = dict(self.config)
-            observer_config.setdefault('expected_mac', vmx_fields.get('ethernet0.generatedaddress') or vmx_fields.get('ethernet0.address'))
+            observer_config.setdefault('expected_mac', (nics[0] if len(nics) == 1 else {}).get('mac'))
             observer_policy = host_policy.evaluate(observer_record.get('facts'), observer_config)
         configured_interface = str(self.config.get('interface') or 'vmnet8')
         ip = {kind: self._ip_json(kind) for kind in

@@ -194,3 +194,25 @@ def test_root_preflight_refuses_earlier_rewrite_before_any_mutation():
     with pytest.raises(RuntimeError,match='earlier'):module.preflight_rules(sample)
     sample['nftables'][1]['rule']['expr']=[{'match':{}},{'counter':{}},{'drop':None}]
     module.preflight_rules(sample)
+
+
+def test_real_provider_receives_actual_vmx_mac_and_keeps_identity_gate(tmp_path):
+    import runpy
+    from fakenet.mcp.host_provider import HostProvider
+    old=runpy.run_path(str(Path(__file__).with_name('test_host_provider.py')))
+    files=old['make_files'](tmp_path)
+    cfg=old['config_for'](tmp_path,*files[:3])
+    value=facts();value['target']['vm_uuid']=old['UUID']
+    class Observer:
+        def request(self,command_id,phase,challenge,timeout=None):
+            return {'facts':copy.deepcopy(value),'producer':value['observer_identity'],
+                    'challenge':challenge,'command_id':command_id}
+    provider=HostProvider(cfg,runner=old['runner_factory']('1'),observer=Observer())
+    provider.set_observer_context(COMMAND,'pre','a'*32)
+    valid=provider.snapshot()
+    assert valid['boundary']['value'] is True
+    value['ruleset']['nftables'].pop()
+    assert provider.snapshot()['boundary']['value'] is None
+    value=facts();value['target']['vm_uuid']=old['UUID']
+    files[0].write_text(files[0].read_text().replace(old['UUID'],'changed-uuid'))
+    assert provider.snapshot()['boundary']['value'] is None
