@@ -1824,8 +1824,38 @@ class VeloMcpClient:
             outcome = anyio.run(call)
         except Exception as exc:  # noqa: BLE001 - report the transport result
             return False, {'error': _safe_transport_error(exc, self.specification)}
-        return (not bool(getattr(outcome, 'is_error', False)),
-                {'tool': self.tool})
+        detail = {'tool': self.tool}
+        if bool(getattr(outcome, 'is_error', False)):
+            return False, dict(detail, error='velo_tool_error')
+        value = getattr(outcome, 'structured_content', None)
+        if not isinstance(value, dict):
+            texts = [item.text for item in (getattr(outcome, 'content', None)
+                                           or []) if getattr(item, 'text', None)]
+            try:
+                value = json.loads(texts[0]) if len(texts) == 1 else None
+            except (ValueError, TypeError):
+                value = None
+        if not isinstance(value, dict):
+            return None, dict(detail, error='velo_response_unconfirmed')
+        # A successful MCP transport does not establish business completion.
+        # In particular an artifact submission with WAITING only creates a
+        # remote flow; it is neither its result nor a completed control probe.
+        status = str(value.get('status') or '').lower()
+        if status in ('error', 'failed', 'failure') or value.get('error'):
+            return False, dict(detail, error='velo_business_error')
+        state = str(value.get('state') or '').upper()
+        if status not in ('success', 'completed') or state not in (
+                '', 'FINISHED', 'COMPLETED'):
+            return None, dict(detail, error='velo_business_not_completed',
+                              status=value.get('status'),
+                              state=value.get('state'))
+        # Keep the fixed read response as evidence, bounded independently of
+        # the transport. No automatic collection, polling or retry is added.
+        raw = json.dumps(value, ensure_ascii=False).encode('utf-8')
+        if len(raw) > 16384:
+            return None, dict(detail, error='velo_response_output_limit')
+        return True, dict(detail, response=value,
+                          response_sha256=hashlib.sha256(raw).hexdigest())
 
 
 def _checked_endpoint_url(value, label, allowed_hosts=None):
