@@ -1606,7 +1606,7 @@ class WindowsMcpClient:
         response = raw
         response_index = raw.find('Response:')
         if response_index >= 0:
-            response = raw[response_index + len('Response:'):]
+            response = raw[response_index + len('Response:'):].lstrip(' \t\r\n')
             status_index = response.rfind('\n\nStatus Code:')
             if status_index >= 0:
                 response = response[:status_index]

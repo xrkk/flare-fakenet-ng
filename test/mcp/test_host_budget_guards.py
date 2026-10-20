@@ -213,3 +213,26 @@ def test_windows_probe_nonzero_status_never_passes(monkeypatch):
         client.probe('Write-Output 1', timeout=5)
     assert exc.value.code == 'windows_probe_failed'
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize('prefix', ['Response: ', 'Response: \r\n', 'Response:\t'])
+def test_windows_probe_parses_real_response_envelope(monkeypatch, prefix):
+    raw = prefix + 'MALTRACE_JSON:{"signal":"console"}\r\n\nStatus Code: 0'
+    client, calls = _window_client_and_capture(monkeypatch, response=raw)
+    parsed, original = client.probe('Write-Output 1', timeout=5)
+    assert parsed == {'signal': 'console'}
+    assert original == raw
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('payload', [
+    'MALTRACE_JSON:{}\r\nMALTRACE_JSON:{}',
+    'embedded MALTRACE_JSON:{}',
+])
+def test_windows_probe_rejects_ambiguous_or_embedded_markers(monkeypatch, payload):
+    raw = 'Response: ' + payload + '\r\n\nStatus Code: 0'
+    client, calls = _window_client_and_capture(monkeypatch, response=raw)
+    with pytest.raises(host_stdio.HostFacadeError) as exc:
+        client.probe('Write-Output 1', timeout=5)
+    assert exc.value.code == 'windows_probe_failed'
+    assert len(calls) == 1
