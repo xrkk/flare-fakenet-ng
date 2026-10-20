@@ -194,7 +194,7 @@ def nft_script(config):
     for typ,dst in [('nd-neighbor-solicit',sn),('nd-neighbor-advert',ll)]:
         rows+=['iifname "vmnet8" ether saddr '+mac+' meta l4proto ipv6-icmp ip6 hoplimit 255 ip6 daddr '+dst+' icmpv6 type '+typ+' accept']
     for port in PORTS:
-        rows+=['iifname "vmnet8" ether saddr '+mac+' meta l4proto tcp ip saddr '+g+' ip daddr '+h+' tcp sport '+str(port)+' ct direction reply ct state established ct original ip saddr '+h+' ct original ip daddr '+g+' ct original protocol tcp ct original proto-dst '+str(port)+' tcp dport ct original proto-src accept']
+        rows+=['iifname "vmnet8" ether saddr '+mac+' meta l4proto tcp ip saddr '+g+' ip daddr '+h+' tcp sport '+str(port)+' ct direction reply ct state established ct original ip saddr '+h+' ct original ip daddr '+g+' ct original protocol tcp ct original proto-dst '+str(port)+' ct original proto-src 1024-65535 tcp dport 1024-65535 accept']
     for proto,name in [('ip','tcp_drop4'),('ip6','tcp_drop6')]:
         rows+=['iifname "vmnet8" meta nfproto '+('ipv4' if proto=='ip' else 'ipv6')+' meta l4proto tcp update @'+name+' { '+proto+' saddr . tcp sport . '+proto+' daddr . tcp dport timeout 60s counter }']
     rows+=['iifname "vmnet8" counter drop','}','}','']

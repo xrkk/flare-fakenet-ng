@@ -71,6 +71,9 @@ def expected_rules(target):
             _match(_payload('ip6', 'hoplimit'), 255),
             _match(_payload('ip6', 'daddr'), destination),
             _match(_payload('icmpv6', 'type'), kind), {'accept': None}])
+    # Conntrack direction=reply supplies the exact reciprocal transport tuple.
+    # nft 1.0.9 cannot compare two packet/ct expressions directly; neither a
+    # broad established exception nor a guessed ephemeral port is accepted.
     for port in PORTS:
         rules.append(incoming + [
             _match(_payload('ether', 'saddr'), mac),
@@ -84,7 +87,8 @@ def expected_rules(target):
             _match(_ct('daddr', 'original', 'ip'), guest),
             _match(_ct('protocol', 'original'), 'tcp'),
             _match(_ct('proto-dst', 'original'), port),
-            _match(_payload('tcp', 'dport'), _ct('proto-src', 'original')),
+            _match(_ct('proto-src', 'original'), {'range': [1024, 65535]}),
+            _match(_payload('tcp', 'dport'), {'range': [1024, 65535]}),
             {'accept': None}])
     for proto, set_name in [('ip', 'tcp_drop4'), ('ip6', 'tcp_drop6')]:
         concat = {'concat': [_payload(proto, 'saddr'),
