@@ -76,8 +76,10 @@ class HostProvider:
             except Exception as exc:  # noqa: BLE001 - report the real failure
                 result = {'returncode': None, 'stdout': '',
                           'stderr': repr(exc)}
+        stdout = str(result.get('stdout') or '')
         item = {'argv': list(argv), 'returncode': result.get('returncode'),
-                'stdout': str(result.get('stdout') or '')[:128 * 1024],
+                'stdout': stdout[:128 * 1024],
+                'stdout_truncated': len(stdout) > 128 * 1024,
                 'stderr': str(result.get('stderr') or '')[:32 * 1024]}
         self.commands.append(item)
         return item
@@ -233,7 +235,8 @@ class HostProvider:
             forwarding_keys.append('net.ipv6.conf.%s.forwarding' % interface)
         forwarding = self._run(['sysctl'] + forwarding_keys)
         sysctl = self._sysctl_fields(forwarding['stdout'])
-        processes = self._run(['ps', '-eo', 'pid,comm,args'])
+        processes = self._run(['ps', '-C', 'vmware-vmx', '-C', 'vmnet-natd',
+                               '-o', 'pid=,comm=,args='])
         lsmod = self._run(['lsmod'])
         firewall_nft = self._run(['nft', 'list', 'ruleset'])
         firewall_ipt = self._run(['iptables-save'])
@@ -246,8 +249,8 @@ class HostProvider:
                   'argv': []}
         vm_processes = []
         for line in (processes.get('stdout') or '').splitlines():
-            low = line.lower()
-            if 'vmware-vmx' in low or 'vmware-vmx' in line:
+            fields = line.split(None, 2)
+            if len(fields) >= 2 and fields[1] == 'vmware-vmx':
                 vm_processes.append(line.strip()[:2048])
         matching_vm = [line for line in vm_processes
                        if str(vmx_path) in line or Path(str(vmx_path)).name in line or
@@ -319,7 +322,11 @@ class HostProvider:
             reasons.append('networking_unavailable')
         if not nics:
             reasons.append('vmx_nic_missing')
-        if not vm_processes:
+        if processes.get('stdout_truncated'):
+            reasons.append('process_facts_truncated')
+        elif processes.get('returncode') != 0:
+            reasons.append('process_facts_unavailable')
+        elif not vm_processes:
             reasons.append('vmware_process_missing')
         elif not matching_vm:
             reasons.append('vmx_running_instance_unmapped')

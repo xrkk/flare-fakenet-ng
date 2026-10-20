@@ -191,3 +191,50 @@ def test_unknown_vmx_is_unknown_not_pass(tmp_path):
     snapshot = provider.snapshot()
     assert snapshot['network_type'] == 'unknown'
     assert snapshot['boundary']['value'] is None
+
+
+def test_unrelated_long_process_argv_does_not_hide_running_vm(tmp_path):
+    files = make_files(tmp_path, connection='hostonly', nat='no', forwarding='0')
+    base = runner_factory('0', vmx_path=str(files[0]))
+
+    def runner(argv, timeout):
+        result = base(argv, timeout)
+        if argv[0] == 'ps' and '-eo' in argv:
+            result['stdout'] = '9 codex ' + ('x' * (140 * 1024)) + '\n' + result['stdout']
+        return result
+
+    snapshot = HostProvider(config_for(tmp_path, *files[:3]), runner).snapshot()
+    assert snapshot['processes']['matching_vm'], snapshot['boundary']
+    assert snapshot['boundary']['value'] is True
+    assert 'codex' not in snapshot['processes']['ps']['stdout']
+
+
+def test_truncated_target_process_list_is_unknown_even_if_vm_seen(tmp_path):
+    files = make_files(tmp_path, connection='hostonly', nat='no', forwarding='0')
+    base = runner_factory('0', vmx_path=str(files[0]))
+
+    def runner(argv, timeout):
+        result = base(argv, timeout)
+        if argv[0] == 'ps':
+            result['stdout'] += '10 vmware-vmx ' + ('x' * (140 * 1024))
+        return result
+
+    snapshot = HostProvider(config_for(tmp_path, *files[:3]), runner).snapshot()
+    assert snapshot['boundary']['value'] is None
+    assert 'process_facts_truncated' in snapshot['boundary']['reasons']
+    assert snapshot['processes']['ps']['stdout_truncated'] is True
+
+
+def test_failed_process_query_does_not_prove_vm_missing(tmp_path):
+    files = make_files(tmp_path, connection='hostonly', nat='no', forwarding='0')
+    base = runner_factory('0', vmx_path=str(files[0]))
+
+    def runner(argv, timeout):
+        if argv[0] == 'ps':
+            return {'returncode': 1, 'stdout': '', 'stderr': 'permission denied'}
+        return base(argv, timeout)
+
+    snapshot = HostProvider(config_for(tmp_path, *files[:3]), runner).snapshot()
+    assert snapshot['boundary']['value'] is None
+    assert 'process_facts_unavailable' in snapshot['boundary']['reasons']
+    assert 'vmware_process_missing' not in snapshot['boundary']['reasons']
