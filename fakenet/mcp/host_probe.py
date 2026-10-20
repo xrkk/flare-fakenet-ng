@@ -84,16 +84,31 @@ function Read-Tcp($client) {
   try { $stream=$client.GetStream();$stream.ReadTimeout=[Math]::Max(1,(Remaining-Ms)); return (Read-Text $stream) } catch { return '' }
 }
 function Invoke-TcpStep($step,[string]$mode) {
-  $result=[ordered]@{id=[string]$step.id;outcome='unknown';sent=0;received='';error=$null;response_type='tcp';status=$null;nonce_match=$false;address_family='';remote_endpoint='';local_endpoint='';started=[DateTime]::UtcNow.ToString('o');ended=$null;elapsed_ms=$null}
+  $result=[ordered]@{id=[string]$step.id;kind=[string]$step.kind;family=[string]$step.family;destination=[string]$step.destination;port=$step.port;outcome='unknown';sent=0;received='';error=$null;response_type='tcp';status=$null;nonce_match=$false;address_family='';remote_endpoint='';local_endpoint='';bound_local_endpoint='';exclusive=$false;connect_called=$false;probe_pid=$PID;probe_birth_ticks=$process.StartTime.ToUniversalTime().ToFileTimeUtc();script_hash=[string]$payload.script_hash;attempted=$false;connect_started=$null;connect_ended=$null;connect_error=$null;started=[DateTime]::UtcNow.ToString('o');ended=$null;elapsed_ms=$null}
   $sw=[Diagnostics.Stopwatch]::StartNew();$client=$null;$ssl=$null;$ar=$null
   try {
     $address=[Net.IPAddress]::Parse([string]$step.destination)
     $result.address_family=$address.AddressFamily.ToString()
     $client=[Net.Sockets.TcpClient]::new($address.AddressFamily)
+    $client.Client.SetSocketOption([Net.Sockets.SocketOptionLevel]::Socket,[Net.Sockets.SocketOptionName]::ExclusiveAddressUse,$true)
+    $route=@(Find-NetRoute -RemoteIPAddress $address -ErrorAction Stop | Where-Object { $_.IPAddress })
+    if($route.Count -lt 1 -or -not $route[0].IPAddress){throw 'no route source address'}
+    $sourceText=([string]$route[0].IPAddress).Split('%')[0]
+    $localAddress=[Net.IPAddress]::Parse($sourceText)
+    if($localAddress.AddressFamily -ne $address.AddressFamily){throw 'route source family mismatch'}
+    $local=[Net.IPEndPoint]::new($localAddress,0)
+    $client.Client.Bind($local)
+    $result.exclusive=[bool]$client.Client.ExclusiveAddressUse
+    $result.bound_local_endpoint=[string]$client.Client.LocalEndPoint
+    $result.local_endpoint=$result.bound_local_endpoint
     $timeout=[Math]::Max(1,(Remaining-Ms))
+    $result.attempted=$true
+    $result.connect_started=[DateTime]::UtcNow.ToString('o')
     $ar=$client.BeginConnect($address,[int]$step.port,$null,$null)
+    $result.connect_called=$true
     if(-not $ar.AsyncWaitHandle.WaitOne($timeout)){throw 'connect timeout'}
     $client.EndConnect($ar)
+    $result.connect_ended=[DateTime]::UtcNow.ToString('o')
     $result.remote_endpoint=[string]$client.Client.RemoteEndPoint
     $result.local_endpoint=[string]$client.Client.LocalEndPoint
     $stream=$client.GetStream();$stream.ReadTimeout=$timeout
@@ -120,7 +135,7 @@ function Invoke-TcpStep($step,[string]$mode) {
       if($match.Success){$result.status=[int]$match.Groups[1].Value}
     }
     if($result.received){$result.outcome='response'}else{$result.outcome='no_response'}
-  } catch { $result.error=[string]$_;$result.outcome='no_response' }
+  } catch { $result.error=[string]$_;$result.connect_error=[string]$_;if(-not $result.connect_ended){$result.connect_ended=[DateTime]::UtcNow.ToString('o')};$result.outcome='no_response' }
   finally { if($ar){try{$ar.AsyncWaitHandle.Dispose()}catch{}};if($ssl){try{$ssl.Dispose()}catch{}};if($client){try{$client.Close()}catch{}};$result.elapsed_ms=$sw.ElapsedMilliseconds;$result.ended=[DateTime]::UtcNow.ToString('o') }
   return $result
 }
@@ -490,7 +505,8 @@ def _family_matches(value, family):
     return False
 
 
-def classify_step(step, observed, expected, *, boundary_verified=None):
+def classify_step(step, observed, expected, *, boundary_verified=None,
+                  drop_evidence=None):
     observed = observed if isinstance(observed, dict) else {}
     received = str(observed.get('received') or '')
     error = str(observed.get('error') or '')
@@ -504,9 +520,13 @@ def classify_step(step, observed, expected, *, boundary_verified=None):
             return 'fail', 'unexpected_response'
         if boundary_verified is not True:
             return 'unknown', 'boundary_unverified'
+        if type(sent) is int and sent > 0:
+            return 'pass', 'independent_boundary_no_local_response'
+        if observed.get('attempted') is True and drop_evidence is True:
+            return 'pass', 'independent_tcp_connect_drop'
         if type(sent) is not int or sent <= 0:
             return 'unknown', 'request_not_sent'
-        return 'pass', 'independent_boundary_no_local_response'
+        return 'unknown', 'request_not_sent'
     if expected != 'local_fake':
         return 'unknown', 'expectation_unknown'
     if not received or type(sent) is not int or sent <= 0:

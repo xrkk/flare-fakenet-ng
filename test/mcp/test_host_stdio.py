@@ -531,3 +531,34 @@ def test_ownership_unknown_blocks_new_target_command(tmp_path):
     other = '55555555-6666-4777-8888-999999999999'
     blocked = facade.verify(other)
     assert blocked['error']['code'] == 'ownership_unknown'
+
+
+def test_host_facade_passes_distinct_observer_context_and_reuses_cache(tmp_path):
+    class ContextProvider(FakeProvider):
+        def __init__(self):
+            self.contexts = []
+            self.snapshots = 0
+
+        def set_observer_context(self, command_id, phase, challenge):
+            self.contexts.append((command_id, phase, challenge))
+
+        def snapshot(self, deadline=None):
+            self.snapshots += 1
+            return super().snapshot(deadline=deadline)
+
+    provider = ContextProvider()
+    fake = FakeFakeNet()
+    facade = HostFacade(config_for(tmp_path), provider=provider,
+                        fakenet_client=fake, windows_client=FakeWindows(),
+                        velo_client=FakeVelo())
+    first = facade.verify(COMMAND_ID)
+    assert first['verdict'] == 'pass'
+    phases = [item[1] for item in provider.contexts]
+    assert phases.count('pre') >= 1
+    assert phases.count('final') >= 1
+    assert len({item[2] for item in provider.contexts}) >= 2
+    before = fake.calls.count('verify_egress')
+    second = facade.verify(COMMAND_ID)
+    assert second['verdict'] == 'pass'
+    assert fake.calls.count('verify_egress') == before
+    assert provider.contexts[-1][1] == 'pre'

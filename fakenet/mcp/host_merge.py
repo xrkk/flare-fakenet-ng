@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 
-from fakenet.mcp import egress_contract, host_probe
+from fakenet.mcp import egress_contract, host_policy, host_probe
 
 
 def _sha(value):
@@ -54,8 +55,87 @@ def _firewall_value(probe):
     return all(row.get('enabled') is False for row in profiles)
 
 
+def _parse_endpoint(value):
+    text = str(value or '')
+    if ':' not in text:
+        return None, None
+    host, _, port = text.rpartition(':')
+    try:
+        port = int(port)
+    except ValueError:
+        return None, None
+    return host.strip('[]').split('%')[0], port
+
+
+def _drop_evidence(row, host_snapshot, final_host_snapshot, probe=None):
+    if not isinstance(row, dict) or row.get('kind') != 'tcp':
+        return None
+    for key in ('family', 'destination', 'port'):
+        if row.get(key) in (None, ''):
+            return None
+    probe = probe or {}
+    instance = probe.get('instance') or {}
+    if (row.get('exclusive') is not True or row.get('connect_called') is not True
+            or not instance.get('pid') or not instance.get('creation_ticks')
+            or row.get('probe_pid') != instance.get('pid')
+            or row.get('probe_birth_ticks') != instance.get('creation_ticks')
+            or not row.get('script_hash')
+            or row.get('script_hash') != instance.get('script_hash')
+            or row.get('bound_local_endpoint') != row.get('local_endpoint')):
+        return None
+    if row.get('attempted') is not True or row.get('received'):
+        return None
+    if not row.get('connect_started') or not row.get('connect_ended'):
+        return None
+    local = _parse_endpoint(row.get('local_endpoint'))
+    if local[0] is None or local[1] is None:
+        return None
+    if local[0] in ('0.0.0.0', '::', '0:0:0:0:0:0:0:0'):
+        return None
+    pre = (host_snapshot or {}).get('observer') or {}
+    final = (final_host_snapshot or {}).get('observer') or {}
+    if not pre.get('available') or not final.get('available'):
+        return None
+    if pre.get('phase') != 'pre' or final.get('phase') != 'final':
+        return None
+    if not pre.get('command_id') or pre.get('command_id') != final.get('command_id'):
+        return None
+    pre_facts = pre.get('facts') or {}
+    final_facts = final.get('facts') or {}
+    if pre_facts.get('target') != final_facts.get('target'):
+        return None
+    pre_producer = pre.get('producer') or {}
+    final_producer = final.get('producer') or {}
+    for key in ('pid', 'birth_ticks', 'boot_id', 'script_sha256'):
+        if not pre_producer.get(key) or pre_producer.get(key) != final_producer.get(key):
+            return None
+    if (host_snapshot.get('policy') or {}).get('ok') is not True or (final_host_snapshot.get('policy') or {}).get('ok') is not True:
+        return None
+    if not (host_snapshot.get('policy') or {}).get('identity') or (host_snapshot.get('policy') or {}).get('identity') != (final_host_snapshot.get('policy') or {}).get('identity'):
+        return None
+    try:
+        start = datetime.fromisoformat(row['connect_started'].replace('Z', '+00:00')).timestamp()
+        end = datetime.fromisoformat(row['connect_ended'].replace('Z', '+00:00')).timestamp()
+        before = pre['response']['collected_at']
+        after = final['response']['collected_at']
+        if not before - 1 <= start <= end <= after + 1 or after - before > 50:
+            return None
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    if (probe.get('identity') or {}).get('boot_id') != pre_facts.get('target', {}).get('boot_id'):
+        return None
+    family = str(row.get('family') or '').lower()
+    delta = host_policy.drop_delta(
+        pre_facts, final_facts, family=family,
+        source=local[0], source_port=local[1],
+        destination=str(row.get('destination')),
+        destination_port=int(row.get('port')))
+    return delta if delta is not None and delta > 0 else None
+
+
 def _matrix_steps(probe, expected_map, boundary_verified=None,
-                  evidence_refs=()):
+                  evidence_refs=(), host_snapshot=None,
+                  final_host_snapshot=None):
     observed = {row.get('id'): row for row in probe.get('steps') or []
                 if isinstance(row, dict)}
     steps = []
@@ -74,9 +154,18 @@ def _matrix_steps(probe, expected_map, boundary_verified=None,
                 'evidence_refs': [], 'started_at': None, 'ended_at': None,
             })
             continue
+        if (row.get('kind') == expected.get('kind') and
+                row.get('family') == expected.get('family') and
+                row.get('destination') == expected.get('destination') and
+                row.get('port') == expected.get('port')):
+            drop_evidence = _drop_evidence(
+                row, host_snapshot, final_host_snapshot, probe)
+        else:
+            drop_evidence = None
         outcome, reason = host_probe.classify_step(
             expected, row, expected.get('expected'),
-            boundary_verified=boundary_verified)
+            boundary_verified=boundary_verified,
+            drop_evidence=drop_evidence is not None)
         steps.append({
             'id': step_id, 'outcome': outcome,
             'expected': expected.get('expected'),
@@ -87,7 +176,8 @@ def _matrix_steps(probe, expected_map, boundary_verified=None,
                          'status': row.get('status'),
                          'nonce_match': row.get('nonce_match'),
                          'address_family': row.get('address_family'),
-                         'remote_endpoint': row.get('remote_endpoint')},
+                         'remote_endpoint': row.get('remote_endpoint'),
+                         'drop_count_delta': drop_evidence},
             'reason_code': reason,
             'evidence_refs': list(row.get('evidence_refs') or
                                   evidence_refs),
@@ -101,7 +191,8 @@ def _matrix_steps(probe, expected_map, boundary_verified=None,
 def build_host_result(*, command_id, request, guest_result, host_snapshot,
                       probe_result, expected_map, config, channels,
                       host_evidence=None, probe_evidence=None,
-                      final_host_evidence=None, started_at=None):
+                      final_host_evidence=None, host_final_snapshot=None,
+                      started_at=None):
     started = started_at or _now()
     ended = _now()
     identity = probe_result.get('identity') or {}
@@ -183,7 +274,9 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
     boundary_value = (host_snapshot or {}).get('boundary', {}).get('value')
     matrix_steps = _matrix_steps(probe_result, expected_map,
                                  boundary_verified=boundary_value is True,
-                                 evidence_refs=probe_refs)
+                                 evidence_refs=probe_refs,
+                                 host_snapshot=host_snapshot,
+                                 final_host_snapshot=host_final_snapshot)
     final_consistency = probe_result.get('final_consistency')
     completeness = egress_contract.evaluate_verification_completeness(
         list(expected_map), matrix_steps, positive, producer_match,

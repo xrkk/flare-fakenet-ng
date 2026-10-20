@@ -614,8 +614,9 @@ class HostFacade:
                 record=record, request=record.get('request'))
         try:
             current_status = self._fakenet().get_status(timeout=5)
-            current_host = self.provider.snapshot(
-                deadline=time.monotonic() + 5)
+            self._set_observer_context(
+                record['command_id'], 'pre', secrets.token_hex(16))
+            current_host = self._host_snapshot(time.monotonic() + 5)
         except Exception as exc:  # noqa: BLE001 - current state unknown
             return self._error_result(
                 record['command_id'], 'stale_result',
@@ -640,7 +641,22 @@ class HostFacade:
                     record['command_id'], 'stale_result',
                     'current network %s differs from the completed result' %
                     key, record=record, request=record.get('request'))
+        current_policy = (current_host.get('policy') or {}).get('identity')
+        if current_policy != (record.get('final_host') or {}).get(
+                'observer_policy_identity'):
+            return self._error_result(
+                record['command_id'], 'stale_result',
+                'current observer policy differs from the completed result',
+                record=record, request=record.get('request'))
         return document
+
+    def _set_observer_context(self, command_id, phase, challenge):
+        setter = getattr(self.provider, 'set_observer_context', None)
+        if callable(setter):
+            setter(command_id, phase, challenge)
+
+    def _host_snapshot(self, deadline):
+        return self.provider.snapshot(deadline=deadline)
 
     # -- client defaults ----------------------------------------------------
     def _fakenet(self):
@@ -824,11 +840,14 @@ class HostFacade:
             'route_to_guest': host.get('route_to_guest'),
             'default_routes': host.get('default_routes'),
             'firewall_known': (host.get('firewall') or {}).get('known'),
+            'observer_policy_identity': (host.get('policy') or {}).get(
+                'identity'),
         }
 
     def _final_consistency(self, fakenet, config_name, initial_status,
                            initial_config, initial_host, identity,
-                           finish_deadline, scope):
+                           finish_deadline, scope, command_id=None,
+                           challenge=None):
         observed = {'checked_at': _now()}
         try:
             if self._remaining(finish_deadline, 1) <= 0:
@@ -837,7 +856,9 @@ class HostFacade:
             self._recheck_action('host_provider')
             status2 = fakenet.get_status(timeout=self._budget(finish_deadline, 20))
             config2 = fakenet.read_config(config_name, timeout=self._budget(finish_deadline, 20))
-            host2 = self.provider.snapshot(deadline=finish_deadline)
+            if command_id is not None and challenge is not None:
+                self._set_observer_context(command_id, 'final', challenge)
+            host2 = self._host_snapshot(finish_deadline)
             observed.update({'status': status2,
                              'config_sha256': config2.get('sha256'),
                              'host_sha256': _sha(host2)})
@@ -916,7 +937,13 @@ class HostFacade:
         self._admitted_scope_sha = auth['scope_sha256']
         try:
             auth = self._recheck_action('host_provider')
-            host = self.provider.snapshot(deadline=action_deadline)
+            record['pre_challenge'] = secrets.token_hex(16)
+            record['final_challenge'] = secrets.token_hex(16)
+            self._command_id_for_observer = command_id
+            self._set_observer_context(
+                command_id, 'pre', record['pre_challenge'])
+            self.state.update(command_id, record)
+            host = self._host_snapshot(action_deadline)
             fakenet = self._fakenet()
             if hasattr(fakenet, 'list_tools'):
                 fakenet.list_tools(timeout=self._budget(action_deadline, 20))
@@ -1195,7 +1222,8 @@ class HostFacade:
                 nonce=nonce, listener_map=parsed_config['listener_map'])
             final_consistency, final_observed = self._final_consistency(
                 fakenet, config_name, status, config_record, host, identity,
-                finish_deadline, scope)
+                finish_deadline, scope, command_id=command_id,
+                challenge=record['final_challenge'])
             probe_result['final_consistency'] = final_consistency
             final_host_snapshot = final_observed.pop('host_snapshot', None)
             probe_result['final_consistency_observed'] = final_observed
@@ -1223,7 +1251,8 @@ class HostFacade:
                 probe_result=probe_result, expected_map=expected_map,
                 config=self.config, channels=channels,
                 host_evidence=host_evidence, probe_evidence=probe_evidence,
-                final_host_evidence=final_host_evidence)
+                final_host_evidence=final_host_evidence,
+                host_final_snapshot=final_host_snapshot)
             result['bindings']['host_evidence_sha256'] = host_sha
             artifact = _atomic_json(evidence_dir / 'result.json', result)
             result['artifact'] = artifact
@@ -1249,6 +1278,8 @@ class HostFacade:
                     'boundary': host.get('boundary'),
                     'nat_active': host.get('nat_active'),
                     'bridge_active': host.get('bridge_active'),
+                    'observer_policy_identity': (host.get('policy') or {}).get(
+                        'identity'),
                 }
                 record['stage'] = 'completed'
                 record['result_path'] = str(evidence_dir / 'output-limit.json')
@@ -1263,6 +1294,8 @@ class HostFacade:
                 'boundary': host.get('boundary'),
                 'nat_active': host.get('nat_active'),
                 'bridge_active': host.get('bridge_active'),
+                'observer_policy_identity': (host.get('policy') or {}).get(
+                    'identity'),
             }
             record['stage'] = 'completed'
             record['result_path'] = str(evidence_dir / 'result.json')

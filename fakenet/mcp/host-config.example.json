@@ -54,7 +54,7 @@
       28790
     ],
     "matrix_version": "v1",
-    "probe_script_sha256": "63e3fa33caaea0e3041131558577bd5745d685276c34cb745c959b166a69044f",
+    "probe_script_sha256": "bb27c26763135e4e608affbe8cac29e6bda2197d0948b8c51a6f9a062362180d",
     "verification_budget_seconds": 50,
     "guest_budget_ms": 15000,
     "output_compact_limit_bytes": 65536

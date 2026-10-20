@@ -279,6 +279,7 @@ def offline_install_sdk(stage, build_root):
 
 FORMAL_RUNTIME_PREFIX = 'test_formal_runtime_'
 MCP_HOST_TESTS = (
+    'test/mcp/test_host_local_fixture.py',
     'test/mcp/test_host_stdio.py', 'test/mcp/test_host_state.py',
     'test/mcp/test_host_budget_guards.py', 'test/mcp/test_r03_regressions.py',
     'test/mcp/test_r04_integration.py',

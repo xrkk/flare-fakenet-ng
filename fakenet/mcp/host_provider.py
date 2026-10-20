@@ -15,6 +15,8 @@ import re
 import subprocess
 import time
 
+from fakenet.mcp import host_observer, host_policy
+
 
 def _sha_text(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
@@ -47,11 +49,42 @@ def _plain_file(path):
 
 
 class HostProvider:
-    def __init__(self, config, runner=None):
+    def __init__(self, config, runner=None, observer=None):
         self.config = dict(config)
         self.runner = runner
         self.commands = []
         self._deadline = None
+        self.observer = observer
+        self._observer_context = None
+        if self.observer is None and config.get('observer'):
+            self.observer = host_observer.RootObserverClient(config['observer'])
+
+    def set_observer_context(self, command_id, phase, challenge):
+        self._observer_context = {
+            'command_id': str(command_id), 'phase': str(phase),
+            'challenge': str(challenge)}
+
+    def _collect_observer(self):
+        if self.observer is None or not self._observer_context:
+            return None
+        context = self._observer_context
+        try:
+            response = self.observer.request(
+                context['command_id'], context['phase'],
+                context['challenge'], timeout=self._remaining_observer())
+        except Exception as exc:  # noqa: BLE001 - observer is fail-closed
+            return {'available': False, 'error': repr(exc),
+                    'phase': context['phase']}
+        return {'available': True, 'phase': context['phase'],
+                'response': response, 'facts': response.get('facts'),
+                'producer': response.get('producer'),
+                'challenge': response.get('challenge'),
+                'command_id': response.get('command_id')}
+
+    def _remaining_observer(self):
+        if self._deadline is None:
+            return 2.0
+        return max(0.0, min(2.0, self._deadline - time.monotonic()))
 
     def _run(self, argv, timeout=5):
         if self._deadline is not None:
@@ -199,6 +232,8 @@ class HostProvider:
 
     def snapshot(self, deadline=None):
         self._deadline = deadline
+        observer_record = self._collect_observer()
+        observer_policy = None
         vmx_path = self.config.get('vmx_path', '')
         vmx = self._read_text(vmx_path)
         vmx_fields = self._vmx_fields(vmx.get('content', '')) if vmx.get(
@@ -211,6 +246,10 @@ class HostProvider:
         nat_fields = self._nat_fields(nat.get('content', '')) if nat.get(
             'available') else {}
         nics = self._vmx_nics(vmx_fields)
+        if observer_record and observer_record.get('available'):
+            observer_config = dict(self.config)
+            observer_config.setdefault('expected_mac', vmx_fields.get('ethernet0.generatedaddress') or vmx_fields.get('ethernet0.address'))
+            observer_policy = host_policy.evaluate(observer_record.get('facts'), observer_config)
         configured_interface = str(self.config.get('interface') or 'vmnet8')
         ip = {kind: self._ip_json(kind) for kind in
               ('address', 'link', 'route', 'neigh', 'rule')}
@@ -356,11 +395,24 @@ class HostProvider:
             reasons.append('nat_active')
         if bridge_active:
             reasons.append('bridge_active')
+        if observer_record is not None:
+            if not observer_record.get('available'):
+                reasons.append('observer_unavailable')
+            elif observer_policy is None or not observer_policy.get('ok'):
+                reasons.extend(observer_policy.get('reasons') if observer_policy else ['observer_policy_invalid'])
         if vmx_fields.get('uuid.bios') and self.config.get('expected_uuid') \
                 and _normal_uuid(vmx_fields.get('uuid.bios')) != _normal_uuid(
                     self.config.get('expected_uuid')):
             reasons.append('vmx_uuid_mismatch')
-        if (not reasons and target_nic and network_type == 'hostonly' and
+        target_blockers = [reason for reason in reasons if reason not in (
+            'forwarding_enabled', 'nat_active')]
+        if (observer_record is not None and observer_record.get('available')
+                and observer_policy and observer_policy.get('ok')
+                and not target_blockers):
+            boundary = {'value': True, 'reason': 'validated_local_isolation_policy',
+                        'policy_identity': observer_policy.get('identity'),
+                        'observer_bound': True}
+        elif (not reasons and target_nic and network_type == 'hostonly' and
                 not nat_active and not bridge_active):
             boundary = {'value': True, 'reason': 'hostonly_all_nics_no_nat_forwarding'}
         elif reasons:
@@ -410,6 +462,8 @@ class HostProvider:
             'nat_active': nat_active,
             'bridge_active': bridge_active,
             'boundary': boundary,
+            'observer': observer_record,
+            'policy': observer_policy,
             'raw_commands': list(self.commands),
         }
 
