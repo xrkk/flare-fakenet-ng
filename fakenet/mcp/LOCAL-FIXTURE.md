@@ -62,3 +62,30 @@ sample execution on the restored network. The original 30 rows, eight checks,
 50-second/64-KiB bounds and authorized=false remain mandatory. Native
 PowerShell parse-only success is syntax evidence, not execution or driver
 acceptance. No token/cost reduction percentage has been measured.
+
+## Protected existing MCP endpoints
+
+Connection specifications may use `bearer_token_env` or `auth_headers_env`
+for Authorization/X-API-Key. These are environment variable names, never
+credential literals. Missing/invalid references refuse IO; MCP protocol,
+controller and Host headers cannot be replaced through this interface.
+Both existing SDK versions use the public streamable HTTP transport with a
+configured HTTP client; redirects and ambient proxy credentials are disabled.
+No provider/agent/global MCP setting is modified. A 401 is an authentication
+gap, not proof that a protocol downgrade or a new endpoint is needed.
+
+The ordinary user's runner environment must explicitly contain the selected
+reference. The root controller clears its environment on privilege drop, so
+production credentials must not be copied into its config/state or displayed
+in approval material. The current bootstrap needs the existing reference
+location before authenticated native acceptance can be prepared.
+
+A deployment may instead set `mcp_auth_ref` to the exact `path` and `server`
+from its existing user-owned Codex TOML configuration. The ordinary process
+bounded-reads that one regular file, verifies its owner/write permissions and
+exact endpoint match, and resolves only authentication headers. The reference
+is recorded, the header values are not. Protocol/controller headers cannot be
+imported as authentication. This permits the root coordinator to clear its
+environment: only the ordinary uid reads the existing user configuration.
+No global MCP configuration is changed and no credential is copied into the
+root state, approval document or tool result.

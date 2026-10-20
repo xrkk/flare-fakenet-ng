@@ -24,8 +24,10 @@ import urllib.request
 import uuid
 
 import anyio
+from contextlib import asynccontextmanager
 import httpx2 as httpx
 from mcp import Client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
@@ -45,6 +47,122 @@ class HostFacadeError(RuntimeError):
         self.message = message
         self.detail = detail or {}
 
+
+
+def _auth_headers(specification):
+    """Resolve only explicit environment references, never literal credentials.
+
+    Values stay inside the transport and are not included in config, intent,
+    result or evidence. Missing/invalid references refuse the request before IO.
+    """
+    refs = specification.get('auth_headers_env') or {}
+    if not isinstance(refs, dict):
+        raise HostFacadeError('invalid_request', 'auth header references invalid')
+    allowed = {'authorization': 'Authorization', 'x-api-key': 'X-API-Key'}
+    result = {}
+    import os as _os
+    import re as _re
+    def resolve(name):
+        if not isinstance(name, str) or not _re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,127}', name):
+            raise HostFacadeError('invalid_request', 'auth environment reference invalid')
+        value = _os.environ.get(name)
+        if not value or len(value) > 8192 or not value.isascii() or '\x00' in value or '\r' in value or '\n' in value:
+            raise HostFacadeError('invalid_request', 'auth environment reference unavailable')
+        return value
+    profile = specification.get('mcp_auth_ref')
+    if profile is not None:
+        import stat as _stat
+        import tomllib as _tomllib
+        if not isinstance(profile, dict) or set(profile) != {'path', 'server'}:
+            raise HostFacadeError('invalid_request', 'MCP auth reference invalid')
+        path = Path(str(profile['path']))
+        try:
+            if not path.is_absolute():
+                raise ValueError('absolute reference required')
+            fd = _os.open(path, _os.O_RDONLY | _os.O_NOFOLLOW | _os.O_CLOEXEC)
+            try:
+                before = _os.fstat(fd)
+                if (not _stat.S_ISREG(before.st_mode) or
+                        before.st_uid != _os.geteuid() or before.st_mode & 0o022 or
+                        before.st_size > 1024 * 1024):
+                    raise ValueError('unsafe credential reference')
+                raw = b''
+                while len(raw) <= 1024 * 1024:
+                    chunk = _os.read(fd, min(65536, 1024 * 1024 + 1 - len(raw)))
+                    if not chunk:
+                        break
+                    raw += chunk
+                after = _os.fstat(fd)
+                if len(raw) > 1024 * 1024 or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                    raise ValueError('credential reference changed')
+            finally:
+                _os.close(fd)
+            node = _tomllib.loads(raw.decode('utf8'))['mcp_servers'][profile['server']]
+            if node.get('url') != specification.get('url'):
+                raise ValueError('credential endpoint mismatch')
+            literal_headers = node.get('http_headers') or {}
+            env_headers = node.get('env_http_headers') or {}
+            if not isinstance(literal_headers, dict) or not isinstance(env_headers, dict):
+                raise ValueError('credential headers invalid')
+            for name, value in literal_headers.items():
+                if not isinstance(name, str) or name.lower() not in allowed:
+                    raise ValueError('unsupported credential header')
+                key = allowed[name.lower()]
+                if key in result or not isinstance(value, str) or not value or len(value) > 8192 or not value.isascii() or any(c in value for c in ('\r','\n','\x00')):
+                    raise ValueError('credential header invalid')
+                result[key] = value
+            for name, reference in env_headers.items():
+                if not isinstance(name, str) or name.lower() not in allowed or allowed[name.lower()] in result:
+                    raise ValueError('credential references ambiguous')
+                result[allowed[name.lower()]] = resolve(reference)
+            token_ref = node.get('bearer_token_env_var')
+            if token_ref is not None:
+                if 'Authorization' in result:
+                    raise ValueError('credential references ambiguous')
+                result['Authorization'] = 'Bearer ' + resolve(token_ref)
+            if not result:
+                raise ValueError('credential reference has no authentication')
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            # Never echo the configuration, decoded credential or TOML error.
+            raise HostFacadeError('invalid_request', 'MCP auth reference unavailable or mismatched') from None
+    for name, reference in refs.items():
+        if not isinstance(name, str) or name.lower() not in allowed:
+            raise HostFacadeError('invalid_request', 'auth header is not allowed')
+        key = allowed[name.lower()]
+        if key in result:
+            raise HostFacadeError('invalid_request', 'auth header reference duplicated')
+        result[key] = resolve(reference)
+    bearer = specification.get('bearer_token_env')
+    if bearer is not None:
+        if 'Authorization' in result:
+            raise HostFacadeError('invalid_request', 'conflicting auth references')
+        result['Authorization'] = 'Bearer ' + resolve(bearer)
+    return result
+
+
+def _safe_transport_error(error, specification):
+    message = repr(error)
+    for value in _auth_headers(specification).values():
+        message = message.replace(value, '<REDACTED>')
+        if value.startswith('Bearer '):
+            message = message.replace(value[7:], '<REDACTED>')
+    return message
+
+
+def _sdk_http_client(specification, timeout):
+    headers = _auth_headers(specification)
+    url = _checked_endpoint_url(specification.get('url'), 'MCP', specification.get('allowed_hosts'))
+    if not headers:
+        return Client(url, read_timeout_seconds=float(timeout))
+    @asynccontextmanager
+    async def transport():
+        async with httpx.AsyncClient(headers=headers, trust_env=False,
+                                     follow_redirects=False,
+                                     timeout=float(timeout)) as http_client:
+            async with streamable_http_client(url,
+                                              http_client=http_client) as streams:
+                yield streams
+    return Client(transport(), read_timeout_seconds=float(timeout))
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
@@ -1362,6 +1480,7 @@ def _checked_loopback_url(value, label):
 
 class FakeNetHttpClient:
     def __init__(self, specification):
+        self.specification = dict(specification)
         self.url = _checked_endpoint_url(specification.get('url'), 'FakeNet MCP', specification.get('allowed_hosts'))
         self.controller = str(specification.get('controller_id') or '')
         self.timeout = float(specification.get('timeout_seconds', 20))
@@ -1384,7 +1503,7 @@ class FakeNetHttpClient:
                         timeout=budget) as client:
                     async with client.stream(
                             'POST', self.url, content=request.data,
-                            headers=dict(request.header_items())) as response:
+                            headers={**dict(request.header_items()), **_auth_headers(self.specification)}) as response:
                         if response.status_code != 200:
                             raise HostFacadeError(
                                 'guest_transport_error',
@@ -1404,7 +1523,7 @@ class FakeNetHttpClient:
         except HostFacadeError:
             raise
         except Exception as exc:
-            raise HostFacadeError('guest_transport_error', repr(exc)) from None
+            raise HostFacadeError('guest_transport_error', _safe_transport_error(exc, self.specification)) from None
 
     def _call(self, name, arguments, timeout=None):
         body = {
@@ -1559,7 +1678,7 @@ class WindowsMcpClient:
     def _client(self, timeout):
         if timeout is None or float(timeout) <= 0:
             raise HostFacadeError('windows_timeout', 'Windows budget exhausted')
-        return Client(self.url, read_timeout_seconds=float(timeout))
+        return _sdk_http_client(self.specification, timeout)
 
     def list_tools(self, timeout=None):
         timeout = self.timeout if timeout is None else float(timeout)
@@ -1572,7 +1691,7 @@ class WindowsMcpClient:
         try:
             outcome = anyio.run(call)
         except Exception as exc:  # noqa: BLE001 - report transport failure
-            raise HostFacadeError('windows_transport_error', repr(exc)) from None
+            raise HostFacadeError('windows_transport_error', _safe_transport_error(exc, self.specification)) from None
         tools = {tool.name: tool for tool in getattr(outcome, 'tools', [])}
         tool = tools.get('PowerShell')
         if tool is None:
@@ -1614,7 +1733,7 @@ class WindowsMcpClient:
         try:
             outcome = anyio.run(call)
         except Exception as exc:  # noqa: BLE001 - report the transport result
-            raise HostFacadeError('windows_transport_error', repr(exc)) \
+            raise HostFacadeError('windows_transport_error', _safe_transport_error(exc, self.specification)) \
                 from None
         texts = []
         for item in getattr(outcome, 'content', None) or []:
@@ -1680,8 +1799,7 @@ class VeloMcpClient:
             raise HostFacadeError('velo_timeout', 'Velo tool budget exhausted')
         async def call():
             with anyio.fail_after(budget):
-                async with Client(self.url,
-                                  read_timeout_seconds=budget) as client:
+                async with _sdk_http_client(self.specification, budget) as client:
                     return await client.list_tools()
         return anyio.run(call)
 
@@ -1703,11 +1821,11 @@ class VeloMcpClient:
                 return False, {'error': 'deadline'}
             async def call():
                 with anyio.fail_after(budget):
-                    async with Client(self.url, read_timeout_seconds=budget) as client:
+                    async with _sdk_http_client(self.specification, budget) as client:
                         return await client.call_tool(self.tool, self.arguments)
             outcome = anyio.run(call)
         except Exception as exc:  # noqa: BLE001 - report the transport result
-            return False, {'error': repr(exc)}
+            return False, {'error': _safe_transport_error(exc, self.specification)}
         return (not bool(getattr(outcome, 'is_error', False)),
                 {'tool': self.tool})
 
