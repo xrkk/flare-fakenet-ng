@@ -12,6 +12,7 @@ import ipaddress
 import json
 import math
 import re
+from fakenet.mcp.host_identity import normal_uuid as _norm_uuid
 
 POLICY_SCHEMA = 'fakenetng.host-local-policy.v2'
 TABLE = 'mt_egress_fixture'
@@ -21,10 +22,6 @@ PORTS = (28787, 28788, 28790)
 def _sha(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True,
                                     separators=(',', ':')).encode()).hexdigest()
-
-
-def _norm_uuid(value):
-    return re.sub(r'[\s-]', '', str(value or '')).lower()
 
 
 def _norm_mac(value):
@@ -237,7 +234,7 @@ def evaluate(facts, config):
         target = facts['target']
         uuid = config.get('expected_uuid') or (config.get('vmx') or {}).get('expected_uuid')
         mac = config.get('expected_mac')
-        if (not uuid or not mac or _norm_uuid(target.get('vm_uuid')) != _norm_uuid(uuid)
+        if (not _norm_uuid(uuid) or not _norm_uuid(target.get('vm_uuid')) or not mac or _norm_uuid(target.get('vm_uuid')) != _norm_uuid(uuid)
                 or _norm_mac(target.get('mac')) != _norm_mac(mac)
                 or target.get('guest_ipv4') != config.get('guest_ip')):
             raise ValueError('observer target mismatch')

@@ -216,3 +216,20 @@ def test_real_provider_receives_actual_vmx_mac_and_keeps_identity_gate(tmp_path)
     value=facts();value['target']['vm_uuid']=old['UUID']
     files[0].write_text(files[0].read_text().replace(old['UUID'],'changed-uuid'))
     assert provider.snapshot()['boundary']['value'] is None
+
+
+def test_actual_vmware_uuid_raw_bytes_match_guest_smbios_without_double_swap():
+    from fakenet.mcp.host_identity import normal_uuid
+    from fakenet.mcp.host_stdio import _normal_uuid as facade_uuid
+    raw='56 4d e0 b3 b2 3d 3d 9f-4d 52 3e c2 2c 4c fd c0'
+    guest='B3E04D56-3DB2-9F3D-4D52-3EC22C4CFDC0'
+    assert normal_uuid(raw)==normal_uuid(guest)==facade_uuid(raw)==facade_uuid(guest)
+    assert normal_uuid('56-4d-e0-b3-b2-3d-3d-9f-4d-52-3e-c2-2c-4c-fd-c0')==normal_uuid(guest)
+    assert normal_uuid('different-invalid')==''
+    value=facts();cfg=config();cfg['expected_uuid']=raw
+    assert host_policy.evaluate(value,cfg)['ok']
+
+
+def test_invalid_uuid_pairs_do_not_become_matching_identity():
+    value=facts();value['target']['vm_uuid']='invalid';cfg=config();cfg['expected_uuid']='invalid'
+    assert host_policy.evaluate(value,cfg)['ok'] is False

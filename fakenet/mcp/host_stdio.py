@@ -34,6 +34,7 @@ from mcp.types import ToolAnnotations
 from fakenet.mcp import MCP_PACKAGE_VERSION, egress_contract, host_merge, \
     host_probe, schemas
 from fakenet.mcp.host_provider import HostProvider
+from fakenet.mcp.host_identity import normal_uuid as _normal_uuid
 from fakenet.mcp.host_state import HostStateError, HostStateStore
 
 PROTOCOL_VERSION = '2026-07-28'
@@ -239,7 +240,8 @@ def _validate_scope(scope, config):
         raise HostFacadeError('invalid_request', 'probe scope has expired')
     vmx = config.get('vmx') or {}
     vm = scope.get('vm') or {}
-    if _normal_uuid(vm.get('uuid')) != _normal_uuid(vmx.get('expected_uuid')):
+    if (not _normal_uuid(vm.get('uuid')) or not _normal_uuid(vmx.get('expected_uuid'))
+            or _normal_uuid(vm.get('uuid')) != _normal_uuid(vmx.get('expected_uuid'))):
         raise HostFacadeError('invalid_request', 'probe scope VM UUID mismatch')
     if str(vm.get('computer') or '') != str(vmx.get('expected_computer') or ''):
         raise HostFacadeError('invalid_request',
@@ -380,10 +382,6 @@ def _sha_file(path):
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(block)
     return digest.hexdigest()
-
-
-def _normal_uuid(value):
-    return re.sub(r'[\s-]', '', str(value or '')).lower()
 
 
 def _endpoint_parts(value):

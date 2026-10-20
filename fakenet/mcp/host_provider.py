@@ -16,14 +16,11 @@ import subprocess
 import time
 
 from fakenet.mcp import host_observer, host_policy
+from fakenet.mcp.host_identity import normal_uuid as _normal_uuid
 
 
 def _sha_text(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
-
-
-def _normal_uuid(value):
-    return re.sub(r'[\s-]', '', str(value or '')).lower()
 
 
 def _mask_mac(value):
@@ -400,9 +397,10 @@ class HostProvider:
                 reasons.append('observer_unavailable')
             elif observer_policy is None or not observer_policy.get('ok'):
                 reasons.extend(observer_policy.get('reasons') if observer_policy else ['observer_policy_invalid'])
-        if vmx_fields.get('uuid.bios') and self.config.get('expected_uuid') \
-                and _normal_uuid(vmx_fields.get('uuid.bios')) != _normal_uuid(
-                    self.config.get('expected_uuid')):
+        if (not _normal_uuid(vmx_fields.get('uuid.bios')) or
+                not _normal_uuid(self.config.get('expected_uuid')) or
+                _normal_uuid(vmx_fields.get('uuid.bios')) != _normal_uuid(
+                    self.config.get('expected_uuid'))):
             reasons.append('vmx_uuid_mismatch')
         target_blockers = [reason for reason in reasons if reason not in (
             'forwarding_enabled', 'nat_active')]
