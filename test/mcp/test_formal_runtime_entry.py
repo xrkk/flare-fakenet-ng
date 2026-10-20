@@ -135,15 +135,14 @@ def invoke(entry_material, tmp_path, capacity=False):
     script = repo/'test/mcp/acceptance/run_formal_completion.py'
     argv = [sys.executable, '-B', str(script), '--materials-json', str(material),
             '--materials-sha256', pin, '--repository-root', str(repo), 'prepare']
-    if capacity:
-        # Only the parent's disk boundary is controlled. The actual independent
-        # child rechecks real free space and retains its own failure.
-        launcher = tmp_path/'host-capacity-boundary.py'
-        launcher.write_text('import runpy,shutil,sys\nfrom types import SimpleNamespace\n'
-            'shutil.disk_usage=lambda _:SimpleNamespace(free=100*2**30)\n'
-            'script=sys.argv.pop(1)\nsys.path.insert(0,__import__("os").path.dirname(script))\n'
-            'runpy.run_path(script,run_name="__main__")\n')
-        argv = [argv[0], '-B', str(launcher), *argv[2:]]
+    # Pin only the parent's capacity boundary in both branches. The child
+    # still rechecks real capacity; healthy hosts must not break the refusal test.
+    launcher = tmp_path/'host-capacity-boundary.py'
+    launcher.write_text('import runpy,shutil,sys\nfrom types import SimpleNamespace\n'
+        'shutil.disk_usage=lambda _:SimpleNamespace(free=' + ('100*2**30' if capacity else '100*2**20') + ')\n'
+        'script=sys.argv.pop(1)\nsys.path.insert(0,__import__("os").path.dirname(script))\n'
+        'runpy.run_path(script,run_name="__main__")\n')
+    argv = [argv[0], '-B', str(launcher), *argv[2:]]
     completed = subprocess.run(argv, cwd=repo, capture_output=True, text=True, timeout=480)
     (tmp_path/'entry-stdout.log').write_text(completed.stdout)
     (tmp_path/'entry-stderr.log').write_text(completed.stderr)
