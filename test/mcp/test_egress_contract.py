@@ -1,6 +1,6 @@
 """Single-author egress contract behavior and matrix coverage."""
 import copy
-import hashlib
+import runpy
 from pathlib import Path
 
 import pytest
@@ -62,16 +62,28 @@ def test_request_validation_and_fingerprint_are_stable():
     assert contract.request_fingerprint(changed) != first
 
 
-def test_generated_copy_matches_source_when_present():
+def test_generated_export_roundtrip_and_existing_copy_match(tmp_path):
+    # Immutable Windows builds contain only this repository. Exercise the
+    # actual exporter there too, rather than skipping a cross-repo assertion.
+    repo = Path(__file__).resolve().parents[2]
+    exporter = runpy.run_path(str(repo / 'tools/export_egress_contract.py'))
+    export = exporter['main']
+    output = tmp_path / 'generated_egress_contract.py'
+    args = ['--repo', str(repo), '--output', str(output)]
+    assert export(args) == 0
+    assert export(args + ['--check']) == 0
+    namespace = runpy.run_path(str(output))
+    assert namespace['CONTRACT_VERSION'] == contract.CONTRACT_VERSION
+    assert namespace['CONTRACT_CASES'] == contract.CONTRACT_CASES
+    # Preserve the source identity header while changing the body: checking
+    # only a hash string in that header must not accept a drifted contract.
+    output.write_bytes(output.read_bytes() + b'\n# body drift\n')
+    assert export(args + ['--check']) == 1
     generated = Path('/home/adminn/projects/MalTrace/AI辅助逆向/'
                      'skills/evidence-lifecycle/_generated_egress_contract.py')
-    if not generated.is_file():
-        pytest.skip('MalTrace generated contract copy is not present')
-    source = Path(__file__).resolve().parents[2] / 'fakenet/mcp/egress_contract.py'
-    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
-    text = generated.read_text(encoding='utf-8')
-    assert ('# Source-SHA256: ' + source_sha) in text
-    assert 'GENERATED_CONTRACT_VERSION = CONTRACT_VERSION' in text
+    if generated.is_file():
+        assert export(['--repo', str(repo), '--output', str(generated),
+                       '--check']) == 0
 
 
 def test_completeness_gate_requires_every_row_positive_producer_and_final():
