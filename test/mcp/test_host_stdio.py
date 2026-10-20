@@ -385,7 +385,7 @@ def test_host_facade_math_and_expected_map():
 def test_host_stdio_tool_surface(tmp_path):
     import anyio
     from mcp import Client
-    from mcp.client.stdio import StdioServerParameters
+    from mcp.client.stdio import StdioServerParameters, stdio_client
 
     root = Path(__file__).resolve().parents[2]
     child = tmp_path / 'host_child.py'
@@ -407,20 +407,26 @@ def test_host_stdio_tool_surface(tmp_path):
     async def run():
         params = StdioServerParameters(command=sys.executable,
                                        args=[str(child)])
-        async with Client(params, read_timeout_seconds=20) as client:
-            tools = await client.list_tools()
-            assert [tool.name for tool in tools.tools] == [
-                'verify_egress_isolation']
-            schema = tools.tools[0].input_schema
-            assert set(schema.get('properties', {})) == {'command_id'}
-            result = await client.call_tool(
-                'verify_egress_isolation',
-                {'command_id': COMMAND_ID})
-            assert result.is_error is False
-            assert result.structured_content['verification_id'] ==                 VERIFICATION_ID
-            assert result.structured_content['authorized'] is False
+        with (tmp_path / 'host-stderr.txt').open('w', encoding='utf-8') as errlog:
+            async with Client(stdio_client(params, errlog=errlog),
+                              read_timeout_seconds=20) as client:
+                tools = await client.list_tools()
+                assert [tool.name for tool in tools.tools] == [
+                    'verify_egress_isolation']
+                schema = tools.tools[0].input_schema
+                assert set(schema.get('properties', {})) == {'command_id'}
+                result = await client.call_tool(
+                    'verify_egress_isolation',
+                    {'command_id': COMMAND_ID})
+                assert result.is_error is False
+                assert result.structured_content['verification_id'] == VERIFICATION_ID
+                assert result.structured_content['authorized'] is False
 
-    anyio.run(run)
+    try:
+        anyio.run(run)
+    except BaseException:
+        print((tmp_path / 'host-stderr.txt').read_text(encoding='utf-8'))
+        raise
 
 
 def test_unknown_boundary_skips_matrix_and_never_passes(tmp_path):
