@@ -18,7 +18,7 @@ from pydantic import StrictBool, StrictFloat, StrictInt
 from mcp.types import ToolAnnotations
 
 from fakenet.mcp import MCP_PACKAGE_NAME, MCP_PACKAGE_VERSION
-from fakenet.mcp import errors
+from fakenet.mcp import egress_contract, errors
 from fakenet.mcp import schemas
 from fakenet.mcp.configstore import ConfigStore
 from fakenet.mcp.coordination import Coordinator
@@ -684,6 +684,69 @@ def register_tools(server, ctx):
                 controller_valid=classification == 'valid_uuid',
                 kind='restart', describe={},
                 execute=execute)
+        except errors.McpError as exc:
+            return ctx.error_response(exc)
+
+    @server.tool(
+        description='Run the guest-observable egress isolation subset once; host-only facts remain unknown.',
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False),
+        structured_output=True)
+    def verify_egress_isolation(
+            command_id: str, expected_state_version: int,
+            verification_request: schemas.VerificationRequest) -> schemas.MutationResponse:
+        controller, classification = ctx.controller_identity()
+        request = verification_request.model_dump(mode='json')
+        request['controller'] = controller
+        try:
+            verification_id = str(uuid.UUID(request.get('verification_id', '')))
+        except (ValueError, AttributeError, TypeError):
+            return ctx.error_response(errors.McpError(
+                errors.INVALID_REQUEST,
+                'verification_id must be a canonical UUID'))
+        request['verification_id'] = verification_id
+        try:
+            egress_contract.validate_verification_request(request)
+        except egress_contract.EgressContractError as exc:
+            return ctx.error_response(errors.McpError(
+                errors.INVALID_REQUEST, str(exc)))
+        snapshot = ctx.coordinator.snapshot()
+        if snapshot.get('run_id') != request.get('run_id'):
+            return ctx.error_response(errors.McpError(
+                errors.STATE_CONFLICT,
+                'verification run_id does not match current run',
+                {'current': snapshot.get('run_id'),
+                 'requested': request.get('run_id')}))
+        if snapshot.get('controller') != controller:
+            return ctx.error_response(errors.McpError(
+                errors.CONTROLLER_CONFLICT,
+                'controller does not own the current run'))
+        if not hasattr(ctx.runner, 'verify_egress'):
+            return ctx.error_response(errors.McpError(
+                errors.NOT_ALLOWED_IN_STATE,
+                'guest verification is unavailable for this runner'))
+        fingerprint = egress_contract.request_fingerprint({
+            'op': 'verify_egress_isolation_guest',
+            'schema_version': request['schema_version'],
+            'controller': controller,
+            'run_id': snapshot.get('run_id'),
+            'expected_state_version': int(expected_state_version),
+            'verification_request': request,
+        })
+
+        def execute(coord):
+            return ctx.runner.verify_egress(
+                coord, controller, request, command_id)
+
+        try:
+            return ctx.coordinator.submit(
+                command_id=command_id,
+                expected_version=int(expected_state_version),
+                controller=controller,
+                controller_valid=classification == 'valid_uuid',
+                kind='verify_egress',
+                describe={'verification_id': verification_id},
+                execute=execute,
+                request_identity=fingerprint)
         except errors.McpError as exc:
             return ctx.error_response(exc)
 

@@ -1,0 +1,67 @@
+{
+  "schema": "fakenetng.probe-scope.v1",
+  "version": 1,
+  "scope_id": "<deployment-scope-id>",
+  "mode": "probe",
+  "authorization": "withheld",
+  "revoked": true,
+  "not_before": "1970-01-01T00:00:00+00:00",
+  "expires_at": "1970-01-01T00:00:00+00:00",
+  "actions": [
+    "host_provider",
+    "windows_probe",
+    "matrix_probe",
+    "guest_verify",
+    "velo_probe"
+  ],
+  "vm": {
+    "uuid": "<vmx-bios-uuid>",
+    "computer": "<guest-computer-name>"
+  },
+  "objects": {
+    "vmx_path": "<absolute-vmx-path>",
+    "guest_ip": "<dedicated-vm-guest-ip>",
+    "config_name": "default.ini"
+  },
+  "paths": {
+    "output_root": "/var/lib/fakenetng-host-mcp/verifications",
+    "state_root": "/var/lib/fakenetng-host-mcp/state"
+  },
+  "tools": {
+    "fakenet": [
+      "get_status",
+      "read_config",
+      "verify_egress_isolation"
+    ],
+    "windows": [
+      "PowerShell"
+    ],
+    "velo": [
+      "<verified-read-only-velo-tool>"
+    ]
+  },
+  "probe": {
+    "script_sha256": "63e3fa33caaea0e3041131558577bd5745d685276c34cb745c959b166a69044f",
+    "destinations": [
+      "198.51.100.77",
+      "2001:db8::77"
+    ],
+    "echo_destination": "198.51.100.77",
+    "echo_port": 1337,
+    "matrix_versions": [
+      "v1"
+    ],
+    "allow_random_ports": true,
+    "guest_echo_allowed": false
+  },
+  "control_ports": [
+    28787,
+    28788,
+    28790
+  ],
+  "budget": {
+    "total_ms": 50000,
+    "finish_ms": 5000
+  },
+  "sample_context": {}
+}

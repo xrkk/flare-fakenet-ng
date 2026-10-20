@@ -1,5 +1,8 @@
 # FakeNet-NG：AI工具功能与MCP接口完整参考
 
+> 2026-10-20 更新: 本功能新增 guest 工具 `verify_egress_isolation` (当前 guest 工具总数 20), 并新增 host stdio facade `fakenetng-host-mcp`. 本文后续 16/19 工具计数是历史读取基线; 现场 `tools/list` 和 `fakenet/mcp/HOST-MCP.md` 为准.
+
+
 本文可单独提供给AI，说明本仓库产品功能、配置入口和全部MCP调用合同。以2026-09-23读取的源码 `e22a60d74adc088a6e8221194baf6bbe2f21d037` 为基线；描述实现能力，不代表全部场景已经验收通过。运行中的安装包可能落后于源码，连接后先用 `tools/list` 核对实际schema，不能仅凭版本号认定包内容一致。
 
 ## 1. 产品是什么，选哪个入口

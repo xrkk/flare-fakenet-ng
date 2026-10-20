@@ -355,11 +355,54 @@ def probe_instance(instance):
         'diverttraffic', 'yes')).lower() == 'no' and diverter is None)
     capture_ready = bool(handle and getattr(handle, 'is_open', False) and
                          capture_alive and capture_error is None)
+    dump_packets = bool(getattr(instance, 'dump_packets', False))
+    inbound_handle = getattr(diverter, '_inbound_capture_handle', None)
+    inbound_active = bool(inbound_handle is not None and inbound_thread is not None
+                          and inbound_thread.is_alive())
+    inbound_filter = None
+    inbound_flags = None
+    if inbound_handle is not None:
+        try:
+            inbound_filter = diverter._inbound_capture_filter()
+        except Exception:
+            inbound_filter = None
+        # Read the flags/filter of the handle which is actually open. The
+        # pinned pydivert stores these constructor values on the handle.
+        actual_flags = getattr(inbound_handle, '_flags', None)
+        try:
+            from pydivert import Flag
+            inbound_flags = ('SNIFF' if actual_flags == Flag.SNIFF
+                             else str(actual_flags))
+        except (ImportError, AttributeError):
+            inbound_flags = None
+        actual_filter = getattr(inbound_handle, '_filter', None)
+        if isinstance(actual_filter, bytes):
+            inbound_filter = actual_filter.decode('utf-8', 'replace')
+    if inbound_handle is not None:
+        capture_mode = 'sniff'
+    elif dump_packets:
+        capture_mode = 'outbound_only'
+    elif listener_only:
+        capture_mode = 'listener_only'
+    else:
+        capture_mode = 'outbound_only'
+    diverter_config = getattr(instance, 'diverter_config', {}) or {}
     return {'init_evidence': bool(providers),
             'probe': bool(listeners and (listener_only or capture_ready)),
             'capture_threads_alive': capture_alive,
             'capture_error': str(capture_error) if capture_error is not None else None,
             'final_filter': str(getattr(diverter, 'filter', '')),
+            'inbound_capture_filter': inbound_filter,
+            'inbound_capture_flags': inbound_flags,
+            'inbound_capture_active': inbound_active,
+            'capture_mode': capture_mode,
+            'dump_packets': dump_packets,
+            'control_link_exclude_ip': str(diverter_config.get(
+                'controllinkexcludeip', diverter_config.get(
+                    'ControlLinkExcludeIp', '')) or ''),
+            'control_link_exclude_ports': str(diverter_config.get(
+                'controllinkexcludeport', diverter_config.get(
+                    'ControlLinkExcludePort', '')) or ''),
             'listeners': observations}
 
 

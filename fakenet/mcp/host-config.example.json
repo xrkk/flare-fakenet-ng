@@ -1,0 +1,64 @@
+{
+  "schema": "fakenetng-host-mcp.config.v1",
+  "fakenet_mcp": {
+    "url": "http://<dedicated-vm-guest-ip>:28788/mcp",
+    "controller_id": "<current-run-controller-uuid>",
+    "config_name": "default.ini",
+    "timeout_seconds": 20,
+    "allowed_hosts": [
+      "<dedicated-vm-guest-ip>"
+    ]
+  },
+  "windows_mcp": {
+    "url": "http://<dedicated-vm-guest-ip>:28787/mcp",
+    "timeout_seconds": 45,
+    "allowed_hosts": [
+      "<dedicated-vm-guest-ip>"
+    ]
+  },
+  "velo_mcp": {
+    "url": "http://<dedicated-vm-guest-ip>:28790/mcp",
+    "tool": "<verified-read-only-velo-tool>",
+    "arguments": {},
+    "timeout_seconds": 15,
+    "allowed_hosts": [
+      "<dedicated-vm-guest-ip>"
+    ],
+    "allowed_tools": [
+      "<verified-read-only-velo-tool>"
+    ],
+    "allowed_arguments": []
+  },
+  "vmx": {
+    "path": "<absolute-vmx-path>",
+    "expected_uuid": "<vmx-bios-uuid>",
+    "expected_computer": "<guest-computer-name>"
+  },
+  "guest_ip": "<dedicated-vm-guest-ip>",
+  "vmware_networking_path": "/etc/vmware/networking",
+  "nat_conf_path": "/etc/vmware/vmnet8/nat/nat.conf",
+  "interface": "vmnet8",
+  "sample_context": {},
+  "probe_authorization": {
+    "authorized": false,
+    "source_ref": "<absolute-probe-scope-json>",
+    "source_sha256": "<probe-scope-json-sha256>",
+    "scope": "dedicated-benign-win10",
+    "expected_vmx_uuid": "<vmx-bios-uuid>",
+    "expected_computer": "<guest-computer-name>"
+  },
+  "policy": {
+    "required_control_ports": [
+      28787,
+      28788,
+      28790
+    ],
+    "matrix_version": "v1",
+    "probe_script_sha256": "63e3fa33caaea0e3041131558577bd5745d685276c34cb745c959b166a69044f",
+    "verification_budget_seconds": 50,
+    "guest_budget_ms": 15000,
+    "output_compact_limit_bytes": 65536
+  },
+  "output_root": "/var/lib/fakenetng-host-mcp/verifications",
+  "state_root": "/var/lib/fakenetng-host-mcp/state"
+}

@@ -278,7 +278,12 @@ def offline_install_sdk(stage, build_root):
 
 
 FORMAL_RUNTIME_PREFIX = 'test_formal_runtime_'
-HOST_ONLY_TESTS = ('test/test_linuxnetpolicy.py', 'test/test_linux_deploy.py',
+MCP_HOST_TESTS = (
+    'test/mcp/test_host_stdio.py', 'test/mcp/test_host_state.py',
+    'test/mcp/test_host_budget_guards.py', 'test/mcp/test_r03_regressions.py',
+    'test/mcp/test_r04_integration.py',
+)
+HOST_ONLY_TESTS = MCP_HOST_TESTS + ('test/test_linuxnetpolicy.py', 'test/test_linux_deploy.py',
                    'test/test_linux_update.py', 'test/test_linuxrunner.py',
                    'test/test_linux_owner_rules.py',
                    'test/test_capture_checkpoint.py')
@@ -470,7 +475,8 @@ def gate_test_files(stage, layer):
     """
     files = sorted(path.relative_to(stage).as_posix()
                    for path in (stage / 'test').rglob('test_*.py')
-                   if path.name != 'test_http_listener_stop.py')
+                   if path.name != 'test_http_listener_stop.py' and
+                   path.relative_to(stage).as_posix() not in MCP_HOST_TESTS)
     if layer == 'core':
         files = [f for f in files if not Path(f).name.startswith(FORMAL_RUNTIME_PREFIX)
                  and f not in HOST_ONLY_TESTS]

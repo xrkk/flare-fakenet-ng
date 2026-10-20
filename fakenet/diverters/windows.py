@@ -149,6 +149,52 @@ from .processredirect import (
 # WinDivert 1.3.0 limits from the repository-pinned pydivert wheel.  These
 # are explicit bindings rather than assumptions about driver defaults: every
 # handle is set and read back before it can receive a packet.
+def _probe_nonce_from_packet(pkt):
+    """Return only the fixed MALTRACE probe marker token, never sample data."""
+    try:
+        raw = bytes(pkt.octets)
+    except Exception:
+        return None
+    marker = b'MALTRACE-EGRESS-'
+    index = raw.find(marker)
+    if index < 0:
+        return None
+    tail = raw[index + len(marker):index + len(marker) + 128]
+    token = tail.split(b' ')[0].split(b'\r')[0].split(b'\n')[0]
+    token = token.split(b'?')[0].split(b'&')[0]
+    if 4 <= len(token) <= 80 and all(
+            32 <= byte <= 126 for byte in token):
+        return token.decode('ascii')
+    return None
+
+
+def _process_creation_ticks(pid):
+    if type(pid) is not int or pid <= 0:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        handle = ctypes.windll.kernel32.OpenProcess(
+            0x1000, False, int(pid))
+        if not handle:
+            return None
+        try:
+            created = wintypes.FILETIME()
+            exited = wintypes.FILETIME()
+            kernel = wintypes.FILETIME()
+            user = wintypes.FILETIME()
+            if not ctypes.windll.kernel32.GetProcessTimes(
+                    handle, ctypes.byref(created), ctypes.byref(exited),
+                    ctypes.byref(kernel), ctypes.byref(user)):
+                return None
+            return ((int(created.dwHighDateTime) << 32) |
+                    int(created.dwLowDateTime))
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
 WINDIVERT_QUEUE_LENGTH = CAPTURE_QUEUE_EXPECTED['queue_len']
 WINDIVERT_QUEUE_TIME_MS = CAPTURE_QUEUE_EXPECTED['queue_time_ms']
 
@@ -1761,11 +1807,30 @@ class Diverter(DiverterBase, WinUtilMixin):
                 return
             if pkt.mangled and not handled_by_base:
                 self._timed_write_pcap(pkt)
-            if verdict == Verdict.DIVERT_FAKE:
-                self.log_egress_event(
-                    'DIVERT_FAKE', original_ip=pkt.dst_ip0,
-                    original_port=pkt.dport0)
+            probe_nonce = (_probe_nonce_from_packet(pkt)
+                           if verdict == Verdict.DIVERT_FAKE else None)
             sent = self._send_packet(pkt)
+            if sent and verdict == Verdict.DIVERT_FAKE:
+                if probe_nonce:
+                    pid, comm = self.get_pid_comm(pkt)
+                    creation = _process_creation_ticks(pid)
+                    self.log_egress_event(
+                        'DIVERT_FAKE_PROBE', original_ip=pkt.dst_ip0,
+                        original_port=pkt.dport0, dst=pkt.dst_ip0,
+                        dport=pkt.dport0, src=pkt.src_ip0,
+                        sport=pkt.sport0,
+                        proto=str(pkt.proto or 'unknown').upper(),
+                        pid=(pid if pid is not None else 'unknown'),
+                        process=(str(comm).replace(' ', '_') if comm else
+                                 'unknown'),
+                        creation=(creation if creation is not None else
+                                  'unknown'),
+                        probe_nonce=probe_nonce,
+                        epoch=int(time.time()))
+                else:
+                    self.log_egress_event(
+                        'DIVERT_FAKE', original_ip=pkt.dst_ip0,
+                        original_port=pkt.dport0)
             if sent and handled_by_base:
                 self._remember_observed_nat_syn(pkt)
             if not sent and mapping:

@@ -16,6 +16,8 @@ EXIT_FILES = frozenset(('target.json', 'entry.json', 'result.json', 'owner-acqui
                         'owner-result.json', 'owner-dump.json', 'normal-claim.json',
                         'normal-ack.json', 'stop-intent.json', 'capability.json'))
 
+OPERATION_BUDGETS = {'verify-egress-isolation': 20.0}
+
 
 def _run_id(value):
     if not isinstance(value, str) or str(uuid.UUID(value)) != value:
@@ -122,6 +124,14 @@ def execute(operation, payload, deadline, watchdog=None):
         if not run_dir.is_dir() or run_dir.parent != (artifacts / 'runs').resolve():
             raise ValueError('pre-start network run directory unavailable')
         return persist_and_assert(run_dir, deadline=deadline)
+    if operation == 'verify-egress-isolation':
+        from fakenet.mcp.egress_verification import collect_guest_subset
+        _run_id(payload['run_id'])
+        verification_id = payload.get('verification_id')
+        if not isinstance(verification_id, str) or str(uuid.UUID(
+                verification_id)) != verification_id:
+            raise ValueError('invalid verification identity')
+        return collect_guest_subset(payload, deadline)
     raise ValueError('unknown diagnostic operation')
 
 
@@ -160,8 +170,12 @@ def main():
             from contextlib import nullcontext
             from fakenet.mcp.exit_guard import SingleFlight
             bulk = request['operation'] in ('incident-prepare', 'incident-collect',
-                                            'exit-verify-dump', 'register-artifacts')
-            watchdog = ItemWatchdog(min(deadline, request['started']+60), reserve=2 if bulk else 0)
+                                            'exit-verify-dump', 'register-artifacts',
+                                            'verify-egress-isolation')
+            operation_budget = OPERATION_BUDGETS.get(request['operation'], 60.0)
+            watchdog = ItemWatchdog(
+                min(deadline, request['started'] + operation_budget),
+                reserve=2 if bulk else 0)
             with (SingleFlight() if bulk else nullcontext()):
                 result = execute(request['operation'], request['payload'], deadline, watchdog)
         if time.monotonic() >= deadline:

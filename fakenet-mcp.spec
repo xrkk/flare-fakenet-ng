@@ -22,6 +22,8 @@ a = Analysis(['fakenet/mcp/__main__.py'],
                   'test/process_redirect_vm'),
              ],
              hiddenimports=[
+                 'fakenet.mcp.egress_contract',
+                 'fakenet.mcp.egress_verification',
                  'mcp',
                  'mcp.types',
                  'mcp.shared',

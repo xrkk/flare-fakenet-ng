@@ -10,6 +10,8 @@ domain-error shapes (which carry ``error`` and may omit success fields)
 validate equally; errors are never coerced into success defaults.
 """
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -129,8 +131,116 @@ class ConfigReceipt(_Open):
     deleted: bool | None = None
 
 
+class VerificationLifecycle(_Open):
+    state: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    duration_ms: int | None = None
+    reason: str | None = None
+
+
+class VerificationBindings(_Open):
+    run_id: str | None = None
+    vm_epoch: str | None = None
+    policy_identity: str | None = None
+    execution_context_identity: str | None = None
+    probe_nonce: str | None = None
+    response_nonce: str | None = None
+    required_control_ports: list[int] = Field(default_factory=list)
+    effective_control_exclusion_ports: list[int] | None = None
+    config_identity: ConfigIdentity | None = None
+    final_filter_sha256: str | None = None
+    host_evidence_sha256: str | None = None
+    guest_evidence_sha256: str | None = None
+    controller_identity: str | None = None
+    facade_version: str | None = None
+    matrix_version: str | None = None
+
+
+class VerificationCheck(_Open):
+    value: bool | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class VerificationStep(_Open):
+    id: str | None = None
+    outcome: str | None = None
+    expected: Any = None
+    observed: Any = None
+    reason_code: str | None = None
+    evidence_refs: list[dict] = Field(default_factory=list)
+    started_at: str | None = None
+    ended_at: str | None = None
+
+
+class VerificationConclusion(_Open):
+    status: str | None = None
+    verdict: str | None = None
+    failed_checks: list[str] = Field(default_factory=list)
+    unknown_checks: list[str] = Field(default_factory=list)
+    sample_path_qualified: bool | None = None
+    stop_remaining_probes: bool | None = None
+    authorized: bool = False
+    reason: str | None = None
+
+
+class VerificationCoverage(_Open):
+    matrix_version: str | None = None
+    planned: int | None = None
+    executed: int | None = None
+    not_run: list[dict] = Field(default_factory=list)
+
+
+class VerificationManifest(_Open):
+    sha256: str | None = None
+    entries: list[dict] = Field(default_factory=list)
+    invalidation_conditions: list[str] = Field(default_factory=list)
+
+
+class VerificationRequest(_Open):
+    schema_version: str
+    verification_id: str
+    run_id: str
+    vm_epoch: str
+    policy_identity: str
+    execution_context_identity: str
+    probe_nonce: str
+    required_control_ports: list[int]
+    matrix_version: str = 'v1'
+    random_tcp_port: int
+    random_udp_port: int
+    host_evidence_sha256: str = ''
+    host_probe_pid: int | None = None
+    host_probe_creation: int | None = None
+    host_probe_destination: str | None = None
+    host_probe_port: int | None = None
+    budget: dict = Field(default_factory=dict)
+
+
+class VerificationResult(_Open):
+    schema_version: str | None = None
+    verification_id: str | None = None
+    command_id: str | None = None
+    lifecycle: VerificationLifecycle | None = None
+    verdict: str | None = None
+    bindings: VerificationBindings | None = None
+    steps: list[VerificationStep] = Field(default_factory=list)
+    checks: dict[str, VerificationCheck] = Field(default_factory=dict)
+    helper_input: dict = Field(default_factory=dict)
+    conclusion: VerificationConclusion | None = None
+    coverage: VerificationCoverage | None = None
+    manifest: VerificationManifest | None = None
+    artifact: dict | None = None
+    producer_match: bool | None = None
+    invalidation_conditions: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    authorized: bool = False
+    error: ErrorObject | None = None
+
+
 class CommandCacheResponse(_Open):
     """in_progress placeholder or the saved final response of a command."""
+    verification_id: str | None = None
     state: str | None = None
     state_version: int | None = None
     run_id: str | None = None
@@ -140,6 +250,7 @@ class CommandCacheResponse(_Open):
     last_run_outcome: str | None = None
     config_identity: ConfigIdentity | None = None
     config_result: ConfigReceipt | None = None
+    verification: VerificationResult | None = None
 
 
 class CommandStatusResponse(_Open):
@@ -187,6 +298,7 @@ class RunOverviewResponse(_Open):
 
 class MutationResponse(_Open):
     """Lifecycle and configuration mutations plus error_response shapes."""
+    verification_id: str | None = None
     state: str | None = None
     state_version: int | None = None
     run_id: str | None = None

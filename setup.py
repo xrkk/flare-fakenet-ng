@@ -38,10 +38,11 @@ setup(
     package_data={'fakenet': ['*.pem','diverters/*.py', 'listeners/*.py',
         'listeners/ssl_utils/*.py', 'listeners/ssl_utils/*.pem', 'configs/*.ini',
         'configs/html_report_template.html', 'defaultFiles/*', 'lib/64/*', 'lib/32/*',
-        'configs/*.crt', 'configs/*.key', 'gui/*.py']},
+        'configs/*.crt', 'configs/*.key', 'gui/*.py', 'mcp/*.json', 'mcp/*.md']},
     entry_points={
         "console_scripts": [
             "fakenet=fakenet.fakenet:main",
+            "fakenetng-host-mcp=fakenet.mcp.host_stdio:main",
         ],
         # Windowed entry (pythonw wrapper on Windows); the GUI itself is
         # pure standard library (tkinter + ctypes + subprocess).

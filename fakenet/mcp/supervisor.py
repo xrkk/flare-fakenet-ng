@@ -621,6 +621,121 @@ class RealSupervisor:
         return self.start(coordinator, controller, config_identity,
                           restart_quiescence=True)
 
+    def verify_egress(self, coordinator, controller, request, command_id):
+        """Run the guest-only egress subset for one coordinator operation."""
+        import json
+
+        from fakenet.mcp.artifacts import ArtifactRegistry
+        from fakenet.mcp.diagnostic_process import DiagnosticError
+        from fakenet.mcp.egress_verification import (
+            build_guest_result, utc_now)
+
+        if self._fakenet is None:
+            raise errors.McpError(
+                errors.NOT_ALLOWED_IN_STATE,
+                'guest verification requires an active managed run')
+        if not self._artifacts_root or not self._run_dir:
+            raise errors.McpError(
+                errors.INTERNAL_ERROR,
+                'guest verification artifact root unavailable')
+        snapshot = coordinator.snapshot()
+        if snapshot.get('state') != 'healthy':
+            raise errors.McpError(
+                errors.NOT_ALLOWED_IN_STATE,
+                'guest verification requires a healthy current run')
+        if snapshot.get('controller') != controller:
+            raise errors.McpError(
+                errors.CONTROLLER_CONFLICT,
+                'controller does not own the current run')
+        if request.get('run_id') != snapshot.get('run_id'):
+            raise errors.McpError(
+                errors.STATE_CONFLICT,
+                'verification run_id does not match current run',
+                {'current': snapshot.get('run_id'),
+                 'requested': request.get('run_id')})
+        verification_id = request.get('verification_id')
+        if not isinstance(verification_id, str):
+            raise errors.McpError(
+                errors.INVALID_REQUEST,
+                'verification_id is required')
+        started_at = utc_now()
+        try:
+            live = self._fakenet.request('health', timeout=5)
+        except BaseException as exc:
+            raise errors.McpError(
+                errors.INTERNAL_ERROR,
+                'live guest health unavailable',
+                {'verification_id': verification_id,
+                 'reason': repr(exc)}) from exc
+        live = dict(live, process_alive=self._fakenet.alive(),
+                    identity=self._fakenet.identity)
+        budget = request.get('budget') if isinstance(
+            request.get('budget'), dict) else {}
+        guest_ms = budget.get('guest_ms', 15000)
+        try:
+            guest_ms = float(guest_ms)
+        except (TypeError, ValueError):
+            guest_ms = 15000.0
+        deadline = time.monotonic() + min(15.0, max(1.0, guest_ms / 1000.0))
+        payload = {
+            'run_id': request['run_id'],
+            'verification_id': verification_id,
+            'probe_nonce': request['probe_nonce'],
+            'required_control_ports': request.get(
+                'required_control_ports', []),
+        }
+        for key in ('host_probe_pid', 'host_probe_creation',
+                    'host_probe_started', 'host_probe_ended',
+                    'host_probe_destination', 'host_probe_port',
+                    'guest_echo_allowed'):
+            if key in request:
+                payload[key] = request[key]
+        try:
+            child = self._diagnostic_call(
+                'verify-egress-isolation', payload, deadline)
+        except DiagnosticError as exc:
+            raise errors.McpError(
+                errors.INTERNAL_ERROR,
+                'guest verification diagnostic failed',
+                {'verification_id': verification_id,
+                 'lifecycle': 'failed',
+                 'diagnostic': self._diagnostics.last}) from exc
+        evidence_dir = self._run_dir / 'egress-verification' / verification_id
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        live_path = evidence_dir / 'live-health.json'
+        raw = (json.dumps(live, ensure_ascii=False, sort_keys=True,
+                          indent=2) + '\n').encode('utf-8')
+        if live_path.exists():
+            if live_path.is_symlink() or not live_path.is_file():
+                raise errors.McpError(
+                    errors.INTERNAL_ERROR,
+                    'live health evidence path is not a plain file')
+            raw = live_path.read_bytes()
+        else:
+            with live_path.open('xb') as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+        live_evidence = {'path': str(live_path),
+                         'sha256': hashlib.sha256(raw).hexdigest(),
+                         'size': len(raw)}
+        result = build_guest_result(
+            command_id=command_id, request=request, snapshot=snapshot,
+            health=live, child=child, started_at=started_at,
+            live_evidence=live_evidence)
+        try:
+            artifact = ArtifactRegistry(
+                self._artifacts_root).publish_verification(
+                    request['run_id'], verification_id, result)
+        except BaseException as exc:
+            raise errors.McpError(
+                errors.INTERNAL_ERROR,
+                'guest verification artifact publication failed',
+                {'verification_id': verification_id,
+                 'reason': repr(exc)}) from exc
+        result['artifact'] = artifact
+        return {'changed': False, 'verification': result}
+
     def _diagnostic_call(self, operation, payload, deadline):
         # Condition.wait releases *all* levels of the lifecycle RLock while
         # the owned child does I/O. The accepted coordinator operation keeps

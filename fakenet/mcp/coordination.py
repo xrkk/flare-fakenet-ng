@@ -43,8 +43,9 @@ def _clone_receipt_fields(response):
     if not isinstance(response, dict):
         return response
     response = dict(response)
-    if 'capture_checkpoint' in response:
-        response['capture_checkpoint'] = copy.deepcopy(response['capture_checkpoint'])
+    for key in ('capture_checkpoint', 'verification'):
+        if key in response:
+            response[key] = copy.deepcopy(response[key])
     return response
 
 
@@ -315,7 +316,7 @@ class Coordinator:
 
     def submit(self, *, command_id, expected_version, controller,
                controller_valid, kind, describe, execute,
-               internal=False, conflict_names=None):
+               internal=False, conflict_names=None, request_identity=None):
         """Run one serialized mutation.
 
         CHK-022 three-phase design: validation and state updates run under
@@ -353,6 +354,11 @@ class Coordinator:
                 raise errors.McpError(
                     errors.CONTROLLER_IDENTITY_MISSING,
                     'mutation requires controller identity')
+            if kind == 'verify_egress' and (
+                    not isinstance(request_identity, str) or not request_identity):
+                raise errors.McpError(
+                    errors.INVALID_REQUEST,
+                    'verification requires a non-empty semantic request identity')
 
             # Identity precedes replay, but replay precedes busy/version:
             # an in-flight retry identifies the original operation immediately.
@@ -362,6 +368,23 @@ class Coordinator:
                     raise errors.McpError(
                         errors.CONTROLLER_CONFLICT,
                         'command_id belongs to another controller')
+                if cached.get('kind') != kind and (
+                        kind == 'verify_egress' or
+                        cached.get('kind') == 'verify_egress'):
+                    raise errors.McpError(
+                        errors.INVALID_REQUEST,
+                        'command_id belongs to another kind',
+                        {'cached_kind': cached.get('kind'),
+                         'incoming_kind': kind})
+                cached_identity = cached.get('request_identity')
+                if (cached_identity is not None and
+                        request_identity is not None and
+                        cached_identity != request_identity):
+                    raise errors.McpError(
+                        errors.INVALID_REQUEST,
+                        'command_id reused with different request',
+                        {'cached_identity': cached_identity,
+                         'incoming_identity': request_identity})
                 if 'exception' in cached:
                     raise cached['exception']
                 replay = dict(cached['response'])
@@ -386,11 +409,15 @@ class Coordinator:
             self._operation_active = True
             self._commands[command_id] = {
                 'controller': controller, 'describe': describe,
+                'kind': kind, 'request_identity': request_identity,
                 'response': {'state': self._state,
                              'state_version': self._state_version,
                              'run_id': self._run_id, 'changed': False,
                              'error': None, 'command_id': command_id,
-                             'in_progress': True},
+                             'in_progress': True,
+                             'verification_id': (
+                                 describe.get('verification_id')
+                                 if kind == 'verify_egress' else None)},
             }
             self._events.record('command.accepted', command_id=command_id,
                                 controller=controller, operation=kind)
@@ -474,6 +501,12 @@ class Coordinator:
                 response['config_identity'] = result['config_identity']
             if 'config_result' in result:
                 response['config_result'] = result['config_result']
+            if kind == 'verify_egress' and 'verification' in result:
+                response['verification'] = copy.deepcopy(
+                    result['verification'])
+                response['verification_id'] = (
+                    result['verification'].get('verification_id')
+                    if isinstance(result['verification'], dict) else None)
             # A successful capture-only stop retains its committed checkpoint
             # and its strict no-release posture in the immutable cached
             # receipt. This is a narrow receipt for this one kind: a normal
@@ -491,7 +524,8 @@ class Coordinator:
                 response['release_controller'] = False
             self._commands[command_id] = {
                 'controller': controller, 'response': response,
-                'describe': describe,
+                'describe': describe, 'kind': kind,
+                'request_identity': request_identity,
             }
             self._finish_operation(command_id)
             return _clone_receipt_fields(response)

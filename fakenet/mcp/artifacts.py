@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
 import time
+import uuid
 
 
 # Producers stage under these suffixes and publish with an atomic replace;
@@ -364,6 +365,36 @@ class ArtifactRegistry:
     def run_dir(self, run_id):
         return self.root / str(run_id)
 
+    def publish_verification(self, run_id, verification_id, payload):
+        """Publish one completed verification result under artifacts/<run_id>."""
+        run_id = str(uuid.UUID(str(run_id)))
+        verification_id = str(uuid.UUID(str(verification_id)))
+        run_dir = self.run_dir(run_id)
+        _plain_directory(self.root, 'artifact registry root')
+        _plain_directory(run_dir, 'artifact run root', allow_missing=True)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        _plain_directory(run_dir, 'artifact run root')
+        path = run_dir / ('egress-verification-%s.json' % verification_id)
+        if path.exists() or path.is_symlink():
+            raise FileExistsError('verification artifact already exists')
+        raw = (json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                          indent=2) + '\n').encode('utf-8')
+        fd, temporary = tempfile.mkstemp(dir=run_dir, prefix='.verification-')
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+        write_publication(run_dir, [path])
+        return {'path': str(path), 'size': len(raw),
+                'sha256': hashlib.sha256(raw).hexdigest()}
+
     def register_fakenet_outputs(self, run_id, package_root, keep=None,
                                  prefix='fakenet-'):
         """Register the artifacts a finished FakeNet run leaves next to the
@@ -572,9 +603,13 @@ class ArtifactRegistry:
         never cross threads.
         """
         suffix = path.suffix.lstrip('.').lower()
-        item_type = {'pcap': 'pcap', 'log': 'log', 'html': 'report',
-                     'dmp': 'userdump', 'ini': 'config'}.get(
-                         suffix, suffix or 'file')
+        if (path.name.startswith('egress-verification-') and
+                suffix == 'json'):
+            item_type = 'egress_verification'
+        else:
+            item_type = {'pcap': 'pcap', 'log': 'log', 'html': 'report',
+                         'dmp': 'userdump', 'ini': 'config'}.get(
+                             suffix, suffix or 'file')
         if path.parent not in publications:
             publications[path.parent] = publication_record(path.parent)
         return (str(path), item_type,

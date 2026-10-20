@@ -345,3 +345,19 @@ class HostPlatformSelectionTests(unittest.TestCase):
             for name in names[:6]:
                 self.assertNotIn(name,windows)
                 self.assertIn(name,host)
+
+
+class McpHostSelectionTests(unittest.TestCase):
+    def test_host_stdio_and_durable_linux_ledger_are_not_windows_tests(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary)
+            for name in gate.MCP_HOST_TESTS:
+                path = stage / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('')
+            for layer in ('core', 'full'):
+                windows = gate.gate_selection(stage, layer)
+                host = gate.gate_selection(stage, layer, host=True)
+                for name in gate.MCP_HOST_TESTS:
+                    self.assertNotIn(name, windows)
+                    self.assertIn(name, host)
