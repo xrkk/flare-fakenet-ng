@@ -689,7 +689,7 @@ def register_tools(server, ctx):
 
     @server.tool(
         description='Run the guest-observable egress isolation subset once; host-only facts remain unknown.',
-        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
         structured_output=True)
     def verify_egress_isolation(
             command_id: str, expected_state_version: int,

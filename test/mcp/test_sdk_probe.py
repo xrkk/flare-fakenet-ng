@@ -207,7 +207,7 @@ def test_tools_list_frozen_surface(endpoint):
     tools_listing = json.loads(text)['result']['tools']
     names = sorted(tool['name'] for tool in tools_listing)
     # P01 probe surface plus the P02 domain tools and the T003 read-only
-    # additions: the frozen 19-tool surface (sub-plan P02 §3; mcp-query
+    # additions: the frozen 20-tool surface (sub-plan P02 §3; mcp-query
     # workflows contract). The existing stop tool adds the optional Linux
     # capture_only flag; the two original required parameters stay required.
     assert names == sorted([
@@ -216,6 +216,7 @@ def test_tools_list_frozen_surface(endpoint):
         'validate_config', 'read_config', 'list_artifacts', 'load_config',
         'start', 'stop', 'restart', 'create_config', 'import_config',
         'edit_config', 'rename_config', 'delete_config',
+        'verify_egress_isolation',
     ])
     schemas_by_name = {tool['name']: tool for tool in tools_listing}
     # Original tool parameters are preserved...

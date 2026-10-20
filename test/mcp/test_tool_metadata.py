@@ -1,7 +1,7 @@
 # Copyright 2026 Google LLC
 """Public tool metadata: descriptions, annotations, typed output schemas.
 
-Real SDK localhost endpoint: all 19 public tools expose a non-empty terse
+Real SDK localhost endpoint: all 20 public tools expose a non-empty terse
 description, honest read/write annotations and a concrete outputSchema
 (typed fields, not an object shell); responses still carry every existing
 field (extras included) and structuredContent matches the text payload.
@@ -30,12 +30,14 @@ EXPECTED_TOOLS = {
     'get_run_overview',
     'load_config', 'start', 'stop', 'restart',
     'create_config', 'import_config', 'edit_config', 'rename_config',
-    'delete_config',
+    'delete_config', 'verify_egress_isolation',
 }
 READ_ONLY = EXPECTED_TOOLS - {
     'load_config', 'start', 'stop', 'restart', 'create_config',
-    'import_config', 'edit_config', 'rename_config', 'delete_config'}
+    'import_config', 'edit_config', 'rename_config', 'delete_config',
+    'verify_egress_isolation'}
 LIFECYCLE = {'start', 'stop', 'restart'}
+NON_DESTRUCTIVE = {'verify_egress_isolation'}
 SNAPSHOT = os.environ.get('FAKENET_T003_SNAPSHOT')  # evidence path opt-in
 
 
@@ -162,7 +164,7 @@ def test_real_validate_read_list_configs_success_paths(endpoint):
     assert rejected['valid'] is None
 
 
-def test_all_nineteen_tools_have_full_metadata(endpoint):
+def test_all_twenty_tools_have_full_metadata(endpoint):
     tools = {tool['name']: tool for tool in tool_list(endpoint)}
     assert set(tools) == EXPECTED_TOOLS
     for name, tool in tools.items():
@@ -170,7 +172,8 @@ def test_all_nineteen_tools_have_full_metadata(endpoint):
         assert len(tool['description']) <= 220, (name, tool['description'])
         annotations = tool.get('annotations') or {}
         assert annotations.get('readOnlyHint') is (name in READ_ONLY), name
-        assert annotations.get('destructiveHint') is (name not in READ_ONLY)
+        assert annotations.get('destructiveHint') is (
+            name not in READ_ONLY and name not in NON_DESTRUCTIVE)
         if name not in READ_ONLY:
             # process-cache dedupe is not durable idempotence
             assert annotations.get('idempotentHint') is False, name
