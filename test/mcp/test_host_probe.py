@@ -150,3 +150,47 @@ def test_extract_marker_requires_exactly_one_marker():
         assert 'marker' in str(exc)
     else:
         raise AssertionError('missing marker accepted')
+
+
+def test_udp_mapped_dns_uses_current_transaction_question_and_parser():
+    nonce='current-nonce'
+    expected=host_probe.expected_steps(mapped_ports=[53],
+        listener_map={53:'dnslistener'},nonce=nonce)
+    step=expected['ipv4_udp_53']
+    assert step['probe_kind']=='dns'
+    assert step['question']=='MALTRACE-'+nonce+'.invalid'
+    assert step['dns_txid']==host_probe.dns_txid(nonce,step['id'])
+    response={'received':'dns-bytes=83','sent':48,'response_type':'dns',
+        'nonce_match':True,'address_family':'InterNetwork',
+        'remote_endpoint':'198.51.100.77:53',
+        'local_endpoint':'192.168.204.149:40000','qr':True,
+        'transaction_id':step['dns_txid'],'question':step['question'],
+        'qtype':1,'qclass':1,'rcode':0}
+    assert host_probe.classify_step(step,response,'local_fake')[0]=='pass'
+    for key,value in (('transaction_id',step['dns_txid']^1),
+                      ('question','different.invalid'),('qr',False)):
+        assert host_probe.classify_step(step,dict(response,**{key:value}),
+                                       'local_fake')[0]!='pass'
+
+
+def test_default_windows_icmp_local_redirect_is_not_an_external_response():
+    expected=host_probe.expected_steps(nonce='nonce')
+    step=expected['ipv4_icmp']
+    assert step['expected']=='local_fake'
+    response={'received':'MALTRACE-nonce','sent':32,'outcome':'response',
+        'status':'Success','response_type':'icmp_echo','nonce_match':True,
+        'address_family':'InterNetwork','responder':'192.168.204.149',
+        'remote_endpoint':'192.168.204.149',
+        'route':{'source':'192.168.204.149','interface':'11',
+                 'next_hop':'192.168.204.2'}}
+    assert host_probe.classify_step(step,response,'local_fake',
+        containment_observed=True,execution_verified=True)[0]=='pass'
+    assert host_probe.classify_step(step,response,'local_fake',
+        containment_observed=None,execution_verified=True)[0]=='unknown'
+    assert host_probe.classify_step(step,response,'local_fake',
+        containment_observed=True,execution_verified=False)[0]=='unknown'
+    for key,value in (('status','TimedOut'),('nonce_match',False),
+                      ('responder','198.51.100.77'),('route',None)):
+        assert host_probe.classify_step(step,dict(response,**{key:value}),
+            'local_fake',containment_observed=True,
+            execution_verified=True)[0]!='pass'

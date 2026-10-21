@@ -341,13 +341,15 @@ def apply_probe_kinds(rows, listener_map=None, redirect_all=True):
 
 def matrix_steps(random_tcp_port, random_udp_port, nonce=None,
                  listener_map=None, redirect_all=True):
-    rows = egress_contract.matrix_definition(random_tcp_port, random_udp_port)
+    rows = apply_probe_kinds(
+        egress_contract.matrix_definition(random_tcp_port, random_udp_port),
+        listener_map, redirect_all)
     if nonce is not None:
         for row in rows:
-            if row['kind'] == 'dns':
+            if row['probe_kind'] == 'dns':
                 row['dns_txid'] = dns_txid(nonce, row['id'])
                 row['question'] = 'MALTRACE-' + str(nonce) + '.invalid'
-    return apply_probe_kinds(rows, listener_map, redirect_all)
+    return rows
 
 
 def dns_txid(nonce, step_id):
@@ -471,7 +473,8 @@ def expected_steps(bypass_tcp=(), bypass_udp=(), mapped_ports=(),
                              listener_map=listener_map,
                              redirect_all=redirect_all):
         if step['kind'] == 'icmp':
-            expected, reason = 'blocked', 'icmp_not_intercepted'
+            # The Windows diverter redirects external ICMP to this host.
+            expected, reason = 'local_fake', 'windows_icmp_local_redirect'
         elif step['kind'] == 'dns':
             if 53 in mapped or redirect_all:
                 expected, reason = 'local_fake', 'dns_listener'
@@ -566,6 +569,21 @@ def classify_step(step, observed, expected, *, boundary_verified=None,
     if kind in ('tcp', 'udp', 'dns', 'icmp') and not _family_matches(
             observed.get('address_family'), family):
         return 'unknown', 'address_family_mismatch'
+    if kind == 'icmp':
+        if (observed.get('response_type') != 'icmp_echo' or
+                observed.get('status') != 'Success' or
+                observed.get('nonce_match') is not True):
+            return 'unknown', 'icmp_nonce_mismatch'
+        route = observed.get('route') or {}
+        if (not all(route.get(k) for k in ('source', 'interface', 'next_hop')) or
+                str(observed.get('responder') or '') != route['source'] or
+                observed.get('remote_endpoint') != route['source']):
+            return 'unknown', 'icmp_responder_mismatch'
+        if containment_observed is not True:
+            return 'unknown', 'running_observation_unconfirmed'
+        if not execution_verified:
+            return 'unknown', 'probe_execution_unconfirmed'
+        return 'pass', 'strict_local_icmp_nonce_and_scoped_no_egress'
     if not _endpoint_matches(observed.get('remote_endpoint'), destination,
                              port):
         return 'unknown', 'remote_endpoint_mismatch'
@@ -589,12 +607,14 @@ def classify_step(step, observed, expected, *, boundary_verified=None,
         if not isinstance(observed.get('elapsed_ms'), int):
             return 'unknown', 'elapsed_missing'
         return 'pass', 'strict_http_nonce_response'
-    if kind == 'udp':
+    # A UDP matrix row mapped to DNS runs the strict DNS probe.
+    response_kind = 'dns' if (step or {}).get('probe_kind') == 'dns' else kind
+    if response_kind == 'udp':
         if response_type != 'udp_nonce' or observed.get(
                 'nonce_match') is not True:
             return 'unknown', 'udp_nonce_mismatch'
         return 'pass', 'strict_udp_nonce_response'
-    if kind == 'dns':
+    if response_kind == 'dns':
         if response_type != 'dns' or observed.get('qr') is not True:
             return 'unknown', 'dns_response_invalid'
         expected_txid = (step or {}).get('dns_txid')
@@ -613,11 +633,4 @@ def classify_step(step, observed, expected, *, boundary_verified=None,
         if observed.get('nonce_match') is not True:
             return 'unknown', 'dns_nonce_mismatch'
         return 'pass', 'strict_dns_transaction_response'
-    if kind == 'icmp':
-        if response_type != 'icmp_echo' or observed.get(
-                'nonce_match') is not True:
-            return 'unknown', 'icmp_nonce_mismatch'
-        if str(observed.get('responder') or '') != destination:
-            return 'unknown', 'icmp_responder_mismatch'
-        return 'pass', 'strict_icmp_nonce_response'
     return 'unknown', 'response_not_verified'

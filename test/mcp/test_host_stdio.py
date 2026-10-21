@@ -379,7 +379,7 @@ def test_host_facade_math_and_expected_map():
     assert expected['ipv4_udp_443']['expected'] == 'blocked'
     assert expected['ipv4_tcp_80']['expected'] == 'local_fake'
     assert expected['ipv4_dns_nonce_invalid']['expected'] == 'local_fake'
-    assert expected['ipv4_icmp']['expected'] == 'blocked'
+    assert expected['ipv4_icmp']['expected'] == 'local_fake'
 
 
 def test_host_stdio_tool_surface(tmp_path):
@@ -644,7 +644,7 @@ def test_repeated_long_evidence_keeps_native_fail_and_all_steps(tmp_path, monkey
         def probe(self, script, timeout=None):
             value, raw = super().probe(script, timeout=timeout)
             for row in value.get('steps', []):
-                if row['id'] == 'ipv4_icmp':
+                if row['id'] == 'ipv4_tcp_139':
                     row.update(received='unexpected echo', outcome='response')
             return value, raw
 
