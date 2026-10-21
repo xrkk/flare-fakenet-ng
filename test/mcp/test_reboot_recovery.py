@@ -201,3 +201,27 @@ def test_expired_capture_does_not_issue_a_shell_query(monkeypatch):
     monkeypatch.setattr(rr,'os',SimpleNamespace(name='nt'))
     monkeypatch.setattr(module,'_run',lambda *a,**kw:pytest.fail('query after deadline'))
     assert rr.capture_context(deadline=0)['error']
+
+
+def test_startup_recovery_publishes_failed_outcome_after_normal_release(tmp_path, monkeypatch):
+    from fakenet.mcp.supervisor import RealSupervisor
+    from fakenet.mcp.snapshot import StateSnapshot
+    from fakenet.mcp.coordination import Coordinator
+    root = tmp_path / 'baselines'
+    root.mkdir()
+    snapshot = StateSnapshot(tmp_path / 'state.json')
+    run = '57886d22-ae94-473f-b9f0-f4242655a884'
+    snapshot.write(run_id=run, controller_id='11111111-2222-4333-8444-555555555555',
+                   state_version=1, command_id='old-command', config_sha256='a' * 64,
+                   baseline_path=str(root / (run + '.json')), needs_recovery=True)
+    store = SimpleNamespace(root=root, last_cross_boot_attribution={'accepted': True},
+                            compensate=lambda *args: None, full_audit_diff=lambda *args, **kwargs: {})
+    runner = RealSupervisor(snapshot=snapshot, baseline_store=store)
+    monkeypatch.setattr(runner, '_await_exit_evidence', lambda deadline: None)
+    monkeypatch.setattr(runner, '_register_run_artifacts', lambda *args: None)
+    coordinator = Coordinator(runner)
+    assert runner.recover(coordinator) == 'stopped'
+    status = coordinator.snapshot()
+    assert status['run_id'] is None and status['controller'] is None
+    assert snapshot.read()[0]['needs_recovery'] is False
+    assert status['last_run_outcome'] == 'failed'

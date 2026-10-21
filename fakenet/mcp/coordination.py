@@ -573,10 +573,12 @@ class Coordinator:
         with self._lock:
             return self.current_command_id in self._exit_fenced
 
-    def restore_responsibility(self, marker, state, reason=None):
+    def restore_responsibility(self, marker, state, reason=None, *, last_run_outcome=None):
         with self._lock:
             self._state = state
             self._failure_reason = reason
+            if last_run_outcome is not None:
+                self._last_run_outcome = last_run_outcome
             if marker and marker.get('needs_recovery'):
                 self._run_id = marker.get('run_id')
                 self._controller = marker.get('controller_id')

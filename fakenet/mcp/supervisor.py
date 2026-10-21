@@ -613,7 +613,9 @@ class RealSupervisor:
             coordinator.restore_responsibility(marker, 'failed', 'missing recovery snapshot with baseline residue')
             return 'failed'
         result = self.stop(coordinator)
-        coordinator.restore_responsibility(marker, result['state'], result.get('failure_reason'))
+        coordinator.restore_responsibility(
+            marker, result['state'], result.get('failure_reason'),
+            last_run_outcome=result.get('last_run_outcome'))
         return result['state']
 
     def restart(self, coordinator, controller, config_identity):
