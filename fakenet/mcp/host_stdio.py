@@ -1178,6 +1178,22 @@ class HostFacade:
                 else:
                     compact_refs.append(ref)
             step['evidence_refs'] = compact_refs
+        # Checks repeat path#digest strings in both the public checks and
+        # helper input. Long native paths can still exceed the wire budget
+        # after step observations have been externalized. Resolve only exact
+        # existing manifest references; leave all values and decisions intact.
+        limit = int((self.config.get('policy') or {}).get(
+            'output_compact_limit_bytes', DEFAULT_COMPACT_LIMIT))
+        if len(json.dumps(result, ensure_ascii=False).encode('utf-8')) + 1024 > limit:
+            check_refs = {entry['path'] + '#' + entry['sha256']:
+                          'manifest#' + entry['id'] for entry in entries
+                          if all(isinstance(entry.get(key), str)
+                                 for key in ('path', 'sha256', 'id'))}
+            observation = (result.get('helper_input') or {}).get('observation') or {}
+            for checks in (result.get('checks') or {}, observation.get('checks') or {}):
+                for check in checks.values():
+                    check['evidence_refs'] = [check_refs.get(ref, ref)
+                                              for ref in check.get('evidence_refs') or []]
         result['manifest']['sha256'] = _sha(entries)
         return result
 

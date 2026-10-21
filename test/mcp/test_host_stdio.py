@@ -814,3 +814,64 @@ def test_modified_analysis_config_requires_matching_guest_subset(tmp_path, match
         assert result['bindings']['config_identity']['name'] == 'sample-analysis.ini'
     else:
         assert result['error']['code'] == 'state_conflict'
+
+
+def test_repeated_check_provenance_fits_single_response(tmp_path, monkeypatch):
+    """Native check paths can exceed 64 KiB after step compaction already ran."""
+    from copy import deepcopy
+    from fakenet.mcp.schemas import VerificationResult
+    original = host_merge.build_host_result
+    before = {}
+    originals = {}
+
+    def native_check_paths(**kwargs):
+        result = original(**kwargs)
+        references = []
+        for index in range(7):
+            path = tmp_path / ('native-provenance-' + 'x' * 140) / str(index)
+            path.parent.mkdir(exist_ok=True)
+            path.write_text('retained native check provenance')
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            result['manifest']['entries'].append({
+                'side': 'host', 'path': str(path), 'sha256': digest,
+                'kind': 'native-check'})
+            reference = str(path) + '#' + digest
+            references.append(reference)
+            originals[reference] = (str(path), digest)
+        for checks in (result['checks'],
+                       result['helper_input']['observation']['checks']):
+            for check in checks.values():
+                check['evidence_refs'] = list(references)
+        before.update(deepcopy(result))
+        return result
+
+    monkeypatch.setattr(host_merge, 'build_host_result', native_check_paths)
+    facade = HostFacade(config_for(tmp_path), provider=FakeProvider(),
+                        fakenet_client=FakeFakeNet(), windows_client=FakeWindows(),
+                        velo_client=FakeVelo())
+    result = facade.verify(COMMAND_ID)
+    assert result['error'] is None
+    assert len(json.dumps(result, ensure_ascii=False).encode()) <= 65536
+    VerificationResult.model_validate(result)
+    assert result['verdict'] == before['verdict']
+    assert result['conclusion'] == before['conclusion']
+    assert result['coverage'] == before['coverage']
+    assert [(r['id'], r['outcome'], r['reason_code']) for r in result['steps']] == [
+        (r['id'], r['outcome'], r['reason_code']) for r in before['steps']]
+    entries = {e['id']: e for e in result['manifest']['entries'] if e.get('id')}
+    for current, prior in ((result['checks'], before['checks']),
+            (result['helper_input']['observation']['checks'],
+             before['helper_input']['observation']['checks'])):
+        for key, check in current.items():
+            assert check['value'] == prior[key]['value']
+            resolved = []
+            for reference in check['evidence_refs']:
+                assert reference.startswith('manifest#')
+                entry = entries[reference.split('#', 1)[1]]
+                assert hashlib.sha256(Path(entry['path']).read_bytes()).hexdigest() == entry['sha256']
+                resolved.append(entry['path'] + '#' + entry['sha256'])
+            assert resolved == prior[key]['evidence_refs']
+    replay = facade.verify(COMMAND_ID)
+    assert replay['checks'] == result['checks']
+    Path(next(iter(originals.values()))[0]).write_text('changed evidence')
+    assert facade.verify(COMMAND_ID)['error']['code'] == 'stale_result'

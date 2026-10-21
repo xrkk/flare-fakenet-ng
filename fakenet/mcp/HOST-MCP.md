@@ -25,6 +25,12 @@ A retry with the same command_id and fixed configuration reconciles the
 original ledger record; it does not start a second probe sequence. A different
 configuration/scope is rejected.
 
+To keep the response within 64 KiB, repeated check evidence may use
+`manifest#<id>` instead of repeating an absolute path and digest. Resolve that
+ID against `manifest.entries`; the entry retains the original path and SHA-256.
+Both public checks and helper input retain every value and evidence reference,
+and all steps, decisions and full disk evidence remain available.
+
 ## Fixed inputs and trust boundary
 
 - The config declares the FakeNet endpoint/controller, Windows-MCP endpoint,
