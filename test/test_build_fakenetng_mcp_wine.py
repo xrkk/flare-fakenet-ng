@@ -348,6 +348,11 @@ class HostPlatformSelectionTests(unittest.TestCase):
 
 
 class McpHostSelectionTests(unittest.TestCase):
+    def test_observer_and_linux_recovery_are_host_receipt_tests(self):
+        for name in ('test/mcp/test_running_observation.py',
+                     'test/mcp/test_host_fixture_nat_pid.py'):
+            self.assertIn(name, gate.MCP_HOST_TESTS)
+
     def test_host_stdio_and_durable_linux_ledger_are_not_windows_tests(self):
         with tempfile.TemporaryDirectory() as temporary:
             stage = Path(temporary)

@@ -284,6 +284,8 @@ MCP_HOST_TESTS = (
     'test/mcp/test_host_protocol_envelope.py',
     'test/mcp/test_host_local_fixture.py',
     'test/mcp/test_host_stdio.py', 'test/mcp/test_host_state.py',
+    'test/mcp/test_running_observation.py',
+    'test/mcp/test_host_fixture_nat_pid.py',
     'test/mcp/test_host_budget_guards.py', 'test/mcp/test_r03_regressions.py',
     'test/mcp/test_r04_integration.py',
 )
