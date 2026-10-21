@@ -41,7 +41,7 @@
     ]
   },
   "probe": {
-    "script_sha256": "16037e73d3061731f5b21d2932defe07c61b2e9544326dc796fba88d91d66e40",
+    "script_sha256": "16a50f7027a0efd062026e957fdce0bf4b2418e60392261153fb4a3f8820fb94",
     "destinations": [
       "198.51.100.77",
       "2001:db8::77"

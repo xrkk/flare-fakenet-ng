@@ -227,3 +227,10 @@ def test_guest_v1_wire_and_initial_raw_evidence_are_retained(tmp_path):
     raw = Path(initial['path']).read_bytes()
     assert hashlib.sha256(raw).hexdigest() == initial['sha256']
     assert 'ipv6_exposure' in json.loads(raw)['probe']
+
+
+def test_missing_os_mapping_for_any_real_ipv6_interface_is_unknown():
+    facts = cf._loopback_exposure()
+    facts['interfaces'].append({'index': 11, 'forwarding': 'Disabled', 'connection_state': 'Connected'})
+    facts['os_non_ipv6_count'] = 25
+    assert contract.normalize_ipv6_exposure(facts)['value'] is None

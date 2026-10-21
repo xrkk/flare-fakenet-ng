@@ -78,7 +78,11 @@ try {
   $out.ipv6_exposure.interfaces=@($ifaces|ForEach-Object {[ordered]@{index=[int]$_.InterfaceIndex;forwarding=[string]$_.Forwarding;connection_state=[string]$_.ConnectionState}})
   $out.ipv6_exposure.addresses=@($addrs|ForEach-Object {[ordered]@{interface_index=[int]$_.InterfaceIndex;address=[string]$_.IPAddress;prefix_length=[int]$_.PrefixLength;state=[string]$_.AddressState}})
   $out.ipv6_exposure.routes=@($rts|ForEach-Object {[ordered]@{interface_index=[int]$_.InterfaceIndex;prefix=[string]$_.DestinationPrefix;next_hop=[string]$_.NextHop}})
-  $out.ipv6_exposure.os_map=@($net|ForEach-Object {[ordered]@{index=[int]$_.GetIPProperties().GetIPv6Properties().Index;type=[string]$_.NetworkInterfaceType}})
+  # OS-declared IPv4-only adapters have no IPv6 properties. Actual IPv6
+  # interfaces must still all match this map in the host's strict guard.
+  $ipv6net=@($net|Where-Object {$_.Supports([Net.NetworkInformation.NetworkInterfaceComponent]::IPv6)})
+  $out.ipv6_exposure.os_map=@($ipv6net|ForEach-Object {[ordered]@{index=[int]$_.GetIPProperties().GetIPv6Properties().Index;type=[string]$_.NetworkInterfaceType}})
+  $out.ipv6_exposure.os_non_ipv6_count=$net.Count-$ipv6net.Count
   $out.ipv6_exposure.complete=$true
 } catch { $out.ipv6_exposure.errors+=([string]$_) }
 $out.ipv6_exposure.collection_ended=[DateTime]::UtcNow.ToString('o')
