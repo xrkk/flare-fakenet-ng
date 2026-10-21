@@ -103,7 +103,7 @@ def test_service_restart_does_not_reopen_completed_run_evidence(tmp_path, monkey
         baseline_store=SimpleNamespace(root=tmp_path / 'baselines'),
         artifacts_root=tmp_path / 'artifacts')
     instance.stop = lambda coordinator: {'state': 'stopped'}
-    coordinator = SimpleNamespace(restore_responsibility=lambda *args: None)
+    coordinator = SimpleNamespace(restore_responsibility=lambda *args, **kwargs: None)
     assert instance.recover(coordinator) == 'stopped'
     assert exclusions == [None]
     assert list(directory.iterdir()) == [directory / 'active-config.ini']

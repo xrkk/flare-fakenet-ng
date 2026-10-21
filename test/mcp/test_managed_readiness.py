@@ -381,7 +381,7 @@ def test_real_start_registers_managed_owner_before_first_job_allocation(monkeypa
         def finish(self, deadline=None): return {'absent': True}
     coordinator = SimpleNamespace(current_command_id='start', operation_fenced=False,
         new_run_id=lambda: run_id, snapshot=lambda: dict(state_version=1, state='failed'),
-        restore_responsibility=lambda *a: None, update_health_state=lambda *a: None,
+        restore_responsibility=lambda *a, **kw: None, update_health_state=lambda *a: None,
         record_terminal_failure=lambda reason: events.append(reason))
     runner = module.RealSupervisor(snapshot=Snapshot(), baseline_store=Baselines(),
         config_path_resolver=lambda *a: config, artifacts_root=tmp_path / 'artifacts')
@@ -487,7 +487,7 @@ def test_real_start_keeps_spawn_failure_owner_until_job_ends(monkeypatch, tmp_pa
             events.append('job-close')
     coordinator = SimpleNamespace(current_command_id='start', operation_fenced=False,
         new_run_id=lambda: run_id, snapshot=lambda: dict(state_version=1, state='failed'),
-        restore_responsibility=lambda *args: None, update_health_state=lambda *args: None,
+        restore_responsibility=lambda *args, **kwargs: None, update_health_state=lambda *args: None,
         record_terminal_failure=lambda reason: events.append(reason))
     runner = module.RealSupervisor(snapshot=Snapshot(), baseline_store=Baselines(),
         config_path_resolver=lambda *args: config, artifacts_root=tmp_path / 'artifacts',
@@ -630,7 +630,7 @@ def test_real_start_keeps_exit_retention_slot_across_initialization_failure(
 
     coordinator = SimpleNamespace(current_command_id='start', operation_fenced=False,
         new_run_id=lambda: run_id, snapshot=lambda: dict(state_version=1, state='failed'),
-        restore_responsibility=lambda *args: None, update_health_state=lambda *args: None,
+        restore_responsibility=lambda *args, **kwargs: None, update_health_state=lambda *args: None,
         record_terminal_failure=lambda reason: events.append(reason))
     runner = supervisor_module.RealSupervisor(snapshot=Snapshot(), baseline_store=Baselines(),
         config_path_resolver=lambda *args: config, artifacts_root=tmp_path / 'artifacts',

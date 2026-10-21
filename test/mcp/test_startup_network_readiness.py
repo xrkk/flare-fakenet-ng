@@ -74,7 +74,7 @@ def test_native_network_prerequisite_is_checked_before_baseline_marker_or_job(
         def snapshot(self):
             return {'state_version': 11}
 
-        def restore_responsibility(self, *args):
+        def restore_responsibility(self, *args, **kwargs):
             raise AssertionError('network rejection must not acquire recovery responsibility')
 
         def update_health_state(self, state, reason):
