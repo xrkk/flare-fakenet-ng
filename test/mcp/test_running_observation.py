@@ -234,7 +234,14 @@ def test_passive_capture_owns_one_bounded_nonprivileged_child_and_confirms_exit(
 
 
 def test_no_passive_scope_does_not_create_capture_or_skip_authorized_matrix(tmp_path):
-    from test.mcp import test_host_stdio as fixture
+    # pytest can expose test/test.py as the top-level `test` module.
+    # Load the sibling fixture explicitly, without importing that CLI.
+    import importlib.util
+    from pathlib import Path
+    spec=importlib.util.spec_from_file_location(
+        'observation_host_fixture',Path(__file__).with_name('test_host_stdio.py'))
+    fixture=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
     config=fixture.config_for(tmp_path)
     config['passive_observation']={'enabled':True}
     def forbidden(*args,**kwargs):raise AssertionError('capture without scope')

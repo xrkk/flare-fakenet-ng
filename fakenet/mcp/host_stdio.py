@@ -1098,7 +1098,7 @@ class HostFacade:
             compact_refs = []
             for ref in step.get('evidence_refs') or []:
                 key = tuple(ref.get(name) for name in fields)
-                if not ref.get('id') and key in lookup:
+                if key in lookup and ref.get('id') in (None, lookup[key]):
                     compact = {name: value for name, value in ref.items()
                                if name not in fields}
                     compact['id'] = lookup[key]
