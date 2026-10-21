@@ -101,7 +101,7 @@ def record(facade, phase):
 
 def calibrate(facade):
     facade._authorization('visibility_calibration')
-    facade._authorization('passive_observe')
+    capture_auth = facade._authorization('passive_observe')
     pre = stopped(facade)
     host = facade._host_snapshot(time.monotonic()+10)
     directory = facade.output_root/'calibration'/str(uuid.uuid4())
@@ -109,7 +109,9 @@ def calibrate(facade):
     nonce = secrets.token_hex(16)
     rows = [r for r in host_probe.matrix_steps(50001,50002,nonce) if r['id'] in ('ipv4_udp_random','ipv6_udp_random')]
     payload = host_probe.probe_payload(nonce,rows,positive_enabled=False,calibration_mode=True)
-    capture = running_observation.PassiveCapture(directory,host,seconds=15)
+    capture = running_observation.PassiveCapture(directory,host,seconds=15,
+        **running_observation.capture_options(facade.config.get('passive_observation') or {},
+                                             capture_auth['scope'], host))
     try:
         capture.start()
         facade._authorization('visibility_calibration')

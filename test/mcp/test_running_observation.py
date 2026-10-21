@@ -291,3 +291,83 @@ def test_common_observation_failure_never_grants_family_pass(tmp_path, problem):
     result = evaluate(tmp_path, host, probe, receipt, capture)
     assert result['value'] is None
     assert not any(row.get('value') is True for row in result.get('families', {}).values())
+
+
+def test_capture_mode_requires_exact_finite_scope_binding(tmp_path):
+    host, _, _, _ = material(tmp_path)
+    options = {'promiscuous': True}
+    nic = observation.topology(host)['nics'][0]
+    grant = {'mode': 'process-promiscuous', 'vm_uuid': host['vmx']['uuid'],
+             'mac': nic['mac'], 'interface': nic['interface'],
+             'dumpcap_sha256': observation._sha(Path('/usr/bin/dumpcap').read_bytes())}
+    assert observation.capture_options({}, {}, host) == {}
+    assert observation.capture_options(options, {'passive_capture': grant}, host) == {'promiscuous': True}
+    for key in grant:
+        changed = dict(grant, **{key: 'wrong'})
+        with pytest.raises(ValueError):
+            observation.capture_options(options, {'passive_capture': changed}, host)
+    with pytest.raises(ValueError):
+        observation.capture_options(options, {}, host)
+
+
+@pytest.mark.parametrize('restore', [True, False])
+def test_approved_capture_drains_and_requires_interface_restoration(tmp_path, monkeypatch, restore):
+    host, _, _, _ = material(tmp_path)
+    calls = []
+    original = {'ifindex': 8, 'address': '00:50:56:c0:00:08', 'flags': ['UP'], 'promiscuity': 0, 'kernel_flags': 0x1003}
+    active = dict(original, promiscuity=1, kernel_flags=0x1103)
+    states = iter([original, active, original if restore else active])
+    monkeypatch.setattr(observation.PassiveCapture, '_link_state', lambda self: next(states))
+    monkeypatch.setattr(observation.time, 'sleep', lambda seconds: calls.append(('sleep', seconds)))
+    class Process:
+        returncode = None
+        def poll(self): return self.returncode
+        def send_signal(self, value): calls.append('signal'); self.returncode = 0
+        def wait(self, timeout): return self.returncode
+        def kill(self): self.returncode = -9
+    def popen(argv, **kwargs):
+        calls.append(argv)
+        kwargs['stderr'].write(b'Capturing on vmnet8\n'); kwargs['stderr'].flush()
+        return Process()
+    monkeypatch.setattr(observation.subprocess, 'Popen', popen)
+    capture = observation.PassiveCapture(tmp_path/'approved', host, promiscuous=True)
+    capture.start()
+    result = capture.finish()
+    assert result['complete'] is restore
+    assert result['interface_restored'] is restore
+    assert '-p' not in calls[0] and 'duration:35' in calls[0]
+    assert ('sleep', 2) in calls and ('sleep', 3) in calls
+    assert calls.index(('sleep', 3)) < calls.index('signal')
+    assert result['identity']['promiscuous'] is True
+    assert capture.finish() == result
+
+
+@pytest.mark.parametrize('fault', ['inactive', 'exited', 'link_read_error'])
+def test_approved_capture_start_failure_closes_own_process(tmp_path, monkeypatch, fault):
+    host, _, _, _ = material(tmp_path)
+    original = {'ifindex': 8, 'address': '00:50:56:c0:00:08', 'flags': ['UP'],
+                'promiscuity': 0, 'kernel_flags': 0x1003}
+    reads = []
+    def state(self):
+        reads.append(1)
+        if fault == 'link_read_error' and len(reads) == 2:
+            raise OSError('state unavailable')
+        return original
+    monkeypatch.setattr(observation.PassiveCapture, '_link_state', state)
+    monkeypatch.setattr(observation.time, 'sleep', lambda seconds: None)
+    class Process:
+        returncode = 1 if fault == 'exited' else None
+        def poll(self): return self.returncode
+        def send_signal(self, value): self.returncode = 0
+        def wait(self, timeout): return self.returncode
+        def kill(self): self.returncode = -9
+    proc = Process()
+    def popen(argv, **kwargs):
+        kwargs['stderr'].write(b'Capturing on vmnet8\n'); kwargs['stderr'].flush()
+        return proc
+    monkeypatch.setattr(observation.subprocess, 'Popen', popen)
+    capture = observation.PassiveCapture(tmp_path/'failed', host, promiscuous=True)
+    with pytest.raises((ValueError, OSError)):
+        capture.start()
+    assert proc.poll() is not None and capture.log.closed
+    assert capture.finish()['complete'] is False

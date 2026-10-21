@@ -1253,7 +1253,8 @@ class HostFacade:
                         capture = self.capture_factory(
                             evidence_dir, host,
                             heartbeat_port=urllib.parse.urlparse(self.config['windows_mcp']['url']).port or 80,
-                            seconds=self._remaining(action_deadline, 35))
+                            seconds=self._remaining(action_deadline, 35),
+                            **running_observation.capture_options(passive_config, scope, host))
                         capture.start()
                     except (ValueError, OSError) as exc:
                         capture_report['reason'] = 'capture_unavailable:' + str(exc)
@@ -1447,7 +1448,7 @@ class HostFacade:
                 nonce=nonce, listener_map=parsed_config['listener_map'])
             final_consistency, final_observed = self._final_consistency(
                 fakenet, config_name, status, config_record, host, identity,
-                finish_deadline - (2 if capture is not None else 0), scope, command_id=command_id,
+                finish_deadline - ((6 if capture.promiscuous else 2) if capture is not None else 0), scope, command_id=command_id,
                 challenge=record['final_challenge'])
             if capture is not None:
                 capture_end = capture.finish()
@@ -1463,6 +1464,9 @@ class HostFacade:
                 if not capture_end.get('complete') and capture_report.get('value') is not False:
                     capture_report['value'] = None
                     capture_report['reason'] = 'capture_completion_unconfirmed'
+                    capture_report['families'] = {}
+                    for path in capture_report.get('paths', []):
+                        path.update(value=None, reason='capture_completion_unconfirmed')
                 capture_report['completion'] = capture_end
                 if capture_end.get('sha256'):
                     capture_report['evidence_refs'] = [{

@@ -301,13 +301,41 @@ def evaluate_capture(capture, probe, snapshot, calibration_ref, *, started, ende
     return result
 
 
+def capture_options(config, scope, snapshot):
+    """Bind an opt-in capture mode to the already validated finite probe scope."""
+    mode = config.get('promiscuous', False)
+    if mode is False:
+        return {}
+    if mode is not True:
+        raise ValueError('invalid promiscuous capture option')
+    target = topology(snapshot)
+    nics = target['nics']
+    if len(nics) != 1:
+        raise ValueError('single mapped NIC required')
+    expected = {'mode': 'process-promiscuous', 'vm_uuid': target['vm_uuid'],
+                'interface': nics[0].get('interface'), 'mac': nics[0].get('mac'),
+                'dumpcap_sha256': _sha(Path('/usr/bin/dumpcap').read_bytes())}
+    grant = scope.get('passive_capture')
+    if not isinstance(grant, dict) or any(
+            not value or grant.get(key) != value for key, value in expected.items()):
+        raise ValueError('process-promiscuous capture scope mismatch')
+    return {'promiscuous': True}
+
+
 class PassiveCapture:
-    """Own one bounded dumpcap process, never sudo or change an interface."""
-    def __init__(self, directory, snapshot, *, heartbeat_port=28787, seconds=35):
+    """Own one bounded dumpcap process; never sudo or set interface policy."""
+    def __init__(self, directory, snapshot, *, heartbeat_port=28787, seconds=35,
+                 promiscuous=False):
         self.path = Path(directory) / 'running-observation.pcapng'
         self.log_path = Path(directory) / 'running-observation.stderr'
         self.process = None
         self.started = self.ended = None
+        self._completion = None
+        self.mode_ready = False
+        self.link_before = self.link_active = None
+        if type(promiscuous) is not bool:
+            raise ValueError('invalid capture mode')
+        self.promiscuous = promiscuous
         nics = topology(snapshot)['nics']
         if len(nics) != 1 or not nics[0].get('interface_present'):
             raise ValueError('single mapped NIC required')
@@ -322,18 +350,42 @@ class PassiveCapture:
         binary = Path('/usr/bin/dumpcap')
         self.identity = {'binary': str(binary), 'sha256': _sha(binary.read_bytes()),
                          'interface': interface, 'filter': self.filter,
-                         'promiscuous': False, 'snaplen': 65535}
+                         'promiscuous': promiscuous, 'snaplen': 65535}
+        if promiscuous:
+            self.identity.update(settle_seconds=2, drain_seconds=3)
         self.seconds = max(1, min(35, int(seconds)))
+
+    def _link_state(self):
+        result = subprocess.run(
+            ['/usr/sbin/ip', '-details', '-json', 'link', 'show', self.nic['interface']],
+            check=True, capture_output=True, text=True, timeout=2, shell=False)
+        rows = json.loads(result.stdout)
+        if len(rows) != 1 or rows[0].get('ifname') != self.nic['interface']:
+            raise ValueError('capture interface identity unavailable')
+        row = rows[0]
+        value = {key: row.get(key) for key in ('ifindex', 'address', 'flags', 'promiscuity')}
+        if (type(value['ifindex']) is not int or not value['address'] or
+                not isinstance(value['flags'], list) or
+                type(value['promiscuity']) is not int):
+            raise ValueError('capture interface state incomplete')
+        value['kernel_flags'] = int((Path('/sys/class/net') / self.nic['interface'] / 'flags').read_text().strip(), 16)
+        value['flags'] = sorted(value['flags'])
+        return value
 
     def start(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.promiscuous:
+            self.link_before = self._link_state()
         self.log = self.log_path.open('xb')
         try:
+            argv = ['/usr/bin/dumpcap', '-q']
+            if not self.promiscuous:
+                argv.append('-p')
+            argv += ['-i', self.nic['interface'], '-f', self.filter, '-s', '65535',
+                     '-a', 'duration:%d' % self.seconds, '-a', 'filesize:4096',
+                     '-w', str(self.path)]
             self.process = subprocess.Popen(
-                ['/usr/bin/dumpcap', '-q', '-p', '-i', self.nic['interface'],
-                 '-f', self.filter, '-s', '65535', '-a', 'duration:%d' % self.seconds,
-                 '-a', 'filesize:4096', '-w', str(self.path)],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=self.log, shell=False, env=dict(os.environ, LC_ALL='C'))
             limit = time.monotonic() + 2
             while time.monotonic() < limit:
@@ -342,6 +394,16 @@ class PassiveCapture:
                     raise ValueError('capture failed to start')
                 if b'Capturing on' in self.log_path.read_bytes():
                     self.started = time.time()
+                    if self.promiscuous:
+                        time.sleep(2)
+                        self.link_active = self._link_state()
+                        if (self.process.poll() is not None or
+                                any(self.link_active[k] != self.link_before[k]
+                                    for k in ('ifindex', 'address')) or
+                                self.link_active['promiscuity'] < self.link_before['promiscuity'] + 1 or
+                                not self.link_active['kernel_flags'] & 0x100):
+                            raise ValueError('process capture mode unconfirmed')
+                        self.mode_ready = True
                     return
                 time.sleep(.025)
             raise ValueError('capture readiness unconfirmed')
@@ -350,9 +412,16 @@ class PassiveCapture:
             raise
 
     def finish(self):
+        if self._completion is not None:
+            return self._completion
         if self.process is None:
+            if hasattr(self, 'log'):
+                self.log.close()
             return {'complete': False, 'reason': 'capture not started'}
         alive = self.process.poll() is None
+        if alive and self.promiscuous and self.link_active is not None:
+            time.sleep(3)
+            alive = self.process.poll() is None
         if alive:
             self.process.send_signal(signal.SIGINT)
         try:
@@ -363,8 +432,19 @@ class PassiveCapture:
             code = None
         self.ended = time.time()
         self.log.close()
-        return {'complete': alive and code == 0 and self.started is not None,
-                'returncode': code, 'started': self.started, 'ended': self.ended,
-                'path': str(self.path), 'sha256': _sha(self.path.read_bytes())
-                if self.path.is_file() else None,
-                'identity': self.identity}
+        result = {'complete': alive and code == 0 and self.started is not None,
+                  'returncode': code, 'started': self.started, 'ended': self.ended,
+                  'path': str(self.path), 'sha256': _sha(self.path.read_bytes())
+                  if self.path.is_file() else None, 'identity': self.identity}
+        if self.promiscuous:
+            result.update(interface_before=self.link_before, interface_active=self.link_active,
+                          interface_restored=False)
+            try:
+                result['interface_after'] = self._link_state()
+                result['interface_restored'] = result['interface_after'] == self.link_before
+            except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                result['interface_error'] = str(exc)
+            result['complete'] = (result['complete'] and result['interface_restored'] and
+                                  self.mode_ready)
+        self._completion = result
+        return result
