@@ -1,3 +1,5 @@
+> Consolidated inventory, original procedures, verdict rules and known gaps: [Acceptance catalog](acceptance/README.md). This inventory is not a new runtime pass.
+
 # FakeNet-NG Test Plan
 This test plan informs developers how to quality assure FakeNet-NG by using two
 test suites:

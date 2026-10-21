@@ -1,0 +1,688 @@
+{
+  "schema": "fakenet.acceptance-catalog.v1",
+  "scope": "Existing Windows/Linux product facilities; new egress interface deferred.",
+  "suites": [
+    {
+      "id": "CORE-UNIT",
+      "title": "核心/GUI/策略/解析离线回归",
+      "sources": [
+        "test/test_*.py"
+      ],
+      "content": "DNS与上游选择, SNI/relay, 端口与进程过滤, GUI读写校验, WinDivert裁决/owner, 双PCAP与报告, Linux运行/部署/更新等逐模块测试.",
+      "procedure": "沿正式构建器分离Windows主片/HTTP占端口片及Linux专属片; 先collect冻结实际node ID, 再执行并保留JUnit与collection. 逐函数与断言由inventory展开.",
+      "judgment": "planned node ID全部有且仅有一个结果, 没有failure/error; skip及仅模拟OS的结果不补原生信用.",
+      "limitations": "Wine和mock不能证明真实驱动/SCM/route/GUI; 不可在Linux宿主直接全量pytest而误执行Windows/真实网络测试.",
+      "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
+      "outputs": "JUnit, collection, stdout/stderr, 执行Python/平台和源码身份.",
+      "evidence_level": "offline",
+      "command": [
+        "参见 tools/build_gui_vm_package_wine.py 与 tools/build_fakenetng_mcp_wine.py 的正式选择器"
+      ],
+      "required_for_full": true,
+      "oracle_status": "existing"
+    },
+    {
+      "id": "MCP-UNIT",
+      "title": "MCP接口及验收工具离线回归",
+      "sources": [
+        "test/mcp/test_*.py"
+      ],
+      "content": "认证/协议/配置/命令幂等/控制者, 子进程与IPC, 生命周期/恢复, evidence, host接口, formal/scenario工具自己的回归.",
+      "procedure": "使用既有构建器gate_selection区分Windows主片与host-only片, 两SDK相关合同沿既有环境执行; collection和JUnit一一对照.",
+      "judgment": "所有选定node完整通过; 不能把验收工具测试通过算作被验产品原生场景通过.",
+      "limitations": "覆盖工具自身正确性; 不继承旧VM/配置/场景的信用.",
+      "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "offline",
+      "command": null,
+      "required_for_full": true,
+      "oracle_status": "existing"
+    },
+    {
+      "id": "UPSTREAM-CORE",
+      "title": "原版协议/重定向/名单功能",
+      "sources": [
+        "test/test.py",
+        "test/template.ini",
+        "test/custom_responses.ini",
+        "docs/testing.md"
+      ],
+      "content": "TCP/UDP bound与unbound/本机与远端, DNS/HTTP/HTTPS/FTP/POP3/SMTP/IRC, Raw静态Base64/字符串/文件/动态响应, HTTP Host/URI匹配, Proxy/Hidden, 端口/进程/主机名单, RedirectAllTraffic关闭.",
+      "procedure": "隔离VM内从test目录执行test.py here; MultiHost另用受控客户端IP及Linux网关; 每组生成原配置并启动/正常停止核心. 不用正则过滤冒充全量.",
+      "judgment": "逐条_printStatus结果对照计划; FAILED即失败; 全部期望项出现才完整. 原脚本失败可能仍退出0, 所以退出0不是通过.",
+      "limitations": "现有Listener HostWhitelist测试引用HostBlacklist端口, 判据有误; SMTP SSL与Windows IRC历史已知失败. 未修判据前这些行不能签通过.",
+      "prerequisites": "隔离Windows/Linux VM; 管理员/root; 原test依赖; 不在宿主运行; MultiHost需第二个受控客户VM.",
+      "outputs": "完整控制台, 每组生成INI及停止结果; 逐条Passed/FAILED与平台分支清单.",
+      "evidence_level": "native",
+      "command": [
+        "{python}",
+        "test.py",
+        "here"
+      ],
+      "required_for_full": true,
+      "oracle_status": "incomplete",
+      "launch": {
+        "platform": "windows",
+        "argv": [
+          "{python}",
+          "test.py",
+          "here"
+        ],
+        "cwd": "test",
+        "fixed_args": false
+      }
+    },
+    {
+      "id": "DOMAIN-EGRESS",
+      "title": "域名真实联网与反向限制",
+      "sources": [
+        "test/egress_control_vm/*"
+      ],
+      "content": "允许域名真实DNS/TCP443/SNI/TLS, HTTP/其它域名/直连IP/错SNI/直连relay/DoH/DoT/外部DNS/UDP443负例, IPv6及停止恢复.",
+      "procedure": "VM内Run-Tests.cmd选择当前默认路由上游DNS, 记录网络基线, 启动pktmon与核心后发正反请求, 正常停止/转换捕获并比对DNS.",
+      "judgment": "允许链必须真实成功; 负例必须由原始包与策略证据判定, 失败/超时本身不等于拦截. 所有OBSERVED须独立判定后才能签通过.",
+      "limitations": "旧runner多个负例仅标OBSERVED且只检查全局事件, 缺逐负例线侧自动判据; 本机回环ping不是外部IPv6阻断证明. 当前VM禁IPv6不能满足该旧原生双栈前置.",
+      "prerequisites": "隔离Windows VM/管理员; 已有依赖/pktmon; 原脚本要求IPv6启用, 不自动改变当前VM设置.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": [
+        "cmd.exe",
+        "/d",
+        "/c",
+        "test/egress_control_vm/Run-Tests.cmd"
+      ],
+      "required_for_full": true,
+      "oracle_status": "incomplete",
+      "launch": {
+        "platform": "windows",
+        "argv": [
+          "powershell.exe",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "test/egress_control_vm/Run-EgressControlTests.ps1"
+        ],
+        "cwd": ".",
+        "fixed_args": false
+      }
+    },
+    {
+      "id": "DOMAIN-IP",
+      "title": "公网IPv4精确放行",
+      "sources": [
+        "test/public_ipv4_allowlist_vm/*"
+      ],
+      "content": "指定TCP/IP/443真实TLS, TCP80/444与UDP443和另一IP负例, DNS地址新鲜度/route, 与域名放行/私网接管共存.",
+      "procedure": "Run-Tests.cmd核清单/锁依赖/固定地址仍在DNS; 两独立profile依次启动, pktmon抓取, TLS证书校验与五元组计数, 每相位停止并比对网络.",
+      "judgment": "指定IP的TLS和放行事件及线上包成立; 禁止组合线上匹配包为0且确有探针; 原始配置/DNS/路由恢复; PCAP验证器通过.",
+      "limitations": "模板/包固定旧百度IP, DNS轮转会拒绝, 不自动替换地址; 网络层允许不等于限制SNI/内容/进程.",
+      "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": [
+        "cmd.exe",
+        "/d",
+        "/c",
+        "test/public_ipv4_allowlist_vm/Run-Tests.cmd"
+      ],
+      "required_for_full": true,
+      "oracle_status": "existing",
+      "launch": {
+        "platform": "windows",
+        "argv": [
+          "powershell.exe",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "test/public_ipv4_allowlist_vm/Run-ReviewedIPv4Tests.ps1"
+        ],
+        "cwd": ".",
+        "fixed_args": false
+      }
+    },
+    {
+      "id": "PROCESS-REDIRECT",
+      "title": "精确EXE与公网A到私网B改址",
+      "sources": [
+        "test/process_redirect_vm/*"
+      ],
+      "content": "完整映像身份/冻结, 非目标负例, 目标TCP透明改址/回包, owner串行10000流/64并发, 路由/配额/驱动边界, wire A/B与双PCAP及停止恢复.",
+      "procedure": "Run-Tests.cmd核manifest/DNS/路由及宿主Sentinel; 由包内良性目标EXE发真实连接; pktmon捕获后由verify_process_redirect.py独立核tuple/nonce/owner及A/B; 再核双PCAP和DNS.",
+      "judgment": "目标getpeername语义/nonce正确, B真实收到, 非目标不得借用, 原A线上0; 所有10000/64与资源/恢复要求满足.",
+      "limitations": "历史v22/v23有无载荷FIN/RST到A, 严格A=0门禁未全过; 接受已知限制不等于本组严格通过; 单规则仅TCP/已知A, 不覆盖任意未知IP/子进程.",
+      "prerequisites": "隔离Windows VM/管理员; 当前合格包/固定良性目标EXE; 原Sentinel; 独立pktmon; 不启动恶意样本.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": [
+        "cmd.exe",
+        "/d",
+        "/c",
+        "test/process_redirect_vm/Run-Tests.cmd"
+      ],
+      "required_for_full": true,
+      "oracle_status": "existing",
+      "launch": {
+        "platform": "windows",
+        "argv": [
+          "powershell.exe",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "test/process_redirect_vm/Run-ProcessRedirectTests.ps1"
+        ],
+        "cwd": ".",
+        "fixed_args": false
+      }
+    },
+    {
+      "id": "GUI-POLICY",
+      "title": "GUI/多域名通配/私网接管/三轮停止",
+      "sources": [
+        "test/gui_vm/Run-Tests.cmd",
+        "test/gui_vm/run_gui_vm_acceptance.py",
+        "test/gui_vm/run_policy_feature_tests.py",
+        "test/gui_vm/run_formal_stop_acceptance.py",
+        "test/gui_vm/README.md"
+      ],
+      "content": "A组VM/UAC/配置/实例/日志/进程归因; P组精确域名/通配/裸域/拒绝/私网DNS/宿主TCP UDP/未知IPv4/裸DNS/负向路由漂移; 三轮GUI停止与原恢复.",
+      "procedure": "唯一正式Run-Tests.cmd按A->P->三轮停止->导出串行; 复用同一次Sentinel nonce; 每组非pass停后续. P15/A11在运行态核宿主TCP UDP; P16-20核负例与metric精确恢复.",
+      "judgment": "A/P全部planned项及三轮停止结果齐全; GUI反馈/句柄/rc/残留/网络恢复达原阈值; DNS租约不冒充应用连接; 路由恢复不精确判fail.",
+      "limitations": "A2/A4是等效分支不是物理机/UAC实测; 开发期单组不等于正式A/P/停止总验收. 部分DNS断言只证明DNS, 不覆盖完整TLS业务.",
+      "prerequisites": "隔离Windows VM管理员+相同包GUI/core; 宿主原Sentinel已就绪; 人工按提示三轮点击启动/停止.",
+      "outputs": "A results.tsv, policy-results.tsv, 三轮停止summary.json, formal导出目录与哈希清单.",
+      "evidence_level": "native",
+      "command": [
+        "cmd.exe",
+        "/d",
+        "/c",
+        "test/gui_vm/Run-Tests.cmd"
+      ],
+      "required_for_full": true,
+      "oracle_status": "existing",
+      "launch": {
+        "platform": "windows",
+        "argv": [
+          "cmd.exe",
+          "/d",
+          "/c",
+          "test/gui_vm/Run-Tests.cmd"
+        ],
+        "cwd": ".",
+        "fixed_args": true
+      }
+    },
+    {
+      "id": "GUI-DEVELOPMENT",
+      "title": "GUI策略/停止诊断独立入口",
+      "sources": [
+        "test/gui_vm/Run-Policy-Tests.cmd",
+        "test/gui_vm/Run-Diagnostics.cmd",
+        "test/gui_vm/run_vm_diagnostics.py",
+        "test/gui_vm/capture_windows_console.py",
+        "test/gui_vm/stop_trace_runtime_hook.py",
+        "test/gui_vm/Export-Logs.cmd",
+        "test/gui_vm/Export-Logs.ps1"
+      ],
+      "content": "原策略单组与停止时序/bootloader/句柄诊断, 手动会话证据导出.",
+      "procedure": "只在对应正式组出现失败或用户明确选择该单组时使用原入口, 保留nonce/配置/窗口/网络前后与异常.",
+      "judgment": "诊断给实际观测, 不因导出成功或有日志而升级正式GUI/网络通过.",
+      "limitations": "不是正式总入口的替代; 诊断包版本与正式包要分开.",
+      "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": null,
+      "required_for_full": false,
+      "oracle_status": "existing"
+    },
+    {
+      "id": "PCAP-WINDOWS",
+      "title": "Windows双PCAP与写入故障",
+      "sources": [
+        "test/dual_pcap_vm/*"
+      ],
+      "content": "raw-IP/converted同步, writer合同, 十万包性能, 正常WinDivert真实捕获, raw/Ethernet/close注入故障, 安全停止与DNS/路由恢复.",
+      "procedure": "VM内Run-Tests.cmd离线依赖校验->原测试->性能->真实核心正常与三故障->逐对verify_dual_pcap.py->恢复.",
+      "judgment": "同包序列内容映射正确, 性能达原2.5倍阈值, 故障非零并唤醒退出, 全部网络基线恢复; 不仅检查文件存在.",
+      "limitations": "正常阶段按原入口需要Enter/Ctrl-C, 不在宿主运行WinDivert.",
+      "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": [
+        "cmd.exe",
+        "/d",
+        "/c",
+        "test/dual_pcap_vm/Run-Tests.cmd"
+      ],
+      "required_for_full": true,
+      "oracle_status": "existing",
+      "launch": {
+        "platform": "windows",
+        "argv": [
+          "powershell.exe",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "test/dual_pcap_vm/Run-DualPcapTests.ps1"
+        ],
+        "cwd": ".",
+        "fixed_args": false
+      }
+    },
+    {
+      "id": "PCAP-LINUX",
+      "title": "Linux双PCAP/NFQUEUE与写入故障",
+      "sources": [
+        "test/dual_pcap_linux/*"
+      ],
+      "content": "双writer合同/十万包性能, NFQUEUE真实IPv4, raw/Ethernet/close故障当前包drop, iptables/ip6tables/DNS/route恢复与无残留.",
+      "procedure": "在隔离Linux VM执行sudo bash Run-Tests.sh; 自检拒绝物理机/容器; 原依赖检查后跑正常与故障, 比较前后完整快照.",
+      "judgment": "summary/results全部pass, 同步PCAP正确, 故障非零/显式drop/无残留, 恢复精确.",
+      "limitations": "生产NFQUEUE只有IPv4; IPv6仅writer文件合同, 不能标IPv6动态拦截通过.",
+      "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": [
+        "sudo",
+        "bash",
+        "test/dual_pcap_linux/Run-Tests.sh"
+      ],
+      "required_for_full": true,
+      "oracle_status": "existing",
+      "launch": {
+        "platform": "linux-vm",
+        "argv": [
+          "bash",
+          "test/dual_pcap_linux/Run-Tests.sh"
+        ],
+        "cwd": ".",
+        "fixed_args": false
+      }
+    },
+    {
+      "id": "PAYLOAD",
+      "title": "PCAP/HTML/双向载荷三方一致",
+      "sources": [
+        "test/gui_vm/Run-SamplePayloadAcceptance.cmd",
+        "test/gui_vm/run_sample_payload_acceptance.py",
+        "test/gui_vm/verify_payload_integrity.py",
+        "test/gui_vm/verify_payload_report.py",
+        "test/gui_vm/verify_reassembly.py",
+        "test/gui_vm/generate_payload_report_fixture.py"
+      ],
+      "content": "NIC/FakeNet raw+converted/HTML同流双向载荷, 正确PID/进程/INI, 报告嵌入/哈希/DOM限制, TCP乱序重传/回绕/gap/conflict/端口复用及UDP报文.",
+      "procedure": "优先使用良性双向客户端替代人工样本启动; 原入口唯一绑定运行GUI并开启pktmon, 获得双向流后GUI停止; 离线两个验证器加reassembly --matrix.",
+      "judgment": "捕获窗内实际同一流两方向逐字节/长度/hash一致; capture fatal/gap/conflict/缺方向/多候选PID均失败; 旧不健康回放不算新健康运行.",
+      "limitations": "原入口提示启动样本, 本套回归只允许良性fixture; 自动化良性client联接尚须补齐; 来源不完整不得用合成报告冒充实机.",
+      "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": [
+        "cmd.exe",
+        "/d",
+        "/c",
+        "test/gui_vm/Run-SamplePayloadAcceptance.cmd"
+      ],
+      "required_for_full": true,
+      "oracle_status": "existing",
+      "launch": {
+        "platform": "windows",
+        "argv": [
+          "cmd.exe",
+          "/d",
+          "/c",
+          "test/gui_vm/Run-SamplePayloadAcceptance.cmd"
+        ],
+        "cwd": ".",
+        "fixed_args": true
+      }
+    },
+    {
+      "id": "MCP-P01",
+      "title": "MCP 安装/身份/服务/防火墙",
+      "sources": [
+        "test/mcp/acceptance/run_p01_acc.py"
+      ],
+      "content": "P01: 安装清单/路径/SCM/监听/认证/控制规则/启动恢复与拒绝分支.",
+      "procedure": "沿原CLI --acc明确选择子项, 绑定当前source/package/manifest/VM/config, 使用原target控制通道, 每条执行后对账并收原result.json及源证据.",
+      "judgment": "对应原ACC逐项完整, status=pass且blocker为空, 原件完整性/身份/停止恢复满足; 子项不替代该分组全量.",
+      "limitations": "原CLI有必填固定计划blob和部署身份; 不自动沿用旧VM/包或开启--deploy; 子项列表见原parser与静态索引.",
+      "prerequisites": "当前独占原MCP会话/服务身份与明确VM动作范围; 认证仅用本机既有引用; 不在报告打印凭据.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": null,
+      "required_for_full": true,
+      "oracle_status": "existing",
+      "launch": {
+        "platform": "host-controller",
+        "argv": [
+          "{python}",
+          "test/mcp/acceptance/run_p01_acc.py"
+        ],
+        "cwd": ".",
+        "fixed_args": false
+      }
+    },
+    {
+      "id": "MCP-P02",
+      "title": "MCP 配置与命令事务",
+      "sources": [
+        "test/mcp/acceptance/run_p02_acc.py"
+      ],
+      "content": "P02: 内置/自定义配置CRUD, 文本/哈希/路径/版本/审计, load/start状态限制与幂等冲突.",
+      "procedure": "沿原CLI --acc明确选择子项, 绑定当前source/package/manifest/VM/config, 使用原target控制通道, 每条执行后对账并收原result.json及源证据.",
+      "judgment": "对应原ACC逐项完整, status=pass且blocker为空, 原件完整性/身份/停止恢复满足; 子项不替代该分组全量.",
+      "limitations": "原CLI有必填固定计划blob和部署身份; 不自动沿用旧VM/包或开启--deploy; 子项列表见原parser与静态索引.",
+      "prerequisites": "当前独占原MCP会话/服务身份与明确VM动作范围; 认证仅用本机既有引用; 不在报告打印凭据.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": null,
+      "required_for_full": true,
+      "oracle_status": "existing",
+      "launch": {
+        "platform": "host-controller",
+        "argv": [
+          "{python}",
+          "test/mcp/acceptance/run_p02_acc.py"
+        ],
+        "cwd": ".",
+        "fixed_args": false
+      }
+    },
+    {
+      "id": "MCP-P03",
+      "title": "MCP 运行/停止/健康/恢复",
+      "sources": [
+        "test/mcp/acceptance/run_p03_acc.py"
+      ],
+      "content": "P03: 核心/GUI配置一致, 状态机/owner/监督/隔离子进程/IPC/停止与故障责任.",
+      "procedure": "沿原CLI --acc明确选择子项, 绑定当前source/package/manifest/VM/config, 使用原target控制通道, 每条执行后对账并收原result.json及源证据.",
+      "judgment": "对应原ACC逐项完整, status=pass且blocker为空, 原件完整性/身份/停止恢复满足; 子项不替代该分组全量.",
+      "limitations": "原CLI有必填固定计划blob和部署身份; 不自动沿用旧VM/包或开启--deploy; 子项列表见原parser与静态索引.",
+      "prerequisites": "当前独占原MCP会话/服务身份与明确VM动作范围; 认证仅用本机既有引用; 不在报告打印凭据.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": null,
+      "required_for_full": true,
+      "oracle_status": "existing",
+      "launch": {
+        "platform": "host-controller",
+        "argv": [
+          "{python}",
+          "test/mcp/acceptance/run_p03_acc.py"
+        ],
+        "cwd": ".",
+        "fixed_args": false
+      }
+    },
+    {
+      "id": "MCP-P04",
+      "title": "MCP 产物/查询/故障证据",
+      "sources": [
+        "test/mcp/acceptance/run_p04_acc.py"
+      ],
+      "content": "P04: 产物边界/下载/完整性, 日志定位与故障/本地化/恢复来源.",
+      "procedure": "沿原CLI --acc明确选择子项, 绑定当前source/package/manifest/VM/config, 使用原target控制通道, 每条执行后对账并收原result.json及源证据.",
+      "judgment": "对应原ACC逐项完整, status=pass且blocker为空, 原件完整性/身份/停止恢复满足; 子项不替代该分组全量.",
+      "limitations": "原CLI有必填固定计划blob和部署身份; 不自动沿用旧VM/包或开启--deploy; 子项列表见原parser与静态索引.",
+      "prerequisites": "当前独占原MCP会话/服务身份与明确VM动作范围; 认证仅用本机既有引用; 不在报告打印凭据.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": null,
+      "required_for_full": true,
+      "oracle_status": "existing",
+      "launch": {
+        "platform": "host-controller",
+        "argv": [
+          "{python}",
+          "test/mcp/acceptance/run_p04_acc.py"
+        ],
+        "cwd": ".",
+        "fixed_args": false
+      }
+    },
+    {
+      "id": "MCP-RELEASE",
+      "title": "MCP正常/故障发布循环",
+      "sources": [
+        "test/mcp/acceptance/run_p05_release.py",
+        "test/mcp/acceptance/release_matrix.py"
+      ],
+      "content": "normal-builtin50+normal-custom50+五类故障各10, final/summary与原ACC-001..019汇总.",
+      "procedure": "原run_p05_release.py --mode normal/fault/final/summary按显式候选和原唯一矩阵顺序执行; 原轮号不能重置.",
+      "judgment": "原150轮逐行完整且当前候选/恢复连续; reduced的3+2/每类1不得签full; 失败恢复也不把运行改pass.",
+      "limitations": "历史未完成; 集中登记不自动重启150轮, 不把它设为每次日常分析前置.",
+      "prerequisites": "原发布合同与当前候选身份/VM/预算/恢复就绪, 明确选择发布回归时才执行.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": null,
+      "required_for_full": true,
+      "oracle_status": "existing",
+      "launch": {
+        "platform": "host-controller",
+        "argv": [
+          "{python}",
+          "test/mcp/acceptance/run_p05_release.py"
+        ],
+        "cwd": ".",
+        "fixed_args": false
+      }
+    },
+    {
+      "id": "MCP-SCENARIOS",
+      "title": "MCP确定性100场景与故障Spike",
+      "sources": [
+        "test/mcp/acceptance/scenario_*.py",
+        "test/mcp/acceptance/scenario_probes.ps1"
+      ],
+      "content": "固定seed的85良性+15故障, 五故障Spike, TCP/TLS/UDP/native/物理捕获及在线/离线重判.",
+      "procedure": "沿原scenario_suite.py generate/preflight/fault-spike/run/resume/verify/summary; 现有formal wrapper执行显式1-5项, 首非pass停止; 用原始捕获重判.",
+      "judgment": "全100逐项完整并通过原independent verify/integrity与summary, 同候选/实例/来源与结束恢复; reduced/Spike/工具单测不算100全过.",
+      "limitations": "历史仅部分场景通过, 其余未执行/旧失败保留; 不因集中盘点自动续跑. 诊断时钟不替代正式oracle.",
+      "prerequisites": "原候选/manifest/namespace/真实物理捕获/资源准入及独占VM; 不混拼历史信用.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": null,
+      "required_for_full": true,
+      "oracle_status": "existing",
+      "launch": {
+        "platform": "host-controller",
+        "argv": [
+          "{python}",
+          "test/mcp/acceptance/scenario_suite.py"
+        ],
+        "cwd": ".",
+        "fixed_args": false
+      }
+    },
+    {
+      "id": "MCP-FORMAL",
+      "title": "MCP固定来源/批次/独立重判编排",
+      "sources": [
+        "test/mcp/acceptance/run_formal_completion.py",
+        "test/mcp/acceptance/run_formal_source_audit.py",
+        "test/mcp/acceptance/formal_batch_v3.py",
+        "test/mcp/acceptance/formal_runtime/*.py",
+        "test/mcp/acceptance/formal_runtime/README.md"
+      ],
+      "content": "materials/source图/历史原件独立重判, prepare/真实实例准入/选定批次/run闭合/导出.",
+      "procedure": "原CLI prepare冻结材料, run-batch执行既有batch并独立重判; export-source保留原源身份; 不创造第二执行/状态机.",
+      "judgment": "原来源与动作/结束证据完整且原oracle成立, prepare通过只算准备; new_formal_credit=0不提升为正式场景完成.",
+      "limitations": "是现有场景的编排设施, 不新增产品功能; 不要求一般功能验收都采用该重型合同.",
+      "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": null,
+      "required_for_full": false,
+      "oracle_status": "existing",
+      "launch": {
+        "platform": "host-controller",
+        "argv": [
+          "{python}",
+          "test/mcp/acceptance/run_formal_completion.py"
+        ],
+        "cwd": ".",
+        "fixed_args": false
+      }
+    },
+    {
+      "id": "MCP-SPECIAL",
+      "title": "MCP专用IPC/故障/原生探针",
+      "sources": [
+        "test/mcp/acceptance/run_control_cases.py",
+        "test/mcp/acceptance/run_creation_cases.py",
+        "test/mcp/acceptance/run_initialization_case.py",
+        "test/mcp/acceptance/run_ipc_cases.py",
+        "test/mcp/acceptance/run_readiness_probe.py",
+        "test/mcp/acceptance/run_active_probe.py",
+        "test/mcp/acceptance/p14_*.py",
+        "test/mcp/acceptance/p7_capture_wrapper.py",
+        "test/mcp/acceptance/crash_*.ps1",
+        "test/mcp/acceptance/*_evidence.py",
+        "test/mcp/acceptance/etl_raw_clock.py",
+        "test/mcp/acceptance/tdh_metadata.py",
+        "test/mcp/acceptance/formal_instance_gate.py",
+        "test/mcp/acceptance/sst_pc008_assert.py",
+        "test/mcp/acceptance/replay_observation.py",
+        "test/mcp/acceptance/gui_contract_export.py",
+        "test/mcp/acceptance/artifact_transfer.py",
+        "test/mcp/acceptance/bounded_mcp.py",
+        "test/mcp/acceptance/helpers.py",
+        "test/mcp/acceptance/evidence_integrity.py"
+      ],
+      "content": "IPC创建窗/EOF/初始化/就绪/控制者, 当前进程精确故障, P14恢复/操作者退出, native与ETW来源、取证传输.",
+      "procedure": "由原P/场景需要时调用固定辅助脚本; 检查原CLI和调用者, 不因有crash脚本就默认执行; 原父任务持故障与恢复责任.",
+      "judgment": "真实触发目标/故障类别/run/incident/ACK与恢复准确; 辅助探针成功只支持所测断言.",
+      "limitations": "部分入口是破坏性故障注入或历史诊断; 仅登记和按原scope显式选择, 不自动与普通功能混跑.",
+      "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": null,
+      "required_for_full": false,
+      "oracle_status": "existing"
+    },
+    {
+      "id": "BUILD",
+      "title": "正式构建/分片测试/包身份",
+      "sources": [
+        "tools/build_*.py",
+        "Build-*.ps1",
+        "Build-*.sh"
+      ],
+      "content": "GUI/MCP Windows不可变源码构建, Windows主片/HTTP与host片, SDK/依赖锁, 合包/manifest/逐载荷hash, Linux工具制品.",
+      "procedure": "复用原Docker/Wine或Windows构建入口和当前source commit; 各片真实collection/JUnit再merge/package, 输出新dist目录.",
+      "judgment": "原gate receipt绑定同源各片且无未允许失败, ZIP与逐载荷校验完整; 构建不替代VM运行.",
+      "limitations": "旧正式包条数和版本不是当前包预期; 不因整理目录重建产品.",
+      "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "offline",
+      "command": null,
+      "required_for_full": false,
+      "oracle_status": "existing"
+    },
+    {
+      "id": "HELPERS",
+      "title": "其它原有诊断/验证/测试辅助",
+      "sources": [
+        "test/scripts/*",
+        "tools/testing_symlinks.py",
+        "tools/replay_*.py",
+        "tools/publish_closed_run_artifacts.py",
+        "tools/Export-VeloArtifacts.ps1",
+        "test/mcp/*fixture*.py"
+      ],
+      "content": "iptables/nc手工诊断, 符号链接边界, 历史回放, 已停产物发布/传输及受控fixture.",
+      "procedure": "由相应原测试或明确诊断选择调用; 离线回放与当前实机证据分开.",
+      "judgment": "只给对应辅助事实, 不以导出/发布/回放成功证明当前功能回归通过.",
+      "limitations": "脚本存在不等于有原生正反例; 原历史回放不转成当前运行信用.",
+      "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": null,
+      "required_for_full": false,
+      "oracle_status": "existing"
+    },
+    {
+      "id": "LINUX-RUNTIME",
+      "title": "Linux运行/更新/隔离与控制恢复",
+      "sources": [
+        "fakenet/mcp/linuxrunner.py",
+        "fakenet/diverters/linuxnetpolicy.py",
+        "deploy/linux/README.md"
+      ],
+      "content": "Linux SingleHost/MultiHost, NFQUEUE/策略/owner控制、服务部署与更新, session恢复; 与Windows专属External扩展分开.",
+      "procedure": "复用Linux离线测试、原版MultiHost及双PCAP原生入口; 记录真实Linux VM网络/规则前后与进程身份.",
+      "judgment": "适用Linux功能逐项通过并恢复; Windows结果或writer IPv6文件合同不转授Linux网络资格.",
+      "limitations": "部署/更新对应完整当前Linux VM原生回归入口尚未统一; 不把MalTrace上层分析会话实测直接算FakeNet每次发布通过.",
+      "prerequisites": "隔离Linux VM与原Linux唯一控制者; 不在当前宿主加载NFQUEUE或改iptables.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": null,
+      "required_for_full": true,
+      "oracle_status": "incomplete"
+    },
+    {
+      "id": "EGRESS-NEW-DEFERRED",
+      "title": "新出口验证接口及生命周期(本轮暂不处理)",
+      "sources": [
+        "test/mcp/acceptance/run_egress_verification.py",
+        "tools/verify_egress_lifecycle.py",
+        "tools/fakenet_egress_fixture.py",
+        "tools/fakenet_egress_guest.ps1",
+        "tools/fakenet_egress_guest_control.py",
+        "tools/export_egress_contract.py"
+      ],
+      "content": "新host单接口正常/host未知/控制缺失/nonce错误/身份变化/超时及停止态-运行态-停止态.",
+      "procedure": "仅登记既有入口和历史结果; 当前用户要求先不处理该接口, 不运行/修复/用其替代旧功能oracle.",
+      "judgment": "后续用已经集中并补齐的既有功能回归约束接口修改, 不允许接口自身通过反向证明其它功能.",
+      "limitations": "本轮excluded, 与之前撤回整体完成结论保持; 不因清单登记追认其完整交付.",
+      "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": null,
+      "required_for_full": false,
+      "oracle_status": "existing"
+    },
+    {
+      "id": "GAP-MANUAL",
+      "title": "原手工功能与不充分判据清单",
+      "sources": [
+        "docs/testing.md",
+        "docs/CustomResponse.md",
+        "fakenet/configs/default.ini"
+      ],
+      "content": "LinuxRestrictInterface, ExecuteCmd, NCSI, standalone listeners, syslog, ICMP日志, DumpPackets开关/前缀, LinuxFlushIptables/DNSCommand, FixGateway/FixDNS/ModifyLocalDNS/StopDNSService, RAW-DATE与名单互斥.",
+      "procedure": "先按docs/testing.md逐条登记人工步骤/正反例/恢复; 由源码与已有单测判断是否已补自动化, 每条仍需实际结果; 不用章节标题算测试.",
+      "judgment": "每功能有明确触发、观测点、正反期望与恢复证据; 未自动化/未实测标unknown/not_run, 不能因其它组通过忽略.",
+      "limitations": "旧手工条目只有名称, 多数没有可重放逐步oracle; 必须补齐后才可能宣称全功能回归通过.",
+      "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "manual",
+      "command": null,
+      "required_for_full": true,
+      "oracle_status": "incomplete"
+    },
+    {
+      "id": "GAP-APPLICATION",
+      "title": "应用层与组合覆盖缺口",
+      "sources": [
+        "docs/AI-工具功能与MCP接口完整参考.md",
+        "test/egress_control_vm/Run-EgressControlTests.ps1",
+        "test/gui_vm/run_policy_feature_tests.py"
+      ],
+      "content": "真实域名应用层成功/真实IP边界/私网接管/专属EXE规则并存, DoH成功后的后续IP兜底, DNS TCP/UDP及缓存/子进程等实际规则覆盖.",
+      "procedure": "使用同一最终配置的良性客户端+受控宿主服务, 同时证明允许的走到正确服务、不允许的被接管/阻断; 禁止把DNS租约或一个DROP事件代替整个组合.",
+      "judgment": "每条已启用规则均有正反例及实际路径; 未知或未覆盖维持unknown, 不要求解析完整恶意协议.",
+      "limitations": "目前分散脚本不足以证明所有配置组合; DoH负例存在但旧脚本为OBSERVED, 不等于完整DoH+后续IP实测通过.",
+      "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
+      "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
+      "evidence_level": "native",
+      "command": null,
+      "required_for_full": true,
+      "oracle_status": "incomplete"
+    }
+  ]
+}
