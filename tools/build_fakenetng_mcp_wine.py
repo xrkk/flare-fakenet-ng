@@ -281,6 +281,7 @@ FORMAL_RUNTIME_PREFIX = 'test_formal_runtime_'
 MCP_HOST_TESTS = (
     'test/mcp/test_host_auth_references.py',
     'test/mcp/test_host_velo_completion.py',
+    'test/mcp/test_host_protocol_envelope.py',
     'test/mcp/test_host_local_fixture.py',
     'test/mcp/test_host_stdio.py', 'test/mcp/test_host_state.py',
     'test/mcp/test_host_budget_guards.py', 'test/mcp/test_r03_regressions.py',

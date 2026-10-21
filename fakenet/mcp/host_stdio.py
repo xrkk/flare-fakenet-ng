@@ -1581,7 +1581,13 @@ class FakeNetHttpClient:
         if timeout <= 0:
             raise HostFacadeError('guest_timeout', 'FakeNet tool budget exhausted')
         body = {
-            'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list', 'params': {},
+            'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list',
+            'params': {'_meta': {
+                'io.modelcontextprotocol/protocolVersion': PROTOCOL_VERSION,
+                'io.modelcontextprotocol/clientInfo': {
+                    'name': 'fakenetng-host-mcp', 'version': '0'},
+                'io.modelcontextprotocol/clientCapabilities': {},
+            }},
         }
         request = urllib.request.Request(
             self.url, data=json.dumps(body).encode('utf-8'), method='POST',

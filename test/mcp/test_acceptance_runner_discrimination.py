@@ -111,3 +111,15 @@ def test_timeout_requires_timeout_lifecycle_and_reason():
     assert runner.expectation('timeout', value) is False
     value['lifecycle'] = {'state': 'timed_out'}
     assert runner.expectation('timeout', value) is True
+
+
+def test_host_unknown_rejects_transport_failures():
+    value = base_result()
+    value['verdict'] = 'unknown'
+    value['conclusion']['status'] = 'underdetermined'
+    value['coverage']['matrix_not_run'] = [{'id': 'x', 'reason': 'guest_transport_error'}]
+    value['checks']['independent_egress_blocked'] = {'value': None}
+    for code in ('guest_transport_error', 'windows_transport_error', 'not_allowed_in_state'):
+        value['error'] = {'code': code}
+        value['lifecycle']['state'] = 'ownership_unknown'
+        assert runner.expectation('host_unknown', value) is False

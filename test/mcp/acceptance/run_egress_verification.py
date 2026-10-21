@@ -99,9 +99,11 @@ def expectation(case, result):
                     'sample_path_qualified') is True and
                 bool((result.get('artifact') or {}).get('sha256')))
     if case == 'host_unknown':
-        return (verdict == 'unknown' and status == 'underdetermined' and
-                (result.get('coverage') or {}).get('matrix_not_run') and
-                _check_value(result, 'independent_egress_blocked') is None)
+        return bool(verdict == 'unknown' and status == 'underdetermined' and
+                    lifecycle == 'completed' and not result.get('error') and
+                    result.get('authorized') is False and
+                    (result.get('coverage') or {}).get('matrix_not_run') and
+                    _check_value(result, 'independent_egress_blocked') is None)
     if case == 'control_missing':
         return (verdict == 'fail' and status != 'qualified_in_scope' and
                 ((_check_value(result, 'mcp_control_exclusions_effective')
