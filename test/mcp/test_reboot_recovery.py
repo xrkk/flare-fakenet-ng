@@ -1,6 +1,8 @@
 """Boot-bound recovery must not inherit old PID-only UDP exceptions."""
 import copy
 import json
+import importlib.util
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,8 +11,15 @@ from fakenet.mcp import baseline as module
 from fakenet.mcp.endpoint_attribution import foreign_udp_owner_changes
 
 
+_fixture_spec = importlib.util.spec_from_file_location(
+    'reboot_endpoint_fixtures', Path(__file__).with_name('test_endpoint_attribution.py'))
+_fixtures = importlib.util.module_from_spec(_fixture_spec)
+_fixture_spec.loader.exec_module(_fixtures)
+foreign_case = _fixtures.foreign_case
+capture_two_samples = _fixtures.capture_two_samples
+
+
 def test_full_audit_rejects_cross_boot_pid_reuse_even_when_old_helper_accepts(tmp_path, monkeypatch):
-    from test.mcp.test_endpoint_attribution import foreign_case, capture_two_samples
     baseline, sample, proof = foreign_case()
     assert foreign_udp_owner_changes(baseline, sample, proof)['accepted']
     sections = module.CapturedSections(baseline['sections'])
@@ -120,7 +129,6 @@ def test_two_current_samples_must_agree_on_instance_and_endpoint_set():
 
 
 def test_full_audit_recovers_legacy_boot_preserving_baseline_bytes(tmp_path,monkeypatch):
-    from test.mcp.test_endpoint_attribution import capture_two_samples
     b,s,p=reboot_case(); sections=module.CapturedSections(b['sections']);sections.windows=b['observation_windows']
     store=module.BaselineStore(tmp_path/'baselines');store.save(b['run_id'],sections)
     path=store.root/(b['run_id']+'.json'); original=path.read_bytes()
@@ -138,7 +146,6 @@ def test_full_audit_recovers_legacy_boot_preserving_baseline_bytes(tmp_path,monk
 
 @pytest.mark.parametrize('missing_event',[False,True])
 def test_no_legacy_fallback_after_cross_boot_rejection(tmp_path,monkeypatch,missing_event):
-    from test.mcp.test_endpoint_attribution import capture_two_samples
     b,s,p=reboot_case()
     if missing_event:s['reboot_context']['boot'].pop('event')
     else:s['reboot_context']['owners'][0]['services']=[]

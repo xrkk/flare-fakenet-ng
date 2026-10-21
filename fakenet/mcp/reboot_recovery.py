@@ -278,9 +278,13 @@ def native_process_identity(pid):
         if not k.GetProcessTimes(handle, *[c.byref(t) for t in times]) or not k.QueryFullProcessImageNameW(handle,0,image,c.byref(size)):
             raise OSError('native image/birth unavailable')
         critical = w.BOOL()
-        k.IsProcessCritical.argtypes = [w.HANDLE,c.POINTER(w.BOOL)]; k.IsProcessCritical.restype = w.BOOL
-        role_read = k.IsProcessCritical(handle,c.byref(critical))
-        role = bool(critical.value) if role_read else None
+        critical_query = getattr(k, 'IsProcessCritical', None)
+        role = None
+        if critical_query is not None:
+            critical_query.argtypes = [w.HANDLE, c.POINTER(w.BOOL)]
+            critical_query.restype = w.BOOL
+            if critical_query(handle, c.byref(critical)):
+                role = bool(critical.value)
         sid = None
         a.OpenProcessToken.argtypes = [w.HANDLE,w.DWORD,c.POINTER(w.HANDLE)]; a.OpenProcessToken.restype = w.BOOL
         a.GetTokenInformation.argtypes = [w.HANDLE,c.c_int,c.c_void_p,w.DWORD,c.POINTER(w.DWORD)]
