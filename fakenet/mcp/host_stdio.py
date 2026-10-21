@@ -1053,9 +1053,8 @@ class HostFacade:
         # expectation, outcome, reason and qualification input stays intact.
         selected = [(i, step) for i, step in enumerate(result.get('steps') or [])
                     if len(json.dumps(step.get('observed'), ensure_ascii=False).encode('utf-8')) > 1024]
-        if not selected:
-            return result
-        raw = _atomic_json(evidence_dir / 'result.unabridged.json', result)
+        raw = (_atomic_json(evidence_dir / 'result.unabridged.json', result)
+               if selected else None)
         for index, step in selected:
             observed = step.get('observed')
             summary = {}
@@ -1073,7 +1072,40 @@ class HostFacade:
             }
             step['evidence_refs'] = list(step.get('evidence_refs') or []) + [{'id': 'unabridged-result', 'json_pointer': '/steps/%d/observed' % index}]
         entries = result['manifest']['entries']
-        entries.append(dict(raw, id='unabridged-result', side='host', kind='unabridged-result'))
+        if raw is not None:
+            entries.append(dict(raw, id='unabridged-result', side='host',
+                                kind='unabridged-result'))
+        # Native provenance repeats the same long path and digest on many
+        # rows. Resolve it once in the manifest; keep every row and decision.
+        fields = ('side', 'path', 'sha256', 'kind')
+        used_ids = {entry.get('id') for entry in entries if entry.get('id')}
+        lookup = {}
+        for index, entry in enumerate(entries):
+            if not all(isinstance(entry.get(key), str) for key in fields):
+                continue
+            key = tuple(entry[name] for name in fields)
+            if key in lookup:
+                continue
+            reference_id = entry.get('id')
+            if not reference_id:
+                reference_id = 'evidence-%d' % index
+                while reference_id in used_ids:
+                    reference_id += '-ref'
+                entry['id'] = reference_id
+                used_ids.add(reference_id)
+            lookup[key] = reference_id
+        for step in result.get('steps') or []:
+            compact_refs = []
+            for ref in step.get('evidence_refs') or []:
+                key = tuple(ref.get(name) for name in fields)
+                if not ref.get('id') and key in lookup:
+                    compact = {name: value for name, value in ref.items()
+                               if name not in fields}
+                    compact['id'] = lookup[key]
+                    compact_refs.append(compact)
+                else:
+                    compact_refs.append(ref)
+            step['evidence_refs'] = compact_refs
         result['manifest']['sha256'] = _sha(entries)
         return result
 

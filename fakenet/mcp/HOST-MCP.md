@@ -110,7 +110,12 @@ configuration/scope is rejected.
 Host raw evidence is written under the configured `output_root`; guest raw
 evidence stays in the FakeNet run lifecycle. The returned result carries
 path/SHA-256 references; no raw credentials, tokens or sample bytes are
-returned. The guest evidence transfer remains a separate authorized VM
+returned. When native provenance exceeds the compact budget, repeated step
+references use `{"id": "evidence-N"}` pointing to one manifest entry with the
+exact path and SHA-256. Step identities, expectations, outcomes, reasons,
+times, qualification inputs and the actual fail/unknown verdict remain in
+line. Large observations retain a hash-checked unabridged JSON pointer.
+The guest evidence transfer remains a separate authorized VM
 transfer; this facade adds no transport service.
 
 ## Offline tests

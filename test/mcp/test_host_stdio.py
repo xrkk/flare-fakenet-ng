@@ -633,3 +633,64 @@ def test_large_raw_step_keeps_one_call_result_and_integrity(tmp_path, monkeypatc
     assert facade.verify(COMMAND_ID)['verdict'] == 'unknown'
     raw_path.write_text('{}')
     assert facade.verify(COMMAND_ID)['error']['code'] == 'stale_result'
+
+
+def test_repeated_long_evidence_keeps_native_fail_and_all_steps(tmp_path, monkeypatch):
+    """Native-sized provenance must not turn an executed fail into not_run."""
+    original = host_merge.build_host_result
+    unabridged = {}
+
+    class NativeFailWindows(FakeWindows):
+        def probe(self, script, timeout=None):
+            value, raw = super().probe(script, timeout=timeout)
+            for row in value.get('steps', []):
+                if row['id'] == 'ipv4_icmp':
+                    row.update(received='unexpected echo', outcome='response')
+            return value, raw
+
+    def with_repeated_evidence(**kwargs):
+        result = original(**kwargs)
+        refs = []
+        for index in range(4):
+            path = tmp_path / ('native-evidence-' + 'x' * 150) / str(index)
+            path.parent.mkdir(exist_ok=True)
+            path.write_text('benign reference')
+            refs.append({'side': 'host', 'path': str(path),
+                         'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                         'kind': 'native-provenance'})
+        result['manifest']['entries'].extend(refs)
+        for step in result['steps']:
+            step['evidence_refs'] = [dict(ref) for ref in refs]
+        assert any(step['outcome'] == 'fail' for step in result['steps'])
+        assert result['verdict'] == 'fail'
+        unabridged.update(json.loads(json.dumps(result)))
+        return result
+
+    monkeypatch.setattr(host_merge, 'build_host_result', with_repeated_evidence)
+    facade = HostFacade(config_for(tmp_path), provider=FakeProvider(),
+                        fakenet_client=FakeFakeNet(), windows_client=NativeFailWindows(),
+                        velo_client=FakeVelo())
+    result = facade.verify(COMMAND_ID)
+    assert result.get('error') is None
+    assert len(json.dumps(result, ensure_ascii=False).encode()) <= 65536
+    assert result['verdict'] == unabridged['verdict'] == 'fail'
+    assert result['coverage'] == unabridged['coverage']
+    assert result['helper_input'] == unabridged['helper_input']
+    assert result['checks'] == unabridged['checks']
+    assert [(s['id'], s['outcome'], s['expected'], s['reason_code'],
+             s['started_at'], s['ended_at']) for s in result['steps']] == [
+        (s['id'], s['outcome'], s['expected'], s['reason_code'],
+         s['started_at'], s['ended_at']) for s in unabridged['steps']]
+    entries = {e['id']: e for e in result['manifest']['entries'] if e.get('id')}
+    for step in result['steps']:
+        for ref in step['evidence_refs']:
+            if ref.get('json_pointer'):
+                continue
+            entry = entries[ref['id']]
+            assert Path(entry['path']).is_file()
+            assert hashlib.sha256(Path(entry['path']).read_bytes()).hexdigest() == entry['sha256']
+    from fakenet.mcp.schemas import VerificationResult
+    VerificationResult.model_validate(result)
+    replay = facade.verify(COMMAND_ID)
+    assert replay['verdict'] == 'fail'
+    assert replay['steps'] == result['steps']
