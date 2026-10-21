@@ -546,6 +546,9 @@ class RealSupervisor:
             differences = self._baseline_store.full_audit_diff(marker['run_id'], deadline=deadline,
                                                               settle_seconds=150,
                                                               observation=self._endpoint_observation)
+            if getattr(self._baseline_store, 'last_cross_boot_attribution', None):
+                # Recovery can finish; the interrupted experiment did not.
+                self._last_run_outcome = 'failed'
             if not self._finish_endpoint_observation(deadline):
                 return self._result('failed', 'endpoint observation cleanup unverified')
             if differences:

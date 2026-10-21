@@ -12,13 +12,15 @@ from fakenet.mcp.baseline import BASELINE_FIELDS
 
 
 
-def capture_two_samples(monkeypatch, module, current):
+def capture_two_samples(monkeypatch, module, current, proof=None):
     """Model two observation intervals without depending on fsync latency."""
     import time
     from types import SimpleNamespace
     clock = {'now': 1000.0}
+    if proof is not None and not hasattr(current, 'reboot_context'):
+        current.reboot_context = same_boot_context(current, proof)
 
-    def capture(deadline=None):
+    def capture(deadline=None, **kwargs):
         clock['now'] += 0.012
         return current
 
@@ -27,6 +29,21 @@ def capture_two_samples(monkeypatch, module, current):
     monkeypatch.setattr(module, 'time', SimpleNamespace(
         monotonic=lambda: clock['now'], time=time.time, sleep=lambda _: None))
 
+
+
+def same_boot_context(current, proof):
+    """Native owner observations at the current sampling interval, not old PIDs alone."""
+    from fakenet.mcp.reboot_recovery import SCHEMA, FILETIME_EPOCH, endpoint_rows
+    identities = {int(r['ProcessId']): r['CreationTime'] for r in proof['start']['processes']}
+    endpoints = endpoint_rows(current['listen_ports'])
+    owners = []
+    for pid in sorted(set(identities) | {r[3] for r in endpoints}):
+        image = r'C:\Windows\System32\svchost.exe'
+        born = identities.get(pid, str(FILETIME_EPOCH + current.windows['listen_ports']['start_ns'] // 100 - 10000))
+        owners.append({'pid':pid,'birth_ticks':str(born),'image':image,'alive':True,
+                       'services':[{'name':'Dnscache','pid':pid,'state':'Running','command':image}]})
+    return {'schema':SCHEMA,'boot':{'computer':'fixture','start_ns':1},
+            'owners':owners,'rows':[dict(protocol=p,address=h,port=n,pid=pid) for p,h,n,pid in endpoints]}
 
 def case():
     source = json.loads((Path(__file__).parent/'fixtures/native_afd_udp_52623.json').read_text())
@@ -87,7 +104,7 @@ def test_full_audit_preserves_raw_difference_and_requires_two_complete_proofs(tm
     store.save(base['run_id'], sections)
     current = module.CapturedSections(sample['current'])
     current.windows = sample['observation_windows']
-    capture_two_samples(monkeypatch, module, current)
+    capture_two_samples(monkeypatch, module, current, proof=proof)
     observed = SimpleNamespace(audit_proof=lambda deadline: proof)
     result = store.full_audit_diff(base['run_id'], settle_seconds=0.02, observation=observed)
     assert (result == {}) is complete
@@ -211,7 +228,7 @@ def test_full_audit_accepts_foreign_preexisting_udp_owner(tmp_path, monkeypatch)
     store.save(baseline['run_id'], sections)
     current = module.CapturedSections(sample['current'])
     current.windows = sample['observation_windows']
-    capture_two_samples(monkeypatch, module, current)
+    capture_two_samples(monkeypatch, module, current, proof=proof)
     observed = SimpleNamespace(audit_proof=lambda deadline: proof)
     result = store.full_audit_diff(baseline['run_id'], settle_seconds=0.02, observation=observed)
     assert result == {}
@@ -264,7 +281,7 @@ def test_full_audit_uses_start_only_proof_when_audit_proof_fails(tmp_path, monke
     store.save(baseline['run_id'], sections)
     current = module.CapturedSections(sample['current'])
     current.windows = sample['observation_windows']
-    capture_two_samples(monkeypatch, module, current)
+    capture_two_samples(monkeypatch, module, current, proof=proof)
 
     def broken_audit_proof(deadline):
         raise ValueError('endpoint observation is incomplete')
@@ -368,7 +385,7 @@ def test_full_audit_accepts_restarted_service_rebind(tmp_path, monkeypatch):
     store.save(baseline['run_id'], sections)
     current = module.CapturedSections(sample['current'])
     current.windows = sample['observation_windows']
-    capture_two_samples(monkeypatch, module, current)
+    capture_two_samples(monkeypatch, module, current, proof=proof)
     monkeypatch.setattr(endpoint_attribution, 'dnscache_host_pid',
                         lambda: (2336, True))
     observed = SimpleNamespace(audit_proof=lambda deadline: proof)
@@ -437,9 +454,12 @@ def test_full_audit_attributes_the_final_settle_sample(tmp_path, monkeypatch):
     clock = {'now': 1000.0}
     monkeypatch.setattr(module.time, 'monotonic', lambda: clock['now'])
 
-    def paced_capture(deadline=None):
+    def paced_capture(deadline=None, **kwargs):
         clock['now'] += 0.012  # two captures exactly fill the settle window
-        return next(provided)
+        current = module.CapturedSections(next(provided))
+        current.windows = sample['observation_windows']
+        current.reboot_context = same_boot_context(current, proof)
+        return current
     monkeypatch.setattr(module, 'capture', paced_capture)
     monkeypatch.setattr(module.time, 'sleep', lambda seconds: None)
     observed = SimpleNamespace(audit_proof=lambda deadline: proof)

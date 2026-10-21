@@ -238,7 +238,7 @@ def settle_dead_socket_rows(deadline=None):
         time.sleep(0.5)
 
 
-def capture(deadline=None):
+def capture(deadline=None, owner_pids=()):
     """Collect the current environment baseline sections.
 
     Each value is ``text`` on success or ``'__COLLECTION_FAILED__'`` when
@@ -302,6 +302,12 @@ def capture(deadline=None):
         'services': services.strip(),
     })
     result.windows = {'listen_ports': {'start_ns': ports_start, 'end_ns': ports_end}}
+    if sys.platform == 'win32':
+        from fakenet.mcp.reboot_recovery import capture_context
+        result.reboot_context = capture_context(deadline, owner_pids=owner_pids)
+        # Keep the original netstat interval, and enclose the native owner read.
+        result.reboot_context['netstat_window'] = dict(result.windows['listen_ports'])
+        result.windows['listen_ports']['end_ns'] = time.time_ns()
     return result
 
 
@@ -344,6 +350,7 @@ class BaselineStore:
                 raise RuntimeError('pre-start firewall evidence unavailable')
         payload = json.dumps({'run_id': run_id, 'sections': sections,
                               'observation_windows': getattr(sections, 'windows', {}),
+                              'reboot_context': getattr(sections, 'reboot_context', None),
                               'firewall': firewall,
                               'managed_driver_root': str(Path(sys.executable).parent)},
                              ensure_ascii=False, indent=2) + '\n'
@@ -384,9 +391,17 @@ class BaselineStore:
     def full_audit_diff(self, run_id, deadline=None, settle_seconds=0, observation=None):
         """Audit all five sections, preserving raw differences and requiring
         complete same-run proof for any closed ephemeral UDP exception."""
+        self.last_cross_boot_attribution = None
         baseline = self.load(run_id)
         if baseline is None:
             return {'__missing_baseline__': True}
+        from fakenet.mcp.reboot_recovery import (
+            endpoint_rows, epoch_mode, cross_boot_pair, same_boot_owner_proof)
+        try:
+            owner_pids = {row[3] for row in endpoint_rows(baseline['sections']['listen_ports'])}
+        except (KeyError, TypeError, ValueError):
+            owner_pids = set()
+
         if settle_seconds:
             # Never adjust the baseline. Preserve every raw observation;
             # exact matches need two samples. Other differences need the
@@ -403,11 +418,15 @@ class BaselineStore:
                     # The settling interval controls when a sample may start.
                     # A started sample keeps its bounded outer operation budget;
                     # don't manufacture partial sections at the settling edge.
-                    current = capture(deadline if observation is not None else audit_deadline)
+                    if observation is not None:
+                        current = capture(deadline, owner_pids=owner_pids)
+                    else:
+                        current = capture(audit_deadline)
                     differences = audit_compare(baseline.get('sections'), current)
                     sample = {'time': time.time(), 'run_id': run_id, 'current': current,
                               'differences': differences,
-                              'observation_windows': getattr(current, 'windows', {})}
+                              'observation_windows': getattr(current, 'windows', {}),
+                              'reboot_context': getattr(current, 'reboot_context', None)}
                     samples.append(sample)
                     samples = samples[-2:]
                     stream.write(json.dumps(sample, ensure_ascii=False) + '\n')
@@ -416,11 +435,39 @@ class BaselineStore:
                     clean = clean + 1 if not differences else 0
                     if clean == 2:
                         return {}
+                    if observation is not None and len(samples) == 2 and hasattr(observation, 'start_proof'):
+                        try:
+                            start = observation.start_proof()
+                            if all(epoch_mode(baseline, x, start) == 'cross_boot' for x in samples):
+                                reboot = cross_boot_pair(baseline, samples, start)
+                                if reboot['accepted']:
+                                    from fakenet.mcp.endpoint_observation import write_evidence
+                                    write_evidence(log.with_suffix('.reboot-attribution.json'), reboot)
+                                    self.last_cross_boot_attribution = reboot
+                                    return {}
+                        except (OSError, ValueError, KeyError, TypeError):
+                            pass
                     time.sleep(min(0.5, max(0, audit_deadline - time.monotonic())))
             if observation is not None and len(samples) == 2:
                 from fakenet.mcp.endpoint_attribution import (closed_udp_changes,
                                                               foreign_udp_owner_changes)
                 from fakenet.mcp.endpoint_observation import write_evidence
+                # All legacy attribution paths are gated, including their
+                # start-only fallback. A refusal cannot be rescued by a PID.
+                try:
+                    start = (observation.start_proof() if hasattr(observation, 'start_proof')
+                             else observation.audit_proof(deadline))
+                except Exception:
+                    start = {}
+                modes = [epoch_mode(baseline, x, start) for x in samples]
+                if modes != ['same_boot', 'same_boot']:
+                    reboot = cross_boot_pair(baseline, samples, start)
+                    reboot['epoch_modes'] = modes
+                    write_evidence(log.with_suffix('.reboot-attribution.json'), reboot)
+                    if reboot['accepted']:
+                        self.last_cross_boot_attribution = reboot
+                        return {}
+                    return differences or {'__audit_stability_unverified__': True}
                 try:
                     proof = observation.audit_proof(deadline)
                     decisions = [closed_udp_changes(baseline, sample, proof) for sample in samples]
@@ -457,7 +504,8 @@ class BaselineStore:
                     try:
                         foreign = [foreign_udp_owner_changes(baseline, sample, proof)
                                    for sample in samples]
-                        accepted = foreign[-1]['accepted']
+                        accepted = (foreign[-1]['accepted'] and
+                                    same_boot_owner_proof(foreign[-1], samples[-1], foreign=True))
                         decision['foreign_owner_samples'] = foreign
                         decision['accepted'] = accepted
                     except Exception as exc:
@@ -474,7 +522,8 @@ class BaselineStore:
                             restarted_service_udp_changes)
                         restarted = [restarted_service_udp_changes(baseline, sample, proof)
                                      for sample in samples]
-                        accepted = restarted[-1]['accepted']
+                        accepted = (restarted[-1]['accepted'] and
+                                    same_boot_owner_proof(restarted[-1], samples[-1]))
                         decision['restarted_service_samples'] = restarted
                         decision['accepted'] = accepted
                     except Exception as exc:
