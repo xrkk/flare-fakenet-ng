@@ -694,3 +694,24 @@ def test_repeated_long_evidence_keeps_native_fail_and_all_steps(tmp_path, monkey
     replay = facade.verify(COMMAND_ID)
     assert replay['verdict'] == 'fail'
     assert replay['steps'] == result['steps']
+
+
+def test_listener_usessl_selects_tls_probe():
+    content = ('[Diverter]\nRedirectAllTraffic = Yes\n'
+               '[HTTPListener443]\nEnabled = True\nPort = 443\n'
+               'Protocol = TCP\nListener = HTTPListener\nUseSSL = Yes\n')
+    from fakenet.mcp.host_stdio import parse_fakenet_config
+    parsed = parse_fakenet_config(content)
+    rows = host_probe.expected_steps(
+        mapped_ports=parsed['mapped_ports'],
+        listener_map=parsed['listener_map'], nonce='nonce')
+    assert parsed['listener_map'][443] == 'httplistener:tls'
+    assert rows['ipv4_tcp_443']['probe_kind'] == 'tcp_tls'
+
+
+def test_listener_usessl_no_keeps_plain_http_even_with_legacy_ssl_yes():
+    from fakenet.mcp.host_stdio import parse_fakenet_config
+    parsed = parse_fakenet_config(
+        '[HTTP]\nEnabled = True\nPort = 80\nListener = HTTPListener\n'
+        'UseSSL = No\nSSL = Yes\n')
+    assert parsed['listener_map'][80] == 'httplistener'

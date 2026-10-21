@@ -448,7 +448,8 @@ def parse_fakenet_config(content):
             number = int(port)
             mapped.add(number)
             listener_kind = listener.lower()
-            if str(parser.get(section, 'SSL', fallback='')).lower() in (
+            if str(parser.get(section, 'UseSSL', fallback=parser.get(
+                    section, 'SSL', fallback=''))).lower() in (
                     'yes', 'true', '1'):
                 listener_kind += ':tls'
             listener_map[number] = listener_kind
