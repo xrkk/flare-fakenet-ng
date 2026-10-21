@@ -126,9 +126,11 @@ configuration/scope is rejected.
   passive check. Host probe/merge corrections do not require deploying another
   guest binary. The installed guest build identity must still be reported.
 
-Validate the actual analysis configuration after configuration preparation.
-Read its name/hash and compare them with the engine's loaded config identity
-before calling the verifier. Each changed configuration, run, sample context
+Prepare the actual analysis configuration under the existing lifecycle
+authorization and bind the host config/scope to the loaded name/hash already
+returned by that preparation. The single verifier rereads and compares the
+configuration and loaded identity internally; AI does not issue extra
+step-by-step identity checks. Each changed configuration, run, sample context
 or scope requires its own verification intent. A dedicated EgressControl test
 profile does not prove another configuration. Reusing the same command ID
 rechecks current facts, calibration lifetime and originals, probe template and
