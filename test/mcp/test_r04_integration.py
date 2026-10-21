@@ -145,3 +145,20 @@ def test_pending_same_id_reconciles_guest_without_rerun(tmp_path, monkeypatch):
     other = '66666666-7777-4888-9999-aaaaaaaaaaaa'
     blocked = facade.verify(other)
     assert blocked['error']['code'] == 'ownership_unknown'
+
+
+def test_medium_observations_and_long_provenance_stay_compact(tmp_path, monkeypatch):
+    root = tmp_path / ('native-provenance-' + 'x' * 150)
+    root.mkdir()
+    artifacts = root / 'artifacts'
+    monkeypatch.setattr(egress_verification.paths, 'data_directories',
+                        lambda: {'artifacts': str(artifacts)})
+    facade = fixture.HostFacade(
+        fixture.config_for(root), provider=fixture.FakeProvider(),
+        fakenet_client=GuestFromActual(artifacts),
+        windows_client=fixture.FakeWindows(), velo_client=fixture.FakeVelo())
+    result = facade.verify(COMMAND_ID)
+    assert result['error'] is None
+    assert result['producer_match'] is True
+    assert result['coverage']['matrix_executed'] == 30
+    assert len(json.dumps(result, ensure_ascii=False).encode()) <= 65536

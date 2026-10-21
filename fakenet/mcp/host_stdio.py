@@ -1052,7 +1052,7 @@ class HostFacade:
         # Only long raw observations move out of the response. Every step,
         # expectation, outcome, reason and qualification input stays intact.
         selected = [(i, step) for i, step in enumerate(result.get('steps') or [])
-                    if len(json.dumps(step.get('observed'), ensure_ascii=False).encode('utf-8')) > 1024]
+                    if len(json.dumps(step.get('observed'), ensure_ascii=False).encode('utf-8')) > 512]
         raw = (_atomic_json(evidence_dir / 'result.unabridged.json', result)
                if selected else None)
         for index, step in selected:
