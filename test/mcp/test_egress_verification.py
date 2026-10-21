@@ -278,3 +278,63 @@ def test_coordinator_rejects_empty_verification_identity():
                      execute=lambda c: {'changed': False},
                      request_identity='')
     assert excinfo.value.code == 'invalid_request'
+
+
+@pytest.mark.parametrize('mismatch', [None, 'source', 'source_port', 'protocol'])
+def test_supervisor_preserves_full_producer_tuple(tmp_path, monkeypatch, mismatch):
+    """Exercise the real supervisor dispatch, not a fake guest shortcut."""
+    from types import SimpleNamespace
+    from fakenet.mcp.supervisor import RealSupervisor
+
+    artifacts = tmp_path / 'artifacts'
+    run_dir = artifacts / 'runs' / RUN_ID
+    run_dir.mkdir(parents=True)
+    log = run_dir / 'run.log'
+    log.write_text(
+        'DIVERT_FAKE_PROBE pid=1234 creation=100 probe_nonce=nonce '
+        'src=192.0.2.10 sport=40000 dst=198.51.100.77 dport=1337 '
+        'proto=TCP epoch=1792465201\n')
+    monkeypatch.setattr(egress_verification.paths, 'data_directories',
+                        lambda: {'artifacts': str(artifacts)})
+    request = request_dict(
+        host_probe_pid=1234, host_probe_creation=100,
+        host_probe_started='2026-10-20T03:00:00+00:00',
+        host_probe_ended='2026-10-20T03:00:02+00:00',
+        host_probe_source='192.0.2.10', host_probe_source_port=40000,
+        host_probe_protocol='TCP', host_probe_destination='198.51.100.77',
+        host_probe_port=1337, unrelated_option='not-forwarded')
+    if mismatch == 'source':
+        request['host_probe_source'] = '192.0.2.11'
+    elif mismatch == 'source_port':
+        request['host_probe_source_port'] = 40001
+    elif mismatch == 'protocol':
+        request['host_probe_protocol'] = 'UDP'
+    request = schemas.VerificationRequest(**request).model_dump(mode='json')
+    captured = {}
+
+    class AtDiagnostic(Exception):
+        pass
+
+    def diagnostic(operation, payload, deadline):
+        assert operation == 'verify-egress-isolation'
+        captured.update(payload)
+        producer = egress_verification._producer_match(RUN_ID, payload)
+        raise AtDiagnostic(producer)
+
+    supervisor = RealSupervisor.__new__(RealSupervisor)
+    supervisor._fakenet = SimpleNamespace(
+        request=lambda *a, **kw: health_dict(), alive=lambda: True,
+        identity={'pid': 1})
+    supervisor._artifacts_root = artifacts
+    supervisor._run_dir = run_dir
+    supervisor._diagnostic_call = diagnostic
+    coordinator = SimpleNamespace(snapshot=lambda: {
+        'state': 'healthy', 'run_id': RUN_ID, 'controller': CONTROLLER})
+    with pytest.raises(AtDiagnostic) as event:
+        supervisor.verify_egress(coordinator, CONTROLLER, request, 'command')
+    for key in ('host_probe_source', 'host_probe_source_port',
+                'host_probe_protocol', 'host_probe_pid', 'host_probe_creation',
+                'host_probe_started', 'host_probe_ended'):
+        assert captured.get(key) == request[key], key
+    assert 'unrelated_option' not in captured
+    assert event.value.args[0]['value'] is (mismatch is None)

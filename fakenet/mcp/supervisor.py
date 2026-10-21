@@ -687,7 +687,8 @@ class RealSupervisor:
         for key in ('host_probe_pid', 'host_probe_creation',
                     'host_probe_started', 'host_probe_ended',
                     'host_probe_destination', 'host_probe_port',
-                    'guest_echo_allowed'):
+                    'host_probe_source', 'host_probe_source_port',
+                    'host_probe_protocol', 'guest_echo_allowed'):
             if key in request:
                 payload[key] = request[key]
         try:
