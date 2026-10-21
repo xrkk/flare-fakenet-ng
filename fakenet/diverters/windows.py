@@ -1596,9 +1596,29 @@ class Diverter(DiverterBase, WinUtilMixin):
                 'outbound' if getattr(pkt, 'is_outbound', False) else 'inbound')
         except AttributeError:
             pass
+        # The default (policy-disabled) path must provide the same fixed
+        # benign probe provenance as the policy path. Capture identity before
+        # NAT callbacks and log only a successfully reinjected local rewrite.
+        nonce = (_probe_nonce_from_packet(pkt)
+                 if getattr(pkt, 'is_outbound', False) else None)
+        producer = self.get_pid_comm(pkt) if nonce else (None, None)
+        creation = _process_creation_ticks(producer[0]) if nonce else None
         cb3, cb4 = self._callbacks()
         self.handle_pkt(pkt, cb3, cb4)
-        self._send_packet(pkt)
+        sent = self._send_packet(pkt)
+        if (nonce and sent and pkt.proto in ('TCP', 'UDP') and
+                pkt.dst_ip0 != pkt.dst_ip and
+                pkt.dst_ip in self.ip_addrs.get(pkt.ipver, ())):
+            pid, comm = producer
+            self.log_egress_event(
+                'DIVERT_FAKE_PROBE', original_ip=pkt.dst_ip0,
+                original_port=pkt.dport0, dst=pkt.dst_ip0,
+                dport=pkt.dport0, src=pkt.src_ip0, sport=pkt.sport0,
+                proto=pkt.proto,
+                pid=(pid if pid is not None else 'unknown'),
+                process=(str(comm).replace(' ', '_') if comm else 'unknown'),
+                creation=(creation if creation is not None else 'unknown'),
+                probe_nonce=nonce, epoch=int(time.time()))
 
     def _handle_policy_packet(self, wdpkt):
         raw = wdpkt.raw.tobytes()

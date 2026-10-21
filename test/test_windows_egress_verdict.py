@@ -1119,3 +1119,40 @@ class WindowsVerdictTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LegacyProbeEvidenceTests(unittest.TestCase):
+    def run_probe(self, *, outbound=True, redirected=True, sent=True,
+                  marker=b'MALTRACE-EGRESS-0123456789abcdef'):
+        pkt=types.SimpleNamespace(is_outbound=outbound,proto='TCP',ipver=4,
+            octets=marker,dst_ip0='198.51.100.77',dport0=1337,
+            src_ip0='192.168.204.149',sport0=40000,
+            dst_ip='198.51.100.77')
+        d=Diverter.__new__(Diverter)
+        d.ip_addrs={4:['192.168.204.149','127.0.0.1']}
+        d._callbacks=mock.Mock(return_value=([],[]))
+        def handle(packet,*callbacks):
+            if redirected:packet.dst_ip='192.168.204.149'
+        d.handle_pkt=mock.Mock(side_effect=handle)
+        d._send_packet=mock.Mock(return_value=sent)
+        d.get_pid_comm=mock.Mock(return_value=(1234,'pwsh.exe'))
+        d.log_egress_event=mock.Mock()
+        with mock.patch('fakenet.diverters.windows.WindowsPacketCtx',return_value=pkt), mock.patch('fakenet.diverters.windows._process_creation_ticks',return_value=100):
+            d._handle_legacy_packet(object())
+        return d,pkt
+
+    def test_default_redirect_records_actual_fixed_probe_producer(self):
+        d,pkt=self.run_probe()
+        d.log_egress_event.assert_called_once()
+        args,fields=d.log_egress_event.call_args
+        self.assertEqual(args,('DIVERT_FAKE_PROBE',))
+        self.assertEqual({k:fields[k] for k in ('pid','creation','probe_nonce','src','sport','dst','dport','proto')},
+            dict(pid=1234,creation=100,probe_nonce='0123456789abcdef',
+                 src='192.168.204.149',sport=40000,dst='198.51.100.77',dport=1337,proto='TCP'))
+
+    def test_unmodified_unsent_inbound_or_nonprobe_never_claims_interception(self):
+        for options in (dict(redirected=False),dict(sent=False),
+                        dict(outbound=False),dict(marker=b'ordinary bytes')):
+            with self.subTest(options=options):
+                d,pkt=self.run_probe(**options)
+                d.log_egress_event.assert_not_called()
