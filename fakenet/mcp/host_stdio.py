@@ -34,6 +34,7 @@ from mcp.types import ToolAnnotations
 from fakenet.mcp import MCP_PACKAGE_VERSION, egress_contract, host_merge, \
     host_probe, schemas
 from fakenet.mcp.host_provider import HostProvider
+from fakenet.mcp import running_observation
 from fakenet.mcp.host_identity import normal_uuid as _normal_uuid
 from fakenet.mcp.host_state import HostStateError, HostStateStore
 
@@ -472,7 +473,8 @@ def _sample_identity(identity, sample):
 
 class HostFacade:
     def __init__(self, config, *, provider=None, fakenet_client=None,
-                 windows_client=None, velo_client=None, state_store=None):
+                 windows_client=None, velo_client=None, state_store=None,
+                 capture_factory=None):
         self.config = config
         if not str(config.get('output_root')) or not str(
                 config.get('state_root')):
@@ -501,6 +503,7 @@ class HostFacade:
         self.fakenet_client = fakenet_client
         self.windows_client = windows_client
         self.velo_client = velo_client
+        self.capture_factory = capture_factory or running_observation.PassiveCapture
 
     # -- fixed authorization/config checks ---------------------------------
     def _authorization(self, action=None):
@@ -605,6 +608,8 @@ class HostFacade:
         not_run = [{'id': step['id'], 'reason': step['reason_code']}
                    for step in steps if step['outcome'] == 'not_run']
         return {
+            'contract_version': egress_contract.CONTRACT_VERSION,
+            'phase': 'running',
             'schema_version': egress_contract.SCHEMA_VERSION,
             'verification_id': (record or {}).get('verification_id'),
             'command_id': command_id,
@@ -726,6 +731,9 @@ class HostFacade:
             # A terminal pre-dispatch failure cannot qualify any environment.
             # Its hash-checked result is stable and needs no new remote probe.
             return document
+        if document.get('contract_version') != egress_contract.CONTRACT_VERSION:
+            return self._error_result(record['command_id'], 'stale_result',
+                'legacy qualification contract cannot be reused', record=record, request=record.get('request'))
         final_status = record.get('final_status')
         if not isinstance(final_status, dict):
             return self._error_result(
@@ -1102,6 +1110,8 @@ class HostFacade:
         finish_deadline = started_monotonic + max(1.0, total_ms / 1000.0)
         self._nonce_for_action = record['probe_nonce']
         self._admitted_scope_sha = auth['scope_sha256']
+        capture = None
+        capture_report = {'value': None, 'reason': 'passive_observation_not_enabled'}
         try:
             auth = self._recheck_action('host_provider')
             record['pre_challenge'] = secrets.token_hex(16)
@@ -1196,35 +1206,44 @@ class HostFacade:
                     'sample launcher context')
             status, config_record = self._assert_guest_unchanged(
                 fakenet, config_name, status, config_record, action_deadline)
-            boundary = (host.get('boundary') or {}).get('value')
+            # NAT/forwarding/legacy boundary do not gate benign probes.
+            passive_config = self.config.get('passive_observation') or {}
+            evidence_dir = self.output_root / 'verifications' / verification_id
+            if passive_config.get('enabled') is True:
+                if 'passive_observe' not in scope.get('actions', []):
+                    capture_report['reason'] = 'passive_observation_not_authorized'
+                else:
+                    self._recheck_action('passive_observe')
+                    try:
+                        capture = self.capture_factory(
+                            evidence_dir, host,
+                            heartbeat_port=urllib.parse.urlparse(self.config['windows_mcp']['url']).port or 80,
+                            seconds=self._remaining(action_deadline, 35))
+                        capture.start()
+                    except (ValueError, OSError) as exc:
+                        capture_report['reason'] = 'capture_unavailable:' + str(exc)
+                        capture = None
             probe_result = identity_result
             probe_raw = identity_raw
-            if boundary is True:
-                self._recheck_action('matrix_probe')
-                matrix_timeout = self._remaining(action_deadline, 30)
-                if matrix_timeout <= 0:
-                    raise HostFacadeError('deadline_exceeded',
-                                          'no time left for matrix')
-                matrix_deadline_utc = self._utc_deadline(matrix_timeout)
-                probe_script = host_probe.probe_script(
-                    nonce, matrix, deadline_ms=max(
-                        1, int(matrix_timeout * 1000)),
-                    deadline_utc=matrix_deadline_utc)
-                probe_script_hash = host_probe.script_identity(
-                    nonce, matrix, deadline_ms=max(
-                        1, int(matrix_timeout * 1000)),
-                    deadline_utc=matrix_deadline_utc)
-                probe_result, probe_raw = windows.probe(
-                    probe_script, timeout=matrix_timeout)
-                host_probe.validate_probe_result(
-                    probe_result, [row['id'] for row in matrix], nonce=nonce,
-                    expected_script_hash=probe_script_hash)
-            else:
-                probe_result = dict(identity_result)
-                probe_result['matrix_run'] = False
-                probe_result['not_run_reason'] = (
-                    'host_isolation_unproven' if boundary is None
-                    else 'host_egress_leak_observed')
+            self._recheck_action('matrix_probe')
+            matrix_timeout = self._remaining(action_deadline, 30)
+            if matrix_timeout <= 0:
+                raise HostFacadeError('deadline_exceeded',
+                                      'no time left for matrix')
+            matrix_deadline_utc = self._utc_deadline(matrix_timeout)
+            probe_script = host_probe.probe_script(
+                nonce, matrix, deadline_ms=max(
+                    1, int(matrix_timeout * 1000)),
+                deadline_utc=matrix_deadline_utc)
+            probe_script_hash = host_probe.script_identity(
+                nonce, matrix, deadline_ms=max(
+                    1, int(matrix_timeout * 1000)),
+                deadline_utc=matrix_deadline_utc)
+            probe_result, probe_raw = windows.probe(
+                probe_script, timeout=matrix_timeout)
+            host_probe.validate_probe_result(
+                probe_result, [row['id'] for row in matrix], nonce=nonce,
+                expected_script_hash=probe_script_hash)
             probe_identity = probe_result.get('identity') or {}
             for key in ('account', 'sid', 'session', 'vm_uuid', 'boot_id',
                         'token_integrity_level', 'policy_scope',
@@ -1393,8 +1412,34 @@ class HostFacade:
                 nonce=nonce, listener_map=parsed_config['listener_map'])
             final_consistency, final_observed = self._final_consistency(
                 fakenet, config_name, status, config_record, host, identity,
-                finish_deadline, scope, command_id=command_id,
+                finish_deadline - (2 if capture is not None else 0), scope, command_id=command_id,
                 challenge=record['final_challenge'])
+            if capture is not None:
+                capture_end = capture.finish()
+                if capture.path.is_file():
+                    capture_report = running_observation.evaluate_capture(
+                        capture.path.read_bytes(), probe_result, host,
+                        passive_config.get('calibration_ref'),
+                        started=capture_end['started'], ended=capture_end['ended'],
+                        heartbeat_port=urllib.parse.urlparse(self.config['windows_mcp']['url']).port or 80,
+                        capture_identity=capture_end['identity'])
+                else:
+                    capture_report = {'value': None, 'reason': 'capture_completion_unconfirmed'}
+                if not capture_end.get('complete') and capture_report.get('value') is not False:
+                    capture_report['value'] = None
+                    capture_report['reason'] = 'capture_completion_unconfirmed'
+                capture_report['completion'] = capture_end
+                if capture_end.get('sha256'):
+                    capture_report['evidence_refs'] = [{
+                        'side': 'host', 'path': capture_end['path'],
+                        'sha256': capture_end['sha256'], 'kind': 'passive-running-observation'}]
+                if capture_report.get('value') is True:
+                    calibration_ref = passive_config.get('calibration_ref') or {}
+                    capture_report.setdefault('evidence_refs', []).append({
+                        'side': 'host', 'path': calibration_ref.get('path'),
+                        'sha256': calibration_ref.get('sha256'), 'kind': 'visibility-calibration'})
+                capture = None
+            probe_result['running_observation'] = capture_report
             probe_result['final_consistency'] = final_consistency
             final_host_snapshot = final_observed.pop('host_snapshot', None)
             probe_result['final_consistency_observed'] = final_observed
@@ -1415,7 +1460,7 @@ class HostFacade:
             probe_result['matrix_run'] = bool(probe_result.get('matrix_run'))
             if not probe_result.get('matrix_run'):
                 probe_result.setdefault('not_run_reason',
-                                        'host_isolation_unproven')
+                                        'positive_interception_unconfirmed')
             result = host_merge.build_host_result(
                 command_id=command_id, request=request,
                 guest_result=guest_result, host_snapshot=host,
@@ -1424,6 +1469,12 @@ class HostFacade:
                 host_evidence=host_evidence, probe_evidence=probe_evidence,
                 final_host_evidence=final_host_evidence,
                 host_final_snapshot=final_host_snapshot)
+            result['lifecycle_identity'] = {
+                'vm_epoch': _sha({key: identity.get(key) for key in ('vm_uuid', 'boot_id')}),
+                'execution_context_identity': _sha({key: identity.get(key) for key in ('account', 'sid', 'session')}),
+                'network_identity': _sha(running_observation.topology(host)),
+                'endpoint': self.config.get('connectivity_endpoint'),
+            }
             result['bindings']['host_evidence_sha256'] = host_sha
             compact_limit = int(policy.get('output_compact_limit_bytes', DEFAULT_COMPACT_LIMIT))
             if len(json.dumps(result, ensure_ascii=False).encode('utf-8')) + 1024 > compact_limit:
@@ -1513,6 +1564,16 @@ class HostFacade:
                                       repr(exc), record=record,
                                       request=record.get('request'),
                                       plan_preview=record)
+
+        finally:
+            if capture is not None:
+                try:
+                    cleanup = capture.finish()
+                    record['passive_capture_cleanup'] = cleanup
+                    self.state.update(command_id, record)
+                except Exception as cleanup_error:
+                    record['passive_capture_cleanup'] = {'complete': False, 'error': repr(cleanup_error)}
+                    self.state.update(command_id, record)
 
 # -- HTTP/MCP clients -------------------------------------------------------
 

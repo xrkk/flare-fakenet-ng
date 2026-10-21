@@ -71,13 +71,13 @@ def test_expected_map_and_timeout_is_not_block_proof():
          'destination': '198.51.100.77'},
         {'received': '', 'error': 'timeout'}, 'blocked')
     assert outcome == 'unknown'
-    assert reason == 'boundary_unverified'
+    assert reason == 'running_observation_unconfirmed'
     outcome, reason = host_probe.classify_step(
         {'kind': 'tcp', 'family': 'ipv4', 'port': 80,
          'destination': '198.51.100.77'},
         {'received': '', 'error': 'timeout'}, 'blocked')
     assert outcome == 'unknown'
-    assert reason == 'boundary_unverified'
+    assert reason == 'running_observation_unconfirmed'
 
 
 def test_unreachable_text_cannot_be_local_fake_pass():
@@ -94,7 +94,7 @@ def test_unreachable_text_cannot_be_local_fake_pass():
     assert reason in ('icmp_nonce_mismatch', 'icmp_responder_mismatch', 'response_not_verified')
 
 
-def test_strict_local_response_and_boundary_blocked():
+def test_strict_local_response_but_extra_boundary_does_not_qualify():
     row = {'kind': 'udp', 'family': 'ipv4', 'port': 53,
            'destination': '198.51.100.77'}
     outcome, reason = host_probe.classify_step(
@@ -104,11 +104,11 @@ def test_strict_local_response_and_boundary_blocked():
         row, {'received': '', 'sent': 12, 'outcome': 'no_response'},
         'blocked', boundary_verified=True)
     assert (outcome, reason) == (
-        'pass', 'independent_boundary_no_local_response')
+        'unknown', 'running_observation_unconfirmed')
     outcome, reason = host_probe.classify_step(
         row, {'received': '', 'sent': 12, 'outcome': 'no_response'},
         'blocked', boundary_verified=None)
-    assert (outcome, reason) == ('unknown', 'boundary_unverified')
+    assert (outcome, reason) == ('unknown', 'running_observation_unconfirmed')
 
 
 def test_validate_probe_result_requires_instance_nonce_and_all_rows():

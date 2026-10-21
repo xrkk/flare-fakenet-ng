@@ -63,5 +63,7 @@
     "total_ms": 50000,
     "finish_ms": 5000
   },
-  "sample_context": {}
+  "sample_context": {},
+  "connectivity_endpoints": [],
+  "lifecycle_script_sha256": "<sha256-of-CONNECT_TEMPLATE-if-connectivity-is-explicitly-authorized>"
 }

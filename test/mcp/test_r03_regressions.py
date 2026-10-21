@@ -195,7 +195,8 @@ def test_r3_01_applocker_unavailable_is_not_a_normal_blocker(tmp_path):
         windows_client=UnknownPolicy(), velo_client=facade_fixture.FakeVelo())
     result = facade.verify(facade_fixture.COMMAND_ID)
     assert result['error'] is None
-    assert result['verdict'] == 'pass'
+    assert result['verdict'] == 'unknown'
+    assert result['checks']['sample_path_equivalent']['value'] is True
 
 
 def test_r3_process_rules_cover_sample_and_probe():

@@ -54,11 +54,19 @@
       28790
     ],
     "matrix_version": "v1",
-    "probe_script_sha256": "bb27c26763135e4e608affbe8cac29e6bda2197d0948b8c51a6f9a062362180d",
+    "probe_script_sha256": "8888baf251de4f75248df7073648d89203e9280c23b6d705b29fe87e6985e495",
     "verification_budget_seconds": 50,
     "guest_budget_ms": 15000,
     "output_compact_limit_bytes": 65536
   },
   "output_root": "/var/lib/fakenetng-host-mcp/verifications",
-  "state_root": "/var/lib/fakenetng-host-mcp/state"
+  "state_root": "/var/lib/fakenetng-host-mcp/state",
+  "passive_observation": {
+    "enabled": false,
+    "calibration_ref": {
+      "path": "<absolute-program-generated-visibility-receipt>",
+      "sha256": "<receipt-sha256>"
+    }
+  },
+  "connectivity_endpoint": null
 }

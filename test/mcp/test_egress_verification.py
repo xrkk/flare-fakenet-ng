@@ -149,7 +149,7 @@ def test_guest_result_is_underdetermined_and_never_host_pass():
     result = guest_result()
     assert result['verdict'] == 'unknown'
     assert result['conclusion']['status'] == 'underdetermined'
-    assert 'independent_egress_blocked' in result['conclusion']['unknown_checks']
+    assert 'running_egress_contained' in result['conclusion']['unknown_checks']
     assert 'sample_path_equivalent' in result['conclusion']['unknown_checks']
     assert result['authorized'] is False
     assert len(result['steps']) == 10

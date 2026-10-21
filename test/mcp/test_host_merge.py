@@ -40,7 +40,7 @@ def guest_result():
                   'blocked_before_interception': False,
                   'control_channels_reachable': True,
                   'local_interception_observed': True,
-                  'independent_egress_blocked': True,
+                  'running_egress_contained': True,
                   'sample_path_equivalent': True}.items()}
     return {
         'checks': checks, 'producer_match': True,
@@ -156,15 +156,16 @@ def test_unknown_row_or_missing_final_cannot_pass():
     assert 'matrix_completeness' in result['conclusion']['unknown_checks']
 
 
-def test_complete_matrix_positive_and_final_can_pass():
+def test_complete_matrix_positive_and_final_without_observation_cannot_pass():
     expected = host_probe.expected_steps(
         random_tcp_port=50001, random_udp_port=50002, nonce='nonce')
     probe = probe_result(expected)
     result = build(probe, expected)
-    assert result['verdict'] == 'pass', result['conclusion']
-    assert result['conclusion']['status'] == 'qualified_in_scope'
-    assert result['conclusion']['sample_path_qualified'] is True
-    assert result['conclusion']['matrix_completeness']['complete'] is True
+    assert result['verdict'] == 'unknown', result['conclusion']
+    assert 'running_egress_contained' in result['conclusion']['unknown_checks']
+    assert result['conclusion']['status'] == 'underdetermined'
+    assert result['conclusion']['sample_path_qualified'] is False
+    assert result['conclusion']['matrix_completeness']['complete'] is False
     for name, check in result['checks'].items():
         if check['value'] is not None:
             assert check['evidence_refs'], name
@@ -198,5 +199,6 @@ def test_sample_launcher_image_hash_is_not_required_to_equal_probe_binary():
                   'velo_mcp': True},
         host_evidence={'path': '/host', 'sha256': 'h' * 64},
         probe_evidence={'path': '/probe', 'sha256': 'p' * 64})
-    assert result['verdict'] == 'pass'
+    assert result['checks']['sample_path_equivalent']['value'] is True
+    assert result['verdict'] == 'unknown'
     assert result['checks']['sample_path_equivalent']['value'] is True

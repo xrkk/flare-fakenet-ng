@@ -12,7 +12,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
 SCHEMA_VERSION = 'fakenetng.egress-verification.v1'
 MATRIX_VERSION = 'v1'
 SOURCE_PATH = 'fakenet/mcp/egress_contract.py'
@@ -26,7 +26,7 @@ EXPECTED_CHECKS = {
     'blocked_before_interception': False,
     'control_channels_reachable': True,
     'local_interception_observed': True,
-    'independent_egress_blocked': True,
+    'running_egress_contained': True,
     'sample_path_equivalent': True,
 }
 CHECK_NAMES = tuple(EXPECTED_CHECKS)
@@ -77,6 +77,8 @@ def evaluate_interception_qualification(plan: Mapping,
     if not isinstance(checks, Mapping):
         raise EgressContractError('interception_checks_invalid')
     failed, unknown = [], []
+    if observation.get("contract_version") != CONTRACT_VERSION:
+        unknown.append("qualification_contract_version")
     for key, wanted in EXPECTED_CHECKS.items():
         item = checks.get(key)
         if not isinstance(item, Mapping) or item.get('value') is None:
@@ -403,6 +405,7 @@ def _base_material():
         'required_control_ports': [28787, 28788, 28790],
     }
     observation = dict(plan)
+    observation['contract_version'] = CONTRACT_VERSION
     observation['response_nonce'] = plan['probe_nonce']
     observation['effective_control_exclusion_ports'] = [28787, 28788, 28790]
     observation['checks'] = {
@@ -459,13 +462,13 @@ def _contract_cases():
                      'authorized': False},
     })
     plan, observation = _base_material()
-    observation['checks']['independent_egress_blocked']['value'] = None
+    observation['checks']['running_egress_contained']['value'] = None
     cases.append({
         'name': 'host_unknown',
         'plan': plan,
         'observation': observation,
         'expected': {'status': 'underdetermined',
-                     'unknown_checks': ['independent_egress_blocked'],
+                     'unknown_checks': ['running_egress_contained'],
                      'sample_path_qualified': False,
                      'authorized': False},
     })

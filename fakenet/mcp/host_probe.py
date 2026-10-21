@@ -83,17 +83,23 @@ function Read-Text($stream) {
 function Read-Tcp($client) {
   try { $stream=$client.GetStream();$stream.ReadTimeout=[Math]::Max(1,(Remaining-Ms)); return (Read-Text $stream) } catch { return '' }
 }
+function Get-ProbeRoute($address) {
+  $selection=@(Find-NetRoute -RemoteIPAddress $address -ErrorAction Stop)
+  $source=@($selection | Where-Object { $_.IPAddress })
+  $route=@($selection | Where-Object { $_.NextHop })
+  if($source.Count -ne 1 -or $route.Count -ne 1){throw 'route selection ambiguous'}
+  return [ordered]@{source=([string]$source[0].IPAddress).Split('%')[0];interface=[string]$route[0].InterfaceIndex;next_hop=[string]$route[0].NextHop}
+}
 function Invoke-TcpStep($step,[string]$mode) {
-  $result=[ordered]@{id=[string]$step.id;kind=[string]$step.kind;family=[string]$step.family;destination=[string]$step.destination;port=$step.port;outcome='unknown';sent=0;received='';error=$null;response_type='tcp';status=$null;nonce_match=$false;address_family='';remote_endpoint='';local_endpoint='';bound_local_endpoint='';exclusive=$false;connect_called=$false;probe_pid=$PID;probe_birth_ticks=$process.StartTime.ToUniversalTime().ToFileTimeUtc();script_hash=[string]$payload.script_hash;attempted=$false;connect_started=$null;connect_ended=$null;connect_error=$null;started=[DateTime]::UtcNow.ToString('o');ended=$null;elapsed_ms=$null}
+  $result=[ordered]@{id=[string]$step.id;kind=[string]$step.kind;family=[string]$step.family;destination=[string]$step.destination;port=$step.port;outcome='unknown';sent=0;received='';error=$null;response_type='tcp';status=$null;nonce_match=$false;address_family='';remote_endpoint='';local_endpoint='';bound_local_endpoint='';exclusive=$false;connect_called=$false;connect_wait_timed_out=$false;connect_completed=$false;route=$null;probe_pid=$PID;probe_birth_ticks=$process.StartTime.ToUniversalTime().ToFileTimeUtc();script_hash=[string]$payload.script_hash;attempted=$false;connect_started=$null;connect_ended=$null;connect_error=$null;started=[DateTime]::UtcNow.ToString('o');ended=$null;elapsed_ms=$null}
   $sw=[Diagnostics.Stopwatch]::StartNew();$client=$null;$ssl=$null;$ar=$null
   try {
     $address=[Net.IPAddress]::Parse([string]$step.destination)
     $result.address_family=$address.AddressFamily.ToString()
     $client=[Net.Sockets.TcpClient]::new($address.AddressFamily)
     $client.Client.SetSocketOption([Net.Sockets.SocketOptionLevel]::Socket,[Net.Sockets.SocketOptionName]::ExclusiveAddressUse,$true)
-    $route=@(Find-NetRoute -RemoteIPAddress $address -ErrorAction Stop | Where-Object { $_.IPAddress })
-    if($route.Count -lt 1 -or -not $route[0].IPAddress){throw 'no route source address'}
-    $sourceText=([string]$route[0].IPAddress).Split('%')[0]
+    $result.route=Get-ProbeRoute $address
+    $sourceText=[string]$result.route.source
     $localAddress=[Net.IPAddress]::Parse($sourceText)
     if($localAddress.AddressFamily -ne $address.AddressFamily){throw 'route source family mismatch'}
     $local=[Net.IPEndPoint]::new($localAddress,0)
@@ -106,8 +112,9 @@ function Invoke-TcpStep($step,[string]$mode) {
     $result.connect_started=[DateTime]::UtcNow.ToString('o')
     $ar=$client.BeginConnect($address,[int]$step.port,$null,$null)
     $result.connect_called=$true
-    if(-not $ar.AsyncWaitHandle.WaitOne($timeout)){throw 'connect timeout'}
+    if(-not $ar.AsyncWaitHandle.WaitOne($timeout)){$result.connect_wait_timed_out=$true;throw 'connect timeout'}
     $client.EndConnect($ar)
+    $result.connect_completed=$true
     $result.connect_ended=[DateTime]::UtcNow.ToString('o')
     $result.remote_endpoint=[string]$client.Client.RemoteEndPoint
     $result.local_endpoint=[string]$client.Client.LocalEndPoint
@@ -140,17 +147,19 @@ function Invoke-TcpStep($step,[string]$mode) {
   return $result
 }
 function Invoke-UdpStep($step) {
-  $result=[ordered]@{id=[string]$step.id;outcome='unknown';sent=0;received='';error=$null;response_type='udp_nonce';status=$null;nonce_match=$false;address_family='';remote_endpoint='';local_endpoint='';started=[DateTime]::UtcNow.ToString('o');ended=$null;elapsed_ms=$null}
+  $result=[ordered]@{id=[string]$step.id;kind=[string]$step.kind;family=[string]$step.family;destination=[string]$step.destination;port=$step.port;send_completed=$false;route=$null;probe_pid=$PID;probe_birth_ticks=$process.StartTime.ToUniversalTime().ToFileTimeUtc();script_hash=[string]$payload.script_hash;outcome='unknown';sent=0;received='';error=$null;response_type='udp_nonce';status=$null;nonce_match=$false;address_family='';remote_endpoint='';local_endpoint='';started=[DateTime]::UtcNow.ToString('o');ended=$null;elapsed_ms=$null}
   $sw=[Diagnostics.Stopwatch]::StartNew();$client=$null
   try {
     $address=[Net.IPAddress]::Parse([string]$step.destination)
     $result.address_family=$address.AddressFamily.ToString()
+    $result.route=Get-ProbeRoute $address
     $client=[Net.Sockets.UdpClient]::new($address.AddressFamily)
     $client.Client.ReceiveTimeout=[Math]::Max(1,(Remaining-Ms))
     $bytes=[Text.Encoding]::ASCII.GetBytes('MALTRACE-EGRESS-'+$nonce)
-    $result.sent=$bytes.Length
     $client.Connect($address,[int]$step.port)
-    [void]$client.Send($bytes,$bytes.Length)
+    $result.sent=$client.Send($bytes,$bytes.Length)
+    $result.send_completed=($result.sent -eq $bytes.Length)
+    $result.local_endpoint=[string]$client.Client.LocalEndPoint
     $remote=[Net.IPEndPoint]::new([Net.IPAddress]::Any,0)
     $data=$client.Receive([ref]$remote)
     $result.received=[Text.Encoding]::UTF8.GetString($data)
@@ -175,21 +184,23 @@ function Build-DnsQuery([string]$name,[int]$txid) {
   return $bytes.ToArray()
 }
 function Invoke-DnsStep($step) {
-  $result=[ordered]@{id=[string]$step.id;outcome='unknown';sent=0;received='';error=$null;response_type='dns';status=$null;nonce_match=$false;address_family='';remote_endpoint='';local_endpoint='';transaction_id=$null;question='';qtype=$null;qclass=$null;qr=$false;rcode=$null;started=[DateTime]::UtcNow.ToString('o');ended=$null;elapsed_ms=$null}
+  $result=[ordered]@{id=[string]$step.id;kind=[string]$step.kind;family=[string]$step.family;destination=[string]$step.destination;port=$step.port;send_completed=$false;route=$null;probe_pid=$PID;probe_birth_ticks=$process.StartTime.ToUniversalTime().ToFileTimeUtc();script_hash=[string]$payload.script_hash;outcome='unknown';sent=0;received='';error=$null;response_type='dns';status=$null;nonce_match=$false;address_family='';remote_endpoint='';local_endpoint='';transaction_id=$null;question='';qtype=$null;qclass=$null;qr=$false;rcode=$null;started=[DateTime]::UtcNow.ToString('o');ended=$null;elapsed_ms=$null}
   $sw=[Diagnostics.Stopwatch]::StartNew();$client=$null
   try {
     $address=[Net.IPAddress]::Parse([string]$step.destination)
     $result.address_family=$address.AddressFamily.ToString()
+    $result.route=Get-ProbeRoute $address
     $name=[string]$step.question
     if(-not $name){$name='MALTRACE-'+$nonce+'.invalid'}
     $result.question=$name
     $client=[Net.Sockets.UdpClient]::new($address.AddressFamily)
     $client.Client.ReceiveTimeout=[Math]::Max(1,(Remaining-Ms))
     $bytes=Build-DnsQuery $name ([int]$step.dns_txid)
-    $result.sent=$bytes.Length
     $client.Connect($address,53)
     $result.local_endpoint=[string]$client.Client.LocalEndPoint
-    [void]$client.Send($bytes,$bytes.Length)
+    $result.sent=$client.Send($bytes,$bytes.Length)
+    $result.send_completed=($result.sent -eq $bytes.Length)
+    $result.local_endpoint=[string]$client.Client.LocalEndPoint
     $remote=[Net.IPEndPoint]::new([Net.IPAddress]::Any,0)
     $data=$client.Receive([ref]$remote)
     $result.remote_endpoint=[string]$remote
@@ -225,11 +236,12 @@ function Invoke-DnsStep($step) {
 }
 
 function Invoke-IcmpStep($step) {
-  $result=[ordered]@{id=[string]$step.id;outcome='unknown';sent=0;received='';error=$null;response_type='icmp_echo';status=$null;nonce_match=$false;address_family='';remote_endpoint='';local_endpoint='';responder='';started=[DateTime]::UtcNow.ToString('o');ended=$null;elapsed_ms=$null}
+  $result=[ordered]@{id=[string]$step.id;kind=[string]$step.kind;family=[string]$step.family;destination=[string]$step.destination;port=$step.port;send_completed=$false;route=$null;probe_pid=$PID;probe_birth_ticks=$process.StartTime.ToUniversalTime().ToFileTimeUtc();script_hash=[string]$payload.script_hash;outcome='unknown';sent=0;received='';error=$null;response_type='icmp_echo';status=$null;nonce_match=$false;address_family='';remote_endpoint='';local_endpoint='';responder='';started=[DateTime]::UtcNow.ToString('o');ended=$null;elapsed_ms=$null}
   $sw=[Diagnostics.Stopwatch]::StartNew();$ping=$null
   try {
     $address=[Net.IPAddress]::Parse([string]$step.destination)
     $result.address_family=$address.AddressFamily.ToString()
+    $result.route=Get-ProbeRoute $address
     $wire=('MALTRACE-'+$nonce); if($wire.Length -lt 32){$wire=$wire.PadRight(32,'.')}
     $bytes=[Text.Encoding]::ASCII.GetBytes($wire)
     $ping=[Net.NetworkInformation.Ping]::new()
@@ -264,7 +276,7 @@ if($payload.positive_enabled) {
   } catch { $out.positive=[ordered]@{id='__POSITIVE__';sent=0;received='';nonce_match=$false;response_type='tcp_nonce';protocol='TCP';destination=[string]$payload.echo.destination;port=[int]$payload.echo.port;error=[string]$_;started=$positiveStarted;ended=[DateTime]::UtcNow.ToString('o')} }
   finally { $positiveEnded=[DateTime]::UtcNow.ToString('o'); if($ar){try{$ar.AsyncWaitHandle.Dispose()}catch{}};if($echoSsl){try{$echoSsl.Dispose()}catch{}};if($echoClient){try{$echoClient.Close()}catch{}};if($out.positive){$out.positive.ended=$positiveEnded} }
 }
-if($payload.positive_enabled -and $out.positive.nonce_match) {
+if(($payload.positive_enabled -and $out.positive.nonce_match) -or $payload.calibration_mode) {
   $out.matrix_run=$true
     foreach($step in $steps) {
       if([DateTime]::UtcNow -gt $deadline){$out.stop_remaining=$true;break}
@@ -346,7 +358,7 @@ def dns_txid(nonce, step_id):
 def probe_payload(nonce, steps, echo_destination='198.51.100.77',
                   echo_port=1337, deadline_ms=DEFAULT_DEADLINE_MS,
                   protocol_class='mixed-v1', positive_enabled=True,
-                  deadline_utc=''):
+                  deadline_utc='', calibration_mode=False):
     return {
         'nonce': nonce,
         'steps': steps,
@@ -355,16 +367,17 @@ def probe_payload(nonce, steps, echo_destination='198.51.100.77',
         'deadline_utc': str(deadline_utc or ''),
         'protocol_class': protocol_class,
         'positive_enabled': bool(positive_enabled),
+        'calibration_mode': bool(calibration_mode),
     }
 
 
 def script_identity(nonce, steps, echo_destination='198.51.100.77',
                     echo_port=1337, deadline_ms=DEFAULT_DEADLINE_MS,
                     protocol_class='mixed-v1', positive_enabled=True,
-                    deadline_utc=''):
+                    deadline_utc='', calibration_mode=False):
     payload = probe_payload(nonce, steps, echo_destination, echo_port,
                             deadline_ms, protocol_class, positive_enabled,
-                            deadline_utc)
+                            deadline_utc, calibration_mode)
     return hashlib.sha256(json.dumps(
         payload, ensure_ascii=False, sort_keys=True,
         separators=(',', ':')).encode('utf-8')).hexdigest()
@@ -373,13 +386,13 @@ def script_identity(nonce, steps, echo_destination='198.51.100.77',
 def probe_script(nonce, steps, echo_destination='198.51.100.77',
                  echo_port=1337, deadline_ms=DEFAULT_DEADLINE_MS,
                  protocol_class='mixed-v1', positive_enabled=True,
-                 deadline_utc=''):
+                 deadline_utc='', calibration_mode=False):
     payload = probe_payload(nonce, steps, echo_destination, echo_port,
                             deadline_ms, protocol_class, positive_enabled,
-                            deadline_utc)
+                            deadline_utc, calibration_mode)
     payload['script_hash'] = script_identity(
         nonce, steps, echo_destination, echo_port, deadline_ms,
-        protocol_class, positive_enabled, deadline_utc)
+        protocol_class, positive_enabled, deadline_utc, calibration_mode)
     encoded = base64.b64encode(json.dumps(
         payload, ensure_ascii=False, sort_keys=True,
         separators=(',', ':')).encode('utf-8')).decode('ascii')
@@ -506,7 +519,8 @@ def _family_matches(value, family):
 
 
 def classify_step(step, observed, expected, *, boundary_verified=None,
-                  drop_evidence=None):
+                  drop_evidence=None, containment_observed=None,
+                  execution_verified=False):
     observed = observed if isinstance(observed, dict) else {}
     received = str(observed.get('received') or '')
     error = str(observed.get('error') or '')
@@ -518,15 +532,33 @@ def classify_step(step, observed, expected, *, boundary_verified=None,
     if expected == 'blocked':
         if received:
             return 'fail', 'unexpected_response'
-        if boundary_verified is not True:
-            return 'unknown', 'boundary_unverified'
-        if type(sent) is int and sent > 0:
-            return 'pass', 'independent_boundary_no_local_response'
-        if observed.get('attempted') is True and drop_evidence is True:
-            return 'pass', 'independent_tcp_connect_drop'
-        if type(sent) is not int or sent <= 0:
-            return 'unknown', 'request_not_sent'
-        return 'unknown', 'request_not_sent'
+        # boundary_verified/drop_evidence are accepted only for old callers;
+        # they cannot qualify a current FakeNet running result.
+        if containment_observed is not True:
+            return 'unknown', 'running_observation_unconfirmed'
+        route = observed.get('route') or {}
+        if not all(route.get(k) for k in ('source', 'interface', 'next_hop')):
+            return 'unknown', 'route_unconfirmed'
+        local = str(observed.get('local_endpoint') or '')
+        if not local or route['source'] not in local:
+            return 'unknown', 'source_endpoint_unconfirmed'
+        if not execution_verified:
+            return 'unknown', 'probe_execution_unconfirmed'
+        if kind in ('udp', 'dns'):
+            if observed.get('send_completed') is True and type(sent) is int and sent > 0:
+                return 'pass', 'completed_send_and_scoped_no_egress'
+            return 'unknown', 'send_not_completed'
+        if kind == 'tcp':
+            if (observed.get('attempted') is True and
+                    observed.get('connect_called') is True and
+                    observed.get('connect_wait_timed_out') is True and
+                    observed.get('connect_completed') is False and
+                    observed.get('exclusive') is True and
+                    observed.get('bound_local_endpoint') == local and
+                    observed.get('connect_error') == 'connect timeout'):
+                return 'pass', 'valid_connect_attempt_and_scoped_no_egress'
+            return 'unknown', 'effective_connect_attempt_unconfirmed'
+        return 'unknown', 'actual_emission_unconfirmed'
     if expected != 'local_fake':
         return 'unknown', 'expectation_unknown'
     if not received or type(sent) is not int or sent <= 0:

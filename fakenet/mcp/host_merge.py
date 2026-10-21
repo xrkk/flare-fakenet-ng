@@ -1,6 +1,6 @@
-"""Merge host boundary, Windows probe and guest subset into one result.
+"""Merge passive running observations, Windows probes and guest facts.
 
-The merge never upgrades an absent host fact to pass.  The eight checks are
+The merge never upgrades a second blocker or an absent observation to pass.  The eight checks are
 projected into the single-author contract's helper input; MalTrace remains
 the qualification authority.
 """
@@ -154,18 +154,24 @@ def _matrix_steps(probe, expected_map, boundary_verified=None,
                 'evidence_refs': [], 'started_at': None, 'ended_at': None,
             })
             continue
-        if (row.get('kind') == expected.get('kind') and
-                row.get('family') == expected.get('family') and
-                row.get('destination') == expected.get('destination') and
-                row.get('port') == expected.get('port')):
-            drop_evidence = _drop_evidence(
-                row, host_snapshot, final_host_snapshot, probe)
-        else:
-            drop_evidence = None
+        instance = probe.get('instance') or {}
+        execution_verified = bool(instance.get('pid') and instance.get('creation_ticks') and
+            instance.get('script_hash') and row.get('probe_pid') == instance['pid'] and
+            row.get('probe_birth_ticks') == instance['creation_ticks'] and
+            row.get('script_hash') == instance['script_hash'])
+        if any(row.get(k) != expected.get(k) for k in ('kind', 'family', 'destination', 'port')):
+            execution_verified = False
+        observation_report = probe.get('running_observation') or {}
         outcome, reason = host_probe.classify_step(
             expected, row, expected.get('expected'),
-            boundary_verified=boundary_verified,
-            drop_evidence=drop_evidence is not None)
+            containment_observed=observation_report.get('value'),
+            execution_verified=execution_verified)
+        if any(leak.get('family') == expected.get('family') and
+               leak.get('destination') == expected.get('destination') and
+               (expected.get('port') is None or leak.get('destination_port') == expected.get('port'))
+               for leak in observation_report.get('leaks') or []):
+            outcome, reason = 'fail', 'running_egress_leak_observed'
+        drop_evidence = None
         steps.append({
             'id': step_id, 'outcome': outcome,
             'expected': expected.get('expected'),
@@ -235,8 +241,8 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
     else:
         local_value = False
     blocked_value = False if local_value is True else None
-    boundary = (host_snapshot or {}).get('boundary') or {}
-    egress_value = boundary.get('value')
+    observation_report = probe_result.get('running_observation') or {}
+    egress_value = observation_report.get('value')
     if egress_value not in (True, False, None):
         egress_value = None
     checks = {
@@ -246,13 +252,15 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
         'blocked_before_interception': _check(blocked_value, []),
         'control_channels_reachable': _check(control_value, []),
         'local_interception_observed': _check(local_value, []),
-        'independent_egress_blocked': _check(egress_value, []),
+        'running_egress_contained': _check(egress_value, []),
         'sample_path_equivalent': _check(sample_value, []),
     }
     refs = []
     if host_evidence:
         refs.append(_ref('host', host_evidence['path'],
                          host_evidence['sha256'], 'host-provider'))
+    for item in observation_report.get('evidence_refs') or []:
+        refs.append(dict(item))
     if probe_evidence:
         refs.append(_ref('host', probe_evidence['path'],
                          probe_evidence['sha256'], 'windows-probe'))
@@ -271,7 +279,7 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
                   if item.startswith(str((probe_evidence or {}).get('path', '')))]
     guest_refs = [item for item in ref_strings if item not in
                   host_refs + probe_refs]
-    boundary_value = (host_snapshot or {}).get('boundary', {}).get('value')
+    boundary_value = None  # A second blocker is never qualification evidence.
     matrix_steps = _matrix_steps(probe_result, expected_map,
                                  boundary_verified=boundary_value is True,
                                  evidence_refs=[item for item in refs if item.get('kind') == 'windows-probe'],
@@ -296,7 +304,7 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
         'blocked_before_interception': probe_refs or host_refs,
         'control_channels_reachable': host_refs,
         'local_interception_observed': probe_refs + guest_refs,
-        'independent_egress_blocked': host_refs,
+        'running_egress_contained': probe_refs + [str(item.get('path')) + '#' + str(item.get('sha256')) for item in observation_report.get('evidence_refs') or []],
         'sample_path_equivalent': probe_refs,
     }
     for key, refs_for_check in check_refs.items():
@@ -311,6 +319,7 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
         'required_control_ports': request['required_control_ports'],
     }
     observation = {
+        'contract_version': egress_contract.CONTRACT_VERSION,
         'run_id': plan['run_id'],
         'vm_epoch': plan['vm_epoch'],
         'policy_identity': plan['policy_identity'],
@@ -440,6 +449,15 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
                         'final_consistency_unconfirmed'),
         'evidence_refs': refs, 'started_at': ended, 'ended_at': ended,
     }
+    host_steps.append({
+        'id': 'host_running_observation',
+        'outcome': 'pass' if egress_value is True else 'fail' if egress_value is False else 'unknown',
+        'expected': 'passive evidence of no egress during this FakeNet running window',
+        'observed': observation_report,
+        'reason_code': observation_report.get('reason', 'passive_observation_missing'),
+        'evidence_refs': observation_report.get('evidence_refs') or [],
+        'started_at': started, 'ended_at': ended,
+    })
     guest_steps = (guest_result or {}).get('steps') or []
     steps = host_steps + [positive_step] + matrix_steps + [final_step] + \
         list(guest_steps)
@@ -481,6 +499,8 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
                     for step in steps if step.get('outcome') == 'not_run'],
     }
     result = {
+        'contract_version': egress_contract.CONTRACT_VERSION,
+        'phase': 'running',
         'schema_version': egress_contract.SCHEMA_VERSION,
         'verification_id': request['verification_id'],
         'command_id': command_id,
@@ -544,14 +564,14 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
                      'invalidation_conditions': [
                          'run_id', 'vm_epoch', 'policy_identity',
                          'execution_context_identity', 'config_identity',
-                         'final_filter', 'network_boundary', 'host_evidence',
+                         'final_filter', 'network_topology', 'visibility_calibration', 'host_evidence',
                          'windows_session', 'service_restart',
                          'command_cache_eviction', 'nonce_reuse',
                          'evidence_hash']},
         'invalidation_conditions': [
             'run_id', 'vm_epoch', 'policy_identity',
             'execution_context_identity', 'config_identity', 'final_filter',
-            'network_boundary', 'host_evidence', 'windows_session',
+            'network_topology', 'visibility_calibration', 'host_evidence', 'windows_session',
             'service_restart', 'command_cache_eviction', 'nonce_reuse',
             'evidence_hash'],
         'limitations': [

@@ -75,7 +75,7 @@ class FakeFakeNet:
                 'blocked_before_interception': False,
                 'control_channels_reachable': True,
                 'local_interception_observed': True,
-                'independent_egress_blocked': True,
+                'running_egress_contained': True,
                 'sample_path_equivalent': True}.items()}
         return {'verification': {
             'schema_version': 'fakenetng.egress-verification.v1',
@@ -327,16 +327,16 @@ def test_host_facade_fake_normal_call_and_replay(tmp_path):
         velo_client=FakeVelo())
     first = facade.verify(COMMAND_ID)
     assert first['error'] is None
-    assert first['verdict'] == 'pass'
-    assert first['conclusion']['status'] == 'qualified_in_scope'
-    assert first['conclusion']['matrix_completeness']['complete'] is True
+    assert first['verdict'] == 'unknown'
+    assert first['conclusion']['status'] == 'underdetermined'
+    assert first['conclusion']['matrix_completeness']['complete'] is False
     assert first['authorized'] is False
     assert first['coverage']['matrix_planned'] == 30
     assert first['artifact']['path'].endswith('result.json')
     assert fake_fakenet.calls.count('verify_egress') == 1
     assert windows.positive_flags == [False, True, False]
     second = facade.verify(COMMAND_ID)
-    assert second['verdict'] == 'pass'
+    assert second['verdict'] == 'unknown'
     assert fake_fakenet.calls.count('verify_egress') == 1
     assert second['verification_id'] == first['verification_id']
 
@@ -429,7 +429,7 @@ def test_host_stdio_tool_surface(tmp_path):
         raise
 
 
-def test_unknown_boundary_skips_matrix_and_never_passes(tmp_path):
+def test_nat_unknown_boundary_runs_matrix_but_requires_passive_observation(tmp_path):
     class UnknownBoundaryProvider(FakeProvider):
         def snapshot(self, deadline=None):
             value = super().snapshot(deadline=deadline)
@@ -444,13 +444,10 @@ def test_unknown_boundary_skips_matrix_and_never_passes(tmp_path):
     assert result['verdict'] == 'unknown'
     assert result['conclusion']['status'] == 'underdetermined'
     assert result['coverage']['matrix_planned'] == 30
-    assert result['coverage']['matrix_not_run']
-    not_run_ids = {item['id'] for item in
-                   result['coverage']['matrix_not_run']}
-    assert len(not_run_ids) == 30
-    assert all(row['outcome'] == 'not_run'
-               for row in result['steps'] if row['id'] in not_run_ids)
-    assert windows.calls == 2
+    assert result['coverage']['matrix_not_run'] == []
+    assert result['coverage']['matrix_executed'] == 30
+    assert result['checks']['running_egress_contained']['value'] is None
+    assert windows.calls == 3  # identity, actual matrix, final identity
 
 
 def test_identity_mismatch_stops_before_guest_or_matrix(tmp_path):
@@ -507,7 +504,7 @@ def test_tampered_completed_result_is_not_replayed_as_pass(tmp_path):
                         fakenet_client=FakeFakeNet(),
                         windows_client=FakeWindows(), velo_client=FakeVelo())
     first = facade.verify(COMMAND_ID)
-    assert first['verdict'] == 'pass'
+    assert first['verdict'] == 'unknown'
     record = facade.state.load(COMMAND_ID)
     path = Path(record['result_path'])
     cached = json.loads(path.read_text(encoding='utf-8'))
@@ -523,7 +520,7 @@ def test_ownership_unknown_blocks_new_target_command(tmp_path):
                         fakenet_client=FakeFakeNet(),
                         windows_client=FakeWindows(), velo_client=FakeVelo())
     first = facade.verify(COMMAND_ID)
-    assert first['verdict'] == 'pass'
+    assert first['verdict'] == 'unknown'
     record = facade.state.load(COMMAND_ID)
     record['stage'] = 'ownership_unknown'
     facade.state.update(COMMAND_ID, record)
@@ -552,14 +549,14 @@ def test_host_facade_passes_distinct_observer_context_and_reuses_cache(tmp_path)
                         fakenet_client=fake, windows_client=FakeWindows(),
                         velo_client=FakeVelo())
     first = facade.verify(COMMAND_ID)
-    assert first['verdict'] == 'pass'
+    assert first['verdict'] == 'unknown'
     phases = [item[1] for item in provider.contexts]
     assert phases.count('pre') >= 1
     assert phases.count('final') >= 1
     assert len({item[2] for item in provider.contexts}) >= 2
     before = fake.calls.count('verify_egress')
     second = facade.verify(COMMAND_ID)
-    assert second['verdict'] == 'pass'
+    assert second['verdict'] == 'unknown'
     assert fake.calls.count('verify_egress') == before
     assert provider.contexts[-1][1] == 'pre'
 
@@ -618,7 +615,7 @@ def test_large_raw_step_keeps_one_call_result_and_integrity(tmp_path, monkeypatc
                         velo_client=FakeVelo())
     result = facade.verify(COMMAND_ID)
     assert result.get('error') is None
-    assert result['verdict'] == 'pass'
+    assert result['verdict'] == 'unknown'
     assert len(json.dumps(result).encode()) <= 65536
     from fakenet.mcp.schemas import VerificationResult
     VerificationResult.model_validate(result)
@@ -633,6 +630,6 @@ def test_large_raw_step_keeps_one_call_result_and_integrity(tmp_path, monkeypatc
         (s['id'], s['outcome'], s.get('reason_code')) for s in full['steps']]
     assert result['checks'] == full['checks']
     assert result['conclusion'] == full['conclusion']
-    assert facade.verify(COMMAND_ID)['verdict'] == 'pass'
+    assert facade.verify(COMMAND_ID)['verdict'] == 'unknown'
     raw_path.write_text('{}')
     assert facade.verify(COMMAND_ID)['error']['code'] == 'stale_result'

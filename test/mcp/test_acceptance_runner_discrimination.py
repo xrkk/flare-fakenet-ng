@@ -27,7 +27,7 @@ def base_result():
         key: {'value': value, 'evidence_refs': ['evidence']}
         for key, value in egress_contract.EXPECTED_CHECKS.items()
     }
-    observation = dict(plan)
+    observation = dict(plan, contract_version=2)
     observation.update({
         'response_nonce': 'nonce',
         'effective_control_exclusion_ports': [28787, 28788, 28790],
@@ -40,13 +40,13 @@ def base_result():
         },
     })
     return {
-        'verdict': 'pass', 'authorized': False,
+        'contract_version': 2, 'phase': 'running', 'verdict': 'pass', 'authorized': False,
         'lifecycle': {'state': 'completed'},
         'conclusion': {'status': 'qualified_in_scope',
                        'sample_path_qualified': True,
                        'failed_checks': [],
                        'matrix_completeness': {'complete': True}},
-        'coverage': {'matrix_planned': 30, 'matrix_not_run': []},
+        'coverage': {'matrix_planned': 30, 'matrix_executed': 30, 'matrix_not_run': []},
         'checks': checks,
         'helper_input': {'plan': plan, 'observation': observation},
         'steps': steps,
@@ -74,7 +74,7 @@ def test_host_unknown_cannot_be_a_pass():
     value['conclusion'].update(status='underdetermined',
                                matrix_completeness={'complete': False})
     value['coverage']['matrix_not_run'] = [{'id': 'x'}]
-    value['checks']['independent_egress_blocked'] = {'value': None}
+    value['checks']['running_egress_contained'] = {'value': None}
     assert runner.expectation('host_unknown', value) is True
     value['verdict'] = 'pass'
     assert runner.expectation('host_unknown', value) is False
@@ -118,7 +118,7 @@ def test_host_unknown_rejects_transport_failures():
     value['verdict'] = 'unknown'
     value['conclusion']['status'] = 'underdetermined'
     value['coverage']['matrix_not_run'] = [{'id': 'x', 'reason': 'guest_transport_error'}]
-    value['checks']['independent_egress_blocked'] = {'value': None}
+    value['checks']['running_egress_contained'] = {'value': None}
     for code in ('guest_transport_error', 'windows_transport_error', 'not_allowed_in_state'):
         value['error'] = {'code': code}
         value['lifecycle']['state'] = 'ownership_unknown'

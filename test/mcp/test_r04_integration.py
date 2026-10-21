@@ -102,9 +102,9 @@ def test_real_facade_generated_guest_parser_normal_chain(tmp_path, monkeypatch):
         windows_client=fixture.FakeWindows(), velo_client=fixture.FakeVelo())
     result = facade.verify(COMMAND_ID)
     assert result['error'] is None, result
-    assert result['verdict'] == 'pass', result['conclusion']
+    assert result['verdict'] == 'unknown', result['conclusion']
     assert result['producer_match'] is True
-    assert result['conclusion']['matrix_completeness']['complete'] is True
+    assert result['conclusion']['matrix_completeness']['complete'] is False
 
 
 def test_wrong_full_source_tuple_is_rejected_end_to_end(tmp_path, monkeypatch):
@@ -133,7 +133,7 @@ def test_pending_same_id_reconciles_guest_without_rerun(tmp_path, monkeypatch):
         fakenet_client=guest, windows_client=fixture.FakeWindows(),
         velo_client=fixture.FakeVelo())
     first = facade.verify(COMMAND_ID)
-    assert first['verdict'] == 'pass'
+    assert first['verdict'] == 'unknown'
     record = facade.state.load(COMMAND_ID)
     record['stage'] = 'running'
     facade.state.update(COMMAND_ID, record)

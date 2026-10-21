@@ -4,7 +4,7 @@ No argv or path comes from the AI.  The provider reads the configured VMX,
 VMware network files, every present VM NIC, ip/sysctl/process facts and, when
 permitted, firewall rules.  A missing mapping, permission failure or unknown
 family/interface fact becomes an explicit unknown; it is never promoted to a
-host-only pass.
+containment pass.
 """
 from __future__ import annotations
 
@@ -459,7 +459,8 @@ class HostProvider:
             'network_type': network_type,
             'nat_active': nat_active,
             'bridge_active': bridge_active,
-            'boundary': boundary,
+            'boundary': dict(boundary, role='legacy_diagnostic_not_qualification'),
+            'qualification_basis': 'passive_running_observation',
             'observer': observer_record,
             'policy': observer_policy,
             'raw_commands': list(self.commands),

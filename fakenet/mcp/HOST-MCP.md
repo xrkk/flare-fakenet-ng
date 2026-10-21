@@ -59,7 +59,8 @@ configuration/scope is rejected.
   hash, explicit IPv4/IPv6 sockets, per-step nonce/transaction/status checks,
   a separate positive and an instance PID/creation/script identity. It records
   the real Windows identity/firewall and runs the fixed 30-row TEST-NET matrix
-  only after the positive and a complete independent host boundary. The
+  after the positive under the already-approved probe scope. NAT, bridging,
+  forwarding or a missing second blocker do not skip the matrix. The
   identity preflight and final consistency read disable the positive; only the
   one matrix process sends the positive, and its PID/creation/source IP/port/
   protocol/full tuple/window/nonce are used for producer matching. The
@@ -67,14 +68,42 @@ configuration/scope is rejected.
   when the fixed benign marker is present. It does not start a sample. The
   guest FakeNet tool returns only its observable subset; host-only checks
   remain unknown unless the host provider proves them.
-- NAT with unreadable host firewall/NAT rules is an honest `unknown`, not a
-  pass. TEST-NET timeouts are not egress-block evidence. A normal pass needs a
-  readable independent boundary (or a pure host-only/no-forwarding deployment
-  with all NICs, both families, per-interface forwarding and route facts) plus
-  all 30 matrix rows, the separate sample-context positive, a real guest
-  producer tuple match, and a stable final host/guest/VM/config re-read.
-  Missing/unknown/not_run rows or an unreviewed final check never produce a
-  pass, even if the eight helper checks are otherwise complete.
+- Qualification contract version 2 replaces `independent_egress_blocked` with
+  `running_egress_contained`. Old results cannot be replayed as this contract.
+  FakeNet stopped permits normal connectivity; running must intercept/contain
+  the declared traffic; stopping must restore connectivity. No permanent
+  independent blocker, NAT suspension, host-only conversion or extra firewall
+  is a prerequisite or a substitute for FakeNet.
+- A normal pass needs all 30 rows, a real nonce/producer positive and stable
+  final facts, plus a complete passive VM-edge observation. UDP/DNS require
+  the actual Send return; TCP blocked rows require a concrete routed source,
+  a real asynchronous connect attempt and timed wait, not a local error.
+  An observed outbound matrix packet fails even if a later host rule drops it.
+  ICMP emission without sufficient proof stays unknown; it is not silently
+  removed from the matrix. Missing IPv6 or unsupported topology stays unknown.
+- `passive_observation.enabled` additionally requires `passive_observe` in the
+  pinned scope. The bounded `/usr/bin/dumpcap` child never installs or elevates
+  permissions, changes network policy or creates a daemon. It only supports a
+  single mapped VMware NIC initially, with Ethernet pcapng, complete drop
+  statistics and a post-probe control heartbeat. A fresh, hash-checked stopped
+  calibration must prove visibility of each family and actual next-hop path.
+  A heartbeat alone cannot prove visibility. Missing capability returns an
+  explicit unknown while already-authorized benign matrix probes still run.
+- Deployment acceptance is separate from each running MCP call. The operator
+  helper `tools/verify_egress_lifecycle.py` records stopped `before`/`after`
+  connectivity to the same explicitly authorized public IP/port, generates
+  `calibrate` evidence with two fixed TEST-NET UDP nonce probes, and evaluates
+  all phases using the real running MCP result. `lifecycle_connectivity` and
+  `visibility_calibration` are separate scope actions; the public endpoint and
+  connectivity template hash must be explicitly covered. The helper never
+  starts/stops FakeNet. Use existing lifecycle tools and reconcile their IDs.
+  TEST-NET calibration is not public-connectivity evidence. Calibration is
+  valid for at most one hour and invalidates on relevant context/network change.
+- The old local nft/NAT-stop fixture is historical recovery material only.
+  No normal verifier path requires it. The old guest subset remains accepted
+  for health/filter/producer facts only; it cannot supply the host contract-v2
+  passive check. Host probe/merge corrections do not require deploying another
+  guest binary. The installed guest build identity must still be reported.
 
 ## Output and evidence
 

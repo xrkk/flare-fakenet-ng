@@ -90,7 +90,8 @@ def expectation(case, result):
     lifecycle = (result.get('lifecycle') or {}).get('state')
     completion = result.get('probe_completion') or {}
     if case == 'normal':
-        return (verdict == 'pass' and status == 'qualified_in_scope' and
+        return (result.get('contract_version') == 2 and result.get('phase') == 'running' and
+                verdict == 'pass' and status == 'qualified_in_scope' and
                 lifecycle == 'completed' and _complete(result) and
                 bool(completion.get('completed_at')) and
                 _helper_consistent(result) and
@@ -102,8 +103,8 @@ def expectation(case, result):
         return bool(verdict == 'unknown' and status == 'underdetermined' and
                     lifecycle == 'completed' and not result.get('error') and
                     result.get('authorized') is False and
-                    (result.get('coverage') or {}).get('matrix_not_run') and
-                    _check_value(result, 'independent_egress_blocked') is None)
+                    (result.get('coverage') or {}).get('matrix_executed') == 30 and
+                    _check_value(result, 'running_egress_contained') is None)
     if case == 'control_missing':
         return (verdict == 'fail' and status != 'qualified_in_scope' and
                 ((_check_value(result, 'mcp_control_exclusions_effective')

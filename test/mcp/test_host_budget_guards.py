@@ -121,7 +121,8 @@ def test_facade_passes_remaining_budget_to_discovery(tmp_path):
         fakenet_client=Guest(), windows_client=Windows(),
         velo_client=fixture.FakeVelo())
     result = facade.verify(fixture.COMMAND_ID)
-    assert result['verdict'] == 'pass', result
+    assert result['verdict'] == 'unknown', result
+    assert result['coverage']['matrix_executed'] == 30
     assert len(timeouts) == 2
     assert all(value is not None and 0 < value <= 20 for value in timeouts)
 
