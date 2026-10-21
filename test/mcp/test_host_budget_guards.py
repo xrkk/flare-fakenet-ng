@@ -237,3 +237,24 @@ def test_windows_probe_rejects_ambiguous_or_embedded_markers(monkeypatch, payloa
         client.probe('Write-Output 1', timeout=5)
     assert exc.value.code == 'windows_probe_failed'
     assert len(calls) == 1
+
+
+def test_final_probe_uses_available_budget_above_five_seconds(tmp_path):
+    """A healthy final OS inventory can need over five seconds after reboot."""
+    path = Path(__file__).with_name('test_host_stdio.py')
+    spec = importlib.util.spec_from_file_location('final_budget_fixture', path)
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    observed = []
+    class Windows(fixture.FakeWindows):
+        def probe(self, script, timeout=None):
+            if self.calls == 2:
+                observed.append(timeout)
+            return super().probe(script, timeout=timeout)
+    facade = fixture.HostFacade(fixture.config_for(tmp_path),
+        provider=fixture.FakeProvider(), fakenet_client=fixture.FakeFakeNet(),
+        windows_client=Windows(), velo_client=fixture.FakeVelo())
+    result = facade.verify('11111111-2222-4333-8444-555555555555')
+    assert result['error'] is None
+    assert len(observed) == 1
+    assert 5 < observed[0] <= 10

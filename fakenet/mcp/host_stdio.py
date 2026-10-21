@@ -1075,7 +1075,7 @@ class HostFacade:
                 observed['reason'] = 'deadline_before_final_probe'
                 return None, observed
             self._recheck_action('windows_probe')
-            final_remaining = self._remaining(finish_deadline, 5)
+            final_remaining = self._remaining(finish_deadline, 10)
             deadline_ms = max(1, int(final_remaining * 1000))
             final_deadline_utc = self._utc_deadline(final_remaining)
             script = host_probe.probe_script(
