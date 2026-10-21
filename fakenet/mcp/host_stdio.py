@@ -1191,7 +1191,9 @@ class HostFacade:
             matrix = host_probe.matrix_steps(
                 random_tcp, random_udp, nonce,
                 listener_map=parsed_config['listener_map'],
-                redirect_all=parsed_config['redirect_all'])
+                redirect_all=parsed_config['redirect_all'],
+                bypass_tcp=parsed_config['bypass_tcp'],
+                bypass_udp=parsed_config['bypass_udp'])
             policy = self.config.get('policy') or {}
             self._recheck_action('windows_probe')
             windows = self._windows()

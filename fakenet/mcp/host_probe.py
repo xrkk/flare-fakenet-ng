@@ -340,10 +340,17 @@ def apply_probe_kinds(rows, listener_map=None, redirect_all=True):
 
 
 def matrix_steps(random_tcp_port, random_udp_port, nonce=None,
-                 listener_map=None, redirect_all=True):
+                 listener_map=None, redirect_all=True,
+                 bypass_tcp=(), bypass_udp=()):
     rows = apply_probe_kinds(
         egress_contract.matrix_definition(random_tcp_port, random_udp_port),
         listener_map, redirect_all)
+    for row in rows:
+        bypass = bypass_tcp if row['kind'] == 'tcp' else bypass_udp
+        if row['kind'] in ('tcp', 'udp') and row['port'] in bypass:
+            # A bypass test must attempt the transport even if a listener
+            # of another protocol happens to use the same port number.
+            row['probe_kind'] = row['kind'] + '_raw'
     if nonce is not None:
         for row in rows:
             if row['probe_kind'] == 'dns':
@@ -471,7 +478,8 @@ def expected_steps(bypass_tcp=(), bypass_udp=(), mapped_ports=(),
     result = {}
     for step in matrix_steps(random_tcp_port, random_udp_port, nonce,
                              listener_map=listener_map,
-                             redirect_all=redirect_all):
+                             redirect_all=redirect_all,
+                             bypass_tcp=bypass_tcp, bypass_udp=bypass_udp):
         if step['kind'] == 'icmp':
             # The Windows diverter redirects external ICMP to this host.
             expected, reason = 'local_fake', 'windows_icmp_local_redirect'

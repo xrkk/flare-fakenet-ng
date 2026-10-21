@@ -194,3 +194,15 @@ def test_default_windows_icmp_local_redirect_is_not_an_external_response():
         assert host_probe.classify_step(step,dict(response,**{key:value}),
             'local_fake',containment_observed=True,
             execution_verified=True)[0]!='pass'
+
+
+def test_bypassed_transport_is_probed_even_with_incompatible_listener_mapping():
+    mapping = {443: 'httplistener:tls'}
+    plan = host_probe.expected_steps(bypass_udp=(443,), listener_map=mapping, nonce='nonce')
+    assert plan['ipv4_udp_443']['expected'] == 'blocked'
+    assert plan['ipv4_udp_443']['probe_kind'] == 'udp_raw'
+    assert plan['ipv6_udp_443']['probe_kind'] == 'udp_raw'
+    rows = {row['id']: row for row in host_probe.matrix_steps(
+        50001, 50002, 'nonce', listener_map=mapping, bypass_udp=(443,))}
+    assert rows['ipv4_udp_443']['probe_kind'] == 'udp_raw'
+    assert rows['ipv4_tcp_443']['probe_kind'] == 'tcp_tls'
