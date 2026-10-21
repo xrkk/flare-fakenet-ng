@@ -55,7 +55,7 @@ configuration/scope is rejected.
   `ScriptBlock`; it creates no file, daemon or extra tool round trip. The
   wrapper rejects an oversized command before constructing a client. This is
   an internal transport detail, not a public MCP argument.
-- The Windows PowerShell probe is a fixed v2 template with a pinned template
+- The Windows PowerShell probe is a fixed v3 profile template with a pinned template
   hash, explicit IPv4/IPv6 sockets, per-step nonce/transaction/status checks,
   a separate positive and an instance PID/creation/script identity. It records
   the real Windows identity/firewall and runs the fixed 30-row TEST-NET matrix
@@ -68,13 +68,21 @@ configuration/scope is rejected.
   when the fixed benign marker is present. It does not start a sample. The
   guest FakeNet tool returns only its observable subset; host-only checks
   remain unknown unless the host provider proves them.
-- Qualification contract version 2 replaces `independent_egress_blocked` with
+- Qualification contract version 3 uses `running_egress_contained` in place of
+  `independent_egress_blocked`. Both the host config policy and finite scope
+  explicitly declare `qualification_profile: ipv4-v1`. Historical contract 2
+  evidence is not a current proof. The running check is named
   `running_egress_contained`. Old results cannot be replayed as this contract.
   FakeNet stopped permits normal connectivity; running must intercept/contain
   the declared traffic; stopping must restore connectivity. No permanent
   independent blocker, NAT suspension, host-only conversion or extra firewall
   is a prerequisite or a substitute for FakeNet.
-- A normal pass needs all 30 rows, a real nonce/producer positive and stable
+- A normal pass retains all 30 rows, requires the fixed 15 IPv4 rows to pass,
+  and requires a strict IPv6 scope guard derived from complete OS facts. Only
+  an OS-confirmed loopback-only IPv6 stack qualifies; link-local/on-link
+  configurations remain unknown, without automatically changing IPv6. The
+  IPv6 diagnostic rows retain their actual outcomes and any leak fails.
+  A pass also needs a real nonce/producer positive and stable
   final facts, plus a complete passive VM-edge observation. UDP/DNS require
   the actual Send return; TCP blocked rows require a concrete routed source,
   a real asynchronous connect attempt and timed wait, not a local error.
@@ -86,7 +94,8 @@ configuration/scope is rejected.
   permissions, changes network policy or creates a daemon. It only supports a
   single mapped VMware NIC initially, with Ethernet pcapng, complete drop
   statistics and a post-probe control heartbeat. A fresh, hash-checked stopped
-  calibration must prove visibility of each family and actual next-hop path.
+  calibration must prove visibility of each required IPv4 next-hop path.
+  Per-family diagnostic facts do not bypass common capture completeness.
   A heartbeat alone cannot prove visibility. Missing capability returns an
   explicit unknown while already-authorized benign matrix probes still run.
   Default capture remains non-promiscuous (`-p`). A deployment may explicitly
@@ -113,9 +122,18 @@ configuration/scope is rejected.
   valid for at most one hour and invalidates on relevant context/network change.
 - The old local nft/NAT-stop fixture is historical recovery material only.
   No normal verifier path requires it. The old guest subset remains accepted
-  for health/filter/producer facts only; it cannot supply the host contract-v2
+  for health/filter/producer facts only; it cannot supply the host contract-v3
   passive check. Host probe/merge corrections do not require deploying another
   guest binary. The installed guest build identity must still be reported.
+
+Validate the actual analysis configuration after configuration preparation.
+Read its name/hash and compare them with the engine's loaded config identity
+before calling the verifier. Each changed configuration, run, sample context
+or scope requires its own verification intent. A dedicated EgressControl test
+profile does not prove another configuration. Reusing the same command ID
+rechecks current facts, calibration lifetime and originals, probe template and
+capture binary; it does not rerun the matrix or guest verification. These
+checks do not require repeating deployment acceptance for every sample.
 
 ## Output and evidence
 

@@ -41,7 +41,7 @@
     ]
   },
   "probe": {
-    "script_sha256": "63e3fa33caaea0e3041131558577bd5745d685276c34cb745c959b166a69044f",
+    "script_sha256": "16037e73d3061731f5b21d2932defe07c61b2e9544326dc796fba88d91d66e40",
     "destinations": [
       "198.51.100.77",
       "2001:db8::77"
@@ -65,5 +65,6 @@
   },
   "sample_context": {},
   "connectivity_endpoints": [],
-  "lifecycle_script_sha256": "<sha256-of-CONNECT_TEMPLATE-if-connectivity-is-explicitly-authorized>"
+  "lifecycle_script_sha256": "<sha256-of-CONNECT_TEMPLATE-if-connectivity-is-explicitly-authorized>",
+  "qualification_profile": "ipv4-v1"
 }

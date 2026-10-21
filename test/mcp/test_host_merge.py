@@ -1,7 +1,7 @@
 """Qualification gate: matrix not_run/unknown must never pass."""
 import copy
 
-from fakenet.mcp import host_merge, host_probe
+from fakenet.mcp import egress_contract, host_merge, host_probe
 
 REQUEST = {
     'schema_version': 'fakenetng.egress-verification.v1',
@@ -13,6 +13,9 @@ REQUEST = {
     'probe_nonce': 'nonce',
     'required_control_ports': [28787, 28788, 28790],
     'matrix_version': 'v1',
+    'qualification_profile': 'ipv4-v1',
+    'required_matrix_ids': None,
+    'diagnostic_matrix_ids': None,
     'random_tcp_port': 50001,
     'random_udp_port': 50002,
 }
@@ -215,7 +218,8 @@ def test_matrix_uses_only_its_verified_family_without_qualifying_other_family():
                          local_endpoint=source + ':40000', route={'source': source,
                          'interface': '1', 'next_hop': 'gateway'}, probe_pid=1,
                          probe_birth_ticks=2, script_hash='fixed-hash'))
-    observation = {'value': None, 'families': {'ipv4': {'value': True}, 'ipv6': {'value': None}}}
+    observation = {'value': None, 'common_complete': True,
+                   'families': {'ipv4': {'value': True}, 'ipv6': {'value': None}}}
     probe = dict(matrix_run=True, instance=instance, steps=rows, running_observation=observation)
     result = {row['id']: row for row in host_merge._matrix_steps(probe, expected)}
     assert result['ipv4_udp_443']['outcome'] == 'pass'
@@ -223,3 +227,28 @@ def test_matrix_uses_only_its_verified_family_without_qualifying_other_family():
     assert probe['running_observation']['value'] is None
     observation['value'] = False
     assert not any(row['outcome'] == 'pass' for row in host_merge._matrix_steps(probe, expected))
+
+
+def test_ipv4_required_pass_with_ipv6_guard_unknown_is_not_qualified():
+    expected = host_probe.expected_steps(
+        random_tcp_port=50001, random_udp_port=50002, nonce='nonce')
+    probe = probe_result(expected)
+    probe['ipv6_exposure'] = {
+        'schema': 'fakenetng.ipv6-exposure.v1', 'complete': True,
+        'interfaces': [{'index': 11, 'forwarding': 'Disabled'}],
+        'addresses': [{'interface_index': 11, 'address': 'fe80::1',
+                       'prefix_length': 64, 'state': 'Preferred'}],
+        'routes': [{'interface_index': 11, 'prefix': 'fe80::/64',
+                    'next_hop': '::'},
+                   {'interface_index': 11, 'prefix': 'ff00::/8',
+                    'next_hop': '::'}],
+        'os_map': [{'index': 11, 'type': 'Ethernet'}], 'errors': []}
+    result = build(probe, expected)
+    assert result['qualification_profile'] == 'ipv4-v1'
+    assert result['scope_guard']['value'] is None
+    assert result['conclusion']['status'] == 'underdetermined'
+    assert result['conclusion']['sample_path_qualified'] is False
+    required = [row for row in result['steps']
+                if row['id'] in egress_contract.IPV4_REQUIRED_IDS]
+    assert len(required) == 15
+    assert all(row['outcome'] in ('pass', 'unknown') for row in required)

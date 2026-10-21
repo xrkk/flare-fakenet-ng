@@ -98,9 +98,10 @@ def test_completeness_gate_requires_every_row_positive_producer_and_final():
         ids, rows[:-1], positive, True, True)
     assert missing['complete'] is False
     assert missing['status'] == 'underdetermined'
+    unknown_rows = [dict(row) for row in rows]
+    unknown_rows[ids.index(contract.IPV4_REQUIRED_IDS[0])]['outcome'] = 'unknown'
     unknown = contract.evaluate_verification_completeness(
-        ids, rows[:-1] + [{'id': ids[-1], 'outcome': 'unknown'}],
-        positive, True, True)
+        ids, unknown_rows, positive, True, True)
     assert unknown['complete'] is False
     failed = contract.evaluate_verification_completeness(
         ids, rows[:-1] + [{'id': ids[-1], 'outcome': 'fail'}],
@@ -115,3 +116,73 @@ def test_completeness_gate_requires_every_row_positive_producer_and_final():
     no_final = contract.evaluate_verification_completeness(
         ids, rows, positive, True, None)
     assert no_final['status'] == 'underdetermined'
+
+
+def _loopback_exposure():
+    return {
+        'schema': 'fakenetng.ipv6-exposure.v1', 'complete': True,
+        'interfaces': [{'index': 1, 'forwarding': 'Disabled',
+                                'connection_state': 'Up'}],
+        'addresses': [{'interface_index': 1, 'address': '::1',
+                       'prefix_length': 128, 'state': 'Preferred'}],
+        'routes': [{'interface_index': 1, 'prefix': '::1/128',
+                    'next_hop': '::'},
+                   {'interface_index': 1, 'prefix': 'ff00::/8',
+                    'next_hop': '::'}],
+        'os_map': [{'index': 1, 'type': 'Loopback'}], 'errors': [],
+        'collection_started': '2026-10-21T00:00:00Z',
+        'collection_ended': '2026-10-21T00:00:01Z',
+    }
+
+
+def test_strict_ipv6_scope_guard_only_loopback_and_ll_is_unknown():
+    guard = contract.normalize_ipv6_exposure(_loopback_exposure())
+    assert guard['value'] is True
+    assert guard['fingerprint']
+    link_local = _loopback_exposure()
+    link_local['interfaces'] = [{'index': 11, 'forwarding': 'Disabled'}]
+    link_local['addresses'] = [{'interface_index': 11,
+                                'address': 'fe80::1', 'prefix_length': 64}]
+    link_local['routes'] = [{'interface_index': 11, 'prefix': 'fe80::/64',
+                             'next_hop': '::'},
+                            {'interface_index': 11, 'prefix': 'ff00::/8',
+                             'next_hop': '::'}]
+    link_local['os_map'] = [{'index': 11, 'type': 'Ethernet'}]
+    assert contract.normalize_ipv6_exposure(link_local)['value'] is None
+    # Same local list, hypothetical peers do not change the conservative fact.
+    guarded = contract.normalize_ipv6_exposure(link_local)
+    assert guarded['value'] is None
+    duplicate = _loopback_exposure()
+    duplicate['interfaces'].append(dict(duplicate['interfaces'][0]))
+    assert contract.normalize_ipv6_exposure(duplicate)['value'] is None
+    empty = dict(_loopback_exposure(), interfaces=[], addresses=[], routes=[],
+                 os_map=[])
+    assert contract.normalize_ipv6_exposure(empty)['value'] is None
+
+
+def test_contract3_profile_and_scope_guard_are_required():
+    ids = contract.matrix_step_ids(50001, 50002)
+    rows = [{'id': step, 'outcome': 'pass'} for step in ids]
+    positive = {'nonce_match': True}
+    complete = contract.evaluate_verification_completeness(
+        ids, rows, positive, True, True,
+        required_ids=contract.IPV4_REQUIRED_IDS,
+        diagnostic_ids=contract.IPV6_DIAGNOSTIC_IDS)
+    assert complete['complete'] is True
+    assert complete['required_ids'] == list(contract.IPV4_REQUIRED_IDS)
+    plan, observation = contract._base_material()
+    observation['qualification_profile'] = 'ipv4-v1'
+    observation['scope_guard'] = contract.normalize_ipv6_exposure(
+        _loopback_exposure())
+    assert contract.evaluate_interception_qualification(
+        plan, observation)['status'] == 'qualified_in_scope'
+    observation.pop('scope_guard')
+    result = contract.evaluate_interception_qualification(plan, observation)
+    assert result['status'] == 'underdetermined'
+    assert 'scope_guard' in result['unknown_checks']
+    observation['scope_guard'] = contract.normalize_ipv6_exposure(
+        _loopback_exposure())
+    plan.pop('required_matrix_ids')
+    result = contract.evaluate_interception_qualification(plan, observation)
+    assert result['status'] == 'underdetermined'
+    assert 'matrix_profile_scope' in result['unknown_checks']

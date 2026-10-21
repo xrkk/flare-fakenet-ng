@@ -17,17 +17,36 @@ runner = load_runner()
 
 
 def base_result():
-    steps = [{'id': 's%d' % i, 'outcome': 'pass'} for i in range(30)]
+    steps = [{'id': key, 'outcome': 'pass'}
+             for key in egress_contract.matrix_step_ids(50001, 50002)]
     plan = {
         'run_id': 'run', 'vm_epoch': 'epoch', 'policy_identity': 'policy',
         'execution_context_identity': 'context', 'probe_nonce': 'nonce',
         'required_control_ports': [28787, 28788, 28790],
+        'qualification_profile': 'ipv4-v1',
+        'required_matrix_ids': list(egress_contract.IPV4_REQUIRED_IDS),
+        'diagnostic_matrix_ids': list(egress_contract.IPV6_DIAGNOSTIC_IDS),
     }
     checks = {
         key: {'value': value, 'evidence_refs': ['evidence']}
         for key, value in egress_contract.EXPECTED_CHECKS.items()
     }
-    observation = dict(plan, contract_version=2)
+    facts = {
+        'schema': 'fakenetng.ipv6-exposure.v1', 'complete': True,
+        'interfaces': [{'index': 1, 'forwarding': 'Disabled',
+                        'connection_state': 'Up'}],
+        'addresses': [{'interface_index': 1, 'address': '::1',
+                       'prefix_length': 128, 'state': 'Preferred'}],
+        'routes': [{'interface_index': 1, 'prefix': '::1/128',
+                    'next_hop': '::'},
+                   {'interface_index': 1, 'prefix': 'ff00::/8',
+                    'next_hop': '::'}],
+        'os_map': [{'index': 1, 'type': 'Loopback'}], 'errors': []}
+    observation = dict(plan, contract_version=3,
+                       qualification_profile='ipv4-v1',
+                       ipv6_exposure=facts,
+                       scope_guard=egress_contract.normalize_ipv6_exposure(
+                           facts))
     observation.update({
         'response_nonce': 'nonce',
         'effective_control_exclusion_ports': [28787, 28788, 28790],
@@ -35,12 +54,16 @@ def base_result():
         'verification_completeness': {
             'schema': 'fakenetng.verification-completeness.v1',
             'complete': True, 'status': 'complete',
+            'qualification_profile': egress_contract.QUALIFICATION_PROFILE,
+            'required_ids': list(egress_contract.IPV4_REQUIRED_IDS),
+            'diagnostic_ids': list(egress_contract.IPV6_DIAGNOSTIC_IDS),
             'planned': 30, 'observed': 30,
             'missing_steps': [], 'unknown_steps': [], 'failed_steps': [],
         },
     })
     return {
-        'contract_version': 2, 'phase': 'running', 'verdict': 'pass', 'authorized': False,
+        'contract_version': 3, 'qualification_profile': 'ipv4-v1',
+        'phase': 'running', 'verdict': 'pass', 'authorized': False,
         'lifecycle': {'state': 'completed'},
         'conclusion': {'status': 'qualified_in_scope',
                        'sample_path_qualified': True,

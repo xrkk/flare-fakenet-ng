@@ -195,7 +195,8 @@ def route_keys(probe, family=None):
 def evaluate_capture(capture, probe, snapshot, calibration_ref, *, started, ended,
                      heartbeat_port, capture_identity, now=None):
     """Observe leaks first. Missing visibility or execution never becomes pass."""
-    result = {'value': None, 'reason': 'observation_incomplete', 'paths': [], 'leaks': []}
+    result = {'value': None, 'reason': 'observation_incomplete', 'paths': [], 'leaks': [],
+              'common_complete': False}
     observed_packets = []
     try:
         try:
@@ -264,6 +265,12 @@ def evaluate_capture(capture, probe, snapshot, calibration_ref, *, started, ende
             if not before - 60 <= _time(row['started']) <= _time(row['ended']) <= before:
                 raise ValueError('calibration probe time invalid')
         old = parse_capture(_raw_ref(receipt['capture']))
+        result['common_complete'] = True
+        result['calibration'] = {
+            'ref': dict(calibration_ref),
+            'expires_at': receipt.get('expires_at'),
+            'probe_template_sha256': receipt.get('probe_template_sha256'),
+            'capture_identity': receipt.get('capture_identity')}
         # Common identity, capture and loss checks qualify neither family on
         # failure. Once those pass, evaluate each actual path independently;
         # a missing IPv6 route must not erase a calibrated IPv4 observation.

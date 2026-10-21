@@ -135,7 +135,7 @@ def phases():
     plan, observed = egress_contract._base_material()
     base = dict(vm_epoch='epoch', network_identity='nat-original', execution_context_identity='context', endpoint=dict(address='1.1.1.1', port=443), second_blocker_used=False, evidence_refs=['fixture#hash'], started_at=stamp(T), ended_at=stamp(T+1))
     before = dict(base, phase='before', engine_state='stopped', run_id=None, connected=True, peer=base['endpoint'])
-    running = dict(base, phase='running', started_at=stamp(T+2), ended_at=stamp(T+3), verification={'authorized':False, 'phase':'running', 'contract_version':2, 'verdict':'pass', 'helper_input':{'plan':plan,'observation':observed}, 'coverage':{'completeness':{'complete':True}}})
+    running = dict(base, phase='running', started_at=stamp(T+2), ended_at=stamp(T+3), verification={'authorized':False, 'phase':'running', 'contract_version':3, 'verdict':'pass', 'helper_input':{'plan':plan,'observation':observed}, 'coverage':{'completeness':{'complete':True}}})
     after = dict(before, phase='after', started_at=stamp(T+4), ended_at=stamp(T+5))
     return before, running, after
 

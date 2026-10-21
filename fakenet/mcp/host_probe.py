@@ -27,7 +27,7 @@ $payload=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD_
 $nonce=[string]$payload.nonce
 $steps=@($payload.steps)
 $deadline=if($payload.deadline_utc){[DateTime]::Parse([string]$payload.deadline_utc).ToUniversalTime()}else{[DateTime]::UtcNow.AddMilliseconds([int]$payload.deadline_ms)}
-$out=[ordered]@{schema='__SCHEMA__';nonce=$nonce;instance=$null;identity=$null;firewall=@();firewall_error=$null;positive=$null;matrix_run=$false;stop_remaining=$false;steps=@();completed_at=$null}
+$out=[ordered]@{schema='__SCHEMA__';nonce=$nonce;instance=$null;identity=$null;firewall=@();firewall_error=$null;ipv6_exposure=$null;positive=$null;matrix_run=$false;stop_remaining=$false;steps=@();completed_at=$null}
 try {
   $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
   $process=Get-Process -Id $PID
@@ -68,6 +68,20 @@ try {
 try {
   $out.firewall=@(Get-NetFirewallProfile -PolicyStore ActiveStore|Select-Object Name,Enabled|ForEach-Object {[ordered]@{name=[string]$_.Name;enabled=[bool]$_.Enabled}})
 } catch { $out.firewall_error=[string]$_ }
+$out.ipv6_exposure=[ordered]@{schema='fakenetng.ipv6-exposure.v1';complete=$false;interfaces=@();addresses=@();routes=@();os_map=@();errors=@();collection_started=[DateTime]::UtcNow.ToString('o');collection_ended=$null}
+try {
+  $ifaces=@(Get-NetIPInterface -AddressFamily IPv6 -PolicyStore ActiveStore -ErrorAction Stop | Select-Object -First 257)
+  $addrs=@(Get-NetIPAddress -AddressFamily IPv6 -PolicyStore ActiveStore -ErrorAction Stop | Select-Object -First 257)
+  $rts=@(Get-NetRoute -AddressFamily IPv6 -PolicyStore ActiveStore -ErrorAction Stop | Select-Object -First 257)
+  $net=@([Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Select-Object -First 257)
+  if($ifaces.Count -gt 256 -or $addrs.Count -gt 256 -or $rts.Count -gt 256 -or $net.Count -gt 256){throw 'ipv6 fact limit exceeded'}
+  $out.ipv6_exposure.interfaces=@($ifaces|ForEach-Object {[ordered]@{index=[int]$_.InterfaceIndex;forwarding=[string]$_.Forwarding;connection_state=[string]$_.ConnectionState}})
+  $out.ipv6_exposure.addresses=@($addrs|ForEach-Object {[ordered]@{interface_index=[int]$_.InterfaceIndex;address=[string]$_.IPAddress;prefix_length=[int]$_.PrefixLength;state=[string]$_.AddressState}})
+  $out.ipv6_exposure.routes=@($rts|ForEach-Object {[ordered]@{interface_index=[int]$_.InterfaceIndex;prefix=[string]$_.DestinationPrefix;next_hop=[string]$_.NextHop}})
+  $out.ipv6_exposure.os_map=@($net|ForEach-Object {[ordered]@{index=[int]$_.GetIPProperties().GetIPv6Properties().Index;type=[string]$_.NetworkInterfaceType}})
+  $out.ipv6_exposure.complete=$true
+} catch { $out.ipv6_exposure.errors+=([string]$_) }
+$out.ipv6_exposure.collection_ended=[DateTime]::UtcNow.ToString('o')
 function Remaining-Ms {
   $ms=[int](([DateTime]::UtcNow - [DateTime]::UtcNow).TotalMilliseconds + 1)
   return [Math]::Max(0, [Math]::Min(__TIMEOUT__, [int]($deadline-[DateTime]::UtcNow).TotalMilliseconds))
@@ -465,6 +479,13 @@ def validate_probe_result(value, expected_ids, *, nonce=None,
         raise ValueError('probe nonce mismatch')
     if not isinstance(value.get('identity'), dict):
         raise ValueError('probe identity missing')
+    exposure = value.get('ipv6_exposure')
+    if exposure is not None:
+        if not isinstance(exposure, dict) or exposure.get('schema') != 'fakenetng.ipv6-exposure.v1':
+            raise ValueError('probe ipv6 exposure invalid')
+        for key in ('interfaces', 'addresses', 'routes', 'os_map', 'errors'):
+            if not isinstance(exposure.get(key), list):
+                raise ValueError('probe ipv6 exposure %s missing' % key)
     instance = value.get('instance')
     if not isinstance(instance, dict):
         raise ValueError('probe instance missing')

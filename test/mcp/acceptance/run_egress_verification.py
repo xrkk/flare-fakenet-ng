@@ -51,14 +51,18 @@ def _complete(result):
     conclusion = result.get('conclusion') or {}
     completeness = conclusion.get('matrix_completeness') or {}
     coverage = result.get('coverage') or {}
-    if not completeness.get('complete'):
+    if not completeness.get('complete') or coverage.get('matrix_planned') != 30:
         return False
-    if (coverage.get('matrix_planned') or 0) != 30:
+    expected = egress_contract.matrix_step_ids(50001, 50002)
+    rows = [row for row in result.get('steps') or []
+            if row.get('id') in expected]
+    if len(rows) != 30 or len({row['id'] for row in rows}) != 30:
         return False
-    if coverage.get('matrix_not_run'):
-        return False
-    for step in result.get('steps') or []:
-        if step.get('outcome') != 'pass':
+    required = set(egress_contract.IPV4_REQUIRED_IDS)
+    for row in rows:
+        if row.get('outcome') not in ('pass', 'unknown', 'not_run'):
+            return False
+        if row['id'] in required and row.get('outcome') != 'pass':
             return False
     return True
 
@@ -90,7 +94,7 @@ def expectation(case, result):
     lifecycle = (result.get('lifecycle') or {}).get('state')
     completion = result.get('probe_completion') or {}
     if case == 'normal':
-        return (result.get('contract_version') == 2 and result.get('phase') == 'running' and
+        return (result.get('contract_version') == 3 and result.get('qualification_profile') == 'ipv4-v1' and result.get('phase') == 'running' and
                 verdict == 'pass' and status == 'qualified_in_scope' and
                 lifecycle == 'completed' and _complete(result) and
                 bool(completion.get('completed_at')) and

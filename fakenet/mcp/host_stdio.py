@@ -230,6 +230,13 @@ def _validate_scope(scope, config):
         raise HostFacadeError('invalid_request', 'probe scope version invalid')
     if not isinstance(scope.get('scope_id'), str) or not scope['scope_id']:
         raise HostFacadeError('invalid_request', 'probe scope id missing')
+    policy = config.get('policy') or {}
+    if scope.get('qualification_profile') != egress_contract.QUALIFICATION_PROFILE:
+        raise HostFacadeError('invalid_request',
+                              'probe scope qualification profile missing or mismatched')
+    if policy.get('qualification_profile') != egress_contract.QUALIFICATION_PROFILE:
+        raise HostFacadeError('invalid_request',
+                              'host configuration qualification profile missing or mismatched')
     if scope.get('mode') != 'probe' or scope.get(
             'authorization') != 'granted' or scope.get('revoked') is not False:
         raise HostFacadeError('invalid_request',
@@ -545,6 +552,7 @@ class HostFacade:
             'scope': scope,
             'template_sha256': host_probe.script_sha256(
                 host_probe.PROBE_TEMPLATE),
+            'qualification_profile': egress_contract.QUALIFICATION_PROFILE,
             'target_key': _sha({
                 'vm_uuid': _normal_uuid(vmx.get('expected_uuid')),
             }),
@@ -697,6 +705,12 @@ class HostFacade:
                 record['command_id'], 'integrity_error',
                 'completed result is unreadable: %r' % exc,
                 record=record, request=record.get('request'))
+        if document.get('error') is None and document.get(
+                'qualification_profile') != egress_contract.QUALIFICATION_PROFILE:
+            return self._error_result(
+                record['command_id'], 'stale_result',
+                'completed result qualification profile is unavailable',
+                record=record, request=record.get('request'))
         if document.get('verification_id') != record.get(
                 'verification_id') or document.get('command_id') != record.get(
                     'command_id'):
@@ -749,13 +763,49 @@ class HostFacade:
                 record['command_id'], 'stale_result',
                 'old result has no complete current-state reuse binding',
                 record=record, request=record.get('request'))
+        observation = document.get('running_observation') or {}
+        calibration = observation.get('calibration')
+        if (self.config.get('passive_observation') or {}).get('enabled') is True:
+            try:
+                ref = (calibration or {}).get('ref') or {}
+                receipt = json.loads(running_observation._raw_ref(ref))
+                if receipt.get('schema') != 'fakenetng.egress-visibility.v1':
+                    raise HostFacadeError('stale_result', 'calibration schema changed')
+                for key in ('guest_status', 'probe', 'capture'):
+                    # The receipt identity alone does not preserve the
+                    # originals it used to establish visibility.
+                    running_observation._raw_ref(receipt.get(key))
+                if receipt.get('expires_at') != calibration.get('expires_at'):
+                    raise HostFacadeError('stale_result', 'calibration summary changed')
+                if datetime.now(timezone.utc) >= _parse_time(
+                        receipt.get('expires_at')):
+                    raise HostFacadeError('stale_result', 'calibration expired')
+                if receipt.get('probe_template_sha256') != host_probe.script_sha256(
+                        host_probe.PROBE_TEMPLATE):
+                    raise HostFacadeError('stale_result', 'probe template changed')
+                capture_id = calibration.get('capture_identity') or {}
+                binary = Path(str(capture_id.get('binary') or ''))
+                if (not binary.is_absolute() or not binary.is_file() or
+                        _sha_file(binary) != capture_id.get('sha256')):
+                    raise HostFacadeError('stale_result', 'capture binary changed')
+            except HostFacadeError as exc:
+                return self._error_result(
+                    record['command_id'], 'stale_result', exc.message,
+                    record=record, request=record.get('request'))
+            except Exception as exc:  # noqa: BLE001 - calibration unknown is stale
+                return self._error_result(
+                    record['command_id'], 'stale_result',
+                    'calibration is unavailable: %r' % exc,
+                    record=record, request=record.get('request'))
         self._nonce_for_action = record['probe_nonce']
         self._command_id_for_observer = record['command_id']
         consistent, detail = self._final_consistency(
             self._fakenet(), self.config['fakenet_mcp']['config_name'],
             final_status, binding['config'], binding['host'],
             binding['identity'], time.monotonic() + 15, auth['scope'],
-            command_id=record['command_id'], challenge=secrets.token_hex(16))
+            command_id=record['command_id'], challenge=secrets.token_hex(16),
+            initial_guard_fingerprint=(document.get('scope_guard') or {}).get(
+                'fingerprint'))
         if consistent is not True:
             return self._error_result(
                 record['command_id'], 'stale_result',
@@ -979,7 +1029,8 @@ class HostFacade:
     def _final_consistency(self, fakenet, config_name, initial_status,
                            initial_config, initial_host, identity,
                            finish_deadline, scope, command_id=None,
-                           challenge=None):
+                           challenge=None, initial_ipv6=None,
+                           initial_guard_fingerprint=None):
         observed = {'checked_at': _now()}
         try:
             if self._remaining(finish_deadline, 1) <= 0:
@@ -1046,6 +1097,16 @@ class HostFacade:
                 key: identity2.get(key) for key in
                 ('pid', 'creation_ticks', 'account', 'sid', 'session',
                  'vm_uuid', 'boot_id')}
+            if initial_guard_fingerprint is None:
+                initial_guard_fingerprint = egress_contract.normalize_ipv6_exposure(
+                    initial_ipv6).get('fingerprint')
+            final_guard = egress_contract.normalize_ipv6_exposure(
+                result.get('ipv6_exposure'))
+            observed['ipv6_scope_fingerprint'] = final_guard.get('fingerprint')
+            observed['ipv6_exposure'] = result.get('ipv6_exposure')
+            if initial_guard_fingerprint != final_guard.get('fingerprint'):
+                observed['reason'] = 'ipv6_exposure_changed'
+                return False, observed
             for key in ('account', 'sid', 'session', 'vm_uuid', 'boot_id',
                         'token_integrity_level', 'policy_scope',
                         'protocol_class', 'image_path', 'image_sha256'):
@@ -1232,6 +1293,11 @@ class HostFacade:
                 identity_result, [], nonce=nonce,
                 expected_script_hash=identity_script_hash,
                 positive_required=False)
+            identity_evidence_dir = self.output_root / 'verifications' / verification_id
+            record['identity_probe_evidence'] = _atomic_json(
+                identity_evidence_dir / 'windows-identity-probe.json',
+                {'probe': identity_result, 'raw': identity_raw})
+            self.state.update(command_id, record)
             identity = identity_result.get('identity') or {}
             vmx = self.config.get('vmx') or {}
             if _normal_uuid(identity.get('vm_uuid')) != _normal_uuid(
@@ -1290,6 +1356,14 @@ class HostFacade:
             host_probe.validate_probe_result(
                 probe_result, [row['id'] for row in matrix], nonce=nonce,
                 expected_script_hash=probe_script_hash)
+            identity_guard = egress_contract.normalize_ipv6_exposure(
+                identity_result.get('ipv6_exposure'))
+            matrix_guard = egress_contract.normalize_ipv6_exposure(
+                probe_result.get('ipv6_exposure'))
+            if identity_guard.get('fingerprint') != matrix_guard.get('fingerprint'):
+                raise HostFacadeError(
+                    'state_conflict',
+                    'IPv6 exposure changed between identity and matrix probes')
             probe_identity = probe_result.get('identity') or {}
             for key in ('account', 'sid', 'session', 'vm_uuid', 'boot_id',
                         'token_integrity_level', 'policy_scope',
@@ -1331,6 +1405,12 @@ class HostFacade:
                 'config_identity': status.get('config_identity'),
                 'config_sha256': config_record.get('sha256'),
                 'matrix_version': matrix_version,
+                'qualification_profile': egress_contract.QUALIFICATION_PROFILE,
+                'required_matrix_ids': list(egress_contract.IPV4_REQUIRED_IDS),
+                'diagnostic_matrix_ids': list(egress_contract.IPV6_DIAGNOSTIC_IDS),
+                'scope_sha256': auth['scope_sha256'],
+                'scope_guard_fingerprint': egress_contract.normalize_ipv6_exposure(
+                    probe_result.get('ipv6_exposure')).get('fingerprint'),
                 'required_control_ports': required_ports,
                 'process_rules': parsed_config.get('process_rules'),
             })
@@ -1352,6 +1432,9 @@ class HostFacade:
                 'probe_nonce': nonce,
                 'required_control_ports': required_ports,
                 'matrix_version': matrix_version,
+                'qualification_profile': egress_contract.QUALIFICATION_PROFILE,
+                'required_matrix_ids': list(egress_contract.IPV4_REQUIRED_IDS),
+                'diagnostic_matrix_ids': list(egress_contract.IPV6_DIAGNOSTIC_IDS),
                 'random_tcp_port': random_tcp,
                 'random_udp_port': random_udp,
                 'host_evidence_sha256': host_sha,
@@ -1393,10 +1476,16 @@ class HostFacade:
                 guest_error = {'code': 'deadline_exceeded'}
             else:
                 try:
+                    # These fields belong to the host qualification contract,
+                    # not the unchanged guest v1 request.
+                    guest_request = {key: value for key, value in request.items()
+                                     if key not in ('qualification_profile',
+                                                    'required_matrix_ids',
+                                                    'diagnostic_matrix_ids')}
                     guest_response = fakenet.verify_egress(
                         record['guest_command_id'],
                         int(status.get('state_version')),
-                        schemas.VerificationRequest(**request).model_dump(
+                        schemas.VerificationRequest(**guest_request).model_dump(
                             mode='json'), timeout=guest_timeout)
                     guest_result = guest_response.get('verification')
                     if guest_response.get('error') or not isinstance(
@@ -1468,7 +1557,8 @@ class HostFacade:
             final_consistency, final_observed = self._final_consistency(
                 fakenet, config_name, status, config_record, host, identity,
                 finish_deadline - ((6 if capture.promiscuous else 2) if capture is not None else 0), scope, command_id=command_id,
-                challenge=record['final_challenge'])
+                challenge=record['final_challenge'],
+                initial_ipv6=probe_result.get('ipv6_exposure'))
             if capture is not None:
                 capture_end = capture.finish()
                 if capture.path.is_file():
@@ -1491,7 +1581,7 @@ class HostFacade:
                     capture_report['evidence_refs'] = [{
                         'side': 'host', 'path': capture_end['path'],
                         'sha256': capture_end['sha256'], 'kind': 'passive-running-observation'}]
-                if capture_report.get('value') is True:
+                if capture_report.get('common_complete') is True:
                     calibration_ref = passive_config.get('calibration_ref') or {}
                     capture_report.setdefault('evidence_refs', []).append({
                         'side': 'host', 'path': calibration_ref.get('path'),
@@ -1526,7 +1616,8 @@ class HostFacade:
                 config=self.config, channels=channels,
                 host_evidence=host_evidence, probe_evidence=probe_evidence,
                 final_host_evidence=final_host_evidence,
-                host_final_snapshot=final_host_snapshot)
+                host_final_snapshot=final_host_snapshot,
+                identity_probe_evidence=record.get('identity_probe_evidence'))
             result['lifecycle_identity'] = {
                 'vm_epoch': _sha({key: identity.get(key) for key in ('vm_uuid', 'boot_id')}),
                 'execution_context_identity': _sha({key: identity.get(key) for key in ('account', 'sid', 'session')}),

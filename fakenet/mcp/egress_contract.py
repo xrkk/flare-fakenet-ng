@@ -9,10 +9,13 @@ mapping are the same semantics as the original MalTrace helper.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 from collections.abc import Mapping
 
-CONTRACT_VERSION = 2
+CONTRACT_VERSION = 3
+QUALIFICATION_PROFILE = 'ipv4-v1'
+SCOPE_GUARD_SCHEMA = 'fakenetng.ipv6-scope-guard.v1'
 SCHEMA_VERSION = 'fakenetng.egress-verification.v1'
 MATRIX_VERSION = 'v1'
 SOURCE_PATH = 'fakenet/mcp/egress_contract.py'
@@ -36,6 +39,16 @@ MATRIX_DESTINATIONS = {
 }
 MATRIX_TCP_PORTS = (80, 443, 139)
 MATRIX_UDP_PORTS = (53, 443, 67, 68, 137, 138, 1900, 5355)
+IPV4_REQUIRED_IDS = tuple(
+    ['ipv4_tcp_%d' % p for p in MATRIX_TCP_PORTS] + ['ipv4_tcp_random'] +
+    ['ipv4_udp_%d' % p for p in MATRIX_UDP_PORTS] + ['ipv4_udp_random'] +
+    ['ipv4_icmp', 'ipv4_dns_nonce_invalid'])
+IPV6_DIAGNOSTIC_IDS = tuple(
+    ['ipv6_tcp_%d' % p for p in MATRIX_TCP_PORTS] + ['ipv6_tcp_random'] +
+    ['ipv6_udp_%d' % p for p in MATRIX_UDP_PORTS] + ['ipv6_udp_random'] +
+    ['ipv6_icmp', 'ipv6_dns_nonce_invalid'])
+if len(IPV4_REQUIRED_IDS) != 15 or len(IPV6_DIAGNOSTIC_IDS) != 15:
+    raise RuntimeError('matrix profile family count invalid')
 
 
 class EgressContractError(ValueError):
@@ -51,6 +64,183 @@ def valid_ports(value):
     return (isinstance(value, list) and 0 < len(value) <= 64 and
             all(type(port) is int and 1 <= port <= 65535 for port in value)
             and len(set(value)) == len(value))
+
+
+def _limit(value):
+    return isinstance(value, list) and 0 < len(value) <= 256
+
+
+def normalize_ipv6_exposure(facts):
+    """Return a fail-closed canonical IPv6 scope guard.
+
+    This is a total function: malformed/partial facts never raise.  Only a
+    complete OS-index/type map whose every IPv6 interface is Loopback, whose
+    only address is ::1/128 and whose routes are exactly ::1/128 or ff00::/8
+    on that loopback, with forwarding disabled, can pass.  Link-local,
+    on-link multicast, disconnected-but-configured, ULA, tunnels, missing
+    mappings, duplicate/truncated facts and empty input are unknown.
+    """
+    reasons = []
+    facts = facts if isinstance(facts, Mapping) else None
+    if facts is None:
+        return {'schema': SCOPE_GUARD_SCHEMA, 'value': None,
+                'reason': 'ipv6_facts_invalid', 'reasons': ['ipv6_facts_invalid'],
+                'fingerprint': None, 'canonical': None,
+                'evidence_refs': [], 'authorized': False}
+    def add(reason):
+        if reason not in reasons:
+            reasons.append(reason)
+    if facts.get('schema') != 'fakenetng.ipv6-exposure.v1':
+        add('ipv6_schema_invalid')
+    if facts.get('complete') is not True:
+        add('ipv6_fact_incomplete')
+    errors = facts.get('errors')
+    if not isinstance(errors, list) or errors:
+        add('ipv6_fact_error')
+    interfaces = facts.get('interfaces')
+    addresses = facts.get('addresses')
+    routes = facts.get('routes')
+    os_map = facts.get('os_map')
+    for value, reason in ((interfaces, 'ipv6_interfaces_invalid'),
+                          (addresses, 'ipv6_addresses_invalid'),
+                          (routes, 'ipv6_routes_invalid'),
+                          (os_map, 'ipv6_os_map_invalid')):
+        if not isinstance(value, list) or len(value) == 0 or len(value) > 256:
+            add(reason)
+    if reasons:
+        # Still construct a minimal canonical representation for the
+        # fingerprint, without indexing malformed entries.
+        return {'schema': SCOPE_GUARD_SCHEMA, 'value': None,
+                'reason': reasons[0], 'reasons': reasons,
+                'fingerprint': sha256_text(canonical_json({
+                    'schema': SCOPE_GUARD_SCHEMA, 'reasons': reasons})),
+                'canonical': None, 'evidence_refs': ['windows-probe#ipv6_exposure'],
+                'authorized': False}
+    inter = {}
+    mapping = {}
+    try:
+        for row in interfaces:
+            if not isinstance(row, Mapping):
+                raise TypeError('interface')
+            idx = row.get('index')
+            if type(idx) is not int or idx < 0:
+                raise TypeError('interface index')
+            forwarding = str(row.get('forwarding') or '').lower()
+            state = str(row.get('connection_state') or row.get('state') or '').lower()
+            if not forwarding or not state:
+                raise ValueError('interface fields')
+            if idx in inter:
+                raise ValueError('duplicate interface')
+            inter[idx] = {'index': idx, 'forwarding': forwarding,
+                          'connection_state': state}
+        for row in os_map:
+            if not isinstance(row, Mapping):
+                raise TypeError('os map')
+            idx = row.get('index')
+            typ = str(row.get('type') or '')
+            if type(idx) is not int or idx < 0 or idx in mapping or not typ:
+                raise ValueError('os map identity')
+            mapping[idx] = typ
+        if set(mapping) != set(inter):
+            raise ValueError('os map incomplete')
+        address_rows = {}
+        for row in addresses:
+            if not isinstance(row, Mapping):
+                raise TypeError('address')
+            idx = row.get('interface_index')
+            addr = row.get('address')
+            prefix = row.get('prefix_length')
+            state = str(row.get('state') or '')
+            if (type(idx) is not int or idx not in inter or
+                    not isinstance(addr, str) or not addr or
+                    type(prefix) is not int or not 0 <= prefix <= 128 or
+                    not state):
+                raise ValueError('address fields')
+            try:
+                ipaddress.ip_address(addr)
+            except ValueError:
+                raise ValueError('address syntax') from None
+            key = (idx, addr.lower(), prefix)
+            if key in address_rows:
+                raise ValueError('duplicate address')
+            address_rows[key] = {'interface_index': idx,
+                                 'address': addr.lower(),
+                                 'prefix_length': prefix, 'state': state}
+        route_rows = {}
+        for row in routes:
+            if not isinstance(row, Mapping):
+                raise TypeError('route')
+            idx = row.get('interface_index')
+            prefix = row.get('prefix')
+            next_hop = row.get('next_hop')
+            if (type(idx) is not int or idx not in inter or
+                    not isinstance(prefix, str) or not prefix or
+                    not isinstance(next_hop, str)):
+                raise ValueError('route fields')
+            try:
+                network = ipaddress.ip_network(prefix, strict=False)
+            except ValueError:
+                raise ValueError('route syntax') from None
+            key = (idx, network.with_prefixlen, next_hop.lower())
+            if key in route_rows:
+                raise ValueError('duplicate route')
+            route_rows[key] = {'interface_index': idx,
+                               'prefix': network.with_prefixlen,
+                               'next_hop': next_hop.lower()}
+        # Strict positive: OS mapping and every configured interface/route.
+        for idx, row in inter.items():
+            if mapping.get(idx, '').lower() != 'loopback':
+                add('ipv6_nonloopback_interface')
+            if row['forwarding'] not in ('disabled', 'false', '0'):
+                add('ipv6_forwarding_enabled')
+            if row['connection_state'] not in ('up', 'connected'):
+                add('ipv6_interface_state_not_up')
+        if not any(key[1] == '::1' and key[2] == 128 for key in address_rows):
+            add('ipv6_loopback_address_missing')
+        for key in address_rows:
+            idx, addr, prefix = key
+            if addr != '::1' or prefix != 128:
+                add('ipv6_nonloopback_address')
+        if not route_rows:
+            add('ipv6_route_list_empty')
+        for key in route_rows:
+            idx, prefix, next_hop = key
+            if not (prefix == '::1/128' and next_hop == '::'):
+                if not (prefix == 'ff00::/8' and next_hop == '::'):
+                    add('ipv6_nonloopback_route')
+        canonical = {
+            'schema': SCOPE_GUARD_SCHEMA,
+            'complete': True,
+            'errors': [],
+            'interfaces': [dict(inter[k], type=mapping.get(k))
+                           for k in sorted(inter)],
+            'addresses': [address_rows[k] for k in sorted(address_rows)],
+            'routes': [route_rows[k] for k in sorted(route_rows)],
+            'os_map': [{'index': k, 'type': mapping[k]}
+                       for k in sorted(mapping)],
+        }
+        fingerprint = sha256_text(canonical_json(canonical))
+        return {'schema': SCOPE_GUARD_SCHEMA,
+                'value': True if not reasons else None,
+                'reason': 'strict_loopback_ipv6_only' if not reasons else reasons[0],
+                'reasons': reasons, 'fingerprint': fingerprint,
+                'canonical': canonical,
+                'evidence_refs': ['windows-probe#ipv6_exposure'],
+                'authorized': False}
+    except (TypeError, ValueError, KeyError) as exc:
+        reason = 'ipv6_facts_malformed'
+        add(reason)
+        return {'schema': SCOPE_GUARD_SCHEMA, 'value': None,
+                'reason': reasons[0], 'reasons': reasons,
+                'fingerprint': sha256_text(canonical_json({
+                    'schema': SCOPE_GUARD_SCHEMA, 'reasons': reasons})),
+                'canonical': None, 'evidence_refs': ['windows-probe#ipv6_exposure'],
+                'authorized': False}
+
+
+def scope_guard_from_observation(observation):
+    guard = observation.get('scope_guard') if isinstance(observation, Mapping) else None
+    return guard if isinstance(guard, Mapping) else None
 
 
 def evaluate_interception_qualification(plan: Mapping,
@@ -77,6 +267,33 @@ def evaluate_interception_qualification(plan: Mapping,
     if not isinstance(checks, Mapping):
         raise EgressContractError('interception_checks_invalid')
     failed, unknown = [], []
+    profile = plan.get('qualification_profile')
+    if profile != QUALIFICATION_PROFILE or observation.get(
+            'qualification_profile') != profile:
+        unknown.append('qualification_profile')
+    required = plan.get('required_matrix_ids')
+    diagnostic = plan.get('diagnostic_matrix_ids')
+    if tuple(required or ()) != IPV4_REQUIRED_IDS or tuple(
+            diagnostic or ()) != IPV6_DIAGNOSTIC_IDS:
+        unknown.append('matrix_profile_scope')
+    guard = scope_guard_from_observation(observation)
+    if guard is None:
+        unknown.append('scope_guard')
+    else:
+        if guard.get('schema') != SCOPE_GUARD_SCHEMA:
+            raise EgressContractError('scope_guard_schema_invalid')
+        try:
+            recomputed = normalize_ipv6_exposure(observation.get('ipv6_exposure'))
+        except Exception:  # noqa: BLE001 - malformed facts are unknown
+            recomputed = {'value': None, 'fingerprint': None}
+        same = (guard.get('value') == recomputed.get('value') and
+                guard.get('fingerprint') == recomputed.get('fingerprint'))
+        if guard.get('value') is True and same:
+            pass
+        elif guard.get('value') is False and same:
+            failed.append('scope_guard')
+        else:
+            unknown.append('scope_guard')
     if observation.get("contract_version") != CONTRACT_VERSION:
         unknown.append("qualification_contract_version")
     for key, wanted in EXPECTED_CHECKS.items():
@@ -98,7 +315,9 @@ def evaluate_interception_qualification(plan: Mapping,
         if observation.get('response_nonce') != nonce:
             failed.append('response_nonce_mismatch')
     completeness = observation.get('verification_completeness')
-    if completeness is not None:
+    if completeness is None:
+        unknown.append('matrix_completeness')
+    else:
         if not isinstance(completeness, Mapping) or completeness.get(
                 'schema') != 'fakenetng.verification-completeness.v1':
             raise EgressContractError(
@@ -112,6 +331,10 @@ def evaluate_interception_qualification(plan: Mapping,
         if type(c_planned) is not int or c_planned != 30 or                 type(c_observed) is not int or c_observed != 30:
             raise EgressContractError(
                 'interception_completeness_invalid')
+        if (list(completeness.get('required_ids') or []) != list(IPV4_REQUIRED_IDS)
+                or list(completeness.get('diagnostic_ids') or []) != list(IPV6_DIAGNOSTIC_IDS)
+                or completeness.get('qualification_profile') != QUALIFICATION_PROFILE):
+            failed.append('matrix_profile_scope')
         if completeness['complete']:
             if c_status != 'complete' or completeness.get(
                     'missing_steps') or completeness.get(
@@ -146,6 +369,10 @@ def evaluate_interception_qualification(plan: Mapping,
         'stop_remaining_probes': bool(failed),
         'authorized': False,
         'run_id': plan['run_id'],
+        'qualification_profile': QUALIFICATION_PROFILE,
+        'required_matrix_ids': list(IPV4_REQUIRED_IDS),
+        'diagnostic_matrix_ids': list(IPV6_DIAGNOSTIC_IDS),
+        'scope_guard': guard,
     }
 
 
@@ -233,7 +460,8 @@ def process_rules_match(sample_path, probe_path, rules):
 
 
 def evaluate_verification_completeness(expected_ids, matrix_steps, positive,
-                                       producer_match, final_consistency):
+                                       producer_match, final_consistency,
+                                       required_ids=None, diagnostic_ids=None):
     """Qualification gate for full matrix/positive/final evidence.
 
     The original eight-check helper stays unchanged.  This gate adds the
@@ -243,6 +471,19 @@ def evaluate_verification_completeness(expected_ids, matrix_steps, positive,
     conditions.
     """
     expected = [str(item) for item in (expected_ids or [])]
+    required = [str(item) for item in (required_ids if required_ids is not None else IPV4_REQUIRED_IDS)]
+    diagnostic = [str(item) for item in (diagnostic_ids if diagnostic_ids is not None else IPV6_DIAGNOSTIC_IDS)]
+    profile_error = None
+    try:
+        fixed = list(matrix_step_ids(50001, 50002))
+    except Exception:  # noqa: BLE001 - malformed module state
+        fixed = []
+    if (expected != fixed or tuple(required) != IPV4_REQUIRED_IDS or
+            tuple(diagnostic) != IPV6_DIAGNOSTIC_IDS or
+            len(required) != len(set(required)) or
+            len(diagnostic) != len(set(diagnostic)) or
+            set(required) & set(diagnostic)):
+        profile_error = 'completeness_profile_invalid'
     if not expected or len(expected) != len(set(expected)):
         raise EgressContractError('completeness_expected_invalid')
     if not isinstance(matrix_steps, list):
@@ -256,12 +497,23 @@ def evaluate_verification_completeness(expected_ids, matrix_steps, positive,
         rows[row['id']] = row
     missing = [item for item in expected if item not in rows]
     extra = [item for item in rows if item not in expected]
-    failed = [item for item in expected if item in rows and
+    invalid_outcomes = [item for item in expected if item in rows and
+                        rows[item].get('outcome') not in
+                        ('pass', 'fail', 'unknown', 'not_run')]
+    failed = [item for item in required if item in rows and
               rows[item].get('outcome') == 'fail']
-    unknown = [item for item in expected if item in rows and
+    unknown = [item for item in required if item in rows and
                rows[item].get('outcome') in ('unknown', 'not_run')]
+    diagnostic_unknown = [item for item in diagnostic if item in rows and
+                          rows[item].get('outcome') in ('unknown', 'not_run')]
+    diagnostic_failed = [item for item in diagnostic if item in rows and
+                         rows[item].get('outcome') == 'fail']
+    if diagnostic_failed:
+        failed.extend(diagnostic_failed)
     if extra:
         raise EgressContractError('completeness_row_unplanned')
+    if invalid_outcomes:
+        failed.extend(invalid_outcomes)
     positive_ok = isinstance(positive, Mapping) and         positive.get('nonce_match') is True
     producer_ok = producer_match is True
     if producer_match is False or (isinstance(positive, Mapping) and
@@ -276,6 +528,8 @@ def evaluate_verification_completeness(expected_ids, matrix_steps, positive,
         unknown.append('final_consistency')
     if missing:
         unknown.extend(missing)
+    if profile_error:
+        failed.append(profile_error)
     if failed:
         status = 'invalid_environment'
         reason = 'matrix_or_final_failed'
@@ -287,10 +541,15 @@ def evaluate_verification_completeness(expected_ids, matrix_steps, positive,
         reason = 'all_matrix_rows_positive_producer_and_final_passed'
     return {
         'status': status,
+        'qualification_profile': QUALIFICATION_PROFILE,
+        'profile_error': profile_error,
         'complete': status == 'complete',
         'failed_steps': failed,
         'unknown_steps': unknown,
         'missing_steps': missing,
+        'required_ids': required,
+        'diagnostic_ids': diagnostic,
+        'diagnostic_unknown_steps': diagnostic_unknown,
         'planned': len(expected),
         'observed': len(rows),
         'reason': reason,
@@ -403,9 +662,35 @@ def _base_material():
         'execution_context_identity': 'contract-case-context',
         'probe_nonce': 'contract-case-nonce',
         'required_control_ports': [28787, 28788, 28790],
+        'qualification_profile': QUALIFICATION_PROFILE,
+        'required_matrix_ids': list(IPV4_REQUIRED_IDS),
+        'diagnostic_matrix_ids': list(IPV6_DIAGNOSTIC_IDS),
     }
     observation = dict(plan)
     observation['contract_version'] = CONTRACT_VERSION
+    observation['verification_completeness'] = {
+        'schema': 'fakenetng.verification-completeness.v1',
+        **evaluate_verification_completeness(
+            matrix_step_ids(50001, 50002),
+            [{'id': key, 'outcome': 'pass'}
+             for key in matrix_step_ids(50001, 50002)],
+            {'nonce_match': True}, True, True),
+    }
+    observation['qualification_profile'] = QUALIFICATION_PROFILE
+    facts = {
+        'schema': 'fakenetng.ipv6-exposure.v1', 'complete': True,
+        'interfaces': [{'index': 1, 'forwarding': 'Disabled',
+                        'connection_state': 'Up'}],
+        'addresses': [{'interface_index': 1, 'address': '::1',
+                       'prefix_length': 128, 'state': 'Preferred'}],
+        'routes': [{'interface_index': 1, 'prefix': '::1/128',
+                    'next_hop': '::'},
+                   {'interface_index': 1, 'prefix': 'ff00::/8',
+                    'next_hop': '::'}],
+        'os_map': [{'index': 1, 'type': 'Loopback'}], 'errors': []}
+    observation['ipv6_exposure'] = facts
+    observation['scope_guard'] = normalize_ipv6_exposure(facts)
+
     observation['response_nonce'] = plan['probe_nonce']
     observation['effective_control_exclusion_ports'] = [28787, 28788, 28790]
     observation['checks'] = {

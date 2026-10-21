@@ -55,6 +55,39 @@ def _firewall_value(probe):
     return all(row.get('enabled') is False for row in profiles)
 
 
+def _scope_guard(probe, observation_report=None):
+    facts = probe.get('ipv6_exposure') if isinstance(probe, dict) else None
+    if not isinstance(facts, dict):
+        return {
+            'schema': egress_contract.SCOPE_GUARD_SCHEMA,
+            'value': None, 'reason': 'ipv6_exposure_missing',
+            'reasons': ['ipv6_exposure_missing'], 'fingerprint': None,
+            'evidence_refs': [],
+        }
+    guard = egress_contract.normalize_ipv6_exposure(facts)
+    leaks = (observation_report or {}).get('leaks') or []
+    if any(row.get('family') == 'ipv6' for row in leaks):
+        guard = dict(guard)
+        guard['value'] = False
+        guard['reason'] = 'ipv6_running_leak_observed'
+        guard['reasons'] = ['ipv6_running_leak_observed']
+    guard['evidence_refs'] = ['windows-probe#ipv6_exposure']
+    return guard
+
+
+def _scoped_containment(report, family):
+    # Family facts only exist after the common evidence has been verified.
+    # Leakage remains decisive even when that verification cannot finish.
+    if report.get('value') is False or report.get('leaks'):
+        return False
+    if report.get('common_complete') is not True:
+        return None
+    if report.get('value') is True:
+        return True
+    path = (report.get('families') or {}).get(family) or {}
+    return True if path.get('value') is True else None
+
+
 def _parse_endpoint(value):
     text = str(value or '')
     if ':' not in text:
@@ -162,12 +195,8 @@ def _matrix_steps(probe, expected_map, boundary_verified=None,
         if any(row.get(k) != expected.get(k) for k in ('kind', 'family', 'destination', 'port')):
             execution_verified = False
         observation_report = probe.get('running_observation') or {}
-        containment = observation_report.get('value')
-        if containment is None:
-            family = (observation_report.get('families') or {}).get(
-                expected.get('family')) or {}
-            if family.get('value') is True:
-                containment = True
+        containment = _scoped_containment(
+            observation_report, expected.get('family'))
         outcome, reason = host_probe.classify_step(
             expected, row, expected.get('expected'),
             containment_observed=containment,
@@ -204,7 +233,7 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
                       probe_result, expected_map, config, channels,
                       host_evidence=None, probe_evidence=None,
                       final_host_evidence=None, host_final_snapshot=None,
-                      started_at=None):
+                      started_at=None, identity_probe_evidence=None):
     started = started_at or _now()
     ended = _now()
     identity = probe_result.get('identity') or {}
@@ -248,9 +277,9 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
         local_value = False
     blocked_value = False if local_value is True else None
     observation_report = probe_result.get('running_observation') or {}
-    egress_value = observation_report.get('value')
-    if egress_value not in (True, False, None):
-        egress_value = None
+    scope_guard = _scope_guard(probe_result, observation_report)
+    guard_public = {k: v for k, v in scope_guard.items() if k != 'canonical'}
+    egress_value = _scoped_containment(observation_report, 'ipv4')
     checks = {
         'firewall_disabled': _check(firewall_value, []),
         'fakenet_running_healthy': _check(guest_health, []),
@@ -267,6 +296,9 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
                          host_evidence['sha256'], 'host-provider'))
     for item in observation_report.get('evidence_refs') or []:
         refs.append(dict(item))
+    if identity_probe_evidence:
+        refs.append(_ref('host', identity_probe_evidence['path'],
+                         identity_probe_evidence['sha256'], 'windows-identity-probe'))
     if probe_evidence:
         refs.append(_ref('host', probe_evidence['path'],
                          probe_evidence['sha256'], 'windows-probe'))
@@ -294,7 +326,9 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
     final_consistency = probe_result.get('final_consistency')
     completeness = egress_contract.evaluate_verification_completeness(
         list(expected_map), matrix_steps, positive, producer_match,
-        final_consistency)
+        final_consistency,
+        required_ids=egress_contract.IPV4_REQUIRED_IDS,
+        diagnostic_ids=egress_contract.IPV6_DIAGNOSTIC_IDS)
     probe_completed = probe_result.get('completed_at')
     if not isinstance(probe_completed, str) or not probe_completed:
         completeness['complete'] = False
@@ -323,9 +357,15 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
         'execution_context_identity': request['execution_context_identity'],
         'probe_nonce': request['probe_nonce'],
         'required_control_ports': request['required_control_ports'],
+        'qualification_profile': egress_contract.QUALIFICATION_PROFILE,
+        'required_matrix_ids': list(egress_contract.IPV4_REQUIRED_IDS),
+        'diagnostic_matrix_ids': list(egress_contract.IPV6_DIAGNOSTIC_IDS),
     }
     observation = {
         'contract_version': egress_contract.CONTRACT_VERSION,
+        'qualification_profile': egress_contract.QUALIFICATION_PROFILE,
+        'ipv6_exposure': probe_result.get('ipv6_exposure'),
+        'scope_guard': guard_public,
         'run_id': plan['run_id'],
         'vm_epoch': plan['vm_epoch'],
         'policy_identity': plan['policy_identity'],
@@ -490,6 +530,9 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
         'matrix_version': request['matrix_version'],
         'planned': len(steps), 'executed': executed,
         'matrix_planned': len(expected_map),
+        'qualification_profile': egress_contract.QUALIFICATION_PROFILE,
+        'required_matrix_ids': list(egress_contract.IPV4_REQUIRED_IDS),
+        'diagnostic_matrix_ids': list(egress_contract.IPV6_DIAGNOSTIC_IDS),
         'matrix_executed': sum(1 for step in matrix_steps
                                if step.get('outcome') != 'not_run'),
         'matrix_not_run': [{'id': step.get('id'),
@@ -503,9 +546,22 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
         'not_run': [{'id': step.get('id'),
                      'reason': step.get('reason_code')}
                     for step in steps if step.get('outcome') == 'not_run'],
+        'families': {
+            family: {
+                'required': family == 'ipv4',
+                'ids': [step_id for step_id in expected_map
+                        if str(step_id).startswith(family + '_')],
+                'outcomes': {
+                    outcome: sum(1 for step in matrix_steps
+                                 if step.get('id') in expected_map and
+                                 str(step.get('id')).startswith(family + '_') and
+                                 step.get('outcome') == outcome)
+                    for outcome in ('pass', 'fail', 'unknown', 'not_run')},
+            } for family in ('ipv4', 'ipv6')},
     }
     result = {
         'contract_version': egress_contract.CONTRACT_VERSION,
+        'qualification_profile': egress_contract.QUALIFICATION_PROFILE,
         'phase': 'running',
         'schema_version': egress_contract.SCHEMA_VERSION,
         'verification_id': request['verification_id'],
@@ -536,7 +592,12 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
             'facade_version': (guest_result or {}).get(
                 'bindings', {}).get('facade_version'),
             'matrix_version': request['matrix_version'],
+            'qualification_profile': egress_contract.QUALIFICATION_PROFILE,
+            'scope_guard_fingerprint': scope_guard.get('fingerprint'),
+            'required_matrix_ids': list(egress_contract.IPV4_REQUIRED_IDS),
+            'diagnostic_matrix_ids': list(egress_contract.IPV6_DIAGNOSTIC_IDS),
         },
+        'scope_guard': guard_public,
         'steps': steps,
         'checks': checks,
         'helper_input': {'plan': plan, 'observation': observation},
@@ -548,6 +609,12 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
             'sample_path_qualified': sample_path_qualified,
             'stop_remaining_probes': stop_remaining,
             'matrix_completeness': completeness,
+            'qualification_profile': egress_contract.QUALIFICATION_PROFILE,
+            'scope_guard': guard_public,
+            'family_coverage': {
+                family: {'required': family == 'ipv4',
+                         'outcomes': coverage['families'][family]['outcomes']}
+                for family in ('ipv4', 'ipv6')},
             'authorized': False,
             'reason': ('matrix_or_final_incomplete'
                        if status in ('invalid_environment',
@@ -565,6 +632,11 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
                 'started'),
             'positive_ended': (probe_result.get('positive') or {}).get(
                 'ended'),
+        },
+        'running_observation': {
+            key: observation_report.get(key) for key in
+            ('value', 'reason', 'common_complete', 'families', 'leaks',
+             'evidence_refs', 'calibration', 'paths')
         },
         'manifest': {'sha256': _sha(entries), 'entries': entries,
                      'invalidation_conditions': [
@@ -584,7 +656,8 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
             'host boundary pass requires complete, readable evidence',
             'TEST-NET timeout is not egress-block evidence',
             'LocalSystem guest echo is not sample-context interception',
-            'pass requires all 30 matrix rows, a separate positive,',
+            'pass requires all 30 diagnostic rows and the fixed IPv4 required 15,',
+            'strict IPv6 scope guard, a separate positive,',
             'producer association and a final consistency read',
         ],
         'producer_match': producer_match,
