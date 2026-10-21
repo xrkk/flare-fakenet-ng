@@ -89,6 +89,18 @@ configuration/scope is rejected.
   calibration must prove visibility of each family and actual next-hop path.
   A heartbeat alone cannot prove visibility. Missing capability returns an
   explicit unknown while already-authorized benign matrix probes still run.
+  Default capture remains non-promiscuous (`-p`). A deployment may explicitly
+  opt in with `passive_observation.promiscuous: true` only when the finite
+  pinned scope also contains `passive_capture` with `mode: process-promiscuous`,
+  the snapshot's exact `vm_uuid`, `mac`, `interface`, and `dumpcap_sha256`.
+  This requests reception through the owned capture process, never `ip link`
+  or a global mode reset. It keeps the VM-only BPF and 35-second/4-MiB limits,
+  waits two seconds after readiness, drains for up to three seconds before
+  closing, and records interface flags/promiscuity before, during and after.
+  An unconfirmed mode or restoration cannot qualify any family. Capture mode
+  and timing are part of the calibration identity; recalibrate after changing
+  them. Concurrent interface changes are reported; the verifier never undoes
+  another process's settings.
 - Deployment acceptance is separate from each running MCP call. The operator
   helper `tools/verify_egress_lifecycle.py` records stopped `before`/`after`
   connectivity to the same explicitly authorized public IP/port, generates
