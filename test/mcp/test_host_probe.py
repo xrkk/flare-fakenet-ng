@@ -206,3 +206,35 @@ def test_bypassed_transport_is_probed_even_with_incompatible_listener_mapping():
         50001, 50002, 'nonce', listener_map=mapping, bypass_udp=(443,))}
     assert rows['ipv4_udp_443']['probe_kind'] == 'udp_raw'
     assert rows['ipv4_tcp_443']['probe_kind'] == 'tcp_tls'
+
+
+def test_existing_fakenet_http_error_reflects_nonce_without_listener_changes():
+    import io
+    import logging
+    from types import SimpleNamespace
+    from fakenet.listeners.HTTPListener import ThreadedHTTPRequestHandler
+
+    class MemoryRequest(ThreadedHTTPRequestHandler):
+        def setup(self):
+            self.rfile = io.BytesIO(self.request)
+            self.wfile = io.BytesIO()
+
+        def finish(self):
+            pass
+
+    nonce = '0123456789abcdef0123456789abcdef'
+    wire = ('MALTRACE-EGRESS-' + nonce + ' /maltrace-egress HTTP/1.1\r\n'
+            'Host: 198.51.100.77\r\nConnection: close\r\n\r\n').encode()
+    server = SimpleNamespace(config={}, logger=logging.getLogger('benign-http-fixture'))
+    handler = MemoryRequest(wire, ('127.0.0.1', 40000), server)
+    response = handler.wfile.getvalue()
+    headers, body = response.split(b'\r\n\r\n', 1)
+    assert headers.startswith(b'HTTP/1.0 501 ')
+    assert nonce.encode() in body
+    length = next(row for row in headers.split(b'\r\n') if row.startswith(b'Content-Length:'))
+    assert int(length.split(b':', 1)[1]) == len(body)
+    step = dict(kind='tcp', family='ipv4', destination='198.51.100.77', port=80)
+    observed = strict_response(step, response_type='http', status=501, received=response.decode())
+    assert host_probe.classify_step(step, observed, 'local_fake')[0] == 'pass'
+    observed['nonce_match'] = False
+    assert host_probe.classify_step(step, observed, 'local_fake')[0] == 'unknown'

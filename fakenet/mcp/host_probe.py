@@ -75,10 +75,43 @@ function Remaining-Ms {
 function Test-Nonce([string]$text,[string]$nonce) {
   return [regex]::IsMatch($text,'(^|[^A-Za-z0-9])'+[regex]::Escape($nonce)+'([^A-Za-z0-9]|$)')
 }
-function Read-Text($stream) {
+function Read-Text($stream,[bool]$http=$false) {
   $buffer=New-Object byte[] 4096
-  try { $n=$stream.Read($buffer,0,$buffer.Length); if($n -gt 0){return [Text.Encoding]::UTF8.GetString($buffer,0,$n)} } catch {}
-  return ''
+  $memory=[IO.MemoryStream]::new();$headerEnd=-1;$expected=$null
+  try {
+    while((Remaining-Ms) -gt 0 -and $memory.Length -lt 16384) {
+      $stream.ReadTimeout=[Math]::Max(1,(Remaining-Ms))
+      $count=[int][Math]::Min($buffer.Length,16384-$memory.Length)
+      $n=$stream.Read($buffer,0,$count)
+      if($n -le 0) {
+        if($http -and ($headerEnd -lt 0 -or ($null -ne $expected -and $memory.Length -ne $expected))){throw 'incomplete HTTP response'}
+        return [Text.Encoding]::UTF8.GetString($memory.ToArray())
+      }
+      $memory.Write($buffer,0,$n);$raw=$memory.ToArray()
+      if(-not $http) {
+        $text=[Text.Encoding]::UTF8.GetString($raw)
+        if(Test-Nonce $text $nonce){return $text}
+        continue
+      }
+      if($headerEnd -lt 0) {
+        $ascii=[Text.Encoding]::ASCII.GetString($raw);$headerEnd=$ascii.IndexOf("`r`n`r`n")
+        if($headerEnd -lt 0){if($memory.Length -gt 8192){throw 'HTTP headers too large'};continue}
+        $headers=$ascii.Substring(0,$headerEnd)
+        if($headers -match '(?im)^Transfer-Encoding:'){throw 'unsupported HTTP transfer framing'}
+        $lengths=[regex]::Matches($headers,'(?im)^Content-Length:[ \t]*(\d+)[ \t]*\r?$')
+        if($lengths.Count -gt 1){throw 'ambiguous HTTP content length'}
+        if($lengths.Count -eq 1){$expected=[long]$lengths[0].Groups[1].Value+$headerEnd+4;if($expected -gt 16384){throw 'HTTP response too large'}}
+      }
+      if($null -ne $expected -and $memory.Length -ge $expected) {
+        if($memory.Length -ne $expected){throw 'extra HTTP response bytes'}
+        return [Text.Encoding]::UTF8.GetString($raw)
+      }
+    }
+    throw 'response bound reached'
+  } catch {
+    if(-not $http -and $memory.Length -gt 0){return [Text.Encoding]::UTF8.GetString($memory.ToArray())}
+    return ''
+  } finally {$memory.Dispose()}
 }
 function Read-Tcp($client) {
   try { $stream=$client.GetStream();$stream.ReadTimeout=[Math]::Max(1,(Remaining-Ms)); return (Read-Text $stream) } catch { return '' }
@@ -131,11 +164,11 @@ function Invoke-TcpStep($step,[string]$mode) {
     if($mode -eq 'tcp_raw') {
       $bytes=[Text.Encoding]::ASCII.GetBytes('MALTRACE-EGRESS-'+$nonce)
     } else {
-      $wire='GET /maltrance-egress?nonce='+$nonce+' HTTP/1.1'+[Environment]::NewLine+'Host: '+[string]$step.destination+[Environment]::NewLine+'Connection: close'+[Environment]::NewLine+[Environment]::NewLine
+      $wire='MALTRACE-EGRESS-'+$nonce+' /maltrace-egress HTTP/1.1'+[Environment]::NewLine+'Host: '+[string]$step.destination+[Environment]::NewLine+'Connection: close'+[Environment]::NewLine+[Environment]::NewLine
       $bytes=[Text.Encoding]::ASCII.GetBytes($wire)
     }
     $stream.Write($bytes,0,$bytes.Length);$stream.Flush();$result.sent=$bytes.Length
-    $result.received=Read-Text $stream
+    $result.received=Read-Text $stream ($mode -ne 'tcp_raw')
     $result.nonce_match=(Test-Nonce $result.received $nonce)
     if($mode -ne 'tcp_raw') {
       $match=[regex]::Match($result.received,'^HTTP/\d\.\d\s+(\d{3})')
