@@ -1040,6 +1040,35 @@ class HostFacade:
             observed['reason'] = 'final_read_failed'
             return None, observed
 
+    def _compact_step_observations(self, result, evidence_dir):
+        # Only long raw observations move out of the response. Every step,
+        # expectation, outcome, reason and qualification input stays intact.
+        selected = [(i, step) for i, step in enumerate(result.get('steps') or [])
+                    if len(json.dumps(step.get('observed'), ensure_ascii=False).encode('utf-8')) > 1024]
+        if not selected:
+            return result
+        raw = _atomic_json(evidence_dir / 'result.unabridged.json', result)
+        for index, step in selected:
+            observed = step.get('observed')
+            summary = {}
+            if isinstance(observed, dict):
+                for key, value in observed.items():
+                    if value is None or isinstance(value, (bool, int, float)):
+                        summary[key] = value
+                    elif isinstance(value, str) and len(value) <= 256:
+                        summary[key] = value
+                    elif isinstance(value, (dict, list)):
+                        summary[key + '_count'] = len(value)
+            step['observed'] = {
+                'summary': summary,
+                'raw_observation_ref': 'unabridged-result#/steps/%d/observed' % index,
+            }
+            step['evidence_refs'] = list(step.get('evidence_refs') or []) + [{'id': 'unabridged-result', 'json_pointer': '/steps/%d/observed' % index}]
+        entries = result['manifest']['entries']
+        entries.append(dict(raw, id='unabridged-result', side='host', kind='unabridged-result'))
+        result['manifest']['sha256'] = _sha(entries)
+        return result
+
     def _finish_no_probe_failure(self, record, result, host=None):
         if record.get('remote_probe_started') is not False:
             return result
@@ -1396,6 +1425,9 @@ class HostFacade:
                 final_host_evidence=final_host_evidence,
                 host_final_snapshot=final_host_snapshot)
             result['bindings']['host_evidence_sha256'] = host_sha
+            compact_limit = int(policy.get('output_compact_limit_bytes', DEFAULT_COMPACT_LIMIT))
+            if len(json.dumps(result, ensure_ascii=False).encode('utf-8')) + 1024 > compact_limit:
+                result = self._compact_step_observations(result, evidence_dir)
             artifact = _atomic_json(evidence_dir / 'result.json', result)
             result['artifact'] = artifact
             result['_result_sha256'] = artifact['sha256']

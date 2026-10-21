@@ -274,7 +274,7 @@ def build_host_result(*, command_id, request, guest_result, host_snapshot,
     boundary_value = (host_snapshot or {}).get('boundary', {}).get('value')
     matrix_steps = _matrix_steps(probe_result, expected_map,
                                  boundary_verified=boundary_value is True,
-                                 evidence_refs=probe_refs,
+                                 evidence_refs=[item for item in refs if item.get('kind') == 'windows-probe'],
                                  host_snapshot=host_snapshot,
                                  final_host_snapshot=host_final_snapshot)
     final_consistency = probe_result.get('final_consistency')

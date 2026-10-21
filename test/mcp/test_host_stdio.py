@@ -602,3 +602,37 @@ def test_windows_submission_timeout_keeps_target_owned(tmp_path):
     assert facade.state.find_active_target(record['target_key']) is not None
     other = facade.verify('55555555-6666-4777-8888-999999999999')
     assert other['error']['code'] == 'ownership_unknown'
+
+
+def test_large_raw_step_keeps_one_call_result_and_integrity(tmp_path, monkeypatch):
+    original = host_merge.build_host_result
+
+    def with_large_adapter_observation(**kwargs):
+        result = original(**kwargs)
+        result['steps'][0]['observed'] = {'returncode': 0, 'stdout': 'adapter details ' * 10000}
+        return result
+
+    monkeypatch.setattr(host_merge, 'build_host_result', with_large_adapter_observation)
+    facade = HostFacade(config_for(tmp_path), provider=FakeProvider(),
+                        fakenet_client=FakeFakeNet(), windows_client=FakeWindows(),
+                        velo_client=FakeVelo())
+    result = facade.verify(COMMAND_ID)
+    assert result.get('error') is None
+    assert result['verdict'] == 'pass'
+    assert len(json.dumps(result).encode()) <= 65536
+    from fakenet.mcp.schemas import VerificationResult
+    VerificationResult.model_validate(result)
+    assert result['steps'][0]['observed']['summary']['returncode'] == 0
+    assert result['steps'][0]['observed']['raw_observation_ref'].endswith('/steps/0/observed')
+    raw = next(e for e in result['manifest']['entries'] if e.get('id') == 'unabridged-result')
+    raw_path = Path(raw['path'])
+    assert hashlib.sha256(raw_path.read_bytes()).hexdigest() == raw['sha256']
+    full = json.loads(raw_path.read_text())
+    assert full['steps'][0]['observed']['stdout'] == 'adapter details ' * 10000
+    assert [(s['id'], s['outcome'], s.get('reason_code')) for s in result['steps']] == [
+        (s['id'], s['outcome'], s.get('reason_code')) for s in full['steps']]
+    assert result['checks'] == full['checks']
+    assert result['conclusion'] == full['conclusion']
+    assert facade.verify(COMMAND_ID)['verdict'] == 'pass'
+    raw_path.write_text('{}')
+    assert facade.verify(COMMAND_ID)['error']['code'] == 'stale_result'
