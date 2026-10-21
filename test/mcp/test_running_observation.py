@@ -4,6 +4,7 @@ import hashlib
 import ipaddress
 import json
 import struct
+from pathlib import Path
 from datetime import datetime, timezone
 
 import pytest
@@ -251,3 +252,42 @@ def test_no_passive_scope_does_not_create_capture_or_skip_authorized_matrix(tmp_
     assert result['verdict']=='unknown'
     step=next(row for row in result['steps'] if row['id']=='host_running_observation')
     assert step['observed']['reason']=='passive_observation_not_authorized'
+
+
+def test_unroutable_ipv6_does_not_erase_verified_ipv4_path(tmp_path):
+    host, probe, receipt, capture = material(tmp_path)
+    probe['steps'][1]['route'] = None
+    baseline = json.loads(Path(receipt['probe']['path']).read_text())
+    baseline['steps'][1].update(route=None, send_completed=False, local_endpoint='')
+    receipt['probe'] = ref(tmp_path, 'unroutable-baseline.json', baseline)
+    receipt['capture'] = ref(tmp_path, 'only-ipv4.pcapng', pcap([
+        (T-34, frame('ipv4', '198.51.100.77', payload=b'baseline-nonce'))]))
+    result = evaluate(tmp_path, host, probe, receipt, capture)
+    assert result['value'] is None
+    assert result['families']['ipv4']['value'] is True
+    assert result['families']['ipv6']['value'] is None
+    assert {row['family'] for row in result['paths']} == {'ipv4', 'ipv6'}
+
+
+@pytest.mark.parametrize('family', ['ipv4', 'ipv6'])
+def test_missing_one_family_calibration_preserves_only_other_family(tmp_path, family):
+    host, probe, receipt, capture = material(tmp_path)
+    other = 'ipv6' if family == 'ipv4' else 'ipv4'
+    destination = '2001:db8::77' if other == 'ipv6' else '198.51.100.77'
+    receipt['capture'] = ref(tmp_path, 'one-family.pcapng', pcap([
+        (T-34, frame(other, destination, payload=b'baseline-nonce'))]))
+    result = evaluate(tmp_path, host, probe, receipt, capture)
+    assert result['value'] is None
+    assert result['families'][family]['value'] is None
+    assert result['families'][other]['value'] is True
+
+
+@pytest.mark.parametrize('problem', ['no_heartbeat', 'capture_loss', 'tampered_receipt'])
+def test_common_observation_failure_never_grants_family_pass(tmp_path, problem):
+    host, probe, receipt, capture = material(tmp_path)
+    if problem == 'no_heartbeat': capture = pcap()
+    elif problem == 'capture_loss': capture = pcap(drops=1)
+    else: receipt['capture']['sha256'] = '0' * 64
+    result = evaluate(tmp_path, host, probe, receipt, capture)
+    assert result['value'] is None
+    assert not any(row.get('value') is True for row in result.get('families', {}).values())

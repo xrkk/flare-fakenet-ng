@@ -169,9 +169,14 @@ def _raw_ref(ref):
     return raw
 
 
-def route_keys(probe):
+def route_keys(probe, family=None):
     result = {}
     for row in probe.get('steps') or []:
+        key = row.get('family')
+        if key not in ('ipv4', 'ipv6'):
+            raise ValueError('probe family unavailable')
+        if family is not None and key != family:
+            continue
         route = row.get('route')
         if not isinstance(route, dict) or not all(route.get(k) for k in ('source', 'interface', 'next_hop')):
             raise ValueError('probe route unavailable')
@@ -181,8 +186,9 @@ def route_keys(probe):
         if key in result and result[key] != route:
             raise ValueError('multiple paths in one family unsupported')
         result[key] = route
-    if set(result) != {'ipv4', 'ipv6'}:
-        raise ValueError('dual-stack path evidence incomplete')
+    required = {family} if family is not None else {'ipv4', 'ipv6'}
+    if set(result) != required:
+        raise ValueError('path evidence incomplete:' + str(family or 'dual-stack'))
     return result
 
 
@@ -257,24 +263,39 @@ def evaluate_capture(capture, probe, snapshot, calibration_ref, *, started, ende
         for row in baseline.get('steps') or []:
             if not before - 60 <= _time(row['started']) <= _time(row['ended']) <= before:
                 raise ValueError('calibration probe time invalid')
-        routes = route_keys(probe)
-        if route_keys(baseline) != routes:
-            raise ValueError('calibration guest routes changed')
         old = parse_capture(_raw_ref(receipt['capture']))
-        for family, route in routes.items():
-            rows = [row for row in baseline['steps'] if row.get('family') == family and row.get('send_completed') is True]
-            matching = [p for p in old['packets'] if p['mac'] in macs and
-                        p['interface'] == nic['interface'] and p['family'] == family and
-                        p['source'] == route['source'] and p['destination'] in DESTINATIONS and
-                        baseline.get('nonce', '').encode() in p['payload'] and any(
-                            row.get('destination') == p['destination'] and row.get('port') == p['destination_port'] and
-                            str(row.get('local_endpoint', '')).endswith(':' + str(p['source_port'])) and
-                            _time(row['started']) <= p['time'] <= _time(row['ended']) for row in rows)]
-            if not matching or not baseline.get('nonce'):
-                raise ValueError('same-path outbound calibration missing:' + family)
-            result['paths'].append({'family': family, 'interface': nic['interface'],
-                                    'route': route, 'visible': True})
-        result.update(value=True, reason='scoped_running_window_no_egress_observed')
+        # Common identity, capture and loss checks qualify neither family on
+        # failure. Once those pass, evaluate each actual path independently;
+        # a missing IPv6 route must not erase a calibrated IPv4 observation.
+        families = {}
+        for family in ('ipv4', 'ipv6'):
+            path = {'family': family, 'interface': nic['interface'],
+                    'value': None, 'visible': False}
+            try:
+                route = route_keys(probe, family)[family]
+                if route_keys(baseline, family)[family] != route:
+                    raise ValueError('calibration guest routes changed:' + family)
+                rows = [row for row in baseline['steps'] if row.get('family') == family and row.get('send_completed') is True]
+                matching = [p for p in old['packets'] if p['mac'] in macs and
+                            p['interface'] == nic['interface'] and p['family'] == family and
+                            p['source'] == route['source'] and p['destination'] in DESTINATIONS and
+                            baseline.get('nonce', '').encode() in p['payload'] and any(
+                                row.get('destination') == p['destination'] and row.get('port') == p['destination_port'] and
+                                str(row.get('local_endpoint', '')).endswith(':' + str(p['source_port'])) and
+                                _time(row['started']) <= p['time'] <= _time(row['ended']) for row in rows)]
+                if not matching or not baseline.get('nonce'):
+                    raise ValueError('same-path outbound calibration missing:' + family)
+                path.update(value=True, visible=True, route=route,
+                            reason='scoped_running_window_no_egress_observed')
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                path['reason'] = str(exc)
+            families[family] = path
+            result['paths'].append(dict(path))
+        result['families'] = families
+        if all(path['value'] is True for path in families.values()):
+            result.update(value=True, reason='scoped_running_window_no_egress_observed')
+        else:
+            result['reason'] = 'one_or_more_family_paths_unconfirmed'
     except (ValueError, OSError, KeyError, TypeError, AttributeError) as exc:
         result['reason'] = str(exc)
     return result

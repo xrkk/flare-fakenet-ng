@@ -202,3 +202,24 @@ def test_sample_launcher_image_hash_is_not_required_to_equal_probe_binary():
     assert result['checks']['sample_path_equivalent']['value'] is True
     assert result['verdict'] == 'unknown'
     assert result['checks']['sample_path_equivalent']['value'] is True
+
+
+def test_matrix_uses_only_its_verified_family_without_qualifying_other_family():
+    expected = {key: value for key, value in host_probe.expected_steps(bypass_udp=(443,)).items()
+                if key in ('ipv4_udp_443', 'ipv6_udp_443')}
+    instance = {'pid': 1, 'creation_ticks': 2, 'script_hash': 'fixed-hash'}
+    rows = []
+    for step in expected.values():
+        source = '192.0.2.10' if step['family'] == 'ipv4' else '2001:db8::10'
+        rows.append(dict(step, received='', sent=8, send_completed=True,
+                         local_endpoint=source + ':40000', route={'source': source,
+                         'interface': '1', 'next_hop': 'gateway'}, probe_pid=1,
+                         probe_birth_ticks=2, script_hash='fixed-hash'))
+    observation = {'value': None, 'families': {'ipv4': {'value': True}, 'ipv6': {'value': None}}}
+    probe = dict(matrix_run=True, instance=instance, steps=rows, running_observation=observation)
+    result = {row['id']: row for row in host_merge._matrix_steps(probe, expected)}
+    assert result['ipv4_udp_443']['outcome'] == 'pass'
+    assert result['ipv6_udp_443']['outcome'] == 'unknown'
+    assert probe['running_observation']['value'] is None
+    observation['value'] = False
+    assert not any(row['outcome'] == 'pass' for row in host_merge._matrix_steps(probe, expected))

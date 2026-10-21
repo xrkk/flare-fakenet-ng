@@ -162,9 +162,15 @@ def _matrix_steps(probe, expected_map, boundary_verified=None,
         if any(row.get(k) != expected.get(k) for k in ('kind', 'family', 'destination', 'port')):
             execution_verified = False
         observation_report = probe.get('running_observation') or {}
+        containment = observation_report.get('value')
+        if containment is None:
+            family = (observation_report.get('families') or {}).get(
+                expected.get('family')) or {}
+            if family.get('value') is True:
+                containment = True
         outcome, reason = host_probe.classify_step(
             expected, row, expected.get('expected'),
-            containment_observed=observation_report.get('value'),
+            containment_observed=containment,
             execution_verified=execution_verified)
         if any(leak.get('family') == expected.get('family') and
                leak.get('destination') == expected.get('destination') and
