@@ -562,3 +562,43 @@ def test_host_facade_passes_distinct_observer_context_and_reuses_cache(tmp_path)
     assert second['verdict'] == 'pass'
     assert fake.calls.count('verify_egress') == before
     assert provider.contexts[-1][1] == 'pre'
+
+
+def test_preprobe_failure_replays_without_permanent_target_lock(tmp_path):
+    from fakenet.mcp.host_stdio import HostFacadeError
+
+    class UnavailableGuest(FakeFakeNet):
+        def list_tools(self, timeout=None):
+            raise HostFacadeError('guest_transport_error', 'guest MCP HTTP status 400')
+
+    windows = FakeWindows()
+    facade = HostFacade(config_for(tmp_path), provider=FakeProvider(),
+                        fakenet_client=UnavailableGuest(), windows_client=windows,
+                        velo_client=FakeVelo())
+    first = facade.verify(COMMAND_ID)
+    assert first['error']['code'] == 'guest_transport_error'
+    assert windows.calls == 0
+    record = facade.state.load(COMMAND_ID)
+    assert facade.state.find_active_target(record['target_key']) is None
+    assert facade.verify(COMMAND_ID) == first
+    other = facade.verify('55555555-6666-4777-8888-999999999999')
+    assert other['error']['code'] == 'guest_transport_error'
+    assert windows.calls == 0
+
+
+def test_windows_submission_timeout_keeps_target_owned(tmp_path):
+    from fakenet.mcp.host_stdio import HostFacadeError
+
+    class TimedOutWindows(FakeWindows):
+        def probe(self, script, timeout=None):
+            raise HostFacadeError('windows_timeout', 'submission outcome unknown')
+
+    facade = HostFacade(config_for(tmp_path), provider=FakeProvider(),
+                        fakenet_client=FakeFakeNet(), windows_client=TimedOutWindows(),
+                        velo_client=FakeVelo())
+    first = facade.verify(COMMAND_ID)
+    assert first['error']['code'] == 'windows_timeout'
+    record = facade.state.load(COMMAND_ID)
+    assert facade.state.find_active_target(record['target_key']) is not None
+    other = facade.verify('55555555-6666-4777-8888-999999999999')
+    assert other['error']['code'] == 'ownership_unknown'

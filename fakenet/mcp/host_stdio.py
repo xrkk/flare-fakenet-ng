@@ -722,6 +722,10 @@ class HostFacade:
                     record['command_id'], 'stale_result',
                     'a referenced evidence file changed',
                     record=record, request=record.get('request'))
+        if record.get('remote_probe_started') is False and document.get('error'):
+            # A terminal pre-dispatch failure cannot qualify any environment.
+            # Its hash-checked result is stable and needs no new remote probe.
+            return document
         final_status = record.get('final_status')
         if not isinstance(final_status, dict):
             return self._error_result(
@@ -1036,10 +1040,28 @@ class HostFacade:
             observed['reason'] = 'final_read_failed'
             return None, observed
 
+    def _finish_no_probe_failure(self, record, result, host=None):
+        if record.get('remote_probe_started') is not False:
+            return result
+        result['lifecycle']['state'] = 'failed'
+        evidence_dir = self.output_root / 'verifications' / record['verification_id']
+        if host is not None:
+            fact = _atomic_json(evidence_dir / 'host-provider.json', host)
+            entry = dict(fact, side='host', kind='host-provider')
+            result['manifest']['entries'] = [entry]
+            result['manifest']['sha256'] = _sha([entry])
+        result['artifact'] = _atomic_json(evidence_dir / 'failure-result.json', result)
+        stored = _atomic_json(evidence_dir / 'result.json', result)
+        record.update(stage='completed', result_path=stored['path'],
+                      result_sha256=stored['sha256'])
+        self.state.update(record['command_id'], record)
+        return result
+
     def _run(self, record, auth):
         command_id = record['command_id']
         verification_id = record['verification_id']
         record['stage'] = 'running'
+        record['remote_probe_started'] = False
         self.state.update(command_id, record)
         started_monotonic = time.monotonic()
         scope = auth['scope']
@@ -1116,6 +1138,10 @@ class HostFacade:
                 nonce, [], deadline_ms=max(1, int(identity_timeout * 1000)),
                 positive_enabled=False,
                 deadline_utc=identity_deadline_utc)
+            # Persist intent before handing any code to the remote executor.
+            # A timeout from this point retains target ownership.
+            record['remote_probe_started'] = True
+            self.state.update(command_id, record)
             identity_result, identity_raw = windows.probe(
                 identity_script, timeout=identity_timeout)
             host_probe.validate_probe_result(
@@ -1443,7 +1469,8 @@ class HostFacade:
                 error['coverage']['matrix_not_run'] = [
                     {'id': step.get('id'), 'reason': step.get('reason_code')}
                     for step in partial if step.get('outcome') == 'not_run']
-            return error
+            return self._finish_no_probe_failure(
+                record, error, locals().get('host'))
         except Exception as exc:  # noqa: BLE001 - preserve the original
             record['stage'] = 'failed'
             record['failure'] = {'code': 'internal_error',
