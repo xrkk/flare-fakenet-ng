@@ -31,6 +31,11 @@ ID against `manifest.entries`; the entry retains the original path and SHA-256.
 Both public checks and helper input retain every value and evidence reference,
 and all steps, decisions and full disk evidence remain available.
 
+Calibration receipts record the actual host capture interval. Packet timing is
+checked in that host clock domain, alongside the exact probe nonce and socket
+tuple; the VM clock need not be synchronized to the host. Legacy receipts retain
+their original timestamp checks and are never silently rewritten.
+
 ## Fixed inputs and trust boundary
 
 - The config declares the FakeNet endpoint/controller, Windows-MCP endpoint,

@@ -261,8 +261,28 @@ def evaluate_capture(capture, probe, snapshot, calibration_ref, *, started, ende
                 raise ValueError('calibration destination invalid')
         script_hash = _sha(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode())
         host_probe.validate_probe_result(baseline, [row['id'] for row in planned], nonce=payload.get('nonce'), expected_script_hash=script_hash, positive_required=False)
+        # PCAP timestamps and the recorder's capture bounds share the host
+        # clock. Guest wall-clock times do not: even a small VM clock offset
+        # can place its authenticated packet just before the reported Send.
+        # Keep exact nonce/tuple/context checks and use the actual host capture
+        # interval for new receipts, without inventing clock-offset tolerance.
+        capture_window = receipt.get('capture_window')
+        if capture_window is not None:
+            if not isinstance(capture_window, dict):
+                raise ValueError('calibration capture window invalid')
+            window_start = capture_window.get('started')
+            window_end = capture_window.get('ended')
+            if (type(window_start) not in (int, float) or
+                    type(window_end) not in (int, float) or
+                    not before - 60 <= window_start <= window_end <= before):
+                raise ValueError('calibration capture window invalid')
         for row in baseline.get('steps') or []:
-            if not before - 60 <= _time(row['started']) <= _time(row['ended']) <= before:
+            step_start, step_end = _time(row['started']), _time(row['ended'])
+            if capture_window is None:
+                valid = before - 60 <= step_start <= step_end <= before
+            else:
+                valid = 0 <= step_end - step_start <= 60
+            if not valid:
                 raise ValueError('calibration probe time invalid')
         old = parse_capture(_raw_ref(receipt['capture']))
         result['common_complete'] = True
@@ -289,7 +309,10 @@ def evaluate_capture(capture, probe, snapshot, calibration_ref, *, started, ende
                             baseline.get('nonce', '').encode() in p['payload'] and any(
                                 row.get('destination') == p['destination'] and row.get('port') == p['destination_port'] and
                                 str(row.get('local_endpoint', '')).endswith(':' + str(p['source_port'])) and
-                                _time(row['started']) <= p['time'] <= _time(row['ended']) for row in rows)]
+                                ((window_start <= p['time'] <= window_end)
+                                 if capture_window is not None else
+                                 (_time(row['started']) <= p['time'] <= _time(row['ended'])))
+                                for row in rows)]
                 if not matching or not baseline.get('nonce'):
                     raise ValueError('same-path outbound calibration missing:' + family)
                 path.update(value=True, visible=True, route=route,

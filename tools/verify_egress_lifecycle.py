@@ -134,6 +134,7 @@ def calibrate(facade):
            'expires_at':datetime.fromtimestamp(now+3600,timezone.utc).isoformat(),
            'topology':running_observation.topology(host),'capture_identity':capture.identity,
            'capture':{'path':str(capture.path),'sha256':completion['sha256']},
+           'capture_window':{key:completion[key] for key in ('started','ended')},
            'guest_status':save(directory/'stopped-status.json',post),
            'probe':save(directory/'probe.json',probe),'probe_payload':payload,
            'probe_template_sha256':host_probe.script_sha256(host_probe.PROBE_TEMPLATE)}

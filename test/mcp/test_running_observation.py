@@ -371,3 +371,32 @@ def test_approved_capture_start_failure_closes_own_process(tmp_path, monkeypatch
         capture.start()
     assert proc.poll() is not None and capture.log.closed
     assert capture.finish()['complete'] is False
+
+
+@pytest.mark.parametrize('offset', [-5.0, 5.0])
+def test_calibration_uses_host_capture_window_with_guest_clock_offset(tmp_path, offset):
+    host, probe, receipt, capture = material(tmp_path)
+    receipt['capture_window'] = {'started': T-40, 'ended': T-30.5}
+    base = json.loads(Path(receipt['probe']['path']).read_text())
+    for row in base['steps']:
+        row.update(started=stamp(T-35+offset), ended=stamp(T-32+offset))
+    base['completed_at'] = stamp(T-31+offset)
+    receipt['probe'] = ref(tmp_path, 'offset-probe.json', base)
+    result = evaluate(tmp_path, host, probe, receipt, capture)
+    assert result['value'] is True, result
+    assert all(row['visible'] for row in result['paths'])
+
+
+@pytest.mark.parametrize('window', [
+    {'started': T-33, 'ended': T-30.5},  # packet precedes the actual host capture
+    {'started': T-40, 'ended': T-35},    # packet follows the actual host capture
+    {'started': T-30.5, 'ended': T-40},
+    {'started': float('nan'), 'ended': T-30.5},
+    {'started': True, 'ended': T-30.5},
+    {'started': T-4000, 'ended': T-30.5},
+    {'started': T-40},
+])
+def test_calibration_host_window_cannot_qualify_unbound_packets(tmp_path, window):
+    host, probe, receipt, capture = material(tmp_path)
+    receipt['capture_window'] = window
+    assert evaluate(tmp_path, host, probe, receipt, capture)['value'] is None
