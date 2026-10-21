@@ -1570,11 +1570,6 @@ class HostFacade:
                 redirect_all=parsed_config['redirect_all'],
                 random_tcp_port=random_tcp, random_udp_port=random_udp,
                 nonce=nonce, listener_map=parsed_config['listener_map'])
-            final_consistency, final_observed = self._final_consistency(
-                fakenet, config_name, status, config_record, host, identity,
-                finish_deadline - ((6 if capture.promiscuous else 2) if capture is not None else 0), scope, command_id=command_id,
-                challenge=record['final_challenge'],
-                initial_ipv6=probe_result.get('ipv6_exposure'))
             if capture is not None:
                 capture_end = capture.finish()
                 if capture.path.is_file():
@@ -1603,6 +1598,14 @@ class HostFacade:
                         'side': 'host', 'path': calibration_ref.get('path'),
                         'sha256': calibration_ref.get('sha256'), 'kind': 'visibility-calibration'})
                 capture = None
+            # The bounded packet window covers the actual matrix and its control
+            # response. Release it before the final read-only OS inventory so
+            # that read cannot exhaust capture time or its drain reserve.
+            final_consistency, final_observed = self._final_consistency(
+                fakenet, config_name, status, config_record, host, identity,
+                finish_deadline, scope, command_id=command_id,
+                challenge=record['final_challenge'],
+                initial_ipv6=probe_result.get('ipv6_exposure'))
             probe_result['running_observation'] = capture_report
             probe_result['final_consistency'] = final_consistency
             final_host_snapshot = final_observed.pop('host_snapshot', None)

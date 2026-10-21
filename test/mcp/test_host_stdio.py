@@ -875,3 +875,37 @@ def test_repeated_check_provenance_fits_single_response(tmp_path, monkeypatch):
     assert replay['checks'] == result['checks']
     Path(next(iter(originals.values()))[0]).write_text('changed evidence')
     assert facade.verify(COMMAND_ID)['error']['code'] == 'stale_result'
+
+
+def test_bounded_capture_finishes_before_readonly_final_inventory(tmp_path):
+    """The 35-second packet observer need not wait on a slow final OS read."""
+    events = []
+    config = config_for(tmp_path)
+    config['passive_observation'] = {'enabled': True}
+    scope_path = Path(config['probe_authorization']['source_ref'])
+    scope = json.loads(scope_path.read_text())
+    scope['actions'].append('passive_observe')
+    scope_path.write_text(json.dumps(scope))
+    config['probe_authorization']['source_sha256'] = hashlib.sha256(scope_path.read_bytes()).hexdigest()
+    class Capture:
+        promiscuous = False
+        def __init__(self, directory, snapshot, **kwargs):
+            self.path = directory / 'absent-fixture.pcapng'
+            self.identity = {}
+        def start(self):
+            events.append('capture-start')
+        def finish(self):
+            events.append('capture-finish')
+            return {'complete': False, 'path': str(self.path), 'identity': {},
+                    'started': 1, 'ended': 2}
+    class Facade(HostFacade):
+        def _final_consistency(self, *args, **kwargs):
+            events.append('final-inventory')
+            return super()._final_consistency(*args, **kwargs)
+    facade = Facade(config, provider=FakeProvider(), fakenet_client=FakeFakeNet(),
+                    windows_client=FakeWindows(), velo_client=FakeVelo(),
+                    capture_factory=Capture)
+    result = facade.verify(COMMAND_ID)
+    assert result['error'] is None
+    assert events == ['capture-start', 'capture-finish', 'final-inventory']
+    assert result['verdict'] == 'unknown'  # absent capture stays unknown
