@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 import sys
 
+import pytest
+
 from fakenet.mcp import host_probe, host_merge
 from fakenet.mcp.host_stdio import HostFacade
 
@@ -558,7 +560,7 @@ def test_host_facade_passes_distinct_observer_context_and_reuses_cache(tmp_path)
     second = facade.verify(COMMAND_ID)
     assert second['verdict'] == 'unknown'
     assert fake.calls.count('verify_egress') == before
-    assert provider.contexts[-1][1] == 'pre'
+    assert provider.contexts[-1][1] == 'final'  # replay validates full current facts
 
 
 def test_preprobe_failure_replays_without_permanent_target_lock(tmp_path):
@@ -715,3 +717,86 @@ def test_listener_usessl_no_keeps_plain_http_even_with_legacy_ssl_yes():
         '[HTTP]\nEnabled = True\nPort = 80\nListener = HTTPListener\n'
         'UseSSL = No\nSSL = Yes\n')
     assert parsed['listener_map'][80] == 'httplistener'
+
+
+@pytest.mark.parametrize('change', ['name', 'sha256', 'missing'])
+def test_actual_loaded_config_must_match_read_configuration_before_probe(tmp_path, change):
+    class OtherConfig(FakeFakeNet):
+        def get_status(self, timeout=None):
+            value = super().get_status(timeout)
+            if change == 'missing':
+                value.pop('config_identity')
+            else:
+                value['config_identity'][change] = 'other.ini' if change == 'name' else 'd' * 64
+            return value
+    windows = FakeWindows()
+    result = HostFacade(config_for(tmp_path), provider=FakeProvider(),
+                        fakenet_client=OtherConfig(), windows_client=windows,
+                        velo_client=FakeVelo()).verify(COMMAND_ID)
+    assert result['error']['code'] == 'state_conflict'
+    assert windows.calls == 0
+
+
+@pytest.mark.parametrize('change', ['active_config', 'read_config', 'nic', 'session'])
+def test_replay_revalidates_actual_config_network_and_execution_context(tmp_path, change):
+    class CurrentConfig(FakeFakeNet):
+        changed = False
+        def get_status(self, timeout=None):
+            value = super().get_status(timeout)
+            if self.changed and change == 'active_config':
+                value['config_identity']['sha256'] = 'd' * 64
+            return value
+        def read_config(self, name, timeout=None):
+            value = super().read_config(name, timeout)
+            if self.changed and change == 'read_config': value['sha256'] = 'd' * 64
+            return value
+    class CurrentProvider(FakeProvider):
+        changed = False
+        def snapshot(self, deadline=None):
+            value = super().snapshot(deadline)
+            if self.changed and change == 'nic': value['vmx']['nics'][0]['interface'] = 'vmnet8'
+            return value
+    class CurrentWindows(FakeWindows):
+        changed = False
+        def probe(self, script, timeout=None):
+            value, raw = super().probe(script, timeout)
+            if self.changed and change == 'session': value['identity']['session'] = 7
+            return value, raw
+    fakenet, provider, windows = CurrentConfig(), CurrentProvider(), CurrentWindows()
+    facade = HostFacade(config_for(tmp_path), provider=provider,
+                        fakenet_client=fakenet, windows_client=windows, velo_client=FakeVelo())
+    first = facade.verify(COMMAND_ID)
+    assert first['error'] is None
+    fakenet.changed = provider.changed = windows.changed = True
+    replay = facade.verify(COMMAND_ID)
+    assert replay['error']['code'] == 'stale_result'
+    assert fakenet.calls.count('verify_egress') == 1
+
+
+@pytest.mark.parametrize('matches', [False, True])
+def test_modified_analysis_config_requires_matching_guest_subset(tmp_path, matches):
+    config = config_for(tmp_path)
+    config['fakenet_mcp']['config_name'] = 'sample-analysis.ini'
+    source = Path(config['probe_authorization']['source_ref'])
+    scope = json.loads(source.read_text())
+    scope['objects']['config_name'] = 'sample-analysis.ini'
+    source.write_text(json.dumps(scope))
+    config['probe_authorization']['source_sha256'] = hashlib.sha256(source.read_bytes()).hexdigest()
+    class AnalysisConfig(FakeFakeNet):
+        def get_status(self, timeout=None):
+            value = super().get_status(timeout)
+            value['config_identity']['name'] = 'sample-analysis.ini'
+            return value
+        def verify_egress(self, command_id, expected_state_version, request, timeout=None):
+            value = super().verify_egress(command_id, expected_state_version, request, timeout)
+            if matches:
+                value['verification']['bindings']['config_identity']['name'] = 'sample-analysis.ini'
+            return value
+    client = AnalysisConfig()
+    result = HostFacade(config, provider=FakeProvider(), fakenet_client=client,
+                        windows_client=FakeWindows(), velo_client=FakeVelo()).verify(COMMAND_ID)
+    if matches:
+        assert result['error'] is None and result['coverage']['matrix_executed'] == 30
+        assert result['bindings']['config_identity']['name'] == 'sample-analysis.ini'
+    else:
+        assert result['error']['code'] == 'state_conflict'

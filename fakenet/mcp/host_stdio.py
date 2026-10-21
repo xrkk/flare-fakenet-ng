@@ -728,9 +728,9 @@ class HostFacade:
                     record['command_id'], 'stale_result',
                     'a referenced evidence file changed',
                     record=record, request=record.get('request'))
-        if record.get('remote_probe_started') is False and document.get('error'):
-            # A terminal pre-dispatch failure cannot qualify any environment.
-            # Its hash-checked result is stable and needs no new remote probe.
+        if document.get('error') and document.get('verdict') != 'pass':
+            # A hash-checked terminal error never grants qualification.
+            # Preserve its original error without re-running any probes.
             return document
         if document.get('contract_version') != egress_contract.CONTRACT_VERSION:
             return self._error_result(record['command_id'], 'stale_result',
@@ -741,41 +741,26 @@ class HostFacade:
                 record['command_id'], 'stale_result',
                 'completed record has no final status snapshot',
                 record=record, request=record.get('request'))
-        try:
-            current_status = self._fakenet().get_status(timeout=5)
-            self._set_observer_context(
-                record['command_id'], 'pre', secrets.token_hex(16))
-            current_host = self._host_snapshot(time.monotonic() + 5)
-        except Exception as exc:  # noqa: BLE001 - current state unknown
+        binding = record.get('reuse_binding')
+        if not isinstance(binding, dict) or any(
+                not isinstance(binding.get(key), dict)
+                for key in ('config', 'host', 'identity')):
             return self._error_result(
                 record['command_id'], 'stale_result',
-                'current state is unavailable: %r' % exc,
+                'old result has no complete current-state reuse binding',
                 record=record, request=record.get('request'))
-        for key in ('run_id', 'controller', 'state_version'):
-            if current_status.get(key) != final_status.get(key):
-                return self._error_result(
-                    record['command_id'], 'stale_result',
-                    'current guest %s differs from the completed result' % key,
-                    record=record, request=record.get('request'))
-        if _normal_uuid((current_host.get('vmx') or {}).get('uuid')) !=                 _normal_uuid((record.get('final_host') or {}).get('vmx_uuid')):
+        self._nonce_for_action = record['probe_nonce']
+        self._command_id_for_observer = record['command_id']
+        consistent, detail = self._final_consistency(
+            self._fakenet(), self.config['fakenet_mcp']['config_name'],
+            final_status, binding['config'], binding['host'],
+            binding['identity'], time.monotonic() + 15, auth['scope'],
+            command_id=record['command_id'], challenge=secrets.token_hex(16))
+        if consistent is not True:
             return self._error_result(
                 record['command_id'], 'stale_result',
-                'current VM identity differs from the completed result',
-                record=record, request=record.get('request'))
-        for key in ('network_type', 'boundary', 'nat_active',
-                    'bridge_active'):
-            if current_host.get(key) != (record.get(
-                    'final_host') or {}).get(key):
-                return self._error_result(
-                    record['command_id'], 'stale_result',
-                    'current network %s differs from the completed result' %
-                    key, record=record, request=record.get('request'))
-        current_policy = (current_host.get('policy') or {}).get('identity')
-        if current_policy != (record.get('final_host') or {}).get(
-                'observer_policy_identity'):
-            return self._error_result(
-                record['command_id'], 'stale_result',
-                'current observer policy differs from the completed result',
+                'current configuration, network or execution context is not '
+                'the verified binding: ' + str(detail.get('reason')),
                 record=record, request=record.get('request'))
         return document
 
@@ -916,6 +901,20 @@ class HostFacade:
                 'probe scope changed after the command was admitted')
         return auth
 
+    @staticmethod
+    def _assert_loaded_config(status, config_record, config_name):
+        active = status.get('config_identity')
+        digest = config_record.get('sha256')
+        if (not isinstance(active, dict) or
+                config_record.get('name') != config_name or
+                active.get('name') != config_name or
+                not isinstance(digest, str) or
+                not re.fullmatch(r'[0-9a-fA-F]{64}', digest) or
+                str(active.get('sha256') or '').lower() != digest.lower()):
+            raise HostFacadeError(
+                'state_conflict',
+                'the read configuration is not the actual loaded configuration')
+
     def _guest_state(self, fakenet, config_name, deadline):
         if self._remaining(deadline, 20) <= 0:
             raise HostFacadeError('deadline_exceeded',
@@ -924,6 +923,7 @@ class HostFacade:
         status = fakenet.get_status(timeout=timeout)
         timeout = self._budget(deadline, 20)
         config = fakenet.read_config(config_name, timeout=timeout)
+        self._assert_loaded_config(status, config, config_name)
         return status, config
 
     def _assert_guest_unchanged(self, fakenet, config_name, status,
@@ -935,17 +935,20 @@ class HostFacade:
         status2 = fakenet.get_status(timeout=timeout)
         timeout = self._budget(deadline, 15)
         config2 = fakenet.read_config(config_name, timeout=timeout)
+        self._assert_loaded_config(status2, config2, config_name)
         expected = {
             'run_id': status.get('run_id'),
             'controller': status.get('controller'),
             'state_version': status.get('state_version'),
             'config_sha256': config_record.get('sha256'),
+            'config_identity': status.get('config_identity'),
         }
         observed = {
             'run_id': status2.get('run_id'),
             'controller': status2.get('controller'),
             'state_version': status2.get('state_version'),
             'config_sha256': config2.get('sha256'),
+            'config_identity': status2.get('config_identity'),
         }
         if observed != expected:
             raise HostFacadeError(
@@ -985,6 +988,13 @@ class HostFacade:
             self._recheck_action('host_provider')
             status2 = fakenet.get_status(timeout=self._budget(finish_deadline, 20))
             config2 = fakenet.read_config(config_name, timeout=self._budget(finish_deadline, 20))
+            self._assert_loaded_config(status2, config2, config_name)
+            if status2.get('state') != 'healthy':
+                observed['reason'] = 'engine_not_healthy'
+                return False, observed
+            if status2.get('config_identity') != initial_status.get('config_identity'):
+                observed['reason'] = 'loaded_config_changed'
+                return False, observed
             if command_id is not None and challenge is not None:
                 self._set_observer_context(command_id, 'final', challenge)
             host2 = self._host_snapshot(finish_deadline)
@@ -1038,7 +1048,7 @@ class HostFacade:
                  'vm_uuid', 'boot_id')}
             for key in ('account', 'sid', 'session', 'vm_uuid', 'boot_id',
                         'token_integrity_level', 'policy_scope',
-                        'protocol_class'):
+                        'protocol_class', 'image_path', 'image_sha256'):
                 if identity.get(key) != identity2.get(key):
                     observed['reason'] = 'windows_identity_changed:%s' % key
                     return False, observed
@@ -1421,6 +1431,15 @@ class HostFacade:
                     'state_conflict',
                     'guest state version changed by more than this operation')
             status, config_record = post_status, post_config
+            if fakenet_ok:
+                guest_bindings = guest_result.get('bindings') or {}
+                self._assert_loaded_config(guest_bindings, config_record, config_name)
+                for key in ('run_id', 'vm_epoch', 'policy_identity',
+                            'execution_context_identity'):
+                    if guest_bindings.get(key) != request.get(key):
+                        raise HostFacadeError(
+                            'state_conflict',
+                            'guest evidence binding differs from current request: ' + key)
             self._recheck_action('velo_probe')
             velo_timeout = self._remaining(action_deadline, 15)
             if velo_timeout <= 0:
@@ -1551,6 +1570,11 @@ class HostFacade:
                     evidence_dir / 'output-limit.json')
                 self.state.update(command_id, record)
                 return error
+            record['reuse_binding'] = {
+                'config': config_record,
+                'host': final_host_snapshot or host,
+                'identity': identity,
+            } if final_consistency is True else None
             record['final_status'] = status
             record['final_host'] = {
                 'vmx_uuid': (host.get('vmx') or {}).get('uuid'),
