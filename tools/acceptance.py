@@ -1058,6 +1058,7 @@ def judge_v2(root, plan_path, results_dir, output=None):
     cleanup_complete = bool(cleanup_rows) and all(
         row.get('complete') is True and row.get('source') == 'adapter'
         for row in cleanup_rows)
+    blocked_count = sum(1 for row in outcomes if row['status'] == 'blocked')
     summary = {
         'schema': SUMMARY_V2,
         'candidate': plan['candidate'],
@@ -1067,7 +1068,8 @@ def judge_v2(root, plan_path, results_dir, output=None):
         'checks': {'required': len(plan['required_cases']), 'passed': len(passed),
                    'failed': len(failed), 'unverified': len(unverified)},
         'cases': outcomes,
-        'cleanup': {'complete': cleanup_complete},
+        'cleanup': {'complete': cleanup_complete, 'evaluated': len(cleanup_rows),
+                    'blocked': blocked_count},
         'verdict': verdict,
         'full_functional_pass': full_functional_pass,
         'unverified': unverified,
