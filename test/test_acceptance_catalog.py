@@ -77,6 +77,20 @@ class JudgmentTests(unittest.TestCase):
         self.assertNotIn('EGRESS-NEW-DEFERRED', value['required_suites'])
         self.assertFalse(value['required_checks'])
 
+    def test_catalog_v2_defines_unique_cases_without_cycles(self):
+        catalog = acceptance.read_catalog(ROOT)
+        self.assertEqual('fakenet.acceptance-catalog.v2', catalog['schema'])
+        self.assertEqual(25, len(catalog['suites']))
+        cases = acceptance.all_cases(catalog)
+        self.assertTrue(cases)
+        self.assertEqual(len(cases), len({row['id'] for row in cases}))
+        self.assertTrue(catalog['exclusions'])
+        by_suite = {row['id']: row for row in catalog['suites']}
+        self.assertTrue(by_suite['GUI-POLICY']['cases'])
+        self.assertEqual([], by_suite['MCP-RELEASE']['cases'])
+        self.assertEqual([], by_suite['MCP-SCENARIOS']['cases'])
+        self.assertEqual([], by_suite['EGRESS-NEW-DEFERRED']['cases'])
+
 
 class SourceBoundReceiptTests(unittest.TestCase):
     def setUp(self):

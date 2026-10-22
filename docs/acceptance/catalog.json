@@ -1,6 +1,6 @@
 {
-  "schema": "fakenet.acceptance-catalog.v1",
-  "scope": "Existing Windows/Linux product facilities; new egress interface deferred.",
+  "schema": "fakenet.acceptance-catalog.v2",
+  "scope": "Existing Windows/Linux product facilities; GUI/100/150 and the new egress interface are excluded; native adapters remain blocked in S1.",
   "suites": [
     {
       "id": "CORE-UNIT",
@@ -19,7 +19,492 @@
         "参见 tools/build_gui_vm_package_wine.py 与 tools/build_fakenetng_mcp_wine.py 的正式选择器"
       ],
       "required_for_full": true,
-      "oracle_status": "existing"
+      "oracle_status": "existing",
+      "disposition": "keep",
+      "disposition_basis": "保留非GUI核心及直接必要设施自测; GUI模块按用户范围排除.",
+      "s1_note": "S1 保留非GUI模块; GUI模型/窗口/校验模块按用户范围排除, 不进入full.",
+      "cases": [
+        {
+          "id": "CORE-TLSHELLO",
+          "suite_id": "CORE-UNIT",
+          "title": "TLS ClientHello 合成字节解析",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "module": "test/test_tlshello.py"
+          },
+          "steps": [
+            "pytest --collect-only -q test/test_tlshello.py",
+            "run the exact collected node IDs with pytest --junitxml",
+            "judge JUnit against the planned node IDs"
+          ],
+          "expected": {
+            "positive": "all collected nodes have exactly one passing result",
+            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "interpreter exists",
+            "run directory is writable"
+          ],
+          "timeout": 300,
+          "cleanup": "only pytest temp files inside this run directory; no external resource owned",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": true,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test_tlshello.py",
+            "fakenet/listeners/DomainEgressRelay.py"
+          ]
+        },
+        {
+          "id": "CORE-DUALPCAP-WRITER",
+          "suite_id": "CORE-UNIT",
+          "title": "双 PCAP writer 临时文件/BytesIO 合同",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "module": "test/test_dual_pcap_writer.py"
+          },
+          "steps": [
+            "pytest --collect-only -q test/test_dual_pcap_writer.py",
+            "run the exact collected node IDs with pytest --junitxml",
+            "judge JUnit against the planned node IDs"
+          ],
+          "expected": {
+            "positive": "all collected nodes have exactly one passing result",
+            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "interpreter exists",
+            "run directory is writable"
+          ],
+          "timeout": 300,
+          "cleanup": "only pytest temp files inside this run directory; no external resource owned",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": true,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test_dual_pcap_writer.py",
+            "fakenet/diverters/pcapwriter.py"
+          ]
+        },
+        {
+          "id": "CORE-ACCEPTANCE-SELFTEST",
+          "suite_id": "CORE-UNIT",
+          "title": "旧 acceptance 判定器自测",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "module": "test/test_acceptance_catalog.py"
+          },
+          "steps": [
+            "pytest --collect-only -q test/test_acceptance_catalog.py",
+            "run the exact collected node IDs with pytest --junitxml",
+            "judge JUnit against the planned node IDs"
+          ],
+          "expected": {
+            "positive": "all collected nodes have exactly one passing result",
+            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "interpreter exists",
+            "run directory is writable"
+          ],
+          "timeout": 300,
+          "cleanup": "only pytest temp files inside this run directory; no external resource owned",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": true,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test_acceptance_catalog.py",
+            "tools/acceptance.py",
+            "docs/acceptance/catalog.json"
+          ]
+        },
+        {
+          "id": "CORE-REGRESSION-SELFTEST",
+          "suite_id": "CORE-UNIT",
+          "title": "新 acceptance 回归设施自测",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "module": "test/test_acceptance_regression.py"
+          },
+          "steps": [
+            "pytest --collect-only -q test/test_acceptance_regression.py",
+            "run the exact collected node IDs with pytest --junitxml",
+            "judge JUnit against the planned node IDs"
+          ],
+          "expected": {
+            "positive": "all collected nodes have exactly one passing result",
+            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "interpreter exists",
+            "run directory is writable"
+          ],
+          "timeout": 300,
+          "cleanup": "only pytest temp files inside this run directory; no external resource owned",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": true,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test_acceptance_regression.py",
+            "tools/acceptance.py"
+          ]
+        },
+        {
+          "id": "CORE-UPSTREAM-CONTRACT",
+          "suite_id": "CORE-UNIT",
+          "title": "原 test.py 退出/名单/SMTP 离线合同",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "module": "test/test_upstream_runner_contract.py"
+          },
+          "steps": [
+            "pytest --collect-only -q test/test_upstream_runner_contract.py",
+            "run the exact collected node IDs with pytest --junitxml",
+            "judge JUnit against the planned node IDs"
+          ],
+          "expected": {
+            "positive": "all collected nodes have exactly one passing result",
+            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "interpreter exists",
+            "run directory is writable"
+          ],
+          "timeout": 300,
+          "cleanup": "only pytest temp files inside this run directory; no external resource owned",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": true,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test_upstream_runner_contract.py",
+            "test/test.py",
+            "test/template.ini"
+          ]
+        },
+        {
+          "id": "CORE-DIVERTER-OFFLINE",
+          "suite_id": "CORE-UNIT",
+          "title": "策略/裁决/进程改址离线单元",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "module": "test/test_egresspolicy.py"
+          },
+          "steps": [
+            "pytest --collect-only -q test/test_egresspolicy.py",
+            "run the exact collected node IDs with pytest --junitxml",
+            "judge JUnit against the planned node IDs"
+          ],
+          "expected": {
+            "positive": "all collected nodes have exactly one passing result",
+            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "interpreter exists",
+            "run directory is writable"
+          ],
+          "timeout": 300,
+          "cleanup": "only pytest temp files inside this run directory; no external resource owned",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test_egresspolicy.py"
+          ]
+        },
+        {
+          "id": "CORE-LISTENERS-OFFLINE",
+          "suite_id": "CORE-UNIT",
+          "title": "监听器健康/停止/代理离线单元",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "module": "test/test_listener_health.py"
+          },
+          "steps": [
+            "pytest --collect-only -q test/test_listener_health.py",
+            "run the exact collected node IDs with pytest --junitxml",
+            "judge JUnit against the planned node IDs"
+          ],
+          "expected": {
+            "positive": "all collected nodes have exactly one passing result",
+            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "interpreter exists",
+            "run directory is writable"
+          ],
+          "timeout": 300,
+          "cleanup": "only pytest temp files inside this run directory; no external resource owned",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test_listener_health.py"
+          ]
+        },
+        {
+          "id": "CORE-DNS-OFFLINE",
+          "suite_id": "CORE-UNIT",
+          "title": "DNS/域名策略离线单元",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "module": "test/test_dns_policy.py"
+          },
+          "steps": [
+            "pytest --collect-only -q test/test_dns_policy.py",
+            "run the exact collected node IDs with pytest --junitxml",
+            "judge JUnit against the planned node IDs"
+          ],
+          "expected": {
+            "positive": "all collected nodes have exactly one passing result",
+            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "interpreter exists",
+            "run directory is writable"
+          ],
+          "timeout": 300,
+          "cleanup": "only pytest temp files inside this run directory; no external resource owned",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test_dns_policy.py"
+          ]
+        },
+        {
+          "id": "CORE-PCAP-OFFLINE",
+          "suite_id": "CORE-UNIT",
+          "title": "PCAP 配置/验证器/捕获离线单元",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "module": "test/test_dual_pcap_configuration.py"
+          },
+          "steps": [
+            "pytest --collect-only -q test/test_dual_pcap_configuration.py",
+            "run the exact collected node IDs with pytest --junitxml",
+            "judge JUnit against the planned node IDs"
+          ],
+          "expected": {
+            "positive": "all collected nodes have exactly one passing result",
+            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "interpreter exists",
+            "run directory is writable"
+          ],
+          "timeout": 300,
+          "cleanup": "only pytest temp files inside this run directory; no external resource owned",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test_dual_pcap_configuration.py"
+          ]
+        },
+        {
+          "id": "CORE-WINDOWS-OFFLINE",
+          "suite_id": "CORE-UNIT",
+          "title": "Windows 进程/捕获离线单元",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "module": "test/test_windows_process_owner.py"
+          },
+          "steps": [
+            "pytest --collect-only -q test/test_windows_process_owner.py",
+            "run the exact collected node IDs with pytest --junitxml",
+            "judge JUnit against the planned node IDs"
+          ],
+          "expected": {
+            "positive": "all collected nodes have exactly one passing result",
+            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "interpreter exists",
+            "run directory is writable"
+          ],
+          "timeout": 300,
+          "cleanup": "only pytest temp files inside this run directory; no external resource owned",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test_windows_process_owner.py"
+          ]
+        },
+        {
+          "id": "CORE-LINUX-OFFLINE",
+          "suite_id": "CORE-UNIT",
+          "title": "Linux 规则/部署/更新离线单元",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "module": "test/test_linuxnetpolicy.py"
+          },
+          "steps": [
+            "pytest --collect-only -q test/test_linuxnetpolicy.py",
+            "run the exact collected node IDs with pytest --junitxml",
+            "judge JUnit against the planned node IDs"
+          ],
+          "expected": {
+            "positive": "all collected nodes have exactly one passing result",
+            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "interpreter exists",
+            "run directory is writable"
+          ],
+          "timeout": 300,
+          "cleanup": "only pytest temp files inside this run directory; no external resource owned",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test_linuxnetpolicy.py"
+          ]
+        }
+      ]
     },
     {
       "id": "MCP-UNIT",
@@ -36,7 +521,108 @@
       "evidence_level": "offline",
       "command": null,
       "required_for_full": true,
-      "oracle_status": "existing"
+      "oracle_status": "existing",
+      "disposition": "keep",
+      "disposition_basis": "保留产品及新回归设施必需自测; 排除只服务旧GUI/100/150/formal编排的项.",
+      "s1_note": "S1 保留产品与设施自测; 只服务旧GUI/100/150/formal编排的项排除.",
+      "cases": [
+        {
+          "id": "MCP-UNIT-PRODUCT",
+          "suite_id": "MCP-UNIT",
+          "title": "MCP产品接口与生命周期离线单元",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "modules": [
+              "test/mcp/test_host_stdio.py",
+              "test/mcp/test_command_status.py",
+              "test/mcp/test_capture_health.py"
+            ]
+          },
+          "steps": [
+            "collect exact nodes",
+            "run exact nodes",
+            "judge JUnit"
+          ],
+          "expected": {
+            "positive": "all collected nodes pass",
+            "negative": "any failure/skip/missing is not pass"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "interpreter"
+          ],
+          "timeout": 300,
+          "cleanup": "temp files only",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/mcp/test_host_stdio.py",
+            "test/mcp/test_command_status.py",
+            "test/mcp/test_capture_health.py"
+          ]
+        },
+        {
+          "id": "MCP-UNIT-TOOLING",
+          "suite_id": "MCP-UNIT",
+          "title": "验收工具/正式运行时自测",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "modules": [
+              "test/mcp/test_acceptance_runner_discrimination.py",
+              "test/mcp/test_acceptance_evidence_writer.py",
+              "test/mcp/test_bounded_mcp.py"
+            ]
+          },
+          "steps": [
+            "collect exact nodes",
+            "run exact nodes",
+            "judge JUnit"
+          ],
+          "expected": {
+            "positive": "all collected nodes pass",
+            "negative": "tool pass does not imply product MCP scenario pass"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "interpreter"
+          ],
+          "timeout": 300,
+          "cleanup": "temp files only",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/mcp/test_acceptance_runner_discrimination.py",
+            "test/mcp/test_acceptance_evidence_writer.py",
+            "test/mcp/test_bounded_mcp.py"
+          ]
+        }
+      ]
     },
     {
       "id": "UPSTREAM-CORE",
@@ -70,7 +656,491 @@
         ],
         "cwd": "test",
         "fixed_args": false
-      }
+      },
+      "disposition": "keep",
+      "disposition_basis": "保留并修误测/退出和交互.",
+      "s1_note": "S1 已修失败退出/结构化TSV/名单夹具/SMTP SSL; 原生执行仍为S2.",
+      "cases": [
+        {
+          "id": "UPSTREAM-TCP-UDP",
+          "suite_id": "UPSTREAM-CORE",
+          "title": "TCP/UDP 绑定/未绑定与目标矩阵",
+          "platforms": [
+            "windows",
+            "linux"
+          ],
+          "modes": [
+            "singlehost",
+            "multihost"
+          ],
+          "input": {
+            "entry": "test/test.py here",
+            "ports": "1337/9999"
+          },
+          "steps": [
+            "generate INI from test/template.ini",
+            "start core",
+            "run TCP/UDP matrix",
+            "stop core"
+          ],
+          "expected": {
+            "positive": "every bound case returns the expected listener response",
+            "negative": "unbound/non-diverted cases fail to connect as expected"
+          },
+          "oracle": {
+            "kind": "tsv",
+            "verifier": "test/test.py structured results"
+          },
+          "resources": [
+            "vm",
+            "administrator-or-root"
+          ],
+          "readiness": [
+            "isolated VM",
+            "core binary"
+          ],
+          "timeout": 600,
+          "cleanup": "stop flag + wait + force-kill fallback; restore network",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test.py",
+            "test/template.ini",
+            "test/custom_responses.ini",
+            "docs/testing.md"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "UPSTREAM-DNS",
+          "suite_id": "UPSTREAM-CORE",
+          "title": "DNS A 应答",
+          "platforms": [
+            "windows",
+            "linux"
+          ],
+          "modes": [
+            "singlehost",
+            "multihost"
+          ],
+          "input": {
+            "domain": "does-not-exist-amirite.mandiant.com",
+            "response_a": "192.0.2.123"
+          },
+          "steps": [
+            "resolve via socket.gethostbyname",
+            "compare with ResponseA"
+          ],
+          "expected": {
+            "positive": "answer equals 192.0.2.123",
+            "negative": "no negative/AAAA/NXDomains coverage yet"
+          },
+          "oracle": {
+            "kind": "tsv"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "core running"
+          ],
+          "timeout": 120,
+          "cleanup": "stop core",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test.py",
+            "test/template.ini",
+            "test/custom_responses.ini",
+            "docs/testing.md"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "UPSTREAM-HTTP-CUSTOM",
+          "suite_id": "UPSTREAM-CORE",
+          "title": "HTTP/HTTPS/URI/Host 自定义响应",
+          "platforms": [
+            "windows",
+            "linux"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "ports": "80/443/81",
+            "custom": "test/custom_responses.ini"
+          },
+          "steps": [
+            "request URI/host/ListenerType cases",
+            "assert status/body"
+          ],
+          "expected": {
+            "positive": "expected bodies for URI/host/ListenerType cases",
+            "negative": "wrong URI/host and host-port mismatches fail as expected"
+          },
+          "oracle": {
+            "kind": "tsv"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "core running"
+          ],
+          "timeout": 300,
+          "cleanup": "stop core",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test.py",
+            "test/template.ini",
+            "test/custom_responses.ini",
+            "docs/testing.md"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "UPSTREAM-FTP-POP-SMTP-IRC",
+          "suite_id": "UPSTREAM-CORE",
+          "title": "FTP/POP3/SMTP/IRC 监听器",
+          "platforms": [
+            "windows",
+            "linux"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "ports": "21/110/25/6667"
+          },
+          "steps": [
+            "connect with each client",
+            "verify content/flags"
+          ],
+          "expected": {
+            "positive": "FTP MD5, POP3 content, SMTP send, IRC flags as expected",
+            "negative": "SMTP SSL/IRC platform failures stay recorded as failures"
+          },
+          "oracle": {
+            "kind": "tsv"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "core running"
+          ],
+          "timeout": 300,
+          "cleanup": "stop core",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test.py",
+            "test/template.ini",
+            "test/custom_responses.ini",
+            "docs/testing.md"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "UPSTREAM-SMTP-SSL",
+          "suite_id": "UPSTREAM-CORE",
+          "title": "SMTP SSL 构造/发送/成功返回/错误响应",
+          "platforms": [
+            "windows",
+            "linux"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "port": "25",
+            "test_function": "test/test.py:_test_smtp_ssl"
+          },
+          "steps": [
+            "construct SMTP_SSL with the current API",
+            "sendmail",
+            "quit",
+            "return True"
+          ],
+          "expected": {
+            "positive": "smtpserver.sendmail called with sender/recipient/msg and True returned",
+            "negative": "construction/send/quit error propagates to the case result"
+          },
+          "oracle": {
+            "kind": "tsv"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "core running"
+          ],
+          "timeout": 120,
+          "cleanup": "stop core",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test.py",
+            "test/template.ini",
+            "test/custom_responses.ini",
+            "docs/testing.md"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "UPSTREAM-PROXY-HIDDEN",
+          "suite_id": "UPSTREAM-CORE",
+          "title": "Proxy 与 Hidden 监听器",
+          "platforms": [
+            "windows",
+            "linux"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "proxy_port": "38926",
+            "hidden_port": "12345"
+          },
+          "steps": [
+            "request unbound port through proxy",
+            "request hidden port"
+          ],
+          "expected": {
+            "positive": "proxy and hidden cases receive expected response",
+            "negative": "no independent hidden=False control yet"
+          },
+          "oracle": {
+            "kind": "tsv"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "core running"
+          ],
+          "timeout": 180,
+          "cleanup": "stop core",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test.py",
+            "test/template.ini",
+            "test/custom_responses.ini",
+            "docs/testing.md"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "UPSTREAM-BLACKLIST",
+          "suite_id": "UPSTREAM-CORE",
+          "title": "端口/主机/ICMP 名单",
+          "platforms": [
+            "windows",
+            "linux"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "host": "6.6.6.6",
+            "tcp": 139,
+            "udp": 67,
+            "icmp": 1234
+          },
+          "steps": [
+            "connect/send to excluded targets",
+            "assert failure"
+          ],
+          "expected": {
+            "positive": "excluded targets are not diverted",
+            "negative": "adjacent allowed target must still be diverted (added with fixture)"
+          },
+          "oracle": {
+            "kind": "tsv"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "core running"
+          ],
+          "timeout": 180,
+          "cleanup": "stop core",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test.py",
+            "test/template.ini",
+            "test/custom_responses.ini",
+            "docs/testing.md"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "UPSTREAM-PROCESS-FILTERS",
+          "suite_id": "UPSTREAM-CORE",
+          "title": "全局进程黑/白名单",
+          "platforms": [
+            "windows",
+            "linux"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "process": "current python executable name"
+          },
+          "steps": [
+            "blacklist current process",
+            "whitelist current process"
+          ],
+          "expected": {
+            "positive": "whitelist case connects; blacklist case fails",
+            "negative": "Linux blacklist remains indeterminate per docs/testing.md"
+          },
+          "oracle": {
+            "kind": "tsv"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "core running"
+          ],
+          "timeout": 180,
+          "cleanup": "stop core",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test.py",
+            "test/template.ini",
+            "test/custom_responses.ini",
+            "docs/testing.md"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "UPSTREAM-LISTENER-FILTERS",
+          "suite_id": "UPSTREAM-CORE",
+          "title": "Listener 级 Process/Host 过滤(修正夹具)",
+          "platforms": [
+            "windows",
+            "linux"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "ports": "8080/8081/8082/8083",
+            "host_filter": "9.9.9.9"
+          },
+          "steps": [
+            "run 8080/8081 process pair",
+            "run 8082/8083 host allowed/blocked pairs"
+          ],
+          "expected": {
+            "positive": "8083 whitelisted host is diverted on 8083; 8082 non-blacklisted host is diverted",
+            "negative": "8083 non-whitelisted host and 8082 blacklisted host are not diverted"
+          },
+          "oracle": {
+            "kind": "tsv"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "core running"
+          ],
+          "timeout": 180,
+          "cleanup": "stop core",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test.py",
+            "test/template.ini",
+            "test/custom_responses.ini",
+            "docs/testing.md"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "UPSTREAM-REDIRECTALL-OFF",
+          "suite_id": "UPSTREAM-CORE",
+          "title": "RedirectAllTraffic=No 旁路矩阵",
+          "platforms": [
+            "windows",
+            "linux"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "bound": 1337,
+            "unbound": 9999
+          },
+          "steps": [
+            "disable RedirectAllTraffic",
+            "run matrix"
+          ],
+          "expected": {
+            "positive": "bound external/localhost still reachable",
+            "negative": "unspecified targets are not diverted"
+          },
+          "oracle": {
+            "kind": "tsv"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "core running"
+          ],
+          "timeout": 180,
+          "cleanup": "stop core",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test.py",
+            "test/template.ini",
+            "test/custom_responses.ini",
+            "docs/testing.md"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        }
+      ]
     },
     {
       "id": "DOMAIN-EGRESS",
@@ -105,7 +1175,161 @@
         ],
         "cwd": ".",
         "fixed_args": false
-      }
+      },
+      "disposition": "keep",
+      "disposition_basis": "保留适用正反例并补实际判据, 不扩大IPv6支持.",
+      "s1_note": "S1 保留入口与配置; 负例逐连接判定和原生执行仍为S2.",
+      "cases": [
+        {
+          "id": "EGRESS-ALLOW-CHAIN",
+          "suite_id": "DOMAIN-EGRESS",
+          "title": "域名放行正链 DNS/TCP443/SNI/TLS",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "allowed": "api.deepseek.com",
+            "dns": "default-route resolver"
+          },
+          "steps": [
+            "pktmon start",
+            "start core",
+            "resolve allowed domain",
+            "curl https"
+          ],
+          "expected": {
+            "positive": "allowed chain succeeds and required policy events appear",
+            "negative": "none in this case"
+          },
+          "oracle": {
+            "kind": "pcap"
+          },
+          "resources": [
+            "windows-vm",
+            "administrator",
+            "pktmon",
+            "internet"
+          ],
+          "readiness": [
+            "IPv6 enabled",
+            "external DNS reachable"
+          ],
+          "timeout": 300,
+          "cleanup": "stop flag, pktmon stop, DNS snapshot compare",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/egress_control_vm/Run-EgressControlTests.ps1",
+            "fakenet/configs/egress_control_windows.ini"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "EGRESS-NEGATIVES",
+          "suite_id": "DOMAIN-EGRESS",
+          "title": "出站负例逐连接判定",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "probes": [
+              "http",
+              "direct-ip",
+              "wrong-sni",
+              "doh",
+              "dot",
+              "external-dns",
+              "udp443",
+              "direct-relay"
+            ]
+          },
+          "steps": [
+            "send each probe with a recorded time/tuple",
+            "match pcap zero packets and DROP_EXTERNAL per tuple"
+          ],
+          "expected": {
+            "positive": "each negative has a send record and matching policy evidence",
+            "negative": "OBSERVED or timeout alone is not a block proof"
+          },
+          "oracle": {
+            "kind": "pcap"
+          },
+          "resources": [
+            "windows-vm",
+            "administrator",
+            "pktmon"
+          ],
+          "readiness": [
+            "capture active"
+          ],
+          "timeout": 300,
+          "cleanup": "stop flag, pktmon stop",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/egress_control_vm/Run-EgressControlTests.ps1",
+            "fakenet/configs/egress_control_windows.ini"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "EGRESS-RESTORE",
+          "suite_id": "DOMAIN-EGRESS",
+          "title": "停止/捕获收尾/DNS恢复",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "snapshot": "IPv4 DNS servers"
+          },
+          "steps": [
+            "stop core",
+            "stop pktmon",
+            "compare DNS snapshot"
+          ],
+          "expected": {
+            "positive": "core exit 0, pcap produced, DNS restored",
+            "negative": "timeout/nonzero/difference fails"
+          },
+          "oracle": {
+            "kind": "pcap"
+          },
+          "resources": [
+            "windows-vm",
+            "administrator"
+          ],
+          "readiness": [
+            "core running"
+          ],
+          "timeout": 120,
+          "cleanup": "stop core and pktmon",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/egress_control_vm/Run-EgressControlTests.ps1",
+            "fakenet/configs/egress_control_windows.ini"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        }
+      ]
     },
     {
       "id": "DOMAIN-IP",
@@ -140,7 +1364,108 @@
         ],
         "cwd": ".",
         "fixed_args": false
-      }
+      },
+      "disposition": "keep",
+      "disposition_basis": "保留IP/端口和组合边界, 不自动替换旧公网地址.",
+      "s1_note": "S1 保留入口与独立PCAP验证器; 原生执行仍为S2.",
+      "cases": [
+        {
+          "id": "IP-REVIEWED-TLS-MATRIX",
+          "suite_id": "DOMAIN-IP",
+          "title": "公网IPv4精确放行 TLS+矩阵",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "rule": "TCP/110.242.69.21/443",
+            "hostname": "www.baidu.com"
+          },
+          "steps": [
+            "manifest/DNS freshness check",
+            "start core",
+            "TLS cert check",
+            "send negative matrix",
+            "analyze pcap"
+          ],
+          "expected": {
+            "positive": "TLS succeeds and pcap matrix shows zero matches for negatives",
+            "negative": "wrong IP/port/UDP cases must not be allowed"
+          },
+          "oracle": {
+            "kind": "pcap"
+          },
+          "resources": [
+            "windows-vm",
+            "administrator",
+            "pktmon"
+          ],
+          "readiness": [
+            "pinned address still in DNS"
+          ],
+          "timeout": 600,
+          "cleanup": "stop core; compare DNS/IP/route",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/public_ipv4_allowlist_vm/Run-ReviewedIPv4Tests.ps1",
+            "test/analyze_reviewed_ipv4_pcap.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "IP-TAKEOVER-COEXIST",
+          "suite_id": "DOMAIN-IP",
+          "title": "与私网接管/域名放行共存",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "sink": "192.168.204.1",
+            "allowed": "api.deepseek.com"
+          },
+          "steps": [
+            "run takeover profile",
+            "resolve sink",
+            "probe TCP/UDP",
+            "compare network"
+          ],
+          "expected": {
+            "positive": "sink answers, allowed domain works, events present",
+            "negative": "reviewed-IP events must not appear in takeover profile"
+          },
+          "oracle": {
+            "kind": "pcap"
+          },
+          "resources": [
+            "windows-vm",
+            "administrator"
+          ],
+          "readiness": [
+            "two profiles"
+          ],
+          "timeout": 600,
+          "cleanup": "stop core; compare snapshots",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/public_ipv4_allowlist_vm/Run-ReviewedIPv4Tests.ps1",
+            "test/analyze_reviewed_ipv4_pcap.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        }
+      ]
     },
     {
       "id": "PROCESS-REDIRECT",
@@ -175,7 +1500,193 @@
         ],
         "cwd": ".",
         "fixed_args": false
-      }
+      },
+      "disposition": "keep",
+      "disposition_basis": "保留精确EXE改址及正确性边界, 压力负载单列stress.",
+      "s1_note": "S1 保留正确性边界; 10000流/64并发单列stress.",
+      "cases": [
+        {
+          "id": "PR-REDIRECT-POSITIVE",
+          "suite_id": "PROCESS-REDIRECT",
+          "title": "精确EXE A->B 正例/非目标隔离",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "original": "reviewed A",
+            "target": "reviewed B",
+            "sentinel": "FNPR/1"
+          },
+          "steps": [
+            "manifest/image identity",
+            "sentinel preflight",
+            "start core",
+            "target and non-target clients"
+          ],
+          "expected": {
+            "positive": "target getpeername=A, nonce matches; non-target isolated",
+            "negative": "non-target must not receive sentinel response"
+          },
+          "oracle": {
+            "kind": "pcap"
+          },
+          "resources": [
+            "windows-vm",
+            "administrator",
+            "sentinel"
+          ],
+          "readiness": [
+            "sentinel ready"
+          ],
+          "timeout": 600,
+          "cleanup": "clients exit; stop core; network restore",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/process_redirect_vm/Run-ProcessRedirectTests.ps1",
+            "test/process_redirect_vm/verify_process_redirect.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "PR-OWNER-BOUNDED",
+          "suite_id": "PROCESS-REDIRECT",
+          "title": "有界多流/owner配额正确性",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "flows": "bounded small count",
+            "budget": "owner budget"
+          },
+          "steps": [
+            "run bounded multi-flow",
+            "verify mapping and budget behavior"
+          ],
+          "expected": {
+            "positive": "bounded flows map and the owner budget triggers as designed",
+            "negative": "unbounded 10000/64 is stress only"
+          },
+          "oracle": {
+            "kind": "pcap"
+          },
+          "resources": [
+            "windows-vm"
+          ],
+          "readiness": [
+            "core running"
+          ],
+          "timeout": 600,
+          "cleanup": "stop core",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/process_redirect_vm/Run-ProcessRedirectTests.ps1",
+            "test/process_redirect_vm/verify_process_redirect.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "PR-OWNER-STRESS",
+          "suite_id": "PROCESS-REDIRECT",
+          "title": "10000流/64并发压力(可选)",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "flows": 10000,
+            "parallel": 64
+          },
+          "steps": [
+            "run 10000 serial flows",
+            "run 64 synchronized flows",
+            "verify"
+          ],
+          "expected": {
+            "positive": "stress thresholds satisfied",
+            "negative": "not part of daily full"
+          },
+          "oracle": {
+            "kind": "pcap"
+          },
+          "resources": [
+            "windows-vm",
+            "administrator"
+          ],
+          "readiness": [
+            "explicit stress opt-in"
+          ],
+          "timeout": 3600,
+          "cleanup": "stop core",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": false,
+          "stress": true,
+          "sources": [
+            "test/process_redirect_vm/Run-ProcessRedirectTests.ps1",
+            "test/process_redirect_vm/verify_process_redirect.py"
+          ]
+        },
+        {
+          "id": "PR-PCAP-RESTORE",
+          "suite_id": "PROCESS-REDIRECT",
+          "title": "双PCAP/停止恢复/禁止事件",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "pcap": "raw+converted pair"
+          },
+          "steps": [
+            "stop core",
+            "verify runtime events and pcap pair"
+          ],
+          "expected": {
+            "positive": "graceful stop and required events; pcap accepted",
+            "negative": "suspend/resume/policy_exception/traceback fail"
+          },
+          "oracle": {
+            "kind": "pcap"
+          },
+          "resources": [
+            "windows-vm"
+          ],
+          "readiness": [
+            "core running"
+          ],
+          "timeout": 300,
+          "cleanup": "stop core",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/process_redirect_vm/Run-ProcessRedirectTests.ps1",
+            "test/process_redirect_vm/verify_process_redirect.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        }
+      ]
     },
     {
       "id": "GUI-POLICY",
@@ -212,7 +1723,159 @@
         ],
         "cwd": ".",
         "fixed_args": true
-      }
+      },
+      "disposition": "extract",
+      "disposition_basis": "排除GUI验收; 抽出域名/宿主接管/组合/恢复核心.",
+      "s1_note": "S1 不执行旧A组/点击/三轮GUI停止; 仅保留P组域名/接管/策略/恢复核心case.",
+      "cases": [
+        {
+          "id": "POL-DOMAIN-ALLOW",
+          "suite_id": "GUI-POLICY",
+          "title": "精确域名/通配/裸域/默认拒绝",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "exact": "api.deepseek.com",
+            "wildcard": "*.deepseek.com",
+            "apex": "deepseek.com",
+            "deny": "example.com"
+          },
+          "steps": [
+            "write core INI directly",
+            "start core",
+            "nslookup four names",
+            "inspect DNS_LEASE_ADD"
+          ],
+          "expected": {
+            "positive": "exact and wildcard lease; apex and deny do not",
+            "negative": "deny query must still reach the listener"
+          },
+          "oracle": {
+            "kind": "native-json"
+          },
+          "resources": [
+            "windows-vm",
+            "sentinel"
+          ],
+          "readiness": [
+            "controlled upstream DNS"
+          ],
+          "timeout": 300,
+          "cleanup": "stop core",
+          "dependencies": [
+            "EGRESS-ALLOW-CHAIN"
+          ],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/gui_vm/run_policy_feature_tests.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "POL-TAKEOVER",
+          "suite_id": "GUI-POLICY",
+          "title": "私网宿主接管 sink/邻接/ICMP/IPv6",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "sink": "192.168.204.1",
+            "ttl": 60
+          },
+          "steps": [
+            "write takeover INI",
+            "start core",
+            "resolve apex/wildcard",
+            "probe TCP/UDP/ICMP/IPv6"
+          ],
+          "expected": {
+            "positive": "apex answered by sink; wildcard allowed; sink reachable; ICMP and IPv6 fail closed",
+            "negative": "adjacent private address is not allowed"
+          },
+          "oracle": {
+            "kind": "native-json"
+          },
+          "resources": [
+            "windows-vm",
+            "sentinel"
+          ],
+          "readiness": [
+            "sink service"
+          ],
+          "timeout": 600,
+          "cleanup": "stop core; restore route metric",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/gui_vm/run_policy_feature_tests.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "POL-TCP-UDP-RECOVERY",
+          "suite_id": "GUI-POLICY",
+          "title": "策略 TCP/UDP 与路由漂移恢复",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "metric_delta": 17,
+            "probes": [
+              "tcp",
+              "udp"
+            ]
+          },
+          "steps": [
+            "change metric",
+            "observe TAKEOVER_SUSPEND",
+            "probe TCP/UDP",
+            "restore metric and compare"
+          ],
+          "expected": {
+            "positive": "both transports fail while suspended; metric restored exactly",
+            "negative": "allow count must not change"
+          },
+          "oracle": {
+            "kind": "native-json"
+          },
+          "resources": [
+            "windows-vm",
+            "administrator"
+          ],
+          "readiness": [
+            "route identity"
+          ],
+          "timeout": 600,
+          "cleanup": "restore metric in finally",
+          "dependencies": [
+            "POL-TAKEOVER"
+          ],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/gui_vm/run_policy_feature_tests.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        }
+      ]
     },
     {
       "id": "GUI-DEVELOPMENT",
@@ -235,7 +1898,11 @@
       "evidence_level": "native",
       "command": null,
       "required_for_full": false,
-      "oracle_status": "existing"
+      "oracle_status": "existing",
+      "disposition": "exclude",
+      "disposition_basis": "排除GUI诊断入口, 仅必要共享非GUI helper按直接依赖复用.",
+      "s1_note": "S1 排除GUI诊断/日志导出; 仅按直接依赖复用非GUI helper.",
+      "cases": []
     },
     {
       "id": "PCAP-WINDOWS",
@@ -270,7 +1937,147 @@
         ],
         "cwd": ".",
         "fixed_args": false
-      }
+      },
+      "disposition": "keep",
+      "disposition_basis": "保留内容/故障/恢复, 性能大负载单列stress.",
+      "s1_note": "S1 保留内容/故障/恢复; normal去Enter/Ctrl-C; 性能单列stress.",
+      "cases": [
+        {
+          "id": "PCAP-WIN-NORMAL",
+          "suite_id": "PCAP-WINDOWS",
+          "title": "Windows 双PCAP正常序列(无按键)",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "case": "normal"
+          },
+          "steps": [
+            "start core with stop flag",
+            "send known traffic",
+            "request safe stop",
+            "verify dual pcap pair"
+          ],
+          "expected": {
+            "positive": "pcap pair matches packet-for-packet and exit 0",
+            "negative": "Enter/Ctrl-C is not allowed as a prerequisite"
+          },
+          "oracle": {
+            "kind": "pcap"
+          },
+          "resources": [
+            "windows-vm",
+            "administrator"
+          ],
+          "readiness": [
+            "core ready marker"
+          ],
+          "timeout": 300,
+          "cleanup": "stop core; compare DNS/route",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/dual_pcap_vm/Run-DualPcapTests.ps1",
+            "test/dual_pcap_vm/verify_dual_pcap.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "PCAP-WIN-FAULTS",
+          "suite_id": "PCAP-WINDOWS",
+          "title": "raw/ethernet/close 三类写入故障",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "modes": [
+              "raw-write",
+              "ethernet-write",
+              "close"
+            ]
+          },
+          "steps": [
+            "inject each fault",
+            "assert exit code and wake"
+          ],
+          "expected": {
+            "positive": "each fault hits its path and exits 1",
+            "negative": "no wake fails"
+          },
+          "oracle": {
+            "kind": "pcap"
+          },
+          "resources": [
+            "windows-vm"
+          ],
+          "readiness": [
+            "fault launcher"
+          ],
+          "timeout": 300,
+          "cleanup": "stop core; compare network",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/dual_pcap_vm/Run-DualPcapTests.ps1",
+            "test/dual_pcap_vm/verify_dual_pcap.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "PCAP-WIN-STRESS",
+          "suite_id": "PCAP-WINDOWS",
+          "title": "十万包性能(可选stress)",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "packets": 100000
+          },
+          "steps": [
+            "run benchmark",
+            "record performance only"
+          ],
+          "expected": {
+            "positive": "reference metric recorded",
+            "negative": "not a functional gate"
+          },
+          "oracle": {
+            "kind": "native-json"
+          },
+          "resources": [
+            "windows-vm"
+          ],
+          "readiness": [
+            "explicit stress opt-in"
+          ],
+          "timeout": 3600,
+          "cleanup": "none",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": false,
+          "stress": true,
+          "sources": [
+            "test/dual_pcap_vm/Run-DualPcapTests.ps1",
+            "test/dual_pcap_vm/verify_dual_pcap.py"
+          ]
+        }
+      ]
     },
     {
       "id": "PCAP-LINUX",
@@ -300,7 +2107,104 @@
         ],
         "cwd": ".",
         "fixed_args": false
-      }
+      },
+      "disposition": "keep",
+      "disposition_basis": "保留IPv4原生/文件/故障/恢复, 性能单列stress.",
+      "s1_note": "S1 保留IPv4正常/故障/恢复; 性能单列stress, 不声称IPv6网络通过.",
+      "cases": [
+        {
+          "id": "PCAP-LINUX-IPV4",
+          "suite_id": "PCAP-LINUX",
+          "title": "Linux NFQUEUE 双PCAP与恢复",
+          "platforms": [
+            "linux"
+          ],
+          "modes": [
+            "singlehost",
+            "multihost"
+          ],
+          "input": {
+            "cases": [
+              "normal",
+              "raw-write",
+              "ethernet-write",
+              "close"
+            ]
+          },
+          "steps": [
+            "snapshot iptables/ip6tables/route/DNS",
+            "run cases",
+            "compare"
+          ],
+          "expected": {
+            "positive": "all cases pass and network is restored",
+            "negative": "snapshot difference fails; IPv6 network is not claimed"
+          },
+          "oracle": {
+            "kind": "pcap"
+          },
+          "resources": [
+            "linux-vm",
+            "root"
+          ],
+          "readiness": [
+            "isolated VM"
+          ],
+          "timeout": 900,
+          "cleanup": "emergency restore only as rollback",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/dual_pcap_linux/run_tests.py",
+            "test/dual_pcap_linux/verify_capture.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "PCAP-LINUX-STRESS",
+          "suite_id": "PCAP-LINUX",
+          "title": "十万包性能(可选stress)",
+          "platforms": [
+            "linux"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "packets": 100000
+          },
+          "steps": [
+            "run benchmark"
+          ],
+          "expected": {
+            "positive": "reference metric recorded",
+            "negative": "not a functional gate"
+          },
+          "oracle": {
+            "kind": "native-json"
+          },
+          "resources": [
+            "linux-vm"
+          ],
+          "readiness": [
+            "explicit stress opt-in"
+          ],
+          "timeout": 3600,
+          "cleanup": "none",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": false,
+          "stress": true,
+          "sources": [
+            "test/dual_pcap_linux/run_tests.py",
+            "test/dual_pcap_linux/verify_capture.py"
+          ]
+        }
+      ]
     },
     {
       "id": "PAYLOAD",
@@ -338,7 +2242,150 @@
         ],
         "cwd": ".",
         "fixed_args": true
-      }
+      },
+      "disposition": "extract",
+      "disposition_basis": "抽出良性客户端与无GUI生命周期, 保留原完整判定.",
+      "s1_note": "S1 抽取无GUI良性客户端与验证器; GUI-owned core和人工点击停止不保留.",
+      "cases": [
+        {
+          "id": "PAYLOAD-HTML-REPORT",
+          "suite_id": "PAYLOAD",
+          "title": "HTML 载荷报告独立校验",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "verifier": "test/gui_vm/verify_payload_report.py",
+            "unit": "test/test_payload_report.py"
+          },
+          "steps": [
+            "produce report.html fixture",
+            "run verify_payload_report",
+            "run the offline unit test"
+          ],
+          "expected": {
+            "positive": "schema/hash/DOM checks pass",
+            "negative": "tampered or external DOM fails"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "report fixture"
+          ],
+          "timeout": 120,
+          "cleanup": "none",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test_payload_report.py",
+            "test/gui_vm/verify_payload_report.py"
+          ]
+        },
+        {
+          "id": "PAYLOAD-THREE-WAY",
+          "suite_id": "PAYLOAD",
+          "title": "NIC/raw/HTML 三方一致(无GUI)",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "client": "benign two-way HTTP",
+            "pktmon": "NIC capture"
+          },
+          "steps": [
+            "pktmon start",
+            "start core directly",
+            "benign client",
+            "stop flag",
+            "run verify_payload_integrity"
+          ],
+          "expected": {
+            "positive": "both directions byte/length/hash equal",
+            "negative": "gap/conflict/missing direction/multiple PIDs fail"
+          },
+          "oracle": {
+            "kind": "native-json"
+          },
+          "resources": [
+            "windows-vm",
+            "administrator",
+            "pktmon"
+          ],
+          "readiness": [
+            "capture active"
+          ],
+          "timeout": 600,
+          "cleanup": "pktmon stop; keep evidence",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/gui_vm/run_sample_payload_acceptance.py",
+            "test/gui_vm/verify_payload_report.py",
+            "test/gui_vm/verify_payload_integrity.py",
+            "test/gui_vm/verify_reassembly.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "PAYLOAD-REASSEMBLY",
+          "suite_id": "PAYLOAD",
+          "title": "TCP/UDP 重组矩阵(离线)",
+          "platforms": [
+            "any"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "verifier": "test/gui_vm/verify_reassembly.py --matrix",
+            "unit": "test/test_payload_integrity_verifier.py"
+          },
+          "steps": [
+            "run matrix",
+            "assert reorder/retransmit/wrap/gap/conflict/UDP cases"
+          ],
+          "expected": {
+            "positive": "matrix cases match",
+            "negative": "synthetic data gives no native credit"
+          },
+          "oracle": {
+            "kind": "junit"
+          },
+          "resources": [
+            "offline-python"
+          ],
+          "readiness": [
+            "verifier present"
+          ],
+          "timeout": 120,
+          "cleanup": "none",
+          "dependencies": [],
+          "adapter": "offline-pytest",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test_payload_integrity_verifier.py",
+            "test/gui_vm/verify_reassembly.py"
+          ]
+        }
+      ]
     },
     {
       "id": "MCP-P01",
@@ -364,7 +2411,57 @@
         ],
         "cwd": ".",
         "fixed_args": false
-      }
+      },
+      "disposition": "keep",
+      "disposition_basis": "保留安装/身份/服务等适用产品功能, 不测GUI.",
+      "s1_note": "S1 保留安装/身份/服务; 原生MCP执行为S2.",
+      "cases": [
+        {
+          "id": "MCP-P01-FULL",
+          "suite_id": "MCP-P01",
+          "title": "MCP安装/身份/服务/防火墙",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "native"
+          ],
+          "input": {
+            "acc": "install/identity/service/firewall"
+          },
+          "steps": [
+            "select explicit ACC items",
+            "run via host-controller channel",
+            "collect result.json and source evidence"
+          ],
+          "expected": {
+            "positive": "each selected ACC item returns pass with identity and originals",
+            "negative": "one sub-item does not substitute the whole group; no 150/100"
+          },
+          "oracle": {
+            "kind": "native-json"
+          },
+          "resources": [
+            "windows-vm",
+            "mcp-service",
+            "controller"
+          ],
+          "readiness": [
+            "candidate/VM/config identity"
+          ],
+          "timeout": 1800,
+          "cleanup": "original runner stops and restores",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/mcp/acceptance/run_p01_acc.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        }
+      ]
     },
     {
       "id": "MCP-P02",
@@ -390,7 +2487,57 @@
         ],
         "cwd": ".",
         "fixed_args": false
-      }
+      },
+      "disposition": "keep",
+      "disposition_basis": "保留配置与命令事务.",
+      "s1_note": "S1 保留配置与命令事务; 原生MCP执行为S2.",
+      "cases": [
+        {
+          "id": "MCP-P02-FULL",
+          "suite_id": "MCP-P02",
+          "title": "MCP配置与命令事务",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "native"
+          ],
+          "input": {
+            "acc": "config CRUD/transactions"
+          },
+          "steps": [
+            "select explicit ACC items",
+            "run via host-controller channel",
+            "collect result.json and source evidence"
+          ],
+          "expected": {
+            "positive": "each selected ACC item returns pass with identity and originals",
+            "negative": "one sub-item does not substitute the whole group; no 150/100"
+          },
+          "oracle": {
+            "kind": "native-json"
+          },
+          "resources": [
+            "windows-vm",
+            "mcp-service",
+            "controller"
+          ],
+          "readiness": [
+            "candidate/VM/config identity"
+          ],
+          "timeout": 1800,
+          "cleanup": "original runner stops and restores",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/mcp/acceptance/run_p02_acc.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        }
+      ]
     },
     {
       "id": "MCP-P03",
@@ -416,7 +2563,57 @@
         ],
         "cwd": ".",
         "fixed_args": false
-      }
+      },
+      "disposition": "keep",
+      "disposition_basis": "保留核心/配置/控制/IPC/停止恢复, 排除GUI交互.",
+      "s1_note": "S1 保留运行/停止/健康/恢复; 不执行GUI交互.",
+      "cases": [
+        {
+          "id": "MCP-P03-FULL",
+          "suite_id": "MCP-P03",
+          "title": "MCP运行/停止/健康/恢复",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "native"
+          ],
+          "input": {
+            "acc": "run/stop/health/recovery"
+          },
+          "steps": [
+            "select explicit ACC items",
+            "run via host-controller channel",
+            "collect result.json and source evidence"
+          ],
+          "expected": {
+            "positive": "each selected ACC item returns pass with identity and originals",
+            "negative": "one sub-item does not substitute the whole group; no 150/100"
+          },
+          "oracle": {
+            "kind": "native-json"
+          },
+          "resources": [
+            "windows-vm",
+            "mcp-service",
+            "controller"
+          ],
+          "readiness": [
+            "candidate/VM/config identity"
+          ],
+          "timeout": 1800,
+          "cleanup": "original runner stops and restores",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/mcp/acceptance/run_p03_acc.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        }
+      ]
     },
     {
       "id": "MCP-P04",
@@ -442,7 +2639,57 @@
         ],
         "cwd": ".",
         "fixed_args": false
-      }
+      },
+      "disposition": "keep",
+      "disposition_basis": "保留产物/查询/最小真实故障, 解除对发布循环依赖.",
+      "s1_note": "S1 保留产物/查询/故障证据; 最小故障原语与150轮解耦.",
+      "cases": [
+        {
+          "id": "MCP-P04-FULL",
+          "suite_id": "MCP-P04",
+          "title": "MCP产物/查询/最小故障证据",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "native"
+          ],
+          "input": {
+            "acc": "artifacts/query/fault point"
+          },
+          "steps": [
+            "select explicit ACC items",
+            "run via host-controller channel",
+            "collect result.json and source evidence"
+          ],
+          "expected": {
+            "positive": "each selected ACC item returns pass with identity and originals",
+            "negative": "one sub-item does not substitute the whole group; no 150/100"
+          },
+          "oracle": {
+            "kind": "native-json"
+          },
+          "resources": [
+            "windows-vm",
+            "mcp-service",
+            "controller"
+          ],
+          "readiness": [
+            "candidate/VM/config identity"
+          ],
+          "timeout": 1800,
+          "cleanup": "original runner stops and restores",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/mcp/acceptance/run_p04_acc.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        }
+      ]
     },
     {
       "id": "MCP-RELEASE",
@@ -469,7 +2716,11 @@
         ],
         "cwd": ".",
         "fixed_args": false
-      }
+      },
+      "disposition": "exclude",
+      "disposition_basis": "排除150轮驱动, 仅共享最小产品故障原语按独立用例抽取.",
+      "s1_note": "S1 排除150轮驱动; 只保留最小产品故障原语.",
+      "cases": []
     },
     {
       "id": "MCP-SCENARIOS",
@@ -496,7 +2747,11 @@
         ],
         "cwd": ".",
         "fixed_args": false
-      }
+      },
+      "disposition": "exclude",
+      "disposition_basis": "排除100场景驱动及其专属编排; 产品必要共享原语只作最小依赖复用.",
+      "s1_note": "S1 排除100场景及其专属编排.",
+      "cases": []
     },
     {
       "id": "MCP-FORMAL",
@@ -526,7 +2781,11 @@
         ],
         "cwd": ".",
         "fixed_args": false
-      }
+      },
+      "disposition": "exclude",
+      "disposition_basis": "排除旧矩阵重型编排, 不作为本套回归的硬前置.",
+      "s1_note": "S1 排除重型formal编排, 不作为本套回归硬前置.",
+      "cases": []
     },
     {
       "id": "MCP-SPECIAL",
@@ -562,7 +2821,112 @@
       "evidence_level": "native",
       "command": null,
       "required_for_full": false,
-      "oracle_status": "existing"
+      "oracle_status": "existing",
+      "disposition": "extract",
+      "disposition_basis": "保留P01..P04等产品功能需要的控制/IPC/故障/恢复项, 排除专属旧诊断/矩阵项.",
+      "s1_note": "S1 只保留P01..P04需要的控制/IPC/故障/恢复项.",
+      "cases": [
+        {
+          "id": "MCP-SPECIAL-IPC",
+          "suite_id": "MCP-SPECIAL",
+          "title": "IPC/控制/初始化产品必需项",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "native"
+          ],
+          "input": {
+            "entries": [
+              "run_ipc_cases.py",
+              "run_control_cases.py",
+              "run_initialization_case.py"
+            ]
+          },
+          "steps": [
+            "run only product-required IPC/control/init items"
+          ],
+          "expected": {
+            "positive": "real IPC/control/init behaviour and recovery",
+            "negative": "destructive diagnostics are not run by default"
+          },
+          "oracle": {
+            "kind": "native-json"
+          },
+          "resources": [
+            "windows-vm",
+            "mcp-service"
+          ],
+          "readiness": [
+            "explicit selection"
+          ],
+          "timeout": 900,
+          "cleanup": "original runner restores",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/mcp/acceptance/run_ipc_cases.py",
+            "test/mcp/acceptance/run_control_cases.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "MCP-SPECIAL-FAULT-RECOVERY",
+          "suite_id": "MCP-SPECIAL",
+          "title": "最小故障原语与恢复",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "native"
+          ],
+          "input": {
+            "faults": [
+              "policy_pause",
+              "listener_stop",
+              "diverter_stop",
+              "child_hang",
+              "capture_fault"
+            ]
+          },
+          "steps": [
+            "arm one fault",
+            "observe run/incident",
+            "recover"
+          ],
+          "expected": {
+            "positive": "each class hits its real hook and recovery is attributed",
+            "negative": "no 150-round or 100-scenario credit"
+          },
+          "oracle": {
+            "kind": "native-json"
+          },
+          "resources": [
+            "windows-vm",
+            "mcp-service"
+          ],
+          "readiness": [
+            "fault-mode service"
+          ],
+          "timeout": 900,
+          "cleanup": "disarm and restore",
+          "dependencies": [
+            "MCP-P04-FULL"
+          ],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/mcp/acceptance/helpers.py",
+            "fakenet/mcp/faultinject.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        }
+      ]
     },
     {
       "id": "BUILD",
@@ -581,7 +2945,55 @@
       "evidence_level": "offline",
       "command": null,
       "required_for_full": false,
-      "oracle_status": "existing"
+      "oracle_status": "existing",
+      "disposition": "keep",
+      "disposition_basis": "复用当前候选必要构建/校验/分片, 不执行GUI测试或专属诊断包.",
+      "s1_note": "S1 只保留候选包/来源身份校验; 不执行GUI打包或完整重建.",
+      "cases": [
+        {
+          "id": "BUILD-PACKAGE-IDENTITY",
+          "suite_id": "BUILD",
+          "title": "候选包/来源身份校验",
+          "platforms": [
+            "windows",
+            "linux"
+          ],
+          "modes": [
+            "offline"
+          ],
+          "input": {
+            "entry": "tools/build_*.py / Build-*.ps1"
+          },
+          "steps": [
+            "verify source commit and package hashes without running a full build"
+          ],
+          "expected": {
+            "positive": "package identity matches the candidate",
+            "negative": "build pass does not imply VM functionality"
+          },
+          "oracle": {
+            "kind": "native-json"
+          },
+          "resources": [
+            "build-artifacts"
+          ],
+          "readiness": [
+            "candidate package"
+          ],
+          "timeout": 600,
+          "cleanup": "none",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "tools/build_gui_vm_package_wine.py",
+            "tools/build_fakenetng_mcp_wine.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        }
+      ]
     },
     {
       "id": "HELPERS",
@@ -603,7 +3015,11 @@
       "evidence_level": "native",
       "command": null,
       "required_for_full": false,
-      "oracle_status": "existing"
+      "oracle_status": "existing",
+      "disposition": "extract",
+      "disposition_basis": "按保留用例实际直接依赖复用, 不独立授予产品通过信用.",
+      "s1_note": "S1 只按保留case的直接依赖复用, 不给独立产品通过信用.",
+      "cases": []
     },
     {
       "id": "LINUX-RUNTIME",
@@ -622,7 +3038,105 @@
       "evidence_level": "native",
       "command": null,
       "required_for_full": true,
-      "oracle_status": "incomplete"
+      "oracle_status": "incomplete",
+      "disposition": "keep",
+      "disposition_basis": "保留Linux模式/服务部署更新与原生恢复.",
+      "s1_note": "S1 保留Linux模式/部署更新入口; 原生执行为S2.",
+      "cases": [
+        {
+          "id": "LINUX-SINGLEHOST",
+          "suite_id": "LINUX-RUNTIME",
+          "title": "Linux SingleHost/MultiHost 分流",
+          "platforms": [
+            "linux"
+          ],
+          "modes": [
+            "singlehost",
+            "multihost"
+          ],
+          "input": {
+            "network_mode": "SingleHost/MultiHost"
+          },
+          "steps": [
+            "start Linux core",
+            "exercise rules",
+            "stop and check rules"
+          ],
+          "expected": {
+            "positive": "rules and traffic behave as configured; rules removed",
+            "negative": "residual rules fail; Windows results do not transfer"
+          },
+          "oracle": {
+            "kind": "pcap"
+          },
+          "resources": [
+            "linux-vm",
+            "root"
+          ],
+          "readiness": [
+            "isolated VM"
+          ],
+          "timeout": 600,
+          "cleanup": "NetPolicy.stop/adopt_leftovers",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "fakenet/mcp/linuxrunner.py",
+            "fakenet/diverters/linuxnetpolicy.py",
+            "deploy/linux/README.md"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "LINUX-DEPLOY-UPDATE",
+          "suite_id": "LINUX-RUNTIME",
+          "title": "Linux部署与更新",
+          "platforms": [
+            "linux"
+          ],
+          "modes": [
+            "native"
+          ],
+          "input": {
+            "entry": "deploy/linux/README.md"
+          },
+          "steps": [
+            "deploy",
+            "update",
+            "check service and originals"
+          ],
+          "expected": {
+            "positive": "deployment/update transaction and recovery",
+            "negative": "missing deps/active run refuse"
+          },
+          "oracle": {
+            "kind": "native-json"
+          },
+          "resources": [
+            "linux-vm",
+            "root"
+          ],
+          "readiness": [
+            "deployment package"
+          ],
+          "timeout": 900,
+          "cleanup": "restore service and originals",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "fakenet/mcp/linuxrunner.py",
+            "fakenet/diverters/linuxnetpolicy.py",
+            "deploy/linux/README.md"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        }
+      ]
     },
     {
       "id": "EGRESS-NEW-DEFERRED",
@@ -644,7 +3158,11 @@
       "evidence_level": "native",
       "command": null,
       "required_for_full": false,
-      "oracle_status": "existing"
+      "oracle_status": "existing",
+      "disposition": "exclude",
+      "disposition_basis": "搁置新接口专属运行和整改.",
+      "s1_note": "S1 按用户裁决排除, 不运行/整改/用作旧功能oracle.",
+      "cases": []
     },
     {
       "id": "GAP-MANUAL",
@@ -663,7 +3181,519 @@
       "evidence_level": "manual",
       "command": null,
       "required_for_full": true,
-      "oracle_status": "incomplete"
+      "oracle_status": "incomplete",
+      "disposition": "keep",
+      "disposition_basis": "保留非GUI既有功能, 机械化触发/判定/恢复.",
+      "s1_note": "S1 逐项保留为必需case, 当前native blocked; 不因历史叫手工而豁免.",
+      "cases": [
+        {
+          "id": "GAP-EXECUTECMD",
+          "suite_id": "GAP-MANUAL",
+          "title": "ExecuteCmd",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "feature": "ExecuteCmd",
+            "trigger": "listener ExecuteCmd 良性命令在首次连接时执行"
+          },
+          "steps": [
+            "configure the feature",
+            "trigger with a benign input",
+            "observe positive/negative",
+            "restore"
+          ],
+          "expected": {
+            "positive": "documented trigger reaches the expected observation",
+            "negative": "no observation or no restore is not pass"
+          },
+          "oracle": {
+            "kind": "manual"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "feature implemented"
+          ],
+          "timeout": 300,
+          "cleanup": "restore the changed configuration/state",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "docs/testing.md",
+            "fakenet/configs/default.ini"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "GAP-NCSI",
+          "suite_id": "GAP-MANUAL",
+          "title": "NCSI",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "feature": "NCSI",
+            "trigger": "dns.msftncsi.com 应答 131.107.255.225"
+          },
+          "steps": [
+            "configure the feature",
+            "trigger with a benign input",
+            "observe positive/negative",
+            "restore"
+          ],
+          "expected": {
+            "positive": "documented trigger reaches the expected observation",
+            "negative": "no observation or no restore is not pass"
+          },
+          "oracle": {
+            "kind": "manual"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "feature implemented"
+          ],
+          "timeout": 300,
+          "cleanup": "restore the changed configuration/state",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "docs/testing.md",
+            "fakenet/configs/default.ini"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "GAP-STANDALONE-LISTENERS",
+          "suite_id": "GAP-MANUAL",
+          "title": "standalone listeners",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "feature": "standalone listeners",
+            "trigger": "各 listener 独立运行"
+          },
+          "steps": [
+            "configure the feature",
+            "trigger with a benign input",
+            "observe positive/negative",
+            "restore"
+          ],
+          "expected": {
+            "positive": "documented trigger reaches the expected observation",
+            "negative": "no observation or no restore is not pass"
+          },
+          "oracle": {
+            "kind": "manual"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "feature implemented"
+          ],
+          "timeout": 300,
+          "cleanup": "restore the changed configuration/state",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "docs/testing.md",
+            "fakenet/configs/default.ini"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "GAP-CTRLC-IPC",
+          "suite_id": "GAP-MANUAL",
+          "title": "Ctrl-C / IPC halt",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "feature": "Ctrl-C / IPC halt",
+            "trigger": "Ctrl-C 与 IPC 停止"
+          },
+          "steps": [
+            "configure the feature",
+            "trigger with a benign input",
+            "observe positive/negative",
+            "restore"
+          ],
+          "expected": {
+            "positive": "documented trigger reaches the expected observation",
+            "negative": "no observation or no restore is not pass"
+          },
+          "oracle": {
+            "kind": "manual"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "feature implemented"
+          ],
+          "timeout": 300,
+          "cleanup": "restore the changed configuration/state",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "docs/testing.md",
+            "fakenet/configs/default.ini"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "GAP-DIVERTER-SWITCH",
+          "suite_id": "GAP-MANUAL",
+          "title": "Diverter enable/disable",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "feature": "Diverter enable/disable",
+            "trigger": "DivertTraffic 开关"
+          },
+          "steps": [
+            "configure the feature",
+            "trigger with a benign input",
+            "observe positive/negative",
+            "restore"
+          ],
+          "expected": {
+            "positive": "documented trigger reaches the expected observation",
+            "negative": "no observation or no restore is not pass"
+          },
+          "oracle": {
+            "kind": "manual"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "feature implemented"
+          ],
+          "timeout": 300,
+          "cleanup": "restore the changed configuration/state",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "docs/testing.md",
+            "fakenet/configs/default.ini"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "GAP-SYSLOG-ICMP-LOG",
+          "suite_id": "GAP-MANUAL",
+          "title": "Syslog / ICMP logging",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "feature": "Syslog / ICMP logging",
+            "trigger": "syslog 与 ICMP 日志"
+          },
+          "steps": [
+            "configure the feature",
+            "trigger with a benign input",
+            "observe positive/negative",
+            "restore"
+          ],
+          "expected": {
+            "positive": "documented trigger reaches the expected observation",
+            "negative": "no observation or no restore is not pass"
+          },
+          "oracle": {
+            "kind": "manual"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "feature implemented"
+          ],
+          "timeout": 300,
+          "cleanup": "restore the changed configuration/state",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "docs/testing.md",
+            "fakenet/configs/default.ini"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "GAP-DUMPPACKETS",
+          "suite_id": "GAP-MANUAL",
+          "title": "DumpPackets",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "feature": "DumpPackets",
+            "trigger": "DumpPackets 开关/前缀"
+          },
+          "steps": [
+            "configure the feature",
+            "trigger with a benign input",
+            "observe positive/negative",
+            "restore"
+          ],
+          "expected": {
+            "positive": "documented trigger reaches the expected observation",
+            "negative": "no observation or no restore is not pass"
+          },
+          "oracle": {
+            "kind": "manual"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "feature implemented"
+          ],
+          "timeout": 300,
+          "cleanup": "restore the changed configuration/state",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "docs/testing.md",
+            "fakenet/configs/default.ini"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "GAP-LINUX-FLUSH-INTERFACE",
+          "suite_id": "GAP-MANUAL",
+          "title": "Linux flush/interface",
+          "platforms": [
+            "linux"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "feature": "Linux flush/interface",
+            "trigger": "LinuxFlushIptables/DNSCommand/LinuxRestrictInterface"
+          },
+          "steps": [
+            "configure the feature",
+            "trigger with a benign input",
+            "observe positive/negative",
+            "restore"
+          ],
+          "expected": {
+            "positive": "documented trigger reaches the expected observation",
+            "negative": "no observation or no restore is not pass"
+          },
+          "oracle": {
+            "kind": "manual"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "feature implemented"
+          ],
+          "timeout": 300,
+          "cleanup": "restore the changed configuration/state",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "docs/testing.md",
+            "fakenet/configs/default.ini"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "GAP-NETWORK-FIX",
+          "suite_id": "GAP-MANUAL",
+          "title": "FixGateway/FixDNS/ModifyLocalDNS/StopDNSService",
+          "platforms": [
+            "windows",
+            "linux"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "feature": "FixGateway/FixDNS/ModifyLocalDNS/StopDNSService",
+            "trigger": "网络修复开关"
+          },
+          "steps": [
+            "configure the feature",
+            "trigger with a benign input",
+            "observe positive/negative",
+            "restore"
+          ],
+          "expected": {
+            "positive": "documented trigger reaches the expected observation",
+            "negative": "no observation or no restore is not pass"
+          },
+          "oracle": {
+            "kind": "manual"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "feature implemented"
+          ],
+          "timeout": 300,
+          "cleanup": "restore the changed configuration/state",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "docs/testing.md",
+            "fakenet/configs/default.ini"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "GAP-RAW-DATE",
+          "suite_id": "GAP-MANUAL",
+          "title": "HTTP CustomResponse RAW-DATE",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "feature": "HTTP CustomResponse RAW-DATE",
+            "trigger": "RAW-DATE 替换"
+          },
+          "steps": [
+            "configure the feature",
+            "trigger with a benign input",
+            "observe positive/negative",
+            "restore"
+          ],
+          "expected": {
+            "positive": "documented trigger reaches the expected observation",
+            "negative": "no observation or no restore is not pass"
+          },
+          "oracle": {
+            "kind": "manual"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "feature implemented"
+          ],
+          "timeout": 300,
+          "cleanup": "restore the changed configuration/state",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "docs/testing.md",
+            "fakenet/configs/default.ini"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        },
+        {
+          "id": "GAP-LIST-MUTEX",
+          "suite_id": "GAP-MANUAL",
+          "title": "Black/White list mutual exclusivity",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "feature": "Black/White list mutual exclusivity",
+            "trigger": "名单互斥"
+          },
+          "steps": [
+            "configure the feature",
+            "trigger with a benign input",
+            "observe positive/negative",
+            "restore"
+          ],
+          "expected": {
+            "positive": "documented trigger reaches the expected observation",
+            "negative": "no observation or no restore is not pass"
+          },
+          "oracle": {
+            "kind": "manual"
+          },
+          "resources": [
+            "vm"
+          ],
+          "readiness": [
+            "feature implemented"
+          ],
+          "timeout": 300,
+          "cleanup": "restore the changed configuration/state",
+          "dependencies": [],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "docs/testing.md",
+            "fakenet/configs/default.ini"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        }
+      ]
     },
     {
       "id": "GAP-APPLICATION",
@@ -682,7 +3712,115 @@
       "evidence_level": "native",
       "command": null,
       "required_for_full": true,
-      "oracle_status": "incomplete"
+      "oracle_status": "incomplete",
+      "disposition": "keep",
+      "disposition_basis": "补齐既有规则代表性交互与应用正反例, 不做所有组合穷举.",
+      "s1_note": "S1 保留组合场景必需case, 当前native blocked.",
+      "cases": [
+        {
+          "id": "GAP-COMBO-SCENARIO",
+          "suite_id": "GAP-APPLICATION",
+          "title": "允许域名/公网IP/私网接管/非允许目标组合",
+          "platforms": [
+            "windows"
+          ],
+          "modes": [
+            "singlehost"
+          ],
+          "input": {
+            "allowed": "api.deepseek.com",
+            "reviewed_ip": "pinned",
+            "sink": "192.168.204.1",
+            "denied": "example.com"
+          },
+          "steps": [
+            "one final config",
+            "benign client for each path",
+            "controlled sink",
+            "match nonce/tuple and policy evidence"
+          ],
+          "expected": {
+            "positive": "allowed path reaches the real service; sink path receives the request; denied path is diverted/blocked",
+            "negative": "DNS lease or a single DROP does not prove the whole path"
+          },
+          "oracle": {
+            "kind": "pcap"
+          },
+          "resources": [
+            "windows-vm",
+            "sentinel",
+            "pktmon"
+          ],
+          "readiness": [
+            "controlled endpoints"
+          ],
+          "timeout": 900,
+          "cleanup": "stop core; restore network",
+          "dependencies": [
+            "EGRESS-ALLOW-CHAIN",
+            "POL-TAKEOVER",
+            "IP-TAKEOVER-COEXIST"
+          ],
+          "adapter": "native-blocked",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "docs/testing.md",
+            "test/gui_vm/run_policy_feature_tests.py"
+          ],
+          "blocked_reason": "native adapter not implemented in S1"
+        }
+      ]
     }
-  ]
+  ],
+  "exclusions": [
+    {
+      "id": "CORE-UNIT:gui-unit-modules",
+      "basis": "用户排除GUI测试; GUI模型/窗口/日志视图/校验器等单元模块不进入full选择."
+    },
+    {
+      "id": "GUI-POLICY:gui-a-group-and-three-round-stop",
+      "basis": "用户排除GUI窗口/点击/UAC及三轮GUI停止; 仅保留抽出的域名/接管/组合/恢复核心用例."
+    },
+    {
+      "id": "GUI-DEVELOPMENT:gui-diagnostics",
+      "basis": "GUI单组/诊断/日志导出不构成正式回归oracle; 仅按直接依赖复用非GUI helper."
+    },
+    {
+      "id": "MCP-RELEASE:150-round-release",
+      "basis": "用户排除150轮发布; 仅保留最小故障原语为独立用例."
+    },
+    {
+      "id": "MCP-SCENARIOS:100-scenario",
+      "basis": "用户排除100场景; 仅保留产品必要共享原语按最小依赖复用."
+    },
+    {
+      "id": "MCP-FORMAL:heavy-formal-orchestration",
+      "basis": "旧矩阵重型编排不作为本套回归硬前置; 场景/来源重判不进入S1."
+    },
+    {
+      "id": "EGRESS-NEW-DEFERRED:new-egress-interface",
+      "basis": "用户明确先不处理新出口验证接口; 不用它替代旧功能oracle."
+    },
+    {
+      "id": "BUILD:gui-package-tests",
+      "basis": "GUI打包与GUI专用测试不执行; 构建组只保留候选制品身份校验."
+    }
+  ],
+  "s1_scope": {
+    "plan_schema": "fakenet.acceptance-plan.v2",
+    "summary_schema": "fakenet.acceptance-summary.v2",
+    "executable_adapters": [
+      "offline-pytest"
+    ],
+    "authorised_offline_modules": [
+      "test/test_tlshello.py",
+      "test/test_dual_pcap_writer.py",
+      "test/test_acceptance_catalog.py",
+      "test/test_acceptance_regression.py",
+      "test/test_upstream_runner_contract.py"
+    ],
+    "native_status": "registered but blocked; requires S2 real VM/endpoints and adapters"
+  }
 }

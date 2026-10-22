@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Inventory, plan and judge existing FakeNet regression facilities.
+"""Inventory, plan, execute and judge existing FakeNet regression facilities.
 
-This module never imports an acceptance driver. Inventory and planning perform
-no network, VM, build or service operations. Original drivers remain owners of
-their runtime checks, evidence and cleanup.
+The v1 surface (inventory/check/plan/run/judge --result) remains readable and
+byte-compatible with historical plans and receipts.  The v2 surface adds the
+catalog cases, an explicit candidate/environment bound plan, offline execution
+with original evidence, and a strict judge that recomputes verdicts from raw
+results.
+
+No inventory/plan operation imports a test driver.  Collection and execution
+are code execution, so they only run registered adapters and only when the
+environment explicitly authorises the action.  Original drivers keep their own
+runtime checks, evidence and cleanup responsibility.
 """
 from __future__ import annotations
 
@@ -11,6 +18,7 @@ import argparse
 import ast
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import subprocess
@@ -21,7 +29,29 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / 'docs' / 'acceptance' / 'catalog.json'
 SCHEMA = 'fakenet.acceptance-inventory.v1'
+CATALOG_V1 = 'fakenet.acceptance-catalog.v1'
+CATALOG_V2 = 'fakenet.acceptance-catalog.v2'
+PLAN_V1 = 'fakenet.acceptance-plan.v1'
+PLAN_V2 = 'fakenet.acceptance-plan.v2'
+RECEIPT_V2 = 'fakenet.acceptance-receipt.v2'
+RESULTS_V2 = 'fakenet.acceptance-results.v2'
+SUMMARY_V1 = 'fakenet.acceptance-summary.v1'
+SUMMARY_V2 = 'fakenet.acceptance-summary.v2'
+CANDIDATE_V2 = 'fakenet.acceptance-candidate.v2'
+ENVIRONMENT_V2 = 'fakenet.acceptance-environment.v2'
 STATUSES = {'pass', 'fail', 'unknown', 'not_run', 'blocked', 'skip', 'observed'}
+CASE_STATUSES = {'pass', 'fail', 'not_run', 'unknown', 'blocked', 'not_applicable'}
+ADAPTERS = {'offline-pytest', 'native-blocked', 'manual-blocked'}
+ORACLES = {'junit', 'tsv', 'native-json', 'pcap', 'manual', 'none'}
+EXIT_OK, EXIT_FAIL, EXIT_INPUT, EXIT_TOOL = 0, 1, 2, 3
+
+
+class InputError(ValueError):
+    """Invalid operator input or unsupported schema; exit 2."""
+
+
+class ToolError(RuntimeError):
+    """Facility failure (collection, adapter, malformed raw result); exit 3."""
 
 
 def sha256(path):
@@ -32,10 +62,23 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def read_json(path):
+    try:
+        return json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise InputError('unreadable JSON %s: %s' % (path, error)) from error
+
+
 def read_catalog(root=ROOT):
-    value = json.loads((Path(root) / 'docs/acceptance/catalog.json').read_text(encoding='utf-8'))
-    if value.get('schema') != 'fakenet.acceptance-catalog.v1':
-        raise ValueError('unknown catalog schema')
+    root = Path(root)
+    value = read_json(root / 'docs/acceptance/catalog.json')
+    schema = value.get('schema')
+    if schema not in (CATALOG_V1, CATALOG_V2):
+        raise InputError('unknown catalog schema: %r' % schema)
     ids = [row['id'] for row in value['suites']]
     if len(ids) != len(set(ids)):
         raise ValueError('duplicate suite id')
@@ -46,9 +89,88 @@ def read_catalog(root=ROOT):
         for source in row['sources']:
             if not source or Path(source).is_absolute() or '..' in Path(source).parts:
                 raise ValueError('unsafe catalog source')
-            if not any(Path(root).glob(source)):
+            if not any(root.glob(source)):
                 raise ValueError('%s missing source %s' % (row['id'], source))
+    if schema == CATALOG_V2:
+        validate_cases(value)
     return value
+
+
+def validate_cases(catalog):
+    cases = []
+    for suite in catalog['suites']:
+        for case in suite.get('cases') or []:
+            cases.append((suite, case))
+    ids = [case['id'] for unused, case in cases]
+    if len(ids) != len(set(ids)):
+        raise ValueError('duplicate case id')
+    for suite, case in cases:
+        required = ('id', 'suite_id', 'title', 'platforms', 'modes', 'input',
+                    'steps', 'expected', 'oracle', 'resources', 'readiness',
+                    'timeout', 'cleanup', 'dependencies', 'adapter')
+        for key in required:
+            if key not in case:
+                raise ValueError('%s missing case field %s' % (case.get('id'), key))
+            if key == 'dependencies':
+                continue
+            if case[key] in (None, '', []):
+                raise ValueError('%s empty case field %s' % (case.get('id'), key))
+        if case['suite_id'] != suite['id']:
+            raise ValueError('%s suite_id mismatch' % case['id'])
+        if not isinstance(case['platforms'], list) or not case['platforms']:
+            raise ValueError('%s platforms must be a nonempty list' % case['id'])
+        if not isinstance(case['modes'], list) or not case['modes']:
+            raise ValueError('%s modes must be a nonempty list' % case['id'])
+        if case['adapter'] not in ADAPTERS:
+            raise ValueError('%s unknown adapter' % case['id'])
+        oracle = case['oracle']
+        if not isinstance(oracle, dict) or oracle.get('kind') not in ORACLES:
+            raise ValueError('%s invalid oracle' % case['id'])
+        if not isinstance(case['timeout'], int) or case['timeout'] <= 0:
+            raise ValueError('%s timeout must be a positive integer' % case['id'])
+        if not isinstance(case['dependencies'], list):
+            raise ValueError('%s dependencies must be a list' % case['id'])
+        if case.get('excluded') and not case.get('excluded_basis'):
+            raise ValueError('%s excluded without basis' % case['id'])
+        if case['adapter'] != 'offline-pytest' and case.get('required_for_full', True):
+            if not case.get('blocked_reason'):
+                raise ValueError('%s needs blocked_reason' % case['id'])
+    known = set(ids)
+    for unused, case in cases:
+        for dependency in case['dependencies']:
+            if dependency not in known:
+                raise ValueError('%s unknown dependency %s' % (case['id'], dependency))
+            if dependency == case['id']:
+                raise ValueError('%s depends on itself' % case['id'])
+    graph = {case['id']: list(case['dependencies']) for unused, case in cases}
+    state = {}
+
+    def visit(node):
+        if state.get(node) == 2:
+            return
+        if state.get(node) == 1:
+            raise ValueError('dependency cycle at %s' % node)
+        state[node] = 1
+        for child in graph.get(node, ()):
+            visit(child)
+        state[node] = 2
+
+    for node in graph:
+        visit(node)
+    for entry in catalog.get('exclusions') or []:
+        if not entry.get('id') or not entry.get('basis'):
+            raise ValueError('exclusion needs id and basis')
+    return cases
+
+
+def all_cases(catalog):
+    result = []
+    for suite in catalog['suites']:
+        for case in suite.get('cases') or []:
+            record = dict(case)
+            record['suite_id'] = suite['id']
+            result.append(record)
+    return result
 
 
 def python_items(path, root):
@@ -133,11 +255,17 @@ def inventory(root=ROOT):
             discovered.add(path.relative_to(root).as_posix())
     unclassified = sorted(discovered - set(files))
     file_list = sorted(files.values(), key=lambda row: row['path'])
+    cases = all_cases(catalog) if catalog['schema'] == CATALOG_V2 else []
     return {'schema': SCHEMA, 'catalog_sha256': sha256(root / 'docs/acceptance/catalog.json'),
+            'catalog_schema': catalog['schema'],
             'suites': catalog['suites'], 'files': file_list,
             'unclassified': unclassified,
             'counts': {'suites': len(catalog['suites']), 'files': len(files),
-                       'declared_items': sum(len(row['items']) for row in file_list)},
+                       'declared_items': sum(len(row['items']) for row in file_list),
+                       'cases': len(cases),
+                       'required_cases': sum(1 for row in cases
+                                             if row.get('required_for_full', True)
+                                             and not row.get('stress'))},
             'qualification': 'not_run',
             'limits': ['Static declarations are not executed cases or pass credit.',
                        'Parameterized and dynamically generated cases require runtime collection.',
@@ -179,6 +307,19 @@ def parse_junit(path):
     return rows
 
 
+def junit_node(node):
+    identity, bracket, parameters = node.partition('[')
+    parts = identity.split('::')
+    path_part = parts[0]
+    if not path_part.startswith('test/'):
+        marker = path_part.rfind('/test/')
+        if marker >= 0:
+            path_part = path_part[marker + 1:]
+    module = path_part[:-3].replace('/', '.')
+    classname = '.' + '.'.join(parts[1:-1]) if len(parts) > 2 else ''
+    return module + classname + '::' + parts[-1] + bracket + parameters
+
+
 def judge_rows(rows, required):
     """A missing/duplicate/observed/skip result cannot silently satisfy a case."""
     if (not isinstance(required, list) or not required
@@ -207,7 +348,7 @@ def judge_session(plan, results, root=ROOT):
     suites = {suite['id']: suite for suite in catalog['suites']}
     if plan.get('catalog_sha256') != sha256(Path(root) / 'docs/acceptance/catalog.json'):
         raise ValueError('plan catalog identity changed')
-    if plan.get('schema') != 'fakenet.acceptance-plan.v1':
+    if plan.get('schema') != PLAN_V1:
         raise ValueError('unknown plan schema')
     required = plan.get('required_suites')
     if not isinstance(required, list) or not required or len(required) != len(set(required)):
@@ -271,7 +412,7 @@ def judge_session(plan, results, root=ROOT):
     full_coverage = full_set.issubset(set(required))
     pending = sorted(row['id'] for row in catalog['suites']
                      if row.get('required_for_full') and row.get('oracle_status') != 'ready')
-    return {'schema': 'fakenet.acceptance-summary.v1', 'candidate': plan['candidate'],
+    return {'schema': SUMMARY_V1, 'candidate': plan['candidate'],
             'execution_id': plan.get('execution_id'), 'suites': outcomes, **evaluation,
             'coverage': 'full_catalog' if full_coverage else 'selected',
             'full_catalog_pass': full_coverage and not pending and evaluation['verdict'] == 'pass',
@@ -286,9 +427,9 @@ def make_plan(root=ROOT):
     for suite in value['suites']:
         hashes[suite['id']] = {row['path']: row['sha256'] for row in value['files']
                                if suite['id'] in row['suites']}
-    return {'schema': 'fakenet.acceptance-plan.v1', 'execution_id': str(uuid.uuid4()),
+    return {'schema': PLAN_V1, 'execution_id': str(uuid.uuid4()),
             'catalog_sha256': value['catalog_sha256'], 'candidate': {},
-            'required_suites': [row['id'] for row in value['suites'] if row['required_for_full']],
+            'required_suites': [row['id'] for row in value['suites'] if row.get('required_for_full')],
             'source_hashes': hashes, 'required_checks': {}, 'qualification': 'not_run',
             'instructions': ['Fill actual candidate identity before executing any suite.',
                              'Freeze exact required case IDs from original runtime collection or reviewed native/manual plan.',
@@ -370,13 +511,29 @@ def markdown(value):
     for row in value['suites']:
         cols = [row['id'] + ': ' + row['title'], row['content'], row['procedure'], row['judgment']]
         lines.append('| ' + ' | '.join(str(c).replace('|', '\\|').replace('\n', ' ') for c in cols) + ' |')
+    cases = all_cases(value) if value.get('schema') == CATALOG_V2 else []
+    if cases:
+        lines += ['', '## 功能用例与适用面', '',
+                  '| 用例 | 分组 | 平台 | 适配器 | 进入full | 状态 |', '| --- | --- | --- | --- | --- | --- |']
+        for case in cases:
+            state = ('excluded' if case.get('excluded') else
+                     'stress' if case.get('stress') else
+                     'blocked' if case.get('adapter') != 'offline-pytest' else 'offline')
+            lines.append('| `%s` | %s | %s | %s | %s | %s |' % (
+                case['id'], case['suite_id'], ', '.join(case['platforms']),
+                case['adapter'], 'no' if case.get('stress') or case.get('excluded') else 'yes',
+                state))
     for suite in value['suites']:
         lines += ['', '## ' + suite['id'] + ' ' + suite['title'], '',
-                  '证据级别: ' + suite['evidence_level'], '',
-                  '前置条件: ' + suite['prerequisites'], '',
+                  '证据级别: ' + suite['evidence_level'], '']
+        if suite.get('s1_note'):
+            lines += ['S1 处置: ' + suite['s1_note'], '']
+        lines += ['前置条件: ' + suite['prerequisites'], '',
                   '原入口/来源: ' + ', '.join('`' + p + '`' for p in suite['sources']), '',
                   '结果与原件: ' + suite['outputs'], '',
                   '限制/待补: ' + suite['limitations']]
+        if suite.get('disposition'):
+            lines += ['', '范围处置: ' + suite['disposition']]
     lines += ['', '## 逐文件和逐项索引', '',
               '用 inventory --format json 导出源码位置、完整哈希、测试函数、断言及原生结果声明.', '',
               '| 文件 | 所属分组 | 静态声明数 |', '| --- | --- | --- |']
@@ -386,47 +543,647 @@ def markdown(value):
     return '\n'.join(lines)
 
 
+# ---------------------------------------------------------------------------
+# v2: catalog cases, explicit candidate/environment plans, offline execution.
+# ---------------------------------------------------------------------------
+
+
+def git_head(root):
+    root = Path(root).resolve()
+    top = subprocess.run(['git', '-C', str(root), 'rev-parse', '--show-toplevel'],
+                         capture_output=True, text=True, check=False)
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != root:
+        raise InputError('root is not the top of a Git work tree: %s' % root)
+    completed = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'],
+                               capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        raise InputError('cannot resolve product HEAD: %s' % completed.stderr.strip())
+    return completed.stdout.strip()
+
+
+def _resolve_source_commit(root, candidate):
+    try:
+        return git_head(root)
+    except InputError:
+        # Explicit fixture-only escape: a temporary product root used by the
+        # facility self-tests has no Git history. The plan records that the
+        # identity was declared, never that it was verified against Git.
+        if candidate.get('offline_fixture') is True:
+            return candidate['source_commit']
+        raise
+
+
+def load_candidate(path):
+    value = read_json(path)
+    if value.get('schema') != CANDIDATE_V2:
+        raise InputError('unknown candidate schema: %r' % value.get('schema'))
+    if not isinstance(value.get('source_commit'), str) or not value['source_commit']:
+        raise InputError('candidate.source_commit is required')
+    for key in ('package_manifest', 'package_sha256', 'deployed_identity'):
+        value.setdefault(key, None)
+    return value
+
+
+def load_environment(path):
+    value = read_json(path)
+    if value.get('schema') != ENVIRONMENT_V2:
+        raise InputError('unknown environment schema: %r' % value.get('schema'))
+    interpreters = value.get('interpreters')
+    if not isinstance(interpreters, dict) or not interpreters.get('python'):
+        raise InputError('environment.interpreters.python is required')
+    python = Path(interpreters['python'])
+    if not python.is_file():
+        raise InputError('environment interpreter is missing: %s' % python)
+    work_root = value.get('work_root')
+    if not isinstance(work_root, str) or not Path(work_root).is_absolute():
+        raise InputError('environment.work_root must be an absolute path')
+    actions = value.get('allowed_actions')
+    if not isinstance(actions, list) or not actions:
+        raise InputError('environment.allowed_actions is required')
+
+    def scan(node, trail=()):
+        if isinstance(node, dict):
+            for key, child in node.items():
+                lowered = str(key).lower()
+                if any(word in lowered for word in ('password', 'secret', 'token', 'private_key')):
+                    raise InputError('environment must not embed secrets: %s' % '.'.join(trail + (str(key),)))
+                scan(child, trail + (str(key),))
+        elif isinstance(node, list):
+            for index, child in enumerate(node):
+                scan(child, trail + (str(index),))
+
+    scan(value)
+    return value
+
+
+def select_cases(catalog, mode, suite_ids, case_ids):
+    cases = all_cases(catalog)
+    if mode == 'full':
+        selected = [case for case in cases
+                    if case.get('required_for_full', True)
+                    and not case.get('stress') and not case.get('excluded')]
+        exclusions = [{'id': case['id'], 'basis': case.get('excluded_basis') or 'excluded'}
+                      for case in cases if case.get('excluded')]
+    elif mode == 'stress':
+        selected = [case for case in cases if case.get('stress') and not case.get('excluded')]
+        exclusions = []
+    elif mode == 'selected':
+        if not suite_ids and not case_ids:
+            raise InputError('plan --mode selected requires --suite or --case')
+        selected = [case for case in cases
+                    if case['suite_id'] in set(suite_ids) or case['id'] in set(case_ids)]
+        missing_suites = sorted(set(suite_ids) - {case['suite_id'] for case in cases})
+        if missing_suites:
+            raise InputError('unknown suite selection: %r' % missing_suites)
+        missing_cases = sorted(set(case_ids) - {case['id'] for case in cases})
+        if missing_cases:
+            raise InputError('unknown case selection: %r' % missing_cases)
+        if any(case.get('excluded') for case in selected):
+            raise InputError('selected set contains an excluded case')
+        exclusions = []
+    else:
+        raise InputError('unknown plan mode: %r' % mode)
+    if not selected:
+        raise InputError('selection is empty')
+    return selected, exclusions
+
+
+def case_sources(case):
+    sources = case.get('sources')
+    if not sources:
+        data = case.get('input') or {}
+        modules = data.get('modules') or ([data['module']] if data.get('module') else [])
+        sources = list(modules)
+    return [str(item) for item in sources]
+
+
+def case_required_checks(case):
+    # Native cases are not adapted in S1.  Their exact runtime node IDs are
+    # not known before the adapter exists, so the plan records an empty check
+    # list and a blocked reason instead of inventing a node identity.
+    return list(case.get('declared_checks') or [])
+
+
+def collect_nodes(root, case, python, tmp_dir, log_dir):
+    data = case.get('input') or {}
+    modules = data.get('modules') or ([data['module']] if data.get('module') else [])
+    if not modules:
+        raise ToolError('%s has no collectable module' % case['id'])
+    log_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / (case['id'] + '-collection.log')
+    env = _python_env(root, tmp_dir)
+    command = [str(python), '-B', '-m', 'pytest', '--collect-only', '-q',
+               '--rootdir', str(root)] + [str(item) for item in modules]
+    completed = subprocess.run(command, cwd=root, env=env, capture_output=True,
+                               text=True, timeout=case['timeout'], check=False)
+    log_path.write_text('$ %s\n[exit %d]\n%s\n%s' % (
+        ' '.join(command), completed.returncode, completed.stdout, completed.stderr), encoding='utf-8')
+    if completed.returncode != 0:
+        raise ToolError('%s collection failed rc=%d log=%s' % (case['id'], completed.returncode, log_path))
+    raw_nodes = []
+    for line in completed.stdout.splitlines():
+        node = line.strip()
+        if '::' not in node:
+            continue
+        path_part = node.split('::', 1)[0]
+        if not path_part.endswith('.py'):
+            continue
+        raw_nodes.append(node)
+    if not raw_nodes:
+        raise ToolError('%s collection returned no nodes' % case['id'])
+    canonical = [junit_node(node) for node in raw_nodes]
+    if len(canonical) != len(set(canonical)):
+        raise ToolError('%s collection returned duplicate nodes' % case['id'])
+    return canonical, raw_nodes, str(log_path)
+
+
+def _python_env(root, tmp_dir):
+    import os
+    env = os.environ.copy()
+    env['PYTHONPATH'] = str(root)
+    env['PYTHONDONTWRITEBYTECODE'] = '1'
+    env['PYTHONIOENCODING'] = 'utf-8'
+    env['TMPDIR'] = str(tmp_dir)
+    return env
+
+
+def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_ids, output):
+    root = Path(root)
+    catalog = read_catalog(root)
+    if catalog.get('schema') != CATALOG_V2:
+        raise InputError('plan --mode requires catalog v2')
+    candidate = load_candidate(candidate_path)
+    environment = load_environment(environment_path)
+    head = _resolve_source_commit(root, candidate)
+    if candidate['source_commit'] != head:
+        raise InputError('candidate.source_commit %s does not match current HEAD %s'
+                         % (candidate['source_commit'], head))
+    selected, exclusions = select_cases(catalog, mode, suite_ids, case_ids)
+    output = Path(output)
+    run_dir = output.parent
+    if output.exists():
+        raise InputError('plan output already exists: %s' % output)
+    if run_dir.exists() and any(run_dir.iterdir()):
+        raise InputError('run directory is not empty: %s' % run_dir)
+    work_root = Path(environment['work_root'])
+    if not run_dir.resolve().is_relative_to(work_root.resolve()):
+        raise InputError('run directory must be under environment.work_root')
+    python = environment['interpreters']['python']
+    run_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = run_dir / 'tmp'
+    case_records = {}
+    source_hashes = {}
+    required_checks = {}
+    blocked = {}
+    for case in selected:
+        sources = case_sources(case)
+        hashes = {}
+        for name in sources:
+            path = root / name
+            if not path.is_file():
+                raise InputError('%s source missing: %s' % (case['id'], name))
+            hashes[name] = sha256(path)
+        source_hashes[case['id']] = hashes
+        record = dict(case)
+        record['sources'] = sources
+        if case['adapter'] == 'offline-pytest':
+            if not case.get('collection_safe'):
+                blocked[case['id']] = 'collection is not authorised for this case'
+                record['required_checks'] = []
+                record['run_nodes'] = []
+            elif 'collection' not in environment['allowed_actions']:
+                blocked[case['id']] = 'environment does not allow collection'
+                record['required_checks'] = []
+                record['run_nodes'] = []
+            else:
+                canonical, raw_nodes, log_path = collect_nodes(
+                    root, case, python, tmp_dir, run_dir / 'collection')
+                required_checks[case['id']] = canonical
+                record['required_checks'] = canonical
+                record['run_nodes'] = raw_nodes
+                record['collection_log'] = log_path
+        else:
+            blocked[case['id']] = case.get('blocked_reason') or 'adapter is not implemented'
+            checks = case_required_checks(case)
+            required_checks[case['id']] = checks
+            record['required_checks'] = checks
+            record['run_nodes'] = []
+        case_records[case['id']] = record
+    plan = {
+        'schema': PLAN_V2,
+        'execution_id': str(uuid.uuid4()),
+        'mode': mode,
+        'candidate': candidate,
+        'environment': environment,
+        'catalog_sha256': sha256(root / 'docs/acceptance/catalog.json'),
+        'source_commit': head,
+        'source_hashes': source_hashes,
+        'required_cases': [case['id'] for case in selected],
+        'required_checks': required_checks,
+        'blocked': blocked,
+        'exclusions': exclusions,
+        'cases': case_records,
+        'run_dir': str(run_dir.resolve()),
+        'created_at': utc_now(),
+    }
+    with output.open('x', encoding='utf-8') as stream:
+        stream.write(json.dumps(plan, ensure_ascii=False, indent=2) + '\n')
+    return plan
+
+
+def _write_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('x', encoding='utf-8') as stream:
+        stream.write(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
+
+
+def _hash_record(path, fmt):
+    path = Path(path)
+    return {'path': str(path.resolve()), 'sha256': sha256(path), 'format': fmt}
+
+
+def execute_plan(root, plan_path):
+    root = Path(root)
+    plan_path = Path(plan_path)
+    plan = read_json(plan_path)
+    if plan.get('schema') != PLAN_V2:
+        raise InputError('execute requires plan v2')
+    run_dir = plan_path.parent.resolve()
+    if Path(plan.get('run_dir', '')).resolve() != run_dir:
+        raise InputError('plan run_dir does not match plan location')
+    if plan.get('catalog_sha256') != sha256(root / 'docs/acceptance/catalog.json'):
+        raise InputError('catalog changed since plan')
+    for case_id, hashes in plan['source_hashes'].items():
+        for name, digest in hashes.items():
+            path = root / name
+            if not path.is_file() or sha256(path) != digest:
+                raise InputError('source changed since plan: %s' % name)
+    results_dir = run_dir / 'results'
+    if results_dir.exists():
+        raise InputError('results directory already exists: %s' % results_dir)
+    results_dir.mkdir(parents=True)
+    python = plan['environment']['interpreters']['python']
+    tmp_dir = run_dir / 'tmp'
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    receipts = []
+    for case_id in plan['required_cases']:
+        case = plan['cases'][case_id]
+        case_dir = results_dir / case_id
+        case_dir.mkdir()
+        receipt = {
+            'schema': RECEIPT_V2,
+            'execution_id': plan['execution_id'],
+            'suite_id': case['suite_id'],
+            'case_id': case_id,
+            'attempt': 1,
+            'candidate': plan['candidate'],
+            'environment': plan['environment'],
+            'config_sha256': _sha256_json(case),
+            'evidence_level': 'offline' if case['adapter'] == 'offline-pytest' else 'native',
+        }
+        if case_id in plan.get('blocked', {}):
+            receipt.update({
+                'status': 'blocked',
+                'reason': plan['blocked'][case_id],
+                'returncode': None,
+                'command': None,
+                'started_at': None,
+                'ended_at': utc_now(),
+                'duration_seconds': 0.0,
+                'artifacts': [],
+                'cleanup': {'source': 'adapter', 'complete': False,
+                            'actions': [], 'post_observation': 'case was not executed'},
+            })
+        elif case['adapter'] == 'offline-pytest':
+            receipt.update(_run_offline_case(root, plan, case, case_dir, python, tmp_dir))
+        else:
+            raise ToolError('unregistered adapter: %s' % case['adapter'])
+        receipt_path = case_dir / 'receipt.json'
+        _write_json(receipt_path, receipt)
+        receipts.append({'case_id': case_id, 'path': str(receipt_path.resolve()),
+                         'sha256': sha256(receipt_path), 'status': receipt['status']})
+    index = {'schema': RESULTS_V2, 'execution_id': plan['execution_id'],
+             'plan': str(plan_path.resolve()), 'plan_sha256': sha256(plan_path),
+             'receipts': receipts}
+    index_path = results_dir / 'results.json'
+    _write_json(index_path, index)
+    summary = judge_v2(root, plan_path, results_dir, run_dir / 'summary.json')
+    summary['paths'] = {'plan': str(plan_path.resolve()),
+                        'results': str(results_dir.resolve()),
+                        'summary': str((run_dir / 'summary.json').resolve())}
+    return summary
+
+
+def _sha256_json(value):
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True).encode('utf-8')
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _run_offline_case(root, plan, case, case_dir, python, tmp_dir):
+    started = datetime.now(timezone.utc)
+    checks = case.get('required_checks') or []
+    run_nodes = case.get('run_nodes') or []
+    if not checks or not run_nodes:
+        raise ToolError('%s has no collected nodes' % case['id'])
+    junit_path = case_dir / 'junit.xml'
+    stdout_path = case_dir / 'stdout.log'
+    stderr_path = case_dir / 'stderr.log'
+    command = [str(python), '-B', '-m', 'pytest', '-q', '--disable-warnings',
+               '--rootdir', str(root), '--junitxml', str(junit_path)] + list(run_nodes)
+    env = _python_env(root, tmp_dir)
+    timed_out = False
+    try:
+        with stdout_path.open('xb') as stdout, stderr_path.open('xb') as stderr:
+            completed = subprocess.run(command, cwd=root, env=env, stdout=stdout,
+                                       stderr=stderr, timeout=case['timeout'], check=False)
+            returncode = completed.returncode
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        returncode = None
+    except OSError as error:
+        raise ToolError('cannot start adapter for %s: %s' % (case['id'], error)) from error
+    ended = datetime.now(timezone.utc)
+    artifacts = []
+    rows = []
+    status = 'unknown'
+    detail = ''
+    if junit_path.is_file():
+        artifacts.append(_hash_record(junit_path, 'junit'))
+        try:
+            rows = parse_junit(junit_path)
+        except (ET.ParseError, ValueError) as error:
+            detail = 'junit parse failed: %s' % error
+            status = 'unknown'
+        else:
+            evaluation = judge_rows(rows, checks)
+            status = evaluation['verdict']
+            detail = json.dumps(evaluation, ensure_ascii=False)
+    else:
+        detail = 'junit.xml was not produced'
+    if timed_out:
+        status = 'unknown'
+        detail = 'timeout after %ss; %s' % (case['timeout'], detail)
+    elif returncode not in (0, None) and status == 'pass':
+        status = 'fail'
+        detail = 'pytest rc=%s; %s' % (returncode, detail)
+    actual = [row['id'] for row in rows]
+    if sorted(actual) != sorted(checks) and status in ('pass', 'fail'):
+        status = 'unknown'
+        detail = 'collection/result coverage mismatch: %s' % detail
+    artifacts.append(_hash_record(stdout_path, 'log'))
+    artifacts.append(_hash_record(stderr_path, 'log'))
+    return {
+        'status': status,
+        'detail': detail,
+        'returncode': returncode,
+        'command': command,
+        'started_at': started.isoformat(),
+        'ended_at': ended.isoformat(),
+        'duration_seconds': (ended - started).total_seconds(),
+        'artifacts': artifacts,
+        'cleanup': {
+            'source': 'adapter',
+            'required': False,
+            'actions': ['pytest temp files remain under the run directory'],
+            'post_observation': 'no external resource was owned by this case',
+            'complete': stdout_path.is_file() and stderr_path.is_file(),
+        },
+    }
+
+
+def judge_v2(root, plan_path, results_dir, output=None):
+    root = Path(root)
+    plan_path = Path(plan_path)
+    plan = read_json(plan_path)
+    if plan.get('schema') != PLAN_V2:
+        raise InputError('judge --results requires plan v2')
+    if plan.get('catalog_sha256') != sha256(root / 'docs/acceptance/catalog.json'):
+        raise InputError('catalog changed since plan')
+    for case_id, hashes in plan['source_hashes'].items():
+        for name, digest in hashes.items():
+            path = root / name
+            if not path.is_file() or sha256(path) != digest:
+                raise InputError('source changed since plan: %s' % name)
+    results_dir = Path(results_dir)
+    index_path = results_dir / 'results.json'
+    index = read_json(index_path)
+    if index.get('schema') != RESULTS_V2:
+        raise InputError('unknown results index schema')
+    if index.get('execution_id') != plan['execution_id']:
+        raise InputError('results execution_id does not match plan')
+    if index.get('plan_sha256') != sha256(plan_path):
+        raise InputError('results were produced for a different plan')
+    receipts = {}
+    for entry in index.get('receipts') or []:
+        case_id = entry.get('case_id')
+        if case_id in receipts:
+            raise InputError('duplicate receipt for %s' % case_id)
+        path = Path(entry.get('path', ''))
+        if not path.is_absolute() or not path.is_file() or sha256(path) != entry.get('sha256'):
+            raise InputError('receipt changed or missing: %s' % case_id)
+        receipts[case_id] = read_json(path)
+    outcomes = []
+    timings = []
+    for case_id in plan['required_cases']:
+        case = plan['cases'][case_id]
+        receipt = receipts.get(case_id)
+        if receipt is None:
+            outcomes.append({'case_id': case_id, 'suite_id': case['suite_id'],
+                             'status': 'unknown', 'reason': 'receipt missing'})
+            continue
+        if receipt.get('candidate') != plan['candidate']:
+            raise InputError('candidate mismatch: %s' % case_id)
+        if receipt.get('execution_id') != plan['execution_id']:
+            raise InputError('execution mismatch: %s' % case_id)
+        if receipt.get('config_sha256') != _sha256_json(case):
+            raise InputError('case config changed: %s' % case_id)
+        if receipt.get('status') == 'blocked':
+            outcomes.append({'case_id': case_id, 'suite_id': case['suite_id'],
+                             'status': 'blocked',
+                             'reason': receipt.get('reason') or 'blocked'})
+            continue
+        parsed = []
+        artifact_paths = []
+        for artifact in receipt.get('artifacts') or []:
+            path = Path(artifact.get('path', ''))
+            if not path.is_absolute() or not path.is_file() or sha256(path) != artifact.get('sha256'):
+                raise InputError('artifact changed or missing: %s' % case_id)
+            artifact_paths.append(str(path))
+            try:
+                if artifact.get('format') == 'junit':
+                    parsed.extend(parse_junit(path))
+                elif artifact.get('format') == 'tsv':
+                    parsed.extend(parse_tsv(path))
+            except (ET.ParseError, ValueError, UnicodeError) as error:
+                raise ToolError('cannot parse original artifact for %s: %s' % (case_id, error))
+        checks = plan['required_checks'].get(case_id) or []
+        if not checks:
+            outcomes.append({'case_id': case_id, 'suite_id': case['suite_id'],
+                             'status': 'unknown', 'reason': 'planned checks are empty'})
+            continue
+        evaluation = judge_rows(parsed, checks)
+        status = evaluation['verdict']
+        reason = ''
+        if receipt.get('returncode') != 0 and status == 'pass':
+            status = 'fail'
+            reason = 'process returncode %r' % receipt.get('returncode')
+        cleanup = receipt.get('cleanup') or {}
+        if cleanup.get('source') != 'adapter' or cleanup.get('complete') is not True:
+            if status == 'pass':
+                status = 'unknown'
+                reason = 'cleanup was not derived by the adapter'
+        outcomes.append({'case_id': case_id, 'suite_id': case['suite_id'],
+                         'status': status, 'reason': reason,
+                         'evaluation': evaluation,
+                         'artifacts': artifact_paths})
+        if isinstance(receipt.get('duration_seconds'), (int, float)):
+            timings.append({'case_id': case_id, 'seconds': receipt['duration_seconds']})
+    passed = [row['case_id'] for row in outcomes if row['status'] == 'pass']
+    failed = [row['case_id'] for row in outcomes if row['status'] == 'fail']
+    unverified = [row['case_id'] for row in outcomes
+                  if row['status'] in ('unknown', 'blocked', 'not_run')]
+    if failed:
+        verdict = 'fail'
+    elif unverified:
+        verdict = 'unknown'
+    else:
+        verdict = 'pass'
+    coverage = 'full' if plan.get('mode') == 'full' else 'selected'
+    full_functional_pass = (plan.get('mode') == 'full' and verdict == 'pass'
+                            and not unverified)
+    cleanup_rows = [(receipts.get(row['case_id'], {}).get('cleanup') or {})
+                    for row in outcomes if row['status'] != 'blocked']
+    cleanup_complete = bool(cleanup_rows) and all(
+        row.get('complete') is True and row.get('source') == 'adapter'
+        for row in cleanup_rows)
+    summary = {
+        'schema': SUMMARY_V2,
+        'candidate': plan['candidate'],
+        'execution_id': plan['execution_id'],
+        'mode': plan.get('mode'),
+        'coverage': coverage,
+        'checks': {'required': len(plan['required_cases']), 'passed': len(passed),
+                   'failed': len(failed), 'unverified': len(unverified)},
+        'cases': outcomes,
+        'cleanup': {'complete': cleanup_complete},
+        'verdict': verdict,
+        'full_functional_pass': full_functional_pass,
+        'unverified': unverified,
+        'failures': failed,
+        'timings': timings,
+        'generated_at': utc_now(),
+    }
+    if output is not None:
+        output = Path(output)
+        if output.exists():
+            raise InputError('summary output already exists: %s' % output)
+        _write_json(output, summary)
+    return summary
+
+
+def exit_code_for(summary):
+    if summary.get('verdict') == 'fail':
+        return EXIT_FAIL
+    if summary.get('verdict') == 'unknown':
+        return EXIT_INPUT
+    if summary.get('verdict') == 'pass':
+        return EXIT_OK
+    return EXIT_TOOL
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--root', type=Path, default=ROOT, help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest='command', required=True)
     inv = commands.add_parser('inventory', help='read-only static inventory; never execute drivers')
     inv.add_argument('--format', choices=('json', 'markdown'), default='json')
     inv.add_argument('--output', type=Path)
     commands.add_parser('check', help='detect missing and unclassified source facilities')
-    plan = commands.add_parser('plan', help='freeze source inventory and all required groups; no VM calls')
+    plan = commands.add_parser('plan', help='freeze source inventory or a v2 case plan; no VM calls')
     plan.add_argument('--output', type=Path, required=True)
+    plan.add_argument('--mode', choices=('full', 'selected', 'stress'))
+    plan.add_argument('--candidate', type=Path)
+    plan.add_argument('--environment', type=Path)
+    plan.add_argument('--suite', action='append', default=[])
+    plan.add_argument('--case', action='append', default=[])
     run = commands.add_parser('run', help='execute one explicit original driver; no implicit all-native run')
     run.add_argument('--suite', required=True)
     run.add_argument('--args-json', type=Path)
     run.add_argument('--python', default=sys.executable)
     run.add_argument('--output', type=Path, required=True)
-    judge = commands.add_parser('judge', help='recompute a source-bound session from explicit receipts')
+    execute = commands.add_parser('execute', help='execute a v2 plan through registered adapters')
+    execute.add_argument('--plan', type=Path, required=True)
+    judge = commands.add_parser('judge', help='recompute a session from explicit original results')
     judge.add_argument('--plan', type=Path, required=True)
     judge.add_argument('--result', type=Path, action='append', default=[])
+    judge.add_argument('--results', type=Path)
     judge.add_argument('--output', type=Path)
     args = parser.parse_args(argv)
+    root = Path(args.root)
     try:
         if args.command in ('check', 'inventory'):
-            value = inventory()
+            value = inventory(root)
             if args.command == 'check':
                 print(json.dumps({'counts': value['counts'], 'unclassified': value['unclassified'],
+                                  'schema': value.get('catalog_schema'),
                                   'qualification': 'not_run'}, ensure_ascii=False))
                 return 1 if value['unclassified'] else 0
             text = markdown(value) if args.format == 'markdown' else json.dumps(value, ensure_ascii=False, indent=2) + '\n'
             code = 0
         elif args.command == 'plan':
-            text = json.dumps(make_plan(), ensure_ascii=False, indent=2) + '\n'
-            code = 0
+            if args.mode:
+                if not args.candidate or not args.environment:
+                    raise InputError('plan --mode requires --candidate and --environment')
+                value = make_plan_v2(root, args.mode, args.candidate, args.environment,
+                                     args.suite, args.case, args.output)
+                text = json.dumps({'schema': value['schema'], 'mode': value['mode'],
+                                   'execution_id': value['execution_id'],
+                                   'required_cases': value['required_cases'],
+                                   'blocked': value['blocked'],
+                                   'plan': str(args.output)}, ensure_ascii=False)
+                code = 0
+            else:
+                text = json.dumps(make_plan(root), ensure_ascii=False, indent=2) + '\n'
+                code = 0
+            if args.output and args.mode is None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                with args.output.open('x', encoding='utf-8') as stream:
+                    stream.write(text)
+                return code
+            print(text)
+            return code
         elif args.command == 'run':
             arguments = json.loads(args.args_json.read_text(encoding='utf-8')) if args.args_json else []
-            value = launch(args.suite, arguments, args.output, python=args.python)
+            value = launch(args.suite, arguments, args.output, root=root, python=args.python)
             print(json.dumps(value, ensure_ascii=False))
             return 0 if value['returncode'] == 0 and not value['sources_changed'] else 1
+        elif args.command == 'execute':
+            summary = execute_plan(root, args.plan)
+            print(json.dumps({'verdict': summary['verdict'], 'coverage': summary['coverage'],
+                              'checks': summary['checks'],
+                              'full_functional_pass': summary['full_functional_pass'],
+                              'paths': summary.get('paths')}, ensure_ascii=False))
+            return exit_code_for(summary)
         else:
-            value = judge_session(json.loads(args.plan.read_text(encoding='utf-8')),
-                                  [json.loads(path.read_text(encoding='utf-8')) for path in args.result])
+            if args.results:
+                summary = judge_v2(root, args.plan, args.results, args.output)
+                text = json.dumps(summary, ensure_ascii=False, indent=2) + '\n'
+                if args.output is None:
+                    print(text, end='')
+                return exit_code_for(summary)
+            value = judge_session(read_json(args.plan),
+                                  [read_json(path) for path in args.result], root)
             text = json.dumps(value, ensure_ascii=False, indent=2) + '\n'
             code = 0 if value['verdict'] == 'pass' else 1
+            if args.output:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                with args.output.open('x', encoding='utf-8') as stream:
+                    stream.write(text)
+            else:
+                print(text, end='')
+            return code
         if args.output:
             # Never overwrite a historical inventory, plan or result.
             args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -435,9 +1192,16 @@ def main(argv=None):
         else:
             print(text, end='')
         return code
+    except InputError as error:
+        print(json.dumps({'status': 'invalid', 'error': str(error)}, ensure_ascii=False), file=sys.stderr)
+        return EXIT_INPUT
     except (ValueError, KeyError, OSError, SyntaxError, ET.ParseError) as error:
         print(json.dumps({'status': 'invalid', 'error': str(error)}, ensure_ascii=False), file=sys.stderr)
-        return 2
+        return EXIT_INPUT
+    except Exception as error:
+        print(json.dumps({'status': 'tool_error', 'error': type(error).__name__ + ': ' + str(error)},
+                         ensure_ascii=False), file=sys.stderr)
+        return EXIT_TOOL
 
 
 if __name__ == '__main__':
