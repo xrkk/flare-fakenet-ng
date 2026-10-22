@@ -730,7 +730,7 @@
           },
           "oracle": {
             "kind": "tsv",
-            "verifier": "test/test.py structured results"
+            "driver": "upstream-singlehost"
           },
           "resources": [
             "vm",
@@ -743,7 +743,7 @@
           "timeout": 600,
           "cleanup": "stop flag + wait + force-kill fallback; restore network",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -753,7 +753,8 @@
             "test/custom_responses.ini",
             "docs/testing.md"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "upstream-singlehost"
         },
         {
           "id": "UPSTREAM-DNS",
@@ -780,7 +781,8 @@
             "negative": "no negative/AAAA/NXDomains coverage yet"
           },
           "oracle": {
-            "kind": "tsv"
+            "kind": "tsv",
+            "driver": "upstream-singlehost"
           },
           "resources": [
             "vm"
@@ -791,7 +793,7 @@
           "timeout": 120,
           "cleanup": "stop core",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -801,7 +803,8 @@
             "test/custom_responses.ini",
             "docs/testing.md"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "upstream-singlehost"
         },
         {
           "id": "UPSTREAM-HTTP-CUSTOM",
@@ -827,7 +830,8 @@
             "negative": "wrong URI/host and host-port mismatches fail as expected"
           },
           "oracle": {
-            "kind": "tsv"
+            "kind": "tsv",
+            "driver": "upstream-singlehost"
           },
           "resources": [
             "vm"
@@ -838,7 +842,7 @@
           "timeout": 300,
           "cleanup": "stop core",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -848,7 +852,8 @@
             "test/custom_responses.ini",
             "docs/testing.md"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "upstream-singlehost"
         },
         {
           "id": "UPSTREAM-FTP-POP-SMTP-IRC",
@@ -873,7 +878,8 @@
             "negative": "SMTP SSL/IRC platform failures stay recorded as failures"
           },
           "oracle": {
-            "kind": "tsv"
+            "kind": "tsv",
+            "driver": "upstream-singlehost"
           },
           "resources": [
             "vm"
@@ -884,7 +890,7 @@
           "timeout": 300,
           "cleanup": "stop core",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -894,7 +900,8 @@
             "test/custom_responses.ini",
             "docs/testing.md"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "upstream-singlehost"
         },
         {
           "id": "UPSTREAM-SMTP-SSL",
@@ -922,7 +929,8 @@
             "negative": "construction/send/quit error propagates to the case result"
           },
           "oracle": {
-            "kind": "tsv"
+            "kind": "tsv",
+            "driver": "upstream-singlehost"
           },
           "resources": [
             "vm"
@@ -933,7 +941,7 @@
           "timeout": 120,
           "cleanup": "stop core",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -943,7 +951,8 @@
             "test/custom_responses.ini",
             "docs/testing.md"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "upstream-singlehost"
         },
         {
           "id": "UPSTREAM-PROXY-HIDDEN",
@@ -969,7 +978,8 @@
             "negative": "no independent hidden=False control yet"
           },
           "oracle": {
-            "kind": "tsv"
+            "kind": "tsv",
+            "driver": "upstream-singlehost"
           },
           "resources": [
             "vm"
@@ -980,7 +990,7 @@
           "timeout": 180,
           "cleanup": "stop core",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -990,7 +1000,8 @@
             "test/custom_responses.ini",
             "docs/testing.md"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "upstream-singlehost"
         },
         {
           "id": "UPSTREAM-BLACKLIST",
@@ -1018,7 +1029,8 @@
             "negative": "adjacent allowed target must still be diverted (added with fixture)"
           },
           "oracle": {
-            "kind": "tsv"
+            "kind": "tsv",
+            "driver": "upstream-singlehost"
           },
           "resources": [
             "vm"
@@ -1029,7 +1041,7 @@
           "timeout": 180,
           "cleanup": "stop core",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -1039,7 +1051,8 @@
             "test/custom_responses.ini",
             "docs/testing.md"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "upstream-singlehost"
         },
         {
           "id": "UPSTREAM-PROCESS-FILTERS",
@@ -1064,7 +1077,8 @@
             "negative": "Linux blacklist remains indeterminate per docs/testing.md"
           },
           "oracle": {
-            "kind": "tsv"
+            "kind": "tsv",
+            "driver": "upstream-singlehost"
           },
           "resources": [
             "vm"
@@ -1075,7 +1089,7 @@
           "timeout": 180,
           "cleanup": "stop core",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -1085,7 +1099,8 @@
             "test/custom_responses.ini",
             "docs/testing.md"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "upstream-singlehost"
         },
         {
           "id": "UPSTREAM-LISTENER-FILTERS",
@@ -1111,7 +1126,8 @@
             "negative": "8083 non-whitelisted host and 8082 blacklisted host are not diverted"
           },
           "oracle": {
-            "kind": "tsv"
+            "kind": "tsv",
+            "driver": "upstream-singlehost"
           },
           "resources": [
             "vm"
@@ -1122,7 +1138,7 @@
           "timeout": 180,
           "cleanup": "stop core",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -1132,7 +1148,8 @@
             "test/custom_responses.ini",
             "docs/testing.md"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "upstream-singlehost"
         },
         {
           "id": "UPSTREAM-REDIRECTALL-OFF",
@@ -1158,7 +1175,8 @@
             "negative": "unspecified targets are not diverted"
           },
           "oracle": {
-            "kind": "tsv"
+            "kind": "tsv",
+            "driver": "upstream-singlehost"
           },
           "resources": [
             "vm"
@@ -1169,7 +1187,7 @@
           "timeout": 180,
           "cleanup": "stop core",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -1179,7 +1197,8 @@
             "test/custom_responses.ini",
             "docs/testing.md"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "upstream-singlehost"
         }
       ]
     },
@@ -1246,7 +1265,8 @@
             "negative": "none in this case"
           },
           "oracle": {
-            "kind": "pcap"
+            "kind": "tsv",
+            "driver": "egress-windows"
           },
           "resources": [
             "windows-vm",
@@ -1261,7 +1281,7 @@
           "timeout": 300,
           "cleanup": "stop flag, pktmon stop, DNS snapshot compare",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -1269,7 +1289,8 @@
             "test/egress_control_vm/Run-EgressControlTests.ps1",
             "fakenet/configs/egress_control_windows.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "egress-windows"
         },
         {
           "id": "EGRESS-NEGATIVES",
@@ -1302,7 +1323,8 @@
             "negative": "OBSERVED or timeout alone is not a block proof"
           },
           "oracle": {
-            "kind": "pcap"
+            "kind": "tsv",
+            "driver": "egress-windows"
           },
           "resources": [
             "windows-vm",
@@ -1315,7 +1337,7 @@
           "timeout": 300,
           "cleanup": "stop flag, pktmon stop",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -1323,7 +1345,8 @@
             "test/egress_control_vm/Run-EgressControlTests.ps1",
             "fakenet/configs/egress_control_windows.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "egress-windows"
         },
         {
           "id": "EGRESS-RESTORE",
@@ -1348,7 +1371,8 @@
             "negative": "timeout/nonzero/difference fails"
           },
           "oracle": {
-            "kind": "pcap"
+            "kind": "tsv",
+            "driver": "egress-windows"
           },
           "resources": [
             "windows-vm",
@@ -1360,7 +1384,7 @@
           "timeout": 120,
           "cleanup": "stop core and pktmon",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -1368,7 +1392,8 @@
             "test/egress_control_vm/Run-EgressControlTests.ps1",
             "fakenet/configs/egress_control_windows.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "egress-windows"
         }
       ]
     },
@@ -1436,7 +1461,8 @@
             "negative": "wrong IP/port/UDP cases must not be allowed"
           },
           "oracle": {
-            "kind": "pcap"
+            "kind": "tsv",
+            "driver": "reviewed-ipv4-windows"
           },
           "resources": [
             "windows-vm",
@@ -1449,7 +1475,7 @@
           "timeout": 600,
           "cleanup": "stop core; compare DNS/IP/route",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -1457,7 +1483,8 @@
             "test/public_ipv4_allowlist_vm/Run-ReviewedIPv4Tests.ps1",
             "test/analyze_reviewed_ipv4_pcap.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "reviewed-ipv4-windows"
         },
         {
           "id": "IP-TAKEOVER-COEXIST",
@@ -1484,7 +1511,8 @@
             "negative": "reviewed-IP events must not appear in takeover profile"
           },
           "oracle": {
-            "kind": "pcap"
+            "kind": "tsv",
+            "driver": "reviewed-ipv4-windows"
           },
           "resources": [
             "windows-vm",
@@ -1496,7 +1524,7 @@
           "timeout": 600,
           "cleanup": "stop core; compare snapshots",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -1504,7 +1532,8 @@
             "test/public_ipv4_allowlist_vm/Run-ReviewedIPv4Tests.ps1",
             "test/analyze_reviewed_ipv4_pcap.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "reviewed-ipv4-windows"
         }
       ]
     },
@@ -1572,7 +1601,8 @@
             "negative": "non-target must not receive sentinel response"
           },
           "oracle": {
-            "kind": "pcap"
+            "kind": "tsv",
+            "driver": "process-redirect-windows"
           },
           "resources": [
             "windows-vm",
@@ -1585,7 +1615,7 @@
           "timeout": 600,
           "cleanup": "clients exit; stop core; network restore",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -1593,7 +1623,8 @@
             "test/process_redirect_vm/Run-ProcessRedirectTests.ps1",
             "test/process_redirect_vm/verify_process_redirect.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "process-redirect-windows"
         },
         {
           "id": "PR-OWNER-BOUNDED",
@@ -1618,7 +1649,8 @@
             "negative": "unbounded 10000/64 is stress only"
           },
           "oracle": {
-            "kind": "pcap"
+            "kind": "tsv",
+            "driver": "process-redirect-windows"
           },
           "resources": [
             "windows-vm"
@@ -1629,7 +1661,7 @@
           "timeout": 600,
           "cleanup": "stop core",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -1637,7 +1669,8 @@
             "test/process_redirect_vm/Run-ProcessRedirectTests.ps1",
             "test/process_redirect_vm/verify_process_redirect.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "process-redirect-windows"
         },
         {
           "id": "PR-OWNER-STRESS",
@@ -1663,7 +1696,8 @@
             "negative": "not part of daily full"
           },
           "oracle": {
-            "kind": "pcap"
+            "kind": "tsv",
+            "driver": "process-redirect-windows"
           },
           "resources": [
             "windows-vm",
@@ -1675,14 +1709,15 @@
           "timeout": 3600,
           "cleanup": "stop core",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": false,
           "stress": true,
           "sources": [
             "test/process_redirect_vm/Run-ProcessRedirectTests.ps1",
             "test/process_redirect_vm/verify_process_redirect.py"
-          ]
+          ],
+          "native_driver": "process-redirect-windows"
         },
         {
           "id": "PR-PCAP-RESTORE",
@@ -1706,7 +1741,8 @@
             "negative": "suspend/resume/policy_exception/traceback fail"
           },
           "oracle": {
-            "kind": "pcap"
+            "kind": "tsv",
+            "driver": "process-redirect-windows"
           },
           "resources": [
             "windows-vm"
@@ -1717,7 +1753,7 @@
           "timeout": 300,
           "cleanup": "stop core",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -1725,7 +1761,8 @@
             "test/process_redirect_vm/Run-ProcessRedirectTests.ps1",
             "test/process_redirect_vm/verify_process_redirect.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "process-redirect-windows"
         }
       ]
     },
@@ -1810,14 +1847,15 @@
           "dependencies": [
             "EGRESS-ALLOW-CHAIN"
           ],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
           "sources": [
             "test/gui_vm/run_policy_feature_tests.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "policy-headless"
         },
         {
           "id": "POL-TAKEOVER",
@@ -1856,14 +1894,15 @@
           "timeout": 600,
           "cleanup": "stop core; restore route metric",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
           "sources": [
             "test/gui_vm/run_policy_feature_tests.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "policy-headless"
         },
         {
           "id": "POL-TCP-UDP-RECOVERY",
@@ -1907,14 +1946,15 @@
           "dependencies": [
             "POL-TAKEOVER"
           ],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
           "sources": [
             "test/gui_vm/run_policy_feature_tests.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "policy-headless"
         }
       ]
     },
@@ -2019,7 +2059,7 @@
           "timeout": 300,
           "cleanup": "stop core; compare DNS/route",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -2027,7 +2067,8 @@
             "test/dual_pcap_vm/Run-DualPcapTests.ps1",
             "test/dual_pcap_vm/verify_dual_pcap.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "pcap-windows-functional"
         },
         {
           "id": "PCAP-WIN-FAULTS",
@@ -2066,7 +2107,7 @@
           "timeout": 300,
           "cleanup": "stop core; compare network",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -2074,7 +2115,8 @@
             "test/dual_pcap_vm/Run-DualPcapTests.ps1",
             "test/dual_pcap_vm/verify_dual_pcap.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "pcap-windows-functional"
         },
         {
           "id": "PCAP-WIN-STRESS",
@@ -2109,14 +2151,15 @@
           "timeout": 3600,
           "cleanup": "none",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": false,
           "stress": true,
           "sources": [
             "test/dual_pcap_vm/Run-DualPcapTests.ps1",
             "test/dual_pcap_vm/verify_dual_pcap.py"
-          ]
+          ],
+          "native_driver": "pcap-windows-functional"
         }
       ]
     },
@@ -2194,7 +2237,7 @@
           "timeout": 900,
           "cleanup": "emergency restore only as rollback",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -2202,7 +2245,8 @@
             "test/dual_pcap_linux/run_tests.py",
             "test/dual_pcap_linux/verify_capture.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "pcap-linux-functional"
         },
         {
           "id": "PCAP-LINUX-STRESS",
@@ -2236,14 +2280,15 @@
           "timeout": 3600,
           "cleanup": "none",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": false,
           "stress": true,
           "sources": [
             "test/dual_pcap_linux/run_tests.py",
             "test/dual_pcap_linux/verify_capture.py"
-          ]
+          ],
+          "native_driver": "pcap-linux-functional"
         }
       ]
     },
@@ -2375,7 +2420,7 @@
           "timeout": 600,
           "cleanup": "pktmon stop; keep evidence",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -2385,7 +2430,8 @@
             "test/gui_vm/verify_payload_integrity.py",
             "test/gui_vm/verify_reassembly.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "payload-headless"
         },
         {
           "id": "PAYLOAD-REASSEMBLY",
@@ -2500,14 +2546,15 @@
           "timeout": 1800,
           "cleanup": "original runner stops and restores",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
           "sources": [
             "test/mcp/acceptance/run_p01_acc.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "mcp-p01"
         }
       ]
     },
@@ -2576,14 +2623,15 @@
           "timeout": 1800,
           "cleanup": "original runner stops and restores",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
           "sources": [
             "test/mcp/acceptance/run_p02_acc.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "mcp-p02"
         }
       ]
     },
@@ -2652,14 +2700,15 @@
           "timeout": 1800,
           "cleanup": "original runner stops and restores",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
           "sources": [
             "test/mcp/acceptance/run_p03_acc.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "mcp-p03"
         }
       ]
     },
@@ -2728,14 +2777,15 @@
           "timeout": 1800,
           "cleanup": "original runner stops and restores",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
           "sources": [
             "test/mcp/acceptance/run_p04_acc.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "mcp-p04"
         }
       ]
     },
@@ -2911,7 +2961,7 @@
           "timeout": 900,
           "cleanup": "original runner restores",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -2919,7 +2969,8 @@
             "test/mcp/acceptance/run_ipc_cases.py",
             "test/mcp/acceptance/run_control_cases.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "mcp-special"
         },
         {
           "id": "MCP-SPECIAL-FAULT-RECOVERY",
@@ -2964,7 +3015,7 @@
           "dependencies": [
             "MCP-P04-FULL"
           ],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -2972,7 +3023,8 @@
             "test/mcp/acceptance/helpers.py",
             "fakenet/mcp/faultinject.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "mcp-special"
         }
       ]
     },
@@ -3031,7 +3083,7 @@
           "timeout": 600,
           "cleanup": "none",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3039,7 +3091,8 @@
             "tools/build_gui_vm_package_wine.py",
             "tools/build_fakenetng_mcp_wine.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "build-identity"
         }
       ]
     },
@@ -3127,7 +3180,7 @@
           "timeout": 600,
           "cleanup": "NetPolicy.stop/adopt_leftovers",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3136,7 +3189,8 @@
             "fakenet/diverters/linuxnetpolicy.py",
             "deploy/linux/README.md"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "linux-runtime"
         },
         {
           "id": "LINUX-DEPLOY-UPDATE",
@@ -3173,7 +3227,7 @@
           "timeout": 900,
           "cleanup": "restore service and originals",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3182,7 +3236,8 @@
             "fakenet/diverters/linuxnetpolicy.py",
             "deploy/linux/README.md"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "linux-runtime"
         }
       ]
     },
@@ -3270,7 +3325,7 @@
           "timeout": 300,
           "cleanup": "restore the changed configuration/state",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3278,7 +3333,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "manual-headless"
         },
         {
           "id": "GAP-NCSI",
@@ -3316,7 +3372,7 @@
           "timeout": 300,
           "cleanup": "restore the changed configuration/state",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3324,7 +3380,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "manual-headless"
         },
         {
           "id": "GAP-STANDALONE-LISTENERS",
@@ -3362,7 +3419,7 @@
           "timeout": 300,
           "cleanup": "restore the changed configuration/state",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3370,7 +3427,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "manual-headless"
         },
         {
           "id": "GAP-CTRLC-IPC",
@@ -3408,7 +3466,7 @@
           "timeout": 300,
           "cleanup": "restore the changed configuration/state",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3416,7 +3474,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "manual-headless"
         },
         {
           "id": "GAP-DIVERTER-SWITCH",
@@ -3454,7 +3513,7 @@
           "timeout": 300,
           "cleanup": "restore the changed configuration/state",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3462,7 +3521,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "manual-headless"
         },
         {
           "id": "GAP-SYSLOG-ICMP-LOG",
@@ -3500,7 +3560,7 @@
           "timeout": 300,
           "cleanup": "restore the changed configuration/state",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3508,7 +3568,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "manual-headless"
         },
         {
           "id": "GAP-DUMPPACKETS",
@@ -3546,7 +3607,7 @@
           "timeout": 300,
           "cleanup": "restore the changed configuration/state",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3554,7 +3615,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "manual-headless"
         },
         {
           "id": "GAP-LINUX-FLUSH-INTERFACE",
@@ -3592,7 +3654,7 @@
           "timeout": 300,
           "cleanup": "restore the changed configuration/state",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3600,7 +3662,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "manual-headless"
         },
         {
           "id": "GAP-NETWORK-FIX",
@@ -3639,7 +3702,7 @@
           "timeout": 300,
           "cleanup": "restore the changed configuration/state",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3647,7 +3710,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "manual-headless"
         },
         {
           "id": "GAP-RAW-DATE",
@@ -3685,7 +3749,7 @@
           "timeout": 300,
           "cleanup": "restore the changed configuration/state",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3693,7 +3757,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "manual-headless"
         },
         {
           "id": "GAP-LIST-MUTEX",
@@ -3731,7 +3796,7 @@
           "timeout": 300,
           "cleanup": "restore the changed configuration/state",
           "dependencies": [],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3739,7 +3804,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "manual-headless"
         }
       ]
     },
@@ -3809,7 +3875,7 @@
             "POL-TAKEOVER",
             "IP-TAKEOVER-COEXIST"
           ],
-          "adapter": "native-blocked",
+          "adapter": "native",
           "collection_safe": false,
           "required_for_full": true,
           "stress": false,
@@ -3817,7 +3883,8 @@
             "docs/testing.md",
             "test/gui_vm/run_policy_feature_tests.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1"
+          "blocked_reason": "native adapter not implemented in S1",
+          "native_driver": "manual-headless"
         }
       ]
     }
@@ -3887,5 +3954,48 @@
       "mcp_blocked": "test/mcp modules not collection-authorised in S1R2"
     },
     "native_status": "registered but blocked; requires S2 real VM/endpoints and adapters"
+  },
+  "s2_native": {
+    "schema": "fakenet.acceptance-native.v1",
+    "drivers": [
+      "build-identity",
+      "egress-windows",
+      "linux-runtime",
+      "manual-headless",
+      "mcp-p01",
+      "mcp-p02",
+      "mcp-p03",
+      "mcp-p04",
+      "mcp-special",
+      "payload-headless",
+      "pcap-linux-functional",
+      "pcap-windows-functional",
+      "policy-headless",
+      "process-redirect-windows",
+      "reviewed-ipv4-windows",
+      "upstream-singlehost"
+    ],
+    "implemented": [
+      "upstream-singlehost",
+      "egress-windows",
+      "reviewed-ipv4-windows",
+      "process-redirect-windows"
+    ],
+    "blocked": [
+      "upstream-multihost",
+      "pcap-windows-functional",
+      "pcap-linux-functional",
+      "policy-headless",
+      "payload-headless",
+      "mcp-p01",
+      "mcp-p02",
+      "mcp-p03",
+      "mcp-p04",
+      "mcp-special",
+      "linux-runtime",
+      "manual-headless",
+      "build-identity"
+    ],
+    "note": "Native drivers are registered with fixed argv and fixed checks. Only upstream/egress/reviewed-ipv4/process-redirect drivers are implemented in this round; the rest carry an explicit missing reason and remain blocked. No native run was authorised."
   }
 }

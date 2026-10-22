@@ -26,6 +26,12 @@ import sys
 import uuid
 import xml.etree.ElementTree as ET
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    import acceptance_native
+except ImportError:  # pragma: no cover - the module is shipped with this entry
+    acceptance_native = None
+
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / 'docs' / 'acceptance' / 'catalog.json'
 SCHEMA = 'fakenet.acceptance-inventory.v1'
@@ -41,7 +47,7 @@ CANDIDATE_V2 = 'fakenet.acceptance-candidate.v2'
 ENVIRONMENT_V2 = 'fakenet.acceptance-environment.v2'
 STATUSES = {'pass', 'fail', 'unknown', 'not_run', 'blocked', 'skip', 'observed'}
 CASE_STATUSES = {'pass', 'fail', 'not_run', 'unknown', 'blocked', 'not_applicable'}
-ADAPTERS = {'offline-pytest', 'native-blocked', 'manual-blocked'}
+ADAPTERS = {'offline-pytest', 'native', 'native-blocked', 'manual-blocked'}
 ORACLES = {'junit', 'tsv', 'native-json', 'pcap', 'manual', 'none'}
 EXIT_OK, EXIT_FAIL, EXIT_INPUT, EXIT_TOOL = 0, 1, 2, 3
 
@@ -93,6 +99,15 @@ def read_catalog(root=ROOT):
                 raise ValueError('%s missing source %s' % (row['id'], source))
     if schema == CATALOG_V2:
         validate_cases(value)
+        if any(case.get('adapter') == 'native'
+               for suite in value['suites'] for case in suite.get('cases') or []):
+            if acceptance_native is None:
+                raise ValueError('native adapter module is unavailable')
+            drivers = acceptance_native.driver_table(root)
+            for suite in value['suites']:
+                for case in suite.get('cases') or []:
+                    if case.get('adapter') == 'native' and case.get('native_driver') not in drivers:
+                        raise ValueError('%s has an unknown native driver' % case['id'])
     return value
 
 
@@ -679,8 +694,8 @@ def case_sources(case):
 CASE_IDENTITY_FIELDS = (
     'id', 'suite_id', 'title', 'platforms', 'modes', 'input', 'steps',
     'expected', 'oracle', 'resources', 'readiness', 'timeout', 'cleanup',
-    'dependencies', 'adapter', 'collection_safe', 'required_for_full',
-    'stress', 'sources', 'blocked_reason',
+    'dependencies', 'adapter', 'native_driver', 'collection_safe',
+    'required_for_full', 'stress', 'sources', 'blocked_reason',
 )
 
 
@@ -724,8 +739,23 @@ def case_applicable(case, platforms):
     return bool(declared & platforms) or 'any' in declared
 
 
-def expected_block(case, actions, platforms):
+def expected_block(case, actions, platforms, root=ROOT):
     """Return the only admissible blocked reason, or None if runnable."""
+    if case['adapter'] == 'native':
+        if acceptance_native is None:
+            return 'native adapter module is unavailable'
+        drivers = acceptance_native.driver_table(root)
+        name = case.get('native_driver')
+        if not name or name not in drivers:
+            return 'native driver is not registered'
+        driver = drivers[name]
+        if not driver.get('implemented'):
+            return driver.get('missing') or 'native driver is not implemented'
+        if not case_applicable(case, platforms):
+            return 'platform not available in environment'
+        if 'native' not in actions:
+            return 'environment does not allow native execution'
+        return None
     if case['adapter'] != 'offline-pytest':
         return case.get('blocked_reason') or 'adapter is not implemented'
     if not case.get('collection_safe'):
@@ -787,8 +817,16 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
     candidate = plan.get('candidate')
     if not isinstance(candidate, dict) or candidate.get('source_commit') != plan.get('source_commit'):
         raise InputError('plan candidate/source_commit mismatch')
-    if require_execute_action and 'offline-pytest' not in actions:
-        raise InputError('environment.allowed_actions does not permit offline-pytest execution')
+    if require_execute_action:
+        has_offline = any(registered[item]['adapter'] == 'offline-pytest'
+                          for item in required)
+        blocked_now = plan.get('blocked') or {}
+        has_native = any(registered[item]['adapter'] == 'native'
+                         and item not in blocked_now for item in required)
+        if has_offline and 'offline-pytest' not in actions:
+            raise InputError('environment.allowed_actions does not permit offline-pytest execution')
+        if has_native and 'native' not in actions:
+            raise InputError('environment.allowed_actions does not permit native execution')
     cases = plan.get('cases')
     if not isinstance(cases, dict) or set(cases) != set(required):
         raise InputError('plan.cases does not match required_cases')
@@ -808,7 +846,7 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
             raise InputError('planned case is not an object: %s' % case_id)
         if case_identity(stored) != case_identity(reference):
             raise InputError('planned case identity differs from catalog: %s' % case_id)
-        expected_reason = expected_block(reference, actions, platforms)
+        expected_reason = expected_block(reference, actions, platforms, root)
         actual_reason = blocked.get(case_id)
         if (expected_reason or None) != (actual_reason or None):
             raise InputError('blocked state differs from registry: %s expected=%r actual=%r'
@@ -824,7 +862,13 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
         run_nodes = stored.get('run_nodes') or []
         if not isinstance(planned_checks, list) or len(planned_checks) != len(set(planned_checks)):
             raise InputError('planned checks are not unique: %s' % case_id)
-        if planned_checks:
+        if reference['adapter'] == 'native':
+            unused_driver, expected_checks = acceptance_native.validate_case(reference, root)
+            if planned_checks != expected_checks:
+                raise InputError('native checks differ from the registered table: %s' % case_id)
+            if run_nodes:
+                raise InputError('native case must not carry pytest run nodes: %s' % case_id)
+        elif planned_checks:
             if not run_nodes:
                 raise InputError('planned checks without run nodes: %s' % case_id)
             if [junit_node(node) for node in run_nodes] != planned_checks:
@@ -954,12 +998,17 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
         source_hashes[case['id']] = hashes
         record = dict(case)
         record['sources'] = sources
-        reason = expected_block(case, actions, platforms)
+        reason = expected_block(case, actions, platforms, root)
         collectable = (case['adapter'] == 'offline-pytest'
                        and case.get('collection_safe')
                        and 'collection' in actions
                        and case_applicable(case, platforms))
-        if collectable:
+        if case['adapter'] == 'native' and acceptance_native is not None:
+            unused, checks = acceptance_native.validate_case(case, root)
+            required_checks[case['id']] = list(checks)
+            record['required_checks'] = list(checks)
+            record['run_nodes'] = []
+        elif collectable:
             canonical, raw_nodes, log_path = collect_nodes(
                 root, case, python, tmp_dir, run_dir / 'collection')
             required_checks[case['id']] = canonical
@@ -1057,6 +1106,9 @@ def execute_plan(root, plan_path):
             })
         elif case['adapter'] == 'offline-pytest':
             receipt.update(_run_offline_case(root, plan, case, case_dir, python, tmp_dir))
+        elif case['adapter'] == 'native':
+            receipt['native_driver'] = case.get('native_driver')
+            receipt.update(acceptance_native.run_driver(root, case, plan, case_dir, python))
         else:
             raise ToolError('unregistered adapter: %s' % case['adapter'])
         receipt_path = case_dir / 'receipt.json'
@@ -1240,6 +1292,23 @@ def judge_v2(root, plan_path, results_dir, output=None):
         receipt_status = receipt.get('status')
         if receipt_status not in CASE_STATUSES:
             raise InputError('invalid receipt status: %s' % case_id)
+        if reference['adapter'] == 'native':
+            if receipt_status == 'blocked':
+                outcomes.append({'case_id': case_id, 'suite_id': reference['suite_id'],
+                                 'status': 'blocked',
+                                 'reason': receipt.get('reason') or 'native driver blocked'})
+                continue
+            if receipt.get('native_driver') != reference.get('native_driver'):
+                raise InputError('native driver mismatch: %s' % case_id)
+            judged = acceptance_native.judge_driver(reference, receipt, plan, root)
+            status = judged.get('status', 'unknown')
+            outcomes.append({'case_id': case_id, 'suite_id': reference['suite_id'],
+                             'status': status,
+                             'reason': judged.get('reason', ''),
+                             'evaluation': judged.get('evaluation')})
+            if isinstance(receipt.get('duration_seconds'), (int, float)):
+                timings.append({'case_id': case_id, 'seconds': receipt['duration_seconds']})
+            continue
         if reference['adapter'] != 'offline-pytest':
             if receipt_status != 'blocked':
                 raise InputError('native case cannot receive offline credit: %s' % case_id)
