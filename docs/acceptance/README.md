@@ -134,3 +134,24 @@ native 的 plan 只展开固定子检查; execute 只在 action/平台/候选包
 - `check`/`inventory` 不执行驱动; `plan --mode` 的 collection 是代码执行, 只对 `collection_safe` 且 environment 允许的模块进行.
 - S1 的成功只证明离线能力, 不代表任何 Windows/Linux 原生功能通过.
 - 共享资源 (VM/驱动/捕获/路由/DNS) 仍由原驱动持有停止与恢复责任; 外层不新增竞争状态机.
+
+### Exact upstream execution
+
+The original `test/test.py here [regex ...]` interface is retained. The new
+`python test/test.py --mechanical-spec SPEC.json` accepts schema
+`fakenet.upstream-selection.v1` with exactly `schema`, `checks`, `target`, and
+`work_root`. `checks` contains unique `suite::test name` IDs from the original
+platform-specific callback definitions, for example `General::DNS listener test`.
+Unknown, duplicate and platform-inapplicable selections fail before target
+operations. `target` is the exact local `{platform, hostname}` identity and
+`work_root` must be a fresh absolute directory on the selected VM. MultiHost
+requires a separate observed remote channel and is refused by this entry.
+
+Each selected configuration starts one owned core using a fixed argv, waits for
+the actual successful-start marker, executes only selected original callbacks
+without automatic retries, requests stop, reaps the process and compares network
+state. Original TSV plus `upstream.json`, core lifecycle and before/after network
+snapshots remain in the run directory. Failure to stop or restore prevents later
+suites from using the same resource. Forced termination never earns cleanup
+credit. This implementation has offline process/channel contract tests; native
+platform acceptance remains required.

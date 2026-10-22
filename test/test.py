@@ -1,6 +1,8 @@
 # Copyright 2025 Google LLC
 
 import os
+import json
+from pathlib import Path
 import re
 import sys
 import time
@@ -373,6 +375,114 @@ class FakeNetTester(object):
             len(failed_suites)))
         return result
 
+    def collectSuites(self):
+        """Build the original platform/mode-specific callbacks without I/O."""
+        self._collecting = True
+        try:
+            return [self.testGeneral(), self.testNoRedirect(),
+                    self.testBlacklistProcess(), self.testWhitelistProcess()]
+        finally:
+            self._collecting = False
+
+    def mechanicalSelection(self, requested):
+        if not isinstance(requested, list) or not requested or any(
+                not isinstance(item, str) for item in requested):
+            raise ValueError('selection must be a nonempty exact ID list')
+        if len(set(requested)) != len(requested):
+            raise ValueError('duplicate upstream selection')
+        available = {}
+        suites = self.collectSuites()
+        for suite in suites:
+            for name in suite['tests']:
+                available[suite['label'] + '::' + name] = True
+        unknown = set(requested) - set(available)
+        if unknown:
+            raise ValueError('unknown/platform-inapplicable upstream IDs: %r' % sorted(unknown))
+        return [(suite, [(suite['label']+'::'+name, value)
+                         for name, value in suite['tests'].items()
+                         if suite['label']+'::'+name in requested])
+                for suite in suites
+                if any(item.startswith(suite['label']+'::') for item in requested)]
+
+    def runMechanical(self, spec):
+        # Import is local so the historical/manual entry keeps its dependencies.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+        from acceptance_runtime import OwnedCore, network_snapshot, require_target, write_json
+        if set(spec) != {'schema', 'checks', 'target', 'work_root'}:
+            raise ValueError('unexpected or missing mechanical spec fields')
+        if spec.get('schema') != 'fakenet.upstream-selection.v1':
+            raise ValueError('unknown upstream selection schema')
+        if not self.settings.singlehost:
+            raise ValueError('mechanical MultiHost requires remote transfer/readiness; not implemented')
+        selected = self.mechanicalSelection(spec.get('checks'))
+        require_target(spec.get('target'))
+        work = Path(spec['work_root'])
+        if not work.is_absolute():
+            raise ValueError('work_root must be absolute')
+        work.mkdir(parents=True, exist_ok=False)
+        rows, lifecycle = [], []
+        fatal = None
+        try:
+            for index, (suite, checks) in enumerate(selected):
+                directory = work / ('suite-%02d' % index)
+                directory.mkdir()
+                self.settings.configpath = str(directory/'fakenet.ini')
+                self.settings.ancillary_files_dest = str(directory)
+                self.settings.stopflag = str(directory/'stop.flag')
+                self.settings.logpath = str(directory/'core.log')
+                config = suite['config']
+                config.rawconfig.set('Diverter', 'DumpPacketsFilePrefix', str(directory/'packets'))
+                for section in config.rawconfig.sections():
+                    if config.rawconfig.has_option(section, 'Custom'):
+                        config.rawconfig.set(section, 'Custom', str(directory/'custom_responses.ini'))
+                    if config.rawconfig.has_option(section, 'DumpHTTPPostsFilePrefix'):
+                        config.rawconfig.set(section, 'DumpHTTPPostsFilePrefix', str(directory/'http'))
+                self.writeConfig(config)
+                # Ancillary relative payloads resolve inside this unique suite.
+                before = network_snapshot()
+                write_json(directory/'network-before.json', before)
+                argv = [sys.executable, '-m', 'fakenet.fakenet', '-n', '--no-pause',
+                        '-f', self.settings.stopflag, '-l', self.settings.logpath,
+                        '-c', self.settings.configpath]
+                core = OwnedCore(argv, directory, directory, self.settings.stopflag,
+                                 self.settings.logpath, source_root=Path(__file__).resolve().parents[1])
+                clean = False
+                after = None
+                try:
+                    core.start()
+                    for identity, (callback, args, expected) in checks:
+                        observed = self._tryTest(identity, callback, args, expected)
+                        rows.append({'id': identity,
+                                     'status': STATUS_PASS if observed['passed'] else STATUS_FAIL,
+                                     'detail': observed['detail']})
+                finally:
+                    stopped = core.stop()
+                    after = network_snapshot()
+                    write_json(directory/'network-after.json', after)
+                    clean = stopped and before == after
+                    lifecycle.append({'suite': suite['label'], 'core': core.state,
+                                      'network_restored': before == after, 'clean': clean})
+                    write_json(work/'lifecycle.json', lifecycle)
+                if not clean:
+                    raise RuntimeError('upstream cleanup failed; inspect lifecycle and network snapshots')
+        except BaseException as error:
+            fatal = '%s: %s' % (type(error).__name__, error)
+        requested = spec['checks']
+        by_id = {row['id']: row for row in rows}
+        for identity in requested:
+            if identity not in by_id:
+                rows.append({'id': identity, 'status': STATUS_FAIL,
+                             'detail': fatal or 'selected check was not executed'})
+        result = {'schema': 'fakenet.upstream-result.v1', 'checks': rows,
+                  'required_checks': requested, 'lifecycle': lifecycle,
+                  'failure': fatal, 'cleanup_complete': bool(lifecycle) and
+                  len(lifecycle) == len(selected) and all(row['clean'] for row in lifecycle)}
+        result['passed'] = not fatal and result['cleanup_complete'] and all(
+            row['status'] == STATUS_PASS for row in rows)
+        write_json(work/'upstream.json', result)
+        writeResults(str(work/'upstream.tsv'), rows)
+        return 0 if result['passed'] else 1
+
     def _printStatus(self, desc, passed):
         status = 'Passed' if passed else 'FAILED'
         punc = '[ + ]' if passed else '[!!!]'
@@ -455,6 +565,8 @@ class FakeNetTester(object):
                 z.write(filepath, arcname)
 
     def _testGeneric(self, label, config, tests, matchspec=[]):
+        if getattr(self, '_collecting', False):
+            return {'label': label, 'config': config, 'tests': tests}
         self._filterMatchingTests(tests, matchspec)
         if not len(tests):
             logger.info('No matching tests')
@@ -1113,6 +1225,12 @@ def parseArgs(argv):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == '--mechanical-spec':
+        spec = json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
+        startingpath = str(Path(__file__).resolve().parent)
+        settings = FakeNetTestSettings(startingpath, singlehost=True,
+                                       non_interactive=True)
+        return FakeNetTester(settings).runMechanical(spec)
     if not is_admin():
         logger.error('Not an admin, exiting...')
         sys.exit(1)

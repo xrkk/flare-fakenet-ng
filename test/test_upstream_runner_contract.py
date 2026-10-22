@@ -17,6 +17,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools'))
 
 
 def _install_stubs():
@@ -363,3 +364,105 @@ class ResultAggregationTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MechanicalUpstreamTests(unittest.TestCase):
+    def _tester(self, **kwargs):
+        with mock.patch.object(DRIVER, 'get_external_ip', return_value='192.0.2.10'):
+            settings = DRIVER.FakeNetTestSettings(str(ROOT/'test'), non_interactive=True)
+        for key, value in kwargs.items():
+            setattr(settings, key, value)
+        return DRIVER.FakeNetTester(settings)
+
+    def test_collection_is_exact_platform_and_mode_specific_without_actions(self):
+        for windows in (False, True):
+            for singlehost in (False, True):
+                tester = self._tester(windows=windows, singlehost=singlehost)
+                with mock.patch.object(tester, 'writeConfig', side_effect=AssertionError('I/O')):
+                    suites = tester.collectSuites()
+                identities = [s['label']+'::'+n for s in suites for n in s['tests']]
+                self.assertEqual(len(identities), len(set(identities)))
+                self.assertEqual(windows, any('hostname test' in n for n in identities))
+                self.assertEqual(singlehost, any('Listener process' in n for n in identities))
+                self.assertEqual(singlehost, any('Global blacklisted process' in n for n in identities))
+
+    def test_invalid_selection_fails_before_target_or_files(self):
+        tester = self._tester()
+        import acceptance_runtime as rt
+        with mock.patch.object(rt, 'require_target') as target:
+            for checks in ([], ['bogus'], ['General::DNS listener test']*2):
+                with self.assertRaises(ValueError):
+                    tester.runMechanical({'schema':'fakenet.upstream-selection.v1',
+                        'checks': checks, 'target': {}, 'work_root': '/not-created'})
+            target.assert_not_called()
+
+    def test_exact_selected_callbacks_and_cleanup(self):
+        import acceptance_runtime as rt
+        from unittest.mock import MagicMock
+        with tempfile.TemporaryDirectory() as temp:
+            tester = self._tester()
+            identity = 'General::DNS listener test'
+            spec = {'schema':'fakenet.upstream-selection.v1', 'checks':[identity],
+                    'target':{}, 'work_root':str(Path(temp)/'work')}
+            core = MagicMock()
+            core.state = {'ready':True, 'stopped':True, 'forced':False, 'returncode':0}
+            core.stop.return_value = True
+            with mock.patch.object(rt, 'require_target'), mock.patch.object(rt, 'network_snapshot', return_value={'dns':'same'}), mock.patch.object(rt, 'OwnedCore', return_value=core), mock.patch.object(tester, '_tryTest', return_value={'passed':True,'detail':'observed'}) as probe:
+                self.assertEqual(0, tester.runMechanical(spec))
+            self.assertEqual([identity], [c.args[0] for c in probe.call_args_list])
+            core.start.assert_called_once()
+            core.stop.assert_called_once()
+            import json
+            result = json.loads((Path(spec['work_root'])/'upstream.json').read_text())
+            self.assertTrue(result['passed'])
+            self.assertEqual([identity], [row['id'] for row in result['checks']])
+
+    def test_start_failure_still_stops_and_cannot_pass(self):
+        import acceptance_runtime as rt
+        from unittest.mock import MagicMock
+        with tempfile.TemporaryDirectory() as temp:
+            tester = self._tester()
+            core = MagicMock(); core.state = {'ready':False}; core.start.side_effect = TimeoutError('no ready'); core.stop.return_value = True
+            spec = {'schema':'fakenet.upstream-selection.v1','checks':['General::DNS listener test'], 'target':{}, 'work_root':str(Path(temp)/'work')}
+            with mock.patch.object(rt, 'require_target'), mock.patch.object(rt, 'network_snapshot', return_value={}), mock.patch.object(rt, 'OwnedCore', return_value=core), mock.patch.object(tester, '_tryTest') as probe:
+                self.assertEqual(1, tester.runMechanical(spec))
+            core.stop.assert_called_once(); probe.assert_not_called()
+
+    def test_network_difference_stops_subsequent_suites(self):
+        import acceptance_runtime as rt
+        from unittest.mock import MagicMock
+        with tempfile.TemporaryDirectory() as temp:
+            tester = self._tester()
+            core = MagicMock(); core.state = {}; core.stop.return_value = True
+            spec = {'schema':'fakenet.upstream-selection.v1', 'checks':['General::DNS listener test','No Redirect::RedirectAllTraffic disabled external IP @ bound'], 'target':{}, 'work_root':str(Path(temp)/'work')}
+            with mock.patch.object(rt,'require_target'), mock.patch.object(rt,'network_snapshot', side_effect=[{'dns':'old'},{'dns':'changed'}]), mock.patch.object(rt,'OwnedCore', return_value=core) as owner, mock.patch.object(tester,'_tryTest',return_value={'passed':True,'detail':'ok'}):
+                self.assertEqual(1, tester.runMechanical(spec))
+            owner.assert_called_once()
+
+
+class OwnedCoreTests(unittest.TestCase):
+    def test_observed_ready_and_graceful_exit(self):
+        import acceptance_runtime as rt
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp); app = directory/'core.log'
+            child = mock.Mock(pid=123, returncode=0)
+            child.poll.side_effect = [None, None, 0, 0]
+            def launch(*args, **kwargs):
+                app.write_text('FakeNet-NG started successfully')
+                self.assertFalse(kwargs['shell'])
+                return child
+            with mock.patch.object(rt.subprocess,'Popen',side_effect=launch):
+                core = rt.OwnedCore(['python','-m','fixed'], directory, directory, directory/'stop', app)
+                core.start()
+                self.assertTrue(core.stop())
+                self.assertTrue(core.state['ready'])
+
+    def test_exited_before_ready_fails_and_closes_console(self):
+        import acceptance_runtime as rt
+        with tempfile.TemporaryDirectory() as temp:
+            d=Path(temp); child=mock.Mock(pid=42, returncode=1); child.poll.return_value=1
+            with mock.patch.object(rt.subprocess,'Popen',return_value=child):
+                core=rt.OwnedCore(['fixed'],d,d,d/'stop',d/'app.log')
+                with self.assertRaisesRegex(RuntimeError,'before ready'): core.start()
+                self.assertTrue(core.console.closed)
+                self.assertFalse(core.state['ready'])
