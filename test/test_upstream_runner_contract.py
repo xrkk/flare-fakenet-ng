@@ -167,6 +167,25 @@ class SmtpSslContractTests(unittest.TestCase):
             with self.assertRaisesRegex(TypeError, 'bad construction'):
                 self.tester._test_smtp_ssl('a', 'b', 'c', 'host', 25)
 
+    def test_partial_refusal_is_not_success(self):
+        class PartialSmtp(self.FakeSmtp):
+            def sendmail(self, sender, recipient, msg):
+                self.sendmail_args = (sender, recipient, msg)
+                return {'bad@example.org': (550, b'no such user')}
+        with mock.patch.object(DRIVER.smtplib, 'SMTP_SSL', PartialSmtp):
+            with self.assertRaisesRegex(DRIVER.FakeNetTestException, 'refused'):
+                self.tester._test_smtp_ssl('a', 'b', 'c', 'host', 25)
+        self.assertTrue(PartialSmtp.instances[0].quit_called)
+
+    def test_plain_smtp_refusal_is_not_success(self):
+        class PartialPlain(self.FakeSmtp):
+            def sendmail(self, sender, recipient, msg):
+                return {'bad@example.org': (550, b'no such user')}
+        with mock.patch.object(DRIVER.smtplib, 'SMTP', PartialPlain):
+            with self.assertRaisesRegex(DRIVER.FakeNetTestException, 'refused'):
+                self.tester._test_smtp('a', 'b', 'c', 'host', 25)
+        self.assertTrue(PartialPlain.instances[0].quit_called)
+
 
 class ResultAggregationTests(unittest.TestCase):
     def make_tester(self, results_path):
@@ -269,11 +288,67 @@ class ResultAggregationTests(unittest.TestCase):
             self.assertEqual(0, DRIVER.main())
 
     def test_parse_args_preserves_matchspec_and_flags(self):
-        positional, results, non_interactive = DRIVER.parseArgs(
-            ['here', '-GUI', '--results', 'out.tsv', '--non-interactive'])
+        positional, results, non_interactive, multihost_ready = DRIVER.parseArgs(
+            ['here', '-GUI', '--results', 'out.tsv', '--non-interactive',
+             '--multihost-ready'])
         self.assertEqual(['here', '-GUI'], positional)
         self.assertEqual('out.tsv', results)
         self.assertTrue(non_interactive)
+        self.assertTrue(multihost_ready)
+
+    def test_stop_failure_is_a_case_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            tester = self.make_tester(os.path.join(temp, 'results.tsv'))
+            tester.stopFakenetAndWait = lambda timeout, kill: False
+            tests = OrderedDict([('passes', (lambda: True, (), True))])
+            with mock.patch.object(DRIVER.time, 'sleep', lambda seconds: None):
+                result = tester._testGeneric('fixture', object(), tests, [])
+            self.assertIn('did not stop cleanly', result['failure'])
+
+    def test_stop_exception_is_a_case_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            tester = self.make_tester(os.path.join(temp, 'results.tsv'))
+
+            def broken_stop(timeout, kill):
+                raise RuntimeError('stop channel closed')
+            tester.stopFakenetAndWait = broken_stop
+            tests = OrderedDict([('passes', (lambda: True, (), True))])
+            with mock.patch.object(DRIVER.time, 'sleep', lambda seconds: None):
+                result = tester._testGeneric('fixture', object(), tests, [])
+            self.assertIn('stop raised', result['failure'])
+
+    def test_multihost_noninteractive_requires_explicit_readiness(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = settings_stub(
+                singlehost=False, non_interactive=True, multihost_ready=False,
+                ancillary_files=[], ancillary_files_dest=temp,
+                configpath=os.path.join(temp, 'fakenet.ini'),
+                results_path=os.path.join(temp, 'results.tsv'))
+            tester = DRIVER.FakeNetTester(settings)
+            tests = OrderedDict([('passes', (lambda: True, (), True))])
+            result = tester._testGeneric('multi', object(), tests, [])
+            self.assertIn('readiness was not provided', result['failure'])
+            self.assertEqual([], result['rows'])
+
+    def test_multihost_noninteractive_with_readiness_runs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = settings_stub(
+                singlehost=False, non_interactive=True, multihost_ready=True,
+                ancillary_files=[], ancillary_files_dest=temp,
+                configpath=os.path.join(temp, 'fakenet.ini'),
+                results_path=os.path.join(temp, 'results.tsv'))
+            tester = DRIVER.FakeNetTester(settings)
+            tester.writeConfig = lambda config: None
+            tester._mkzip = lambda path, files: None
+            tester.delConfig = lambda: None
+            tests = OrderedDict([('passes', (lambda: True, (), True))])
+            class Config:
+                def multiHostMode(self):
+                    pass
+            with mock.patch.object(DRIVER.time, 'sleep', lambda seconds: None):
+                result = tester._testGeneric('multi', Config(), tests, [])
+            self.assertIsNone(result['failure'])
+            self.assertEqual(DRIVER.STATUS_PASS, result['rows'][0]['status'])
 
     def test_try_test_reports_exception_detail(self):
         tester = DRIVER.FakeNetTester(settings_stub())

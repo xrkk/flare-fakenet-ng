@@ -119,14 +119,17 @@ match the expression.
 Optional tooling flags, which do not change the positional/match semantics:
 
 ```text
-test.py here --results /path/to/results.tsv --non-interactive
+test.py here --results /path/to/results.tsv --non-interactive --multihost-ready
 ```
 
 `--results` writes a `status<TAB>name<TAB>detail` file. A case that fails on the
 first attempt and passes on the retry is written as `FAIL` with both attempts in
 the detail; the process exits non-zero for any failure or retry-only success.
-`--non-interactive` suppresses the MultiHost "type ok" prompt and assumes the
-operator has already prepared the remote system.
+`--non-interactive` suppresses the MultiHost "type ok" prompt, but it is
+accepted only together with `--multihost-ready`; without that explicit readiness
+input the affected MultiHost suite fails instead of assuming the remote system
+is ready. A stop failure or stop exception is also recorded as a case failure
+and makes the process exit non-zero.
 
 If you are testing remotely the test script will create a custom configuration
 file for each subsuite of tests that it runs. You must copy that configuration
@@ -324,15 +327,18 @@ current candidate in S2; the test-side defects were fixed on 2026-10-22:
 
 * `SMTP SSL listener test`: the function previously referenced an undefined
   `server` and passed positional arguments that the current `SMTP_SSL` exposes
-  only as keyword-only. It now uses the current keyword API, returns `True`
-  after a successful `sendmail`, and lets construction/send errors propagate.
-  Its native listener result is still NOT_RUN.
+  only as keyword-only. It now uses the current keyword API, verifies the
+  `sendmail` refusal mapping (full/partial refusal is not success), returns
+  `True` only after a successful send, and lets construction/send errors
+  propagate. Its native listener result is still NOT_RUN.
 * `IRC listener test` (works on Linux, not on Windows).
 * `Listener host whitelist`: the test previously targeted the blacklist port
   8082, and the fixture used `6.6.6.6`, which is also the global
   `Diverter.HostBlackList`. It now targets port 8083 with `9.9.9.9` and adds a
   blocked negative; the positive case is no longer shadowed by the global
   blacklist. Its native result is still NOT_RUN.
+* A stop failure or stop exception now enters the suite failure and the
+  process exit code; it is no longer only logged.
 * The functional status of process blacklisting on Linux is indeterminate: it
   was thought to have been deficient, however it may have been observed
   passing the tests in the automated test suite.

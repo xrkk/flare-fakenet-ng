@@ -463,6 +463,11 @@ class FakeNetTester(object):
 
         # If doing a multi-host test, then toggle the network mode
         if not self.settings.singlehost:
+            if self.settings.non_interactive and not self.settings.multihost_ready:
+                logger.error('MultiHost readiness was not provided; '
+                             'refusing to treat the remote system as ready')
+                return {'label': label, 'rows': [],
+                        'failure': 'MultiHost readiness was not provided'}
             config.multiHostMode()
 
         self.writeConfig(config)
@@ -491,8 +496,8 @@ class FakeNetTester(object):
             logger.info('')
 
             if self.settings.non_interactive:
-                logger.info('Non-interactive mode: assuming the remote system '
-                            'is ready; no operator prompt was issued')
+                logger.info('Non-interactive mode: explicit MultiHost readiness '
+                            'input was provided; no operator prompt was issued')
             else:
                 while True:
                     logger.info('Type \'ok\' to continue, or \'exit\' to stop')
@@ -511,6 +516,7 @@ class FakeNetTester(object):
         logger.info('-' * 79)
 
         rows = []
+        stop_failure = None
         try:
             for desc, (callback, args, expected) in tests.items():
                 logger.debug('Testing: %s' % (desc))
@@ -561,19 +567,27 @@ class FakeNetTester(object):
                 time.sleep(sec)
 
                 logger.info('Stopping FakeNet-NG and waiting for it to complete')
-                responsive = self.stopFakenetAndWait(15, True)
-
+                try:
+                    responsive = self.stopFakenetAndWait(15, True)
+                except Exception as error:
+                    responsive = False
+                    stop_failure = ('FakeNet-NG stop raised %s: %s'
+                                    % (type(error).__name__, error))
                 if responsive:
                     logger.info('FakeNet-NG is stopped')
                 else:
-                    logger.info('FakeNet-NG was no longer running or was stopped forcibly')
+                    if stop_failure is None:
+                        stop_failure = 'FakeNet-NG did not stop cleanly'
+                    logger.error(stop_failure)
 
                 time.sleep(1)
 
             self.delConfig()
 
         failure = None
-        if any(row['status'] == STATUS_FAIL for row in rows):
+        if stop_failure:
+            failure = stop_failure
+        elif any(row['status'] == STATUS_FAIL for row in rows):
             failure = 'one or more cases failed'
         elif any(row['status'] == STATUS_FLAKY for row in rows):
             failure = 'one or more cases failed on the first attempt'
@@ -627,20 +641,28 @@ class FakeNetTester(object):
     def _test_ns(self, hostname, expected):
        return (expected == socket.gethostbyname(hostname))
 
+    def _smtp_send(self, smtpserver, sender, recipient, msg):
+        refused = smtpserver.sendmail(sender, recipient, msg)
+        if refused:
+            raise FakeNetTestException('SMTP refused recipients: %r' %
+                                       sorted(refused))
+        return True
+
     def _test_smtp_ssl(self, sender, recipient, msg, hostname, port=None, timeout=5):
         smtpserver = smtplib.SMTP_SSL(hostname, port, local_hostname='fake.net',
                                       timeout=timeout)
         try:
-            smtpserver.sendmail(sender, recipient, msg)
+            self._smtp_send(smtpserver, sender, recipient, msg)
         finally:
             smtpserver.quit()
         return True
 
     def _test_smtp(self, sender, recipient, msg, hostname, port=None, timeout=5):
         smtpserver = smtplib.SMTP(hostname, port, 'fake.net', timeout)
-        smtpserver.sendmail(sender, recipient, msg)
-        smtpserver.quit()
-
+        try:
+            self._smtp_send(smtpserver, sender, recipient, msg)
+        finally:
+            smtpserver.quit()
         return True
 
     def _test_pop(self, hostname, port=None, timeout=5):
@@ -979,7 +1001,7 @@ class FakeNetTestSettings:
     """Test constants/literals, some of which may vary per OS, etc."""
 
     def __init__(self, startingpath, singlehost=True, non_interactive=False,
-                 results_path=None):
+                 results_path=None, multihost_ready=False):
         # Where am I? Who are you?
         self.platform_name = platform.system()
         self.windows = (self.platform_name == 'Windows')
@@ -988,6 +1010,7 @@ class FakeNetTestSettings:
         # Test parameters
         self.singlehost = singlehost
         self.non_interactive = non_interactive
+        self.multihost_ready = multihost_ready
         self.startingpath = startingpath
         self.configtemplate = os.path.join(startingpath, 'template.ini')
 
@@ -1061,6 +1084,7 @@ def parseArgs(argv):
     """
     results_path = None
     non_interactive = False
+    multihost_ready = False
     positional = []
     index = 0
     while index < len(argv):
@@ -1079,9 +1103,13 @@ def parseArgs(argv):
             non_interactive = True
             index += 1
             continue
+        if item == '--multihost-ready':
+            multihost_ready = True
+            index += 1
+            continue
         positional.append(item)
         index += 1
-    return positional, results_path, non_interactive
+    return positional, results_path, non_interactive, multihost_ready
 
 
 def main():
@@ -1089,11 +1117,11 @@ def main():
         logger.error('Not an admin, exiting...')
         sys.exit(1)
 
-    positional, results_path, non_interactive = parseArgs(sys.argv[1:])
+    positional, results_path, non_interactive, multihost_ready = parseArgs(sys.argv[1:])
 
     if len(positional) < 1:
         logger.error('Usage: test.py <where> [matchspec1 [matchspec2 [...] ] ]')
-        logger.error('       [--results PATH] [--non-interactive]')
+        logger.error('       [--results PATH] [--non-interactive] [--multihost-ready]')
         logger.error('')
         logger.error('Valid where:')
         logger.error('  here')
@@ -1130,7 +1158,8 @@ def main():
     startingpath = os.getcwd()
     settings = FakeNetTestSettings(startingpath, singlehost,
                                    non_interactive=non_interactive,
-                                   results_path=results_path)
+                                   results_path=results_path,
+                                   multihost_ready=multihost_ready)
     if not singlehost: # <where> was an IP, so record it
         settings.ext_ip = where
     tester = FakeNetTester(settings)
