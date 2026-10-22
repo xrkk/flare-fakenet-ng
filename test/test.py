@@ -30,6 +30,27 @@ from requests.adapters import HTTPAdapter
 logger = logging.getLogger('FakeNetTests')
 logging.basicConfig(format='%(message)s', level=logging.INFO)
 
+STATUS_PASS = 'PASS'
+STATUS_FAIL = 'FAIL'
+STATUS_FLAKY = 'FLAKY'
+
+
+def writeResults(path, rows):
+    """Write structured per-case results consumed by acceptance tooling.
+
+    A first-attempt failure that passed on retry is written as FAIL so that a
+    retry can never erase the original failure; the detail keeps both attempts.
+    """
+    directory = os.path.dirname(path)
+    if directory and not os.path.isdir(directory):
+        os.makedirs(directory)
+    with open(path, 'w', encoding='utf-8', newline='') as stream:
+        for row in rows:
+            status = STATUS_PASS if row['status'] == STATUS_PASS else STATUS_FAIL
+            detail = str(row.get('detail', '')).replace('\t', ' ').replace('\n', ' ')
+            stream.write('%s\t%s\t%s\n' % (status, row['id'], detail))
+
+
 def is_admin():
     result = False
     try:
@@ -317,10 +338,40 @@ class FakeNetTester(object):
             os.remove(self.settings.configpath)
 
     def doTests(self, match_spec):
-        self.testGeneral(match_spec)
-        self.testNoRedirect(match_spec)
-        self.testBlacklistProcess(match_spec)
-        self.testWhitelistProcess(match_spec)
+        suites = [
+            self.testGeneral(match_spec),
+            self.testNoRedirect(match_spec),
+            self.testBlacklistProcess(match_spec),
+            self.testWhitelistProcess(match_spec),
+        ]
+        rows = []
+        for suite in suites:
+            rows.extend(suite.get('rows', []))
+            if suite.get('failure') and not suite.get('rows'):
+                rows.append({'id': '%s::driver' % suite['label'],
+                             'status': STATUS_FAIL,
+                             'detail': suite['failure']})
+        failed = sum(1 for row in rows if row['status'] == STATUS_FAIL)
+        flaky = sum(1 for row in rows if row['status'] == STATUS_FLAKY)
+        failed_suites = [suite['label'] for suite in suites
+                         if suite.get('failure')]
+        result = {
+            'suites': suites,
+            'rows': rows,
+            'passed': sum(1 for row in rows if row['status'] == STATUS_PASS),
+            'failed': failed,
+            'flaky': flaky,
+            'failed_suites': failed_suites,
+            'exit_code': 1 if failed or flaky or failed_suites else 0,
+        }
+        if self.settings.results_path:
+            writeResults(self.settings.results_path, rows)
+            logger.info('Structured results written to %s' %
+                        self.settings.results_path)
+        logger.info('Aggregate: passed=%d failed=%d flaky=%d suites_failed=%d' % (
+            result['passed'], result['failed'], result['flaky'],
+            len(failed_suites)))
+        return result
 
     def _printStatus(self, desc, passed):
         status = 'Passed' if passed else 'FAILED'
@@ -329,15 +380,20 @@ class FakeNetTester(object):
 
     def _tryTest(self, desc, callback, args, expected):
         retval = None
+        detail = ''
         try:
             retval = callback(*args)
         except Exception as e:
+            detail = '%s: %s' % (type(e).__name__, str(e))
             logger.info('Test %s: Uncaught exception of type %s: %s' %
                         (desc, str(type(e)), str(e)))
 
         passed = (retval == expected)
+        if not passed and not detail:
+            detail = 'expected %r, got %r' % (expected, retval)
 
-        return passed
+        return {'passed': passed, 'detail': detail, 'value': retval}
+
 
     def _filterMatchingTests(self, tests, matchspec):
         """Remove tests that match negative specifications (regexes preceded by
@@ -402,7 +458,8 @@ class FakeNetTester(object):
         self._filterMatchingTests(tests, matchspec)
         if not len(tests):
             logger.info('No matching tests')
-            return False
+            failure = None if matchspec else 'empty test set for %s' % label
+            return {'label': label, 'rows': [], 'failure': failure}
 
         # If doing a multi-host test, then toggle the network mode
         if not self.settings.singlehost:
@@ -413,7 +470,8 @@ class FakeNetTester(object):
         if self.settings.singlehost:
             if not self.executeFakenet():
                 self.delConfig()
-                return False
+                return {'label': label, 'rows': [],
+                        'failure': 'FakeNet-NG failed to start'}
 
             sec = self.settings.sleep_after_start
             logger.info('Sleeping %d seconds before commencing' % (sec))
@@ -432,73 +490,94 @@ class FakeNetTester(object):
                         'system: %s') % (zip_path))
             logger.info('')
 
-            while True:
-                logger.info('Type \'ok\' to continue, or \'exit\' to stop')
-                try:
-                    ok = input()
-                except EOFError:
-                    ok = 'exit'
+            if self.settings.non_interactive:
+                logger.info('Non-interactive mode: assuming the remote system '
+                            'is ready; no operator prompt was issued')
+            else:
+                while True:
+                    logger.info('Type \'ok\' to continue, or \'exit\' to stop')
+                    try:
+                        ok = input()
+                    except EOFError:
+                        ok = 'exit'
 
-                if ok.lower() in ['exit', 'quit', 'stop', 'n', 'no']:
-                    sys.exit(0)
-                elif ok.lower() in ['ok', 'okay', 'go', 'y', 'yes']:
-                    break
+                    if ok.lower() in ['exit', 'quit', 'stop', 'n', 'no']:
+                        sys.exit(0)
+                    elif ok.lower() in ['ok', 'okay', 'go', 'y', 'yes']:
+                        break
 
         logger.info('-' * 79)
         logger.info('Testing')
         logger.info('-' * 79)
 
-        nPassedTests = 0
-        nFailedTests = 0
-        failedTests = []
+        rows = []
+        try:
+            for desc, (callback, args, expected) in tests.items():
+                logger.debug('Testing: %s' % (desc))
+                first = self._tryTest(desc, callback, args, expected)
 
-        # Do each test
-        for desc, (callback, args, expected) in tests.items():
-            logger.debug('Testing: %s' % (desc))
-            passed = self._tryTest(desc, callback, args, expected)
+                if first['passed']:
+                    status = STATUS_PASS
+                    detail = 'first attempt passed'
+                else:
+                    # Retry in case of transient error e.g. timeout, but never
+                    # hide the first failure: a retry-only success is FLAKY and
+                    # is not counted as a pass.
+                    logger.debug('Retrying: %s' % (desc))
+                    second = self._tryTest(desc, callback, args, expected)
+                    if second['passed']:
+                        status = STATUS_FLAKY
+                        detail = ('first attempt failed (%s); retry passed'
+                                  % first['detail'])
+                    else:
+                        status = STATUS_FAIL
+                        detail = ('first attempt failed (%s); retry failed (%s)'
+                                  % (first['detail'], second['detail']))
 
-            # Retry in case of transient error e.g. timeout
-            if not passed:
-                logger.debug('Retrying: %s' % (desc))
-                passed = self._tryTest(desc, callback, args, expected)
+                rows.append({'id': desc, 'status': status, 'detail': detail})
+                self._printStatus(desc, status == STATUS_PASS)
 
-            if passed:
-                nPassedTests += 1
-            else:
-                nFailedTests += 1
-                failedTests.append(desc)
+                time.sleep(0.5)
+        finally:
+            logger.info('-' * 79)
+            logger.info('Done.')
+            passed = sum(1 for row in rows if row['status'] == STATUS_PASS)
+            flaky = sum(1 for row in rows if row['status'] == STATUS_FLAKY)
+            failed = sum(1 for row in rows if row['status'] == STATUS_FAIL)
+            logger.info('Passed: %s/%s | Failed: %s/%s | Flaky: %s/%s' % (
+                passed, len(tests), failed, len(tests), flaky, len(tests)))
 
-            self._printStatus(desc, passed)
+            if failed or flaky:
+                logger.info('\nFailed or flaky tests:')
+                for row in rows:
+                    if row['status'] in (STATUS_FAIL, STATUS_FLAKY):
+                        logger.info('[*] %s: %s' % (row['id'], row['detail']))
 
-            time.sleep(0.5)
+            logger.info('-' * 79)
 
-        logger.info('-' * 79)
-        logger.info('Done.')
-        logger.info('Passed: %s/%s | Failed: %s/%s' % (nPassedTests, len(tests), nFailedTests, len(tests)))
+            if self.settings.singlehost:
+                sec = self.settings.sleep_before_stop
+                logger.info('Sleeping %d seconds before transitioning' % (sec))
+                time.sleep(sec)
 
-        if nFailedTests:
-            logger.info('\nFailed tests:')
-            for test in failedTests:
-                logger.info('[*] %s' % (test))
+                logger.info('Stopping FakeNet-NG and waiting for it to complete')
+                responsive = self.stopFakenetAndWait(15, True)
 
-        logger.info('-' * 79)
+                if responsive:
+                    logger.info('FakeNet-NG is stopped')
+                else:
+                    logger.info('FakeNet-NG was no longer running or was stopped forcibly')
 
-        if self.settings.singlehost:
-            sec = self.settings.sleep_before_stop
-            logger.info('Sleeping %d seconds before transitioning' % (sec))
-            time.sleep(sec)
+                time.sleep(1)
 
-            logger.info('Stopping FakeNet-NG and waiting for it to complete')
-            responsive = self.stopFakenetAndWait(15, True)
+            self.delConfig()
 
-            if responsive:
-                logger.info('FakeNet-NG is stopped')
-            else:
-                logger.info('FakeNet-NG was no longer running or was stopped forcibly')
-
-            time.sleep(1)
-
-        self.delConfig()
+        failure = None
+        if any(row['status'] == STATUS_FAIL for row in rows):
+            failure = 'one or more cases failed'
+        elif any(row['status'] == STATUS_FLAKY for row in rows):
+            failure = 'one or more cases failed on the first attempt'
+        return {'label': label, 'rows': rows, 'failure': failure}
 
     def _test_sk(self, proto, host, port, teststring=None, expected=None,
                  timeout=5):
@@ -549,9 +628,13 @@ class FakeNetTester(object):
        return (expected == socket.gethostbyname(hostname))
 
     def _test_smtp_ssl(self, sender, recipient, msg, hostname, port=None, timeout=5):
-        smtpserver = smtplib.SMTP_SSL(hostname, port, 'fake.net', None, None, timeout)
-        server.sendmail(sender, recipient, msg)
-        smtpserver.quit()
+        smtpserver = smtplib.SMTP_SSL(hostname, port, local_hostname='fake.net',
+                                      timeout=timeout)
+        try:
+            smtpserver.sendmail(sender, recipient, msg)
+        finally:
+            smtpserver.quit()
+        return True
 
     def _test_smtp(self, sender, recipient, msg, hostname, port=None, timeout=5):
         smtpserver = smtplib.SMTP(hostname, port, 'fake.net', timeout)
@@ -577,7 +660,7 @@ class FakeNetTester(object):
 
         if not b'Alice' in b''.join(lines):
             msg = 'POP3 message did not contain expected string'
-            raise FakeNetTestException(msg)
+            logger.error(msg)
             return False
 
         return True
@@ -733,9 +816,7 @@ class FakeNetTester(object):
 
         return self._testGeneric('Global process whitelist', config, t, matchspec)
 
-    def testGeneral(self, matchspec=[]):
-        config = self.makeConfig()
-
+    def generalTests(self):
         domain_dne = self.settings.domain_dne
         ext_ip = self.settings.ext_ip
         arbitrary = self.settings.arbitrary
@@ -829,10 +910,20 @@ class FakeNetTester(object):
         if self.settings.singlehost:
             t['Listener process blacklist'] = (self._test_http, (arbitrary, self.settings.listener_proc_black), False)
             t['Listener process whitelist'] = (self._test_http, (arbitrary, self.settings.listener_proc_white), True)
+            # The filter host (9.9.9.9) is deliberately outside the global
+            # Diverter.HostBlackList (6.6.6.6), so these cases exercise the
+            # listener-level filters rather than the global exclusion.
+            filter_host = self.settings.listener_filter_host
             t['Listener host blacklist'] = (self._test_http, (arbitrary, self.settings.listener_host_black), True)
-            t['Listener host whitelist'] = (self._test_http, (arbitrary, self.settings.listener_host_black), True)
+            t['Listener host blacklist blocked'] = (self._test_http, (filter_host, self.settings.listener_host_black), False)
+            t['Listener host whitelist'] = (self._test_http, (filter_host, self.settings.listener_host_white), True)
+            t['Listener host whitelist blocked'] = (self._test_http, (arbitrary, self.settings.listener_host_white), False)
 
-        return self._testGeneric('General', config, t, matchspec)
+        return t
+
+    def testGeneral(self, matchspec=[]):
+        return self._testGeneric('General', self.makeConfig(),
+                                 self.generalTests(), matchspec)
 
     def makeConfig(self, singlehostmode=True, proxied=True, redirectall=True):
         template = self.settings.configtemplate
@@ -887,7 +978,8 @@ class FakeNetConfig:
 class FakeNetTestSettings:
     """Test constants/literals, some of which may vary per OS, etc."""
 
-    def __init__(self, startingpath, singlehost=True):
+    def __init__(self, startingpath, singlehost=True, non_interactive=False,
+                 results_path=None):
         # Where am I? Who are you?
         self.platform_name = platform.system()
         self.windows = (self.platform_name == 'Windows')
@@ -895,6 +987,7 @@ class FakeNetTestSettings:
 
         # Test parameters
         self.singlehost = singlehost
+        self.non_interactive = non_interactive
         self.startingpath = startingpath
         self.configtemplate = os.path.join(startingpath, 'template.ini')
 
@@ -912,6 +1005,8 @@ class FakeNetTestSettings:
         self.logpath = self.genPath('%TEMP%\\fakenet.log', '/tmp/fakenet.log')
         self.fakenet = self.genPath('fakenet', 'python3 -m fakenet.fakenet')
         self.fndir = self.genPath('.', os.path.dirname(os.getcwd()))
+        self.results_path = results_path or os.path.join(
+            self.ancillary_files_dest, 'fakenet-test-results.tsv')
 
         # For process blacklisting
         self.pythonname = os.path.basename(sys.executable)
@@ -929,6 +1024,9 @@ class FakeNetTestSettings:
         self.listener_proc_white = 8081 # HTTP listener with process whitelists
         self.listener_host_black = 8082 # HTTP listener with host blacklist
         self.listener_host_white = 8083 # HTTP listener with host whitelists
+        # Not in Diverter.HostBlackList, so listener-level host tests are not
+        # shadowed by the global exclusion.
+        self.listener_filter_host = '9.9.9.9'
         self.localhost = '127.0.0.1'
         self.dns_expected = '192.0.2.123'
         self.domain_dne = 'does-not-exist-amirite.mandiant.com'
@@ -954,13 +1052,48 @@ def is_ip(s):
     pat = r'^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'
     return bool(re.match(pat, s))
 
+def parseArgs(argv):
+    """Parse the historical positional interface plus optional tooling flags.
+
+    Usage stays `test.py <where> [matchspec ...]`.  `--results PATH` writes the
+    structured per-case TSV and `--non-interactive` suppresses the MultiHost
+    ready prompt; both are optional and do not change match semantics.
+    """
+    results_path = None
+    non_interactive = False
+    positional = []
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if item == '--results':
+            if index + 1 >= len(argv):
+                raise SystemExit('--results requires a path')
+            results_path = argv[index + 1]
+            index += 2
+            continue
+        if item.startswith('--results='):
+            results_path = item.split('=', 1)[1]
+            index += 1
+            continue
+        if item == '--non-interactive':
+            non_interactive = True
+            index += 1
+            continue
+        positional.append(item)
+        index += 1
+    return positional, results_path, non_interactive
+
+
 def main():
     if not is_admin():
         logger.error('Not an admin, exiting...')
         sys.exit(1)
 
-    if len(sys.argv) < 2:
+    positional, results_path, non_interactive = parseArgs(sys.argv[1:])
+
+    if len(positional) < 1:
         logger.error('Usage: test.py <where> [matchspec1 [matchspec2 [...] ] ]')
+        logger.error('       [--results PATH] [--non-interactive]')
         logger.error('')
         logger.error('Valid where:')
         logger.error('  here')
@@ -976,7 +1109,7 @@ def main():
         sys.exit(1)
 
     # Validate where
-    where = sys.argv[1]
+    where = positional[0]
 
     singlehost = (where.lower() == 'here')
 
@@ -985,7 +1118,7 @@ def main():
         sys.exit(1)
 
     # Will execute only tests matching *match_spec if specified
-    match_spec = sys.argv[2:]
+    match_spec = positional[1:]
 
     if len(match_spec):
         logger.info('Only running tests that match the following ' +
@@ -995,12 +1128,15 @@ def main():
 
     # Doit
     startingpath = os.getcwd()
-    settings = FakeNetTestSettings(startingpath, singlehost)
+    settings = FakeNetTestSettings(startingpath, singlehost,
+                                   non_interactive=non_interactive,
+                                   results_path=results_path)
     if not singlehost: # <where> was an IP, so record it
         settings.ext_ip = where
     tester = FakeNetTester(settings)
     logger.info('Running with privileges on %s' % (settings.platform_name))
-    tester.doTests(match_spec)
+    result = tester.doTests(match_spec)
+    return result['exit_code']
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
