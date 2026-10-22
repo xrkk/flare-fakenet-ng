@@ -217,3 +217,23 @@ class MultiHostTests(unittest.TestCase):
         self.assertTrue(result['passed']);core.stop.assert_called_once()
         evidence=json.loads((Path(self.request['output_root'])/'server-result.json').read_text())
         self.assertTrue(evidence['network_restored']);self.assertEqual('born',evidence['owner']['core_birth'])
+
+
+    def test_original_general_and_no_redirect_config_stays_equivalent(self):
+        import configparser
+        import test_upstream_runner_contract as original
+        for suite in ('General','No Redirect'):
+            output=self.root/('config-'+suite.replace(' ','-'))
+            rows=self.multi.prepare_original_config(ROOT,suite,output)
+            actual=configparser.RawConfigParser();actual.read(output/'fakenet.ini')
+            expected=original.DRIVER.FakeNetConfig(str(ROOT/'test/template.ini'),singlehostmode=False,proxied=suite=='General',redirectall=suite=='General')
+            self.assertEqual({s:dict(actual[s]) for s in actual.sections()},{s:dict(expected.rawconfig[s]) for s in expected.rawconfig.sections()})
+            self.assertEqual(5,len(rows));self.assertTrue((output/'input-manifest.json').is_file())
+
+    def test_sdk_staging_refuses_changed_config_before_any_upload(self):
+        output=self.root/'prepared';rows=self.multi.prepare_original_config(ROOT,'General',output)
+        (output/'fakenet.ini').write_text('changed')
+        sdk=mock.Mock();sdk.load_connection.return_value={}
+        channel=linux.ExistingRemnuxChannel({'connection_ref':'existing','workspace_id':'owned'},self.root/'journal',sdk=sdk);channel.epoch=7
+        with self.assertRaisesRegex(linux.RemnuxChannelError,'source identity changed'):channel.stage_multihost('experiment',rows)
+        sdk.put_file.assert_not_called()

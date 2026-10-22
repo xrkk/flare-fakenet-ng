@@ -102,3 +102,23 @@ class ExistingRemnuxChannel:
         return self.call_once(action+'-'+uuid.uuid4().hex,'remnux_command',{'argv':argv,'cwd':'work',
             'timeout_s':30,'execution_identity':'root_explicit',
             'reason':'observe/stop only the pinned benign MultiHost test core'})
+
+
+    def stage_multihost(self,experiment_id,files):
+        # No remote directory scan or guessed source. The original SDK creates
+        # each published path and verifies its transfer; first error ends stage.
+        import hashlib
+        if not experiment_id or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in experiment_id):
+            raise RemnuxChannelError('invalid owned MultiHost stage ID')
+        names=[row['relative_path'] for row in files]
+        if not names or len(names)!=len(set(names)):
+            raise RemnuxChannelError('empty/duplicate MultiHost stage list')
+        for row in files:
+            relative=Path(row['relative_path']);local=Path(row['local'])
+            if (relative.is_absolute() or '..' in relative.parts or local.is_symlink() or not local.is_file() or
+                local.stat().st_size!=row['size'] or hashlib.sha256(local.read_bytes()).hexdigest()!=row['sha256']):
+                raise RemnuxChannelError('MultiHost staged source identity changed')
+        result=[]
+        for index,row in enumerate(files):
+            result.append(self.put('stage-%03d'%index,row['local'],'published/'+experiment_id+'/'+row['relative_path']))
+        return result

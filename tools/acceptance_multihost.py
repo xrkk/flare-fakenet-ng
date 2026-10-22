@@ -60,7 +60,7 @@ def serve(request,root):
     before=network_snapshot();write_json(directory/'network-before.json',before)
     stop=directory/'stop.flag';log=directory/'core.log'
     argv=[sys.executable,'-m','fakenet.fakenet','-n','--no-pause','-c',str(config),'-l',str(log),'-f',str(stop)]
-    core=OwnedCore(argv,config.parent,directory,stop,log,source_root=root)
+    core=OwnedCore(argv,directory,directory,stop,log,source_root=root)
     error=None;clean=False;owner=None
     try:
         core.start()
@@ -142,6 +142,28 @@ def probes(request,root):
             'checks':rows,'server_observation':observation,'client_target':request['target']}
     write_new(directory/'probes.json',result)
     return result
+
+
+
+def prepare_original_config(root,suite,output):
+    """Deterministic original MultiHost fixture, with no client imports/I/O."""
+    if suite not in ('General','No Redirect'):
+        raise ValueError('suite has no original MultiHost callbacks')
+    import shutil
+    output=Path(output);output.mkdir(parents=True,exist_ok=False)
+    parser=configparser.RawConfigParser();parser.read(Path(root)/'test/template.ini')
+    parser.set('Diverter','NetworkMode','MultiHost')
+    parser.set('Diverter','RedirectAllTraffic','No' if suite=='No Redirect' else 'Yes')
+    if suite=='No Redirect':
+        parser.remove_section('ProxyTCPListener');parser.remove_section('ProxyUDPListener')
+        parser.set('Diverter','DefaultTCPListener','RawTCPListener')
+        parser.set('Diverter','DefaultUDPListener','RawUDPListener')
+    with (output/'fakenet.ini').open('x') as stream:parser.write(stream)
+    names=['fakenet.ini','custom_responses.ini','CustomProviderExample.py','sample_raw_response.txt','sample_raw_tcp_response.txt']
+    for name in names[1:]:shutil.copyfile(Path(root)/'test'/name,output/name)
+    rows=[{'local':str(output/name),'relative_path':name,'sha256':sha(output/name),'size':(output/name).stat().st_size} for name in names]
+    write_new(output/'input-manifest.json',{'suite':suite,'source_template_sha256':sha(Path(root)/'test/template.ini'),'files':rows})
+    return rows
 
 
 def main(argv=None):

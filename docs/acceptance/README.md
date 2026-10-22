@@ -245,9 +245,10 @@ execution/pull path is still unfinished. It does not install or recreate SSH.
 `probes` target actions. The original core owns stop and network recovery.
 Observe checks owner/core birth identities, exact configuration and the actual
 ready log; a supplied `ready=true` cannot enable probes. Probes execute exact
-original MultiHost callbacks on the selected client VM. Host orchestration of
-configuration staging, the two targets, observations before/after probes and
-final original collection remains necessary before MultiHost can be marked
+original MultiHost callbacks on the selected client VM. Original General/No Redirect configuration and ancillary file staging are
+available as fixed, hash-checked inputs through the existing REMnux SDK. Host
+orchestration of the two targets, observations before/after probes and final
+original collection remains necessary before MultiHost can be marked
 runnable. Native Windows/REMnux configuration, authentication, source deployment,
 PowerShell execution and actual runtime behavior have not been certified by
 these offline channel tests.
