@@ -176,7 +176,8 @@
               "test/test_acceptance_native.py",
               "test/test_acceptance_native_oracles.py",
               "test/test_acceptance_native_channels.py",
-              "test/test_upstream_runner_contract.py"
+              "test/test_upstream_runner_contract.py",
+              "test/test_acceptance_orchestration.py"
             ]
           },
           "steps": [
@@ -220,7 +221,10 @@
             "tools/acceptance_native.py",
             "tools/acceptance_runtime.py",
             "tools/acceptance_oracles.py",
-            "test/test.py"
+            "test/test.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py",
+            "test/test_acceptance_orchestration.py"
           ]
         },
         {
@@ -779,7 +783,9 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "upstream-singlehost",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
@@ -839,7 +845,9 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "upstream-singlehost",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
@@ -898,7 +906,9 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "upstream-singlehost",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
@@ -956,7 +966,9 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "upstream-singlehost",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
@@ -1017,7 +1029,9 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "upstream-singlehost",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
@@ -1076,7 +1090,9 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "upstream-singlehost",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
@@ -1137,7 +1153,9 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "upstream-singlehost",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
@@ -1195,7 +1213,9 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "upstream-singlehost",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
@@ -1254,7 +1274,9 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "upstream-singlehost",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
@@ -1313,10 +1335,82 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "upstream-singlehost",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
+        },
+        {
+          "id": "UPSTREAM-MULTIHOST",
+          "suite_id": "UPSTREAM-CORE",
+          "title": "原版MultiHost双机配置与完整客户端回归",
+          "platforms": [
+            "linux"
+          ],
+          "modes": [
+            "multihost"
+          ],
+          "input": {
+            "suites": [
+              "General",
+              "No Redirect"
+            ],
+            "server_mode": "MultiHost"
+          },
+          "steps": [
+            "stage original configuration and ancillary files",
+            "start one owned Linux server",
+            "observe actual owner and ready log",
+            "run exact original callbacks on a distinct Windows/Linux client",
+            "observe same live server after probes",
+            "finally request owned stop, wait for exit and collect both original outputs"
+          ],
+          "expected": {
+            "positive": "all original platform/mode callbacks pass with a live server and restored network",
+            "negative": "unready/dead/changed server, unknown producer, failed callback or recovery cannot pass"
+          },
+          "oracle": {
+            "kind": "native-json",
+            "driver": "upstream-multihost"
+          },
+          "resources": [
+            "linux-vm",
+            "client-vm",
+            "root-or-administrator"
+          ],
+          "readiness": [
+            "isolated VM",
+            "core binary"
+          ],
+          "timeout": 900,
+          "cleanup": "owned stop flag; observe original producer exit and both network snapshots; unknown does not replay",
+          "dependencies": [],
+          "adapter": "native",
+          "collection_safe": false,
+          "required_for_full": true,
+          "stress": false,
+          "sources": [
+            "test/test.py",
+            "test/template.ini",
+            "test/custom_responses.ini",
+            "docs/testing.md",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/CustomProviderExample.py",
+            "test/sample_raw_response.txt",
+            "test/sample_raw_tcp_response.txt",
+            "tools/acceptance_guest.py",
+            "tools/acceptance_windows.py",
+            "tools/acceptance_linux.py",
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
+          ],
+          "native_driver": "upstream-multihost",
+          "blocked_reason": "requires explicit existing Linux server and distinct Windows/Linux client channels, authorized native actions, original client gateway/DNS topology"
         }
       ]
     },
@@ -2194,7 +2288,9 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "pcap-windows-functional",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
@@ -2253,7 +2349,9 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "pcap-windows-functional",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
@@ -2308,7 +2406,9 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "pcap-windows-functional",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
@@ -2403,7 +2503,9 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "pcap-linux-functional",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
@@ -2454,7 +2556,9 @@
             "tools/acceptance_guest.py",
             "tools/acceptance_windows.py",
             "tools/acceptance_linux.py",
-            "tools/acceptance_multihost.py"
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_collection.py",
+            "tools/acceptance_orchestration.py"
           ],
           "native_driver": "pcap-linux-functional",
           "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"

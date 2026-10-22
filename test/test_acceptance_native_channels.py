@@ -131,7 +131,7 @@ class RemoteProductionTests(unittest.TestCase):
                 driver=native.driver_table(root)['pcap-windows-functional']
                 receipt={'command':native.remote_guest_command(driver,runtime,self.request['output_root'],['normal']),
                          'native_target':outer.identity,'required_checks':['normal'],'returncode':0,'status':'pass','artifacts':artifacts,
-                         'cleanup':{'recovered':True,'process_exit':{'exited':True,'timed_out':False,'returncode':0}}}
+                         'cleanup':{'source':'driver','resources':driver['resources'],'recovered':True,'process_exit':{'exited':True,'timed_out':False,'returncode':0}}}
                 (directory/'guest-result.json').write_text(json.dumps({'schema':'fakenet.native-guest-result.v1','case_id':'FIX-BLOCKED','execution_id':self.request['execution_id'],'request':self.request,'receipt':receipt}))
                 return {}
             def execute(self,*args):return {'returncode':0,'process_exited':True,'recovered':True}

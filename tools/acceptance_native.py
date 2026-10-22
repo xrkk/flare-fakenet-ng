@@ -147,10 +147,12 @@ def driver_table(root):
             'argv':['{python}','{root}/test/test.py','--mechanical-spec','{output}/request.json'],
         },
         'upstream-multihost': {
-            'implemented': False,
-            'missing': 'MultiHost needs config transfer and a real remote ready channel',
-            'platforms': ['linux'], 'modes': ['multihost'],
-            'checks': upstream, 'requires': ['native'], 'package_required': False,
+            'implemented':True,'production_kind':'upstream-multihost',
+            'platforms':['linux'],'modes':['multihost'],
+            'checks':upstream_checks(root,'windows',False),
+            'checks_by_platform':{platform:upstream_checks(root,platform,False) for platform in ('linux','windows')},
+            'requires':['native','multihost'],'package_required':False,'resources':['server-core','server-network','client-network'],
+            'oracle':{'kind':'upstream-multihost','artifact':'orchestration.json'},
         },
         'egress-windows': {
             'implemented': False,
@@ -288,7 +290,7 @@ def select_checks(driver, case, environment=None):
         data=case.get('input') or {}
         return data.get('cases') or data.get('modes') or [data.get('case')]
     target=(environment or {}).get('native_runtime') or {}
-    platform=(target.get('identity') or {}).get('platform','linux')
+    platform=((target.get('client') or {}).get('identity') or target.get('identity') or {}).get('platform','linux')
     checks=(driver.get('checks_by_platform') or {}).get(platform,driver.get('checks') or [])
     if driver.get('production_kind')=='upstream-result':
         # Every original callback belongs to one family; ICMP positives remain
@@ -345,6 +347,14 @@ def runtime_block(case, environment):
         if 'windows' not in case['platforms'] or case.get('stress'):
             return 'case does not support this Windows functional target'
         return None
+    if case.get('native_driver')=='upstream-multihost':
+        if not isinstance(runtime,dict) or runtime.get('transport')!='remnux-multihost':
+            return 'MultiHost requires an explicit two-target existing-channel runtime'
+        from acceptance_orchestration import multi_runtime_block
+        return multi_runtime_block(runtime,case,environment)
+    if isinstance(runtime,dict) and runtime.get('transport')=='remnux-sdk':
+        from acceptance_orchestration import linux_runtime_block
+        return linux_runtime_block(runtime,case,environment)
     if not isinstance(runtime,dict) or runtime.get('transport')!='local-target':
         return 'native_runtime requires an explicit local-target channel on the selected VM'
     identity=runtime.get('identity')
@@ -379,9 +389,15 @@ def fixed_argv(driver, context):
 
 def run_driver(root, case, plan, output_dir, python):
     driver, unused=validate_case(case,root,plan['environment'])
+    if driver.get('production_kind')=='upstream-multihost':
+        from acceptance_orchestration import run_multihost
+        return run_multihost(root,case,plan,output_dir)
     if driver.get('production_kind'):
         if plan['environment'].get('native_runtime',{}).get('transport')=='windows-mcp-velo':
             return run_remote(root,case,plan,output_dir,python)
+        if plan['environment'].get('native_runtime',{}).get('transport')=='remnux-sdk':
+            from acceptance_orchestration import run_linux
+            return run_linux(root,case,plan,output_dir)
         return run_production(root,case,plan,output_dir,python)
     root = Path(root)
     driver, checks = validate_case(case, root)
@@ -473,8 +489,11 @@ def run_driver(root, case, plan, output_dir, python):
 
 def judge_driver(case, receipt, plan, root):
     driver,unused=validate_case(case,root,plan['environment'])
+    if driver.get('production_kind')=='upstream-multihost':
+        from acceptance_orchestration import judge_multihost
+        return judge_multihost(case,receipt,plan,root)
     if driver.get('production_kind'):
-        if plan['environment'].get('native_runtime',{}).get('transport')=='windows-mcp-velo':
+        if plan['environment'].get('native_runtime',{}).get('transport') in ('windows-mcp-velo','remnux-sdk'):
             return judge_remote(case,receipt,plan,root)
         return judge_production(case,receipt,plan,root)
     driver, checks = validate_case(case, root)
@@ -857,8 +876,9 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
         raise ValueError('guest result/request/execution identity mismatch')
     receipt=guest['receipt'];driver,checks=validate_case(case,root,plan['environment'])
     runtime=plan['environment']['native_runtime']
-    from pathlib import PureWindowsPath
-    expected_output=str(PureWindowsPath(runtime['work_root'])/plan['execution_id']/case['id']/'output')
+    from pathlib import PureWindowsPath, PurePosixPath
+    path_type=PureWindowsPath if runtime['identity']['platform']=='windows' else PurePosixPath
+    expected_output=str(path_type(runtime['work_root'])/plan['execution_id']/case['id']/'output')
     hashes=dict(plan['native_source_hashes']);hashes.update(plan['source_hashes'][case['id']])
     catalog=json.loads(_read(Path(root)/'docs/acceptance/catalog.json'))
     registered=next(c for suite in catalog['suites'] for c in suite.get('cases',[]) if c['id']==case['id'])
@@ -870,9 +890,9 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
     # Verify every original remote artifact using its preserved relative mapping.
     # Raw guest receipt bytes are never rewritten to pretend they were local.
     from pathlib import PureWindowsPath
-    base=PureWindowsPath(request['output_root']);seen=set()
+    base=path_type(request['output_root']);seen=set()
     for artifact in receipt.get('artifacts') or []:
-        remote=PureWindowsPath(artifact['path'])
+        remote=path_type(artifact['path'])
         relative=remote.relative_to(base)
         if not relative.parts or '..' in relative.parts:raise ValueError('guest artifact escaped output root')
         local=Path(original).joinpath(*relative.parts)
@@ -881,12 +901,16 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
         seen.add(relative.as_posix())
     actual={p.relative_to(original).as_posix() for p in Path(original).rglob('*') if p.is_file() and p.name!='guest-result.json'}
     if not seen or seen!=actual:raise ValueError('guest original artifact set is not exact')
+    if not {'stdout.log','stderr.log','request.json','target.json'}.issubset(seen):
+        raise ValueError('guest execution originals missing')
     if driver['production_kind']=='upstream-result':
         rows,clean=acceptance_oracles.upstream(root,Path(original)/'driver',checks)
     else:
-        rows,clean=acceptance_oracles.dual_pcap(root,Path(original)/'driver',checks,'windows')
+        rows,clean=acceptance_oracles.dual_pcap(root,Path(original)/'driver',checks,runtime['identity']['platform'])
     cleanup=receipt.get('cleanup') or {};process=cleanup.get('process_exit') or {}
-    clean=clean and cleanup.get('recovered') is True and process.get('exited') is True and process.get('timed_out') is False
+    clean=(clean and cleanup.get('source')=='driver' and cleanup.get('resources')==driver['resources'] and
+           cleanup.get('recovered') is True and process.get('exited') is True and process.get('timed_out') is False and
+           process.get('returncode')==receipt.get('returncode'))
     result=_judge_rows(rows,checks)
     if receipt.get('returncode')!=0 or receipt.get('status')=='fail':result['verdict']='fail'
     return result,clean
@@ -930,7 +954,8 @@ def native_source_pins(root):
         path=root/relative
         if path.is_file():paths.add(path)
     for name in ('acceptance.py','acceptance_native.py','acceptance_runtime.py','acceptance_oracles.py',
-                 'acceptance_guest.py','acceptance_windows.py','acceptance_linux.py','acceptance_multihost.py'):
+                 'acceptance_guest.py','acceptance_windows.py','acceptance_linux.py','acceptance_multihost.py',
+                 'acceptance_collection.py','acceptance_orchestration.py'):
         path=root/'tools'/name
         if path.is_file():paths.add(path)
     path=root/'docs/acceptance/catalog.json'

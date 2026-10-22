@@ -198,7 +198,7 @@ Run the unified entry on this selected VM with its project interpreter.
 runner checks administrator/root and actual VM identity before starting a core;
 a host platform label alone cannot authorize local native execution. No remote
 VM is silently substituted and this channel performs no deployment or snapshot
-reset. Host-to-guest transport and MultiHost orchestration remain incomplete.
+reset. Existing-channel Host-to-guest and MultiHost code paths are described below; actual native acceptance remains pending.
 
 Plans freeze platform-specific exact upstream IDs without importing client
 libraries or contacting the target. Native results retain all indexed original
@@ -235,20 +235,50 @@ original content oracles. Transfer completion requires publication, both cleanup
 results, the expected VM and local hashes. Unknown submission is retained with
 its original intent and is never silently replayed or moved to another channel.
 
-`acceptance_linux.ExistingRemnuxChannel` reuses the existing REMnux SDK and its
-connection reference, Host health/epoch, owned workspace, per-request UUIDs,
-root-explicit native process entry and original put/get implementation. Its
-start/query and file interfaces exist; integration into the full catalog
-execution/pull path is still unfinished. It does not install or recreate SSH.
+`remnux-sdk` executes registered Linux upstream/PCAP cases through
+`acceptance_linux.ExistingRemnuxChannel`, reusing the deployed REMnux SDK,
+Host-authoritative health/epoch, mutation UUIDs and original put/get. Required
+runtime references are `connection_ref/module_root`, `expected_vm_uuid`, the
+existing `workspace_id/workspace_root`, absolute `python/source_root/work_root`
+and exact `identity={platform: linux, hostname: ...}`. `work_root` is inside that
+workspace's `work/` directory; a fixed read-only command observes the actual
+workspace cwd and VM hostname, and pins the target entry before execution.
+The adapter does not create a workspace, install SSH or deploy a candidate.
 
-`acceptance_multihost.py` supplies bounded `serve`, `observe`, `stop` and
-`probes` target actions. The original core owns stop and network recovery.
-Observe checks owner/core birth identities, exact configuration and the actual
-ready log; a supplied `ready=true` cannot enable probes. Probes execute exact
-original MultiHost callbacks on the selected client VM. Original General/No Redirect configuration and ancillary file staging are
-available as fixed, hash-checked inputs through the existing REMnux SDK. Host
-orchestration of the two targets, observations before/after probes and final
-original collection remains necessary before MultiHost can be marked
-runnable. Native Windows/REMnux configuration, authentication, source deployment,
-PowerShell execution and actual runtime behavior have not been certified by
-these offline channel tests.
+The SDK starts the fixed guest entry once. Read-only process queries follow
+that original job ID and kernel birth until `state=exited`; `unknown`, `stopped`,
+birth changes or timeout never enable collection/replay. The last guest producer
+writes a closed, hash-bound export index. After observing its exit, the Host
+uses existing SDK file downloads for precisely those originals, preserving their
+remote-to-local relative mapping and then invoking the original Linux byte
+oracle. No AI performs chunk transfer or fills individual result fields.
+
+`UPSTREAM-MULTIHOST` is a separate original functional case, covering General
+and No Redirect configurations and every original platform/mode callback.
+Use a `native_runtime` with `transport=remnux-multihost`, `server_ipv4`, `server`
+(the existing Linux REMnux runtime above), and a distinct `client`. The client
+uses either `windows-mcp-velo` (the original supported client platform) or
+`remnux-sdk` (the original optional Linux client). `allowed_actions` additionally
+includes `multihost`; `candidate.deployed_identity` names both exact `server`
+and `client` identities. The original documented client gateway and DNS must
+already point to the server; probes observe that topology, without changing it.
+
+For each original configuration the Host transfers the original INI and its
+ancillary files, starts one bounded owned server, obtains an actual Observe
+(owner/core PID birth, config/source hashes and successful-start log), passes
+that observation to the fixed client entry, runs exact original callbacks,
+then observes the same live server again. Negative connection probes cannot
+pass because the server died. Finally it requests only that owner's stop flag,
+observes producer exit and collects both sides' originals. Unknown submission
+retains the original intent/ID and never silently creates another job. A failed
+or unresolved configuration prevents the next configuration from starting.
+Independent judge rechecks configuration derivation, source/target identities,
+both exact original indexes, observations, callback set and network/core
+recovery. It does not treat a supplied ready boolean or status-only JSON as proof.
+
+These paths have only safe SDK/process/Windows-channel substitute tests. The
+original PCAP content validators remain real in those tests. Actual Windows
+PowerShell syntax/execution, authenticated/deployed channel operation, Linux
+NFQUEUE, Windows WinDivert and complete native acceptance are still unverified.
+All other planned policy, payload, MCP, Linux deployment/manual, package identity,
+scheduling/reuse/recovery and final full regression work remains required.

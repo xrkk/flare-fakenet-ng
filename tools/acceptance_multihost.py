@@ -7,6 +7,7 @@ client probes, then requests Stop and collects originals. No service is added.
 from __future__ import annotations
 import argparse
 import configparser
+import contextlib
 import hashlib
 import importlib.util
 import ipaddress
@@ -89,6 +90,8 @@ def observe(request,root):
     from acceptance_runtime import target_identity
     directory=validate(request,root)
     if target_identity()!=request['target']:raise ValueError('MultiHost Observe target mismatch')
+    if not (directory/'owner.json').exists() and not (directory/'server-result.json').exists():
+        return {'pending':True}
     owner=json.loads((directory/'owner.json').read_text())
     if (owner.get('experiment_id')!=request['experiment_id'] or owner.get('target')!=request['target'] or
         owner.get('source_hashes')!=request['source_hashes'] or owner.get('config_sha256')!=request['config_sha256']):
@@ -111,21 +114,43 @@ def stop(request,root):
     result=directory/'server-result.json'
     if result.is_file():return json.loads(result.read_text())
     observed=observe(request,root)
+    if observed.get('pending') is True:raise ValueError('server ownership not observed; bounded owner will stop itself')
     (directory/'stop.flag').touch(exist_ok=False)
     return {'stop_requested':True,'owner':observed['owner']}
 
 
+def topology(server_ipv4):
+    """Read the original documented gateway/DNS prerequisites; no reconfigure."""
+    from acceptance_runtime import command
+    import platform
+    if platform.system()=='Linux':
+        route=json.loads(command(['ip','-j','-4','route','get','8.8.8.8']))
+        dns=Path('/etc/resolv.conf').read_text()
+        servers=[line.split()[1] for line in dns.splitlines() if line.strip().startswith('nameserver ') and len(line.split())>=2]
+        gateway=route[0].get('gateway') if len(route)==1 else None
+        value={'gateway':gateway,'dns_servers':servers,'route':route,'resolv_conf':dns}
+    else:
+        script=("$ErrorActionPreference='Stop'; $r=@(Find-NetRoute -RemoteIPAddress '8.8.8.8'|"
+                "Where-Object {$null -ne $_.NextHop}); if($r.Count -ne 1){throw 'ambiguous client route'}; "
+                "$d=@((Get-DnsClientServerAddress -InterfaceIndex $r[0].InterfaceIndex -AddressFamily IPv4).ServerAddresses); "
+                "@{gateway=$r[0].NextHop;dns_servers=$d;interface_index=$r[0].InterfaceIndex}|ConvertTo-Json -Compress")
+        value=json.loads(command(['powershell.exe','-NoProfile','-NonInteractive','-Command',script]).decode('utf-8-sig'))
+    if value.get('gateway')!=server_ipv4 or not value.get('dns_servers') or set(value['dns_servers'])!={server_ipv4}:
+        raise ValueError('original MultiHost client gateway and DNS must point to the selected server')
+    return value
+
+
 def probes(request,root):
-    from acceptance_runtime import require_target
+    from acceptance_runtime import require_target,network_snapshot,write_json
     directory=validate(request,root);require_target(request['target'])
     observation=request.get('server_observation') or {};owner=observation.get('owner') or {}
     if (observation.get('schema')!='fakenet.multihost-observation.v1' or observation.get('core_ready') is not True or
         owner.get('experiment_id')!=request['experiment_id'] or owner.get('config_sha256')!=request['config_sha256'] or
+        owner.get('target')!=request.get('server_target') or owner.get('source_hashes')!=request['source_hashes'] or
         not owner.get('core_birth') or not owner.get('owner_birth') or
         observation.get('config_sha256')!=request['config_sha256'] or not observation.get('core_log_sha256') or
-        not isinstance(observation.get('observed_at'),(int,float)) or not 0<=time.time()-observation['observed_at']<=30):
+        type(observation.get('observed_at')) not in (int,float) or not 0<=time.time()-observation['observed_at']<=30):
         raise ValueError('fresh observed server owner/readiness required; boolean ready is insufficient')
-    # Import original callbacks only on the explicitly selected client VM.
     spec=importlib.util.spec_from_file_location('fakenet_multihost_original',Path(root)/'test/test.py')
     original=importlib.util.module_from_spec(spec);spec.loader.exec_module(original)
     settings=original.FakeNetTestSettings(str(Path(root)/'test'),singlehost=False,non_interactive=True)
@@ -133,14 +158,24 @@ def probes(request,root):
     tester=original.FakeNetTester(settings)
     selected=tester.mechanicalSelection(request['checks'])
     directory.mkdir(parents=True,exist_ok=False)
-    rows=[]
-    for suite,checks in selected:
-        for identity,(callback,args,expected) in checks:
-            result=tester._tryTest(identity,callback,args,expected)
-            rows.append({'id':identity,'status':'pass' if result['passed'] else 'fail','detail':result['detail']})
-    result={'schema':'fakenet.multihost-probes.v1','experiment_id':request['experiment_id'],
-            'checks':rows,'server_observation':observation,'client_target':request['target']}
-    write_new(directory/'probes.json',result)
+    before=network_snapshot();write_json(directory/'network-before.json',before)
+    rows=[];error=None;observed_topology=None
+    try:
+        observed_topology=topology(request['server_ipv4'])
+        with (directory/'probe-stdout.log').open('x') as stdout,(directory/'probe-stderr.log').open('x') as stderr:
+            with contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stderr):
+                for suite,checks in selected:
+                    for identity,(callback,args,expected) in checks:
+                        result=tester._tryTest(identity,callback,args,expected)
+                        rows.append({'id':identity,'status':'pass' if result['passed'] else 'fail','detail':result['detail']})
+    except BaseException as exc:error=type(exc).__name__+': '+str(exc)
+    finally:
+        after=network_snapshot();write_json(directory/'network-after.json',after)
+        result={'schema':'fakenet.multihost-probes.v1','experiment_id':request['experiment_id'],
+                'checks':rows,'server_observation':observation,'client_target':request['target'],
+                'topology':observed_topology,'error':error,'cleanup_complete':before==after,
+                'passed':error is None and before==after and all(row['status']=='pass' for row in rows)}
+        write_new(directory/'probes.json',result)
     return result
 
 
@@ -171,7 +206,15 @@ def main(argv=None):
     parser.add_argument('--action',choices=('serve','observe','stop','probes'),required=True)
     args=parser.parse_args(argv);path=Path(args.request)
     if not path.is_file() or path.is_symlink() or sha(path)!=args.request_sha256:raise ValueError('MultiHost request changed')
-    request=json.loads(path.read_text());result=globals()[args.action](request,Path(__file__).resolve().parents[1])
+    request=json.loads(path.read_text())
+    output=Path(request['output_root']);was_present=output.exists()
+    try:
+        result=globals()[args.action](request,Path(__file__).resolve().parents[1])
+    finally:
+        if args.action in ('serve','probes') and not was_present and output.is_dir():
+            from acceptance_collection import write_index
+            producer_closed=(output/'probes.json').is_file() if args.action=='probes' else ((output/'server-result.json').is_file() and json.loads((output/'server-result.json').read_text()).get('core',{}).get('stopped') is True)
+            if producer_closed:write_index(output,args.request_sha256)
     print(json.dumps(result,sort_keys=True))
     return 1 if result.get('passed') is False else 0
 

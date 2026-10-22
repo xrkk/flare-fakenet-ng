@@ -49,7 +49,18 @@ def main(argv=None):
     args=parser.parse_args(argv);path=Path(args.request)
     if not path.is_file() or path.is_symlink() or file_sha(path)!=args.request_sha256:
         raise ValueError('guest request identity mismatch')
-    return execute(json.loads(path.read_text(encoding='utf-8')),Path(__file__).resolve().parents[1])
+    request=json.loads(path.read_text(encoding='utf-8'))
+    output=Path(request['output_root']);was_present=output.exists()
+    try:
+        return execute(request,Path(__file__).resolve().parents[1])
+    finally:
+        # The entry is the last producer. The Host still observes its job exit
+        # before reading this closed index through the existing SDK.
+        if request.get('target',{}).get('platform')=='linux' and not was_present and output.is_dir() and (output/'guest-result.json').is_file():
+            from acceptance_collection import write_index
+            result=json.loads((output/'guest-result.json').read_text())
+            if result.get('receipt',{}).get('cleanup',{}).get('process_exit',{}).get('exited') is True:
+                write_index(output,args.request_sha256)
 
 
 if __name__=='__main__':raise SystemExit(main())

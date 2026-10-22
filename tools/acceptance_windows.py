@@ -148,3 +148,14 @@ class ExistingWindowsChannel:
         path=str(PureWindowsPath(output_root)/'guest-result.json')
         return self.invoke('observe-'+uuid.uuid4().hex,
             "$ErrorActionPreference='Stop'; Get-Content -LiteralPath "+psquote(path)+" -Raw",30)
+
+    def multihost_probes(self,request_path,request_sha,output_root,source_hashes,timeout):
+        entry=str(PureWindowsPath(self.runtime['source_root'])/'tools/acceptance_multihost.py')
+        command=("$ErrorActionPreference='Stop'; $entry="+psquote(entry)+"; "
+                 "if((Get-FileHash -LiteralPath $entry -Algorithm SHA256).Hash.ToLower() -cne "+psquote(source_hashes['tools/acceptance_multihost.py'])+"){throw 'MultiHost entry changed'}; "
+                 "& "+psquote(self.runtime['python'])+" -B $entry --request "+psquote(request_path)+" --request-sha256 "+psquote(request_sha)+" --action probes; "
+                 "$inner=$LASTEXITCODE; @{returncode=$inner;process_exited=$true}|ConvertTo-Json -Compress")
+        # The guest's result is retained on disk; suppress its stdout JSON so
+        # invoke reads exactly the outer completed-process observation.
+        command=command.replace(" --action probes; "," --action probes | Out-Null; ")
+        return self.invoke('multihost-probes',command,timeout)
