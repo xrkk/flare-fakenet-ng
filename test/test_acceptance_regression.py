@@ -311,6 +311,19 @@ class AcceptanceLoopTests(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertFalse((path.parent / 'results').exists())
 
+    def test_dropped_collected_node_is_refused_before_execution(self):
+        code, path, stdout, stderr = plan(self.root, 'selected', '--case', 'FIX-PASS')
+        self.assertEqual(0, code, stderr)
+        value = read_json(path)
+        value['required_checks']['FIX-PASS'] = value['required_checks']['FIX-PASS'][:-1]
+        value['cases']['FIX-PASS']['required_checks'] = value['required_checks']['FIX-PASS']
+        value['cases']['FIX-PASS']['run_nodes'] = value['cases']['FIX-PASS']['run_nodes'][:-1]
+        write_json(path, value)
+        code, stdout, stderr = execute(self.root, path)
+        self.assertEqual(2, code, stderr + stdout)
+        self.assertIn('collection', stderr)
+        self.assertFalse((path.parent / 'results').exists())
+
     def test_unknown_case_selection_is_refused(self):
         code, path, stdout, stderr = plan(self.root, 'selected', '--case', 'NOPE')
         self.assertEqual(2, code)

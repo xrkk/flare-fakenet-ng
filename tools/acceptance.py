@@ -842,9 +842,12 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
             if sha256(log_path) != collection_sha:
                 raise InputError('collection log changed: %s' % case_id)
             log_text = log_path.read_text(encoding='utf-8', errors='replace')
+            collected_nodes = collection_nodes(log_text)
             for node in run_nodes:
-                if node not in log_text:
+                if node not in collected_nodes:
                     raise InputError('planned node is absent from collection log: %s' % case_id)
+            if run_nodes != collected_nodes:
+                raise InputError('planned nodes differ from complete collection: %s' % case_id)
         elif stored.get('run_nodes'):
             raise InputError('run nodes without planned checks: %s' % case_id)
         if expected_reason is None and not planned_checks:
@@ -860,6 +863,18 @@ def case_required_checks(case):
     # not known before the adapter exists, so the plan records an empty check
     # list and a blocked reason instead of inventing a node identity.
     return list(case.get('declared_checks') or [])
+
+
+def collection_nodes(text):
+    """Read exact pytest node lines from live output or its saved transcript."""
+    nodes = []
+    for line in text.splitlines():
+        node = line.strip()
+        if node.startswith(('$ ', '[exit ')) or '::' not in node:
+            continue
+        if node.split('::', 1)[0].endswith('.py'):
+            nodes.append(node)
+    return nodes
 
 
 def collect_nodes(root, case, python, tmp_dir, log_dir):
@@ -879,15 +894,7 @@ def collect_nodes(root, case, python, tmp_dir, log_dir):
         ' '.join(command), completed.returncode, completed.stdout, completed.stderr), encoding='utf-8')
     if completed.returncode != 0:
         raise ToolError('%s collection failed rc=%d log=%s' % (case['id'], completed.returncode, log_path))
-    raw_nodes = []
-    for line in completed.stdout.splitlines():
-        node = line.strip()
-        if '::' not in node:
-            continue
-        path_part = node.split('::', 1)[0]
-        if not path_part.endswith('.py'):
-            continue
-        raw_nodes.append(node)
+    raw_nodes = collection_nodes(completed.stdout)
     if not raw_nodes:
         raise ToolError('%s collection returned no nodes' % case['id'])
     canonical = [junit_node(node) for node in raw_nodes]
