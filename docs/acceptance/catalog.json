@@ -759,7 +759,6 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
         },
         {
@@ -815,7 +814,6 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
         },
         {
@@ -870,7 +868,6 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
         },
         {
@@ -924,7 +921,6 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
         },
         {
@@ -981,7 +977,6 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
         },
         {
@@ -1036,7 +1031,6 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
         },
         {
@@ -1093,7 +1087,6 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
         },
         {
@@ -1147,7 +1140,6 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
         },
         {
@@ -1202,7 +1194,6 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
         },
         {
@@ -1257,7 +1248,6 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
         }
       ]
@@ -2054,7 +2044,7 @@
       "content": "raw-IP/converted同步, writer合同, 十万包性能, 正常WinDivert真实捕获, raw/Ethernet/close注入故障, 安全停止与DNS/路由恢复.",
       "procedure": "VM内Run-Tests.cmd离线依赖校验->原测试->性能->真实核心正常与三故障->逐对verify_dual_pcap.py->恢复.",
       "judgment": "同包序列内容映射正确, 性能达原2.5倍阈值, 故障非零并唤醒退出, 全部网络基线恢复; 不仅检查文件存在.",
-      "limitations": "正常阶段按原入口需要Enter/Ctrl-C, 不在宿主运行WinDivert.",
+      "limitations": "统一功能入口使用 -Functional/-CaseSet 和 stop flag, 无按键; 旧独立入口保留交互/重型流程, 不用于日常功能组. Windows原生验收仍必需.",
       "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
       "outputs": "保存该脚本的原始日志, 配置, 逐项结果和实际生成的 PCAP/JSON; 不只保存退出码.",
       "evidence_level": "native",
@@ -2134,7 +2124,6 @@
             "test/dual_pcap_vm/Read-ExitCodeEvidence.ps1",
             "test/dual_pcap_vm/ConsoleStopSignal.ps1"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "pcap-windows-functional"
         },
         {
@@ -2189,7 +2178,6 @@
             "test/dual_pcap_vm/Read-ExitCodeEvidence.ps1",
             "test/dual_pcap_vm/ConsoleStopSignal.ps1"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "pcap-windows-functional"
         },
         {
@@ -2251,7 +2239,7 @@
         "test/dual_pcap_linux/*"
       ],
       "content": "双writer合同/十万包性能, NFQUEUE真实IPv4, raw/Ethernet/close故障当前包drop, iptables/ip6tables/DNS/route恢复与无残留.",
-      "procedure": "在隔离Linux VM执行sudo bash Run-Tests.sh; 自检拒绝物理机/容器; 原依赖检查后跑正常与故障, 比较前后完整快照.",
+      "procedure": "统一功能入口 --functional 只执行明确 normal/raw-write/ethernet-write/close; 原NFQUEUE/恢复和verify_capture判定复用, 不混入unit/benchmark.",
       "judgment": "summary/results全部pass, 同步PCAP正确, 故障非零/显式drop/无残留, 恢复精确.",
       "limitations": "生产NFQUEUE只有IPv4; IPv6仅writer文件合同, 不能标IPv6动态拦截通过.",
       "prerequisites": "使用当前待验版本; 良性输入; 原执行者持有停止/恢复责任.",
@@ -2330,7 +2318,6 @@
             "tools/acceptance_oracles.py",
             "test/dual_pcap_linux/fault_launcher.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "pcap-linux-functional"
         },
         {

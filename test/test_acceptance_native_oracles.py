@@ -243,3 +243,39 @@ class ProductionEntryTests(unittest.TestCase):
     def test_original_tsv_header_is_not_a_result_row(self):
         path=self.root/'original.tsv';path.write_text('status\tname\tdetail\nPASS\talpha\tok\n')
         self.assertEqual([{'id':'alpha','status':'pass'}],self.native._read_oracle('tsv',path))
+
+
+    def test_windows_production_entry_routes_all_four_modes_to_original_pair_oracle(self):
+        self.case.update(native_driver='pcap-windows-functional',platforms=['windows'], input={'cases':['normal','raw-write','ethernet-write','close']})
+        catalog=json.loads(self.catalog_path.read_text());catalog['suites'][1]['cases'][0]=self.case;self.catalog_path.write_text(json.dumps(catalog))
+        self.identity={'platform':'windows','hostname':'fixture-windows-vm'}
+        candidate=json.loads((self.root/'candidate.json').read_text());candidate['deployed_identity']=self.identity;(self.root/'candidate.json').write_text(json.dumps(candidate))
+        self.environment['targets']=['windows-vm'];self.environment['native_runtime']['identity']=self.identity;(self.root/'environment.json').write_text(json.dumps(self.environment))
+        import shutil,acceptance_runtime as rt
+        (self.root/'test/dual_pcap_vm').mkdir();shutil.copyfile(ROOT/'test/dual_pcap_vm/verify_dual_pcap.py',self.root/'test/dual_pcap_vm/verify_dual_pcap.py')
+        path=self.plan()
+        def launch(argv,**kwargs):
+            self.assertEqual('powershell.exe',argv[0])
+            self.assertEqual('normal,raw-write,ethernet-write,close',argv[argv.index('-CaseSet')+1])
+            directory=Path(argv[argv.index('-OutputDirectory')+1]);directory.mkdir()
+            results=['PASS\tDependencies\timports']
+            for mode in self.case['input']['cases']:
+                child=directory/mode;child.mkdir()
+                for name in ('network-before.json','network-after.json'):(child/name).write_text('{}')
+                state={'ready':True,'forced':False,'returncode':0 if mode=='normal' else 1,'process_exited':True,'network_restored':True}
+                (child/'case-evidence.json').write_text(json.dumps(state))
+                text='PCAP_DUAL_SUMMARY healthy=True' if mode=='normal' else 'PCAP_DUAL_WRITE_FAILED'
+                if mode=='close':text+='\nPCAP_DUAL_SUMMARY healthy=False'
+                (child/'fakenet.log').write_text(text)
+                if mode=='normal':make_pair(child)
+                for prefix in ('Start-','Exit-','Capture-','NetworkRestore-'):results.append('PASS\t'+prefix+mode+'\tobserved')
+            results.append('PASS\tLivePcapPair\toriginal verifier')
+            (directory/'results.tsv').write_text('\n'.join(results)+'\n')
+            process=mock.Mock(pid=99);process.wait.return_value=0;return process
+        with mock.patch.object(rt,'require_target',return_value=self.identity),mock.patch.object(self.native.subprocess,'Popen',side_effect=launch):
+            code,out,err=self.cli('execute','--plan',path)
+        self.assertEqual(0,code,out+err)
+        receipt=json.loads((path.parent/'results/FIX-BLOCKED/receipt.json').read_text())
+        self.assertEqual('fixture',receipt['evidence_level'])
+        self.assertEqual(self.case['input']['cases'],receipt['required_checks'])
+        self.assertEqual(0,self.cli('judge','--plan',path,'--results',path.parent/'results')[0])
