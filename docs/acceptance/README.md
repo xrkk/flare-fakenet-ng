@@ -210,3 +210,44 @@ Unresolved native cleanup prevents following native cases; independent offline
 cases can continue. `offline_fixture` candidates retain only fixture credit even
 when their tests exercise production adapter code. Native/full acceptance is
 still pending and cannot be inferred from these offline tests.
+
+### Existing host-to-VM channels (code, native acceptance pending)
+
+`windows-mcp-velo` extends `native_runtime` with `mcp_config_ref` and
+`mcp_server` referencing the existing URL-only Windows MCP configuration,
+plus the guest `python`, `source_root`, and an E/D `work_root`. The existing
+`transfer` deployment reference supplies `python/python_sha256`,
+`origin/origin_sha256`, `connection_profile`, `expected_vm_identity`
+(`vm_uuid/boot_identity/vm_epoch`) and the original Velo `budget`.
+`allowed_actions` must explicitly include `native`, `vm-execute`, `vm-transfer`.
+Credentials stay inside the existing client/coordinator; this adapter creates
+no profiles, bearer tokens, SSH installation or transfer service. Authenticated
+Windows configurations unsupported by the original Win10VmChannel are rejected.
+
+The host pins the original source set in the plan, pushes only a closed request
+through `python -I -B -m velo_transfer --spec`, verifies MCP and transfer VM
+identity, then invokes the pinned `tools/acceptance_guest.py` once. The target
+verifies request/source/catalog/check identities before starting the registered
+driver. Only after the original producer has exited does the host pull that
+exact output directory through the same coordinator. It preserves the guest
+receipt bytes, maps artifacts by relative paths and independently invokes the
+original content oracles. Transfer completion requires publication, both cleanup
+results, the expected VM and local hashes. Unknown submission is retained with
+its original intent and is never silently replayed or moved to another channel.
+
+`acceptance_linux.ExistingRemnuxChannel` reuses the existing REMnux SDK and its
+connection reference, Host health/epoch, owned workspace, per-request UUIDs,
+root-explicit native process entry and original put/get implementation. Its
+start/query and file interfaces exist; integration into the full catalog
+execution/pull path is still unfinished. It does not install or recreate SSH.
+
+`acceptance_multihost.py` supplies bounded `serve`, `observe`, `stop` and
+`probes` target actions. The original core owns stop and network recovery.
+Observe checks owner/core birth identities, exact configuration and the actual
+ready log; a supplied `ready=true` cannot enable probes. Probes execute exact
+original MultiHost callbacks on the selected client VM. Host orchestration of
+configuration staging, the two targets, observations before/after probes and
+final original collection remains necessary before MultiHost can be marked
+runnable. Native Windows/REMnux configuration, authentication, source deployment,
+PowerShell execution and actual runtime behavior have not been certified by
+these offline channel tests.

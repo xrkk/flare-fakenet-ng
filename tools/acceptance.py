@@ -787,6 +787,9 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
     if mode not in ('full', 'selected', 'stress'):
         raise InputError('unknown plan mode: %r' % mode)
     registered = {case['id']: case for case in all_cases(catalog)}
+    if plan.get('native_source_hashes') is not None and acceptance_native is not None:
+        if plan['native_source_hashes']!=acceptance_native.native_source_pins(root):
+            raise InputError('native candidate source changed since plan')
     required = plan.get('required_cases')
     if (not isinstance(required, list) or not required
             or any(not isinstance(item, str) or not item for item in required)):
@@ -1026,6 +1029,7 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
             blocked[case['id']] = reason
         case_records[case['id']] = record
     plan = {
+        'native_source_hashes': acceptance_native.native_source_pins(root) if acceptance_native is not None else {},
         'schema': PLAN_V2,
         'execution_id': str(uuid.uuid4()),
         'mode': mode,

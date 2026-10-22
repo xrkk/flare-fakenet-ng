@@ -328,6 +328,23 @@ def runtime_block(case, environment):
     if case.get('stress'):
         return 'functional native driver does not run stress'
     runtime=environment.get('native_runtime')
+    if isinstance(runtime,dict) and runtime.get('transport')=='windows-mcp-velo':
+        if runtime.get('identity',{}).get('platform')!='windows':
+            return 'Windows MCP channel requires a Windows target'
+        required={'mcp_config_ref','mcp_server','python','source_root','work_root','transfer'}
+        if not required.issubset(runtime):
+            return 'existing Windows channel references are incomplete'
+        if not {'native','vm-execute','vm-transfer'}.issubset(environment.get('allowed_actions',[])):
+            return 'environment does not authorize VM execute and transfer'
+        from pathlib import PureWindowsPath
+        for key in ('python','source_root','work_root'):
+            if not PureWindowsPath(runtime[key]).is_absolute():
+                return 'remote Windows paths must be absolute'
+        if PureWindowsPath(runtime['work_root']).drive.upper() not in ('E:','D:'):
+            return 'new Windows work root requires a recorded E/D location'
+        if 'windows' not in case['platforms'] or case.get('stress'):
+            return 'case does not support this Windows functional target'
+        return None
     if not isinstance(runtime,dict) or runtime.get('transport')!='local-target':
         return 'native_runtime requires an explicit local-target channel on the selected VM'
     identity=runtime.get('identity')
@@ -363,6 +380,8 @@ def fixed_argv(driver, context):
 def run_driver(root, case, plan, output_dir, python):
     driver, unused=validate_case(case,root,plan['environment'])
     if driver.get('production_kind'):
+        if plan['environment'].get('native_runtime',{}).get('transport')=='windows-mcp-velo':
+            return run_remote(root,case,plan,output_dir,python)
         return run_production(root,case,plan,output_dir,python)
     root = Path(root)
     driver, checks = validate_case(case, root)
@@ -455,6 +474,8 @@ def run_driver(root, case, plan, output_dir, python):
 def judge_driver(case, receipt, plan, root):
     driver,unused=validate_case(case,root,plan['environment'])
     if driver.get('production_kind'):
+        if plan['environment'].get('native_runtime',{}).get('transport')=='windows-mcp-velo':
+            return judge_remote(case,receipt,plan,root)
         return judge_production(case,receipt,plan,root)
     driver, checks = validate_case(case, root)
     if not driver.get('implemented'):
@@ -738,7 +759,7 @@ def judge_production(case,receipt,plan,root):
             not path.resolve().is_relative_to(output_dir.resolve()) or sha256(path)!=item.get('sha256')):
             return {'status':'unknown','cleanup_ok':False,'reason':'production artifact missing/changed/outside case'}
         paths.append(str(path.resolve()))
-    actual={str(path.resolve()) for path in output_dir.rglob('*') if path.is_file() and path.name!='receipt.json'}
+    actual={str(path.resolve()) for path in output_dir.rglob('*') if path.is_file() and path.resolve()!=(output_dir/'receipt.json').resolve()}
     if len(paths)!=len(set(paths)) or set(paths)!=actual:
         return {'status':'unknown','cleanup_ok':False,'reason':'production evidence index is not exact'}
     if not all(str(output_dir/name) in paths for name in ('stdout.log','stderr.log','request.json','target.json')):
@@ -763,3 +784,155 @@ def judge_production(case,receipt,plan,root):
         status='unknown' if status!='fail' else status
     return {'status':status,'evaluation':evaluation,'cleanup_ok':clean,
             'reason':'' if clean else 'native cleanup not established by original observations'}
+
+
+
+def remote_guest_command(driver,runtime,output_root,checks):
+    context={'root':runtime['source_root'],'python':runtime['python'],
+             'output':output_root,'modes':','.join(checks)}
+    argv=fixed_argv(driver,context)
+    if driver.get('production_kind')=='dual-pcap-linux':
+        for mode in checks:argv.extend(['--case',mode])
+    return argv
+
+
+def run_remote(root,case,plan,output_dir,python):
+    from pathlib import PureWindowsPath
+    from acceptance_windows import ExistingWindowsChannel,ChannelError,write_new,digest
+    from datetime import datetime,timezone
+    driver,checks=validate_case(case,root,plan['environment'])
+    runtime=plan['environment']['native_runtime'];output_dir=Path(output_dir)
+    remote_base=PureWindowsPath(runtime['work_root'])/plan['execution_id']/case['id']
+    remote_output=str(remote_base/'output')
+    source_hashes=dict(plan['native_source_hashes'])
+    source_hashes.update(plan['source_hashes'][case['id']])
+    request={'schema':'fakenet.native-guest-request.v1','case_id':case['id'],
+             'case':{key:value for key,value in case.items() if key not in ('required_checks','run_nodes')},
+             'checks':checks,'source_hashes':source_hashes,'candidate':plan['candidate'],
+             'target':runtime['identity'],'output_root':remote_output,
+             'execution_id':plan['execution_id'],'actions':['native']}
+    # Planned records also carry derived 'sources'; compare using the actual
+    # registered catalog object instead of sending derived plan-only metadata.
+    catalog=json.loads(_read(Path(root)/'docs/acceptance/catalog.json'))
+    request['case']=next(item for suite in catalog['suites'] for item in suite.get('cases',[]) if item['id']==case['id'])
+    request_path=output_dir/'guest-request.json';write_new(request_path,request)
+    channel=ExistingWindowsChannel(root,runtime,output_dir/'transport')
+    started=datetime.now(timezone.utc);terminal=None;status='unknown';detail='';clean=False
+    try:
+        if channel.identity()!=runtime['identity']:
+            raise ChannelError('MCP target identity differs from selected VM')
+        channel.transfer('push-request','push',[{'absolute_path':str(request_path.resolve()),'relative_path':'request.json'}],str(remote_base/'input'),producer_reference=str(request_path))
+        terminal=channel.execute(str(remote_base/'input/request.json'),digest(request_path),remote_output,source_hashes,case['timeout'])
+        if terminal.get('process_exited') is not True:
+            raise ChannelError('recovery_required: remote producer has not exited; no pull or replay')
+        # Only the stopped driver output is requested, not a scan of guest Logs.
+        channel.transfer('pull-originals','pull',[{'absolute_path':remote_output,'relative_path':'originals'}],str((output_dir/'incoming').resolve()),producer_reference='guest-result.json process_exited=true; '+str(output_dir/'transport/execute-response.json'))
+        original=output_dir/'incoming/originals'
+        guest=json.loads(_read(original/'guest-result.json'))
+        rows,clean=_remote_original_evaluation(root,case,plan,request,guest,original)
+        status=rows['verdict']
+        if terminal.get('returncode')!=0:status='fail'
+        if not clean and status=='pass':status='unknown'
+    except (ChannelError,OSError,ValueError,KeyError,AssertionError,TypeError) as error:
+        detail='%s: %s' % (type(error).__name__,error)
+        if terminal and terminal.get('returncode') not in (None,0):status='fail'
+    ended=datetime.now(timezone.utc)
+    artifacts=[]
+    for path in sorted(output_dir.rglob('*')):
+        if path.is_symlink():raise ValueError('remote result symlink')
+        if path.is_file():artifacts.append({'path':str(path.resolve()),'sha256':sha256(path),'format':'remote-evidence'})
+    return {'status':status,'detail':detail,'returncode':None if terminal is None else terminal.get('returncode'),
+            'command':None if terminal is None else remote_guest_command(driver,runtime,remote_output,checks),
+            'started_at':started.isoformat(),'ended_at':ended.isoformat(),'duration_seconds':(ended-started).total_seconds(),
+            'required_checks':checks,'native_target':runtime['identity'],'artifacts':artifacts,
+            'cleanup':{'source':'driver','resources':driver['resources'],'recovered':clean,
+                       'process_exit':{'exited':bool(terminal and terminal.get('process_exited')),'returncode':None if terminal is None else terminal.get('returncode'),'timed_out':terminal is None},
+                       'remote_output':remote_output,'temp_roots':[str(output_dir.resolve())]}}
+
+
+def _remote_original_evaluation(root,case,plan,request,guest,original):
+    import acceptance_oracles
+    if (guest.get('schema')!='fakenet.native-guest-result.v1' or guest.get('request')!=request or
+        guest.get('case_id')!=case['id'] or guest.get('execution_id')!=plan['execution_id']):
+        raise ValueError('guest result/request/execution identity mismatch')
+    receipt=guest['receipt'];driver,checks=validate_case(case,root,plan['environment'])
+    runtime=plan['environment']['native_runtime']
+    from pathlib import PureWindowsPath
+    expected_output=str(PureWindowsPath(runtime['work_root'])/plan['execution_id']/case['id']/'output')
+    hashes=dict(plan['native_source_hashes']);hashes.update(plan['source_hashes'][case['id']])
+    catalog=json.loads(_read(Path(root)/'docs/acceptance/catalog.json'))
+    registered=next(c for suite in catalog['suites'] for c in suite.get('cases',[]) if c['id']==case['id'])
+    expected_request={'schema':'fakenet.native-guest-request.v1','case_id':case['id'],'case':registered,'checks':checks,'source_hashes':hashes,'candidate':plan['candidate'],'target':runtime['identity'],'output_root':expected_output,'execution_id':plan['execution_id'],'actions':['native']}
+    if request!=expected_request:raise ValueError('remote original request differs from frozen plan')
+    expected=remote_guest_command(driver,plan['environment']['native_runtime'],request['output_root'],checks)
+    if receipt.get('command')!=expected or receipt.get('native_target')!=request['target'] or receipt.get('required_checks')!=checks:
+        raise ValueError('guest command/target/checks mismatch')
+    # Verify every original remote artifact using its preserved relative mapping.
+    # Raw guest receipt bytes are never rewritten to pretend they were local.
+    from pathlib import PureWindowsPath
+    base=PureWindowsPath(request['output_root']);seen=set()
+    for artifact in receipt.get('artifacts') or []:
+        remote=PureWindowsPath(artifact['path'])
+        relative=remote.relative_to(base)
+        if not relative.parts or '..' in relative.parts:raise ValueError('guest artifact escaped output root')
+        local=Path(original).joinpath(*relative.parts)
+        if relative.as_posix() in seen or not local.is_file() or local.is_symlink() or sha256(local)!=artifact['sha256']:
+            raise ValueError('guest original artifact changed/missing/duplicate')
+        seen.add(relative.as_posix())
+    actual={p.relative_to(original).as_posix() for p in Path(original).rglob('*') if p.is_file() and p.name!='guest-result.json'}
+    if not seen or seen!=actual:raise ValueError('guest original artifact set is not exact')
+    if driver['production_kind']=='upstream-result':
+        rows,clean=acceptance_oracles.upstream(root,Path(original)/'driver',checks)
+    else:
+        rows,clean=acceptance_oracles.dual_pcap(root,Path(original)/'driver',checks,'windows')
+    cleanup=receipt.get('cleanup') or {};process=cleanup.get('process_exit') or {}
+    clean=clean and cleanup.get('recovered') is True and process.get('exited') is True and process.get('timed_out') is False
+    result=_judge_rows(rows,checks)
+    if receipt.get('returncode')!=0 or receipt.get('status')=='fail':result['verdict']='fail'
+    return result,clean
+
+
+def judge_remote(case,receipt,plan,root):
+    output=Path(plan['run_dir'])/'results'/case['id'];paths=[]
+    for artifact in receipt.get('artifacts') or []:
+        path=Path(artifact.get('path',''))
+        if (not path.is_absolute() or not path.is_file() or path.is_symlink() or
+            not path.resolve().is_relative_to(output.resolve()) or sha256(path)!=artifact.get('sha256')):
+            return {'status':'unknown','cleanup_ok':False,'reason':'remote evidence changed/missing/escaped'}
+        paths.append(str(path.resolve()))
+    actual={str(p.resolve()) for p in output.rglob('*') if p.is_file() and p.resolve()!=(output/'receipt.json').resolve()}
+    if not paths or len(paths)!=len(set(paths)) or set(paths)!=actual:
+        return {'status':'unknown','cleanup_ok':False,'reason':'remote evidence index not exact'}
+    try:
+        request=json.loads(_read(output/'guest-request.json'))
+        original=output/'incoming/originals'
+        guest=json.loads(_read(original/'guest-result.json'))
+        evaluation,clean=_remote_original_evaluation(root,case,plan,request,guest,original)
+    except (OSError,ValueError,KeyError,TypeError,AssertionError) as error:
+        return {'status':'fail' if receipt.get('status')=='fail' else 'unknown','cleanup_ok':False,'reason':'remote original oracle refused: %s' % error}
+    if receipt.get('command')!=guest['receipt'].get('command') or receipt.get('native_target')!=request['target']:
+        return {'status':'fail','cleanup_ok':False,'reason':'remote receipt command/target mismatch'}
+    clean=clean and receipt.get('cleanup',{}).get('recovered') is True
+    status=evaluation['verdict']
+    if receipt.get('returncode')!=0 or receipt.get('status')=='fail':status='fail'
+    process=receipt.get('cleanup',{}).get('process_exit') or {}
+    if process.get('returncode')!=receipt.get('returncode') or process.get('exited') is not True or process.get('timed_out') is not False:
+        clean=False
+    if (not clean or receipt.get('status')!='pass') and status=='pass':status='unknown'
+    return {'status':status,'evaluation':evaluation,'cleanup_ok':clean,'reason':'' if clean else 'remote recovery unverified'}
+
+
+
+def native_source_pins(root):
+    root=Path(root)
+    paths=set((root/'fakenet').rglob('*.py'))
+    for relative in ('test/mcp/acceptance/helpers.py','test/mcp/acceptance/evidence_integrity.py'):
+        path=root/relative
+        if path.is_file():paths.add(path)
+    for name in ('acceptance.py','acceptance_native.py','acceptance_runtime.py','acceptance_oracles.py',
+                 'acceptance_guest.py','acceptance_windows.py','acceptance_linux.py','acceptance_multihost.py'):
+        path=root/'tools'/name
+        if path.is_file():paths.add(path)
+    path=root/'docs/acceptance/catalog.json'
+    if path.is_file():paths.add(path)
+    return {path.relative_to(root).as_posix():sha256(path) for path in sorted(paths)}

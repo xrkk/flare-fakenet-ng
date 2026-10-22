@@ -1,0 +1,219 @@
+"""Existing-channel contracts; no VM, network, transfer service or core starts."""
+import hashlib
+import importlib.util
+import json
+from pathlib import Path, PureWindowsPath
+import shutil
+import sys
+import tempfile
+import types
+import unittest
+from unittest import mock
+
+ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT/'tools'));sys.path.insert(0,str(ROOT/'test'))
+import acceptance_windows as win
+import acceptance_linux as linux
+import acceptance_native as native
+import acceptance_guest as guest
+import test_acceptance_native_oracles as existing
+from test_acceptance_native_oracles import make_pair
+
+
+def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+class WindowsChannelTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
+        python=self.root/'python';python.write_bytes(b'trusted interpreter')
+        origin=self.root/'velo_transfer/__init__.py';origin.parent.mkdir();origin.write_bytes(b'trusted module')
+        profile=self.root/'profile.json';profile.write_text('protected reference fixture')
+        self.vm={'vm_uuid':'00000000-0000-0000-0000-000000000001','boot_identity':'boot','vm_epoch':'epoch'}
+        self.runtime={'transfer':{'python':str(python),'python_sha256':sha(python),'origin':str(origin),'origin_sha256':sha(origin),'connection_profile':str(profile),'expected_vm_identity':self.vm,'budget':{}},'source_root':r'E:\candidate','python':r'E:\python.exe'}
+
+    def test_identity_requires_same_mcp_and_transfer_vm(self):
+        call=mock.Mock(return_value={'exit_code':0,'output':json.dumps({'platform':'windows','hostname':'vm','vm_uuid':'other'})})
+        channel=win.ExistingWindowsChannel(ROOT,self.runtime,self.root/'journal',powershell=call)
+        with self.assertRaisesRegex(win.ChannelError,'different VM'):channel.identity()
+        call.assert_called_once()
+
+    def test_unknown_is_not_reissued_and_original_error_retained(self):
+        call=mock.Mock(side_effect=RuntimeError('original timeout response'))
+        channel=win.ExistingWindowsChannel(ROOT,self.runtime,self.root/'journal',powershell=call)
+        with self.assertRaisesRegex(win.ChannelError,'unknown'):channel.invoke('execute','fixed command',30)
+        with self.assertRaises(FileExistsError):channel.invoke('execute','fixed command',30)
+        call.assert_called_once()
+        self.assertIn('original timeout response',(self.root/'journal/execute-unknown.json').read_text())
+
+    def test_velo_cli_terminal_contract_and_local_bytes(self):
+        source=self.root/'source';source.write_bytes(b'benign request')
+        def run(argv,**kwargs):
+            self.assertEqual(['-I','-B','-m','velo_transfer','--spec'],argv[1:6])
+            spec=json.loads(Path(argv[-1]).read_text())
+            result={'schema':'velo.transfer.result.v1','direction':'push','transfer_id':spec['transfer_id'],
+                    'phase':'COMPLETE','outcome':'complete','published_ever':True,'destination_verified':True,
+                    'cleanup':{'host':True,'guest':True},'destination_identity':{'identity':self.vm,'canonical_path':r'E:\stage'},
+                    'files':[{'relative_path':'request.json','source':str(source),'destination':r'E:\stage\request.json','size':source.stat().st_size,'sha256':sha(source)}]}
+            path=self.root/'result.json';path.write_text(json.dumps(result))
+            kwargs['stdout'].write(json.dumps({'result_path':str(path)}).encode());return types.SimpleNamespace(returncode=0)
+        channel=win.ExistingWindowsChannel(ROOT,self.runtime,self.root/'journal',powershell=mock.Mock(),run=run)
+        result=channel.transfer('push','push',[{'absolute_path':str(source),'relative_path':'request.json'}],r'E:\stage',producer_reference='closed request fixture')
+        self.assertEqual('COMPLETE',result['phase'])
+        self.assertTrue((self.root/'journal/push-terminal.json').is_file())
+
+    def test_transfer_error_does_not_execute_or_fallback(self):
+        call=mock.Mock();run=mock.Mock(return_value=types.SimpleNamespace(returncode=3))
+        channel=win.ExistingWindowsChannel(ROOT,self.runtime,self.root/'journal',powershell=call,run=run)
+        with self.assertRaisesRegex(win.ChannelError,'no fallback'):
+            channel.transfer('push','push',[],r'E:\stage',producer_reference='fixture')
+        call.assert_not_called();run.assert_called_once()
+
+
+class RemnuxChannelTests(unittest.TestCase):
+    def test_requires_current_host_health_and_preserves_mutation_id(self):
+        with tempfile.TemporaryDirectory() as temp:
+            sdk=mock.Mock();sdk.load_connection.return_value={}
+            sdk.call.side_effect=[{'guest_response':{'ok':True,'vm_uuid':'expected','request_epoch':7},'host_assessment':{'current_gate':'OPEN','guest_matches_current':True},'transport_error':None},RuntimeError('UNKNOWN')]
+            runtime={'connection_ref':'existing','expected_vm_uuid':'expected','workspace_id':'owned','python':'/opt/fakenet-ng/venv/bin/python','source_root':'/opt/fakenet-ng'}
+            channel=linux.ExistingRemnuxChannel(runtime,temp,sdk=sdk)
+            with self.assertRaisesRegex(linux.RemnuxChannelError,'health first'):channel.start_guest('published/request.json','a'*64)
+            channel.health()
+            with self.assertRaisesRegex(linux.RemnuxChannelError,'unknown'):channel.start_guest('published/request.json','a'*64)
+            intent=json.loads((Path(temp)/'execute-intent.json').read_text())
+            self.assertEqual(7,intent['arguments']['request_epoch'])
+            self.assertEqual('root_explicit',intent['arguments']['execution_identity'])
+            with self.assertRaises(FileExistsError):channel.start_guest('published/request.json','a'*64)
+            self.assertEqual(2,sdk.call.call_count)
+
+    def test_download_hash_checked_without_overwriting_existing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            sdk=mock.Mock();sdk.load_connection.return_value={}
+            channel=linux.ExistingRemnuxChannel({'connection_ref':'existing','workspace_id':'owned'},Path(temp)/'journal',sdk=sdk);channel.epoch=1
+            path=Path(temp)/'output';path.write_bytes(b'keep')
+            with self.assertRaisesRegex(linux.RemnuxChannelError,'exists'):channel.get('get','work/output',path)
+            sdk.get_file.assert_not_called();self.assertEqual(b'keep',path.read_bytes())
+
+
+class RemoteProductionTests(unittest.TestCase):
+    setUp=existing.ProductionEntryTests.setUp
+    cli=existing.ProductionEntryTests.cli
+    plan=existing.ProductionEntryTests.plan
+
+    def prepare_windows(self):
+        self.case.update(native_driver='pcap-windows-functional',platforms=['windows'],input={'cases':['normal']})
+        catalog=json.loads(self.catalog_path.read_text());catalog['suites'][1]['cases'][0]=self.case;self.catalog_path.write_text(json.dumps(catalog))
+        self.identity={'platform':'windows','hostname':'fixture-vm'}
+        candidate=json.loads((self.root/'candidate.json').read_text());candidate['deployed_identity']=self.identity;(self.root/'candidate.json').write_text(json.dumps(candidate))
+        self.runtime={'transport':'windows-mcp-velo','identity':self.identity,'mcp_config_ref':'existing','mcp_server':'VMMalBox','python':r'E:\python.exe','source_root':r'E:\candidate','work_root':r'E:\native-runs','transfer':{}}
+        self.environment.update(targets=['windows-vm'],native_runtime=self.runtime)
+        self.environment['allowed_actions']+=['vm-execute','vm-transfer'];(self.root/'environment.json').write_text(json.dumps(self.environment))
+        (self.root/'test/dual_pcap_vm').mkdir();shutil.copyfile(ROOT/'test/dual_pcap_vm/verify_dual_pcap.py',self.root/'test/dual_pcap_vm/verify_dual_pcap.py')
+
+    def fake_channel(self,root,runtime,journal):
+        outer=self
+        class Channel:
+            def identity(self):return outer.identity
+            def transfer(self,name,direction,sources,destination,**kwargs):
+                if direction=='push':self.request=json.loads(Path(sources[0]['absolute_path']).read_text());return {}
+                directory=Path(destination)/'originals';directory.mkdir(parents=True)
+                child=directory/'driver/normal';child.mkdir(parents=True);make_pair(child)
+                (child/'fakenet.log').write_text('PCAP_DUAL_SUMMARY healthy=True')
+                for name in ('network-before.json','network-after.json'):(child/name).write_text('{}')
+                (child/'case-evidence.json').write_text(json.dumps({'ready':True,'forced':False,'returncode':0,'process_exited':True,'network_restored':True}))
+                (directory/'driver/results.tsv').write_text('\\n'.join([]))
+                rows=['Dependencies','Start-normal','Exit-normal','Capture-normal','NetworkRestore-normal','LivePcapPair']
+                (directory/'driver/results.tsv').write_text('\n'.join('PASS\t'+n+'\tobserved' for n in rows)+'\n')
+                for name in ('stdout.log','stderr.log'):(directory/name).write_text('original target log')
+                (directory/'request.json').write_text('{}');(directory/'target.json').write_text(json.dumps(outer.identity))
+                remote_base=PureWindowsPath(self.request['output_root'])
+                artifacts=[{'path':str(remote_base/p.relative_to(directory)),'sha256':sha(p),'format':'original'} for p in directory.rglob('*') if p.is_file()]
+                driver=native.driver_table(root)['pcap-windows-functional']
+                receipt={'command':native.remote_guest_command(driver,runtime,self.request['output_root'],['normal']),
+                         'native_target':outer.identity,'required_checks':['normal'],'returncode':0,'status':'pass','artifacts':artifacts,
+                         'cleanup':{'recovered':True,'process_exit':{'exited':True,'timed_out':False,'returncode':0}}}
+                (directory/'guest-result.json').write_text(json.dumps({'schema':'fakenet.native-guest-result.v1','case_id':'FIX-BLOCKED','execution_id':self.request['execution_id'],'request':self.request,'receipt':receipt}))
+                return {}
+            def execute(self,*args):return {'returncode':0,'process_exited':True,'recovered':True}
+        return Channel()
+
+    def test_actual_remote_cli_roundtrip_and_independent_original_oracle(self):
+        self.prepare_windows();path=self.plan()
+        with mock.patch.object(win,'ExistingWindowsChannel',side_effect=self.fake_channel):
+            code,out,err=self.cli('execute','--plan',path)
+        self.assertEqual(0,code,out+err)
+        self.assertEqual(0,self.cli('judge','--plan',path,'--results',path.parent/'results')[0])
+
+    def test_remote_actions_missing_block_before_channel(self):
+        self.prepare_windows();self.environment['allowed_actions'].remove('vm-transfer');(self.root/'environment.json').write_text(json.dumps(self.environment))
+        path=self.plan()
+        with mock.patch.object(win,'ExistingWindowsChannel') as channel:
+            code,out,err=self.cli('execute','--plan',path)
+        self.assertEqual(2,code,out+err);channel.assert_not_called()
+
+    def test_guest_wrong_source_is_rejected_before_native_launch(self):
+        import acceptance_runtime as rt
+        request={'schema':'fakenet.native-guest-request.v1','case_id':'FIX-BLOCKED','case':self.case,'checks':['normal'],
+                 'source_hashes':{'test/test.py':'f'*64},'candidate':{},'target':self.identity,'output_root':str(self.root/'no-output'),
+                 'execution_id':'fixture','actions':['native']}
+        with mock.patch.object(rt,'require_target'),mock.patch.object(native,'run_production') as launch:
+            with self.assertRaisesRegex(ValueError,'source mismatch'):guest.execute(request,self.root)
+            launch.assert_not_called();self.assertFalse((self.root/'no-output').exists())
+
+
+class MultiHostTests(unittest.TestCase):
+    def setUp(self):
+        import acceptance_multihost
+        self.multi=acceptance_multihost
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
+        self.output=self.root/'output';self.output.mkdir()
+        self.config=self.root/'config.ini';self.config.write_text('[Diverter]\nNetworkMode: MultiHost\n')
+        self.identity={'platform':'linux','hostname':'server'}
+        self.request={'schema':'fakenet.multihost-request.v1','actions':['native','multihost'],'experiment_id':'experiment',
+                      'target':self.identity,'source_hashes':{},'server_ipv4':'192.0.2.10','output_root':str(self.output),
+                      'config_path':str(self.config),'config_sha256':sha(self.config),'checks':['General::DNS listener test'],'max_seconds':30}
+        self.owner={'schema':'fakenet.multihost-owner.v1','experiment_id':'experiment','target':self.identity,'owner_pid':10,'owner_birth':'111','core_pid':20,'core_birth':'222','config_sha256':sha(self.config),'source_hashes':{}}
+        (self.output/'owner.json').write_text(json.dumps(self.owner));(self.output/'core.log').write_text('FakeNet-NG started successfully')
+
+    def test_observe_reads_actual_owned_birth_config_and_log(self):
+        import acceptance_runtime as rt
+        with mock.patch.object(rt,'target_identity',return_value=self.identity),mock.patch.object(self.multi,'birth',side_effect=lambda pid:'111' if pid==10 else '222'):
+            observation=self.multi.observe(self.request,self.root)
+        self.assertEqual(self.owner,observation['owner']);self.assertTrue(observation['core_ready'])
+        self.assertEqual(sha(self.output/'core.log'),observation['core_log_sha256'])
+
+    def test_pid_reuse_and_config_change_refused_before_stop(self):
+        import acceptance_runtime as rt
+        with mock.patch.object(rt,'target_identity',return_value=self.identity),mock.patch.object(self.multi,'birth',return_value='reused'):
+            with self.assertRaisesRegex(ValueError,'reused'):self.multi.stop(self.request,self.root)
+        self.assertFalse((self.output/'stop.flag').exists())
+        self.config.write_text('[Diverter]\nNetworkMode: SingleHost\n')
+        with mock.patch.object(rt,'target_identity',return_value=self.identity),mock.patch.object(self.multi,'birth',side_effect=['111','222']):
+            with self.assertRaisesRegex(ValueError,'configuration changed'):self.multi.observe(self.request,self.root)
+
+    def test_boolean_ready_cannot_start_client_probes(self):
+        import acceptance_runtime as rt
+        self.request['server_observation']={'core_ready':True}
+        with mock.patch.object(rt,'require_target'),mock.patch.object(self.multi.importlib.util,'spec_from_file_location') as loader:
+            with self.assertRaisesRegex(ValueError,'boolean ready is insufficient'):self.multi.probes(self.request,self.root)
+            loader.assert_not_called()
+
+    def test_stop_only_sets_bound_flag_after_live_observation(self):
+        import acceptance_runtime as rt
+        with mock.patch.object(rt,'target_identity',return_value=self.identity),mock.patch.object(self.multi,'birth',side_effect=['111','222']):
+            result=self.multi.stop(self.request,self.root)
+        self.assertTrue(result['stop_requested']);self.assertTrue((self.output/'stop.flag').is_file())
+
+
+    def test_server_owner_uses_original_core_finally_and_network_observations(self):
+        import acceptance_runtime as rt
+        self.request['output_root']=str(self.root/'server-output')
+        core=mock.Mock();core.process.pid=20;core.state={'ready':True,'stopped':True,'forced':False,'returncode':0};core.stop.return_value=True
+        def ready():
+            directory=Path(self.request['output_root']);(directory/'core.log').write_text('FakeNet-NG started successfully');(directory/'stop.flag').touch()
+        core.start.side_effect=ready
+        with mock.patch.object(rt,'require_target'),mock.patch.object(rt,'network_snapshot',return_value={'dns':'same'}),mock.patch.object(rt,'OwnedCore',return_value=core),mock.patch.object(self.multi,'birth',return_value='born'):
+            result=self.multi.serve(self.request,self.root)
+        self.assertTrue(result['passed']);core.stop.assert_called_once()
+        evidence=json.loads((Path(self.request['output_root'])/'server-result.json').read_text())
+        self.assertTrue(evidence['network_restored']);self.assertEqual('born',evidence['owner']['core_birth'])
