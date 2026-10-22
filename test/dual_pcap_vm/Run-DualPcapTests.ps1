@@ -88,13 +88,13 @@ function Test-PackageManifest {
 
 function Get-NetworkSnapshot {
     $dns = @(Get-DnsClientServerAddress |
-        Sort-Object InterfaceIndex |
+        Sort-Object InterfaceIndex, AddressFamily |
         ForEach-Object {
-            '{0}|{1}|{2}' -f $_.InterfaceIndex, $_.InterfaceAlias,
+            '{0}|{1}|{2}|{3}' -f $_.InterfaceIndex, $_.AddressFamily, $_.InterfaceAlias,
                 (@($_.ServerAddresses) -join ',')
         })
     $routes = @(Get-NetRoute |
-        Sort-Object InterfaceIndex, DestinationPrefix, NextHop, RouteMetric |
+        Sort-Object InterfaceIndex, AddressFamily, DestinationPrefix, NextHop, RouteMetric |
         ForEach-Object {
             '{0}|{1}|{2}|{3}|{4}' -f $_.InterfaceIndex,
                 $_.DestinationPrefix, $_.NextHop, $_.RouteMetric, $_.PolicyStore

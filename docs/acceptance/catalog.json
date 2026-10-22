@@ -751,7 +751,13 @@
             "test/test.py",
             "test/template.ini",
             "test/custom_responses.ini",
-            "docs/testing.md"
+            "docs/testing.md",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/CustomProviderExample.py",
+            "test/sample_raw_response.txt",
+            "test/sample_raw_tcp_response.txt"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
@@ -801,7 +807,13 @@
             "test/test.py",
             "test/template.ini",
             "test/custom_responses.ini",
-            "docs/testing.md"
+            "docs/testing.md",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/CustomProviderExample.py",
+            "test/sample_raw_response.txt",
+            "test/sample_raw_tcp_response.txt"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
@@ -850,7 +862,13 @@
             "test/test.py",
             "test/template.ini",
             "test/custom_responses.ini",
-            "docs/testing.md"
+            "docs/testing.md",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/CustomProviderExample.py",
+            "test/sample_raw_response.txt",
+            "test/sample_raw_tcp_response.txt"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
@@ -898,7 +916,13 @@
             "test/test.py",
             "test/template.ini",
             "test/custom_responses.ini",
-            "docs/testing.md"
+            "docs/testing.md",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/CustomProviderExample.py",
+            "test/sample_raw_response.txt",
+            "test/sample_raw_tcp_response.txt"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
@@ -949,7 +973,13 @@
             "test/test.py",
             "test/template.ini",
             "test/custom_responses.ini",
-            "docs/testing.md"
+            "docs/testing.md",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/CustomProviderExample.py",
+            "test/sample_raw_response.txt",
+            "test/sample_raw_tcp_response.txt"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
@@ -998,7 +1028,13 @@
             "test/test.py",
             "test/template.ini",
             "test/custom_responses.ini",
-            "docs/testing.md"
+            "docs/testing.md",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/CustomProviderExample.py",
+            "test/sample_raw_response.txt",
+            "test/sample_raw_tcp_response.txt"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
@@ -1049,7 +1085,13 @@
             "test/test.py",
             "test/template.ini",
             "test/custom_responses.ini",
-            "docs/testing.md"
+            "docs/testing.md",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/CustomProviderExample.py",
+            "test/sample_raw_response.txt",
+            "test/sample_raw_tcp_response.txt"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
@@ -1097,7 +1139,13 @@
             "test/test.py",
             "test/template.ini",
             "test/custom_responses.ini",
-            "docs/testing.md"
+            "docs/testing.md",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/CustomProviderExample.py",
+            "test/sample_raw_response.txt",
+            "test/sample_raw_tcp_response.txt"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
@@ -1146,7 +1194,13 @@
             "test/test.py",
             "test/template.ini",
             "test/custom_responses.ini",
-            "docs/testing.md"
+            "docs/testing.md",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/CustomProviderExample.py",
+            "test/sample_raw_response.txt",
+            "test/sample_raw_tcp_response.txt"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
@@ -1195,7 +1249,13 @@
             "test/test.py",
             "test/template.ini",
             "test/custom_responses.ini",
-            "docs/testing.md"
+            "docs/testing.md",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/CustomProviderExample.py",
+            "test/sample_raw_response.txt",
+            "test/sample_raw_tcp_response.txt"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "upstream-singlehost"
@@ -2065,7 +2125,14 @@
           "stress": false,
           "sources": [
             "test/dual_pcap_vm/Run-DualPcapTests.ps1",
-            "test/dual_pcap_vm/verify_dual_pcap.py"
+            "test/dual_pcap_vm/verify_dual_pcap.py",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/dual_pcap_vm/fault_launcher.py",
+            "test/dual_pcap_vm/Invoke-PythonLogged.ps1",
+            "test/dual_pcap_vm/Read-ExitCodeEvidence.ps1",
+            "test/dual_pcap_vm/ConsoleStopSignal.ps1"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "pcap-windows-functional"
@@ -2113,7 +2180,14 @@
           "stress": false,
           "sources": [
             "test/dual_pcap_vm/Run-DualPcapTests.ps1",
-            "test/dual_pcap_vm/verify_dual_pcap.py"
+            "test/dual_pcap_vm/verify_dual_pcap.py",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/dual_pcap_vm/fault_launcher.py",
+            "test/dual_pcap_vm/Invoke-PythonLogged.ps1",
+            "test/dual_pcap_vm/Read-ExitCodeEvidence.ps1",
+            "test/dual_pcap_vm/ConsoleStopSignal.ps1"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "pcap-windows-functional"
@@ -2157,7 +2231,14 @@
           "stress": true,
           "sources": [
             "test/dual_pcap_vm/Run-DualPcapTests.ps1",
-            "test/dual_pcap_vm/verify_dual_pcap.py"
+            "test/dual_pcap_vm/verify_dual_pcap.py",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/dual_pcap_vm/fault_launcher.py",
+            "test/dual_pcap_vm/Invoke-PythonLogged.ps1",
+            "test/dual_pcap_vm/Read-ExitCodeEvidence.ps1",
+            "test/dual_pcap_vm/ConsoleStopSignal.ps1"
           ],
           "native_driver": "pcap-windows-functional"
         }
@@ -2243,7 +2324,11 @@
           "stress": false,
           "sources": [
             "test/dual_pcap_linux/run_tests.py",
-            "test/dual_pcap_linux/verify_capture.py"
+            "test/dual_pcap_linux/verify_capture.py",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/dual_pcap_linux/fault_launcher.py"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "pcap-linux-functional"
@@ -2286,7 +2371,11 @@
           "stress": true,
           "sources": [
             "test/dual_pcap_linux/run_tests.py",
-            "test/dual_pcap_linux/verify_capture.py"
+            "test/dual_pcap_linux/verify_capture.py",
+            "tools/acceptance_native.py",
+            "tools/acceptance_runtime.py",
+            "tools/acceptance_oracles.py",
+            "test/dual_pcap_linux/fault_launcher.py"
           ],
           "native_driver": "pcap-linux-functional"
         }

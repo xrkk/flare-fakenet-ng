@@ -37,22 +37,31 @@ def _read(path):
     return Path(path).read_text(encoding='utf-8', errors='replace')
 
 
-def upstream_checks(root):
-    """Static test-name table from test/test.py's ``t['name']`` assignments."""
-    path = Path(root) / 'test' / 'test.py'
-    if not path.is_file():
-        return []
-    tree = ast.parse(_read(path), filename=str(path))
-    names = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if (isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name)
-                and target.value.id == 't' and isinstance(target.slice, ast.Constant)
-                and isinstance(target.slice.value, str)):
-            names.append(target.slice.value)
-    return names
+def upstream_checks(root, platform='linux', singlehost=True):
+    """Read only registered original callback definitions, respecting guards."""
+    tree = ast.parse(_read(Path(root)/'test/test.py'))
+    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name=='FakeNetTester')
+    suites = {'generalTests':'General', 'testNoRedirect':'No Redirect',
+              'testBlacklistProcess':'Global process blacklist',
+              'testWhitelistProcess':'Global process whitelist'}
+    def enabled(test):
+        if isinstance(test, ast.Attribute) and isinstance(test.value, ast.Attribute) and test.value.attr=='settings':
+            if test.attr=='windows': return platform=='windows'
+            if test.attr=='singlehost': return singlehost
+        raise ValueError('unsupported guard in upstream callback collection')
+    def visit(nodes, label):
+        names=[]
+        for node in nodes:
+            if isinstance(node, ast.If):
+                names.extend(visit(node.body if enabled(node.test) else node.orelse,label))
+            elif isinstance(node, ast.Assign) and len(node.targets)==1:
+                target=node.targets[0]
+                if (isinstance(target,ast.Subscript) and isinstance(target.value,ast.Name) and
+                    target.value.id=='t' and isinstance(target.slice,ast.Constant) and isinstance(target.slice.value,str)):
+                    names.append(label+'::'+target.slice.value)
+        return names
+    return [name for method in owner.body if isinstance(method,ast.FunctionDef) and method.name in suites
+            for name in visit(method.body,suites[method.name])]
 
 
 def ps1_checks(path):
@@ -128,19 +137,14 @@ def driver_table(root):
     exe = ps1_checks(exe_path) if exe_path.is_file() else []
     drivers = {
         'upstream-singlehost': {
-            'implemented': False,
-            'missing': 'per-case upstream suite/case selection and observed readiness are not implemented; current argv would run the whole test.py per case',
-            'platforms': ['windows', 'linux'],
-            'modes': ['singlehost'],
-            'argv': ['{python}', 'test/test.py', 'here', '--results',
-                     '{output}/upstream.tsv', '--non-interactive'],
-            'oracle': {'kind': 'tsv', 'artifact': 'upstream.tsv'},
-            'checks': upstream,
-            'check_filters': UPSTREAM_FILTERS,
-            'requires': ['native'],
-            'package_required': False,
-            'cleanup': 'test.py writes only the run result file; stop handling is internal',
-            'readiness': ['project interpreter', 'test/test.py dependencies'],
+            'implemented': True, 'production_kind':'upstream-result',
+            'platforms':['windows','linux'], 'modes':['singlehost'],
+            'checks':upstream, 'checks_by_platform':{
+                platform:upstream_checks(root,platform) for platform in ('windows','linux')},
+            'check_filters':UPSTREAM_FILTERS, 'requires':['native'],
+            'package_required':False, 'resources':['core','network'],
+            'oracle':{'kind':'upstream-result','artifact':'driver/upstream.json'},
+            'argv':['{python}','{root}/test/test.py','--mechanical-spec','{output}/request.json'],
         },
         'upstream-multihost': {
             'implemented': False,
@@ -188,18 +192,23 @@ def driver_table(root):
             'readiness': ['Windows VM', 'administrator', 'sentinel', 'reviewed A/B'],
         },
         'pcap-windows-functional': {
-            'implemented': False,
-            'missing': 'Run-DualPcapTests.ps1 needs a -Functional switch that removes '
-                       'unittest discover, benchmark and the interactive normal stop',
-            'platforms': ['windows'], 'modes': ['singlehost'],
-            'checks': [], 'requires': ['native'], 'package_required': True,
+            'implemented':True, 'production_kind':'dual-pcap-windows',
+            'platforms':['windows'], 'modes':['singlehost'],
+            'checks':['normal','raw-write','ethernet-write','close'],
+            'requires':['native'], 'package_required':False, 'resources':['core','network','capture'],
+            'oracle':{'kind':'dual-pcap-windows','artifact':'driver/results.tsv'},
+            'argv':['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass',
+                    '-File','{root}/test/dual_pcap_vm/Run-DualPcapTests.ps1','-Functional',
+                    '-CaseSet','{modes}','-OutputDirectory','{output}/driver','-PythonPath','{python}'],
         },
         'pcap-linux-functional': {
-            'implemented': False,
-            'missing': 'run_tests.py needs a -Functional switch for normal/fault cases '
-                       'without unit discovery and benchmark',
-            'platforms': ['linux'], 'modes': ['singlehost', 'multihost'],
-            'checks': [], 'requires': ['native'], 'package_required': True,
+            'implemented':True, 'production_kind':'dual-pcap-linux',
+            'platforms':['linux'], 'modes':['singlehost'],
+            'checks':['normal','raw-write','ethernet-write','close'],
+            'requires':['native'], 'package_required':False, 'resources':['core','network','capture'],
+            'oracle':{'kind':'dual-pcap-linux','artifact':'driver/summary.json'},
+            'argv':['{python}','{root}/test/dual_pcap_linux/run_tests.py','--functional',
+                    '--output-directory','{output}/driver'],
         },
         'policy-headless': {
             'implemented': False,
@@ -272,27 +281,64 @@ def driver_table(root):
     return drivers
 
 
-def select_checks(driver, case):
-    checks = driver.get('checks') or []
-    filters = (driver.get('check_filters') or {}).get(case['id'])
-    if not filters:
-        return list(checks)
-    selected = [name for name in checks if any(token in name for token in filters)]
-    return selected
+def select_checks(driver, case, environment=None):
+    if driver.get('production_kind','').startswith('dual-pcap-'):
+        if case.get('stress'):
+            return []
+        data=case.get('input') or {}
+        return data.get('cases') or data.get('modes') or [data.get('case')]
+    target=(environment or {}).get('native_runtime') or {}
+    platform=(target.get('identity') or {}).get('platform','linux')
+    checks=(driver.get('checks_by_platform') or {}).get(platform,driver.get('checks') or [])
+    if driver.get('production_kind')=='upstream-result':
+        # Every original callback belongs to one family; ICMP positives remain
+        # in the general packet family. Do not silently lose them from full.
+        def family(identity):
+            suite,name=identity.split('::',1)
+            if suite=='No Redirect':return 'UPSTREAM-REDIRECTALL-OFF'
+            if suite.startswith('Global process'):return 'UPSTREAM-PROCESS-FILTERS'
+            if name.startswith('Listener '):return 'UPSTREAM-LISTENER-FILTERS'
+            if 'blacklisted' in name:return 'UPSTREAM-BLACKLIST'
+            if name.startswith(('TCP ','UDP ','ICMP ')):return 'UPSTREAM-TCP-UDP'
+            if name.startswith('DNS '):return 'UPSTREAM-DNS'
+            if name.startswith(('HTTP ','HTTPS ')):return 'UPSTREAM-HTTP-CUSTOM'
+            if name.startswith('SMTP SSL'):return 'UPSTREAM-SMTP-SSL'
+            if name.startswith(('FTP ','POP3 ','SMTP ','IRC ')):return 'UPSTREAM-FTP-POP-SMTP-IRC'
+            if name.startswith('Proxy '):return 'UPSTREAM-PROXY-HIDDEN'
+            raise ValueError('unmapped original upstream check: '+identity)
+        return [name for name in checks if family(name)==case['id']]
+    filters=(driver.get('check_filters') or {}).get(case['id'])
+    return [name for name in checks if any(token in name for token in filters)] if filters else list(checks)
 
 
-def validate_case(case, root):
-    drivers = driver_table(root)
-    name = case.get('native_driver')
+def validate_case(case, root, environment=None):
+    drivers=driver_table(root)
+    name=case.get('native_driver')
     if not name or name not in drivers:
         raise ValueError('%s has an unknown native driver' % case['id'])
-    driver = drivers[name]
-    if not driver.get('implemented'):
-        return driver, []
-    checks = select_checks(driver, case)
-    if not checks:
+    driver=drivers[name]
+    if not driver.get('implemented'):return driver,[]
+    checks=select_checks(driver,case,environment)
+    if not checks and not case.get('stress'):
         raise ValueError('%s driver has no declared checks' % case['id'])
-    return driver, checks
+    return driver,checks
+
+
+def runtime_block(case, environment):
+    if case.get('stress'):
+        return 'functional native driver does not run stress'
+    runtime=environment.get('native_runtime')
+    if not isinstance(runtime,dict) or runtime.get('transport')!='local-target':
+        return 'native_runtime requires an explicit local-target channel on the selected VM'
+    identity=runtime.get('identity')
+    if not isinstance(identity,dict) or set(identity)!={'platform','hostname'} or not identity.get('hostname'):
+        return 'native_runtime.identity requires exact platform and hostname'
+    if identity['platform'] not in ('linux','windows'):
+        return 'unsupported native target platform'
+    if identity['platform'] not in case['platforms']:
+        return 'native target platform does not match case'
+    # local-target never treats a host platform label as remote VM authority.
+    return None
 
 
 def is_fixture(case, root):
@@ -315,6 +361,9 @@ def fixed_argv(driver, context):
 
 
 def run_driver(root, case, plan, output_dir, python):
+    driver, unused=validate_case(case,root,plan['environment'])
+    if driver.get('production_kind'):
+        return run_production(root,case,plan,output_dir,python)
     root = Path(root)
     driver, checks = validate_case(case, root)
     if not driver.get('implemented'):
@@ -404,13 +453,16 @@ def run_driver(root, case, plan, output_dir, python):
 
 
 def judge_driver(case, receipt, plan, root):
+    driver,unused=validate_case(case,root,plan['environment'])
+    if driver.get('production_kind'):
+        return judge_production(case,receipt,plan,root)
     driver, checks = validate_case(case, root)
     if not driver.get('implemented'):
         return {'status': 'blocked', 'reason': driver.get('missing') or 'not implemented'}
     expected_argv = fixed_argv(driver, {
         'python': plan['environment']['interpreters']['python'],
         'output': str(Path(plan['run_dir']) / 'results' / case['id']),
-        'root': plan['run_dir'],
+        'root': str(root),
         'package_manifest': plan.get('candidate', {}).get('package_manifest') or '',
         'package_sha256': plan.get('candidate', {}).get('package_sha256') or ''})
     if receipt.get('command') != expected_argv:
@@ -518,6 +570,8 @@ def _read_oracle(kind, path):
             if len(fields) < 2:
                 raise ValueError('invalid TSV line %d' % number)
             first, second = fields[:2]
+            if number==1 and first.lstrip('\ufeff').lower()=='status' and second.lower() in ('name','test','id'):
+                continue
             if first.lower() in ('pass', 'fail', 'unknown', 'not_run', 'blocked',
                                  'skip', 'observed') or first.upper() in ('FAILED', 'REFUSED'):
                 status, name = first.lower(), second
@@ -577,3 +631,135 @@ def main(argv=None):
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
+
+def production_command(root,case,plan,output_dir,python):
+    driver,checks=validate_case(case,root,plan['environment'])
+    context={'root':str(Path(root).resolve()),'python':str(python),
+             'output':str(Path(output_dir).resolve()),'modes':','.join(checks)}
+    argv=fixed_argv(driver,context)
+    if driver['production_kind']=='dual-pcap-linux':
+        for mode in checks:argv.extend(['--case',mode])
+    return argv
+
+
+def original_evaluation(root,case,plan,output_dir):
+    import acceptance_oracles
+    driver,checks=validate_case(case,root,plan['environment'])
+    directory=Path(output_dir)/'driver'
+    if driver['production_kind']=='upstream-result':
+        rows,clean=acceptance_oracles.upstream(root,directory,checks)
+    else:
+        platform=driver['production_kind'].rsplit('-',1)[1]
+        rows,clean=acceptance_oracles.dual_pcap(root,directory,checks,platform)
+    return _judge_rows(rows,checks),clean
+
+
+def run_production(root,case,plan,output_dir,python):
+    """Run only on the explicitly bound target, never host fallback.
+
+    Drivers own cleanup. An outer timeout requests cooperative interruption on
+    POSIX, then preserves an unresolved owner instead of claiming kill=restore.
+    """
+    from datetime import datetime,timezone
+    from acceptance_runtime import require_target,write_json
+    output_dir=Path(output_dir)
+    reason=runtime_block(case,plan['environment'])
+    if reason:raise ValueError(reason)
+    runtime=plan['environment']['native_runtime']
+    actual=require_target(runtime['identity'])
+    if (plan.get('candidate') or {}).get('deployed_identity')!=actual:
+        raise ValueError('candidate.deployed_identity differs from observed native target')
+    driver,checks=validate_case(case,root,plan['environment'])
+    argv=production_command(root,case,plan,output_dir,python)
+    output_dir.mkdir(parents=True,exist_ok=True)
+    request={'schema':'fakenet.upstream-selection.v1','target':actual,
+             'checks':checks,'work_root':str(output_dir/'driver')}
+    write_json(output_dir/'request.json',request)
+    write_json(output_dir/'target.json',actual)
+    started=datetime.now(timezone.utc)
+    timed_out=False; exited=False; code=None; process=None
+    env=os.environ.copy();env['PYTHONPATH']=str(Path(root).resolve())
+    with (output_dir/'stdout.log').open('xb') as stdout,(output_dir/'stderr.log').open('xb') as stderr:
+        options={'start_new_session':True} if os.name!='nt' else {'creationflags':subprocess.CREATE_NEW_PROCESS_GROUP}
+        process=subprocess.Popen(argv,cwd=root,env=env,stdout=stdout,stderr=stderr,shell=False,**options)
+        try:
+            code=process.wait(timeout=case['timeout']);exited=True
+        except subprocess.TimeoutExpired:
+            timed_out=True
+            if os.name!='nt':
+                process.send_signal(signal.SIGINT)
+                try:code=process.wait(timeout=90);exited=True
+                except subprocess.TimeoutExpired:pass
+    ended=datetime.now(timezone.utc)
+    evaluation={'verdict':'unknown'};clean=False;detail=''
+    if exited:
+        try:evaluation,clean=original_evaluation(root,case,plan,output_dir)
+        except (OSError,ValueError,AssertionError,KeyError,TypeError) as error:
+            detail='original native oracle refused: %s: %s' % (type(error).__name__,error)
+    else:detail='recovery_required: original driver has not exited; preserve owned process and evidence'
+    if timed_out:detail='driver timeout; '+detail
+    status=evaluation['verdict']
+    if code not in (0,None):status='fail'
+    if timed_out or not clean:
+        status='unknown' if status!='fail' else status
+    # If an owner remains, do not hash its changing logs as stable evidence.
+    artifacts=[]
+    if exited:
+        for path in sorted(output_dir.rglob('*')):
+            if path.is_symlink():raise ValueError('native artifact is a symlink')
+            if path.is_file():
+                fmt='pcap' if path.suffix=='.pcap' else 'log' if path.name in ('stdout.log','stderr.log') else 'native-evidence'
+                artifacts.append({'path':str(path.resolve()),'sha256':sha256(path),'format':fmt})
+    return {'status':status,'detail':detail,'returncode':code,'command':argv,
+            'started_at':started.isoformat(),'ended_at':ended.isoformat(),
+            'duration_seconds':(ended-started).total_seconds(),'required_checks':checks,
+            'artifacts':artifacts,'native_target':actual,
+            'cleanup':{'source':'driver','resources':driver['resources'],'recovered':clean and exited,
+                       'process_exit':{'exited':exited,'returncode':code,'timed_out':timed_out},
+                       'owner_pid':process.pid,'temp_roots':[str(output_dir.resolve())]}}
+
+
+def judge_production(case,receipt,plan,root):
+    driver,checks=validate_case(case,root,plan['environment'])
+    output_dir=Path(plan['run_dir'])/'results'/case['id']
+    if receipt.get('command')!=production_command(root,case,plan,output_dir,plan['environment']['interpreters']['python']):
+        return {'status':'fail','cleanup_ok':False,'reason':'production argv mismatch'}
+    if receipt.get('required_checks')!=checks:
+        return {'status':'fail','cleanup_ok':False,'reason':'production check set mismatch'}
+    expected_target=plan['environment']['native_runtime']['identity']
+    if receipt.get('native_target')!=expected_target or plan['candidate'].get('deployed_identity')!=expected_target:
+        return {'status':'fail','cleanup_ok':False,'reason':'production target identity mismatch'}
+    artifacts=receipt.get('artifacts') or []
+    paths=[]
+    for item in artifacts:
+        path=Path(item.get('path',''))
+        if (not path.is_absolute() or path.is_symlink() or not path.is_file() or
+            not path.resolve().is_relative_to(output_dir.resolve()) or sha256(path)!=item.get('sha256')):
+            return {'status':'unknown','cleanup_ok':False,'reason':'production artifact missing/changed/outside case'}
+        paths.append(str(path.resolve()))
+    actual={str(path.resolve()) for path in output_dir.rglob('*') if path.is_file() and path.name!='receipt.json'}
+    if len(paths)!=len(set(paths)) or set(paths)!=actual:
+        return {'status':'unknown','cleanup_ok':False,'reason':'production evidence index is not exact'}
+    if not all(str(output_dir/name) in paths for name in ('stdout.log','stderr.log','request.json','target.json')):
+        return {'status':'unknown','cleanup_ok':False,'reason':'production execution logs/request/target missing'}
+    try:
+        if json.loads(_read(output_dir/'target.json'))!=expected_target:
+            raise ValueError('observed target differs')
+        request=json.loads(_read(output_dir/'request.json'))
+        expected_request={'schema':'fakenet.upstream-selection.v1','target':expected_target,'checks':checks,'work_root':str(output_dir/'driver')}
+        if request!=expected_request:
+            raise ValueError('original native request differs from plan')
+        evaluation,clean=original_evaluation(root,case,plan,output_dir)
+    except (OSError,ValueError,AssertionError,KeyError,TypeError) as error:
+        return {'status':'fail' if receipt.get('status')=='fail' or receipt.get('returncode') not in (None,0) else 'unknown','cleanup_ok':False,'reason':'original native oracle refused: %s' % error}
+    cleanup=receipt.get('cleanup') or {};process=cleanup.get('process_exit') or {}
+    clean=(clean and cleanup.get('source')=='driver' and cleanup.get('resources')==driver['resources'] and
+           cleanup.get('recovered') is True and process.get('exited') is True and
+           process.get('timed_out') is False and process.get('returncode')==receipt.get('returncode'))
+    status=evaluation['verdict']
+    if receipt.get('returncode')!=0 or receipt.get('status')=='fail':status='fail'
+    if not clean or receipt.get('status') not in ('pass','fail'):
+        status='unknown' if status!='fail' else status
+    return {'status':status,'evaluation':evaluation,'cleanup_ok':clean,
+            'reason':'' if clean else 'native cleanup not established by original observations'}

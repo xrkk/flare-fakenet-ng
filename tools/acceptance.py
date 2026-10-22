@@ -739,7 +739,7 @@ def case_applicable(case, platforms):
     return bool(declared & platforms) or 'any' in declared
 
 
-def expected_block(case, actions, platforms, root=ROOT):
+def expected_block(case, actions, platforms, root=ROOT, environment=None):
     """Return the only admissible blocked reason, or None if runnable."""
     if case['adapter'] == 'native':
         if acceptance_native is None:
@@ -755,6 +755,8 @@ def expected_block(case, actions, platforms, root=ROOT):
             return 'platform not available in environment'
         if 'native' not in actions:
             return 'environment does not allow native execution'
+        if driver.get('production_kind'):
+            return acceptance_native.runtime_block(case,environment or {})
         return None
     if case['adapter'] != 'offline-pytest':
         return case.get('blocked_reason') or 'adapter is not implemented'
@@ -846,7 +848,7 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
             raise InputError('planned case is not an object: %s' % case_id)
         if case_identity(stored) != case_identity(reference):
             raise InputError('planned case identity differs from catalog: %s' % case_id)
-        expected_reason = expected_block(reference, actions, platforms, root)
+        expected_reason = expected_block(reference, actions, platforms, root, environment)
         actual_reason = blocked.get(case_id)
         if (expected_reason or None) != (actual_reason or None):
             raise InputError('blocked state differs from registry: %s expected=%r actual=%r'
@@ -863,7 +865,7 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
         if not isinstance(planned_checks, list) or len(planned_checks) != len(set(planned_checks)):
             raise InputError('planned checks are not unique: %s' % case_id)
         if reference['adapter'] == 'native':
-            unused_driver, expected_checks = acceptance_native.validate_case(reference, root)
+            unused_driver, expected_checks = acceptance_native.validate_case(reference, root, environment)
             if planned_checks != expected_checks:
                 raise InputError('native checks differ from the registered table: %s' % case_id)
             if run_nodes:
@@ -998,13 +1000,13 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
         source_hashes[case['id']] = hashes
         record = dict(case)
         record['sources'] = sources
-        reason = expected_block(case, actions, platforms, root)
+        reason = expected_block(case, actions, platforms, root, environment)
         collectable = (case['adapter'] == 'offline-pytest'
                        and case.get('collection_safe')
                        and 'collection' in actions
                        and case_applicable(case, platforms))
         if case['adapter'] == 'native' and acceptance_native is not None:
-            unused, checks = acceptance_native.validate_case(case, root)
+            unused, checks = acceptance_native.validate_case(case, root, environment)
             required_checks[case['id']] = list(checks)
             record['required_checks'] = list(checks)
             record['run_nodes'] = []
@@ -1074,6 +1076,7 @@ def execute_plan(root, plan_path):
     tmp_dir = run_dir / 'tmp'
     tmp_dir.mkdir(parents=True, exist_ok=True)
     receipts = []
+    native_recovery_block = None
     for case_id in plan['required_cases']:
         case = plan['cases'][case_id]
         case_dir = results_dir / case_id
@@ -1091,10 +1094,10 @@ def execute_plan(root, plan_path):
             'config_sha256': _sha256_json(case),
             'evidence_level': 'offline' if case['adapter'] == 'offline-pytest' else 'native',
         }
-        if case_id in plan.get('blocked', {}):
+        if case_id in plan.get('blocked', {}) or (case['adapter']=='native' and native_recovery_block):
             receipt.update({
                 'status': 'blocked',
-                'reason': plan['blocked'][case_id],
+                'reason': plan['blocked'].get(case_id) or native_recovery_block,
                 'returncode': None,
                 'command': None,
                 'started_at': None,
@@ -1109,8 +1112,11 @@ def execute_plan(root, plan_path):
         elif case['adapter'] == 'native':
             receipt['native_driver'] = case.get('native_driver')
             receipt.update(acceptance_native.run_driver(root, case, plan, case_dir, python))
-            receipt['evidence_level'] = ('fixture' if acceptance_native.is_fixture(case, root)
+            receipt['evidence_level'] = ('fixture' if plan['candidate'].get('offline_fixture') is True or acceptance_native.is_fixture(case, root)
                                          else 'native')
+            production = acceptance_native.validate_case(case,root,plan['environment'])[0].get('production_kind')
+            if production and receipt.get('cleanup',{}).get('recovered') is not True:
+                native_recovery_block = 'prior native driver recovery unresolved: '+case_id
         else:
             raise ToolError('unregistered adapter: %s' % case['adapter'])
         receipt_path = case_dir / 'receipt.json'
@@ -1266,7 +1272,7 @@ def judge_v2(root, plan_path, results_dir, output=None):
     outcomes = []
     timings = []
     cleanup_results = []
-    fixture_used = False
+    fixture_used = plan.get('candidate',{}).get('offline_fixture') is True
     for case_id in plan['required_cases']:
         reference = registered[case_id]
         case = plan['cases'][case_id]
@@ -1291,7 +1297,7 @@ def judge_v2(root, plan_path, results_dir, output=None):
             raise InputError('case config changed: %s' % case_id)
         expected_level = ('offline' if reference['adapter'] == 'offline-pytest'
                           else 'fixture' if reference['adapter'] == 'native'
-                          and acceptance_native.is_fixture(reference, root) else 'native')
+                          and (plan['candidate'].get('offline_fixture') is True or acceptance_native.is_fixture(reference, root)) else 'native')
         if receipt.get('evidence_level') != expected_level:
             raise InputError('evidence level mismatch: %s' % case_id)
         receipt_status = receipt.get('status')

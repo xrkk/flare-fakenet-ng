@@ -40,12 +40,22 @@ def require_target(expected):
         kind = command(['systemd-detect-virt', '--vm']).decode().strip()
         if kind not in ('vmware', 'kvm', 'qemu', 'microsoft', 'oracle', 'xen', 'parallels'):
             raise ValueError('unverified native VM: %s' % kind)
+        for path in Path('/proc').iterdir():
+            if not path.name.isdigit() or int(path.name)==os.getpid():
+                continue
+            try: argv=(path/'cmdline').read_bytes().split(b'\0')
+            except OSError: continue
+            if b'fakenet.fakenet' in argv or any(item.endswith(b'/fault_launcher.py') for item in argv):
+                raise ValueError('another core already owns native network resources')
     elif actual['platform'] == 'windows':
         script = ("$ErrorActionPreference='Stop'; "
                   "$p=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()); "
                   "if(-not $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){exit 2}; "
                   "$s=Get-CimInstance Win32_ComputerSystem; "
-                  "if(($s.Manufacturer+' '+$s.Model) -notmatch 'virtual|vmware|kvm|qemu|hyper-v|xen|parallels'){exit 3}")
+                  "if(($s.Manufacturer+' '+$s.Model) -notmatch 'virtual|vmware|kvm|qemu|hyper-v|xen|parallels'){exit 3}; "
+                  "$owners=@(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and "
+                  "$_.CommandLine -match '(-m\\s+fakenet\\.fakenet|fault_launcher\\.py)' }); "
+                  "if($owners.Count){exit 4}")
         command(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script])
     else:
         raise ValueError('unsupported native platform')

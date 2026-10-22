@@ -144,3 +144,102 @@ class FunctionalPcapTests(unittest.TestCase):
         self.assertIn("if ($Functional) {\n            foreach ($mode in $Case)",text)
         self.assertIn('} finally {\n        $restored = Test-NetworkRestored',text)
         self.assertNotIn("else { $fatalCount -eq 1 -and $dropCount -eq 1 }",text)
+
+
+class ProductionEntryTests(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0,str(ROOT/'tools'))
+        sys.path.insert(0,str(ROOT/'test'))
+        import acceptance_native
+        self.native=acceptance_native
+        self.acc=load('production_acceptance_entry','tools/acceptance.py')
+        self.fixture=load('production_acceptance_fixture','test/test_acceptance_regression.py')
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=self.fixture.make_root(self.temp.name)
+        import shutil
+        shutil.copyfile(ROOT/'test/test.py',self.root/'test/test.py')
+        (self.root/'test/dual_pcap_linux').mkdir()
+        shutil.copyfile(ROOT/'test/dual_pcap_linux/verify_capture.py',self.root/'test/dual_pcap_linux/verify_capture.py')
+        self.catalog_path=self.root/'docs/acceptance/catalog.json'
+        catalog=json.loads(self.catalog_path.read_text())
+        self.case=catalog['suites'][1]['cases'][0]
+        self.case.update(adapter='native',native_driver='pcap-linux-functional',platforms=['linux'],modes=['singlehost'],input={'cases':['normal']},oracle={'kind':'pcap'})
+        self.catalog_path.write_text(json.dumps(catalog))
+        self.identity={'platform':'linux','hostname':'fixture-vm'}
+        candidate=json.loads((self.root/'candidate.json').read_text());candidate['deployed_identity']=self.identity
+        (self.root/'candidate.json').write_text(json.dumps(candidate))
+        self.environment=json.loads((self.root/'environment.json').read_text())
+        self.environment['allowed_actions']+=['native'];self.environment['native_runtime']={'transport':'local-target','identity':self.identity}
+        (self.root/'environment.json').write_text(json.dumps(self.environment))
+
+    def cli(self,*args):
+        import contextlib,io
+        out,err=io.StringIO(),io.StringIO()
+        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
+            code=self.acc.main(['--root',str(self.root)]+[str(a) for a in args])
+        return code,out.getvalue(),err.getvalue()
+
+    def plan(self):
+        path=self.root/'Logs/run/plan.json'
+        code,out,err=self.cli('plan','--mode','selected','--case','FIX-BLOCKED','--candidate',self.root/'candidate.json','--environment',self.root/'environment.json','--output',path)
+        self.assertEqual(0,code,err+out)
+        return path
+
+    def process_stub(self,argv,**kwargs):
+        # Replace only the native launch, leave real PCAP oracles untouched.
+        directory=Path(argv[argv.index('--output-directory')+1]); directory.mkdir()
+        child=directory/'normal';child.mkdir()
+        make_pair(child)
+        (child/'fakenet.log').write_text('PCAP_DUAL_SUMMARY healthy=True')
+        for name in ('network-before.json','network-after.json'):(child/name).write_text('{}')
+        (child/'case-evidence.json').write_text(json.dumps({'ready':True,'forced':False,'returncode':0,'process_exited':True,'network_differences':[],'resource_residue':[],'case_error':None,'snapshot_error':None}))
+        (directory/'summary.json').write_text(json.dumps({'results':[{'name':n,'status':'PASS'} for n in ('Environment','Dependencies','Live-normal')]}))
+        process=mock.Mock(pid=123);process.wait.return_value=0
+        return process
+
+    def test_actual_plan_execute_and_independent_judge_with_original_pcap(self):
+        path=self.plan()
+        import acceptance_runtime as rt
+        with mock.patch.object(rt,'require_target',return_value=self.identity),mock.patch.object(self.native.subprocess,'Popen',side_effect=self.process_stub):
+            code,out,err=self.cli('execute','--plan',path)
+        self.assertEqual(0,code,out+err)
+        result=json.loads((path.parent/'summary.json').read_text())
+        self.assertEqual('pass',result['verdict']);self.assertFalse(result['full_functional_pass'])
+        code,out,err=self.cli('judge','--plan',path,'--results',path.parent/'results')
+        self.assertEqual(0,code,out+err)
+        # Rehash a corrupted PCAP to prove content verification, not only SHA.
+        case_dir=path.parent/'results/FIX-BLOCKED'
+        eth=next((case_dir/'driver/normal').glob('*-converted.pcap'))
+        content=bytearray(eth.read_bytes());content[-1]^=1;eth.write_bytes(content)
+        receipt_path=case_dir/'receipt.json';receipt=json.loads(receipt_path.read_text())
+        next(a for a in receipt['artifacts'] if a['path']==str(eth))['sha256']=self.native.sha256(eth)
+        receipt_path.write_text(json.dumps(receipt))
+        index_path=path.parent/'results/results.json';index=json.loads(index_path.read_text());index['receipts'][0]['sha256']=self.native.sha256(receipt_path);index_path.write_text(json.dumps(index))
+        code,out,err=self.cli('judge','--plan',path,'--results',path.parent/'results')
+        self.assertEqual(2,code,out+err)
+        self.assertIn('original native oracle refused',out)
+
+    def test_absent_target_is_blocked_and_wrong_target_refuses_before_launch(self):
+        self.environment.pop('native_runtime');(self.root/'environment.json').write_text(json.dumps(self.environment))
+        path=self.plan();plan=json.loads(path.read_text());self.assertIn('local-target',plan['blocked']['FIX-BLOCKED'])
+        with mock.patch.object(self.native.subprocess,'Popen') as launch:
+            code,out,err=self.cli('execute','--plan',path)
+            self.assertEqual(2,code,out+err);launch.assert_not_called()
+
+    def test_registered_upstream_exact_selection_matches_original_platform_callbacks(self):
+        import test_upstream_runner_contract as original
+        ids=['UPSTREAM-TCP-UDP','UPSTREAM-DNS','UPSTREAM-HTTP-CUSTOM','UPSTREAM-FTP-POP-SMTP-IRC','UPSTREAM-SMTP-SSL','UPSTREAM-PROXY-HIDDEN','UPSTREAM-BLACKLIST','UPSTREAM-PROCESS-FILTERS','UPSTREAM-LISTENER-FILTERS','UPSTREAM-REDIRECTALL-OFF']
+        driver=self.native.driver_table(ROOT)['upstream-singlehost']
+        for platform in ('windows','linux'):
+            settings=original.settings_stub(windows=platform=='windows',pythonname='python')
+            tester=original.DRIVER.FakeNetTester(settings)
+            tester.makeConfig=mock.Mock(return_value=mock.Mock())
+            suites=tester.collectSuites()
+            expected={s['label']+'::'+name for s in suites for name in s['tests']}
+            actual=[name for case_id in ids for name in self.native.select_checks(driver,{'id':case_id},{'native_runtime':{'identity':{'platform':platform}}})]
+            self.assertEqual(len(actual),len(set(actual)))
+            self.assertEqual(expected,set(actual))
+
+    def test_original_tsv_header_is_not_a_result_row(self):
+        path=self.root/'original.tsv';path.write_text('status\tname\tdetail\nPASS\talpha\tok\n')
+        self.assertEqual([{'id':'alpha','status':'pass'}],self.native._read_oracle('tsv',path))

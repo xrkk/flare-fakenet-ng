@@ -179,3 +179,34 @@ remain failures, including when emergency rollback subsequently succeeds.
 Offline tests replace native processes/network but execute the original PCAP
 oracles on benign packets. They do not certify Windows/WinDivert or
 Linux/NFQUEUE runtime behavior.
+
+### Native target and original evidence binding
+
+The unified production adapters now support `upstream-singlehost`,
+`pcap-linux-functional` and `pcap-windows-functional`. Native execution requires
+`allowed_actions` to contain `native` and an explicit environment field:
+
+```json
+"native_runtime": {
+  "transport": "local-target",
+  "identity": {"platform": "linux", "hostname": "EXACT_VM_HOSTNAME"}
+}
+```
+
+Run the unified entry on this selected VM with its project interpreter.
+`candidate.deployed_identity` must equal the observed target identity. The
+runner checks administrator/root and actual VM identity before starting a core;
+a host platform label alone cannot authorize local native execution. No remote
+VM is silently substituted and this channel performs no deployment or snapshot
+reset. Host-to-guest transport and MultiHost orchestration remain incomplete.
+
+Plans freeze platform-specific exact upstream IDs without importing client
+libraries or contacting the target. Native results retain all indexed original
+files, both execution logs, request and observed target. Independent `judge`
+reopens the original driver outputs, compares lifecycle/network observations
+and invokes original PCAP content verifiers; a status-only JSON is insufficient.
+A timeout never treats a killed outer process as proof of network restoration.
+Unresolved native cleanup prevents following native cases; independent offline
+cases can continue. `offline_fixture` candidates retain only fixture credit even
+when their tests exercise production adapter code. Native/full acceptance is
+still pending and cannot be inferred from these offline tests.
