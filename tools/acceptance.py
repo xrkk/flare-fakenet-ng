@@ -342,6 +342,25 @@ def judge_rows(rows, required):
             'missing': missing, 'duplicate': duplicate, 'nonpass': nonpass, 'failed': failed}
 
 
+def judge_rows_exact(rows, required):
+    """v2: planned and observed node sets must be identical.
+
+    Any extra node (for example an unplanned skipped testcase) invalidates the
+    case even when every planned node passed.  A real failure anywhere still
+    dominates, matching the v1 rule that a failure outside the required subset
+    is never hidden.
+    """
+    base = judge_rows(rows, required)
+    by_id = {}
+    for row in rows:
+        by_id.setdefault(row['id'], []).append(row)
+    extra = sorted(set(by_id) - set(required))
+    verdict = base['verdict']
+    if verdict != 'fail' and extra:
+        verdict = 'unknown'
+    return {**base, 'extra': extra, 'verdict': verdict}
+
+
 def judge_session(plan, results, root=ROOT):
     """Judge explicit source-bound receipts; never infer current credit from history."""
     catalog = read_catalog(root)
@@ -657,6 +676,185 @@ def case_sources(case):
     return [str(item) for item in sources]
 
 
+CASE_IDENTITY_FIELDS = (
+    'id', 'suite_id', 'title', 'platforms', 'modes', 'input', 'steps',
+    'expected', 'oracle', 'resources', 'readiness', 'timeout', 'cleanup',
+    'dependencies', 'adapter', 'collection_safe', 'required_for_full',
+    'stress', 'sources', 'blocked_reason',
+)
+
+
+def case_identity(case):
+    return {key: case.get(key) for key in CASE_IDENTITY_FIELDS}
+
+
+def expected_case_ids(catalog, mode):
+    cases = all_cases(catalog)
+    if mode == 'full':
+        return [case['id'] for case in cases
+                if case.get('required_for_full', True)
+                and not case.get('stress') and not case.get('excluded')]
+    if mode == 'stress':
+        return [case['id'] for case in cases
+                if case.get('stress') and not case.get('excluded')]
+    if mode == 'selected':
+        return None
+    raise InputError('unknown plan mode: %r' % mode)
+
+
+def environment_platforms(environment):
+    mapping = {
+        'host-linux': 'linux', 'linux-vm': 'linux', 'linux': 'linux',
+        'host-windows': 'windows', 'windows-vm': 'windows', 'windows': 'windows',
+        'any': 'any',
+    }
+    targets = environment.get('targets')
+    if not isinstance(targets, list) or not targets:
+        raise InputError('environment.targets is required')
+    platforms = set()
+    for target in targets:
+        if not isinstance(target, str) or target not in mapping:
+            raise InputError('unknown environment target: %r' % (target,))
+        platforms.add(mapping[target])
+    return platforms
+
+
+def case_applicable(case, platforms):
+    declared = set(case.get('platforms') or [])
+    return bool(declared & platforms) or 'any' in declared
+
+
+def expected_block(case, actions, platforms):
+    """Return the only admissible blocked reason, or None if runnable."""
+    if case['adapter'] != 'offline-pytest':
+        return case.get('blocked_reason') or 'adapter is not implemented'
+    if not case.get('collection_safe'):
+        return 'collection is not authorised for this case'
+    if 'collection' not in actions:
+        return 'environment does not allow collection'
+    if not case_applicable(case, platforms):
+        return 'platform not available in environment'
+    if 'offline-pytest' not in actions:
+        return 'environment does not allow offline-pytest execution'
+    return None
+
+
+def validate_plan_registry(root, plan, plan_path=None, require_execute_action=False):
+    """Recompute the plan's registry, source and block state from the catalog.
+
+    The plan is never trusted for its own mode, case set, adapter, oracle or
+    blocked map.  This is the single validation used by execute and judge.
+    """
+    root = Path(root)
+    catalog = read_catalog(root)
+    if plan.get('schema') != PLAN_V2:
+        raise InputError('expected plan v2, got %r' % plan.get('schema'))
+    if plan.get('catalog_sha256') != sha256(root / 'docs/acceptance/catalog.json'):
+        raise InputError('catalog changed since plan')
+    mode = plan.get('mode')
+    if mode not in ('full', 'selected', 'stress'):
+        raise InputError('unknown plan mode: %r' % mode)
+    registered = {case['id']: case for case in all_cases(catalog)}
+    required = plan.get('required_cases')
+    if (not isinstance(required, list) or not required
+            or any(not isinstance(item, str) or not item for item in required)):
+        raise InputError('plan.required_cases must be a nonempty string list')
+    if len(required) != len(set(required)):
+        raise InputError('plan.required_cases contains duplicates')
+    unknown = sorted(set(required) - set(registered))
+    if unknown:
+        raise InputError('plan contains unregistered cases: %r' % unknown)
+    expected = expected_case_ids(catalog, mode)
+    if mode == 'full' and set(required) != set(expected):
+        raise InputError('full plan does not cover the catalog full set: missing=%r extra=%r'
+                         % (sorted(set(expected) - set(required)),
+                            sorted(set(required) - set(expected))))
+    if mode == 'stress' and not set(required).issubset(set(expected)):
+        raise InputError('stress plan contains non-stress cases: %r'
+                         % sorted(set(required) - set(expected)))
+    if mode == 'selected':
+        if any(registered[item].get('stress') for item in required):
+            raise InputError('selected plan contains stress-only cases')
+        if any(registered[item].get('excluded') for item in required):
+            raise InputError('selected plan contains excluded cases')
+    environment = plan.get('environment')
+    if not isinstance(environment, dict):
+        raise InputError('plan.environment is required')
+    actions = environment.get('allowed_actions')
+    if not isinstance(actions, list) or not actions:
+        raise InputError('plan environment.allowed_actions is required')
+    platforms = environment_platforms(environment)
+    candidate = plan.get('candidate')
+    if not isinstance(candidate, dict) or candidate.get('source_commit') != plan.get('source_commit'):
+        raise InputError('plan candidate/source_commit mismatch')
+    if require_execute_action and 'offline-pytest' not in actions:
+        raise InputError('environment.allowed_actions does not permit offline-pytest execution')
+    cases = plan.get('cases')
+    if not isinstance(cases, dict) or set(cases) != set(required):
+        raise InputError('plan.cases does not match required_cases')
+    blocked = plan.get('blocked')
+    if not isinstance(blocked, dict) or not set(blocked).issubset(set(required)):
+        raise InputError('plan.blocked is invalid')
+    source_hashes = plan.get('source_hashes')
+    checks = plan.get('required_checks')
+    if not isinstance(source_hashes, dict) or set(source_hashes) != set(required):
+        raise InputError('plan.source_hashes does not match required_cases')
+    if not isinstance(checks, dict) or set(checks) != set(required):
+        raise InputError('plan.required_checks does not match required_cases')
+    for case_id in required:
+        reference = registered[case_id]
+        stored = cases[case_id]
+        if not isinstance(stored, dict):
+            raise InputError('planned case is not an object: %s' % case_id)
+        if case_identity(stored) != case_identity(reference):
+            raise InputError('planned case identity differs from catalog: %s' % case_id)
+        expected_reason = expected_block(reference, actions, platforms)
+        actual_reason = blocked.get(case_id)
+        if (expected_reason or None) != (actual_reason or None):
+            raise InputError('blocked state differs from registry: %s expected=%r actual=%r'
+                             % (case_id, expected_reason, actual_reason))
+        sources = case_sources(reference)
+        if set(source_hashes[case_id]) != set(sources):
+            raise InputError('source set differs from catalog: %s' % case_id)
+        for name, digest in source_hashes[case_id].items():
+            path = root / name
+            if not path.is_file() or sha256(path) != digest:
+                raise InputError('source changed since plan: %s' % name)
+        planned_checks = checks[case_id]
+        run_nodes = stored.get('run_nodes') or []
+        if not isinstance(planned_checks, list) or len(planned_checks) != len(set(planned_checks)):
+            raise InputError('planned checks are not unique: %s' % case_id)
+        if planned_checks:
+            if not run_nodes:
+                raise InputError('planned checks without run nodes: %s' % case_id)
+            if [junit_node(node) for node in run_nodes] != planned_checks:
+                raise InputError('planned checks differ from collected nodes: %s' % case_id)
+            collection_log = stored.get('collection_log')
+            collection_sha = stored.get('collection_sha256')
+            if not collection_log or not collection_sha:
+                raise InputError('collection evidence is missing: %s' % case_id)
+            log_path = Path(collection_log)
+            run_root = Path(plan.get('run_dir', '')).resolve()
+            if not log_path.is_absolute() or not log_path.is_file():
+                raise InputError('collection log is missing: %s' % case_id)
+            if not log_path.resolve().is_relative_to(run_root):
+                raise InputError('collection log escapes the run directory: %s' % case_id)
+            if sha256(log_path) != collection_sha:
+                raise InputError('collection log changed: %s' % case_id)
+            log_text = log_path.read_text(encoding='utf-8', errors='replace')
+            for node in run_nodes:
+                if node not in log_text:
+                    raise InputError('planned node is absent from collection log: %s' % case_id)
+        elif stored.get('run_nodes'):
+            raise InputError('run nodes without planned checks: %s' % case_id)
+        if expected_reason is None and not planned_checks:
+            raise InputError('runnable case has no planned checks: %s' % case_id)
+    if plan_path is not None:
+        if Path(plan.get('run_dir', '')).resolve() != Path(plan_path).parent.resolve():
+            raise InputError('plan run_dir does not match plan location')
+    return catalog, registered
+
+
 def case_required_checks(case):
     # Native cases are not adapted in S1.  Their exact runtime node IDs are
     # not known before the adapter exists, so the plan records an empty check
@@ -730,6 +928,8 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
     if not run_dir.resolve().is_relative_to(work_root.resolve()):
         raise InputError('run directory must be under environment.work_root')
     python = environment['interpreters']['python']
+    actions = environment['allowed_actions']
+    platforms = environment_platforms(environment)
     run_dir.mkdir(parents=True, exist_ok=True)
     tmp_dir = run_dir / 'tmp'
     case_records = {}
@@ -747,28 +947,25 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
         source_hashes[case['id']] = hashes
         record = dict(case)
         record['sources'] = sources
-        if case['adapter'] == 'offline-pytest':
-            if not case.get('collection_safe'):
-                blocked[case['id']] = 'collection is not authorised for this case'
-                record['required_checks'] = []
-                record['run_nodes'] = []
-            elif 'collection' not in environment['allowed_actions']:
-                blocked[case['id']] = 'environment does not allow collection'
-                record['required_checks'] = []
-                record['run_nodes'] = []
-            else:
-                canonical, raw_nodes, log_path = collect_nodes(
-                    root, case, python, tmp_dir, run_dir / 'collection')
-                required_checks[case['id']] = canonical
-                record['required_checks'] = canonical
-                record['run_nodes'] = raw_nodes
-                record['collection_log'] = log_path
+        reason = expected_block(case, actions, platforms)
+        collectable = (case['adapter'] == 'offline-pytest'
+                       and case.get('collection_safe')
+                       and 'collection' in actions
+                       and case_applicable(case, platforms))
+        if collectable:
+            canonical, raw_nodes, log_path = collect_nodes(
+                root, case, python, tmp_dir, run_dir / 'collection')
+            required_checks[case['id']] = canonical
+            record['required_checks'] = canonical
+            record['run_nodes'] = raw_nodes
+            record['collection_log'] = log_path
+            record['collection_sha256'] = sha256(log_path)
         else:
-            blocked[case['id']] = case.get('blocked_reason') or 'adapter is not implemented'
-            checks = case_required_checks(case)
-            required_checks[case['id']] = checks
-            record['required_checks'] = checks
+            required_checks[case['id']] = []
+            record['required_checks'] = []
             record['run_nodes'] = []
+        if reason:
+            blocked[case['id']] = reason
         case_records[case['id']] = record
     plan = {
         'schema': PLAN_V2,
@@ -787,6 +984,7 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
         'run_dir': str(run_dir.resolve()),
         'created_at': utc_now(),
     }
+    validate_plan_registry(root, plan, output)
     with output.open('x', encoding='utf-8') as stream:
         stream.write(json.dumps(plan, ensure_ascii=False, indent=2) + '\n')
     return plan
@@ -808,18 +1006,10 @@ def execute_plan(root, plan_path):
     root = Path(root)
     plan_path = Path(plan_path)
     plan = read_json(plan_path)
-    if plan.get('schema') != PLAN_V2:
-        raise InputError('execute requires plan v2')
+    # Validate registry, mode, sources, environment actions and block state
+    # before creating any output or starting any subprocess.
+    validate_plan_registry(root, plan, plan_path, require_execute_action=True)
     run_dir = plan_path.parent.resolve()
-    if Path(plan.get('run_dir', '')).resolve() != run_dir:
-        raise InputError('plan run_dir does not match plan location')
-    if plan.get('catalog_sha256') != sha256(root / 'docs/acceptance/catalog.json'):
-        raise InputError('catalog changed since plan')
-    for case_id, hashes in plan['source_hashes'].items():
-        for name, digest in hashes.items():
-            path = root / name
-            if not path.is_file() or sha256(path) != digest:
-                raise InputError('source changed since plan: %s' % name)
     results_dir = run_dir / 'results'
     if results_dir.exists():
         raise InputError('results directory already exists: %s' % results_dir)
@@ -838,6 +1028,8 @@ def execute_plan(root, plan_path):
             'suite_id': case['suite_id'],
             'case_id': case_id,
             'attempt': 1,
+            'adapter': case['adapter'],
+            'oracle_kind': case['oracle']['kind'],
             'candidate': plan['candidate'],
             'environment': plan['environment'],
             'config_sha256': _sha256_json(case),
@@ -853,8 +1045,8 @@ def execute_plan(root, plan_path):
                 'ended_at': utc_now(),
                 'duration_seconds': 0.0,
                 'artifacts': [],
-                'cleanup': {'source': 'adapter', 'complete': False,
-                            'actions': [], 'post_observation': 'case was not executed'},
+                'cleanup': {'source': 'adapter', 'resources': [],
+                            'process_exit': None, 'temp_roots': []},
             })
         elif case['adapter'] == 'offline-pytest':
             receipt.update(_run_offline_case(root, plan, case, case_dir, python, tmp_dir))
@@ -917,7 +1109,7 @@ def _run_offline_case(root, plan, case, case_dir, python, tmp_dir):
             detail = 'junit parse failed: %s' % error
             status = 'unknown'
         else:
-            evaluation = judge_rows(rows, checks)
+            evaluation = judge_rows_exact(rows, checks)
             status = evaluation['verdict']
             detail = json.dumps(evaluation, ensure_ascii=False)
     else:
@@ -925,13 +1117,9 @@ def _run_offline_case(root, plan, case, case_dir, python, tmp_dir):
     if timed_out:
         status = 'unknown'
         detail = 'timeout after %ss; %s' % (case['timeout'], detail)
-    elif returncode not in (0, None) and status == 'pass':
+    elif returncode != 0:
         status = 'fail'
         detail = 'pytest rc=%s; %s' % (returncode, detail)
-    actual = [row['id'] for row in rows]
-    if sorted(actual) != sorted(checks) and status in ('pass', 'fail'):
-        status = 'unknown'
-        detail = 'collection/result coverage mismatch: %s' % detail
     artifacts.append(_hash_record(stdout_path, 'log'))
     artifacts.append(_hash_record(stderr_path, 'log'))
     return {
@@ -945,27 +1133,46 @@ def _run_offline_case(root, plan, case, case_dir, python, tmp_dir):
         'artifacts': artifacts,
         'cleanup': {
             'source': 'adapter',
-            'required': False,
-            'actions': ['pytest temp files remain under the run directory'],
-            'post_observation': 'no external resource was owned by this case',
-            'complete': stdout_path.is_file() and stderr_path.is_file(),
+            'resources': [],
+            'process_exit': {'exited': True, 'returncode': returncode,
+                             'timed_out': timed_out},
+            'temp_roots': [str(case_dir.resolve())],
         },
     }
+
+
+def _cleanup_derived(receipt, run_dir):
+    cleanup = receipt.get('cleanup')
+    if not isinstance(cleanup, dict):
+        return False, 'cleanup record is missing'
+    if cleanup.get('source') != 'adapter':
+        return False, 'cleanup was not derived by the adapter'
+    if cleanup.get('resources') != []:
+        return False, 'offline adapter must not own external resources'
+    process_exit = cleanup.get('process_exit')
+    if not isinstance(process_exit, dict) or process_exit.get('exited') is not True:
+        return False, 'subprocess exit was not observed'
+    roots = cleanup.get('temp_roots')
+    if not isinstance(roots, list) or not roots:
+        return False, 'adapter temp roots are missing'
+    base = Path(run_dir).resolve()
+    for root in roots:
+        path = Path(root)
+        if not path.is_absolute() or not path.resolve().is_relative_to(base):
+            return False, 'adapter temp root escapes the run directory'
+    return True, ''
 
 
 def judge_v2(root, plan_path, results_dir, output=None):
     root = Path(root)
     plan_path = Path(plan_path)
     plan = read_json(plan_path)
-    if plan.get('schema') != PLAN_V2:
-        raise InputError('judge --results requires plan v2')
-    if plan.get('catalog_sha256') != sha256(root / 'docs/acceptance/catalog.json'):
-        raise InputError('catalog changed since plan')
-    for case_id, hashes in plan['source_hashes'].items():
-        for name, digest in hashes.items():
-            path = root / name
-            if not path.is_file() or sha256(path) != digest:
-                raise InputError('source changed since plan: %s' % name)
+    catalog, registered = validate_plan_registry(root, plan, plan_path,
+                                                 require_execute_action=False)
+    if plan.get('mode') == 'full':
+        expected = expected_case_ids(catalog, 'full')
+        if set(plan['required_cases']) != set(expected):
+            raise InputError('full plan is not the catalog full set')
     results_dir = Path(results_dir)
     index_path = results_dir / 'results.json'
     index = read_json(index_path)
@@ -975,66 +1182,129 @@ def judge_v2(root, plan_path, results_dir, output=None):
         raise InputError('results execution_id does not match plan')
     if index.get('plan_sha256') != sha256(plan_path):
         raise InputError('results were produced for a different plan')
+    entries = index.get('receipts')
+    if not isinstance(entries, list):
+        raise InputError('results index has no receipt list')
+    entry_ids = [entry.get('case_id') for entry in entries]
+    if len(entry_ids) != len(set(entry_ids)):
+        raise InputError('results index contains duplicate receipts')
+    if set(entry_ids) != set(plan['required_cases']):
+        raise InputError('results do not cover the planned case set exactly: missing=%r extra=%r'
+                         % (sorted(set(plan['required_cases']) - set(entry_ids)),
+                            sorted(set(entry_ids) - set(plan['required_cases']))))
     receipts = {}
-    for entry in index.get('receipts') or []:
+    for entry in entries:
         case_id = entry.get('case_id')
-        if case_id in receipts:
-            raise InputError('duplicate receipt for %s' % case_id)
         path = Path(entry.get('path', ''))
         if not path.is_absolute() or not path.is_file() or sha256(path) != entry.get('sha256'):
             raise InputError('receipt changed or missing: %s' % case_id)
-        receipts[case_id] = read_json(path)
+        receipt = read_json(path)
+        if receipt.get('case_id') != case_id:
+            raise InputError('receipt case_id differs from index: %s' % case_id)
+        receipts[case_id] = receipt
     outcomes = []
     timings = []
+    cleanup_results = []
     for case_id in plan['required_cases']:
+        reference = registered[case_id]
         case = plan['cases'][case_id]
-        receipt = receipts.get(case_id)
-        if receipt is None:
-            outcomes.append({'case_id': case_id, 'suite_id': case['suite_id'],
-                             'status': 'unknown', 'reason': 'receipt missing'})
-            continue
-        if receipt.get('candidate') != plan['candidate']:
-            raise InputError('candidate mismatch: %s' % case_id)
+        receipt = receipts[case_id]
+        if receipt.get('schema') != RECEIPT_V2:
+            raise InputError('unknown receipt schema: %s' % case_id)
         if receipt.get('execution_id') != plan['execution_id']:
             raise InputError('execution mismatch: %s' % case_id)
+        if receipt.get('suite_id') != reference['suite_id']:
+            raise InputError('receipt suite mismatch: %s' % case_id)
+        if receipt.get('case_id') != case_id:
+            raise InputError('receipt case mismatch: %s' % case_id)
+        if receipt.get('adapter') != reference['adapter']:
+            raise InputError('receipt adapter mismatch: %s' % case_id)
+        if receipt.get('oracle_kind') != reference['oracle']['kind']:
+            raise InputError('receipt oracle kind mismatch: %s' % case_id)
+        if receipt.get('candidate') != plan['candidate']:
+            raise InputError('candidate mismatch: %s' % case_id)
+        if receipt.get('environment') != plan['environment']:
+            raise InputError('receipt environment mismatch: %s' % case_id)
         if receipt.get('config_sha256') != _sha256_json(case):
             raise InputError('case config changed: %s' % case_id)
-        if receipt.get('status') == 'blocked':
-            outcomes.append({'case_id': case_id, 'suite_id': case['suite_id'],
+        expected_level = 'offline' if reference['adapter'] == 'offline-pytest' else 'native'
+        if receipt.get('evidence_level') != expected_level:
+            raise InputError('evidence level mismatch: %s' % case_id)
+        receipt_status = receipt.get('status')
+        if receipt_status not in CASE_STATUSES:
+            raise InputError('invalid receipt status: %s' % case_id)
+        if reference['adapter'] != 'offline-pytest':
+            if receipt_status != 'blocked':
+                raise InputError('native case cannot receive offline credit: %s' % case_id)
+            outcomes.append({'case_id': case_id, 'suite_id': reference['suite_id'],
                              'status': 'blocked',
-                             'reason': receipt.get('reason') or 'blocked'})
+                             'reason': receipt.get('reason') or 'adapter is not implemented'})
             continue
+        if receipt_status == 'blocked':
+            if case_id not in plan.get('blocked', {}):
+                raise InputError('blocked receipt for an unblocked case: %s' % case_id)
+            outcomes.append({'case_id': case_id, 'suite_id': reference['suite_id'],
+                             'status': 'blocked',
+                             'reason': receipt.get('reason') or plan['blocked'][case_id]})
+            continue
+        if case_id in plan.get('blocked', {}):
+            raise InputError('blocked plan case has an execution receipt: %s' % case_id)
+        oracle_kind = reference['oracle']['kind']
+        if oracle_kind not in ('junit', 'tsv'):
+            raise InputError('offline adapter cannot claim oracle %r: %s' % (oracle_kind, case_id))
+        expected_format = oracle_kind
         parsed = []
         artifact_paths = []
+        oracle_artifacts = 0
         for artifact in receipt.get('artifacts') or []:
             path = Path(artifact.get('path', ''))
             if not path.is_absolute() or not path.is_file() or sha256(path) != artifact.get('sha256'):
                 raise InputError('artifact changed or missing: %s' % case_id)
             artifact_paths.append(str(path))
-            try:
-                if artifact.get('format') == 'junit':
-                    parsed.extend(parse_junit(path))
-                elif artifact.get('format') == 'tsv':
-                    parsed.extend(parse_tsv(path))
-            except (ET.ParseError, ValueError, UnicodeError) as error:
-                raise ToolError('cannot parse original artifact for %s: %s' % (case_id, error))
+            fmt = artifact.get('format')
+            if fmt not in (expected_format, 'log'):
+                raise InputError('unexpected artifact format %r for %s' % (fmt, case_id))
+            if fmt == expected_format:
+                oracle_artifacts += 1
+                try:
+                    if fmt == 'junit':
+                        parsed.extend(parse_junit(path))
+                    else:
+                        parsed.extend(parse_tsv(path))
+                except (ET.ParseError, ValueError, UnicodeError) as error:
+                    raise ToolError('cannot parse original artifact for %s: %s' % (case_id, error))
+        if oracle_artifacts != 1:
+            raise InputError('expected exactly one %s artifact: %s' % (expected_format, case_id))
         checks = plan['required_checks'].get(case_id) or []
         if not checks:
-            outcomes.append({'case_id': case_id, 'suite_id': case['suite_id'],
-                             'status': 'unknown', 'reason': 'planned checks are empty'})
-            continue
-        evaluation = judge_rows(parsed, checks)
-        status = evaluation['verdict']
-        reason = ''
-        if receipt.get('returncode') != 0 and status == 'pass':
+            raise InputError('planned checks are empty for an executed case: %s' % case_id)
+        evaluation = judge_rows_exact(parsed, checks)
+        eval_status = evaluation['verdict']
+        if eval_status == 'fail' or receipt_status == 'fail':
             status = 'fail'
-            reason = 'process returncode %r' % receipt.get('returncode')
+        elif eval_status != 'pass' or receipt_status != 'pass':
+            status = 'unknown'
+        else:
+            status = 'pass'
+        reason = ''
+        returncode = receipt.get('returncode')
+        if not isinstance(returncode, int):
+            status = 'fail' if status == 'fail' else 'unknown'
+            reason = 'process exit was not observed'
+        elif returncode != 0:
+            status = 'fail'
+            reason = 'process returncode %r' % returncode
         cleanup = receipt.get('cleanup') or {}
-        if cleanup.get('source') != 'adapter' or cleanup.get('complete') is not True:
-            if status == 'pass':
-                status = 'unknown'
-                reason = 'cleanup was not derived by the adapter'
-        outcomes.append({'case_id': case_id, 'suite_id': case['suite_id'],
+        process_exit = cleanup.get('process_exit') or {}
+        if process_exit.get('timed_out') is True:
+            status = 'fail' if status == 'fail' else 'unknown'
+            reason = 'case timed out'
+        cleanup_ok, cleanup_reason = _cleanup_derived(receipt, plan['run_dir'])
+        cleanup_results.append(cleanup_ok)
+        if not cleanup_ok and status == 'pass':
+            status = 'unknown'
+            reason = cleanup_reason
+        outcomes.append({'case_id': case_id, 'suite_id': reference['suite_id'],
                          'status': status, 'reason': reason,
                          'evaluation': evaluation,
                          'artifacts': artifact_paths})
@@ -1050,14 +1320,11 @@ def judge_v2(root, plan_path, results_dir, output=None):
         verdict = 'unknown'
     else:
         verdict = 'pass'
-    coverage = 'full' if plan.get('mode') == 'full' else 'selected'
+    coverage = ('full' if plan.get('mode') == 'full'
+                else 'stress' if plan.get('mode') == 'stress' else 'selected')
     full_functional_pass = (plan.get('mode') == 'full' and verdict == 'pass'
                             and not unverified)
-    cleanup_rows = [(receipts.get(row['case_id'], {}).get('cleanup') or {})
-                    for row in outcomes if row['status'] != 'blocked']
-    cleanup_complete = bool(cleanup_rows) and all(
-        row.get('complete') is True and row.get('source') == 'adapter'
-        for row in cleanup_rows)
+    cleanup_complete = bool(cleanup_results) and all(cleanup_results)
     blocked_count = sum(1 for row in outcomes if row['status'] == 'blocked')
     summary = {
         'schema': SUMMARY_V2,
@@ -1068,7 +1335,7 @@ def judge_v2(root, plan_path, results_dir, output=None):
         'checks': {'required': len(plan['required_cases']), 'passed': len(passed),
                    'failed': len(failed), 'unverified': len(unverified)},
         'cases': outcomes,
-        'cleanup': {'complete': cleanup_complete, 'evaluated': len(cleanup_rows),
+        'cleanup': {'complete': cleanup_complete, 'evaluated': len(cleanup_results),
                     'blocked': blocked_count},
         'verdict': verdict,
         'full_functional_pass': full_functional_pass,

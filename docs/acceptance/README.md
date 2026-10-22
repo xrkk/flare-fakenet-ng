@@ -2,7 +2,7 @@
 
 本目录集中现有 Windows/Linux 核心、策略、GUI、PCAP、载荷报告、MCP、发布和辅助验收. 目标是修改产品或接口后, 能明确选择并执行同一份回归清单, 对照原始结果判断是否破坏已有功能.
 
-当前状态: **盘点 + S1 离线闭环**. `catalog.json` 已升级为 v2, `tools/acceptance.py` 已具备候选/环境绑定的 `plan --mode`、`execute` 和严格 `judge --results`; 原 `test.py` 的退出、Host 名单夹具和 SMTP SSL 测试已修, 并有离线合同自测. S2 原生适配、S3 资源调度、S4 完整验收尚未完成. 当前没有任何新的原生实机通过, 不能把本目录或 S1 自测当作完整设施验收.
+当前状态: **盘点 + S1/R02 离线闭环**. `catalog.json` 已升级为 v2, `tools/acceptance.py` 已具备候选/环境绑定的 `plan --mode`、`execute` 和严格 `judge --results`; R02 增加了注册表/模式/源/环境动作校验、JUnit 精确节点集合判定、receipt 身份与 oracle 类型校验、adapter 派生 cleanup, 并接通 12 个安全离线 case. 原 `test.py` 的退出、Host 名单夹具、SMTP SSL 拒收/错误、stop 失败和 MultiHost 就绪也已修, 并有离线合同自测. S2 原生适配、S3 资源调度、S4 完整验收尚未完成. 当前没有任何新的原生实机通过, 不能把本目录或 S1 自测当作完整设施验收.
 
 排除范围保持用户裁决: GUI 窗口/点击/UAC/三轮停止、旧 100 场景、150 轮发布和新出口验证接口不进入 full; 它们的共享核心已按断言/调用用途抽取为独立 case, 没有因目录名删除.
 
@@ -32,8 +32,8 @@ python tools/acceptance.py judge --plan Logs/acceptance/<run>/plan.json --result
 - `plan --mode selected --suite <id>` 或 `--case <id>`: 明确子集. 成功也只会得到 `coverage=selected`, 不会 `full_functional_pass=true`.
 - `plan --mode stress`: 只选 `stress=true` 的性能/大负载 case. 不把 stress 计数抄回 full.
 - 不带 `--mode` 的 `plan --output`: 仍是旧 v1 计划, 只读兼容.
-- `execute`: 按计划中的精确 collection 节点执行注册适配器, 自动收集 stdout/stderr、返回码、JUnit、耗时和 adapter 派生 cleanup; 正常结束时自动调用同一 judge.
-- `judge --results`: 从本轮 results 索引读取收据, 重验原件 SHA, 重算终态. 不遍历历史结果猜选.
+- `execute`: 在任何子进程前重新校验 plan 注册表、mode、case 集合、adapter/oracle、源 hash、environment 动作和 blocked 状态; 通过后按精确 collection 节点执行注册适配器, 自动收集 stdout/stderr、返回码、JUnit、耗时和 adapter 派生 cleanup; 正常结束时自动调用同一 judge. `allowed_actions` 没有 `offline-pytest` 时在执行前拒绝, 只有 `collection` 时 plan 可完成合法收集但 case 记 blocked.
+- `judge --results`: 从本轮 results 索引读取收据, 重验原件 SHA, 重算终态. 不信任 plan 自报 mode/局部集合: full 必须等于 catalog 完整必需集合; index/receipt 必须与计划 case/suite/adapter/oracle/environment/config 一一对应; JUnit 的额外节点、缺失、重复、skip、OBSERVED、unknown/timeout 及非零返回码都不能升级为 pass. 不遍历历史结果猜选.
 - `run --suite`: 保留旧语义, 只转交一个已注册原生入口, 不自动批量运行.
 
 ### candidate.json
@@ -103,9 +103,9 @@ Logs/acceptance/<run>/
 ## S1 已实现
 
 1. catalog v2: 25 旧 suite 全部有 disposition, 64 case 覆盖核心/MCP/上游协议/域名与 IP/进程改址/双 PCAP/载荷/MCP/构建/Linux/手工/组合; GUI/100/150/新出口显式排除, 共享核心保留.
-2. 离线闭环: 真实 CLI 在 `test/test_tlshello.py`、`test/test_dual_pcap_writer.py` 和三个自测模块上完成 collection → execute → 自动收证 → 严格重判; 2026-10-22 本轮证据中 selected 5/5 pass, 但 `full_functional_pass=false`.
-3. 严格判定负例: 错候选、错 execution_id、配置漂移、源漂移、缺项、重复、skip、OBSERVED、假 cleanup、rc0 失败、输出碰撞、未知 schema/命令/case/suite 全部在对应入口被拒, 原失败保留.
-4. 原 `test.py`: 失败汇总进入非零退出和结构化 TSV; 首次失败后重试成功记为 FLAKY, 不抹首次失败; MultiHost 支持 `--non-interactive`; Host 名单夹具改为真正命中 listener 级黑/白名单; SMTP SSL 修构造 API、实际 `sendmail` 调用、成功返回和错误传播.
+2. 离线闭环: 真实 CLI 在 12 个安全离线 case 上完成 collection → execute → 自动收证 → 严格重判 (tlshello、dual-pcap writer、三个设施自测、diverter、listeners、DNS、PCAP、Linux 规则、payload report/integrity). 2026-10-22 R02 证据中 selected 12/12 pass, full 12 pass + 49 blocked, `full_functional_pass=false`.
+3. 严格判定负例: MAIN-001 把 selected 改名 full、MAIN-002 额外 skip/unknown、MAIN-003 错 case/environment、MAIN-004 collection-only 执行, 以及错候选、错 execution_id、配置/源漂移、缺项、重复、skip、OBSERVED、非法 adapter/node、假 cleanup、rc0 失败、输出碰撞、未知 schema/命令/case/suite 全部在对应入口被拒, 原失败保留.
+4. 原 `test.py`: 失败汇总进入非零退出和结构化 TSV; 首次失败后重试成功记为 FLAKY, 不抹首次失败; stop 失败/异常进入失败结论; MultiHost 的 `--non-interactive` 必须配合显式 `--multihost-ready`, 缺就绪停止该 suite; Host 名单夹具改为真正命中 listener 级黑/白名单; SMTP/SMTP SSL 用当前 API 实际发送, 全/部分拒收和异常不返回成功.
 5. 文档: 本 README、派生 `清单.md` 和 `docs/testing.md` 导航.
 
 ## 尚未完成 (S2..S4)

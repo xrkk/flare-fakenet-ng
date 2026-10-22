@@ -57,7 +57,8 @@ def suite_record(suite_id, title, module):
     }
 
 
-def case_record(case_id, suite_id, module, adapter='offline-pytest', safe=True):
+def case_record(case_id, suite_id, module, adapter='offline-pytest', safe=True,
+                stress=False, required_for_full=True):
     value = {
         'id': case_id,
         'suite_id': suite_id,
@@ -75,8 +76,8 @@ def case_record(case_id, suite_id, module, adapter='offline-pytest', safe=True):
         'dependencies': [],
         'adapter': adapter,
         'collection_safe': safe,
-        'required_for_full': True,
-        'stress': False,
+        'required_for_full': required_for_full,
+        'stress': stress,
         'sources': [module],
     }
     if adapter != 'offline-pytest':
@@ -99,7 +100,9 @@ def make_root(temp, failing=False):
         'suites': [
             dict(suite_record('FIX-OFFLINE', 'fixture offline', module),
                  disposition='keep',
-                 cases=[case_record('FIX-PASS', 'FIX-OFFLINE', module)]),
+                 cases=[case_record('FIX-PASS', 'FIX-OFFLINE', module),
+                        case_record('FIX-STRESS', 'FIX-OFFLINE', module,
+                                    stress=True, required_for_full=False)]),
             dict(suite_record('FIX-NATIVE', 'fixture native', module),
                  disposition='keep',
                  cases=[case_record('FIX-BLOCKED', 'FIX-NATIVE', module,
@@ -231,7 +234,7 @@ class AcceptanceLoopTests(unittest.TestCase):
         self.assertEqual(0, code, stderr)
         payload = json.loads(stdout)
         self.assertEqual('fakenet.acceptance-catalog.v2', payload['schema'])
-        self.assertEqual(2, payload['counts']['cases'])
+        self.assertEqual(3, payload['counts']['cases'])
 
     def test_plan_full_records_blocked_native_and_exact_checks(self):
         code, path, stdout, stderr = plan(self.root, 'full')
@@ -256,7 +259,9 @@ class AcceptanceLoopTests(unittest.TestCase):
         receipt = read_json(path.parent / 'results' / 'FIX-PASS' / 'receipt.json')
         self.assertEqual(0, receipt['returncode'])
         self.assertEqual('adapter', receipt['cleanup']['source'])
-        self.assertTrue(receipt['cleanup']['complete'])
+        self.assertEqual([], receipt['cleanup']['resources'])
+        self.assertTrue(receipt['cleanup']['process_exit']['exited'])
+        self.assertTrue(receipt['cleanup']['temp_roots'])
         self.assertTrue(any(item['format'] == 'junit' for item in receipt['artifacts']))
 
     def test_full_execute_reports_blocked_and_is_not_full_pass(self):
@@ -418,6 +423,132 @@ class AcceptanceLoopTests(unittest.TestCase):
         empty.mkdir()
         code, stdout, stderr = judge(self.root, path, empty)
         self.assertEqual(2, code)
+
+    def test_full_plan_excludes_stress_and_stress_plan_selects_it(self):
+        code, path, stdout, stderr = plan(self.root, 'full')
+        self.assertEqual(0, code, stderr)
+        self.assertNotIn('FIX-STRESS', read_json(path)['required_cases'])
+        code, path, stdout, stderr = plan(self.root, 'stress')
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(['FIX-STRESS'], read_json(path)['required_cases'])
+
+    def test_relabelled_full_subset_is_rejected(self):
+        path, results = self._executed_results()
+        target = self.root / 'Logs' / 'relabel-full'
+        target.mkdir()
+        plan_copy = target / 'plan.json'
+        value = read_json(path)
+        value['mode'] = 'full'
+        value['run_dir'] = str(target)
+        write_json(plan_copy, value)
+        mutated = copy_results(results)
+        index = read_json(index_path(mutated))
+        index['plan'] = str(plan_copy)
+        index['plan_sha256'] = ACC.sha256(plan_copy)
+        write_json(index_path(mutated), index)
+        code, stdout, stderr = judge(self.root, plan_copy, mutated)
+        self.assertEqual(2, code)
+        self.assertIn('full plan does not cover', stderr)
+        self.assertFalse((target / 'summary.json').exists())
+
+    def test_extra_skipped_node_with_unknown_receipt_is_not_pass(self):
+        path, results = self._executed_results()
+        checks = read_json(path)['required_checks']['FIX-PASS']
+        cases = []
+        for check in checks:
+            classname, name = check.split('::')
+            cases.append((classname, name, 'pass'))
+        cases.append(('unexpected.Class', 'test_skipped', 'skip'))
+        mutated = copy_results(results)
+        rewrite_junit(mutated, 'FIX-PASS', junit(cases))
+        receipt_file = receipt_path(mutated, 'FIX-PASS')
+        receipt = read_json(receipt_file)
+        receipt['status'] = 'unknown'
+        receipt['detail'] = 'collection/result coverage mismatch'
+        write_json(receipt_file, receipt)
+        update_index(mutated)
+        code, stdout, stderr = judge(self.root, path, mutated)
+        self.assertEqual(2, code)
+        output = self.root / 'Logs' / 'extra-skip-summary.json'
+        code, stdout, stderr = judge(self.root, path, mutated, output)
+        self.assertEqual('unknown', read_json(output)['verdict'])
+
+    def test_receipt_case_mismatch_is_refused(self):
+        path, results = self._executed_results()
+        mutated = copy_results(results)
+        receipt_file = receipt_path(mutated, 'FIX-PASS')
+        receipt = read_json(receipt_file)
+        receipt['case_id'] = 'WRONG-CASE'
+        write_json(receipt_file, receipt)
+        update_index(mutated)
+        code, stdout, stderr = judge(self.root, path, mutated)
+        self.assertEqual(2, code)
+        self.assertIn('case_id', stderr)
+
+    def test_receipt_environment_mismatch_is_refused(self):
+        path, results = self._executed_results()
+        mutated = copy_results(results)
+        receipt_file = receipt_path(mutated, 'FIX-PASS')
+        receipt = read_json(receipt_file)
+        receipt['environment'] = {'wrong': 'environment'}
+        write_json(receipt_file, receipt)
+        update_index(mutated)
+        code, stdout, stderr = judge(self.root, path, mutated)
+        self.assertEqual(2, code)
+        self.assertIn('environment mismatch', stderr)
+
+    def test_collection_only_environment_does_not_execute(self):
+        environment = read_json(self.root / 'environment.json')
+        environment['allowed_actions'] = ['collection']
+        write_json(self.root / 'environment.json', environment)
+        code, path, stdout, stderr = plan(self.root, 'selected', '--case', 'FIX-PASS')
+        self.assertEqual(0, code, stderr)
+        value = read_json(path)
+        self.assertIn('FIX-PASS', value['blocked'])
+        self.assertIn('offline-pytest', value['blocked']['FIX-PASS'])
+        self.assertTrue((path.parent / 'collection' / 'FIX-PASS-collection.log').is_file())
+        code, stdout, stderr = execute(self.root, path)
+        self.assertEqual(2, code)
+        self.assertIn('offline-pytest', stderr)
+        self.assertFalse((path.parent / 'results').exists())
+
+    def test_unknown_and_timeout_receipts_cannot_pass(self):
+        path, results = self._executed_results()
+        mutated = copy_results(results)
+        receipt_file = receipt_path(mutated, 'FIX-PASS')
+        receipt = read_json(receipt_file)
+        receipt['status'] = 'unknown'
+        write_json(receipt_file, receipt)
+        update_index(mutated)
+        code, stdout, stderr = judge(self.root, path, mutated)
+        self.assertEqual(2, code)
+        output = self.root / 'Logs' / 'unknown-summary.json'
+        code, stdout, stderr = judge(self.root, path, mutated, output)
+        self.assertEqual('unknown', read_json(output)['verdict'])
+        timed = copy_results(results)
+        receipt_file = receipt_path(timed, 'FIX-PASS')
+        receipt = read_json(receipt_file)
+        receipt['cleanup']['process_exit']['timed_out'] = True
+        write_json(receipt_file, receipt)
+        update_index(timed)
+        code, stdout, stderr = judge(self.root, path, timed)
+        self.assertEqual(2, code)
+
+    def test_receipt_oracle_format_cannot_be_swapped(self):
+        path, results = self._executed_results()
+        mutated = copy_results(results)
+        tsv = mutated / 'FIX-PASS' / 'results.tsv'
+        tsv.write_text('PASS\ttest.test_fixture_module.FixtureTests::test_alpha\tok\n',
+                       encoding='utf-8')
+        receipt_file = receipt_path(mutated, 'FIX-PASS')
+        receipt = read_json(receipt_file)
+        receipt['artifacts'] = [{'path': str(tsv.resolve()),
+                                 'sha256': ACC.sha256(tsv), 'format': 'tsv'}]
+        write_json(receipt_file, receipt)
+        update_index(mutated)
+        code, stdout, stderr = judge(self.root, path, mutated)
+        self.assertEqual(2, code)
+        self.assertIn('artifact format', stderr)
 
 
 if __name__ == '__main__':

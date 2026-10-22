@@ -22,7 +22,7 @@
       "oracle_status": "existing",
       "disposition": "keep",
       "disposition_basis": "保留非GUI核心及直接必要设施自测; GUI模块按用户范围排除.",
-      "s1_note": "S1 保留非GUI模块; GUI模型/窗口/校验模块按用户范围排除, 不进入full.",
+      "s1_note": "S1/R02 保留非GUI模块; R02 已接入10组经静态核与真实执行的安全离线模块; GUI模型/窗口/校验模块排除.",
       "cases": [
         {
           "id": "CORE-TLSHELLO",
@@ -44,7 +44,7 @@
           ],
           "expected": {
             "positive": "all collected nodes have exactly one passing result",
-            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+            "negative": "failure/error/skip/missing/duplicate/extra/collection mismatch is not pass"
           },
           "oracle": {
             "kind": "junit"
@@ -54,9 +54,10 @@
           ],
           "readiness": [
             "interpreter exists",
-            "run directory is writable"
+            "run directory is writable",
+            "static import/direct-dependency review completed"
           ],
-          "timeout": 300,
+          "timeout": 600,
           "cleanup": "only pytest temp files inside this run directory; no external resource owned",
           "dependencies": [],
           "adapter": "offline-pytest",
@@ -88,7 +89,7 @@
           ],
           "expected": {
             "positive": "all collected nodes have exactly one passing result",
-            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+            "negative": "failure/error/skip/missing/duplicate/extra/collection mismatch is not pass"
           },
           "oracle": {
             "kind": "junit"
@@ -98,9 +99,10 @@
           ],
           "readiness": [
             "interpreter exists",
-            "run directory is writable"
+            "run directory is writable",
+            "static import/direct-dependency review completed"
           ],
-          "timeout": 300,
+          "timeout": 600,
           "cleanup": "only pytest temp files inside this run directory; no external resource owned",
           "dependencies": [],
           "adapter": "offline-pytest",
@@ -132,7 +134,7 @@
           ],
           "expected": {
             "positive": "all collected nodes have exactly one passing result",
-            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+            "negative": "failure/error/skip/missing/duplicate/extra/collection mismatch is not pass"
           },
           "oracle": {
             "kind": "junit"
@@ -142,9 +144,10 @@
           ],
           "readiness": [
             "interpreter exists",
-            "run directory is writable"
+            "run directory is writable",
+            "static import/direct-dependency review completed"
           ],
-          "timeout": 300,
+          "timeout": 600,
           "cleanup": "only pytest temp files inside this run directory; no external resource owned",
           "dependencies": [],
           "adapter": "offline-pytest",
@@ -177,7 +180,7 @@
           ],
           "expected": {
             "positive": "all collected nodes have exactly one passing result",
-            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+            "negative": "failure/error/skip/missing/duplicate/extra/collection mismatch is not pass"
           },
           "oracle": {
             "kind": "junit"
@@ -187,9 +190,10 @@
           ],
           "readiness": [
             "interpreter exists",
-            "run directory is writable"
+            "run directory is writable",
+            "static import/direct-dependency review completed"
           ],
-          "timeout": 300,
+          "timeout": 600,
           "cleanup": "only pytest temp files inside this run directory; no external resource owned",
           "dependencies": [],
           "adapter": "offline-pytest",
@@ -221,7 +225,7 @@
           ],
           "expected": {
             "positive": "all collected nodes have exactly one passing result",
-            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+            "negative": "failure/error/skip/missing/duplicate/extra/collection mismatch is not pass"
           },
           "oracle": {
             "kind": "junit"
@@ -231,9 +235,10 @@
           ],
           "readiness": [
             "interpreter exists",
-            "run directory is writable"
+            "run directory is writable",
+            "static import/direct-dependency review completed"
           ],
-          "timeout": 300,
+          "timeout": 600,
           "cleanup": "only pytest temp files inside this run directory; no external resource owned",
           "dependencies": [],
           "adapter": "offline-pytest",
@@ -249,7 +254,7 @@
         {
           "id": "CORE-DIVERTER-OFFLINE",
           "suite_id": "CORE-UNIT",
-          "title": "策略/裁决/进程改址离线单元",
+          "title": "策略/裁决离线单元",
           "platforms": [
             "any"
           ],
@@ -257,16 +262,19 @@
             "offline"
           ],
           "input": {
-            "module": "test/test_egresspolicy.py"
+            "modules": [
+              "test/test_egresspolicy.py",
+              "test/test_sink_divert_contract.py"
+            ]
           },
           "steps": [
-            "pytest --collect-only -q test/test_egresspolicy.py",
+            "pytest --collect-only -q test/test_egresspolicy.py test/test_sink_divert_contract.py",
             "run the exact collected node IDs with pytest --junitxml",
             "judge JUnit against the planned node IDs"
           ],
           "expected": {
             "positive": "all collected nodes have exactly one passing result",
-            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+            "negative": "failure/error/skip/missing/duplicate/extra/collection mismatch is not pass"
           },
           "oracle": {
             "kind": "junit"
@@ -276,17 +284,20 @@
           ],
           "readiness": [
             "interpreter exists",
-            "run directory is writable"
+            "run directory is writable",
+            "static import/direct-dependency review completed"
           ],
-          "timeout": 300,
+          "timeout": 600,
           "cleanup": "only pytest temp files inside this run directory; no external resource owned",
           "dependencies": [],
           "adapter": "offline-pytest",
-          "collection_safe": false,
+          "collection_safe": true,
           "required_for_full": true,
           "stress": false,
           "sources": [
-            "test/test_egresspolicy.py"
+            "test/test_egresspolicy.py",
+            "test/test_sink_divert_contract.py",
+            "fakenet/diverters/egresspolicy.py"
           ]
         },
         {
@@ -309,7 +320,7 @@
           ],
           "expected": {
             "positive": "all collected nodes have exactly one passing result",
-            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+            "negative": "failure/error/skip/missing/duplicate/extra/collection mismatch is not pass"
           },
           "oracle": {
             "kind": "junit"
@@ -319,17 +330,20 @@
           ],
           "readiness": [
             "interpreter exists",
-            "run directory is writable"
+            "run directory is writable",
+            "static import/direct-dependency review completed"
           ],
-          "timeout": 300,
+          "timeout": 600,
           "cleanup": "only pytest temp files inside this run directory; no external resource owned",
           "dependencies": [],
           "adapter": "offline-pytest",
-          "collection_safe": false,
+          "collection_safe": true,
           "required_for_full": true,
           "stress": false,
           "sources": [
-            "test/test_listener_health.py"
+            "test/test_listener_health.py",
+            "fakenet/mcp/managed.py",
+            "fakenet/listeners/ListenerBase.py"
           ]
         },
         {
@@ -343,16 +357,19 @@
             "offline"
           ],
           "input": {
-            "module": "test/test_dns_policy.py"
+            "modules": [
+              "test/test_dns_policy.py",
+              "test/test_domain_egress_relay.py"
+            ]
           },
           "steps": [
-            "pytest --collect-only -q test/test_dns_policy.py",
+            "pytest --collect-only -q test/test_dns_policy.py test/test_domain_egress_relay.py",
             "run the exact collected node IDs with pytest --junitxml",
             "judge JUnit against the planned node IDs"
           ],
           "expected": {
             "positive": "all collected nodes have exactly one passing result",
-            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+            "negative": "failure/error/skip/missing/duplicate/extra/collection mismatch is not pass"
           },
           "oracle": {
             "kind": "junit"
@@ -362,23 +379,27 @@
           ],
           "readiness": [
             "interpreter exists",
-            "run directory is writable"
+            "run directory is writable",
+            "static import/direct-dependency review completed"
           ],
-          "timeout": 300,
+          "timeout": 600,
           "cleanup": "only pytest temp files inside this run directory; no external resource owned",
           "dependencies": [],
           "adapter": "offline-pytest",
-          "collection_safe": false,
+          "collection_safe": true,
           "required_for_full": true,
           "stress": false,
           "sources": [
-            "test/test_dns_policy.py"
+            "test/test_dns_policy.py",
+            "test/test_domain_egress_relay.py",
+            "fakenet/listeners/DNSListener.py",
+            "fakenet/listeners/DomainEgressRelay.py"
           ]
         },
         {
           "id": "CORE-PCAP-OFFLINE",
           "suite_id": "CORE-UNIT",
-          "title": "PCAP 配置/验证器/捕获离线单元",
+          "title": "PCAP 配置/验证器离线单元",
           "platforms": [
             "any"
           ],
@@ -386,16 +407,19 @@
             "offline"
           ],
           "input": {
-            "module": "test/test_dual_pcap_configuration.py"
+            "modules": [
+              "test/test_dual_pcap_configuration.py",
+              "test/test_dual_pcap_vm_verifier.py"
+            ]
           },
           "steps": [
-            "pytest --collect-only -q test/test_dual_pcap_configuration.py",
+            "pytest --collect-only -q test/test_dual_pcap_configuration.py test/test_dual_pcap_vm_verifier.py",
             "run the exact collected node IDs with pytest --junitxml",
             "judge JUnit against the planned node IDs"
           ],
           "expected": {
             "positive": "all collected nodes have exactly one passing result",
-            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+            "negative": "failure/error/skip/missing/duplicate/extra/collection mismatch is not pass"
           },
           "oracle": {
             "kind": "junit"
@@ -405,17 +429,20 @@
           ],
           "readiness": [
             "interpreter exists",
-            "run directory is writable"
+            "run directory is writable",
+            "static import/direct-dependency review completed"
           ],
-          "timeout": 300,
+          "timeout": 600,
           "cleanup": "only pytest temp files inside this run directory; no external resource owned",
           "dependencies": [],
           "adapter": "offline-pytest",
-          "collection_safe": false,
+          "collection_safe": true,
           "required_for_full": true,
           "stress": false,
           "sources": [
-            "test/test_dual_pcap_configuration.py"
+            "test/test_dual_pcap_configuration.py",
+            "test/test_dual_pcap_vm_verifier.py",
+            "fakenet/diverters/pcapwriter.py"
           ]
         },
         {
@@ -429,16 +456,20 @@
             "offline"
           ],
           "input": {
-            "module": "test/test_windows_process_owner.py"
+            "modules": [
+              "test/test_windows_process_redirect.py",
+              "test/test_windows_process_owner.py",
+              "test/test_windows_egress_verdict.py"
+            ]
           },
           "steps": [
-            "pytest --collect-only -q test/test_windows_process_owner.py",
+            "pytest --collect-only -q test/test_windows_process_redirect.py test/test_windows_process_owner.py test/test_windows_egress_verdict.py",
             "run the exact collected node IDs with pytest --junitxml",
             "judge JUnit against the planned node IDs"
           ],
           "expected": {
             "positive": "all collected nodes have exactly one passing result",
-            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+            "negative": "failure/error/skip/missing/duplicate/extra/collection mismatch is not pass"
           },
           "oracle": {
             "kind": "junit"
@@ -448,9 +479,10 @@
           ],
           "readiness": [
             "interpreter exists",
-            "run directory is writable"
+            "run directory is writable",
+            "static import/direct-dependency review completed"
           ],
-          "timeout": 300,
+          "timeout": 600,
           "cleanup": "only pytest temp files inside this run directory; no external resource owned",
           "dependencies": [],
           "adapter": "offline-pytest",
@@ -458,7 +490,9 @@
           "required_for_full": true,
           "stress": false,
           "sources": [
-            "test/test_windows_process_owner.py"
+            "test/test_windows_process_redirect.py",
+            "test/test_windows_process_owner.py",
+            "test/test_windows_egress_verdict.py"
           ]
         },
         {
@@ -472,16 +506,19 @@
             "offline"
           ],
           "input": {
-            "module": "test/test_linuxnetpolicy.py"
+            "modules": [
+              "test/test_linuxnetpolicy.py",
+              "test/test_linux_owner_rules.py"
+            ]
           },
           "steps": [
-            "pytest --collect-only -q test/test_linuxnetpolicy.py",
+            "pytest --collect-only -q test/test_linuxnetpolicy.py test/test_linux_owner_rules.py",
             "run the exact collected node IDs with pytest --junitxml",
             "judge JUnit against the planned node IDs"
           ],
           "expected": {
             "positive": "all collected nodes have exactly one passing result",
-            "negative": "failure/error/skip/missing/duplicate/collection mismatch is not pass"
+            "negative": "failure/error/skip/missing/duplicate/extra/collection mismatch is not pass"
           },
           "oracle": {
             "kind": "junit"
@@ -491,17 +528,21 @@
           ],
           "readiness": [
             "interpreter exists",
-            "run directory is writable"
+            "run directory is writable",
+            "static import/direct-dependency review completed"
           ],
-          "timeout": 300,
+          "timeout": 600,
           "cleanup": "only pytest temp files inside this run directory; no external resource owned",
           "dependencies": [],
           "adapter": "offline-pytest",
-          "collection_safe": false,
+          "collection_safe": true,
           "required_for_full": true,
           "stress": false,
           "sources": [
-            "test/test_linuxnetpolicy.py"
+            "test/test_linuxnetpolicy.py",
+            "test/test_linux_owner_rules.py",
+            "fakenet/diverters/linuxnetpolicy.py",
+            "fakenet/mcp/linuxrunner.py"
           ]
         }
       ]
@@ -524,7 +565,7 @@
       "oracle_status": "existing",
       "disposition": "keep",
       "disposition_basis": "保留产品及新回归设施必需自测; 排除只服务旧GUI/100/150/formal编排的项.",
-      "s1_note": "S1 保留产品与设施自测; 只服务旧GUI/100/150/formal编排的项排除.",
+      "s1_note": "S1 保留产品与设施自测; R02 仍未授权collect MCP 模块; 只服务旧GUI/100/150/formal编排的项排除.",
       "cases": [
         {
           "id": "MCP-UNIT-PRODUCT",
@@ -2245,7 +2286,7 @@
       },
       "disposition": "extract",
       "disposition_basis": "抽出良性客户端与无GUI生命周期, 保留原完整判定.",
-      "s1_note": "S1 抽取无GUI良性客户端与验证器; GUI-owned core和人工点击停止不保留.",
+      "s1_note": "S1 抽取无GUI良性客户端与验证器; R02 已把 report/integrity 单测接入离线CLI; GUI-owned core和人工点击停止不保留.",
       "cases": [
         {
           "id": "PAYLOAD-HTML-REPORT",
@@ -2258,17 +2299,16 @@
             "offline"
           ],
           "input": {
-            "verifier": "test/gui_vm/verify_payload_report.py",
-            "unit": "test/test_payload_report.py"
+            "module": "test/test_payload_report.py"
           },
           "steps": [
-            "produce report.html fixture",
-            "run verify_payload_report",
-            "run the offline unit test"
+            "pytest --collect-only -q test/test_payload_report.py",
+            "run the exact collected node IDs with pytest --junitxml",
+            "judge JUnit against the planned node IDs"
           ],
           "expected": {
-            "positive": "schema/hash/DOM checks pass",
-            "negative": "tampered or external DOM fails"
+            "positive": "all collected nodes have exactly one passing result",
+            "negative": "failure/error/skip/missing/duplicate/extra/collection mismatch is not pass"
           },
           "oracle": {
             "kind": "junit"
@@ -2277,18 +2317,23 @@
             "offline-python"
           ],
           "readiness": [
-            "report fixture"
+            "interpreter exists",
+            "run directory is writable",
+            "static import/direct-dependency review completed"
           ],
-          "timeout": 120,
-          "cleanup": "none",
+          "timeout": 600,
+          "cleanup": "only pytest temp files inside this run directory; no external resource owned",
           "dependencies": [],
           "adapter": "offline-pytest",
-          "collection_safe": false,
+          "collection_safe": true,
           "required_for_full": true,
           "stress": false,
           "sources": [
             "test/test_payload_report.py",
-            "test/gui_vm/verify_payload_report.py"
+            "test/gui_vm/verify_payload_report.py",
+            "fakenet/payload_report.py",
+            "fakenet/diverters/pcapwriter.py",
+            "fakenet/diverters/diverterbase.py"
           ]
         },
         {
@@ -2353,16 +2398,16 @@
             "offline"
           ],
           "input": {
-            "verifier": "test/gui_vm/verify_reassembly.py --matrix",
-            "unit": "test/test_payload_integrity_verifier.py"
+            "module": "test/test_payload_integrity_verifier.py"
           },
           "steps": [
-            "run matrix",
-            "assert reorder/retransmit/wrap/gap/conflict/UDP cases"
+            "pytest --collect-only -q test/test_payload_integrity_verifier.py",
+            "run the exact collected node IDs with pytest --junitxml",
+            "judge JUnit against the planned node IDs"
           ],
           "expected": {
-            "positive": "matrix cases match",
-            "negative": "synthetic data gives no native credit"
+            "positive": "all collected nodes have exactly one passing result",
+            "negative": "failure/error/skip/missing/duplicate/extra/collection mismatch is not pass"
           },
           "oracle": {
             "kind": "junit"
@@ -2371,18 +2416,21 @@
             "offline-python"
           ],
           "readiness": [
-            "verifier present"
+            "interpreter exists",
+            "run directory is writable",
+            "static import/direct-dependency review completed"
           ],
-          "timeout": 120,
-          "cleanup": "none",
+          "timeout": 600,
+          "cleanup": "only pytest temp files inside this run directory; no external resource owned",
           "dependencies": [],
           "adapter": "offline-pytest",
-          "collection_safe": false,
+          "collection_safe": true,
           "required_for_full": true,
           "stress": false,
           "sources": [
             "test/test_payload_integrity_verifier.py",
-            "test/gui_vm/verify_reassembly.py"
+            "test/gui_vm/verify_reassembly.py",
+            "test/gui_vm/verify_payload_integrity.py"
           ]
         }
       ]
@@ -3819,8 +3867,25 @@
       "test/test_dual_pcap_writer.py",
       "test/test_acceptance_catalog.py",
       "test/test_acceptance_regression.py",
-      "test/test_upstream_runner_contract.py"
+      "test/test_upstream_runner_contract.py",
+      "test/test_egresspolicy.py",
+      "test/test_sink_divert_contract.py",
+      "test/test_dns_policy.py",
+      "test/test_domain_egress_relay.py",
+      "test/test_dual_pcap_configuration.py",
+      "test/test_dual_pcap_vm_verifier.py",
+      "test/test_linuxnetpolicy.py",
+      "test/test_linux_owner_rules.py",
+      "test/test_listener_health.py",
+      "test/test_payload_report.py",
+      "test/test_payload_integrity_verifier.py"
     ],
+    "offline_review": {
+      "probed_pass": "16 modules probed; 13 passed on the host interpreter",
+      "platform_blocked": "test_windows_process_redirect.py/owner.py need winreg; test_windows_egress_verdict.py fails 3/48 on Linux ctypes.windll",
+      "not_probed": "test_dns_selection.py binds localhost UDP sockets; test_proxy_listener.py/test_http_listener_stop.py own sockets/processes",
+      "mcp_blocked": "test/mcp modules not collection-authorised in S1R2"
+    },
     "native_status": "registered but blocked; requires S2 real VM/endpoints and adapters"
   }
 }
