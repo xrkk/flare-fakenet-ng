@@ -3881,8 +3881,8 @@
       "test/test_payload_integrity_verifier.py"
     ],
     "offline_review": {
-      "probed_pass": "16 modules probed; 13 passed on the host interpreter",
-      "platform_blocked": "test_windows_process_redirect.py/owner.py need winreg; test_windows_egress_verdict.py fails 3/48 on Linux ctypes.windll",
+      "probed_pass": "14 candidate modules probed; 11 passed on the host interpreter",
+      "platform_blocked": "3 modules failed on Linux: test_windows_process_redirect.py and test_windows_process_owner.py need winreg; test_windows_egress_verdict.py fails 3/48 on ctypes.windll",
       "not_probed": "test_dns_selection.py binds localhost UDP sockets; test_proxy_listener.py/test_http_listener_stop.py own sockets/processes",
       "mcp_blocked": "test/mcp modules not collection-authorised in S1R2"
     },
