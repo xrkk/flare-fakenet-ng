@@ -256,15 +256,11 @@ def driver_table(root):
             'checks': [], 'requires': ['native'], 'package_required': False,
         },
         'build-identity': {
-            'implemented': True,
+            'implemented': False,
+            'missing': 'package identity oracle adapter is not implemented; only a '
+                       'manifest/SHA read-only check exists',
             'platforms': ['windows', 'linux'], 'modes': ['offline'],
-            'argv': ['{python}', 'tools/acceptance_native.py', '--check-package',
-                     '{package_manifest}', '{package_sha256}'],
-            'oracle': {'kind': 'json', 'artifact': 'identity.json'},
-            'checks': ['source_commit', 'package_manifest', 'package_sha256'],
-            'requires': [], 'package_required': True,
-            'cleanup': 'read-only identity check',
-            'readiness': ['candidate package manifest'],
+            'checks': [], 'requires': [], 'package_required': True,
         },
     }
     return drivers
