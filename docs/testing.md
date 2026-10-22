@@ -1,6 +1,8 @@
 > Consolidated inventory, original procedures, verdict rules and known gaps: [Acceptance catalog](acceptance/README.md). This inventory is not a new runtime pass.
 >
 > S1 offline loop (2026-10-22): the catalog is v2 and `tools/acceptance.py` adds `plan --mode full|selected|stress`, `execute` and `judge --results`. Only statically reviewed offline pytest cases run on the host; every native case stays `blocked` until the S2 adapters and real VM/endpoints exist. Commands, candidate/environment files, exit codes and exclusions are in [Acceptance README](acceptance/README.md). `test.py` also accepts `--results <path>` and `--non-interactive`, and now exits non-zero when a case fails.
+>
+> S2 native adapter code (2026-10-22, partial): `tools/acceptance_native.py` registers fixed-argv drivers and fixed sub-check tables for upstream/egress/reviewed-IPv4/process-redirect; Multihost, Windows/Linux PCAP functional modes, headless policy/payload, MCP P01-P04/SPECIAL, Linux mode and manual features remain explicitly blocked. No native execution was performed; see the acceptance README.
 
 # FakeNet-NG Test Plan
 This test plan informs developers how to quality assure FakeNet-NG by using two
