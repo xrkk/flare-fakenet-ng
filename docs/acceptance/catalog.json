@@ -759,7 +759,8 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "native_driver": "upstream-singlehost"
+          "native_driver": "upstream-singlehost",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         },
         {
           "id": "UPSTREAM-DNS",
@@ -814,7 +815,8 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "native_driver": "upstream-singlehost"
+          "native_driver": "upstream-singlehost",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         },
         {
           "id": "UPSTREAM-HTTP-CUSTOM",
@@ -868,7 +870,8 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "native_driver": "upstream-singlehost"
+          "native_driver": "upstream-singlehost",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         },
         {
           "id": "UPSTREAM-FTP-POP-SMTP-IRC",
@@ -921,7 +924,8 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "native_driver": "upstream-singlehost"
+          "native_driver": "upstream-singlehost",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         },
         {
           "id": "UPSTREAM-SMTP-SSL",
@@ -977,7 +981,8 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "native_driver": "upstream-singlehost"
+          "native_driver": "upstream-singlehost",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         },
         {
           "id": "UPSTREAM-PROXY-HIDDEN",
@@ -1031,7 +1036,8 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "native_driver": "upstream-singlehost"
+          "native_driver": "upstream-singlehost",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         },
         {
           "id": "UPSTREAM-BLACKLIST",
@@ -1087,7 +1093,8 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "native_driver": "upstream-singlehost"
+          "native_driver": "upstream-singlehost",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         },
         {
           "id": "UPSTREAM-PROCESS-FILTERS",
@@ -1140,7 +1147,8 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "native_driver": "upstream-singlehost"
+          "native_driver": "upstream-singlehost",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         },
         {
           "id": "UPSTREAM-LISTENER-FILTERS",
@@ -1194,7 +1202,8 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "native_driver": "upstream-singlehost"
+          "native_driver": "upstream-singlehost",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         },
         {
           "id": "UPSTREAM-REDIRECTALL-OFF",
@@ -1248,7 +1257,8 @@
             "test/sample_raw_response.txt",
             "test/sample_raw_tcp_response.txt"
           ],
-          "native_driver": "upstream-singlehost"
+          "native_driver": "upstream-singlehost",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         }
       ]
     },
@@ -2124,7 +2134,8 @@
             "test/dual_pcap_vm/Read-ExitCodeEvidence.ps1",
             "test/dual_pcap_vm/ConsoleStopSignal.ps1"
           ],
-          "native_driver": "pcap-windows-functional"
+          "native_driver": "pcap-windows-functional",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         },
         {
           "id": "PCAP-WIN-FAULTS",
@@ -2178,7 +2189,8 @@
             "test/dual_pcap_vm/Read-ExitCodeEvidence.ps1",
             "test/dual_pcap_vm/ConsoleStopSignal.ps1"
           ],
-          "native_driver": "pcap-windows-functional"
+          "native_driver": "pcap-windows-functional",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         },
         {
           "id": "PCAP-WIN-STRESS",
@@ -2228,7 +2240,8 @@
             "test/dual_pcap_vm/Read-ExitCodeEvidence.ps1",
             "test/dual_pcap_vm/ConsoleStopSignal.ps1"
           ],
-          "native_driver": "pcap-windows-functional"
+          "native_driver": "pcap-windows-functional",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         }
       ]
     },
@@ -2318,7 +2331,8 @@
             "tools/acceptance_oracles.py",
             "test/dual_pcap_linux/fault_launcher.py"
           ],
-          "native_driver": "pcap-linux-functional"
+          "native_driver": "pcap-linux-functional",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         },
         {
           "id": "PCAP-LINUX-STRESS",
@@ -2364,7 +2378,8 @@
             "tools/acceptance_oracles.py",
             "test/dual_pcap_linux/fault_launcher.py"
           ],
-          "native_driver": "pcap-linux-functional"
+          "native_driver": "pcap-linux-functional",
+          "blocked_reason": "requires explicit native VM target identity and native action; actual runtime capability checked by adapter"
         }
       ]
     },
