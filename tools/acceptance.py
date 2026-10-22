@@ -1109,6 +1109,8 @@ def execute_plan(root, plan_path):
         elif case['adapter'] == 'native':
             receipt['native_driver'] = case.get('native_driver')
             receipt.update(acceptance_native.run_driver(root, case, plan, case_dir, python))
+            receipt['evidence_level'] = ('fixture' if acceptance_native.is_fixture(case, root)
+                                         else 'native')
         else:
             raise ToolError('unregistered adapter: %s' % case['adapter'])
         receipt_path = case_dir / 'receipt.json'
@@ -1264,6 +1266,7 @@ def judge_v2(root, plan_path, results_dir, output=None):
     outcomes = []
     timings = []
     cleanup_results = []
+    fixture_used = False
     for case_id in plan['required_cases']:
         reference = registered[case_id]
         case = plan['cases'][case_id]
@@ -1286,7 +1289,9 @@ def judge_v2(root, plan_path, results_dir, output=None):
             raise InputError('receipt environment mismatch: %s' % case_id)
         if receipt.get('config_sha256') != _sha256_json(case):
             raise InputError('case config changed: %s' % case_id)
-        expected_level = 'offline' if reference['adapter'] == 'offline-pytest' else 'native'
+        expected_level = ('offline' if reference['adapter'] == 'offline-pytest'
+                          else 'fixture' if reference['adapter'] == 'native'
+                          and acceptance_native.is_fixture(reference, root) else 'native')
         if receipt.get('evidence_level') != expected_level:
             raise InputError('evidence level mismatch: %s' % case_id)
         receipt_status = receipt.get('status')
@@ -1302,6 +1307,11 @@ def judge_v2(root, plan_path, results_dir, output=None):
                 raise InputError('native driver mismatch: %s' % case_id)
             judged = acceptance_native.judge_driver(reference, receipt, plan, root)
             status = judged.get('status', 'unknown')
+            cleanup_ok = bool(judged.get('cleanup_ok', False))
+            cleanup_results.append(cleanup_ok)
+            if not cleanup_ok and status == 'pass':
+                status = 'unknown'
+            fixture_used = fixture_used or receipt.get('evidence_level') == 'fixture'
             outcomes.append({'case_id': case_id, 'suite_id': reference['suite_id'],
                              'status': status,
                              'reason': judged.get('reason', ''),
@@ -1399,7 +1409,8 @@ def judge_v2(root, plan_path, results_dir, output=None):
     coverage = ('full' if plan.get('mode') == 'full'
                 else 'stress' if plan.get('mode') == 'stress' else 'selected')
     full_functional_pass = (plan.get('mode') == 'full' and verdict == 'pass'
-                            and not unverified)
+                            and not unverified and not fixture_used)
+    fixture_contract_pass = fixture_used and verdict == 'pass'
     cleanup_complete = bool(cleanup_results) and all(cleanup_results)
     blocked_count = sum(1 for row in outcomes if row['status'] == 'blocked')
     summary = {
@@ -1415,6 +1426,7 @@ def judge_v2(root, plan_path, results_dir, output=None):
                     'blocked': blocked_count},
         'verdict': verdict,
         'full_functional_pass': full_functional_pass,
+        'fixture_contract_pass': fixture_contract_pass,
         'unverified': unverified,
         'failures': failed,
         'timings': timings,

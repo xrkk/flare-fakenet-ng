@@ -3975,27 +3975,26 @@
       "reviewed-ipv4-windows",
       "upstream-singlehost"
     ],
-    "implemented": [
-      "upstream-singlehost",
-      "egress-windows",
-      "reviewed-ipv4-windows",
-      "process-redirect-windows"
-    ],
+    "implemented": [],
     "blocked": [
-      "upstream-multihost",
-      "pcap-windows-functional",
-      "pcap-linux-functional",
-      "policy-headless",
-      "payload-headless",
+      "build-identity",
+      "egress-windows",
+      "linux-runtime",
+      "manual-headless",
       "mcp-p01",
       "mcp-p02",
       "mcp-p03",
       "mcp-p04",
       "mcp-special",
-      "linux-runtime",
-      "manual-headless",
-      "build-identity"
+      "payload-headless",
+      "pcap-linux-functional",
+      "pcap-windows-functional",
+      "policy-headless",
+      "process-redirect-windows",
+      "reviewed-ipv4-windows",
+      "upstream-multihost",
+      "upstream-singlehost"
     ],
-    "note": "Native drivers are registered with fixed argv and fixed checks. Only upstream/egress/reviewed-ipv4/process-redirect drivers are implemented in this round; the rest carry an explicit missing reason and remain blocked. No native run was authorised."
+    "note": "All production native drivers are blocked in this round: the previous wrappers are not acceptable per-case drivers. The shared native judgment skeleton is fixed and fixture-tested; upstream and both PCAP functional chains remain TODO."
   }
 }

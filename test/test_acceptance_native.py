@@ -68,7 +68,7 @@ def fixture_driver(implemented=True, missing=None):
         'checks': ['alpha', 'beta'],
         'requires': ['native'], 'package_required': False,
         'cleanup': 'fixture only', 'readiness': ['fixture'],
-        'missing': missing,
+        'missing': missing, 'fixture': True,
     }
 
 
@@ -124,7 +124,8 @@ class NativeAdapterTests(unittest.TestCase):
         code, out, err = self.run_cli('execute', '--plan', path)
         self.assertEqual(0, code, err + out)
         summary = json.loads((path.parent / 'summary.json').read_text(encoding='utf-8'))
-        self.assertTrue(summary['full_functional_pass'])
+        self.assertFalse(summary['full_functional_pass'])
+        self.assertTrue(summary['fixture_contract_pass'])
 
     def test_missing_native_check_is_unknown(self):
         self.install()
@@ -177,6 +178,68 @@ class NativeAdapterTests(unittest.TestCase):
     def test_fixed_argv_rejects_shell_metacharacters(self):
         with self.assertRaisesRegex(ValueError, 'metacharacter'):
             NATIVE.fixed_argv({'argv': ['run; rm -rf /']}, {})
+
+    def _executed_native(self):
+        self.install()
+        code, path, err = self.plan('selected', '--case', 'FIX-BLOCKED')
+        self.assertEqual(0, code, err)
+        code, out, err = self.run_cli('execute', '--plan', path)
+        self.assertEqual(0, code, err + out)
+        return path
+
+    def _refresh(self, path, case_id):
+        results = path.parent / 'results'
+        receipt_path = results / case_id / 'receipt.json'
+        index_path = results / 'results.json'
+        index = json.loads(index_path.read_text(encoding='utf-8'))
+        for entry in index['receipts']:
+            if entry['case_id'] == case_id:
+                entry['sha256'] = ACC.sha256(receipt_path)
+        index_path.write_text(json.dumps(index), encoding='utf-8')
+
+    def test_duplicate_native_check_is_not_pass(self):
+        path = self._executed_native()
+        results = path.parent / 'results'
+        oracle = results / 'FIX-BLOCKED' / 'native.json'
+        oracle.write_text(json.dumps({'checks': [
+            {'id': 'alpha', 'status': 'pass'},
+            {'id': 'alpha', 'status': 'pass'},
+            {'id': 'beta', 'status': 'pass'}]}), encoding='utf-8')
+        receipt_path = results / 'FIX-BLOCKED' / 'receipt.json'
+        receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+        for artifact in receipt['artifacts']:
+            if artifact['format'] == 'native-json':
+                artifact['sha256'] = ACC.sha256(oracle)
+        receipt_path.write_text(json.dumps(receipt), encoding='utf-8')
+        self._refresh(path, 'FIX-BLOCKED')
+        code, out, err = self.run_cli('judge', '--plan', path, '--results', results,
+                                      '--output', path.parent / 'duplicate.json')
+        self.assertNotEqual(0, code)
+        self.assertEqual('unknown', json.loads(
+            (path.parent / 'duplicate.json').read_text(encoding='utf-8'))['verdict'])
+
+    def test_contradictory_timeout_is_not_pass(self):
+        path = self._executed_native()
+        results = path.parent / 'results'
+        receipt_path = results / 'FIX-BLOCKED' / 'receipt.json'
+        receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+        receipt['cleanup']['process_exit']['timed_out'] = True
+        receipt_path.write_text(json.dumps(receipt), encoding='utf-8')
+        self._refresh(path, 'FIX-BLOCKED')
+        code, out, err = self.run_cli('judge', '--plan', path, '--results', results)
+        self.assertNotEqual(0, code)
+
+    def test_missing_logs_is_not_pass(self):
+        path = self._executed_native()
+        results = path.parent / 'results'
+        receipt_path = results / 'FIX-BLOCKED' / 'receipt.json'
+        receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+        receipt['artifacts'] = [item for item in receipt['artifacts']
+                                if item['format'] == 'native-json']
+        receipt_path.write_text(json.dumps(receipt), encoding='utf-8')
+        self._refresh(path, 'FIX-BLOCKED')
+        code, out, err = self.run_cli('judge', '--plan', path, '--results', results)
+        self.assertNotEqual(0, code)
 
 
 if __name__ == '__main__':

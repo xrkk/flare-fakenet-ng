@@ -16,7 +16,9 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import re
+import signal
 import subprocess
 from pathlib import Path
 
@@ -126,7 +128,8 @@ def driver_table(root):
     exe = ps1_checks(exe_path) if exe_path.is_file() else []
     drivers = {
         'upstream-singlehost': {
-            'implemented': True,
+            'implemented': False,
+            'missing': 'per-case upstream suite/case selection and observed readiness are not implemented; current argv would run the whole test.py per case',
             'platforms': ['windows', 'linux'],
             'modes': ['singlehost'],
             'argv': ['{python}', 'test/test.py', 'here', '--results',
@@ -146,7 +149,8 @@ def driver_table(root):
             'checks': upstream, 'requires': ['native'], 'package_required': False,
         },
         'egress-windows': {
-            'implemented': True,
+            'implemented': False,
+            'missing': 'original PS1 wrapper is not adapted: fixed paths, placeholder replacement and dependency installation',
             'platforms': ['windows'], 'modes': ['singlehost'],
             'argv': ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass',
                      '-File', 'test/egress_control_vm/Run-EgressControlTests.ps1',
@@ -159,7 +163,8 @@ def driver_table(root):
             'readiness': ['Windows VM', 'administrator', 'pktmon', 'external DNS'],
         },
         'reviewed-ipv4-windows': {
-            'implemented': True,
+            'implemented': False,
+            'missing': 'original PS1 wrapper is not adapted: fixed paths and pinned public address handling',
             'platforms': ['windows'], 'modes': ['singlehost'],
             'argv': ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass',
                      '-File', 'test/public_ipv4_allowlist_vm/Run-ReviewedIPv4Tests.ps1',
@@ -171,7 +176,8 @@ def driver_table(root):
             'readiness': ['Windows VM', 'administrator', 'pktmon', 'pinned DNS address'],
         },
         'process-redirect-windows': {
-            'implemented': True,
+            'implemented': False,
+            'missing': 'original PS1 wrapper is not adapted: fixed manifest/sentinel/10000-flow pressure',
             'platforms': ['windows'], 'modes': ['singlehost'],
             'argv': ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass',
                      '-File', 'test/process_redirect_vm/Run-ProcessRedirectTests.ps1'],
@@ -289,6 +295,11 @@ def validate_case(case, root):
     return driver, checks
 
 
+def is_fixture(case, root):
+    driver, unused = validate_case(case, root)
+    return bool(driver.get('fixture'))
+
+
 def fixed_argv(driver, context):
     argv = []
     for item in driver['argv']:
@@ -324,15 +335,28 @@ def run_driver(root, case, plan, output_dir, python):
     output_dir.mkdir(parents=True, exist_ok=True)
     stdout_path = output_dir / 'stdout.log'
     stderr_path = output_dir / 'stderr.log'
-    started = _now()
+    from datetime import datetime, timezone
+    start_dt = datetime.now(timezone.utc)
+    timed_out = False
     try:
         with stdout_path.open('xb') as stdout, stderr_path.open('xb') as stderr:
-            completed = subprocess.run(argv, cwd=root, stdout=stdout, stderr=stderr,
-                                       timeout=case['timeout'], check=False)
-            returncode = completed.returncode
-    except subprocess.TimeoutExpired:
-        returncode = None
-    ended = _now()
+            process = subprocess.Popen(argv, cwd=root, stdout=stdout, stderr=stderr,
+                                       start_new_session=True)
+            try:
+                returncode = process.wait(timeout=case['timeout'])
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    process.kill()
+                process.wait()
+                returncode = None
+    except OSError as error:
+        raise ValueError('cannot start native driver: %s' % error) from error
+    end_dt = datetime.now(timezone.utc)
+    started = start_dt.isoformat()
+    ended = end_dt.isoformat()
     artifacts = []
     rows = []
     status = 'unknown'
@@ -354,7 +378,7 @@ def run_driver(root, case, plan, output_dir, python):
     if returncode not in (0, None) and status == 'pass':
         status = 'fail'
         detail = 'driver rc=%s; %s' % (returncode, detail)
-    if returncode is None:
+    if timed_out:
         status = 'unknown'
         detail = 'timeout after %ss' % case['timeout']
     artifacts.append({'path': str(stdout_path.resolve()), 'sha256': sha256(stdout_path),
@@ -368,12 +392,13 @@ def run_driver(root, case, plan, output_dir, python):
         'command': argv,
         'started_at': started,
         'ended_at': ended,
-        'duration_seconds': 0.0,
+        'duration_seconds': (end_dt - start_dt).total_seconds(),
         'required_checks': checks,
         'artifacts': artifacts,
-        'cleanup': {'source': 'driver', 'resources': [],
+        'cleanup': {'source': 'driver',
+                    'resources': list(driver.get('resources') or []),
                     'process_exit': {'exited': True, 'returncode': returncode,
-                                     'timed_out': returncode is None},
+                                     'timed_out': timed_out},
                     'temp_roots': [str(output_dir.resolve())]},
     }
 
@@ -382,23 +407,32 @@ def judge_driver(case, receipt, plan, root):
     driver, checks = validate_case(case, root)
     if not driver.get('implemented'):
         return {'status': 'blocked', 'reason': driver.get('missing') or 'not implemented'}
-    if receipt.get('command') != fixed_argv(driver, {
-            'python': plan['environment']['interpreters']['python'],
-            'output': str(Path(plan['run_dir']) / 'results' / case['id']),
-            'root': plan['run_dir'],
-            'package_manifest': plan.get('candidate', {}).get('package_manifest') or '',
-            'package_sha256': plan.get('candidate', {}).get('package_sha256') or ''}):
+    expected_argv = fixed_argv(driver, {
+        'python': plan['environment']['interpreters']['python'],
+        'output': str(Path(plan['run_dir']) / 'results' / case['id']),
+        'root': plan['run_dir'],
+        'package_manifest': plan.get('candidate', {}).get('package_manifest') or '',
+        'package_sha256': plan.get('candidate', {}).get('package_sha256') or ''})
+    if receipt.get('command') != expected_argv:
         return {'status': 'fail', 'reason': 'receipt argv differs from the registered driver'}
     if receipt.get('required_checks') != checks:
         return {'status': 'fail', 'reason': 'receipt checks differ from the registered table'}
+    artifacts = receipt.get('artifacts')
+    if not isinstance(artifacts, list) or not artifacts:
+        return {'status': 'unknown', 'reason': 'receipt has no artifacts'}
+    formats = []
+    for item in artifacts:
+        path = Path(item.get('path', ''))
+        if not path.is_absolute() or not path.is_file() or sha256(path) != item.get('sha256'):
+            return {'status': 'unknown', 'reason': 'artifact missing or changed: %s' % path}
+        formats.append(item.get('format'))
+    if formats.count('log') < 2:
+        return {'status': 'unknown', 'reason': 'stdout/stderr logs are not both indexed'}
     oracle = driver['oracle']
-    oracle_paths = [item for item in receipt.get('artifacts') or []
-                    if item.get('format') == oracle['kind']]
+    oracle_paths = [item for item in artifacts if item.get('format') == oracle['kind']]
     if len(oracle_paths) != 1:
         return {'status': 'unknown', 'reason': 'expected exactly one native oracle artifact'}
     artifact = Path(oracle_paths[0]['path'])
-    if not artifact.is_file() or sha256(artifact) != oracle_paths[0]['sha256']:
-        return {'status': 'unknown', 'reason': 'native oracle artifact changed'}
     rows = _read_oracle(oracle['kind'], artifact)
     evaluation = _judge_rows(rows, checks)
     receipt_status = receipt.get('status')
@@ -408,14 +442,46 @@ def judge_driver(case, receipt, plan, root):
         status = 'unknown'
     else:
         status = 'pass'
-    if receipt.get('returncode') != 0:
-        status = 'fail'
-    cleanup = receipt.get('cleanup') or {}
-    if (cleanup.get('source') != 'driver' or cleanup.get('resources') != []
-            or (cleanup.get('process_exit') or {}).get('exited') is not True):
+    returncode = receipt.get('returncode')
+    cleanup = receipt.get('cleanup')
+    cleanup_ok = True
+    reason = ''
+    if not isinstance(cleanup, dict) or cleanup.get('source') != 'driver':
+        cleanup_ok = False
+        reason = 'cleanup was not derived by the driver'
+    elif cleanup.get('resources') != list(driver.get('resources') or []):
+        cleanup_ok = False
+        reason = 'cleanup resource scope differs from the driver'
+    else:
+        process_exit = cleanup.get('process_exit') or {}
+        timed_out = process_exit.get('timed_out')
+        if process_exit.get('exited') is not True:
+            cleanup_ok = False
+            reason = 'process exit was not observed'
+        elif timed_out is True and returncode is not None:
+            cleanup_ok = False
+            reason = 'timeout and a real returncode are contradictory'
+        elif timed_out is not True and returncode is None:
+            cleanup_ok = False
+            reason = 'missing returncode without a timeout'
+        elif process_exit.get('returncode') != returncode:
+            cleanup_ok = False
+            reason = 'cleanup returncode differs from receipt'
+        if not isinstance(receipt.get('duration_seconds'), (int, float)) or receipt.get('duration_seconds') <= 0:
+            cleanup_ok = False
+            reason = 'duration was not observed'
+    if returncode is None or returncode != 0:
+        status = 'fail' if status != 'unknown' else 'unknown'
+        if returncode is None and (cleanup.get('process_exit') or {}).get('timed_out') is not True:
+            status = 'unknown'
+        elif returncode not in (None, 0):
+            status = 'fail'
+    if not cleanup_ok:
         if status == 'pass':
             status = 'unknown'
-    return {'status': status, 'evaluation': evaluation}
+        reason = reason or 'cleanup is not valid'
+    return {'status': status, 'evaluation': evaluation,
+            'cleanup_ok': cleanup_ok, 'reason': reason}
 
 
 def _now():
@@ -475,16 +541,21 @@ def _judge_rows(rows, required):
     for row in rows:
         if not isinstance(row, dict) or not isinstance(row.get('id'), str):
             raise ValueError('invalid native result row')
+        if row.get('status') not in ('pass', 'fail', 'unknown', 'not_run',
+                                     'blocked', 'skip', 'observed'):
+            raise ValueError('invalid native result status')
         by_id.setdefault(row['id'], []).append(row)
     missing = [key for key in required if key not in by_id]
+    duplicate = sorted(key for key, values in by_id.items() if len(values) != 1)
     nonpass = [key for key in required if key in by_id
                and any(row.get('status') != 'pass' for row in by_id[key])]
     failed = sorted(key for key, values in by_id.items()
                     if any(row.get('status') == 'fail' for row in values))
     extra = sorted(set(by_id) - set(required))
-    verdict = ('fail' if failed else 'unknown' if missing or nonpass or extra else 'pass')
-    return {'verdict': verdict, 'missing': missing, 'nonpass': nonpass,
-            'failed': failed, 'extra': extra}
+    verdict = ('fail' if failed else
+               'unknown' if missing or duplicate or nonpass or extra else 'pass')
+    return {'verdict': verdict, 'missing': missing, 'duplicate': duplicate,
+            'nonpass': nonpass, 'failed': failed, 'extra': extra}
 
 
 def main(argv=None):
