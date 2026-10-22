@@ -1,4 +1,6 @@
 > Consolidated inventory, original procedures, verdict rules and known gaps: [Acceptance catalog](acceptance/README.md). This inventory is not a new runtime pass.
+>
+> S1 offline loop (2026-10-22): the catalog is v2 and `tools/acceptance.py` adds `plan --mode full|selected|stress`, `execute` and `judge --results`. Only statically reviewed offline pytest cases run on the host; every native case stays `blocked` until the S2 adapters and real VM/endpoints exist. Commands, candidate/environment files, exit codes and exclusions are in [Acceptance README](acceptance/README.md). `test.py` also accepts `--results <path>` and `--non-interactive`, and now exits non-zero when a case fails.
 
 # FakeNet-NG Test Plan
 This test plan informs developers how to quality assure FakeNet-NG by using two
@@ -113,6 +115,18 @@ a match specification with a minus sign to indicate
 that you would like to include only tests that do NOT
 match the expression.
 ```
+
+Optional tooling flags, which do not change the positional/match semantics:
+
+```text
+test.py here --results /path/to/results.tsv --non-interactive
+```
+
+`--results` writes a `status<TAB>name<TAB>detail` file. A case that fails on the
+first attempt and passes on the retry is written as `FAIL` with both attempts in
+the detail; the process exits non-zero for any failure or retry-only success.
+`--non-interactive` suppresses the MultiHost "type ok" prompt and assumes the
+operator has already prepared the remote system.
 
 If you are testing remotely the test script will create a custom configuration
 file for each subsuite of tests that it runs. You must copy that configuration
@@ -305,14 +319,20 @@ the test plan. These include, but are not limited to:
 * Foreign-Bound Traffic Redirection
 
 ### Known and Suspected Deficiencies in FakeNet and its Tests
-The following tests are known to fail for some or all platform combinations:
-* `SMTP SSL listener test` (any platform combination)
-* `IRC listener test` (works on Linux, not on Windows)
+The following native results remain historical until they are re-run on the
+current candidate in S2; the test-side defects were fixed on 2026-10-22:
 
-As of this writing, the `Listener host whitelist` test under `SingleHostMode`
-in the Automated test suite (General subsuite) is incorrect for testing the
-behavior of the setting `<Listener>.HostWhitelist` when it is configured.
-
-The functional status of process blacklisting on Linux is indeterminate: it was
-thought to have been deficient, however it may have been observed passing the
-tests in the automated test suite.
+* `SMTP SSL listener test`: the function previously referenced an undefined
+  `server` and passed positional arguments that the current `SMTP_SSL` exposes
+  only as keyword-only. It now uses the current keyword API, returns `True`
+  after a successful `sendmail`, and lets construction/send errors propagate.
+  Its native listener result is still NOT_RUN.
+* `IRC listener test` (works on Linux, not on Windows).
+* `Listener host whitelist`: the test previously targeted the blacklist port
+  8082, and the fixture used `6.6.6.6`, which is also the global
+  `Diverter.HostBlackList`. It now targets port 8083 with `9.9.9.9` and adds a
+  blocked negative; the positive case is no longer shadowed by the global
+  blacklist. Its native result is still NOT_RUN.
+* The functional status of process blacklisting on Linux is indeterminate: it
+  was thought to have been deficient, however it may have been observed
+  passing the tests in the automated test suite.
