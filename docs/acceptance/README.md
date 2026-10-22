@@ -155,3 +155,27 @@ snapshots remain in the run directory. Failure to stop or restore prevents later
 suites from using the same resource. Forced termination never earns cleanup
 credit. This implementation has offline process/channel contract tests; native
 platform acceptance remains required.
+
+### Noninteractive dual-PCAP functionality
+
+Linux: `python test/dual_pcap_linux/run_tests.py --functional --case normal
+--case raw-write --case ethernet-write --case close --output-directory ABSENT_ABSOLUTE_DIR`.
+Windows: `powershell.exe -NoProfile -NonInteractive -File
+test/dual_pcap_vm/Run-DualPcapTests.ps1 -Functional -CaseSet
+normal,raw-write,ethernet-write,close -OutputDirectory ABSENT_ABSOLUTE_DIR
+-PythonPath PYTHON`. These run only the explicit functional modes and installed
+dependency checks, with no dependency installation, broad unit discovery,
+benchmark, UAC prompt or keypress requirement. Historical entry behavior remains
+available without the new switch.
+
+Normal Windows execution uses the stop flag. Both platforms retain original
+packet generation and original pair verifiers; Linux also verifies original and
+mangled marker destinations. Each mode retains process exit evidence, capture
+logs and before/after network snapshots. Faults must hit their own fatal path;
+Linux write faults additionally require its NFQUEUE current-packet-drop marker,
+which is not a Windows contract. Network differences and forced termination
+remain failures, including when emergency rollback subsequently succeeds.
+
+Offline tests replace native processes/network but execute the original PCAP
+oracles on benign packets. They do not certify Windows/WinDivert or
+Linux/NFQUEUE runtime behavior.

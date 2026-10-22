@@ -5,6 +5,7 @@ non-root, container, and unverified physical-host execution before FakeNet-NG
 is imported or any network state is changed.
 """
 
+import argparse
 import base64
 import configparser
 import datetime
@@ -45,10 +46,15 @@ class AcceptanceError(RuntimeError):
 
 
 class Runner(object):
-    def __init__(self):
+    def __init__(self, output_directory=None, functional_modes=None):
+        self.functional_modes = functional_modes
         stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
         self.run_directory = LOG_ROOT / (
             'dual-pcap-linux-%s-%s' % (PACKAGE_VERSION, stamp))
+        if output_directory is not None:
+            self.run_directory = Path(output_directory)
+            if not self.run_directory.is_absolute():
+                raise ValueError('output directory must be absolute')
         self.results = []
         self.active = None
         self.active_stop_flag = None
@@ -430,6 +436,7 @@ class Runner(object):
         try:
             return process.wait(timeout=8)
         except subprocess.TimeoutExpired:
+            self.forced = True
             try:
                 os.killpg(process.pid, signal.SIGTERM)
             except ProcessLookupError:
@@ -504,6 +511,8 @@ class Runner(object):
         process = None
         case_error = None
         code = None
+        ready = False
+        self.forced = False
         with console_log.open('wb') as console:
             try:
                 process = subprocess.Popen(
@@ -513,6 +522,7 @@ class Runner(object):
                 self.active = process
                 self.active_stop_flag = stop_flag
                 self.wait_for_ready(process, app_log, before)
+                ready = True
                 self.send_marker()
                 if mode in ('normal', 'close'):
                     time.sleep(1.0)
@@ -541,9 +551,20 @@ class Runner(object):
             remaining = self.emergency_restore(before, case_directory, differences)
         network_ok = not differences
         residue = self.resource_residue(case_directory)
+        (case_directory / 'case-evidence.json').write_text(json.dumps({
+            'mode': mode, 'returncode': code, 'ready': ready, 'forced': self.forced,
+            'process_exited': process is not None and process.poll() is not None,
+            'network_differences': differences, 'emergency_remaining': remaining,
+            'resource_residue': residue,
+            'case_error': str(case_error) if case_error is not None else None,
+            'snapshot_error': str(snapshot_error) if snapshot_error is not None else None,
+            'app_log': str(app_log), 'directory': str(case_directory)},
+            indent=2, sort_keys=True)+'\n', encoding='utf-8')
         (case_directory / 'exit-code.txt').write_text(
             ('unavailable' if code is None else str(code)) + '\n',
             encoding='ascii', newline='\n')
+        if self.forced:
+            raise AcceptanceError('owned core required force; native recovery cannot pass')
         if case_error is not None:
             raise AcceptanceError('%s failed: %s; network_diff=%s; residual=%s' %
                                   (mode, case_error, differences, residue))
@@ -621,6 +642,29 @@ class Runner(object):
         print('\nPlain logs available at: %s' % self.run_directory, flush=True)
         return 0 if passed else 1
 
+    def run_functional(self):
+        # Original run_case owns startup, packet generation, stop/restore and
+        # the original verify_capture.py oracle. No unit/stress/install work.
+        previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+        try:
+            for sig in previous:
+                signal.signal(sig, self.signal_stop)
+            self.step('Environment', self.preflight)
+            self.step('Dependencies', self.dependency_identity)
+            for mode in self.functional_modes:
+                self.step('Live-' + mode, lambda selected=mode: self.run_case(selected))
+                if self.interrupted:
+                    raise AcceptanceError('acceptance run was interrupted')
+        except BaseException as exc:
+            self.record('Runner', False, '%s: %s' % (type(exc).__name__, exc))
+            (self.run_directory/'runner-error.log').write_text(traceback.format_exc(), encoding='utf-8')
+            if self.active is not None and self.active.poll() is None:
+                self.wait_process(self.active, self.active_stop_flag, 8)
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+        return self.finish()
+
     def run(self):
         signal.signal(signal.SIGINT, self.signal_stop)
         signal.signal(signal.SIGTERM, self.signal_stop)
@@ -675,14 +719,25 @@ class Runner(object):
         return self.finish()
 
 
-def main():
-    runner = Runner()
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--functional', action='store_true')
+    parser.add_argument('--case', action='append', choices=('normal','raw-write','ethernet-write','close'))
+    parser.add_argument('--output-directory')
+    args = parser.parse_args(argv)
+    if not args.functional and (args.case or args.output_directory):
+        parser.error('--case/--output-directory require --functional')
+    if args.functional and (not args.case or not args.output_directory):
+        parser.error('--functional requires explicit --case and --output-directory')
+    if args.case and len(args.case) != len(set(args.case)):
+        parser.error('duplicate functional cases')
+    runner = Runner(args.output_directory, args.case if args.functional else None)
     print('Linux dual-PCAP acceptance %s' % PACKAGE_VERSION, flush=True)
     print('This runner changes iptables and DNS only inside a proven VM.',
           flush=True)
     print('Do not run malware or another FakeNet-NG instance during acceptance.',
           flush=True)
-    raise SystemExit(runner.run())
+    raise SystemExit(runner.run_functional() if args.functional else runner.run())
 
 
 if __name__ == '__main__':

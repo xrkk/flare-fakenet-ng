@@ -1,7 +1,16 @@
 [CmdletBinding()]
-param([string]$PythonPath = 'python.exe')
+param([string]$PythonPath = 'python.exe', [switch]$Functional,
+    [string]$CaseSet,
+    [string]$OutputDirectory)
 
 $ErrorActionPreference = 'Stop'
+$Case = @()
+if ($CaseSet) {
+    $Case = @($CaseSet.Split(','))
+    foreach ($mode in $Case) {
+        if ($mode -notin @('normal','raw-write','ethernet-write','close')) { throw 'Invalid functional case.' }
+    }
+}
 $script:ExitCode = 1
 $script:TranscriptStarted = $false
 $script:ConsoleStopRegistered = $false
@@ -18,7 +27,17 @@ function Test-IsAdministrator {
         [Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+if ($Functional -and (-not $Case -or -not $OutputDirectory)) {
+    throw '-Functional requires -CaseSet and -OutputDirectory.'
+}
+if (-not $Functional -and ($Case -or $OutputDirectory)) {
+    throw '-CaseSet/-OutputDirectory require -Functional.'
+}
+if ($Case -and (@($Case | Select-Object -Unique).Count -ne $Case.Count)) {
+    throw 'Duplicate functional cases.'
+}
 if (-not (Test-IsAdministrator)) {
+    if ($Functional) { throw 'Functional mode requires an already elevated VM channel; no UAC prompt.' }
     $arguments = ('-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f
         $PSCommandPath.Replace('"', '""'))
     $elevated = Start-Process powershell.exe -Verb RunAs -Wait -PassThru `
@@ -68,13 +87,13 @@ function Test-PackageManifest {
 }
 
 function Get-NetworkSnapshot {
-    $dns = @(Get-DnsClientServerAddress -AddressFamily IPv4 |
+    $dns = @(Get-DnsClientServerAddress |
         Sort-Object InterfaceIndex |
         ForEach-Object {
             '{0}|{1}|{2}' -f $_.InterfaceIndex, $_.InterfaceAlias,
                 (@($_.ServerAddresses) -join ',')
         })
-    $routes = @(Get-NetRoute -AddressFamily IPv4 |
+    $routes = @(Get-NetRoute |
         Sort-Object InterfaceIndex, DestinationPrefix, NextHop, RouteMetric |
         ForEach-Object {
             '{0}|{1}|{2}|{3}|{4}' -f $_.InterfaceIndex,
@@ -89,14 +108,14 @@ function Test-NetworkRestored {
     $dnsDiff = @(Compare-Object $Before.Dns $after.Dns)
     $routeDiff = @(Compare-Object $Before.Routes $after.Routes)
     if ($dnsDiff.Count -eq 0 -and $routeDiff.Count -eq 0) {
-        Add-Result ('NetworkRestore-' + $CaseName) 'PASS'
+        Add-Result ('NetworkRestore-' + $CaseName) 'PASS' | Out-Host
         return $true
     }
     $dnsDiff | Out-File -LiteralPath (
         Join-Path $script:LogRoot ($CaseName + '-dns-diff.txt')) -Encoding utf8
     $routeDiff | Out-File -LiteralPath (
         Join-Path $script:LogRoot ($CaseName + '-route-diff.txt')) -Encoding utf8
-    Add-Result ('NetworkRestore-' + $CaseName) 'FAIL' 'DNS or route differs'
+    Add-Result ('NetworkRestore-' + $CaseName) 'FAIL' 'DNS or route differs' | Out-Host
     return $false
 }
 
@@ -196,8 +215,10 @@ function Stop-CaseProcess {
     }
     if (-not $Process.WaitForExit(30000)) {
         Add-Result ('Stop-' + $CaseName) 'FAIL' 'process did not stop in 30 seconds'
-        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
-        $Process.WaitForExit()
+        $script:CaseForced = $true
+        # Kill only this owned launcher tree, never all processes by name.
+        & taskkill.exe /PID $Process.Id /T /F | Out-Null
+        if (-not $Process.WaitForExit(5000)) { throw 'Owned process tree did not exit.' }
     }
 }
 
@@ -216,6 +237,12 @@ function Invoke-FakeNetCase {
         -ConfigPath $config -StopFlag $stopFlag -LogFile $logFile `
         -ExitCodePath $exitCodeFile -FaultMode $FaultMode
     $before = Get-NetworkSnapshot
+    $before | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $caseDirectory 'network-before.json') -Encoding UTF8
+    $process = $null
+    $ready = $false
+    $script:CaseForced = $false
+    $actualExitCode = $null
+    try {
     $cmdArguments = '/d /s /c ""{0}""' -f $command
     $process = Start-Process cmd.exe -PassThru -WorkingDirectory $script:RepoRoot `
         -ArgumentList $cmdArguments -RedirectStandardOutput $stdout `
@@ -224,12 +251,16 @@ function Invoke-FakeNetCase {
     while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
         if ((Test-Path -LiteralPath $logFile) -and
                 ([string](Get-Content -LiteralPath $logFile -Raw)).Contains(
-                    'Capturing traffic to')) { break }
+                    'Capturing traffic to')) { $ready = $true; break }
         Start-Sleep -Milliseconds 200
         $process.Refresh()
     }
+    if (-not $ready -and -not $process.HasExited) {
+        Add-Result ('Start-' + $CaseName) 'FAIL' 'capture readiness timeout'
+        return $null
+    }
     if ($process.HasExited) {
-        $process.WaitForExit()
+        $process.WaitForExit() | Out-Null
         $process.Refresh()
         try {
             $earlyExitCode = Read-ExitCodeEvidence -Path $exitCodeFile
@@ -237,10 +268,10 @@ function Invoke-FakeNetCase {
         } catch {
             Add-Result ('Start-' + $CaseName) 'FAIL' $_.Exception.Message
         }
-        Test-NetworkRestored $before $CaseName | Out-Null
         return $null
     }
 
+    Add-Result ('Start-' + $CaseName) 'PASS' 'capture readiness observed'
     Send-KnownTraffic $trafficLog
     if ($Interactive) {
         Write-Host ''
@@ -262,7 +293,7 @@ function Invoke-FakeNetCase {
             $process.Refresh()
         }
         Write-NewLogLines $logFile ([ref]$lineCount)
-    } elseif ($FaultMode -eq 'close') {
+    } elseif (-not $FaultMode -or $FaultMode -eq 'close') {
         Stop-CaseProcess $process $stopFlag $CaseName
     } else {
         $faultDeadline = [DateTime]::UtcNow.AddSeconds(20)
@@ -276,7 +307,7 @@ function Invoke-FakeNetCase {
             Stop-CaseProcess $process $stopFlag $CaseName
         }
     }
-    $process.WaitForExit()
+    $process.WaitForExit() | Out-Null
     $expected = if ($FaultMode) { 1 } else { 0 }
     try {
         $actualExitCode = Read-ExitCodeEvidence -Path $exitCodeFile
@@ -289,8 +320,32 @@ function Invoke-FakeNetCase {
     } catch {
         Add-Result ('Exit-' + $CaseName) 'FAIL' $_.Exception.Message
     }
-    Test-NetworkRestored $before $CaseName | Out-Null
+    $text = if (Test-Path -LiteralPath $logFile) { Get-Content -LiteralPath $logFile -Raw } else { '' }
+    $fatalCount = [regex]::Matches($text, 'PCAP_DUAL_WRITE_FAILED').Count
+    $dropCount = [regex]::Matches($text, 'PCAP_DUAL_CURRENT_PACKET_DROP').Count
+    $captureOK = if (-not $FaultMode) {
+        $fatalCount -eq 0 -and $text.Contains('PCAP_DUAL_SUMMARY') -and $text.Contains('healthy=True')
+    } elseif ($FaultMode -eq 'close') {
+        $fatalCount -eq 1 -and $text.Contains('healthy=False')
+    } else { $fatalCount -eq 1 }
+    if ($captureOK) { Add-Result ('Capture-' + $CaseName) 'PASS' }
+    else { Add-Result ('Capture-' + $CaseName) 'FAIL' 'capture log contract mismatch' }
     return $caseDirectory
+    } finally {
+        try {
+        if ($null -ne $process -and -not $process.HasExited) {
+            Stop-CaseProcess $process $stopFlag $CaseName
+        }
+        } finally {
+        $restored = Test-NetworkRestored $before $CaseName
+        $after = Get-NetworkSnapshot
+        $after | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $caseDirectory 'network-after.json') -Encoding UTF8
+        [ordered]@{ mode=$CaseName; ready=$ready; returncode=$actualExitCode;
+            process_exited=($null -ne $process -and $process.HasExited);
+            forced=$script:CaseForced; network_restored=[bool]$restored
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $caseDirectory 'case-evidence.json') -Encoding UTF8
+    }
+        }
 }
 
 try {
@@ -299,18 +354,24 @@ try {
     }
     $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
     $env:PYTHONPATH = $script:RepoRoot
-    Test-PackageManifest $script:RepoRoot
+    if (-not $Functional) { Test-PackageManifest $script:RepoRoot }
     $logsBase = Join-Path $PSScriptRoot 'Logs'
     New-Item -ItemType Directory -Path $logsBase -Force | Out-Null
     $script:LogRoot = Join-Path $logsBase (
         'dual-pcap-v5-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
-    New-Item -ItemType Directory -Path $script:LogRoot -Force | Out-Null
+    if ($Functional) {
+        if (-not [IO.Path]::IsPathRooted($OutputDirectory)) { throw 'OutputDirectory must be absolute.' }
+        if (Test-Path -LiteralPath $OutputDirectory) { throw 'OutputDirectory already exists.' }
+        $script:LogRoot = $OutputDirectory
+    }
+    New-Item -ItemType Directory -Path $script:LogRoot | Out-Null
     $script:ResultFile = Join-Path $script:LogRoot 'results.tsv'
     $script:AnyFailure = $false
     Start-Transcript -LiteralPath (Join-Path $script:LogRoot 'runner.log') | Out-Null
     $script:TranscriptStarted = $true
 
     $script:PythonExe = (Get-Command $PythonPath -ErrorAction Stop).Source
+    if (-not $Functional) {
     $dependencyExit = Invoke-PythonLogged -PythonExe $script:PythonExe `
         -Arguments @('-m', 'pip', 'install', '--disable-pip-version-check',
             '--no-index', '--find-links',
@@ -319,6 +380,7 @@ try {
         -LogPath (Join-Path $script:LogRoot 'dependency-install.log')
     if ($dependencyExit -ne 0) { throw 'Offline dependency installation failed.' }
 
+    }
     $identity = @'
 import json, platform, sys, dpkt, fakenet
 print(json.dumps({'python': platform.python_version(), 'machine': platform.machine(), 'dpkt': dpkt.__version__, 'dpkt_path': dpkt.__file__, 'dlt_raw': dpkt.pcap.DLT_RAW, 'fakenet_path': fakenet.__file__, 'utf8_mode': sys.flags.utf8_mode}, sort_keys=True))
@@ -327,10 +389,11 @@ print(json.dumps({'python': platform.python_version(), 'machine': platform.machi
         -Arguments @('-X', 'utf8', '-') -InputText $identity `
         -LogPath (Join-Path $script:LogRoot 'python-identity.log')
     if ($identityExit -ne 0) { throw 'Python identity check failed.' }
-    Add-Result 'Dependencies' 'PASS' 'offline lock and actual import verified'
+    Add-Result 'Dependencies' 'PASS' 'actual imports verified; functional mode performs no installation'
 
     Push-Location $script:RepoRoot
     try {
+        if (-not $Functional) {
         $testExit = Invoke-PythonLogged -PythonExe $script:PythonExe `
             -Arguments @('-m', 'unittest', 'discover', '-s', 'test', '-p',
                 'test_*.py', '-v') `
@@ -345,6 +408,32 @@ print(json.dumps({'python': platform.python_version(), 'machine': platform.machi
         if ($performanceExit -eq 0) { Add-Result 'PerformanceGate' 'PASS' }
         else { Add-Result 'PerformanceGate' 'FAIL' ('exit=' + $performanceExit) }
 
+        }
+        if ($Functional) {
+            foreach ($mode in $Case) {
+                $faultMode = if ($mode -eq 'normal') { '' } else { $mode }
+                $directory = Invoke-FakeNetCase $mode -FaultMode $faultMode
+                if ($mode -eq 'normal' -and $directory) {
+                    # Invoke-FakeNetCase writes host lines only, returns one path.
+                    $raw = @(Get-ChildItem -LiteralPath $directory -Filter 'packets_*.pcap' | Where-Object Name -NotLike '*-converted.pcap')
+                    $ethernet = @(Get-ChildItem -LiteralPath $directory -Filter 'packets_*-converted.pcap')
+                    if ($raw.Count -ne 1 -or $ethernet.Count -ne 1) {
+                        Add-Result 'LivePcapPair' 'FAIL' 'expected exactly one pair'
+                    } else {
+                        $verifyExit = Invoke-PythonLogged -PythonExe $script:PythonExe `
+                            -Arguments @((Join-Path $PSScriptRoot 'verify_dual_pcap.py'),
+                                $raw[0].FullName, $ethernet[0].FullName, '--output',
+                                (Join-Path $directory 'pcap-verification.json'), '--expected-versions', '4') `
+                            -LogPath (Join-Path $directory 'pcap-verification.log')
+                        if ($verifyExit -eq 0) { Add-Result 'LivePcapPair' 'PASS' }
+                        else { Add-Result 'LivePcapPair' 'FAIL' ('exit=' + $verifyExit) }
+                    }
+                }
+                if ($script:CaseForced) { throw 'Forced core shutdown; recovery required.' }
+                $state = Get-Content -LiteralPath (Join-Path (Join-Path $script:LogRoot $mode) 'case-evidence.json') -Raw | ConvertFrom-Json
+                if (-not $state.network_restored) { throw 'Network recovery failed; do not start another case.' }
+            }
+        } else {
         Initialize-ConsoleStopSignal
         $script:ConsoleStopRegistered = $true
         try {
@@ -374,6 +463,7 @@ print(json.dumps({'python': platform.python_version(), 'machine': platform.machi
 
         foreach ($mode in @('raw-write', 'ethernet-write', 'close')) {
             $null = Invoke-FakeNetCase ('fault-' + $mode) -FaultMode $mode
+        }
         }
     } finally {
         Pop-Location
