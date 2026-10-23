@@ -490,4 +490,47 @@ class OriginalFirewallAttributionTests(unittest.TestCase):
   value,rows,clean,details=self.run_firewall(response=(500,b'internal error'))
   self.assertEqual('blocked',value['checks']['ACC-003']['status']);self.assertEqual('fail',rows[0]['status'])
 
+
+class MultiRunFaultBoundary(FaultProcessBoundary):
+ def __init__(self,inputs):
+  super().__init__(inputs);self.started=0;self.archives={}
+ def archive(self):
+  super().archive();self.archives[self.run_id]=(self.manifest,self.manifest_bytes,self.zip_bytes)
+ def exchange(self,kind,value):
+  with self.guard:
+   if kind=='http' and json.loads(value['data'])['params']['name']=='start':
+    self.started+=1;self.run_id='22222222-2222-4222-8222-%012d'%self.started;self.archive()
+   if kind=='powershell' and 'Compress-Archive' in value['command']:
+    import re
+    run=re.search(r'artifacts\\([0-9a-f-]{36})',value['command']).group(1)
+    self.manifest,self.manifest_bytes,self.zip_bytes=self.archives[run]
+   return super().exchange(kind,value)
+
+class OriginalIncidentIntegrityTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_integrity_slice_passes_without_claiming_root_cause_capability(self):
+  unit='INCIDENT-INTEGRITY';out=self.root/'integrity'
+  value=m.run('MCP-P04-FULL',out,self.inputs,selected=[unit],boundary=MultiRunFaultBoundary(self.inputs),fixture=True)
+  result=m.read(out/'units'/unit/'result.json');self.assertEqual('pass',value['checks'][unit]['status'],result)
+  scope=m.read(out/'units'/unit/'incident-integrity-scope.json');self.assertFalse(scope['complete_acc014']);self.assertEqual('not_evaluated',scope['root_cause_localization']);self.assertEqual(5,len(scope['run_ids']))
+  rows,clean,details=o.evaluate(ROOT,out,'MCP-P04-FULL',[unit],self.inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],details);self.assertTrue(clean)
+ def test_original_full_acc_still_requires_actual_localization(self):
+  unit='ACC-014';out=self.root/'full'
+  value=m.run('MCP-P04-FULL',out,self.inputs,selected=[unit],boundary=MultiRunFaultBoundary(self.inputs),fixture=True)
+  result=m.read(out/'units'/unit/'result.json');self.assertEqual('blocked',value['checks'][unit]['status'],result);self.assertIn('package-only developer localization record required',json.dumps(result));self.assertIn('ACC-014',m.CHECKS['MCP-P04-FULL']);self.assertNotIn('INCIDENT-INTEGRITY',m.CHECKS['MCP-P04-FULL'])
+ def test_missing_conditional_dump_cannot_pass_integrity(self):
+  class NoDump(MultiRunFaultBoundary):
+   def archive(self):
+    super().archive()
+    import io,zipfile
+    self.manifest['entries']=[x for x in self.manifest['entries'] if x['item']!='userdump.dmp']
+    self.manifest_bytes=json.dumps(self.manifest).encode();stream=io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(self.zip_bytes)) as original,zipfile.ZipFile(stream,'w') as archive:
+     for name in original.namelist():
+      if name!='userdump.dmp':archive.writestr(name,self.manifest_bytes if name=='manifest.json' else original.read(name))
+    self.zip_bytes=stream.getvalue();self.archives[self.run_id]=(self.manifest,self.manifest_bytes,self.zip_bytes)
+  unit='INCIDENT-INTEGRITY';out=self.root/'no-dump'
+  value=m.run('MCP-P04-FULL',out,self.inputs,selected=[unit],boundary=NoDump(self.inputs),fixture=True)
+  self.assertNotEqual('pass',value['checks'][unit]['status']);self.assertEqual('fail',o.evaluate(ROOT,out,'MCP-P04-FULL',[unit],self.inputs,allow_fixture=True)[0][0]['status'])
+
 if __name__=='__main__':unittest.main()

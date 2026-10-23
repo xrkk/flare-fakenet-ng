@@ -351,3 +351,5 @@ scheduling/reuse/recovery and final full regression work remains required.
 MCP恢复判定与业务结果独立: 业务断言失败但配置SHA、服务模式和独立前后环境均恢复时, 保留业务失败并单独记录clean=true. 恢复未观察到或恢复失败时, 不执行该组剩余单元, 记录not_run及未决原因. 来源索引递归绑定固定原模块的本地传递依赖和静态脚本引用; 不从结果提供的任意路径加载代码.
 
 P01非允许源探针现在记录源地址HTTP边界供独立回放. 绑定/路由失败、连接超时或无关HTTP错误只能判未知/blocked, 不作为远端阻断通过; 实际端点拒绝与正常协议响应分别判定. 默认探针来源仍须现场可用, 当前未证明实际防火墙全链. firewall-attribution-02正常/反例及firewall-impacted-02相关49tests/31subtests仅为guard下的内存边界信用, 不授真实网络或整体验收通过.
+
+P04功能与信用映射见[mcp-capability-map.md](mcp-capability-map.md). 新`INCIDENT-INTEGRITY`仅供selected定点检查原机械断言, full不为此重复触发故障, 原`ACC-014`完整包内根因定位与terminal/条件转储要求仍在full集合; 未完成项不能以切片通过替代.

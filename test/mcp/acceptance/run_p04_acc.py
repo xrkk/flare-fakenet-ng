@@ -52,8 +52,8 @@ def run_fault_point_proof(base, channel, writer, args):
     return EXIT_PASS
 
 
-def run_acc014(base, channel, writer, args):
-    """Validate actual fault packages and explicit package-only localization."""
+def collect_acc014_incident_integrity(base, channel, writer, args):
+    """Collect and verify the original mechanical incident assertions only."""
     from helpers import export_incident_bundle
     from evidence_integrity import IDENTITY_FIELDS, validate_round
     from run_p05_release import FAULT_CLASSES
@@ -63,16 +63,16 @@ def run_acc014(base, channel, writer, args):
     else:
         result = run_fault_point_proof(base, channel, writer, args)
         if result != EXIT_PASS:
-            return result
+            return result, {}, []
         records = writer.fault_records
     if set(FAULT_CLASSES) - {record.get('class') for record in records}:
         writer.blocker = {'reason': 'actual five-class incident coverage missing'}
-        return EXIT_BLOCKED
+        return EXIT_BLOCKED, {}, records
     bundles = {}
     for record in records:
         if validate_round(record, identity):
             writer.add_evidence('rejected-fault-record', record)
-            return EXIT_FAIL
+            return EXIT_FAIL, {}, records
         run_id = record['fault_evidence']['receipt']['run_id']
         run_bundles = {}
         for exported in record['incident_exports']:
@@ -82,12 +82,35 @@ def run_acc014(base, channel, writer, args):
             writer.add_evidence(name + '-verified-' + run_id, bundle)
             writer.evidence.append({key: bundle[key] for key in ('path', 'sha256', 'size')})
             if not bundle['complete']:
-                return EXIT_FAIL
+                return EXIT_FAIL, {}, records
             run_bundles[name] = bundle
         if record['class'] in ('policy_pause', 'child_hang', 'ipc_permanent_timeout',
                                'stacks_unavailable', 'native_crash', 'unknown_cause') and not any('userdump.dmp' in bundle['verified_members'] for bundle in run_bundles.values()):
-            return EXIT_FAIL
+            return EXIT_FAIL, {}, records
         bundles[run_id] = run_bundles
+    return EXIT_PASS, bundles, records
+
+
+def run_incident_integrity(base, channel, writer, args):
+    """Mechanical slice; never grants package-only root-cause localization."""
+    code, bundles, records = collect_acc014_incident_integrity(base, channel, writer, args)
+    writer.add_evidence('incident-integrity-scope', {
+        'capability': 'incident-integrity', 'complete_acc014': False,
+        'run_ids': sorted(bundles),
+        'fault_classes': sorted(record.get('class', '') for record in records),
+        'root_cause_localization': 'not_evaluated',
+    })
+    return code
+
+
+def run_acc014(base, channel, writer, args):
+    """Preserve full package-only localization and terminal coverage contract."""
+    from evidence_integrity import IDENTITY_FIELDS
+    from run_p05_release import FAULT_CLASSES
+    identity = {field: getattr(args, field) for field in IDENTITY_FIELDS}
+    result, bundles, records = collect_acc014_incident_integrity(base, channel, writer, args)
+    if result != EXIT_PASS:
+        return result
     # A developer must actually inspect these packages. Presence of a stack
     # or a fabricated log line is never a localization conclusion.
     if not args.localization_record:

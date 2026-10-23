@@ -42,6 +42,9 @@ CHECKS = {
  'MCP-SPECIAL-IPC': list(IPC)+['INITIALIZATION-FAILURE','CONTROL-DEFAULT','CONTROL-INVALID']+['CONTROL-EXTRA-%d'%p for p in (28787,28790,29095,29094)]+['LOOPBACK-V4','LOOPBACK-V6'],
  'MCP-SPECIAL-FAULT-RECOVERY': list(FAULTS),
 }
+# Selected-only slice; full ACC-014 already executes these same assertions.
+SELECTABLE_CHECKS = {case: list(checks) for case, checks in CHECKS.items()}
+SELECTABLE_CHECKS['MCP-P04-FULL'].append('INCIDENT-INTEGRITY')
 CASES = tuple(CHECKS)
 EXCLUSIONS = {
  'ACC-001-GUI': 'GUI launch, window and co-control interactions excluded; headless service/core uniqueness retained.',
@@ -131,7 +134,7 @@ def validate_inputs(value,case,selected=None,*,fixture=False):
  try:verifier.verify_package_zip(Path(value['package']),manifest)
  except (RuntimeError,KeyError,OSError,ValueError) as exc:raise ValueError('original MCP package verification refused: '+str(exc)) from exc
  selected=list(CHECKS[case] if selected is None else selected)
- if not selected or len(selected)!=len(set(selected)) or any(k not in CHECKS[case] for k in selected):raise ValueError('MCP selection not declared by case')
+ if not selected or len(selected)!=len(set(selected)) or any(k not in SELECTABLE_CHECKS[case] for k in selected):raise ValueError('MCP selection not declared by case')
  return copy.deepcopy(value),selected
 
 
@@ -405,6 +408,7 @@ def invoke_unit(unit,args,channel,writer,mods):
  if unit.startswith('ACC-004-S'):return p3.run_acc004_scenario(base,channel,writer,unit[-2:])
  if unit in ('ACC-006','ACC-007','ACC-008','ACC-009'):return getattr(p3,'run_acc'+unit[4:])(base,channel,writer)
  if unit=='FAULT-POINTS':return p4.run_fault_point_proof(base,channel,writer,args)
+ if unit=='INCIDENT-INTEGRITY':return p4.run_incident_integrity(base,channel,writer,args)
  if unit=='ACC-014':return p4.run_acc014(base,channel,writer,args)
  if unit=='ACC-015':return p4.run_acc015(base,channel,writer,args.allowed_host)
  if unit=='ACC-019':return p4.run_acc019(base,channel,writer,args)
