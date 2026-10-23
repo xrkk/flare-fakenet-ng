@@ -293,7 +293,14 @@ def _same_config(a,b):
 
 class BoundarySession:
  def __init__(self,boundary,inputs=None,logical_root=None):
-  self.boundary=boundary;self.inputs=inputs;self.logical_root=logical_root;self.records=[];self.mutation_operations=[];self.config_operations=[];self.config_owned_files={};self.lock=threading.RLock();self.thread_names={};self._thread_count=0;self._socket_count=0;self.owned_runs=set();self.owned_configs=set();self._local=threading.local();self._original={'time':time.time,'monotonic':time.monotonic,'sleep':time.sleep,'uuid':uuid.uuid4,'socket':socket.create_connection,'http_connection':http.client.HTTPConnection}
+  self.boundary=boundary;self.inputs=inputs;self.logical_root=logical_root;self.records=[];self.mutation_operations=[];self.config_operations=[];self.config_owned_files={};self.lock=threading.RLock();self.thread_names={};self._thread_count=0;self._socket_count=0;self.owned_runs=set();self.owned_configs=set();self._local=threading.local();self._original_http_depth=0;self._original={'time':time.time,'monotonic':time.monotonic,'sleep':time.sleep,'uuid':uuid.uuid4,'socket':socket.create_connection,'http_connection':http.client.HTTPConnection}
+ @contextlib.contextmanager
+ def original_http_contract(self):
+  with self.lock:self._original_http_depth+=1
+  try:
+   yield
+  finally:
+   with self.lock:self._original_http_depth-=1
  def operation(self,kind,value):
   if getattr(self._local,'inside_transport',False) and kind in self._original:
    if kind=='sleep':return self._original[kind](value['seconds'])
@@ -353,10 +360,22 @@ class BoundarySession:
   try:
    value=self.operation('http',{'url':request.full_url,'method':request.get_method(),'headers':dict(request.header_items()),'data':request.data,'timeout':timeout})
    if value.get('http_error'):raise urllib.error.HTTPError(request.full_url,value['status'],'recorded HTTP error',value['headers'],io.BytesIO(value['body']))
-   response_body=json.loads(value['body']);result=response_body.get('result')
-   if not isinstance(result,dict) or result.get('isError') is True:raise ValueError('MCP operation result unavailable')
-   payload=json.loads(result.get('content',[{}])[0].get('text','{}'))
-   if not isinstance(payload,dict) or not payload:raise ValueError('MCP operation payload incomplete')
+   with self.lock:original_call=self._original_http_depth>0
+   if original_call and operation is None:return RecordedResponse(value)
+   try:
+    response_body=json.loads(value['body']);result=response_body.get('result')
+    if not isinstance(result,dict) or result.get('isError') is True:raise ValueError('MCP operation result unavailable')
+    payload=json.loads(result.get('content',[{}])[0].get('text','{}'))
+    if not isinstance(payload,dict) or not payload:raise ValueError('MCP operation payload incomplete')
+    if original_call:
+     # The original caller owns result/error decoding.  Still observe a
+     # complete tracked receipt for ownership and recovery denial.
+     pass
+   except (ValueError,KeyError,TypeError,IndexError,json.JSONDecodeError):
+    if not original_call:raise
+    if operation is not None:
+     operation['response_unknown']=True;self.preserve_scene=True
+    return RecordedResponse(value)
    if operation is not None:
     operation.update(response=copy.deepcopy(payload),response_command_id=payload.get('command_id'),response_state_version=payload.get('state_version'),changed=payload.get('changed'),config_identity=copy.deepcopy(payload.get('config_identity')),name=payload.get('name'))
     error=payload.get('error')
@@ -395,10 +414,13 @@ class BoundarySession:
        if name in self.owned_configs and arguments.get('expected_sha256')!=self.config_owned_files.get(name):raise ValueError('accepted deletion has wrong owned hash')
        self.owned_configs.discard(name);self.config_owned_files.pop(name,None)
      if not replay and tool in ('start','restart') and payload.get('run_id'):self.owned_runs.add(payload['run_id'])
-  except BaseException:
+  except BaseException as exc:
    if operation is not None:
     operation['response_unknown']=True
     self.preserve_scene=True
+   if isinstance(exc, (urllib.error.HTTPError,OSError)):raise
+   with self.lock:original_call=self._original_http_depth>0
+   if original_call and operation is not None and 'value' in locals():return RecordedResponse(value)
    raise
   return RecordedResponse(value)
  def http_connection(self,host,port=None,timeout=30,source_address=None,**kwargs):
@@ -707,7 +729,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
     service_before=service_preflight(session,inputs);writer.add_evidence('installed-service-before',service_before)
     before=session.operation('observe',{})
     writer.add_evidence('environment-before',before)
-    code=invoke_unit(unit,args,session,writer,mods)
+    with session.original_http_contract():code=invoke_unit(unit,args,session,writer,mods)
    except Exception as exc:error={'type':type(exc).__name__,'message':str(exc)};writer.blocker=error
    finally:
     if before is not None:

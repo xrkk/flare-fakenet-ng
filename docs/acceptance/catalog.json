@@ -166,7 +166,8 @@
             "test/test_acceptance_mcp_identity.py",
             "test/test_acceptance_mcp_baseline.py",
             "test/test_acceptance_mcp_transport.py",
-            "test/test_acceptance_mcp_compatibility.py"
+            "test/test_acceptance_mcp_compatibility.py",
+            "test/test_acceptance_mcp_http_contract.py"
           ]
         },
         {

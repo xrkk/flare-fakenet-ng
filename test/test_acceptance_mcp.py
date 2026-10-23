@@ -269,8 +269,14 @@ class FaultProcessBoundary(ReadOnlyBoundary):
     req=json.loads(value['data']);tool=req['params']['name']
     state={'service':'fakenetng-mcp','state':'stopped','state_version':self.version,'run_id':None,'controller':None,'config_identity':self.inputs['config_identity'],'last_run_outcome':'failed' if self.fault else None,'error':None}
     if tool in ('load_config','start','stop'):
-     self.version+=1;state['state_version']=self.version
+     arguments=req['params']['arguments'];command=arguments.get('command_id');expected=arguments.get('expected_state_version')
+     if type(expected) is int:self.version=max(self.version+1,expected+1)
+     elif type(self.version) is int:self.version+=1
+     state['state_version']=self.version
      if tool=='start':state['run_id']=self.run_id
+     if isinstance(command,str) and type(expected) is int:
+      state.update(command_id=command,changed=True,in_progress=False,replayed=False)
+      if tool=='load_config':state['config_identity']=self.inputs['config_identity']
      return self.response(state)
     if tool=='get_status':return self.response(state)
    if kind=='powershell':
@@ -335,8 +341,13 @@ class IpcProcessBoundary(FaultProcessBoundary):
       if self.step==1:state='degraded' if 'timeout' in self.fault['fault'] else 'failed'
       elif self.fault['fault']=='ipc_once_timeout':state='healthy'
       else:self.running=False;self.terminal=True;state='stopped'
-     if tool!='get_status':self.version+=1
+     arguments=req['params']['arguments'];command=arguments.get('command_id');expected=arguments.get('expected_state_version')
+     if tool!='get_status':
+      if type(expected) is int:self.version=max(self.version+1,expected+1)
+      else:self.version+=1
      payload={'service':'fakenetng-mcp','state':state,'state_version':self.version,'run_id':self.run_id if self.running else None,'controller':None,'config_identity':self.inputs['config_identity'],'last_run_outcome':'failed' if self.terminal else None,'error':None}
+     if tool!='get_status' and isinstance(command,str) and type(expected) is int:payload.update(command_id=command,changed=True,in_progress=False,replayed=False)
+     if tool=='load_config' and isinstance(command,str) and type(expected) is int:payload['config_identity']=self.inputs['config_identity']
      return self.response(payload)
    if kind=='powershell':
     command=value['command']
@@ -798,8 +809,10 @@ class SnapshotProcessBoundary(ReadOnlyBoundary):
   if kind=='http':
    req=json.loads(value['data']);tool=req['params']['name']
    if tool in ('start','stop','load_config','get_status'):
-    error=None
-    if tool!='get_status':self.version+=1
+    error=None;arguments=req['params']['arguments'];command=arguments.get('command_id');expected=arguments.get('expected_state_version')
+    if tool!='get_status':
+     if type(expected) is int:self.version=max(self.version+1,expected+1)
+     else:self.version+=1
     if tool=='start':
      if self.denied or self.state=='failed':error={'code':'snapshot_write_failed' if self.denied else 'recovery_required'}
      else:
@@ -809,7 +822,9 @@ class SnapshotProcessBoundary(ReadOnlyBoundary):
      marker,corrupt=self.snapshot.read()
      if marker:self.snapshot.clear_recovery(**marker)
      self.state='stopped';self.run_id=None
-    return self.response({'service':'fakenetng-mcp','state':self.state,'state_version':self.version,'run_id':self.run_id,'controller':None,'config_identity':self.inputs['config_identity'],'error':error})
+    payload={'service':'fakenetng-mcp','state':self.state,'state_version':self.version,'run_id':self.run_id,'controller':None,'config_identity':self.inputs['config_identity'],'error':error}
+    if error is None and tool!='get_status' and isinstance(command,str) and type(expected) is int:payload.update(command_id=command,changed=True,in_progress=False,replayed=False)
+    return self.response(payload)
   if kind=='powershell':
    cmd=value['command']
    if 'baselines' in cmd and '-Filter' in cmd and ').Count' in cmd:output=str(len(list(self.baselines.root.glob('*.json'))))
