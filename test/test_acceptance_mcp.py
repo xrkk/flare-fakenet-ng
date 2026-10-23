@@ -1421,3 +1421,242 @@ class PublicHangMcpCliTests(unittest.TestCase):
         summary = m.read(self.run / 'negative.json')
         self.assertFalse(summary['fixture_contract_pass'])
         self.assertIn('original assertions', json.dumps(summary))
+
+
+class ConfigLockDomainBoundary(DomainBoundary):
+    """Real configuration/coordination domain, simulated Windows file edges."""
+    def __init__(self, inputs, root, fault=None):
+        self.fault = fault
+        self.calls = []
+        self.probes = []
+        self.links = {}
+        self.foreign = {}
+        self.targets = []
+        super().__init__(inputs, root)
+        if fault == 'legacy-junction':
+            (self.context.store.custom_root / 'junction.ini').write_bytes(b'preexisting benign legacy object')
+
+    def exchange(self, kind, value):
+        if kind == 'http':
+            request = json.loads(value['data'])
+            tool = request.get('params', {}).get('name')
+            self.calls.append(tool)
+            arguments = request.get('params', {}).get('arguments') or {}
+            self.targets.append((tool, arguments.get('name'), arguments.get('new_name')))
+            if ((self.fault == 'import-conflict' and tool == 'import_config' and str(arguments.get('name')).startswith('acc009-import-')) or
+                    (self.fault == 'rename-conflict' and tool == 'rename_config' and str(arguments.get('new_name')).startswith('acc009-moved-'))):
+                name = arguments.get('new_name') if tool == 'rename_config' else arguments['name']
+                path = self.context.store.custom_root / name
+                content = m.modules()['run_p02_acc'].VALID_INI if tool == 'import_config' else m.modules()['run_p02_acc'].VALID_INI + '\n# ACC009 stopped management\n'
+                with path.open('xb') as stream:
+                    stream.write(content.encode())
+                self.foreign[name] = path.read_bytes()
+            if self.fault == 'reject-' + str(tool):
+                snap = self.context.coordinator.snapshot()
+                snap.update(error={'code': 'refused-' + tool}, changed=False)
+                return FaultProcessBoundary.response(self, snap)
+            response = super().exchange(kind, value)
+            body = json.loads(response['body'])
+            payload = json.loads(body['result']['content'][0]['text'])
+            if self.fault == 'empty-' + str(tool):
+                payload = {}
+            if self.fault == 'wrong-config' and tool == 'get_status' and payload.get('state') == 'healthy':
+                payload['config_identity']['name'] = 'foreign.ini'
+            if self.fault == 'bad-bound-run' and tool == 'restart':
+                payload['bound_run_id'] = '22222222-2222-4222-8222-222222222222'
+            body['result']['content'][0]['text'] = json.dumps(payload)
+            response['body'] = json.dumps(body).encode()
+            return response
+        if kind == 'powershell' and 'ACC009_CONFIG_PROBE_V1' in value['command']:
+            import base64
+            import re
+            from pathlib import PureWindowsPath
+            encoded = re.search(r"FromBase64String\('([A-Za-z0-9+/=]+)'\)", value['command']).group(1)
+            request = json.loads(base64.b64decode(encoded))
+            self.probes.append(request)
+            path = self.context.store.custom_root / request['name']
+            result = {'schema': 'fakenet.acc009-os.v1', 'operation': request['operation'],
+                      'name': request['name'], 'token': request['token'], 'run_id': request.get('run_id'),
+                      'path': str(PureWindowsPath(self.inputs['programdata_root']) / 'configs/custom' / request['name'])}
+            if request['operation'] == 'file-probe':
+                def observe():
+                    return {'exists': path.exists(), 'sha256': m.sha256(path) if path.exists() else None,
+                            'creation_time': str(path.stat().st_mtime_ns) if path.exists() else None,
+                            'size': path.stat().st_size if path.exists() else 0}
+                before = observe()
+                locked = self.context.store.active_name == request['name']
+                result.update(phase=request['phase'], before=before, restored=False)
+                if locked:
+                    error = 5 if self.fault == 'wrong-error' else 32
+                    result['write'] = {'attempted': self.fault != 'unattempted', 'success': False, 'win32_error': error}
+                    result['delete'] = {'attempted': True, 'success': False, 'win32_error': error}
+                else:
+                    raw = path.read_bytes()
+                    path.write_bytes(raw)
+                    path.unlink()
+                    result['write'] = {'attempted': True, 'success': True, 'win32_error': None}
+                    result['delete'] = {'attempted': True, 'success': True, 'win32_error': None}
+                    with path.open('xb') as stream:
+                        stream.write(raw)
+                    result['restored'] = m.sha256(path) == request['sha256']
+                result['after'] = observe()
+                if self.fault == 'content-drift' and locked:
+                    result['after']['sha256'] = '0' * 64
+                if self.fault == 'wrong-restoration' and not locked:
+                    result['restored'] = False
+            else:
+                work = PureWindowsPath(self.inputs['guest_work_root']) / ('fakenet-acc009-' + request['token'])
+                result.update(work_dir=str(work), target=str(work / 'target.ini'))
+                if request['operation'] == 'reparse-setup':
+                    if self.fault == 'link-unavailable':
+                        result.update(created=False, cleanup_complete=True, error='simulated unsupported Windows link permission')
+                    else:
+                        host_work = self.root / ('fakenet-acc009-' + request['token'])
+                        host_work.mkdir(exist_ok=False)
+                        target = host_work / 'target.ini'
+                        target.write_bytes(b'acc009 benign controlled target\n')
+                        path.symlink_to(target)
+                        self.links[request['token']] = (host_work, target, path)
+                        result.update(created=True, cleanup_complete=False, target_sha256=m.sha256(target))
+                else:
+                    host_work, target, link = self.links[request['token']]
+                    if self.fault == 'cleanup-unconfirmed':
+                        result['cleanup_complete'] = False
+                    else:
+                        if not link.is_symlink() or link.resolve() != target.resolve() or m.sha256(target) != request['target_sha256']:
+                            raise AssertionError('fixture owned reparse identity differs')
+                        link.unlink(); target.unlink(); host_work.rmdir()
+                        result['cleanup_complete'] = True
+            output = json.dumps(result)
+            return {'output': output, 'raw': output, 'exit_code': 0, 'is_error': False}
+        return super().exchange(kind, value)
+
+
+class OriginalConfigLockTests(unittest.TestCase):
+    setUp = OriginalMcpTests.setUp
+
+    def run_case(self, label, fault=None):
+        boundary = ConfigLockDomainBoundary(self.inputs, self.root / ('domain-' + label), fault)
+        out = self.root / label
+        result = m.run('MCP-P03-FULL', out, self.inputs, selected=['ACC-009'], boundary=boundary, fixture=True)
+        rows, clean, details = o.evaluate(ROOT, out, 'MCP-P03-FULL', ['ACC-009'], self.inputs, allow_fixture=True)
+        return boundary, out, result, rows, clean, details
+
+    def test_original_domain_complete_lock_management_and_reparse_chain(self):
+        boundary, out, result, rows, clean, details = self.run_case('normal')
+        self.assertEqual('pass', result['checks']['ACC-009']['status'], m.read(out / 'units/ACC-009/result.json'))
+        self.assertEqual('pass', rows[0]['status'], details)
+        self.assertTrue(clean, details)
+        self.assertIsNone(boundary.context.store.active_name)
+        self.assertEqual([], list(boundary.context.store.custom_root.iterdir()))
+        self.assertEqual(['file-probe', 'file-probe', 'reparse-setup', 'reparse-cleanup'], [p['operation'] for p in boundary.probes])
+        self.assertFalse((boundary.context.store.custom_root / 'junction.ini').exists())
+
+    def test_rejected_mutations_and_wrong_active_name_stop_dependent_probes(self):
+        for fault in ('reject-create_config', 'reject-load_config', 'reject-start', 'wrong-config'):
+            with self.subTest(fault=fault):
+                boundary, out, result, rows, clean, details = self.run_case(fault, fault)
+                self.assertNotEqual('pass', result['checks']['ACC-009']['status'])
+                self.assertNotEqual('pass', rows[0]['status'], details)
+                self.assertEqual([], boundary.probes)
+                if fault != 'reject-start' and fault != 'wrong-config':
+                    self.assertNotIn('start', boundary.calls)
+
+    def test_wrong_error_unattempted_changed_bytes_and_restoration_are_not_locks(self):
+        for fault, expected_check in (
+                ('wrong-error', 'external_write_blocked'),
+                ('unattempted', 'external_write_blocked'),
+                ('content-drift', 'external_target_exact'),
+                ('wrong-restoration', 'unlocked_after_stop'),
+                ('bad-bound-run', 'restart_binds_original_run')):
+            with self.subTest(fault=fault):
+                boundary, out, result, rows, clean, details = self.run_case(fault, fault)
+                self.assertEqual('fail', result['checks']['ACC-009']['status'])
+                self.assertEqual('fail', rows[0]['status'], details)
+                checks = m.read(out / 'units/ACC-009/acc009-checks.json')
+                self.assertIs(False, checks[expected_check])
+
+    def test_empty_success_receipt_stops_without_retry_or_default_fallback(self):
+        for fault in ('empty-create_config', 'empty-load_config', 'empty-start'):
+            with self.subTest(fault=fault):
+                boundary, out, result, rows, clean, details = self.run_case(fault, fault)
+                self.assertNotEqual('pass', rows[0]['status'], details)
+                self.assertFalse(clean, details)
+                self.assertEqual([], boundary.probes)
+                self.assertEqual(1, boundary.calls.count(fault[len('empty-'):]))
+                original = m.read(out / 'units/ACC-009/result.json')
+                self.assertIn('receipt not confirmed', json.dumps(original))
+
+    def test_legacy_fixed_junction_name_is_never_touched(self):
+        boundary, out, result, rows, clean, details = self.run_case('legacy-junction', 'legacy-junction')
+        self.assertEqual('pass', rows[0]['status'], details)
+        self.assertTrue(clean, details)
+        self.assertEqual(b'preexisting benign legacy object',
+                         (boundary.context.store.custom_root / 'junction.ini').read_bytes())
+        self.assertTrue(all(p['name'] != 'junction.ini' for p in boundary.probes))
+
+    def test_name_conflicts_never_mutate_preexisting_import_or_rename_targets(self):
+        for fault in ('import-conflict', 'rename-conflict'):
+            with self.subTest(fault=fault):
+                boundary, out, result, rows, clean, details = self.run_case(fault, fault)
+                self.assertEqual('fail', rows[0]['status'], details)
+                self.assertTrue(boundary.foreign)
+                for name, original in boundary.foreign.items():
+                    self.assertEqual(original, (boundary.context.store.custom_root / name).read_bytes())
+                    self.assertFalse(any(tool in ('edit_config', 'delete_config') and target == name
+                                         for tool, target, renamed in boundary.targets))
+                self.assertNotIn('restart', boundary.calls)
+
+    def test_link_unavailable_is_not_evaluated_and_unknown_cleanup_is_not_clean(self):
+        for fault in ('link-unavailable', 'cleanup-unconfirmed'):
+            with self.subTest(fault=fault):
+                boundary, out, result, rows, clean, details = self.run_case(fault, fault)
+                self.assertNotEqual('pass', rows[0]['status'], details)
+                if fault == 'link-unavailable':
+                    self.assertEqual('blocked', result['checks']['ACC-009']['status'])
+                else:
+                    self.assertFalse(clean, details)
+                    self.assertNotIn('restart', boundary.calls)
+
+
+class PublicConfigLockCliTests(unittest.TestCase):
+    setUp = PublicMcpCliTests.setUp
+    cli = PublicMcpCliTests.cli
+    prepare = PublicMcpCliTests.prepare
+
+    def test_same_catalog_lock_chain_and_rehashed_bad_attempt(self):
+        self.prepare('MCP-P03-FULL', ['ACC-009'])
+        with mock.patch.object(m, 'NativeBoundary', side_effect=lambda *a, **kw: ConfigLockDomainBoundary(self.inputs, self.base / 'domain')):
+            result = self.cli('execute', '--plan', self.run / 'plan.json')
+        self.assertEqual(0, result[0], result)
+        result = self.cli('judge', '--plan', self.run / 'plan.json', '--results', self.run / 'results', '--output', self.run / 'positive.json')
+        self.assertEqual(0, result[0], result)
+        summary = m.read(self.run / 'positive.json')
+        self.assertTrue(summary['fixture_contract_pass'])
+        self.assertFalse(summary['full_functional_pass'])
+        case_dir = self.run / 'results/MCP-P03-FULL'
+        path = case_dir / 'driver/units/ACC-009/trace.json'
+        trace = m.read(path)
+        hits = 0
+        for row in trace['records']:
+            if row['kind'] == 'powershell' and 'ACC009_CONFIG_PROBE_V1' in row['input']['command']:
+                observed = json.loads(row['output']['output'])
+                if observed.get('phase') == 'active':
+                    hits += 1
+                    observed['write']['attempted'] = False
+                    row['output']['output'] = json.dumps(observed)
+                    row['output']['raw'] = row['output']['output']
+        self.assertEqual(1, hits)
+        path.write_text(json.dumps(trace))
+        receipt = m.read(case_dir / 'receipt.json')
+        for item in receipt['artifacts']:
+            item['sha256'] = m.sha256(item['path'])
+        (case_dir / 'receipt.json').write_text(json.dumps(receipt))
+        index = m.read(self.run / 'results/results.json')
+        for item in index['receipts']:
+            if item['case_id'] == 'MCP-P03-FULL':
+                item['sha256'] = m.sha256(case_dir / 'receipt.json')
+        (self.run / 'results/results.json').write_text(json.dumps(index))
+        result = self.cli('judge', '--plan', self.run / 'plan.json', '--results', self.run / 'results', '--output', self.run / 'negative.json')
+        self.assertNotEqual(0, result[0], result)
+        self.assertFalse(m.read(self.run / 'negative.json')['fixture_contract_pass'])

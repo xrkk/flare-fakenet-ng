@@ -124,3 +124,38 @@ catalog are exercised with process/HTTP/clock boundaries only: wrong nonce,
 class, run and channel exit code fail; rehashing the outer receipts does not
 make bad content pass. This is limited offline integration credit, not a native
 hang, complete P03/MCP acceptance, or any of the three missing classes above.
+
+P03 `ACC-009` now verifies the accepted create/load/start receipts before using
+the current healthy run's exact custom-config name, bytes, SHA and version.
+It does not continue from a rejection or missing receipt into the old default.
+The fixed `acc009_config_probe.ps1` records actual file identity, attempted
+write/delete, native error codes and unchanged hashes. Only sharing/lock
+violations (32/33), with the same readable bytes, satisfy the running lock
+predicate. Access-denied labels or other OS failures do not. After controlled
+stop, it actually writes/deletes and exclusively recreates only its own file
+with the original bytes, then observes restoration before MCP cleanup.
+
+The real ConfigStore and coordinator still own runtime `config_in_use`, path
+rejection, versions and stopped CRUD assertions. Failed accepted mutations may
+reserve a version; that is recorded without treating lifecycle/byte mutation as
+acceptable. Import/edit/rename failure stops dependent mutations: a preexisting
+same-name object is neither edited nor deleted to make the test continue.
+
+Reparse tests use a fresh nonce name and a benign target under the selected E/D
+work root. They record creation, real configuration-domain rejection and exact
+link/target cleanup, and leave any old `junction.ini` untouched. Unsupported
+construction is not evaluated; unknown cleanup or an unconfirmed mutation
+receipt preserves the scene and cannot supply cleanup credit. The new-run
+restart response is checked against its observed current run, while
+`bound_run_id` must identify the request's original run; a new run is not
+mistakenly required to retain the old run ID.
+
+Current tests run original P03 functions and actual configuration/coordination
+domain code, replacing only Windows file/process/HTTP/clock edges. Real benign
+host symlinks exercise the path guard. Same-catalog CLI tests reject bad attempt
+content even after outer hashes are updated. Windows sharing/PowerShell/SCM
+execution remains unverified; these results provide offline integration credit,
+not complete P03/MCP or native/full acceptance. The centralized facility selftest
+now includes `test/test_acceptance_mcp.py`, and source identity includes the
+fixed PowerShell probe. No GUI, historical scenario/release driver or T007 test
+is added by this registration.

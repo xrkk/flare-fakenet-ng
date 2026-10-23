@@ -178,7 +178,8 @@
               "test/test_acceptance_native_channels.py",
               "test/test_upstream_runner_contract.py",
               "test/test_acceptance_orchestration.py",
-              "test/test_acceptance_package.py"
+              "test/test_acceptance_package.py",
+              "test/test_acceptance_mcp.py"
             ]
           },
           "steps": [
@@ -228,7 +229,10 @@
             "test/test_acceptance_orchestration.py",
             "test/test_acceptance_package.py",
             "tools/acceptance_package.py",
-            "tools/build_fakenetng_mcp_wine.py"
+            "tools/build_fakenetng_mcp_wine.py",
+            "test/test_acceptance_mcp.py",
+            "test/mcp/acceptance/run_p03_acc.py",
+            "test/mcp/acceptance/acc009_config_probe.ps1"
           ]
         },
         {
@@ -2922,7 +2926,8 @@
       "id": "MCP-P03",
       "title": "MCP 运行/停止/健康/恢复",
       "sources": [
-        "test/mcp/acceptance/run_p03_acc.py"
+        "test/mcp/acceptance/run_p03_acc.py",
+        "test/mcp/acceptance/acc009_config_probe.ps1"
       ],
       "content": "P03: 核心/GUI配置一致, 状态机/owner/监督/隔离子进程/IPC/停止与故障责任.",
       "procedure": "沿原CLI --acc明确选择子项, 绑定当前source/package/manifest/VM/config, 使用原target控制通道, 每条执行后对账并收原result.json及源证据.",
@@ -2989,7 +2994,8 @@
           "required_for_full": true,
           "stress": false,
           "sources": [
-            "test/mcp/acceptance/run_p03_acc.py"
+            "test/mcp/acceptance/run_p03_acc.py",
+            "test/mcp/acceptance/acc009_config_probe.ps1"
           ],
           "blocked_reason": "requires fixed candidate/VM/config/actions and existing Windows channel; original-function integration in progress, no native credit",
           "native_driver": "mcp-headless"

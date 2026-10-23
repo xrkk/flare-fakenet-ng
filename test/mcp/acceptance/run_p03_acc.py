@@ -1061,165 +1061,247 @@ def run_acc008(base, channel, writer):
     return EXIT_PASS if all(checked) else EXIT_FAIL
 
 
+def _acc009_os_probe(channel, request):
+    """Run one fixed owned-file probe, returning observed bytes and actions."""
+    import re
+    from pathlib import PureWindowsPath
+    inputs = getattr(channel, 'inputs', None) or {}
+    request = dict(request, programdata_root=inputs.get('programdata_root'))
+    if not re.fullmatch(r'acc009-[a-z]+-[0-9a-f]{32}\.ini', request['name']) or not re.fullmatch(r'[0-9a-f]{32}', request['token']):
+        raise StepError('invalid ACC009 owned name/token')
+    if request['operation'] not in ('file-probe', 'reparse-setup', 'reparse-cleanup'):
+        raise StepError('unknown ACC009 fixed operation')
+    if request['operation'] == 'reparse-setup':
+        request['work_root'] = inputs.get('guest_work_root')
+        if request['work_root']:
+            work = PureWindowsPath(request['work_root'])
+            if not work.is_absolute() or work.drive.upper() not in ('E:', 'D:') or '..' in work.parts:
+                raise StepError('ACC009 requires an absolute selected E/D work root')
+    encoded = base64.b64encode(json.dumps(request).encode('utf-8')).decode('ascii')
+    script = Path(__file__).with_name('acc009_config_probe.ps1').read_text()
+    try:
+        raw = channel.powershell(script.replace('__REQUEST__', encoded), timeout=90)
+        value = json.loads(raw['output'])
+        for key, expected in (('schema', 'fakenet.acc009-os.v1'), ('operation', request['operation']),
+                              ('name', request['name']), ('token', request['token']),
+                              ('run_id', request.get('run_id'))):
+            if value.get(key) != expected:
+                raise StepError('ACC009 probe identity mismatch: ' + key)
+        path = PureWindowsPath(value['path'])
+        if (not path.is_absolute() or path.name != request['name'] or
+                tuple(part.lower() for part in path.parts[-3:-1]) != ('configs', 'custom')):
+            raise StepError('ACC009 probe path differs')
+        if inputs.get('programdata_root') and path != PureWindowsPath(inputs['programdata_root']) / 'configs' / 'custom' / request['name']:
+            raise StepError('ACC009 probe outside frozen root')
+        if request['operation'].startswith('reparse-') and value.get('work_dir'):
+            work = PureWindowsPath(value['work_dir'])
+            if work.drive.upper() not in ('E:', 'D:') or work.name != 'fakenet-acc009-' + request['token'] or PureWindowsPath(value['target']) != work / 'target.ini':
+                raise StepError('ACC009 reparse work identity differs')
+        if request['operation'] == 'file-probe' and value.get('phase') != request['phase']:
+            raise StepError('ACC009 probe phase differs')
+        if request['operation'].startswith('reparse-') and value.get('work_dir'):
+            work = PureWindowsPath(value['work_dir'])
+            expected_parent = PureWindowsPath(inputs['guest_work_root']) if inputs.get('guest_work_root') else PureWindowsPath(work.anchor)
+            if work.parent != expected_parent:
+                raise StepError('ACC009 work root differs from frozen selection')
+            if value.get('created') is True and value.get('target_sha256') != sha_of('acc009 benign controlled target\n'):
+                raise StepError('ACC009 controlled target bytes differ')
+        return value, raw
+    except Exception:
+        channel.preserve_scene = True
+        raise
+
+
+
 def run_acc009(base, channel, writer):
     writer.action('acc009', 'P03-final: real lock, reparse points, full '
                             'custom management on real lifecycle')
+    import uuid
     checks = {}
-    lock_name = 'lock-probe-%s.ini' % unique_command('lp')[:8]
-    # A minimal ini runs no listeners (init evidence never satisfied); the
-    # lock probe needs a fully runnable custom config, so clone default.ini.
-    builtin = call(base, 'read_config', {'name': 'default.ini'},
-                   controller=None)
-    lock_content = builtin.get('content') or VALID_INI
-    created_lock = call(base, 'create_config',
-                        {'name': lock_name, 'content': lock_content,
-                         'command_id': unique_command('lp-c'),
-                         'expected_state_version':
-                             status(base)['state_version']}, timeout=60)
-    loaded_lock = call(base, 'load_config',
-                       {'name': lock_name,
-                        'command_id': unique_command('lp-l'),
-                        'expected_state_version':
-                            created_lock['state_version']})
-    started = call(base, 'start',
-                   {'command_id': unique_command('lp-s'),
-                    'expected_state_version':
-                        loaded_lock['state_version']})
+
+    def finish(code=None):
+        writer.add_evidence('acc009-checks', checks)
+        return code if code is not None else (EXIT_PASS if checks and all(checks.values()) else EXIT_FAIL)
+
+    def mutate(tool, arguments, label):
+        command_id = unique_command(label)
+        version = status(base)['state_version']
+        payload = call(base, tool, dict(arguments, command_id=command_id,
+                       expected_state_version=version), timeout=120)
+        writer.add_evidence(label, payload)
+        if not payload.get('error') and (
+                payload.get('command_id') != command_id or
+                type(payload.get('state_version')) is not int or
+                payload['state_version'] < version or payload.get('in_progress')):
+            channel.preserve_scene = True
+            raise StepError('ACC009 mutation receipt not confirmed: ' + tool)
+        return payload
+
+    def content_matches(payload, name, content):
+        return (not payload.get('error') and payload.get('name') == name and
+                payload.get('content') == content and payload.get('sha256') == sha_of(content))
+
+    token = uuid.uuid4().hex
+    lock_name = 'acc009-lock-' + token + '.ini'
+    builtin = call(base, 'read_config', {'name': 'default.ini'}, controller=None)
+    writer.add_evidence('acc009-default-source', builtin)
+    lock_content = builtin.get('content')
+    checks['source_read_ok'] = isinstance(lock_content, str) and bool(lock_content) and content_matches(builtin, 'default.ini', lock_content)
+    if not checks['source_read_ok']:
+        return finish()
+    created = mutate('create_config', {'name': lock_name, 'content': lock_content}, 'acc009-create-lock')
+    checks['create_lock_ok'] = created.get('error') is None
+    if not checks['create_lock_ok']:
+        return finish()
+    read_created = call(base, 'read_config', {'name': lock_name}, controller=None)
+    writer.add_evidence('acc009-created-bytes', read_created)
+    checks['created_content_exact'] = content_matches(read_created, lock_name, lock_content)
+    if not checks['created_content_exact']:
+        return finish()
+    loaded = mutate('load_config', {'name': lock_name}, 'acc009-load-lock')
+    checks['load_lock_ok'] = loaded.get('error') is None
+    if not checks['load_lock_ok']:
+        return finish()
+    started = mutate('start', {}, 'acc009-start-lock')
     checks['start_ok'] = started.get('error') is None
-    active = status(base).get('config_identity') or {}
-    active_name = active.get('name')
+    if not checks['start_ok']:
+        return finish()
+    ready, active = wait_state(base, lambda s: s.get('state') == 'healthy', timeout=45)
+    writer.add_evidence('acc009-active', active or {})
+    identity = (active or {}).get('config_identity') or {}
+    checks['healthy_lock_identity'] = bool(ready and identity.get('name') == lock_name and identity.get('sha256') == sha_of(lock_content) and active.get('run_id'))
+    if not checks['healthy_lock_identity']:
+        return finish()
+    run_id = str(uuid.UUID(active['run_id']))
+    probe_request = dict(operation='file-probe', name=lock_name, token=token,
+                         run_id=run_id, phase='active', sha256=sha_of(lock_content))
+    observed, raw = _acc009_os_probe(channel, probe_request)
+    writer.add_evidence('acc009-external-lock', raw)
+    before, after = observed['before'], observed['after']
+    checks['external_target_exact'] = (before.get('exists') is True and before.get('sha256') == sha_of(lock_content) and bool(before.get('creation_time')) and after == before)
+    for action in ('write', 'delete'):
+        attempt = observed[action]
+        checks['external_' + action + '_blocked'] = (attempt.get('attempted') is True and attempt.get('success') is False and type(attempt.get('win32_error')) is int and attempt['win32_error'] in (32, 33))
+    if not all(checks.values()):
+        return finish()
+    readback = call(base, 'read_config', {'name': lock_name}, controller=None)
+    writer.add_evidence('acc009-service-read', readback)
+    checks['service_read_still_works'] = content_matches(readback, lock_name, lock_content)
+    if not checks['service_read_still_works']:
+        return finish()
 
-    # MCP-level lock already rejects edits (config_in_use); OS-level lock:
-    # external PowerShell write/delete attempts fail.
-    active_dir = ('$env:ProgramData + '
-                  "'\\FakeNet-NG-MCP\\configs\\custom'")
-    ext = channel.powershell(
-        "$base = %s; $p = Join-Path $base '%s'; "
-        "try { Set-Content $p 'tampered' -ErrorAction Stop; 'WRITE_OK' } "
-        "catch { 'WRITE_BLOCKED' }; "
-        "try { Remove-Item $p -ErrorAction Stop; 'DELETE_OK' } "
-        "catch { 'DELETE_BLOCKED' }" % (active_dir, active_name), timeout=90)
-    writer.add_evidence('acc009-external-lock', ext)
-    out = ext['output']
-    checks['external_write_blocked'] = 'WRITE_BLOCKED' in out
-    checks['external_delete_blocked'] = 'DELETE_BLOCKED' in out
+    for operation, arguments in (
+            ('edit', {'content': lock_content}),
+            ('rename', {'new_name': 'acc009-renamed-' + uuid.uuid4().hex + '.ini'}),
+            ('delete', {})):
+        prior = status(base)
+        payload = mutate(operation + '_config', dict(arguments, name=lock_name, expected_sha256=sha_of(lock_content)), 'acc009-runtime-' + operation)
+        post = status(base)
+        current = call(base, 'read_config', {'name': lock_name}, controller=None)
+        writer.add_evidence('acc009-runtime-' + operation + '-after', {'before': prior, 'after': post, 'content': current})
+        checks['runtime_' + operation + '_refused'] = err_of(payload) == 'config_in_use'
+        # Accepted failed mutations reserve versions; lifecycle/bytes stay fixed.
+        checks['runtime_' + operation + '_unchanged'] = (
+            post.get('state') == 'healthy' and post.get('run_id') == run_id and
+            post.get('config_identity') == prior.get('config_identity') and
+            payload.get('state_version') == post.get('state_version') and
+            post['state_version'] >= prior['state_version'] and
+            content_matches(current, lock_name, lock_content))
+        if not all(checks.values()):
+            return finish()
 
-    # service can still read its config (link to FakeNet read compat)
-    readback = call(base, 'read_config', {'name': active_name})
-    checks['service_read_still_works'] = readback.get('error') is None
-
-    # Runtime MCP mutations of the ACTIVE config must all be refused
-    # (config_in_use) while the run holds the activity lock.
-    version = status(base)['state_version']
-    checks['runtime_edit_refused'] = err_of(call(
-        base, 'edit_config',
-        {'name': active_name, 'content': lock_content,
-         'expected_sha256': sha_of(lock_content),
-         'command_id': unique_command('a9-re'),
-         'expected_state_version': version}, timeout=90)) == 'config_in_use'
-    checks['runtime_rename_refused'] = err_of(call(
-        base, 'rename_config',
-        {'name': active_name, 'new_name': 'renamed-%s.ini' %
-         unique_command('rn')[:6],
-         'expected_sha256': sha_of(lock_content),
-         'command_id': unique_command('a9-rr'),
-         'expected_state_version': version}, timeout=90)) == 'config_in_use'
-    checks['runtime_delete_refused'] = err_of(call(
-        base, 'delete_config',
-        {'name': active_name, 'expected_sha256': sha_of(lock_content),
-         'command_id': unique_command('a9-rd'),
-         'expected_state_version': version}, timeout=90)) == 'config_in_use'
-
-    # import_config: valid import lands as a new custom config; a
-    # link-escaping import target is refused.
-    version = status(base)['state_version']
-    import_name = 'imported-%s.ini' % unique_command('im')[:6]
-    imported = call(base, 'import_config',
-                    {'name': import_name,
-                     'content': VALID_INI,
-                     'command_id': unique_command('a9-im'),
-                     'expected_state_version': version}, timeout=120)
-    checks['import_config_ok'] = imported.get('error') is None and \
-        call(base, 'read_config',
-             {'name': import_name},
-             controller=None).get('error') is None
-    bad_import = call(base, 'import_config',
-                      {'name': '../escape-%s.ini' % unique_command('be')[:6],
-                       'content': VALID_INI,
-                       'command_id': unique_command('a9-im-bad'),
-                       'expected_state_version':
-                           status(base)['state_version']}, timeout=90)
-    checks['import_escape_refused'] = err_of(bad_import) == \
-        'path_escape_blocked'
-    # builtin delete: negative (default.ini is permanently read-only).
-    checks['builtin_delete_refused'] = err_of(call(
-        base, 'delete_config',
-        {'name': 'default.ini', 'expected_sha256': 'x',
-         'command_id': unique_command('a9-bd'),
-         'expected_state_version': status(base)['state_version']},
-        timeout=90)) in ('builtin_readonly', 'config_not_found',
-                         'invalid_request')
+    import_name = 'acc009-import-' + uuid.uuid4().hex + '.ini'
+    imported = mutate('import_config', {'name': import_name, 'content': VALID_INI}, 'acc009-import')
+    imported_read = call(base, 'read_config', {'name': import_name}, controller=None)
+    writer.add_evidence('acc009-imported-read', imported_read)
+    checks['import_config_ok'] = imported.get('error') is None and content_matches(imported_read, import_name, VALID_INI)
+    if not checks['import_config_ok']:
+        return finish()
+    bad = mutate('import_config', {'name': '../escape-' + uuid.uuid4().hex + '.ini', 'content': VALID_INI}, 'acc009-import-escape')
+    checks['import_escape_refused'] = err_of(bad) == 'path_escape_blocked'
+    builtin_delete = mutate('delete_config', {'name': 'default.ini', 'expected_sha256': 'x'}, 'acc009-builtin-delete')
+    checks['builtin_delete_refused'] = err_of(builtin_delete) in ('builtin_readonly', 'config_not_found', 'invalid_request')
 
     stop = stop_run(base)
-    checks['clean_stop'] = stop.get('error') is None
-    ext2 = channel.powershell(
-        "$base = %s; $p = Join-Path $base '%s'; "
-        "try { Set-Content $p 'after-stop' -ErrorAction Stop; 'WRITE_OK' } "
-        "catch { 'WRITE_BLOCKED' }; "
-        "try { Remove-Item $p -ErrorAction Stop; 'DELETE_OK' } catch "
-        "{ 'DELETE_BLOCKED' }" % (active_dir, active_name), timeout=90)
-    writer.add_evidence('acc009-unlock-after-stop', ext2)
-    checks['unlocked_after_stop'] = 'WRITE_OK' in ext2['output']
-    # cleanup probe config
+    writer.add_evidence('acc009-stop', stop)
+    stopped = status(base)
+    checks['clean_stop'] = stop.get('error') is None and stopped.get('state') == 'stopped' and stopped.get('run_id') is None
+    if not checks['clean_stop']:
+        return finish()
+    unlocked, raw = _acc009_os_probe(channel, dict(probe_request, phase='stopped', creation_time=before['creation_time']))
+    writer.add_evidence('acc009-unlock-after-stop', raw)
+    checks['unlocked_after_stop'] = (
+        unlocked['before'] == before and unlocked['write'].get('attempted') is True and
+        unlocked['write'].get('success') is True and unlocked['delete'].get('attempted') is True and
+        unlocked['delete'].get('success') is True and unlocked.get('restored') is True and
+        unlocked['after'].get('exists') is True and unlocked['after'].get('sha256') == sha_of(lock_content))
+    if not checks['unlocked_after_stop']:
+        channel.preserve_scene = True
+        return finish()
+    deleted_lock = mutate('delete_config', {'name': lock_name, 'expected_sha256': sha_of(lock_content)}, 'acc009-delete-lock')
+    checks['owned_lock_removed'] = deleted_lock.get('error') is None
+    if not checks['owned_lock_removed']:
+        return finish()
+    edited_content = VALID_INI + '\n# ACC009 stopped management\n'
+    edited = mutate('edit_config', {'name': import_name, 'content': edited_content, 'expected_sha256': sha_of(VALID_INI)}, 'acc009-stopped-edit')
+    read_edited = call(base, 'read_config', {'name': import_name}, controller=None)
+    writer.add_evidence('acc009-stopped-edit-read', read_edited)
+    checks['stopped_edit_ok'] = edited.get('error') is None and content_matches(read_edited, import_name, edited_content)
+    if not checks['stopped_edit_ok']:
+        return finish()
+    renamed_name = 'acc009-moved-' + uuid.uuid4().hex + '.ini'
+    renamed = mutate('rename_config', {'name': import_name, 'new_name': renamed_name, 'expected_sha256': sha_of(edited_content)}, 'acc009-stopped-rename')
+    read_renamed = call(base, 'read_config', {'name': renamed_name}, controller=None)
+    writer.add_evidence('acc009-stopped-rename-read', read_renamed)
+    checks['stopped_rename_ok'] = renamed.get('error') is None and content_matches(read_renamed, renamed_name, edited_content)
+    if not checks['stopped_rename_ok']:
+        return finish()
+    deleted = mutate('delete_config', {'name': renamed_name, 'expected_sha256': sha_of(edited_content)}, 'acc009-stopped-delete')
+    missing = call(base, 'read_config', {'name': renamed_name}, controller=None)
+    writer.add_evidence('acc009-stopped-delete-read', missing)
+    checks['stopped_delete_ok'] = deleted.get('error') is None and err_of(missing) == 'config_not_found'
+    if not all(checks.values()):
+        return finish()
+
+    link_request = dict(operation='reparse-setup', name='acc009-link-' + token + '.ini', token=token, run_id=run_id)
+    setup, raw = _acc009_os_probe(channel, link_request)
+    writer.add_evidence('acc009-reparse-setup', raw)
+    if setup.get('created') is not True:
+        if setup.get('cleanup_complete') is not True:
+            channel.preserve_scene = True
+            raise StepError('ACC009 failed reparse setup cleanup unconfirmed')
+        writer.blocker = {'reason': 'ACC009 reparse construction unavailable; not evaluated', 'observation': setup}
+        return finish(EXIT_BLOCKED)
     try:
-        call(base, 'delete_config',
-             {'name': lock_name,
-              'expected_sha256': sha_of(lock_content),
-              'command_id': unique_command('lp-d'),
-              'expected_state_version': status(base)['state_version']})
-    except Exception:  # noqa: BLE001
-        pass
+        payload = call(base, 'read_config', {'name': link_request['name']}, controller=None)
+        writer.add_evidence('acc009-reparse-read', payload)
+        checks['reparse_escape_blocked'] = err_of(payload) == 'path_escape_blocked'
+    finally:
+        cleanup, raw = _acc009_os_probe(channel, dict(link_request, operation='reparse-cleanup', work_dir=setup['work_dir'], target_sha256=setup['target_sha256']))
+        writer.add_evidence('acc009-reparse-cleanup', raw)
+        checks['reparse_cleanup_confirmed'] = cleanup.get('cleanup_complete') is True
+        if not checks['reparse_cleanup_confirmed']:
+            channel.preserve_scene = True
+    if not all(checks.values()):
+        return finish()
 
-    # reparse point escape: junction inside custom root pointing outside.
-    reparse = channel.powershell(
-        "$root = Join-Path $env:ProgramData "
-        "'FakeNet-NG-MCP\\configs\\custom'; "
-        "$link = Join-Path $root 'junction.ini'; "
-        "New-Item -ItemType SymbolicLink -Path $link -Target "
-        "'C:\\Windows\\system.ini' -ErrorAction SilentlyContinue | "
-        "Out-Null; "
-        "if (Test-Path $link) { 'LINK_CREATED' } else { 'LINK_UNAVAILABLE' }",
-        timeout=90)
-    writer.add_evidence('acc009-reparse-setup', reparse)
-    if 'LINK_CREATED' in reparse['output']:
-        payload = call(base, 'read_config', {'name': 'junction.ini'},
-                       controller=None)
-        checks['reparse_escape_blocked'] = err_of(payload) == \
-            'path_escape_blocked'
-        channel.powershell(
-            "Remove-Item (Join-Path $env:ProgramData "
-            "'FakeNet-NG-MCP\\configs\\custom\\junction.ini') -Force",
-            timeout=60)
-    else:
-        checks['reparse_escape_blocked'] = False  # environment cannot
-        # construct the link: sub-check blocked, overall verdict fails
-
-    # real restart binding (record 023 real-run share)
     second = load_and_start(base)
     writer.add_evidence('acc009-second-start', second)
-    run_before = status(base).get('run_id')
-    version = status(base)['state_version']
-    restarted = call(base, 'restart',
-                     {'command_id': unique_command('a9-restart'),
-                      'expected_state_version': version}, timeout=150)
-    writer.add_evidence('acc009-restart-payload', restarted)
-    checks['restart_ok'] = restarted.get('error') is None
-    checks['restart_binds_original_run'] = \
-        restarted.get('run_id') == run_before
-    stop_run(base)
-    writer.add_evidence('acc009-checks', checks)
-    checked = [v for v in checks.values() if v is not None]
-    return EXIT_PASS if all(checked) else EXIT_FAIL
+    ready, prior = wait_state(base, lambda s: s.get('state') == 'healthy', timeout=45)
+    checks['second_start_ok'] = second.get('error') is None and bool(ready and prior.get('run_id') and second.get('run_id') == prior['run_id'] and second.get('config_identity') == prior.get('config_identity'))
+    if not checks['second_start_ok']:
+        return finish()
+    run_before = prior['run_id']
+    restarted = mutate('restart', {}, 'acc009-restart')
+    current = status(base)
+    writer.add_evidence('acc009-restart-observed', current)
+    checks['restart_ok'] = restarted.get('error') is None and current.get('state') == 'healthy'
+    checks['restart_binds_original_run'] = restarted.get('bound_run_id') == run_before
+    checks['restart_reports_current_run'] = bool(restarted.get('run_id') and restarted['run_id'] == current.get('run_id') and restarted['run_id'] != run_before)
+    final = stop_run(base)
+    writer.add_evidence('acc009-final-stop', final)
+    checks['final_stop_ok'] = final.get('error') is None and final.get('state') == 'stopped' and not final.get('run_id')
+    return finish()
 
 
 def main():
