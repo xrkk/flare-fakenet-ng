@@ -12,7 +12,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import tempfile
 import unittest
 from unittest import mock
 import uuid
@@ -23,11 +22,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import acceptance as entry
 import acceptance_mcp as mcp
 
-OLD_PACKAGE = ROOT / 'dist/fakenet-egress-e493a23-20261021/fakenetng-mcp-candidate.zip'
-OLD_MANIFEST = ROOT / 'dist/fakenet-egress-e493a23-20261021/mcp-candidate-manifest.json'
 OLD_SOURCE = 'e493a236ca8297373dc4157a6c4bd8aef8683b4e'
-OLD_PACKAGE_SHA = '64b1539f2ea60b6b0c0473107cab570023d720f240662bcbf396683c39dc3478'
-OLD_MANIFEST_SHA = '2cb37dc7a2ada39b0f6e03a7595feb0760e94e18bb86053abb510f2a71892f54'
 CHECKS = ['ACC-005']
 
 
@@ -42,7 +37,8 @@ def write_json(path, value):
 
 
 def proof_dir(name):
-    root = Path(os.environ.get('FN_IDENTITY_CHECK_DIR', tempfile.mkdtemp(prefix='t011-proof-')))
+    configured = os.environ.get('FN_IDENTITY_CHECK_DIR')
+    root = Path(configured) if configured else ROOT / 'Logs/acceptance/mcp-identity-selftest'
     path = root / 'proofs' / (name + '-' + uuid.uuid4().hex)
     path.mkdir(parents=True, exist_ok=False)
     return path
@@ -143,6 +139,11 @@ def cli(*args):
     stdout, stderr = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         code = entry.main(['--root', str(ROOT), *map(str, args)])
+    configured = os.environ.get('FN_IDENTITY_CHECK_DIR')
+    if configured:
+        with (Path(configured) / 'cli-transcripts.jsonl').open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps({'entry': 'acceptance.main', 'argv': ['--root', str(ROOT), *map(str, args)],
+                         'returncode': code, 'stdout': stdout.getvalue(), 'stderr': stderr.getvalue()}) + '\n')
     return code, stdout.getvalue(), stderr.getvalue()
 
 
@@ -229,14 +230,14 @@ class PackageLayerTests(unittest.TestCase):
 
     def test_old_package_current_harness_plan_execute_independent_judge(self):
         base = proof_dir('old-package-current-harness')
-        package, manifest = OLD_PACKAGE, OLD_MANIFEST
+        package, manifest, unused = synthetic_package(base / 'package', OLD_SOURCE)
         self.assertEqual(OLD_SOURCE, json.loads(manifest.read_text())['source_commit'])
         before = (sha256(package), sha256(manifest))
         inputs = mcp_inputs(base, package, manifest, OLD_SOURCE)
         plan = self.prepare(package, manifest, inputs, base)
         self.assertEqual(OLD_SOURCE, plan['source_commit'])
         self.assertEqual(OLD_SOURCE, plan['candidate']['source_commit'])
-        self.assertEqual(OLD_MANIFEST_SHA, plan['candidate']['package_manifest_sha256'])
+        self.assertEqual(sha256(manifest), plan['candidate']['package_manifest_sha256'])
         self.assertEqual(entry.sha256(ROOT / 'tools/acceptance.py'),
                          plan['native_source_hashes']['tools/acceptance.py'])
         self.assertFalse(plan['blocked'])
@@ -257,6 +258,74 @@ class PackageLayerTests(unittest.TestCase):
         self.assertEqual(OLD_SOURCE, result_value['identity']['source_commit'])
         self.assertTrue(result_value['fixture'])
         self.assertEqual(before, (sha256(package), sha256(manifest)))
+
+        self.assert_rehashed_judge_rejects(base, inputs, plan)
+
+    def assert_rehashed_judge_rejects(self, base, inputs, plan):
+        import shutil
+        original = base / 'run'
+        for mutation in ('missing-pins', 'receipt-target', 'trace-target'):
+            root = proof_dir('independent-' + mutation)
+            run = root / 'run'
+            shutil.copytree(original, run)
+            # Relocate every original path and rebuild all legitimate outer hashes.
+            for path in run.rglob('*.json'):
+                path.write_text(path.read_text().replace(str(original), str(run)), encoding='utf-8')
+            plan_path = run / 'plan.json'
+            candidate_plan = mcp.read(plan_path)
+            receipt_path = run / 'results/MCP-P02-FULL/receipt.json'
+            receipt = mcp.read(receipt_path)
+            if mutation == 'missing-pins':
+                candidate_plan.pop('native_source_hashes')
+                write_json(plan_path, candidate_plan)
+            elif mutation == 'receipt-target':
+                receipt['native_target']['hostname'] = 'FOREIGN-HOST'
+            else:
+                trace_path = run / 'results/MCP-P02-FULL/driver/units/ACC-005/trace.json'
+                trace = mcp.read(trace_path)
+                trace['target']['hostname'] = 'FOREIGN-HOST'
+                write_json(trace_path, trace)
+            # Relocation changes legitimate nested path evidence too; refresh
+            # its exact indexed hashes before testing the semantic mismatch.
+            def refresh_links(value):
+                if isinstance(value, dict):
+                    if isinstance(value.get('path'), str) and 'sha256' in value:
+                        path = Path(value['path'])
+                        if path.is_file():
+                            value['sha256'] = sha256(path)
+                    for child in value.values():
+                        refresh_links(child)
+                elif isinstance(value, list):
+                    for child in value:
+                        refresh_links(child)
+            for iteration in range(4):
+                for path in (run / 'results').rglob('*.json'):
+                    if path == receipt_path or path.name == 'results.json':
+                        continue
+                    value = mcp.read(path)
+                    refresh_links(value)
+                    write_json(path, value)
+            for artifact in receipt['artifacts']:
+                artifact['sha256'] = sha256(artifact['path'])
+            write_json(receipt_path, receipt)
+            index_path = run / 'results/results.json'
+            index = mcp.read(index_path)
+            index['plan_sha256'] = sha256(plan_path)
+            for item in index['receipts']:
+                item['sha256'] = sha256(item['path'])
+            write_json(index_path, index)
+            response = cli('judge', '--plan', plan_path, '--results', run / 'results',
+                           '--output', root / 'refused.json')
+            write_json(root / 'cli-response.json', {'rc': response[0], 'stdout': response[1], 'stderr': response[2]})
+            self.assertNotEqual(0, response[0], response)
+            combined = response[1] + response[2]
+            if mutation == 'missing-pins':
+                self.assertIn('complete native source pins', combined)
+            else:
+                summary = mcp.read(root / 'refused.json')
+                combined += json.dumps(summary)
+                self.assertIn('receipt identity differs' if mutation == 'receipt-target' else 'unit trace identity mismatch', combined)
+                self.assertFalse(summary['fixture_contract_pass'])
 
     def test_dependency_expansion_keeps_only_package_cases_in_layer(self):
         base = proof_dir('dependency-expansion')
@@ -292,6 +361,66 @@ class PackageLayerTests(unittest.TestCase):
         self.assertIn('does not match current HEAD', result[2])
         self.assertFalse((old / 'run/plan.json').exists())
 
+    def test_real_historical_blob_equality_and_mixed_build_compatibility(self):
+        import subprocess
+        base = proof_dir('source-identity')
+        previous = '4f09102f503bad49d390179b6751d71ceb7f2845'
+        compared = '2c70e2318372f022934b6feda19642885bed3be1'
+        current = entry.git_head(ROOT)
+        # The received T011 commit left the scheduler unchanged, but changed the planner.
+        self.assertTrue(entry._git_objects_equal(ROOT, previous, compared, ['tools/acceptance_scheduler.py']))
+        self.assertFalse(entry._git_objects_equal(ROOT, previous, compared, ['tools/acceptance.py']))
+        self.assertFalse(entry._git_objects_equal(ROOT, previous, compared, ['missing-required-source.py']))
+        write_json(base / 'blob-observations.json', {'source': previous, 'head': compared,
+                   'unchanged': 'tools/acceptance_scheduler.py', 'changed': 'tools/acceptance.py',
+                   'unrelated_path_reuse': True, 'changed_or_missing_refused': True,
+                   'scope': 'real Git batch parser; not full source/mixed functional execution'})
+        package, manifest, unused = synthetic_package(base / 'package', current)
+        inputs = mcp_inputs(base, package, manifest, current)
+        env = environment(base, inputs)
+        # No offline-pytest permission: the source case remains honestly blocked.
+        env['allowed_actions'] = ['offline-artifacts']
+        write_json(base / 'candidate.json', candidate(package, manifest, inputs))
+        write_json(base / 'environment.json', env)
+        response = cli('plan', '--mode', 'selected', '--case', 'BUILD-PACKAGE-IDENTITY',
+                       '--case', 'CORE-REGRESSION-SELFTEST', '--candidate', base / 'candidate.json',
+                       '--environment', base / 'environment.json', '--output', base / 'run/plan.json')
+        write_json(base / 'response.json', {'rc': response[0], 'stdout': response[1], 'stderr': response[2]})
+        self.assertEqual(0, response[0], response)
+        plan = mcp.read(base / 'run/plan.json')
+        self.assertEqual(sha256(manifest), plan['candidate']['package_manifest_sha256'])
+        self.assertNotIn('BUILD-PACKAGE-IDENTITY', plan['blocked'])
+        # Exercise the full registry gate with protocol bytes supplied only at
+        # the Git process boundary. This is an OS-metadata fixture, not a new
+        # repository/commit and not a claim that a deployed candidate is equal.
+        metadata_records = []
+        for mode in ('unchanged', 'changed', 'missing'):
+            def metadata(argv, **kwargs):
+                if argv[-2:] == ['rev-parse', '--show-toplevel']:
+                    return subprocess.CompletedProcess(argv, 0, str(ROOT) + '\n', '')
+                if argv[-2:] == ['rev-parse', 'HEAD']:
+                    return subprocess.CompletedProcess(argv, 0, 'f' * 40 + '\n', '')
+                self.assertEqual('cat-file', argv[-2])
+                self.assertEqual('--batch-check', argv[-1])
+                queries = kwargs['input'].splitlines()
+                rows = []
+                for i, query in enumerate(queries):
+                    name = query.split(':', 1)[1]
+                    digest = sha256(ROOT / name)[:40]
+                    rows.append(query + ' missing' if mode == 'missing' and i == 1 else
+                                ('e' * 40 if mode == 'changed' and i == 1 else digest) + ' blob 1')
+                output = '\n'.join(rows) + '\n'
+                metadata_records.append({'mode': mode, 'argv': argv, 'input': kwargs['input'],
+                                         'returncode': 0, 'stdout': output, 'fixture': True})
+                return subprocess.CompletedProcess(argv, 0, output, '')
+            with mock.patch.object(entry.subprocess, 'run', side_effect=metadata):
+                if mode == 'unchanged':
+                    entry.validate_plan_registry(ROOT, plan, base / 'run/plan.json')
+                else:
+                    with self.assertRaisesRegex(entry.InputError, 'source plan is not valid'):
+                        entry.validate_plan_registry(ROOT, plan, base / 'run/plan.json')
+        write_json(base / 'metadata-protocol-originals.json', metadata_records)
+
     def test_bad_source_package_target_and_pin_rejected_before_driver(self):
         base = proof_dir('rejections')
         package, manifest, unused = synthetic_package(base / 'package')
@@ -310,8 +439,14 @@ class PackageLayerTests(unittest.TestCase):
             'missing-source': lambda p: p['source_hashes']['MCP-P02-FULL'].pop(
                 'test/mcp/acceptance/run_p02_acc.py'),
         }
+        reasons = {'package': 'MCP package candidate differs',
+                   'manifest': 'MCP package candidate differs',
+                   'source': 'MCP package candidate differs',
+                   'target': 'MCP target differs',
+                   'pin': 'native candidate source changed',
+                   'missing-source': 'source set differs'}
         with mock.patch.object(mcp, 'NativeBoundary',
-                                        side_effect=AssertionError('driver must not start')):
+                                        side_effect=AssertionError('driver must not start')) as boundary:
             for name, mutate in mutations.items():
                 with self.subTest(name=name):
                     bad = copy.deepcopy(plan)
@@ -319,9 +454,13 @@ class PackageLayerTests(unittest.TestCase):
                     local = base / ('bad-' + name)
                     local.mkdir()
                     path = local / 'plan.json'
+                    bad['run_dir'] = str(local)
                     write_json(path, bad)
-                    with self.assertRaises((ValueError, KeyError, OSError, RuntimeError)):
+                    with self.assertRaisesRegex(entry.InputError, reasons[name]) as caught:
                         entry.execute_plan(ROOT, path)
+                    write_json(local / 'refusal.json', {'mutation': name, 'reason': str(caught.exception),
+                                                       'driver_calls': boundary.call_count})
+                    self.assertEqual(0, boundary.call_count)
                     self.assertFalse((local / 'results').exists())
                     self.assertFalse((base / 'run/results').exists())
 

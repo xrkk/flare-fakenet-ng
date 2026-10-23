@@ -764,18 +764,22 @@ def is_package_layer(root, cases, catalog, environment, candidate):
     ids = {case.get('id') for case in cases}
     if not ids or not ids.issubset(PACKAGE_LAYER_CASES):
         return False
+    registered = {case['id']: case for case in all_cases(catalog)}
     drivers = acceptance_native.driver_table(root)
     for case in cases:
+        if (case.get('adapter') != 'native' or case.get('id') not in registered
+                or case_identity(case) != case_identity(registered[case['id']])):
+            return False
         case_id = case.get('id')
         driver = drivers.get(case.get('native_driver'))
         if not isinstance(driver, dict) or not driver.get('implemented'):
             return False
         kind = driver.get('production_kind')
         if case_id == 'BUILD-PACKAGE-IDENTITY':
-            if kind != 'package-identity':
+            if case.get('native_driver') != 'build-identity' or kind != 'package-identity':
                 return False
             continue
-        if kind != 'mcp-controller':
+        if case.get('native_driver') != 'mcp-headless' or kind != 'mcp-controller':
             return False
         try:
             unused, checks = acceptance_native.validate_case(case, root, environment)
@@ -789,9 +793,15 @@ def is_package_layer(root, cases, catalog, environment, candidate):
                     or identity.get('package_sha256') != candidate.get('package_sha256')
                     or Path(inputs.get('package', '')).resolve() != Path(candidate.get('package_path', '')).resolve()
                     or Path(inputs.get('manifest', '')).resolve() != Path(candidate.get('package_manifest', '')).resolve()):
-                return False
-        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
-            return False
+                raise InputError('MCP package candidate differs from frozen input: ' + case_id)
+            runtime_target = environment.get('native_runtime', {}).get('identity', {})
+            if any(inputs['target'][key] != runtime_target.get(key)
+                   for key in ('platform', 'hostname', 'vm_uuid')):
+                raise InputError('MCP target differs from frozen Windows target: ' + case_id)
+        except InputError:
+            raise
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+            raise InputError('MCP package input refused: %s: %s' % (case_id, exc)) from exc
     return True
 
 
@@ -940,6 +950,9 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
         raise InputError('plan candidate/source_commit mismatch')
     package_selection = is_package_layer(
         root, [registered[item] for item in required], catalog, environment, candidate)
+    if (set(required) & PACKAGE_LAYER_CASES
+            and not isinstance(plan.get('native_source_hashes'), dict)):
+        raise InputError('package execution requires complete native source pins')
     if package_selection:
         # Bind the package manifest as part of planning.  A blocked BUILD-only
         # input keeps its original blocked state; every runnable package-layer
@@ -975,8 +988,10 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
         except InputError:
             raise
         except (OSError, ValueError, KeyError, TypeError, RuntimeError):
-            # The original input/runtime validator will turn this into the
-            # registered blocked reason.  It cannot reach a driver.
+            # Full/mixed plans retain missing-environment blocked entries.
+            # The registered blocked reason is rechecked below; a previously
+            # runnable plan with changed input cannot reach a driver. Package-
+            # only input errors already fail in is_package_layer above.
             continue
     if require_execute_action:
         has_offline = any(registered[item]['adapter'] == 'offline-pytest'
@@ -1141,7 +1156,7 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
     if candidate['source_commit'] != head:
         raise InputError('candidate.source_commit %s does not match current HEAD %s'
                          % (candidate['source_commit'], head))
-    if package_selection:
+    if package_selection or any(case.get('native_driver') == 'build-identity' for case in selected):
         try:
             candidate = __import__('acceptance_package').freeze_candidate(candidate)
         except (OSError, ValueError, KeyError, TypeError) as exc:
