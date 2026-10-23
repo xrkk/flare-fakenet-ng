@@ -402,11 +402,18 @@ class BoundarySession:
    raise
   return RecordedResponse(value)
  def http_connection(self,host,port=None,timeout=30,source_address=None,**kwargs):
-  if getattr(self._local,'inside_transport',False):return self._original['http_connection'](host,port,timeout=timeout,source_address=source_address,**kwargs)
-  if kwargs or not source_address:raise ValueError('explicit source required for raw HTTP probe')
+  if getattr(self._local,'inside_transport',False):
+   return self._original['http_connection'](host,port,timeout=timeout,source_address=source_address,**kwargs)
+  if kwargs:raise ValueError('unsupported raw HTTP connection options')
+  if not source_address:
+   # urllib's standard path is already recorded by urlopen().  Let its inner
+   # HTTPConnection remain the real class so its class contract is intact.
+   return self._original['http_connection'](host,port,timeout=timeout,source_address=None)
   owner=self
   class Connection:
-   def request(self,method,path,body=None,headers=None):
+   sock=None
+   def request(self,method,path,body=None,headers=None,**kwargs):
+    if kwargs:raise ValueError('unsupported raw HTTP request options')
     self.response=owner.operation('http-source',{'host':host,'port':port,'timeout':timeout,'source_address':list(source_address),'method':method,'path':path,'body':body,'headers':headers or {}})
    def getresponse(self):return RecordedResponse(self.response)
    def close(self):pass  # Native operation closes its socket before returning bytes.
@@ -455,6 +462,10 @@ class BoundarySession:
  @contextlib.contextmanager
  def activate(self):
   from unittest.mock import patch
+  real_connection=http.client.HTTPConnection
+  class RecordedHTTPConnection(real_connection):
+   def __new__(cls,host,port=None,timeout=30,source_address=None,**kwargs):
+    return self.http_connection(host,port,timeout=timeout,source_address=source_address,**kwargs)
   real_thread_init=threading.Thread.__init__;real_alive=threading.Thread.is_alive
   def init_thread(thread,*args,**kwargs):
    with self.lock:self._thread_count+=1;number=self._thread_count
@@ -464,7 +475,7 @@ class BoundarySession:
    stack.enter_context(patch.object(threading.Thread,'is_alive',lambda thread:self.local_observation('thread-alive',{'name':thread.name},lambda:real_alive(thread))))
    for obj,name,replacement in ((urllib.request,'urlopen',self.urlopen),(subprocess,'run',self.run_process),(time,'time',lambda:self.operation('time',{})),(time,'monotonic',lambda:self.operation('monotonic',{})),(time,'sleep',lambda n:self.operation('sleep',{'seconds':n})),(uuid,'uuid4',lambda:uuid.UUID(self.operation('uuid',{}))),(threading.Thread,'__init__',init_thread)):
     stack.enter_context(patch.object(obj,name,replacement))
-   stack.enter_context(patch.object(http.client,'HTTPConnection',self.http_connection))
+   stack.enter_context(patch.object(http.client,'HTTPConnection',RecordedHTTPConnection))
    import artifact_transfer
    stack.enter_context(patch.object(artifact_transfer,'receive_artifact',self.receive_artifact))
    # A direct unrecorded socket path must never silently evade the evidence.

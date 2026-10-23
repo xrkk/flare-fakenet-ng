@@ -164,7 +164,8 @@
             "test/test_acceptance_scheduler.py",
             "test/test_acceptance_combo.py",
             "test/test_acceptance_mcp_identity.py",
-            "test/test_acceptance_mcp_baseline.py"
+            "test/test_acceptance_mcp_baseline.py",
+            "test/test_acceptance_mcp_transport.py"
           ]
         },
         {
