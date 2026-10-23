@@ -33,7 +33,7 @@ class ReadOnlyBoundary:
   if kind=='powershell':
    if 'fault_exists=' in value['command']:
     from pathlib import PureWindowsPath
-    manifest=m.read(self.inputs['manifest']);payload={'image':str(PureWindowsPath(self.inputs['installation_root'])/'fakenetng-mcp.exe'),'sha256':manifest['files'][0]['sha256'],'pid':12,'birth':'1234','enabled':False,'grace':60,'fault_exists':False}
+    manifest=m.read(self.inputs['manifest']);payload={'image':str(PureWindowsPath(self.inputs['installation_root'])/'fakenetng-mcp.exe'),'sha256':manifest['files'][0]['sha256'],'pid':12,'birth':'1234','enabled':False,'grace':60,'fault_exists':False,'service_config':{'listen_ip':self.inputs['listen_ip'],'listen_port':28788,'allowed_host_ips':[self.inputs['allowed_host']],'extra_control_ports':[]}}
    elif 'grace=$cfg.stop_grace_seconds' in value['command']:payload={'enabled':False,'grace':60}
    else:raise AssertionError('unexpected original PowerShell command '+value['command'])
    return {'output':json.dumps(payload),'raw':json.dumps(payload),'exit_code':0,'is_error':False}
@@ -532,5 +532,211 @@ class OriginalIncidentIntegrityTests(unittest.TestCase):
   unit='INCIDENT-INTEGRITY';out=self.root/'no-dump'
   value=m.run('MCP-P04-FULL',out,self.inputs,selected=[unit],boundary=NoDump(self.inputs),fixture=True)
   self.assertNotEqual('pass',value['checks'][unit]['status']);self.assertEqual('fail',o.evaluate(ROOT,out,'MCP-P04-FULL',[unit],self.inputs,allow_fixture=True)[0][0]['status'])
+
+
+class ControlDomainBoundary(DomainBoundary):
+ """Real registered tools/config domain; guest processes and wire are memory."""
+ def __init__(self,inputs,root,marker_mode='normal'):
+  self.service_bytes=json.dumps({'listen_ip':inputs['listen_ip'],'listen_port':28788,'allowed_host_ips':[inputs['allowed_host']],'extra_control_ports':[]}).encode();self.marker_mode=marker_mode;self.sent={};self.echoes={};self.packet_files={};self.marker='';self.closed=[]
+  super().__init__(inputs,root)
+  from fakenet.mcp.testdouble import LifecycleDouble
+  self.context.runner.health_detail=lambda state:{**LifecycleDouble.health_detail(state),'final_filter':('(ip.DstAddr != '+self.inputs['allowed_host']+' or (tcp.SrcPort != 28788 and tcp.SrcPort != 28787 and tcp.SrcPort != 28790 and tcp.SrcPort != 29094 and tcp.SrcPort != 29095)) and (ip.DstAddr < 127.0.0.0 or ip.DstAddr > 127.255.255.255)')}
+ def pcap_bytes(self,family,loop_marker,diverted_marker,port):
+  import dpkt,io,socket
+  stream=io.BytesIO();writer=dpkt.pcap.Writer(stream,linktype=dpkt.pcap.DLT_RAW)
+  def packet(src,dst,marker,udp=True,dport=port):
+   l4=dpkt.udp.UDP(sport=41000,dport=dport,data=marker.encode()) if udp else dpkt.tcp.TCP(sport=28787,dport=41000,data=marker.encode())
+   if udp:l4.ulen=len(l4)
+   proto=17 if udp else 6
+   if ':' in src:ip=dpkt.ip6.IP6(src=socket.inet_pton(socket.AF_INET6,src),dst=socket.inet_pton(socket.AF_INET6,dst),nxt=proto,hlim=64,data=l4);ip.plen=len(l4)
+   else:ip=dpkt.ip.IP(src=socket.inet_aton(src),dst=socket.inet_aton(dst),p=proto,ttl=64,data=l4);ip.len=len(ip)
+   writer.writepkt(bytes(ip),ts=1.)
+  local='127.0.0.1' if family=='V4' else '::1'
+  packet(local,local,loop_marker)
+  if self.marker_mode=='management-only':packet('192.168.204.149','192.168.204.1',diverted_marker,False,28787)
+  else:packet('192.168.204.149','192.168.204.2',diverted_marker if self.marker_mode!='substring' else 'prefix-'+diverted_marker,True,53)
+  if self.marker_mode=='redirected':packet('127.0.0.1','192.168.204.149',loop_marker,True,53)
+  return stream.getvalue()
+ def exchange(self,kind,value):
+  with self.guard:
+   if kind=='socket-open':
+    self.assert_target(value['address']);self.sent[value['handle']]=b'';return {'connected':True}
+   if kind=='socket-send':
+    self.sent[value['handle']]=value['data'];port=int(value['handle'].split('-')[-1]);return None
+   if kind=='socket-recv':return self.sent[value['handle']]
+   if kind=='socket-timeout':return None
+   if kind=='socket-close':self.closed.append(value['handle']);return {'fileno':-1}
+   if kind=='powershell':
+    cmd=value['command'];import re,base64
+    if 'fault_exists=' in cmd:
+     payload=json.loads(ReadOnlyBoundary.exchange(self,kind,value)['output']);payload['service_config']=json.loads(self.service_bytes);output=json.dumps(payload)
+    elif '$b=[IO.File]::ReadAllBytes($p)' in cmd:
+     output=json.dumps({'sha256':hashlib.sha256(self.service_bytes).hexdigest(),'base64':base64.b64encode(self.service_bytes).decode()})
+    elif "extra control config changed; preserve scene" in cmd:
+     previous=re.search(r"-ne '([a-f0-9]{64})'",cmd).group(1)
+     if hashlib.sha256(self.service_bytes).hexdigest()!=previous:raise ValueError('extra control config changed; preserve scene')
+     self.service_bytes=base64.b64decode(re.search(r"FromBase64String\('([^']*)'\)",cmd).group(1));output=json.dumps({'sha256':hashlib.sha256(self.service_bytes).hexdigest()})
+    elif 'Start-Service fakenetng-mcp' in cmd:output='Running'
+    elif 'controlled pre-stop failed' in cmd:output='controlled service stop completed'
+    elif 'Start-Process powershell -WindowStyle Hidden' in cmd:output='120'
+    elif 'StartTime.ToFileTimeUtc()' in cmd and 'WaitForExit' not in cmd and 'fault_exists=' not in cmd:output='123456'
+    elif 'owned process PID was reused' in cmd:output='KILLED'
+    elif 'Get-Content' in cmd and 'ctrl-listener-' in cmd:
+     port=re.search(r'ctrl-listener-',cmd);output='\n'.join('recv echo:ctrl-'+str(p)+'-'+str(i) for p in (28790,29094,29095) for i in range(5))
+    elif "$c=[Net.Sockets.UdpClient]" in cmd:
+     loop=re.search(r"'(ctrl-loopback-(v[46])-[a-z0-9]+)'",cmd);self.marker=loop.group(1);family=loop.group(2).upper();diverted=self.marker.replace('ctrl-loopback','ctrl-diverted');port=39998 if family=='V4' else 39999;raw=self.pcap_bytes(family,self.marker,diverted,port);self.packet_files={'packets.pcap':raw,'packets-raw.pcap':raw};output=json.dumps({'loopback_sent':len(self.marker),'diverted_sent':len(diverted)})
+    elif "Filter '*.pcap'" in cmd and ').Count' in cmd:output='2'
+    elif '$rows=@($files' in cmd:
+     output=json.dumps({'run_dir':'memory-guest-run','files':[{'name':name,'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest()} for name,raw in self.packet_files.items()]})
+    elif "Filter 'packets" in cmd:
+     name=re.search(r"Filter '(packets[^']*)'",cmd).group(1);output=base64.b64encode(self.packet_files[name]).decode()
+    elif 'loopback-receipts-' in cmd and '@{content=' in cmd:output=json.dumps({'content':self.marker,'base64':base64.b64encode(self.marker.encode()).decode()})
+    else:return super().exchange(kind,value)
+    return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+   return super().exchange(kind,value)
+ def assert_target(self,address):
+  if address[0]!=self.inputs['listen_ip']:raise AssertionError('old or unbound VM target '+str(address))
+
+class OriginalControlTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_default_and_each_management_port_use_current_vm(self):
+  for unit in ['CONTROL-DEFAULT']+['CONTROL-EXTRA-'+str(port) for port in (28787,28790,29094,29095)]:
+   with self.subTest(unit=unit):
+    boundary=ControlDomainBoundary(self.inputs,self.root/(unit+'-domain'));out=self.root/unit
+    value=m.run('MCP-SPECIAL-IPC',out,self.inputs,selected=[unit],boundary=boundary,fixture=True)
+    self.assertEqual('pass',value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+    self.assertEqual([],json.loads(boundary.service_bytes)['extra_control_ports'])
+    rows,clean,details=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',[unit],self.inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],details);self.assertTrue(clean)
+ def test_original_loopback_v4_v6_bytes_and_replay(self):
+  for family in ('V4','V6'):
+   with self.subTest(family=family):
+    unit='LOOPBACK-'+family;out=self.root/unit;boundary=ControlDomainBoundary(self.inputs,self.root/(unit+'-domain'))
+    value=m.run('MCP-SPECIAL-IPC',out,self.inputs,selected=[unit],boundary=boundary,fixture=True)
+    self.assertEqual('pass',value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+    rows,clean,details=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',[unit],self.inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],details);self.assertTrue(clean)
+ def test_management_text_substrings_and_redirected_marker_cannot_pass(self):
+  for mode in ('management-only','substring','redirected'):
+   with self.subTest(mode=mode):
+    unit='LOOPBACK-V4';out=self.root/mode;boundary=ControlDomainBoundary(self.inputs,self.root/(mode+'-domain'),mode)
+    value=m.run('MCP-SPECIAL-IPC',out,self.inputs,selected=[unit],boundary=boundary,fixture=True)
+    self.assertEqual('fail',value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+    rows,clean,details=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',[unit],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],details);self.assertTrue(clean)
+
+
+class InitializationProcessBoundary(IpcProcessBoundary):
+ def exchange(self,kind,value):
+  with self.guard:
+   if kind=='http' and json.loads(value['data'])['params']['name']=='start':
+    self.running=False;self.terminal=True;self.version+=1
+    return self.response({'service':'fakenetng-mcp','state':'stopped','state_version':self.version,'run_id':None,'controller':None,'config_identity':self.inputs['config_identity'],'last_run_outcome':'failed','error':None})
+   if kind=='powershell' and "throw 'S2 receipt not unique'" in value['command']:
+    log='Traceback (most recent call last):\n  File "fakenet/mcp/managed.py", line 1, in child_main\n  File "fakenet/fakenet.py", line 2, in start\n  File "fakenet/mcp/faultinject.py", line 3, in initialize\nRuntimeError: injected managed initialization failure'
+    output=json.dumps({'run_id':self.run_id,'receipt':self.fault,'log':log,'parent':json.dumps({'event':'health_state','frame':{'state':'failed','run_id':self.run_id}}),'child':json.dumps({'event':'send','frame':{'error':'injected managed initialization failure','run_id':self.run_id}})})
+    return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+   return super().exchange(kind,value)
+
+class OriginalInitializationTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def run_initialization(self):
+  unit='INITIALIZATION-FAILURE';out=self.root/unit
+  value=m.run('MCP-SPECIAL-IPC',out,self.inputs,selected=[unit],boundary=InitializationProcessBoundary(self.inputs),fixture=True)
+  self.assertEqual('pass',value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+  rows,clean,details=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',[unit],self.inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],details);self.assertTrue(clean)
+  return out
+ def test_actual_initialization_stack_nonce_child_and_recovery_replay(self):self.run_initialization()
+ def test_configuration_error_or_wrong_nonce_is_not_initialization_evidence(self):
+  out=self.run_initialization();path=out/'units/INITIALIZATION-FAILURE/trace.json';trace=m.read(path)
+  for row in trace['records']:
+   if row['kind']=='powershell' and "throw 'S2 receipt not unique'" in row['input']['command']:
+    data=json.loads(row['output']['output']);data['receipt']['nonce']='different';data['log']='ConfigError: invalid configuration';data['child']='';row['output']['output']=json.dumps(data)
+  path.write_text(json.dumps(trace))
+  rows,clean,details=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',['INITIALIZATION-FAILURE'],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],details);self.assertTrue(clean)
+
+
+class InvalidControlBoundary(ControlDomainBoundary):
+ def __init__(self,inputs,root,stale=False):
+  super().__init__(inputs,root);self.service_log=b'config load failed ConfigError extra control old\n';self.stale=stale;self.service_state='Running'
+ def exchange(self,kind,value):
+  if kind=='powershell':
+   cmd=value['command'];import re,base64
+   if '$b=[IO.File]::ReadAllBytes(' in cmd and '@{sha256=' in cmd and 'service.json' in cmd:
+    output=json.dumps({'sha256':hashlib.sha256(self.service_bytes).hexdigest(),'base64':base64.b64encode(self.service_bytes).decode()})
+   elif '[IO.File]::WriteAllText(' in cmd and "service.json','" in cmd:
+    self.service_bytes=re.search(r"service.json','(.*?)',\[Text.UTF8Encoding\]",cmd).group(1).replace("''", "'").encode();output='written'
+   elif 'if(Test-Path $p){(Get-Item $p).Length}else{0}' in cmd:output=str(len(self.service_log))
+   elif 'sc.exe start fakenetng-mcp' in cmd and 'Seconds 8' in cmd:
+    from fakenet.mcp.config import ServiceConfig,ConfigError
+    try:ServiceConfig.from_dict(json.loads(self.service_bytes));self.service_state='Running'
+    except ConfigError as exc:
+     self.service_state='Stopped'
+     if not self.stale:self.service_log+=('config load failed ConfigError '+str(exc)+'\n').encode()
+    output=self.service_state
+   elif '$reader=[IO.StreamReader]' in cmd:
+    offset=int(re.search(r'\.Seek\((\d+),',cmd).group(1));output=self.service_log[offset:].decode()
+   elif "$bytes=[Convert]::FromBase64String(" in cmd:
+    self.service_bytes=base64.b64decode(re.search(r"FromBase64String\('([^']*)'\)",cmd).group(1));output='restored'
+   elif 'service did not stop for variant' in cmd:self.service_state='Stopped';output='stopped'
+   elif 'sc.exe start fakenetng-mcp' in cmd and 'Seconds 5' in cmd:self.service_state='Running';output='Running'
+   else:return super().exchange(kind,value)
+   return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+  return super().exchange(kind,value)
+
+class OriginalInvalidControlTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def run_invalid(self,stale=False):
+  unit='CONTROL-INVALID';out=self.root/('invalid-stale' if stale else 'invalid');boundary=InvalidControlBoundary(self.inputs,self.root/'domain',stale)
+  before=boundary.service_bytes
+  value=m.run('MCP-SPECIAL-IPC',out,self.inputs,selected=[unit],boundary=boundary,fixture=True)
+  self.assertEqual(before,boundary.service_bytes)
+  rows,clean,details=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',[unit],self.inputs,allow_fixture=True);self.assertTrue(clean,details)
+  return value,rows,details
+ def test_all_illegal_types_refused_by_actual_config_validator(self):
+  value,rows,details=self.run_invalid();self.assertEqual('pass',value['checks']['CONTROL-INVALID']['status']);self.assertEqual('pass',rows[0]['status'],details)
+ def test_old_refusal_log_cannot_prove_current_variant_refused(self):
+  value,rows,details=self.run_invalid(True);self.assertEqual('fail',value['checks']['CONTROL-INVALID']['status']);self.assertEqual('fail',rows[0]['status'],details)
+
+
+class OriginalControlRecoveryTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_concurrent_service_config_change_is_preserved_and_stops_group(self):
+  class ForeignChange(ControlDomainBoundary):
+   def exchange(self,kind,value):
+    if kind=='powershell' and 'Get-Content' in value['command'] and 'ctrl-listener-' in value['command']:
+     data=json.loads(self.service_bytes);data['extra_control_ports']=[39997];self.service_bytes=json.dumps(data).encode()
+    return super().exchange(kind,value)
+  selected=['CONTROL-EXTRA-29094','CONTROL-DEFAULT'];out=self.root/'foreign';boundary=ForeignChange(self.inputs,self.root/'domain')
+  result=m.run('MCP-SPECIAL-IPC',out,self.inputs,selected=selected,boundary=boundary,fixture=True)
+  self.assertEqual([39997],json.loads(boundary.service_bytes)['extra_control_ports']);self.assertNotEqual('pass',result['checks'][selected[0]]['status']);self.assertEqual('not_run',result['checks'][selected[1]]['status'])
+  rows,clean,details=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',selected,self.inputs,allow_fixture=True);self.assertFalse(clean);self.assertEqual('fail',rows[0]['status']);self.assertEqual('not_run',rows[1]['status'])
+
+
+class PublicSpecialMcpCliTests(unittest.TestCase):
+ setUp=PublicMcpCliTests.setUp
+ cli=PublicMcpCliTests.cli
+ def test_original_catalog_control_loopback_and_bad_capture_rejudge(self):
+  import acceptance as a
+  checks=['CONTROL-DEFAULT','CONTROL-EXTRA-29094','CONTROL-INVALID','LOOPBACK-V4','LOOPBACK-V6']
+  candidate={'schema':a.CANDIDATE_V2,'source_commit':self.inputs['identity']['source_commit'],'package_sha256':self.inputs['identity']['package_sha256'],'package_path':self.inputs['package'],'package_manifest':self.inputs['manifest'],'offline_fixture':True}
+  environment={'schema':a.ENVIRONMENT_V2,'targets':['windows-vm'],'interpreters':{'python':sys.executable},'work_root':str(self.base),'allowed_actions':['native','vm-execute'],'endpoints':[],'auth_refs':[],'native_runtime':{'transport':'windows-mcp-velo','identity':self.inputs['target'],**self.inputs['channel']},'mcp':self.inputs,'mcp_checks':{'MCP-SPECIAL-IPC':checks}}
+  (self.base/'candidate.json').write_text(json.dumps(candidate));(self.base/'environment.json').write_text(json.dumps(environment))
+  digest=m.sha256(ROOT/'docs/acceptance/catalog.json')
+  result=self.cli('plan','--mode','selected','--case','MCP-SPECIAL-IPC','--candidate',self.base/'candidate.json','--environment',self.base/'environment.json','--output',self.run/'plan.json');self.assertEqual(0,result[0],result)
+  with mock.patch.object(m,'NativeBoundary',side_effect=lambda *args,**kwargs:InvalidControlBoundary(self.inputs,self.base/'domain')):
+   result=self.cli('execute','--plan',self.run/'plan.json')
+  self.assertEqual(0,result[0],result)
+  result=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'independent.json');self.assertEqual(0,result[0],result)
+  summary=m.read(self.run/'independent.json');self.assertTrue(summary['fixture_contract_pass']);self.assertFalse(summary['full_functional_pass']);self.assertEqual(digest,m.sha256(ROOT/'docs/acceptance/catalog.json'))
+  case_dir=self.run/'results/MCP-SPECIAL-IPC';path=case_dir/'driver/units/LOOPBACK-V4/trace.json';trace=m.read(path)
+  for row in trace['records']:
+   if row['kind']=='powershell' and "Filter 'packets" in row['input']['command']:
+    row['output']['output']=__import__('base64').b64encode(b'invalid actual capture bytes').decode()
+  path.write_text(json.dumps(trace));receipt=m.read(case_dir/'receipt.json')
+  for item in receipt['artifacts']:item['sha256']=m.sha256(item['path'])
+  (case_dir/'receipt.json').write_text(json.dumps(receipt));index=m.read(self.run/'results/results.json')
+  for row in index['receipts']:
+   if row['case_id']=='MCP-SPECIAL-IPC':row['sha256']=m.sha256(case_dir/'receipt.json')
+  (self.run/'results/results.json').write_text(json.dumps(index))
+  result=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'negative.json');self.assertNotEqual(0,result[0],result)
+  summary=m.read(self.run/'negative.json');self.assertFalse(summary['fixture_contract_pass']);self.assertIn('loopback PCAP content identity differs',json.dumps(summary))
 
 if __name__=='__main__':unittest.main()

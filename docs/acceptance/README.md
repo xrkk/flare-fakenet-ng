@@ -353,3 +353,10 @@ MCP恢复判定与业务结果独立: 业务断言失败但配置SHA、服务模
 P01非允许源探针现在记录源地址HTTP边界供独立回放. 绑定/路由失败、连接超时或无关HTTP错误只能判未知/blocked, 不作为远端阻断通过; 实际端点拒绝与正常协议响应分别判定. 默认探针来源仍须现场可用, 当前未证明实际防火墙全链. firewall-attribution-02正常/反例及firewall-impacted-02相关49tests/31subtests仅为guard下的内存边界信用, 不授真实网络或整体验收通过.
 
 P04功能与信用映射见[mcp-capability-map.md](mcp-capability-map.md). 新`INCIDENT-INTEGRITY`仅供selected定点检查原机械断言, full不为此重复触发故障, 原`ACC-014`完整包内根因定位与terminal/条件转储要求仍在full集合; 未完成项不能以切片通过替代.
+
+
+控制/初始化接入增量: 原CONTROL-DEFAULT、四CONTROL-EXTRA与既有LOOPBACK-V4/V6使用当前冻结VM/source/端口和来宾工作根, 不再向旧VM地址发socket探针. 中央驱动自动临时加入本用例需要的额外控制端口, 保留其它service配置; 受控停启后只按已核SHA恢复本轮仍未变化的原字节. 并发配置变化保留且恢复不确认, 后续单元not_run; 外层另核完整service配置语义前后相同. 原runner独立CLI缺该新参数时保留原配置约定, 当前中央接口显式管理配置.
+
+LOOPBACK原PCAP检查现仅使用完整UDP载荷的准确标记; 管理TCP命令文字或子串不能证明捕获活跃, 重定向环回标记必须失败. PCAP原字节大小/SHA与解析和原恢复断言均保留, 既有IPv6用例只保留原适用范围, 不扩大IPv6产品支持. CONTROL-INVALID从本次启动前记录的日志偏移读新增错误, 历史尾部拒绝文字不能证明本次非法值被拒绝. 初始化用例仍检查有效配置、真实初始化调用栈/nonce/child失败/从未健康及incident与恢复原函数; 内存边界不是实机证据.
+
+原件位于`main-mcp-r18/control-03`、`control-config-01`、`control-foreign-01`、`control-invalid-01`、`initialization-01`和`special-public-02`. 同正式catalog的plan/execute/独立judge已走控制/非法配置/双栈环回正常链及正确更新引用hash后的坏PCAP拒绝, 没用替代catalog. 实机和整个SPECIAL/P03/P04仍未验/未完成, 未声明MCP完整通过.

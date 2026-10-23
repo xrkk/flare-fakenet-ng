@@ -18,6 +18,7 @@ Cases (one process invocation each, same evidence shape as the ACC runners):
                             capture; a diverted marker proves capture liveness
 """
 import argparse
+import contextlib
 import base64
 import ipaddress
 import datetime
@@ -78,13 +79,16 @@ def tcp_echo_probe(host, port, marker, timeout=5):
         return {'ok': False, 'error': repr(exc), 't': began}
 
 
-def start_guest_tcp_listener(channel, port, nonce):
+def start_guest_tcp_listener(channel, port, nonce, host='192.168.204.233',
+                             work_root='C:\\Windows\\Temp'):
     """A real local listener on the excluded port; pinned for owned cleanup."""
+    from pathlib import PureWindowsPath
+    log = str(PureWindowsPath(work_root) / ('ctrl-listener-' + nonce + '.log'))
     script = (
         "$ErrorActionPreference='Stop';"
-        "$listener=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Parse('192.168.204.233')," + str(port) + ");"
+        "$listener=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Parse('" + host + "')," + str(port) + ");"
         "$listener.Start();"
-        "$log='C:\\Windows\\Temp\\ctrl-listener-" + nonce + ".log';"
+        "$log='" + log + "';"
         "Set-Content -Path $log -Value ('started pid=' + $PID);"
         "try{while($true){try{"
         "$c=$listener.AcceptTcpClient();"
@@ -104,7 +108,7 @@ def start_guest_tcp_listener(channel, port, nonce):
     born = channel.powershell(
         "(Get-Process -Id " + str(pid) + ").StartTime.ToFileTimeUtc()", timeout=30)
     return {'pid': pid, 'created': int(born['output'].strip()),
-            'receipt': 'C:\\Windows\\Temp\\ctrl-listener-%s.log' % nonce, 'port': port}
+            'receipt': log, 'port': port}
 
 
 class ControlCase:
@@ -113,6 +117,12 @@ class ControlCase:
         self.args = args
         self.channel = Win10VmChannel(args.win10vm_mcp)
         self.base = args.target_base_url
+        from urllib.parse import urlsplit
+        endpoint = urlsplit(self.base)
+        self.guest_host = getattr(args, 'listen_ip', endpoint.hostname)
+        self.control_port = getattr(args, 'listen_port', endpoint.port or 80)
+        self.allowed_host = getattr(args, 'allowed_host', '192.168.204.1')
+        self.guest_work_root = getattr(args, 'guest_work_root', 'C:\\Windows\\Temp')
 
     # -- shared lifecycle ---------------------------------------------------
     def normalize(self):
@@ -171,15 +181,84 @@ class ControlCase:
         snap = self.start_run(writer)
         final_filter = (snap.get('health') or {}).get('final_filter') or ''
         checks['filter_excludes_control_link'] = (
-            '(ip.DstAddr != 192.168.204.1 or (tcp.SrcPort != 28788' in final_filter)
+            ('(ip.DstAddr != %s or (tcp.SrcPort != %d' %
+             (self.allowed_host, self.control_port)) in final_filter)
         timeline = probe_timeline(self.base, 10)
         writer.add_evidence('control-default-probe', timeline)
-        checks['control_link_alive_during_takeover'] = all(x['ok'] for x in timeline)
+        checks['control_link_alive_during_takeover'] = bool(timeline) and all(x['ok'] for x in timeline)
         ok, final = self.finish_run(writer)
         checks['run_stopped_cleanly'] = ok
         return checks
 
+    @contextlib.contextmanager
+    def extra_port_config(self, writer, port):
+        """Bind one authorized test setting, restore only unchanged owned bytes."""
+        from helpers import controlled_service_stop
+        from fakenet.mcp.config import ServiceConfig
+        path = 'C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json'
+        observed = self.channel.powershell(
+            "$ErrorActionPreference='Stop';$p='" + path + "';"
+            "$b=[IO.File]::ReadAllBytes($p);"
+            "@{sha256=(Get-FileHash $p -Algorithm SHA256).Hash.ToLower();"
+            "base64=[Convert]::ToBase64String($b)}|ConvertTo-Json -Compress", timeout=30)
+        original = json.loads(observed['output'])
+        body = base64.b64decode(original['base64'], validate=True)
+        if hashlib.sha256(body).hexdigest() != original['sha256']:
+            raise RuntimeError('extra control config backup hash mismatch')
+        parsed = json.loads(body)
+        validated = ServiceConfig.from_dict(parsed)
+        ports = list(validated.extra_control_ports)
+        if port in ports:
+            writer.add_evidence('extra-control-config-unchanged', original)
+            yield
+            return
+        ports.append(port)
+        parsed['extra_control_ports'] = ports
+        configured = json.dumps(parsed, ensure_ascii=False).encode('utf-8')
+        expected = hashlib.sha256(configured).hexdigest()
+        def replace(previous, raw):
+            encoded = base64.b64encode(raw).decode('ascii')
+            wanted = hashlib.sha256(raw).hexdigest()
+            result = self.channel.powershell(
+                "$ErrorActionPreference='Stop';$p='" + path + "';"
+                "if((Get-FileHash $p -Algorithm SHA256).Hash.ToLower() -ne '" + previous +
+                "'){throw 'extra control config changed; preserve scene'};"
+                "$b=[Convert]::FromBase64String('" + encoded + "');"
+                "[IO.File]::WriteAllBytes($p,$b);"
+                "$hash=(Get-FileHash $p -Algorithm SHA256).Hash.ToLower();"
+                "if($hash -ne '" + wanted + "'){throw 'extra control config write hash differs'};"
+                "@{sha256=$hash}|ConvertTo-Json -Compress", timeout=30)
+            if json.loads(result['output']).get('sha256') != wanted:
+                raise RuntimeError('extra control config write not observed')
+            return result
+        changed = False
+        try:
+            controlled_service_stop(self.channel)
+            written = replace(original['sha256'], configured)
+            changed = True
+            writer.add_evidence('extra-control-config-write', written)
+            started = self.channel.powershell(
+                "Start-Service fakenetng-mcp; (Get-Service fakenetng-mcp).Status", timeout=120)
+            if started['output'].strip() != 'Running':
+                raise RuntimeError('service not running with extra control setting')
+            yield
+        finally:
+            if changed:
+                controlled_service_stop(self.channel)
+                writer.add_evidence('extra-control-config-restore', replace(expected, body))
+                restored = self.channel.powershell(
+                    "Start-Service fakenetng-mcp; (Get-Service fakenetng-mcp).Status", timeout=120)
+                writer.add_evidence('extra-control-service-restored', restored)
+                if restored['output'].strip() != 'Running':
+                    raise RuntimeError('service not running after config restore')
+
     def case_control_extra(self, writer, port):
+        if getattr(self.args, 'manage_extra_ports', False):
+            with self.extra_port_config(writer, port):
+                return self._case_control_extra(writer, port)
+        return self._case_control_extra(writer, port)
+
+    def _case_control_extra(self, writer, port):
         checks = {}
         self.normalize()
         started_listener = None
@@ -187,14 +266,15 @@ class ControlCase:
             if port != 28787:
                 import uuid
                 started_listener = start_guest_tcp_listener(
-                    self.channel, port, uuid.uuid4().hex[:8])
+                    self.channel, port, uuid.uuid4().hex[:8],
+                    self.guest_host, self.guest_work_root)
                 writer.add_evidence('control-extra-listener', started_listener)
                 time.sleep(1.0)
             snap = self.start_run(writer)
             final_filter = (snap.get('health') or {}).get('final_filter') or ''
             checks['filter_excludes_port'] = (
                 'tcp.SrcPort != %d' % port) in final_filter
-            host = '192.168.204.233'
+            host = self.guest_host
             timeline = []
             if port == 28787:
                 # The co-resident management service on this VM is the
@@ -205,7 +285,7 @@ class ControlCase:
                 for _ in range(5):
                     began = time.time()
                     try:
-                        with socket.create_connection(('192.168.204.233', port),
+                        with socket.create_connection((host, port),
                                                       timeout=5):
                             ok = True
                             raw = {'connected': True}
@@ -218,7 +298,7 @@ class ControlCase:
             else:
                 for index in range(5):
                     marker = 'ctrl-%s-%d' % (port, index)
-                    probe = tcp_echo_probe('192.168.204.233', port, marker)
+                    probe = tcp_echo_probe(host, port, marker)
                     timeline.append(probe)
                     time.sleep(1.0)
                 checks['excluded_listener_reachable_during_takeover'] = all(
@@ -274,15 +354,26 @@ class ControlCase:
                 # The service entry validates its configuration under the
                 # real SCM launch; an illegal value must keep the service
                 # from ever reaching Running and name the offending field.
+                cursor = self.channel.powershell(
+                    "$p='C:\\ProgramData\\FakeNet-NG-MCP\\logs\\service.log';"
+                    "if(Test-Path $p){(Get-Item $p).Length}else{0}", timeout=30)
+                offset = int(cursor['output'].strip())
+                if offset < 0:
+                    raise RuntimeError('negative service log offset')
                 started = self.channel.powershell(
                     "sc.exe start fakenetng-mcp | Out-Null; Start-Sleep -Seconds 8; "
                     "(Get-Service fakenetng-mcp).Status", timeout=90)
                 state = started['output'].strip().splitlines()[-1].strip()
                 log = self.channel.powershell(
-                    "Get-Content 'C:\\ProgramData\\FakeNet-NG-MCP\\logs\\service.log' -Tail 15 | Out-String", timeout=30)
+                    "$ErrorActionPreference='Stop';$p='C:\\ProgramData\\FakeNet-NG-MCP\\logs\\service.log';"
+                    "$s=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite);"
+                    "try{if($s.Length -lt " + str(offset) + "){throw 'service log rotated; unknown attribution'};"
+                    "[void]$s.Seek(" + str(offset) + ",[IO.SeekOrigin]::Begin);"
+                    "$reader=[IO.StreamReader]::new($s,[Text.Encoding]::UTF8);$reader.ReadToEnd()}"
+                    "finally{$s.Dispose()}", timeout=30)
                 combined = log['output']
                 results[variant['label']] = {
-                    'value': variant['value'], 'sc_state': state,
+                    'value': variant['value'], 'sc_state': state, 'log_offset': offset,
                     'log_tail': combined,
                     'refused': state != 'Running' and
                                ('config load failed' in combined and
@@ -480,7 +571,8 @@ class ControlCase:
                 continue
             payload = base64.b64decode(f['base64'])
             import hashlib as _h
-            assert _h.sha256(payload).hexdigest() == f['sha256']
+            if len(payload) != f['size'] or _h.sha256(payload).hexdigest() != f['sha256']:
+                raise ValueError('loopback PCAP content identity differs')
             writer.add_evidence('pcap-' + f['name'], payload)
             import io as _io
             reader = dpkt.pcap.Reader(_io.BytesIO(payload))
@@ -507,22 +599,19 @@ class ControlCase:
                                sport=getattr(l4, 'sport', None),
                                dport=getattr(l4, 'dport', None),
                                proto=layer.p if layer.v == 4 else layer.nxt)
-                    if marker_loopback_b in buf:
+                    if not isinstance(l4, dpkt.udp.UDP):
+                        continue
+                    marker = bytes(l4.data)
+                    if marker == marker_loopback_b:
                         is_loopback_pair = (
                             ipaddress.ip_address(src).is_loopback and
                             ipaddress.ip_address(dst).is_loopback)
-                        if (row['proto'] == dpkt.ip.IP_PROTO_UDP and
-                                row['dport'] == loop_port and is_loopback_pair):
+                        if row['dport'] == loop_port and is_loopback_pair:
                             loop_records.append(row)
-                        elif row['proto'] == dpkt.ip.IP_PROTO_UDP:
-                            # a marker datagram whose destination was
-                            # rewritten away from the local listener would
-                            # prove diversion; nothing else counts.
+                        else:
                             redirected.append(row)
-                        # TCP segments carrying the channel command text are
-                        # observations of the runner's own traffic, not
-                        # copies of the loopback datagram.
-                    if marker_diverted_b in buf:
+                    if (marker == marker_diverted_b and
+                            not ipaddress.ip_address(dst).is_loopback):
                         diverted_seen.append(f['name'])
         writer.add_evidence('loopback-packet-records',
                             {'loopback': loop_records, 'redirected': redirected})

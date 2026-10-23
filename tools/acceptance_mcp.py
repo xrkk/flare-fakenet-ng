@@ -386,10 +386,10 @@ def current_tool_surface(root=ROOT):
 def original_args(inputs,out):
  identity=inputs['identity'];url=urllib.parse.urlparse(inputs['endpoint'])
  return SimpleNamespace(**identity,package=inputs['package'],manifest=inputs['manifest'],
-  vm_identity=json.dumps(inputs['target'],sort_keys=True),config_identity=json.dumps(inputs['config_identity'],sort_keys=True),
+  guest_work_root=inputs['guest_work_root'],vm_identity=json.dumps(inputs['target'],sort_keys=True),config_identity=json.dumps(inputs['config_identity'],sort_keys=True),
   target_base_url=inputs['endpoint'].rstrip('/'),listen_ip=inputs['listen_ip'],listen_port=url.port,allowed_host=inputs['allowed_host'],
   controller_uuid='11111111-2222-4333-8444-555555555555',vm_package_dir=inputs['installation_root'],win10vm_mcp='existing-config-reference',
-  expected_tool_surface=current_tool_surface(),extra_exclude_port=[],run_firewall_round=True,deploy='deploy' in inputs['actions'],output_root=str(out),fault_record=[],localization_record='')
+  manage_extra_ports=True,expected_tool_surface=current_tool_surface(),extra_exclude_port=[],run_firewall_round=True,deploy='deploy' in inputs['actions'],output_root=str(out),fault_record=[],localization_record='')
 
 def invoke_unit(unit,args,channel,writer,mods):
  base=args.target_base_url;p1=mods['run_p01_acc'];p2=mods['run_p02_acc'];p3=mods['run_p03_acc'];p4=mods['run_p04_acc']
@@ -450,11 +450,11 @@ def service_preflight(session,inputs):
   "$fault='"+inputs['programdata_root']+"\\logs\\fault-injection.json';"
   "@{image=$p.Path;sha256=(Get-FileHash -LiteralPath $p.Path -Algorithm SHA256).Hash.ToLower();"
   "pid=$p.Id;birth=$p.StartTime.ToFileTimeUtc().ToString();"
-  "enabled=($envs -contains 'FAKENETNG_MCP_FAULT_INJECTION=1');grace=$cfg.stop_grace_seconds;"
+  "service_config=$cfg;enabled=($envs -contains 'FAKENETNG_MCP_FAULT_INJECTION=1');grace=$cfg.stop_grace_seconds;"
   "fault_exists=(Test-Path $fault)}|ConvertTo-Json -Compress")
  raw=session.powershell(script,timeout=60);value=json.loads(raw['output'])
  if value.get('image','').casefold()!=image.casefold() or value.get('sha256')!=rows[0]['sha256'] or not isinstance(value.get('pid'),int) or value['pid']<=0 or not str(value.get('birth','')).isdigit():raise ValueError('MCP installed image/process birth differs from candidate')
- if value.get('fault_exists') is not False or type(value.get('enabled')) is not bool or type(value.get('grace')) is not int:raise ValueError('unknown fault residue or service settings; preserve scene')
+ if value.get('fault_exists') is not False or type(value.get('enabled')) is not bool or type(value.get('grace')) is not int or not isinstance(value.get('service_config'),dict):raise ValueError('unknown fault residue or service settings; preserve scene')
  return value
 
 def run_unit(unit,inputs,out,boundary,*,root=ROOT):
@@ -511,7 +511,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT):
        restored_mode=mods['helpers'].configure_fault_service(session,service_before['enabled'],service_before['grace'])
        writer.add_evidence('service-settings-restored',restored_mode)
        service_after=service_preflight(session,inputs);writer.add_evidence('installed-service-after',service_after)
-       if any(service_after[k]!=service_before[k] for k in ('image','sha256','enabled','grace','fault_exists')):raise ValueError('service settings/image restoration not observed')
+       if any(service_after[k]!=service_before[k] for k in ('image','sha256','enabled','grace','fault_exists','service_config')):raise ValueError('service settings/image restoration not observed')
       after=session.operation('observe',{});writer.add_evidence('environment-after',after)
       from fakenet.mcp.baseline import audit_compare
       differences=audit_compare(before['sections'],after['sections'])
@@ -522,7 +522,11 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT):
  status={0:'pass',1:'fail',2:'blocked',3:'unknown'}.get(code,'unknown')
  result=writer.write_result(acc_id=unit,p_id='headless',**inputs['identity'],environment_identity=json.dumps(inputs['target'],sort_keys=True),status=status)
  trace={'schema':'fakenet.mcp-unit-trace.v1','unit':unit,'identity':inputs['identity'],'target':inputs['target'],'config_identity':inputs['config_identity'],'unit_root':str(out.resolve()),'records':session.records,'returncode':code,'error':error,'recovery_observed':before is not None and after is not None,'recovery_error':recovery_error}
- if isinstance(boundary,ReplayBoundary):boundary.finish()
+ if isinstance(boundary,ReplayBoundary):
+  try:boundary.finish()
+  except ReplayMismatch as exc:
+   reason=(error or {}).get('message') or status
+   raise ReplayMismatch(str(exc)+'; original unit failure: '+reason) from exc
  return result,trace
 
 
