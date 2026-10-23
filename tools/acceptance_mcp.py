@@ -404,11 +404,7 @@ class BoundarySession:
  def http_connection(self,host,port=None,timeout=30,source_address=None,**kwargs):
   if getattr(self._local,'inside_transport',False):
    return self._original['http_connection'](host,port,timeout=timeout,source_address=source_address,**kwargs)
-  if kwargs:raise ValueError('unsupported raw HTTP connection options')
-  if not source_address:
-   # urllib's standard path is already recorded by urlopen().  Let its inner
-   # HTTPConnection remain the real class so its class contract is intact.
-   return self._original['http_connection'](host,port,timeout=timeout,source_address=None)
+  if kwargs or not source_address:raise ValueError('explicit source required for raw HTTP probe')
   owner=self
   class Connection:
    sock=None

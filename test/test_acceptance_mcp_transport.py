@@ -6,7 +6,8 @@ import json
 import os
 from pathlib import Path
 import sys
-import tempfile
+import threading
+import uuid
 import unittest
 import urllib.request
 from unittest import mock
@@ -22,7 +23,8 @@ ERROR_RESPONSE = b'HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nCo
 
 
 def proof_root(name):
-    base = Path(os.environ.get('FN_TRANSPORT_CHECK_DIR', tempfile.mkdtemp(prefix='mcp-http-')))
+    configured = os.environ.get('FN_TRANSPORT_CHECK_DIR')
+    base = Path(configured) if configured else ROOT / 'Logs/acceptance/mcp-transport-selftest' / uuid.uuid4().hex
     path = base / 'proofs' / name
     path.mkdir(parents=True, exist_ok=False)
     return path
@@ -127,7 +129,8 @@ class HTTPBoundaryTests(unittest.TestCase):
             sockets.append(stream)
             return stream
         with mock.patch.object(mcp.socket, 'create_connection', fake_connect), \
-                mock.patch.object(urllib.request, '_opener', None):
+                mock.patch.object(urllib.request, '_opener', None), \
+                mock.patch.dict(os.environ, {'NO_PROXY': '*', 'no_proxy': '*'}):
             boundary = make_boundary(self.base / 'error')
             session = mcp.BoundarySession(boundary)
             with session.activate():
@@ -139,7 +142,7 @@ class HTTPBoundaryTests(unittest.TestCase):
     def test_explicit_source_is_recorded_and_replayed(self):
         source_session = mcp.BoundarySession(SourceBoundary())
         with source_session.activate():
-            connection = source_session.http_connection('192.0.2.1', 28788, timeout=1,
+            connection = http.client.HTTPConnection('192.0.2.1', 28788, timeout=1,
                                                         source_address=('192.0.2.2', 0))
             connection.request('POST', '/mcp', body=b'body', headers={'X-Test': '1'})
             response = connection.getresponse()
@@ -150,7 +153,7 @@ class HTTPBoundaryTests(unittest.TestCase):
         replay = mcp.ReplayBoundary(source_session.records, str(self.base), str(self.base / 'replay'))
         replay_session = mcp.BoundarySession(replay)
         with replay_session.activate():
-            replay_connection = replay_session.http_connection('192.0.2.1', 28788, timeout=1,
+            replay_connection = http.client.HTTPConnection('192.0.2.1', 28788, timeout=1,
                                                                 source_address=('192.0.2.2', 0))
             replay_connection.request('POST', '/mcp', body=b'body', headers={'X-Test': '1'})
             self.assertEqual(200, replay_connection.getresponse().status)
@@ -193,14 +196,80 @@ class HTTPBoundaryTests(unittest.TestCase):
         self.assertNotIn('x-fakenet-controller-id', first)
         self.assertEqual('not-a-uuid', second.get('x-fakenet-controller-id'))
 
-    def test_thread_local_and_activation_restore(self):
-        original = http.client.HTTPConnection
+    def test_http_failure_keeps_mutation_unknown_and_restores_context(self):
+        sockets = []
+        def fake_connect(address, timeout=30, source_address=None, **kwargs):
+            stream = ByteSocket(ERROR_RESPONSE)
+            sockets.append(stream)
+            return stream
+        before_class = http.client.HTTPConnection
+        with mock.patch.object(mcp.socket, 'create_connection', fake_connect), \
+                mock.patch.object(urllib.request, '_opener', None), \
+                mock.patch.dict(os.environ, {'NO_PROXY': '*', 'no_proxy': '*'}):
+            session = mcp.BoundarySession(make_boundary(self.base / 'unknown-mutation'))
+            body = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                    'params': {'name': 'create_config', 'arguments': {
+                        'name': 'owned.ini', 'content': '[FakeNet]\n',
+                        'command_id': 'owned-test', 'expected_state_version': 1}}}
+            request = urllib.request.Request('http://192.0.2.1:28788/mcp',
+                data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'}, method='POST')
+            with self.assertRaises(urllib.error.HTTPError):
+                with session.activate():
+                    urllib.request.urlopen(request, timeout=1)
+            self.assertTrue(session.preserve_scene)
+            self.assertEqual(1, len(session.mutation_operations))
+            self.assertTrue(session.mutation_operations[0]['response_unknown'])
+            self.assertEqual(set(), session.owned_configs)
+            self.assertEqual(['http'], [row['kind'] for row in session.records])
+            self.assertTrue(sockets and sockets[0].closed)
+            self.assertFalse(getattr(session._local, 'inside_transport', False))
+        self.assertIs(before_class, http.client.HTTPConnection)
+
+    def test_unrecorded_connection_without_explicit_source_is_refused(self):
         session = mcp.BoundarySession(SourceBoundary())
         with session.activate():
-            self.assertNotEqual(original, http.client.HTTPConnection)
-            self.assertTrue(issubclass(http.client.HTTPConnection, original))
-            self.assertEqual(0, http.client.HTTPConnection.debuglevel)
-            self.assertIsInstance(http.client.HTTPConnection._get_content_length, object)
+            with self.assertRaisesRegex(ValueError, 'explicit source required'):
+                http.client.HTTPConnection('192.0.2.1', 28788)
+        self.assertEqual([], session.records)
+
+    def test_two_threads_record_once_each_and_restore_activation(self):
+        original = http.client.HTTPConnection
+        sockets, responses, errors, states = [], [], [], []
+        barrier = threading.Barrier(2)
+        def fake_connect(address, timeout=30, source_address=None, **kwargs):
+            stream = ByteSocket()
+            sockets.append(stream)
+            return stream
+        with mock.patch.object(mcp.socket, 'create_connection', fake_connect), \
+                mock.patch.object(urllib.request, '_opener', None), \
+                mock.patch.dict(os.environ, {'NO_PROXY': '*', 'no_proxy': '*'}):
+            session = mcp.BoundarySession(make_boundary(self.base / 'threads', FreshBoundary))
+            def worker():
+                try:
+                    states.append(getattr(session._local, 'inside_transport', False))
+                    barrier.wait(timeout=3)
+                    responses.append(session.operation('http', self.value))
+                    states.append(getattr(session._local, 'inside_transport', False))
+                except BaseException as exc:
+                    errors.append(repr(exc))
+            with session.activate():
+                self.assertTrue(issubclass(http.client.HTTPConnection, original))
+                self.assertEqual(0, http.client.HTTPConnection.debuglevel)
+                workers = [threading.Thread(target=worker) for unused in range(2)]
+                for thread in workers:
+                    thread.start()
+                for thread in workers:
+                    thread.join(timeout=5)
+                self.assertTrue(all(not thread.is_alive() for thread in workers))
+            self.assertEqual([], errors)
+            self.assertEqual([PAYLOAD, PAYLOAD], [r['body'] for r in responses])
+            self.assertEqual([False] * 4, states)
+            rows = [r for r in session.records if r['kind'] == 'http']
+            self.assertEqual(2, len(rows))
+            self.assertEqual(2, len({r['thread'] for r in rows}))
+            self.assertFalse(any(r['kind'] in ('http-source', 'socket-open') for r in session.records))
+            self.assertEqual(2, len(sockets))
+            self.assertTrue(all(stream.closed for stream in sockets))
         self.assertIs(original, http.client.HTTPConnection)
         self.assertFalse(getattr(session._local, 'inside_transport', False))
 
