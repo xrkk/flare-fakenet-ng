@@ -1,8 +1,11 @@
 """Original HTTP/JSON-RPC contract tests for the MCP acceptance boundary."""
 import json
+import os
+import tempfile
 import sys
 import threading
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -137,6 +140,86 @@ class OriginalHttpContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'MCP operation'):
                 session.urlopen(request)
         strict_after_context()
+
+
+class ReceiptAndExceptionRegressions(unittest.TestCase):
+    def proof(self):
+        root = Path(os.environ.get('FN_COMPAT_CHECK_DIR', ROOT / 'Logs/acceptance-http-contract'))
+        root.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(prefix='receipt-', dir=root))
+
+    def test_three_os_boundaries_match_real_noop_and_version_conflict(self):
+        from test_acceptance_mcp import (inputs_at, FaultProcessBoundary,
+                                         IpcProcessBoundary, SnapshotProcessBoundary)
+        from fakenet.mcp.coordination import Coordinator
+        from fakenet.mcp.testdouble import LifecycleDouble
+        from fakenet.mcp.errors import McpError
+        controller = '11111111-2222-4333-8444-555555555555'
+        for boundary_type in (FaultProcessBoundary, IpcProcessBoundary, SnapshotProcessBoundary):
+            with self.subTest(boundary=boundary_type.__name__):
+                base = self.proof()
+                inputs = inputs_at(base)
+                boundary = (boundary_type(inputs, base / 'snapshot')
+                            if boundary_type is SnapshotProcessBoundary else boundary_type(inputs))
+                coord = Coordinator(LifecycleDouble())
+                initial = boundary.version
+                expected = coord.snapshot()['state_version']
+                actual = coord.submit(command_id='noop', expected_version=expected,
+                    controller=controller, controller_valid=True, kind='stop', describe={},
+                    execute=lambda c: {'state': 'stopped', 'changed': False})
+                request = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                    'params': {'name': 'stop', 'arguments': {
+                        'command_id': 'noop', 'expected_state_version': initial}}}
+                response = boundary.exchange('http', {'data': json.dumps(request).encode()})
+                payload = json.loads(json.loads(response['body'])['result']['content'][0]['text'])
+                self.assertEqual(actual['command_id'], payload['command_id'])
+                self.assertEqual(actual['changed'], payload['changed'])
+                self.assertEqual(actual['state_version'] - expected,
+                                 payload['state_version'] - initial)
+                before = boundary.version
+                request['params']['arguments'].update(command_id='future', expected_state_version=before + 10)
+                response = boundary.exchange('http', {'data': json.dumps(request).encode()})
+                rejected = json.loads(json.loads(response['body'])['result']['content'][0]['text'])
+                with self.assertRaises(McpError) as caught:
+                    coord.submit(command_id='future', expected_version=coord.snapshot()['state_version'] + 10,
+                        controller=controller, controller_valid=True, kind='stop', describe={},
+                        execute=lambda c: self.fail('version mismatch executed production action'))
+                self.assertEqual(caught.exception.to_dict()['code'], rejected['error']['code'])
+                self.assertFalse(rejected['changed'])
+                self.assertIsNone(rejected['command_id'])
+                self.assertEqual(before, boundary.version)
+                (base / 'comparison.json').write_text(json.dumps({
+                    'production_noop': actual, 'fixture_noop': payload,
+                    'production_conflict': caught.exception.to_dict(),
+                    'fixture_conflict': rejected}, indent=2))
+
+    def test_internal_exceptions_escape_original_context_and_depth_is_restored(self):
+        real_copy = mcp.copy.deepcopy
+        for exception in (KeyboardInterrupt, RuntimeError):
+            with self.subTest(exception=exception.__name__):
+                class Boundary(_Boundary):
+                    def exchange(self, kind, value):
+                        if kind != 'http':
+                            return super().exchange(kind, value)
+                        return _response({'result': {'content': [{'text': json.dumps({
+                            'state': 'stopped', 'state_version': 2, 'changed': False,
+                            'error': None, 'command_id': 'noop'})}]}})
+                session = mcp.BoundarySession(Boundary())
+                def observe(value):
+                    if isinstance(value, dict) and value.get('command_id') == 'noop' and 'state' in value:
+                        raise exception('original observation interrupted')
+                    return real_copy(value)
+                with self.assertRaises(exception):
+                    with session.original_http_contract():
+                        with mock.patch.object(mcp.copy, 'deepcopy', side_effect=observe):
+                            session.urlopen(
+                                urllib.request.Request('http://192.0.2.1:28788/mcp', data=json.dumps({
+                                    'method': 'tools/call', 'params': {'name': 'stop', 'arguments': {
+                                        'command_id': 'noop', 'expected_state_version': 1}}}).encode()))
+                self.assertEqual(0, session._original_http_depth)
+                self.assertTrue(session.mutation_operations[-1]['response_unknown'])
+                self.assertFalse(session.owned_configs)
+                self.assertFalse(session.owned_runs)
 
 
 if __name__ == '__main__':

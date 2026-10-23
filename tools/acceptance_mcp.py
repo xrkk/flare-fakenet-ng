@@ -367,10 +367,6 @@ class BoundarySession:
     if not isinstance(result,dict) or result.get('isError') is True:raise ValueError('MCP operation result unavailable')
     payload=json.loads(result.get('content',[{}])[0].get('text','{}'))
     if not isinstance(payload,dict) or not payload:raise ValueError('MCP operation payload incomplete')
-    if original_call:
-     # The original caller owns result/error decoding.  Still observe a
-     # complete tracked receipt for ownership and recovery denial.
-     pass
    except (ValueError,KeyError,TypeError,IndexError,json.JSONDecodeError):
     if not original_call:raise
     if operation is not None:
@@ -420,7 +416,7 @@ class BoundarySession:
     self.preserve_scene=True
    if isinstance(exc, (urllib.error.HTTPError,OSError)):raise
    with self.lock:original_call=self._original_http_depth>0
-   if original_call and operation is not None and 'value' in locals():return RecordedResponse(value)
+   if original_call and operation is not None and isinstance(exc,(ValueError,KeyError,TypeError,IndexError)) and 'value' in locals():return RecordedResponse(value)
    raise
   return RecordedResponse(value)
  def http_connection(self,host,port=None,timeout=30,source_address=None,**kwargs):

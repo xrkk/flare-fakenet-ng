@@ -248,7 +248,7 @@ class OriginalProtocolTests(unittest.TestCase):
 class FaultProcessBoundary(ReadOnlyBoundary):
  """Remote process/capture/file bytes only; all original fault logic runs."""
  def __init__(self,inputs):
-  super().__init__(inputs);self.t=1700000000.;self.n=0;self.fault=None;self.version=7;self.enabled=False;self.grace=60;self.run_id='11111111-1111-4111-8111-111111111111';self.guard=__import__('threading').RLock()
+  super().__init__(inputs);self.t=1700000000.;self.n=0;self.fault=None;self.version=7;self.enabled=False;self.grace=60;self.run_id='11111111-1111-4111-8111-111111111111';self.guard=__import__('threading').RLock();self.receipt_running=False
  def archive(self):
   import io,zipfile
   from fakenet.mcp.incident import BASIC_ITEMS
@@ -270,15 +270,19 @@ class FaultProcessBoundary(ReadOnlyBoundary):
     state={'service':'fakenetng-mcp','state':'stopped','state_version':self.version,'run_id':None,'controller':None,'config_identity':self.inputs['config_identity'],'last_run_outcome':'failed' if self.fault else None,'error':None}
     if tool in ('load_config','start','stop'):
      arguments=req['params']['arguments'];command=arguments.get('command_id');expected=arguments.get('expected_state_version')
-     if type(expected) is int:self.version=max(self.version+1,expected+1)
-     elif type(self.version) is int:self.version+=1
-     state['state_version']=self.version
-     if tool=='start':state['run_id']=self.run_id
-     if isinstance(command,str) and type(expected) is int:
-      state.update(command_id=command,changed=True,in_progress=False,replayed=False)
+     if type(expected) is not int or expected!=self.version:
+      return self.response({'state':'stopped','state_version':self.version,'run_id':None,'changed':False,'command_id':None,'error':{'code':'state_conflict'}})
+     self.version+=1;state['state_version']=self.version
+     changed=tool!='stop' or self.receipt_running
+     if tool=='start':state['run_id']=self.run_id;self.receipt_running=True
+     if tool=='stop':self.receipt_running=False
+     if isinstance(command,str) and command:
+      state.update(command_id=command,changed=changed,in_progress=False,replayed=False)
       if tool=='load_config':state['config_identity']=self.inputs['config_identity']
      return self.response(state)
-    if tool=='get_status':return self.response(state)
+    if tool=='get_status':
+     if self.fault:self.receipt_running=False
+     return self.response(state)
    if kind=='powershell':
     command=value['command']
     if 'fault_exists=' in command:
@@ -333,6 +337,9 @@ class IpcProcessBoundary(FaultProcessBoundary):
    if kind=='http':
     req=json.loads(value['data']);tool=req['params']['name']
     if tool in ('get_status','start','stop','load_config'):
+     arguments=req['params']['arguments'];command=arguments.get('command_id');expected=arguments.get('expected_state_version');was_running=self.running
+     if tool!='get_status' and (type(expected) is not int or expected!=self.version):
+      return self.response({'state':'healthy' if self.running else 'stopped','state_version':self.version,'run_id':self.run_id if self.running else None,'changed':False,'command_id':None,'error':{'code':'state_conflict'}})
      if tool=='start':self.running=True;self.fault=None;self.step=0;self.terminal=False
      if tool=='stop':self.running=False;self.terminal=True
      state='healthy' if self.running else 'stopped'
@@ -341,12 +348,9 @@ class IpcProcessBoundary(FaultProcessBoundary):
       if self.step==1:state='degraded' if 'timeout' in self.fault['fault'] else 'failed'
       elif self.fault['fault']=='ipc_once_timeout':state='healthy'
       else:self.running=False;self.terminal=True;state='stopped'
-     arguments=req['params']['arguments'];command=arguments.get('command_id');expected=arguments.get('expected_state_version')
-     if tool!='get_status':
-      if type(expected) is int:self.version=max(self.version+1,expected+1)
-      else:self.version+=1
+     if tool!='get_status':self.version+=1
      payload={'service':'fakenetng-mcp','state':state,'state_version':self.version,'run_id':self.run_id if self.running else None,'controller':None,'config_identity':self.inputs['config_identity'],'last_run_outcome':'failed' if self.terminal else None,'error':None}
-     if tool!='get_status' and isinstance(command,str) and type(expected) is int:payload.update(command_id=command,changed=True,in_progress=False,replayed=False)
+     if tool!='get_status' and isinstance(command,str) and type(expected) is int:payload.update(command_id=command,changed=(tool!='stop' or was_running),in_progress=False,replayed=False)
      if tool=='load_config' and isinstance(command,str) and type(expected) is int:payload['config_identity']=self.inputs['config_identity']
      return self.response(payload)
    if kind=='powershell':
@@ -810,9 +814,11 @@ class SnapshotProcessBoundary(ReadOnlyBoundary):
    req=json.loads(value['data']);tool=req['params']['name']
    if tool in ('start','stop','load_config','get_status'):
     error=None;arguments=req['params']['arguments'];command=arguments.get('command_id');expected=arguments.get('expected_state_version')
+    was_running=self.run_id is not None or self.state in ('failed','recovering')
     if tool!='get_status':
-     if type(expected) is int:self.version=max(self.version+1,expected+1)
-     else:self.version+=1
+     if type(expected) is not int or expected!=self.version:
+      return self.response({'state':self.state,'state_version':self.version,'run_id':self.run_id,'changed':False,'command_id':None,'error':{'code':'state_conflict'}})
+     self.version+=1
     if tool=='start':
      if self.denied or self.state=='failed':error={'code':'snapshot_write_failed' if self.denied else 'recovery_required'}
      else:
@@ -823,7 +829,7 @@ class SnapshotProcessBoundary(ReadOnlyBoundary):
      if marker:self.snapshot.clear_recovery(**marker)
      self.state='stopped';self.run_id=None
     payload={'service':'fakenetng-mcp','state':self.state,'state_version':self.version,'run_id':self.run_id,'controller':None,'config_identity':self.inputs['config_identity'],'error':error}
-    if error is None and tool!='get_status' and isinstance(command,str) and type(expected) is int:payload.update(command_id=command,changed=True,in_progress=False,replayed=False)
+    if error is None and tool!='get_status' and isinstance(command,str) and type(expected) is int:payload.update(command_id=command,changed=(tool!='stop' or was_running),in_progress=False,replayed=False)
     return self.response(payload)
   if kind=='powershell':
    cmd=value['command']
