@@ -52,7 +52,7 @@ python tools/acceptance.py judge --plan Logs/acceptance/<run>/plan.json --result
 }
 ```
 
-纯源码离线组只要求真实 `source_commit`; 原生组才需要实际包/部署身份. 源码、运行及混合集合仍保留当前产品 HEAD 约束. 仅选择已注册的只读 `BUILD-PACKAGE-IDENTITY` 时, 允许校验其它提交的原包: candidate/plan 的 source_commit 保持原 manifest 源提交, 当前校验器由既有 source_hashes/native_source_hashes 精确绑定. 不改原包、旧候选或旧计划, 不证明旧包等于当前产品或满足新的构建资格/运行要求. 其余跨提交复用尚未实现, 不自动重建、换填源提交或用目录白名单绕过.
+纯源码离线组只要求真实 `source_commit`; 原生组才需要实际包/部署身份. 源码、运行及混合集合仍保留当前产品 HEAD 约束. 包执行身份按实际注册分两层: `BUILD-PACKAGE-IDENTITY` 与六个 `MCP-P01-FULL/P02/P03/P04/SPECIAL-IPC/SPECIAL-FAULT-RECOVERY` 形成唯一包层集合, 只有该完整集合允许 candidate/plan 的 source_commit 保持旧包 manifest 来源, 当前 harness 仍由 source_hashes/native_source_hashes 及原 ZIP/`mcp-input.v2` 验证器固定. ACC019 依赖先展开为 P03/ACC008 再分类; 源码、运行、混合集合及任何未核包/目标仍保留原 HEAD 或拒绝条件. 不写当前 HEAD 冒充包来源, 不改旧包/旧候选/旧计划, 不证明旧包等于当前产品或满足新的构建资格/运行要求. 已有 source/mixed 计划在 execute/judge 时只在冻结路径集合的 Git 对象逐项相同且工作树 pins 完整通过时接受无关 HEAD 漂移, 缺失或变化拒绝; 不新增调用方豁免开关.
 
 ### environment.json
 

@@ -700,6 +700,15 @@ CASE_IDENTITY_FIELDS = (
     'required_for_full', 'stress', 'sources', 'blocked_reason',
 )
 
+# These are the only cases that may carry an old package source while the
+# current harness is a different commit.  The set is intentionally closed:
+# source, runtime and mixed selections must keep the original HEAD gate.
+PACKAGE_LAYER_CASES = frozenset({
+    'BUILD-PACKAGE-IDENTITY',
+    'MCP-P01-FULL', 'MCP-P02-FULL', 'MCP-P03-FULL', 'MCP-P04-FULL',
+    'MCP-SPECIAL-IPC', 'MCP-SPECIAL-FAULT-RECOVERY',
+})
+
 
 def case_identity(case):
     return {key: case.get(key) for key in CASE_IDENTITY_FIELDS}
@@ -739,6 +748,104 @@ def environment_platforms(environment):
 def case_applicable(case, platforms):
     declared = set(case.get('platforms') or [])
     return bool(declared & platforms) or 'any' in declared
+
+
+def is_package_layer(root, cases, catalog, environment, candidate):
+    """Return whether this exact registered selection is package-only.
+
+    The check starts from the actual catalog registration, driver dispatch and
+    expanded check selection.  A name, a directory or a stored plan flag can
+    never create the exception by itself.  MCP cases additionally need the
+    original input validator to accept the package/manifest/source/target
+    identity; without that evidence the selection keeps the normal HEAD gate.
+    """
+    if acceptance_native is None or not isinstance(candidate, dict):
+        return False
+    ids = {case.get('id') for case in cases}
+    if not ids or not ids.issubset(PACKAGE_LAYER_CASES):
+        return False
+    drivers = acceptance_native.driver_table(root)
+    for case in cases:
+        case_id = case.get('id')
+        driver = drivers.get(case.get('native_driver'))
+        if not isinstance(driver, dict) or not driver.get('implemented'):
+            return False
+        kind = driver.get('production_kind')
+        if case_id == 'BUILD-PACKAGE-IDENTITY':
+            if kind != 'package-identity':
+                return False
+            continue
+        if kind != 'mcp-controller':
+            return False
+        try:
+            unused, checks = acceptance_native.validate_case(case, root, environment)
+            import acceptance_mcp
+            inputs, selected = acceptance_mcp.validate_inputs(
+                (environment or {}).get('mcp'), case_id, checks,
+                fixture=candidate.get('offline_fixture') is True)
+            identity = inputs.get('identity') or {}
+            if (list(selected) != list(checks)
+                    or identity.get('source_commit') != candidate.get('source_commit')
+                    or identity.get('package_sha256') != candidate.get('package_sha256')
+                    or Path(inputs.get('package', '')).resolve() != Path(candidate.get('package_path', '')).resolve()
+                    or Path(inputs.get('manifest', '')).resolve() != Path(candidate.get('package_manifest', '')).resolve()):
+                return False
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+            return False
+    return True
+
+
+def _frozen_source_paths(plan, registered, required):
+    paths = set()
+    for case_id in required:
+        paths.update(case_sources(registered[case_id]))
+    pins = plan.get('native_source_hashes')
+    if isinstance(pins, dict):
+        paths.update(str(name) for name in pins)
+    return sorted(paths)
+
+
+def _git_objects_equal(root, source_commit, head, paths):
+    if source_commit == head:
+        return True
+    if not paths:
+        return False
+    request = ''.join('%s:%s\n%s:%s\n' % (source_commit, name, head, name)
+                      for name in paths)
+    completed = subprocess.run(
+        ['git', '-C', str(Path(root)), 'cat-file', '--batch-check'],
+        input=request, capture_output=True, text=True, timeout=30, check=False)
+    if completed.returncode != 0:
+        return False
+    lines = completed.stdout.splitlines()
+    if len(lines) != 2 * len(paths):
+        return False
+    for index in range(0, len(lines), 2):
+        left, right = lines[index].split(), lines[index + 1].split()
+        if (len(left) < 2 or len(right) < 2 or left[1] != 'blob'
+                or right[1] != 'blob' or left[0] != right[0]):
+            return False
+    return True
+
+
+def source_plan_head_allowed(root, plan, candidate, registered=None):
+    """Allow only unrelated-commit drift for an already frozen source plan."""
+    source = plan.get('source_commit')
+    try:
+        head = git_head(root)
+    except InputError:
+        # Preserve the existing explicit no-Git fixture branch.  It earns
+        # fixture credit only; no real source identity is inferred.
+        if isinstance(candidate, dict) and candidate.get('offline_fixture') is True:
+            return True
+        raise
+    if source == head:
+        return True
+    pins = plan.get('native_source_hashes')
+    if not isinstance(pins, dict) or not pins or not isinstance(registered, dict):
+        return False
+    paths = _frozen_source_paths(plan, registered, plan.get('required_cases') or [])
+    return _git_objects_equal(root, str(source), head, paths)
 
 
 def expected_block(case, actions, platforms, root=ROOT, environment=None, candidate=None):
@@ -831,6 +938,46 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
     candidate = plan.get('candidate')
     if not isinstance(candidate, dict) or candidate.get('source_commit') != plan.get('source_commit'):
         raise InputError('plan candidate/source_commit mismatch')
+    package_selection = is_package_layer(
+        root, [registered[item] for item in required], catalog, environment, candidate)
+    if package_selection:
+        # Bind the package manifest as part of planning.  A blocked BUILD-only
+        # input keeps its original blocked state; every runnable package-layer
+        # selection must already carry the frozen manifest hash.
+        build_selected = 'BUILD-PACKAGE-IDENTITY' in required
+        rpc_cases = [item for item in required if item != 'BUILD-PACKAGE-IDENTITY']
+        if rpc_cases or not build_selected:
+            try:
+                frozen = __import__('acceptance_package').freeze_candidate(candidate)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise InputError('package identity input unavailable: %s' % exc) from exc
+            if frozen != candidate:
+                raise InputError('package candidate identity was not frozen at planning')
+    else:
+        if not source_plan_head_allowed(root, plan, candidate, registered):
+            raise InputError('source plan is not valid for the current HEAD and frozen pins')
+    for case_id in required:
+        reference = registered[case_id]
+        if reference.get('native_driver') != 'mcp-headless':
+            continue
+        try:
+            unused, checks = acceptance_native.validate_case(reference, root, environment)
+            import acceptance_mcp
+            inputs, unused_selected = acceptance_mcp.validate_inputs(
+                environment.get('mcp'), case_id, checks,
+                fixture=candidate.get('offline_fixture') is True)
+            identity = inputs.get('identity') or {}
+            if (identity.get('source_commit') != candidate.get('source_commit')
+                    or identity.get('package_sha256') != candidate.get('package_sha256')
+                    or Path(inputs.get('package', '')).resolve() != Path(candidate.get('package_path', '')).resolve()
+                    or Path(inputs.get('manifest', '')).resolve() != Path(candidate.get('package_manifest', '')).resolve()):
+                raise InputError('MCP package candidate differs from the frozen input: ' + case_id)
+        except InputError:
+            raise
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+            # The original input/runtime validator will turn this into the
+            # registered blocked reason.  It cannot reach a driver.
+            continue
     if require_execute_action:
         has_offline = any(registered[item]['adapter'] == 'offline-pytest'
                           for item in required)
@@ -983,26 +1130,24 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
     candidate = load_candidate(candidate_path)
     environment = load_environment(environment_path)
     selected, exclusions = select_cases(catalog, mode, suite_ids, case_ids)
-    # This registered adapter reads immutable artifact bytes only. The package
-    # keeps its builder source; existing plan pins bind our current verifier.
-    # Mixed/source/runtime selections still require their original HEAD gate.
-    native_only = all(case.get('adapter') == 'native' for case in selected)
-    drivers = (acceptance_native.driver_table(root)
-               if native_only and acceptance_native is not None else {})
-    artifact_only = all(case.get('adapter') == 'native' and
-                        drivers.get(case.get('native_driver'), {}).get('production_kind') == 'package-identity'
-                        for case in selected)
-    head = candidate['source_commit'] if artifact_only else _resolve_source_commit(root, candidate)
+    # Expand ACC019's fixed predecessor before classifying the selection.  A
+    # package-only plan may keep the old package source while the test harness
+    # is at HEAD; every other selection retains the original HEAD gate.
+    import acceptance_mcp_dependencies
+    selected, environment = acceptance_mcp_dependencies.plan_selection(
+        selected, catalog, environment, mode)
+    package_selection = is_package_layer(root, selected, catalog, environment, candidate)
+    head = candidate['source_commit'] if package_selection else _resolve_source_commit(root, candidate)
     if candidate['source_commit'] != head:
         raise InputError('candidate.source_commit %s does not match current HEAD %s'
                          % (candidate['source_commit'], head))
-    if any(case.get('native_driver') == 'build-identity' for case in selected):
+    if package_selection:
         try:
             candidate = __import__('acceptance_package').freeze_candidate(candidate)
         except (OSError, ValueError, KeyError, TypeError) as exc:
+            if any(case.get('id') != 'BUILD-PACKAGE-IDENTITY' for case in selected):
+                raise InputError('package identity input unavailable: %s' % exc) from exc
             candidate = dict(candidate, package_identity_error=str(exc))
-    import acceptance_mcp_dependencies
-    selected, environment = acceptance_mcp_dependencies.plan_selection(selected,catalog,environment,mode)
     output = Path(output)
     run_dir = output.parent
     if output.exists():
