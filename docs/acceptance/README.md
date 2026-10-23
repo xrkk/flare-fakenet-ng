@@ -367,3 +367,10 @@ P03原S2初始化、S3监听线程异常、S6精确受管子进程退出已补OS
 ACC019前序引用现在由中央控制器从同一次run的`results/MCP-P03-FULL/driver/units/ACC-008/result.json`生成, 不读旧cwd或最新目录. 引用冻结result SHA, 先核同候选/部署VM/配置/manifest和来源闭包, 再对ACC008原业务函数与直接字节单独重判; 与被依赖能力无关的其它P03失败不代替该项判定. 缺失、失败、变更或跨身份在本轮服务动作前拒绝, fixture不授native引用信用. 输入首次配置不需要每轮人工填写前序路径. 原ACC008损坏快照拒启只支持启动恢复子能力, 明确不授ACC019预停审计失败或完整定位信用; ACC019新受控停服与完整能力引用其余接线仍未完成.
 
 `predecessor-01/02`使用实际StateSnapshot/BaselineStore字节及原ACC008函数/原validator的OS内存边界, 包括快照损坏、写失败、监听残留和先备份再精确清理原路径. 仅证明编排/原判据接通, 不证明真实Windows ACL/SCM/原子写或故障恢复. 前序单项回放只读取明确本次目录, 不枚举历史结果.
+
+
+ACC019当前生产链已改接现有安装CLI的两阶段stop与install升级预停, 中央执行前须显式授权`deploy`动作(仅代码测试不会安装). plan在选中ACC019时自动加入同次ACC008单项前序并固定先后, 原完整P03若已选不缩减其集合; 被依赖能力单独重判, 不使用旧目录布尔. 原CLI停服和升级分别要求: 预停前标准STOP得到1061且原PID/出生仍在线; 本次instance/attempt进入draining窗口时发起两种变更, 必须立即得到not_allowed_in_state; 查询在安全关闭前保持, 只读本次run.log新增顺序完成阶段, 当前预停成功/无子进程与恢复责任才接受SCM停止/升级文件可替换. 实际升级分支使用固定当前部署参数和原产品install入口, 不构造任意命令或覆盖产品为另一候选.
+
+预停审计失败另做本run baseline受控扰动, 先保存原字节并绑定run/SHA, 验证stop与upgrade均非零、同PID/出生/instance保持Running且状态failed/原因可读、标准STOP仍拒绝、映像/配置未替换. 只恢复本轮仍未变baseline原字节, 再走现有受控退出与重启恢复. 它不是用ACC008启动恢复布尔代替. CLI与wrapper都须有匹配nonce/argv/出生和实际退出观察; 提交后结果未知/未退出时保留现场及基线恢复责任、不与其并行重启清理，后续单元not_run.
+
+正常/三种错误实现和未知回执的direct原件在controlled-exit-01/02、exit-wrapper-01与exit-planned-dependency-01. 同正式catalog public CLI自动串跑ACC008→ACC019并独立重判, 更新正确引用hash后的错误attempt不得通过. exit-public-01因夹具预建结果不满足空run目录而失败且保留, public-02改为实际同plan生产链后通过. exit-impacted-01误写不存在测试文件导致零测试, 正确exit-impacted-02相关126tests54subtests通过、1项Windows分享句柄测试在Linux跳过. 这些都在零网络guard和OS边界替身下, 实际Windows PowerShell/SCM/升级/ACL/Job/审计恢复仍未验证, 不授完整P04/MCP/native信用; 根因定位/terminal三条件取证及其它未完保持.

@@ -51,3 +51,41 @@ def verify_acc008(inputs, *, root, fixture=False):
     return {'reference': reference, 'checks': checks,
             'scope': 'startup-corrupt-snapshot-recovery-only',
             'prestop_audit_failure_proven': False}
+
+
+def plan_selection(selected, catalog, environment, mode):
+    """Expand only ACC019's fixed current-execution predecessor before plan."""
+    import copy
+    import acceptance_mcp as m
+    chosen = list(selected)
+    if not any(case['id'] == 'MCP-P04-FULL' for case in chosen):
+        return chosen, environment
+    checks = environment.get('mcp_checks', {}).get('MCP-P04-FULL', m.CHECKS['MCP-P04-FULL'])
+    if 'ACC-019' not in checks:
+        return chosen, environment
+    environment = copy.deepcopy(environment)
+    source = next((case for case in chosen if case['id'] == 'MCP-P03-FULL'), None)
+    if source is None:
+        source = next(case for suite in catalog['suites'] for case in suite.get('cases', []) if case['id'] == 'MCP-P03-FULL')
+        chosen.append(source)
+        environment.setdefault('mcp_checks', {})['MCP-P03-FULL'] = ['ACC-008']
+    elif 'MCP-P03-FULL' in environment.get('mcp_checks', {}):
+        subset = environment['mcp_checks']['MCP-P03-FULL']
+        if 'ACC-008' not in subset:
+            subset.append('ACC-008')
+    # Retain the order of unrelated groups. Pin P03 immediately before P04.
+    chosen.remove(source)
+    position = next(i for i, case in enumerate(chosen) if case['id'] == 'MCP-P04-FULL')
+    chosen.insert(position, source)
+    return chosen, environment
+
+
+def validate_plan_order(plan):
+    if 'MCP-P04-FULL' not in plan['required_cases']:
+        return
+    if 'ACC-019' not in plan.get('required_checks', {}).get('MCP-P04-FULL', []):
+        return
+    cases = plan['required_cases']
+    if ('MCP-P03-FULL' not in cases or cases.index('MCP-P03-FULL') > cases.index('MCP-P04-FULL') or
+            'ACC-008' not in plan.get('required_checks', {}).get('MCP-P03-FULL', [])):
+        raise ValueError('ACC019 requires planned ACC008 predecessor before P04')

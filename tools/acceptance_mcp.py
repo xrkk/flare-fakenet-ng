@@ -387,7 +387,7 @@ def current_tool_surface(root=ROOT):
 def original_args(inputs,out):
  identity=inputs['identity'];url=urllib.parse.urlparse(inputs['endpoint'])
  return SimpleNamespace(**identity,package=inputs['package'],manifest=inputs['manifest'],
-  guest_work_root=inputs['guest_work_root'],vm_identity=json.dumps(inputs['target'],sort_keys=True),config_identity=json.dumps(inputs['config_identity'],sort_keys=True),
+  programdata_root=inputs['programdata_root'],guest_work_root=inputs['guest_work_root'],vm_identity=json.dumps(inputs['target'],sort_keys=True),config_identity=json.dumps(inputs['config_identity'],sort_keys=True),
   target_base_url=inputs['endpoint'].rstrip('/'),listen_ip=inputs['listen_ip'],listen_port=url.port,allowed_host=inputs['allowed_host'],
   controller_uuid='11111111-2222-4333-8444-555555555555',vm_package_dir=inputs['installation_root'],win10vm_mcp='existing-config-reference',
   manage_extra_ports=True,expected_tool_surface=current_tool_surface(),extra_exclude_port=[],run_firewall_round=True,deploy='deploy' in inputs['actions'],output_root=str(out),fault_record=[],localization_record='')
@@ -489,6 +489,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT):
    finally:
     if before is not None:
      try:
+      if getattr(session,'preserve_scene',False):raise ValueError('controlled operation unresolved; preserve scene')
       final=mods['run_p02_acc'].status(args.target_base_url)
       if final.get('run_id') in session.owned_runs:
        stopped=mods['run_p02_acc'].call(args.target_base_url,'stop',{'command_id':mods['run_p02_acc'].unique_command('owned-final-stop'),'expected_state_version':final['state_version']},timeout=420)
@@ -536,7 +537,9 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT):
 
 def run(case,output,inputs,*,selected=None,boundary=None,fixture=False,root=ROOT):
  inputs,selected=validate_inputs(inputs,case,selected,fixture=fixture)
- if 'ACC-019' in selected:__import__('acceptance_mcp_dependencies').verify_acc008(inputs,root=root,fixture=fixture)
+ if 'ACC-019' in selected:
+  __import__('acceptance_mcp_dependencies').verify_acc008(inputs,root=root,fixture=fixture)
+  if 'deploy' not in inputs['actions']:raise ValueError('ACC019 upgrade CLI requires explicit deploy action')
  out=Path(output).resolve()
  if not out.is_relative_to(Path(inputs['work_root']).resolve()):raise ValueError('MCP output outside fixed owned root')
  if out.exists():raise FileExistsError('MCP output exists; no overwrite or replay')

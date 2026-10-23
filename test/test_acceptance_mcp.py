@@ -863,4 +863,122 @@ class OriginalSnapshotTests(unittest.TestCase):
    with self.assertRaisesRegex(ValueError,'requires this execution'):m.run('MCP-P04-FULL',self.root/'missing',self.inputs,selected=['ACC-019'])
   self.assertFalse((self.root/'missing').exists())
 
+
+class ControlledExitBoundary(IpcProcessBoundary):
+ def __init__(self,inputs,root,mode='normal'):
+  super().__init__(inputs);self.root=Path(root);self.mode=mode;self.service_state='Running';self.pid=12;self.birth='1234';self.instance='instance-1';self.attempt=0;self.phase='idle';self.pending=None;self.audit_injected=False;self.baseline_bytes=b'';self.reason=None;self.log='';self.file_replacement=False
+  self.cfg={'listen_ip':inputs['listen_ip'],'listen_port':28788,'allowed_host_ips':[inputs['allowed_host']],'extra_control_ports':[],'stop_grace_seconds':60};self.cfg_bytes=json.dumps(self.cfg).encode()
+ def facts(self):
+  image=m.read(self.inputs['manifest'])['files'][0]['sha256']
+  return {'state':self.service_state,'pid':self.pid if self.service_state=='Running' else 0,'birth':self.birth if self.service_state=='Running' else None,'prestop':{'pid':self.pid,'creation_time':self.birth,'instance_id':self.instance,'attempt':self.attempt,'phase':self.phase,'reason':self.reason},'marker':{'needs_recovery':self.running or self.phase=='failed'},'config_base64':__import__('base64').b64encode(self.cfg_bytes).decode(),'config_sha256':hashlib.sha256(self.cfg_bytes).hexdigest(),'config':self.cfg,'image_sha256':image,'children':[{'ProcessId':121}] if self.running else [],'log_length':0,'log':self.log}
+ def exchange(self,kind,value):
+  with self.guard:
+   if kind=='http':
+    req=json.loads(value['data']);tool=req['params']['name']
+    if self.pending and self.phase=='draining' and tool in ('create_config','edit_config'):return self.response({'error':{'code':'not_allowed_in_state','message':'controlled shutdown'}})
+    if tool=='get_status' and self.phase=='failed':return self.response({'state':'failed','state_version':self.version,'run_id':self.run_id,'controller':None,'config_identity':self.inputs['config_identity'],'failure_reason':self.reason})
+    if tool=='start':
+     self.running=True;self.phase='idle';self.reason=None;self.log='';self.baseline_bytes=json.dumps({'run_id':self.run_id,'sections':{'services':'original'}}).encode()
+    return super().exchange(kind,value)
+   if kind=='powershell':
+    cmd=value['command'];import re,base64
+    if cmd.startswith('# acc019:'):
+     label=cmd.splitlines()[0][9:]
+     if label=='fact':output=json.dumps(self.facts())
+     elif label in ('direct-stop','failed-direct-stop'):output=json.dumps({'exit_code':0 if self.mode=='accept-direct-stop' else 1061,'state':'Running','pid':self.pid,'birth':self.birth})
+     elif label.startswith('launch-'):
+      nonce=re.search(r'acc019-([a-f0-9]{32})',cmd).group(1);mode=label[7:];argv=['stop'] if mode=='stop' else ['install','--listen-ip',self.cfg['listen_ip'],'--port','28788','--allowed-host',self.cfg['allowed_host_ips'][0]]
+      self.attempt+=1;self.phase='draining';self.pending={'nonce':nonce,'argv':argv,'pid':140,'birth':'1456','completed':True,'wrapper_exited':True,'exit_code':0,'stdout':'','stderr':''};output=json.dumps({'pid':139,'birth':'1455'})
+     elif label=='receipt':
+      if self.pending is None:output='null'
+      else:
+       if self.audit_injected:
+        self.phase='failed';self.reason='environment restoration audit failed';self.pending['exit_code']=1;self.running=False;self.terminal=True
+        if self.mode=='failure-exits':self.service_state='Stopped'
+       else:
+        self.phase='succeeded';self.running=False;self.terminal=True;self.service_state='Stopped';self.log='\n'.join('STOP_PHASE_END phase='+name+' elapsed_ms=1 healthy=True' for name in ('listeners','diverter','complete'))
+        if self.mode=='wrong-attempt':self.attempt=0
+       output=json.dumps(self.pending);self.pending=None
+     elif label=='replace-after-stopped':
+      if self.service_state!='Stopped':raise AssertionError('premature replacement')
+      self.file_replacement=True;output=json.dumps({'source':'a'*64,'copy':'a'*64})
+     elif label=='restart':self.service_state='Running';self.pid+=1;self.birth=str(int(self.birth)+1);self.instance='instance-'+str(self.pid);self.phase='idle';self.reason=None;self.running=False;output='Running'
+     elif label=='restore-config':output=''
+     elif label=='baseline-read':output=json.dumps({'base64':base64.b64encode(self.baseline_bytes).decode(),'sha256':hashlib.sha256(self.baseline_bytes).hexdigest()})
+     elif label=='baseline-write':
+      expected=re.search(r"-ne '([a-f0-9]{64})'",cmd).group(1)
+      if expected!=hashlib.sha256(self.baseline_bytes).hexdigest():raise ValueError('baseline changed')
+      self.baseline_bytes=base64.b64decode(re.search(r"FromBase64String\('([^']*)'\)",cmd).group(1));self.audit_injected='ACC019-INJECTED-' in self.baseline_bytes.decode();output=json.dumps({'sha256':hashlib.sha256(self.baseline_bytes).hexdigest()})
+     else:raise AssertionError('unexpected ACC019 edge '+label)
+     return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+    if 'fault_exists=' in cmd:
+     data=json.loads(ReadOnlyBoundary.exchange(self,kind,value)['output']);data['service_config']=self.cfg;data['pid']=self.pid;data['birth']=self.birth;output=json.dumps(data);return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+    if 'controlled pre-stop failed' in cmd:
+     self.service_state='Stopped';self.running=False;self.phase='succeeded';output='controlled service stop completed';return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+    return super().exchange(kind,value)
+   return super().exchange(kind,value)
+
+class OriginalControlledExitTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def inputs_with_predecessor(self):
+  import copy
+  out=self.root/'predecessor';m.run('MCP-P03-FULL',out,self.inputs,selected=['ACC-008'],boundary=SnapshotProcessBoundary(self.inputs,self.root/'snapshot-guest'),fixture=True)
+  inputs=copy.deepcopy(self.inputs);inputs['actions'].append('deploy');inputs['references']={'ACC-008':{'directory':str(out),'result_sha256':m.sha256(out/'units/ACC-008/result.json')}};return inputs
+ def test_current_cli_stop_upgrade_and_same_instance_audit_failure(self):
+  inputs=self.inputs_with_predecessor();out=self.root/'exit';boundary=ControlledExitBoundary(inputs,self.root/'guest')
+  value=m.run('MCP-P04-FULL',out,inputs,selected=['ACC-019'],boundary=boundary,fixture=True)
+  self.assertEqual('pass',value['checks']['ACC-019']['status'],m.read(out/'units/ACC-019/result.json'));self.assertTrue(boundary.file_replacement);self.assertFalse(boundary.audit_injected)
+  rows,clean,details=o.evaluate(ROOT,out,'MCP-P04-FULL',['ACC-019'],inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],details);self.assertTrue(clean,details)
+ def test_direct_stop_acceptance_or_failed_audit_exit_is_not_pass(self):
+  for mode in ('accept-direct-stop','failure-exits','wrong-attempt'):
+   with self.subTest(mode=mode):
+    self.setUp();inputs=self.inputs_with_predecessor();out=self.root/'exit';value=m.run('MCP-P04-FULL',out,inputs,selected=['ACC-019'],boundary=ControlledExitBoundary(inputs,self.root/'guest',mode),fixture=True)
+    self.assertNotEqual('pass',value['checks']['ACC-019']['status'],m.read(out/'units/ACC-019/result.json'))
+    rows,clean,details=o.evaluate(ROOT,out,'MCP-P04-FULL',['ACC-019'],inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],details)
+
+
+class PublicControlledExitCliTests(unittest.TestCase):
+ setUp=PublicMcpCliTests.setUp
+ cli=PublicMcpCliTests.cli
+ def test_same_catalog_predecessor_stop_upgrade_and_rehashed_wrong_attempt(self):
+  import acceptance as a
+  self.inputs['actions'].append('deploy')
+  candidate={'schema':a.CANDIDATE_V2,'source_commit':self.inputs['identity']['source_commit'],'package_sha256':self.inputs['identity']['package_sha256'],'package_path':self.inputs['package'],'package_manifest':self.inputs['manifest'],'offline_fixture':True}
+  environment={'schema':a.ENVIRONMENT_V2,'targets':['windows-vm'],'interpreters':{'python':sys.executable},'work_root':str(self.base),'allowed_actions':['native','vm-execute'],'endpoints':[],'auth_refs':[],'native_runtime':{'transport':'windows-mcp-velo','identity':self.inputs['target'],**self.inputs['channel']},'mcp':self.inputs,'mcp_checks':{'MCP-P04-FULL':['ACC-019']}}
+  (self.base/'candidate.json').write_text(json.dumps(candidate));(self.base/'environment.json').write_text(json.dumps(environment))
+  digest=m.sha256(ROOT/'docs/acceptance/catalog.json')
+  result=self.cli('plan','--mode','selected','--case','MCP-P04-FULL','--candidate',self.base/'candidate.json','--environment',self.base/'environment.json','--output',self.run/'plan.json');self.assertEqual(0,result[0],result)
+  plan=m.read(self.run/'plan.json');self.assertEqual(['MCP-P03-FULL','MCP-P04-FULL'],plan['required_cases']);self.assertEqual(['ACC-008'],plan['required_checks']['MCP-P03-FULL'])
+  import copy
+  bad=copy.deepcopy(plan);bad['required_cases'].reverse()
+  with self.assertRaisesRegex(ValueError,'predecessor before P04'):__import__('acceptance_mcp_dependencies').validate_plan_order(bad)
+  with mock.patch.object(m,'NativeBoundary',side_effect=lambda root,inputs,journal:SnapshotProcessBoundary(inputs,self.base/'snapshot-domain') if 'MCP-P03-FULL' in str(journal) else ControlledExitBoundary(inputs,self.base/'exit-domain')):
+   result=self.cli('execute','--plan',self.run/'plan.json')
+  self.assertEqual(0,result[0],result)
+  result=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'independent.json');self.assertEqual(0,result[0],result)
+  self.assertEqual(digest,m.sha256(ROOT/'docs/acceptance/catalog.json'));summary=m.read(self.run/'independent.json');self.assertTrue(summary['fixture_contract_pass']);self.assertFalse(summary['full_functional_pass'])
+  case_dir=self.run/'results/MCP-P04-FULL';path=case_dir/'driver/units/ACC-019/trace.json';trace=m.read(path)
+  for row in trace['records']:
+   if row['kind']=='powershell' and row['input']['command'].startswith('# acc019:fact'):
+    data=json.loads(row['output']['output']);data['prestop']['attempt']=0;row['output']['output']=json.dumps(data)
+  path.write_text(json.dumps(trace));receipt=m.read(case_dir/'receipt.json')
+  for item in receipt['artifacts']:item['sha256']=m.sha256(item['path'])
+  (case_dir/'receipt.json').write_text(json.dumps(receipt));index=m.read(self.run/'results/results.json')
+  for row in index['receipts']:
+   if row['case_id']=='MCP-P04-FULL':row['sha256']=m.sha256(case_dir/'receipt.json')
+  (self.run/'results/results.json').write_text(json.dumps(index))
+  result=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'negative.json');self.assertNotEqual(0,result[0],result);self.assertFalse(m.read(self.run/'negative.json')['fixture_contract_pass'])
+
+class ControlledExitPendingTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_unknown_or_unfinished_cli_does_not_grant_recovery(self):
+  inputs=OriginalControlledExitTests.inputs_with_predecessor(self)
+  class Unknown(ControlledExitBoundary):
+   def exchange(self,kind,value):
+    if kind=='powershell' and value['command'].startswith('# acc019:receipt'):
+     raise OSError('transport lost before CLI completion')
+    return super().exchange(kind,value)
+  out=self.root/'unknown';boundary=Unknown(inputs,self.root/'guest');result=m.run('MCP-P04-FULL',out,inputs,selected=['ACC-019','ACC-015'],boundary=boundary,fixture=True)
+  self.assertIsNotNone(boundary.pending);self.assertEqual('not_run',result['checks']['ACC-015']['status']);trace=m.read(out/'units/ACC-019/trace.json');self.assertIsNotNone(trace['recovery_error']);self.assertIn('preserve scene',trace['recovery_error']['message'])
+
 if __name__=='__main__':unittest.main()

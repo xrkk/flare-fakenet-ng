@@ -813,6 +813,7 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
             raise InputError('selected plan contains stress-only cases')
         if any(registered[item].get('excluded') for item in required):
             raise InputError('selected plan contains excluded cases')
+    __import__('acceptance_mcp_dependencies').validate_plan_order(plan)
     environment = plan.get('environment')
     if not isinstance(environment, dict):
         raise InputError('plan.environment is required')
@@ -975,6 +976,8 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
         raise InputError('candidate.source_commit %s does not match current HEAD %s'
                          % (candidate['source_commit'], head))
     selected, exclusions = select_cases(catalog, mode, suite_ids, case_ids)
+    import acceptance_mcp_dependencies
+    selected, environment = acceptance_mcp_dependencies.plan_selection(selected,catalog,environment,mode)
     output = Path(output)
     run_dir = output.parent
     if output.exists():
