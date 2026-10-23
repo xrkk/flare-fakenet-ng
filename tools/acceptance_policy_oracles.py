@@ -231,7 +231,7 @@ def _validate_config(original, scenario, inputs, checks):
         ipaddress.ip_address(_config_value(parser, 'ExternalDnsServer').strip())
     except ValueError as error:
         raise ValueError('ExternalDnsServer is invalid') from error
-    if scenario in ('ipv4', 'combined'):
+    if scenario in ('ipv4', 'combined', 'combo'):
         if _config_value(parser, 'ExternalAllowedIPv4'):
             raise ValueError('old ExternalAllowedIPv4 key is present')
         rule = _config_value(parser, 'ExternalAllowedIPv4Rules').strip()
@@ -239,7 +239,7 @@ def _validate_config(original, scenario, inputs, checks):
                                   int(inputs['reviewed_port']))
         if rule != expected:
             raise ValueError('reviewed IPv4 rule differs from the selected input')
-    if scenario in ('takeover', 'combined'):
+    if scenario in ('takeover', 'combined', 'combo'):
         if _config_value(parser, 'ExternalTakeoverIPv4').strip() != inputs['sink_ip']:
             raise ValueError('takeover sink differs from the selected input')
         ttl = _config_value(parser, 'ExternalTakeoverDnsTTL').strip()
@@ -457,6 +457,11 @@ def evaluate(original, scenario, checks, *, allow_fixture=False, expected_inputs
                     if name=='tls_application':
                         resolution=_load_json(original,trace.get('resolution'),'TLS DNS prerequisite');_,addresses=_dns_content(bytes.fromhex(resolution['request_hex']),bytes.fromhex(resolution['response_hex']),inputs['allowed_domain'])
                         if flow['dst'] not in addresses:raise ValueError('TLS destination differs from original DNS prerequisite')
+                    if scenario=='combo' and name in ('sink_tcp','sink_udp'):
+                        resolution=_load_json(original,trace.get('dns_resolution'),'sink DNS prerequisite')
+                        _,addresses=_dns_content(bytes.fromhex(resolution['request_hex']),bytes.fromhex(resolution['response_hex']),inputs['denied_domain'])
+                        if addresses!=[inputs['sink_ip']] or flow['dst']!=inputs['sink_ip']:
+                            raise ValueError('sink was not consumed from denied-domain DNS answer')
                     if not trace.get('tls') or fixture:
                         if not request in _stream(outgoing):raise ValueError('request nonce absent from original packets')
                     elif not any(p['payload'] for p in outgoing):raise ValueError('TLS original outgoing content missing')

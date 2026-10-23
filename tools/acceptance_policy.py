@@ -42,12 +42,14 @@ TEMPLATES = {
     'ipv4': 'domain_reviewed_ipv4_windows.ini',
     'takeover': 'domain_takeover_windows.ini',
     'combined': 'domain_takeover_windows.ini',
+    'combo': 'domain_takeover_windows.ini',
 }
 READY = {
     'domain': 'EGRESS_CONTROL_READY',
     'ipv4': 'IP_ALLOW_READY',
     'takeover': 'DOMAIN_TAKEOVER_READY',
     'combined': 'DOMAIN_TAKEOVER_READY',
+    'combo': 'DOMAIN_TAKEOVER_READY',
 }
 CHECKS = {
     'domain': ['exact_domain', 'wildcard_domain', 'apex_denied',
@@ -58,6 +60,10 @@ CHECKS = {
                  'ipv6_denied', 'route_restore'],
     'combined': ['exact_domain', 'wildcard_domain', 'reviewed_ip_tls',
                  'sink_tcp', 'sink_udp', 'route_restore'],
+    'combo': ['exact_domain', 'wildcard_domain', 'tls_application',
+              'reviewed_ip_tls', 'sink_tcp', 'sink_udp', 'port_80_denied',
+              'port_444_denied', 'udp443_denied', 'other_ip_denied',
+              'adjacent_denied', 'route_restore'],
 }
 APPLICATION_CHECKS = {'tls_application', 'reviewed_ip_tls', 'sink_tcp',
                       'sink_udp'}
@@ -146,7 +152,7 @@ def _validate_inputs(scenario, inputs, *, strict=True):
         if not address.is_global or address.is_reserved or address.is_loopback:
             raise ValueError('reviewed_ip must be global unicast IPv4')
         private = [ipaddress.ip_network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')]
-        if scenario in ('takeover', 'combined') and not any(ipaddress.ip_address(inputs['sink_ip']) in n for n in private):
+        if scenario in ('takeover', 'combined', 'combo') and not any(ipaddress.ip_address(inputs['sink_ip']) in n for n in private):
             raise ValueError('takeover sink must be RFC1918 IPv4')
         if inputs['upstream_dns'] == inputs['local_source']:
             raise ValueError('upstream DNS cannot be the local source')
@@ -171,14 +177,14 @@ def config_text(scenario, output=None, inputs=None, strict=True):
     diverter['ExternalDnsServer'] = inputs['upstream_dns']
     prefix = str(Path(output) / 'policy') if output else 'policy'
     diverter['DumpPacketsFilePrefix'] = prefix
-    if scenario in ('ipv4', 'combined'):
+    if scenario in ('ipv4', 'combined', 'combo'):
         # The reviewed core grammar is PROTOCOL/IPv4/PORT; the old
         # ExternalAllowedIPv4 key is not a reviewed policy input.
         rule = 'TCP/%s/%d' % (inputs['reviewed_ip'], inputs['reviewed_port'])
         if 'ExternalAllowedIPv4' in diverter:
             del diverter['ExternalAllowedIPv4']
         diverter['ExternalAllowedIPv4Rules'] = rule
-    if scenario in ('takeover', 'combined'):
+    if scenario in ('takeover', 'combined', 'combo'):
         diverter['ExternalTakeoverIPv4'] = inputs['sink_ip']
         diverter['ExternalTakeoverDnsTTL'] = '60'
         diverter['ExternalTakeoverProbeTCPPorts'] = str(inputs['sink_port'])
@@ -628,6 +634,15 @@ def _run_checks(scenario, output, inputs, log_text, capture, core=None, selected
             rcode,answers=_dns_query(domain,dst,port,3,capture,io=core,trace=trace)
             valid=bool(answers) if positive else rcode!='timeout' and not answers
         else:
+            if scenario=='combo' and name in ('sink_tcp','sink_udp'):
+                resolution={};rcode,answers=_dns_query(inputs['denied_domain'],inputs['dns_address'],inputs['dns_port'],3,capture,io=core,trace=resolution)
+                resolution_path=evidence_dir/(name+'-dns.json');resolution_path.write_text(json.dumps(resolution)+'\n')
+                trace['dns_resolution']={'path':str(resolution_path.relative_to(output)),'sha256':sha256(resolution_path),'answers':answers,'rcode':rcode}
+                if answers!=[inputs['sink_ip']]:
+                    trace.update(sent=False,error='denied-domain DNS did not return the configured sink')
+                    path=evidence_dir/(name+'.json');path.write_text(json.dumps(trace)+'\n')
+                    checks.append({'id':name,'status':'unknown','reason':'denied-domain sink DNS missing','evidence':[str(path.relative_to(output))]});return
+                dst=answers[0]
             response,sport=(_tcp_exchange(dst,port,nonce,3,capture,tls=tls,server_hostname=domain or inputs['allowed_domain'],io=core,trace=trace,policy_inputs=inputs) if kind=='TCP' else _udp_exchange(dst,port,nonce,3,capture,io=core,trace=trace))
             valid=response==('FNPR/1|%s|OK\n'%nonce).encode()
         end=log.stat().st_size if log.exists() else 0

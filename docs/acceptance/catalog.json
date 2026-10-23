@@ -161,7 +161,8 @@
             "test/test_acceptance_catalog.py",
             "tools/acceptance.py",
             "docs/acceptance/catalog.json",
-            "test/test_acceptance_scheduler.py"
+            "test/test_acceptance_scheduler.py",
+            "test/test_acceptance_combo.py"
           ]
         },
         {
@@ -4187,7 +4188,8 @@
             "negative": "DNS lease or a single DROP does not prove the whole path"
           },
           "oracle": {
-            "kind": "pcap"
+            "kind": "policy-result",
+            "driver": "policy-combo"
           },
           "resources": [
             "windows-vm",
@@ -4210,10 +4212,11 @@
           "stress": false,
           "sources": [
             "docs/testing.md",
-            "test/gui_vm/run_policy_feature_tests.py"
+            "test/gui_vm/run_policy_feature_tests.py",
+            "test/test_acceptance_combo.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "manual-headless"
+          "blocked_reason": "requires explicit Windows policy inputs and a live VM; this round uses only the memory boundary",
+          "native_driver": "policy-combo"
         }
       ]
     }
@@ -4301,6 +4304,7 @@
       "pcap-linux-functional",
       "pcap-windows-functional",
       "policy-combined",
+      "policy-combo",
       "policy-domain",
       "policy-headless",
       "policy-ipv4",
@@ -4314,6 +4318,7 @@
       "mcp-headless",
       "payload-headless",
       "policy-combined",
+      "policy-combo",
       "policy-domain",
       "policy-ipv4",
       "policy-takeover",

@@ -120,7 +120,7 @@ Logs/acceptance/<run>/
 历史 T003/R01 的整跑 test.py 问题已由精确选择修复; 仍停用的旧包装为 `egress-windows`/`reviewed-ipv4-windows`/`process-redirect-windows` 仍有固定路径、占位、依赖安装或压力步骤; 它们不再标为可用, 原 case 与功能保留待改.
 
 upstream singlehost/MultiHost、Windows/Linux 双 PCAP 和四个策略 driver 的代码已接入, 真实环境未验. 仍未接入: `policy-headless`, `payload-headless`, `mcp-p01`..`mcp-p04`, `mcp-special`, `linux-runtime`, `manual-headless`, `build-identity`.
-本轮新增 `policy-domain`/`policy-ipv4`/`policy-takeover`/`policy-combined` 四个 Windows singlehost driver: 固定配置来自仓库内已审 INI 模板, 生产路径发送真实 DNS/TCP/UDP/TLS FNPR/1 请求, oracle 重读实际 INI/日志/PCAP 帧并核对 attempt/nonce/五元组/双向服务. 另有 `policy-substitute-*` 仅用于本机安全替身: 同 CLI 的 plan/execute/judge 覆盖 8 个策略/组合 case (`EGRESS-*`、`IP-*`、`POL-*`), 结果为 `fixture_contract_pass` 且 `full_functional_pass=false`, 不产生 native 信用.
+本轮新增 `policy-domain`/`policy-ipv4`/`policy-takeover`/`policy-combined`/`policy-combo` 五个 Windows singlehost driver: 固定配置来自仓库内已审 INI 模板, 生产路径发送真实 DNS/TCP/UDP/TLS FNPR/1 请求, oracle 重读实际 INI/日志/PCAP 帧并核对 attempt/nonce/五元组/双向服务. 另有 `policy-substitute-*` 仅用于本机安全替身: 同 CLI 的 plan/execute/judge 覆盖策略/组合 case, 结果为 `fixture_contract_pass` 且 `full_functional_pass=false`, 不产生 native 信用. 新 `policy-combo` 以单个最终 INI/核心/捕获窗口覆盖 12 项组合检查; `sink_tcp`/`sink_udp` 先消费 denied_domain 的实际 DNS sink 回答, 不回落固定地址.
 
 ## 有界离线调度
 
