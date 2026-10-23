@@ -775,4 +775,92 @@ class OriginalLifecycleAdditionalTests(unittest.TestCase):
     data=json.loads(row['output']['output']);data['child']['pid']=999;row['output']['output']=json.dumps(data)
   path.write_text(json.dumps(trace));rows,clean,details=o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],details);self.assertTrue(clean)
 
+
+class SnapshotProcessBoundary(ReadOnlyBoundary):
+ """Actual StateSnapshot/BaselineStore bytes; SCM/filesystem ACL edges only."""
+ def __init__(self,inputs,root):
+  super().__init__(inputs);self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self.t=1700000000.;self.n=0;self.version=7;self.state='stopped';self.run_id=None;self.denied=False;self.listener=False;self.recovery='stopped'
+  from fakenet.mcp.snapshot import StateSnapshot
+  from fakenet.mcp.baseline import BaselineStore
+  self.snapshot=StateSnapshot(self.root/'state/state.json');self.baselines=BaselineStore(self.root/'baselines')
+ def next_uuid(self):self.n+=1;return '33333333-3333-4333-8333-%012d'%self.n
+ def normalize_recovery(self):
+  marker,corrupt=self.snapshot.read()
+  self.recovery='failed' if corrupt or self.listener else 'stopped';self.state=self.recovery;self.run_id=None
+  if marker and self.recovery=='stopped':self.snapshot.clear_recovery(**marker)
+ def response(self,payload):return {'status':200,'headers':{'Content-Type':'application/json'},'body':json.dumps({'result':{'content':[{'text':json.dumps(payload)}]}}).encode(),'http_error':False}
+ def exchange(self,kind,value):
+  import base64,re
+  if kind in ('time','monotonic'):self.t+=.02;return self.t
+  if kind=='sleep':self.t+=value['seconds'];return None
+  if kind=='uuid':return self.next_uuid()
+  if kind=='http':
+   req=json.loads(value['data']);tool=req['params']['name']
+   if tool in ('start','stop','load_config','get_status'):
+    error=None
+    if tool!='get_status':self.version+=1
+    if tool=='start':
+     if self.denied or self.state=='failed':error={'code':'snapshot_write_failed' if self.denied else 'recovery_required'}
+     else:
+      self.run_id=self.next_uuid();self.state='healthy';sections={k:'unchanged' for k in ('routes','dns_servers','windivert_processes','listen_ports','services')};baseline=self.baselines.save(self.run_id,sections)
+      self.snapshot.write(run_id=self.run_id,controller_id='11111111-2222-4333-8444-555555555555',state_version=self.version,command_id='memory-accepted-start',config_sha256=self.inputs['config_identity']['sha256'],baseline_path=baseline['path'],needs_recovery=True)
+    if tool=='stop':
+     marker,corrupt=self.snapshot.read()
+     if marker:self.snapshot.clear_recovery(**marker)
+     self.state='stopped';self.run_id=None
+    return self.response({'service':'fakenetng-mcp','state':self.state,'state_version':self.version,'run_id':self.run_id,'controller':None,'config_identity':self.inputs['config_identity'],'error':error})
+  if kind=='powershell':
+   cmd=value['command']
+   if 'baselines' in cmd and '-Filter' in cmd and ').Count' in cmd:output=str(len(list(self.baselines.root.glob('*.json'))))
+   elif '$rows=@($files' in cmd and 'state export exceeds bound' in cmd:
+    files=list(self.baselines.root.glob('*.json'))+([self.snapshot.path] if self.snapshot.path.exists() else []);rows=[]
+    for path in files:
+     raw=path.read_bytes();win='C:\\ProgramData\\FakeNet-NG-MCP\\'+('state\\state.json' if path==self.snapshot.path else 'baselines\\'+path.name);rows.append({'path':win,'name':path.name,'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),'body':base64.b64encode(raw).decode()})
+    output=json.dumps(rows)
+   elif 'owned file changed' in cmd and 'Remove-Item' in cmd:
+    name=__import__('pathlib').PureWindowsPath(re.search(r"\$p='([^']+)'",cmd).group(1)).name;path=self.snapshot.path if name=='state.json' else self.baselines.root/name
+    expected=re.search(r"-ne '([a-f0-9]{64})'",cmd).group(1)
+    if hashlib.sha256(path.read_bytes()).hexdigest()!=expected:raise ValueError('owned file changed')
+    path.unlink();output='REMOVED'
+   elif 'Base64String([IO.File]::ReadAllBytes((' in cmd:output=base64.b64encode(self.snapshot.path.read_bytes()).decode()
+   elif 'RESTORED_OWNED_RESPONSIBILITY' in cmd:
+    raw=base64.b64decode(re.search(r"FromBase64String\('([^']+)'\)",cmd).group(1));self.snapshot.path.write_bytes(raw);output='RESTORED_OWNED_RESPONSIBILITY'
+   elif "'NOT JSON {{'" in cmd:self.snapshot.path.write_bytes(b'NOT JSON {{');output='CORRUPTED'
+   elif 'no service instance to kill' in cmd:self.normalize_recovery();output=json.dumps({'killed_pid':12,'created':'123456','image':'memory-service'})
+   elif 'startup recovery outcome' in cmd:output='startup recovery outcome '+self.recovery
+   elif '-EncodedCommand' in cmd:self.listener=True;output=json.dumps({'pid':125,'created':123456})
+   elif 'owned listener not listening' in cmd:output='READY'
+   elif 'owned process PID was reused' in cmd:self.listener=False;output='KILLED'
+   elif 'icacls' in cmd:
+    self.denied='/deny' in cmd;output='DENIED' if self.denied else 'GRANTED'
+   elif 'controlled pre-stop failed' in cmd:self.normalize_recovery();output='controlled service stop completed'
+   elif 'Get-Service fakenetng-mcp | Select-Object Name,Status' in cmd:self.normalize_recovery();output=json.dumps({'Name':'fakenetng-mcp','Status':'Running'})
+   elif 'Get-Content' in cmd and 'state.json' in cmd:output=self.snapshot.path.read_text()
+   elif 'SCAN_OK' in cmd:output='10\n0\nSCAN_OK'
+   else:return super().exchange(kind,value)
+   return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+  return super().exchange(kind,value)
+
+class OriginalSnapshotTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_original_snapshot_corruption_write_failure_and_owned_cleanup(self):
+  unit='ACC-008';out=self.root/'predecessor';value=m.run('MCP-P03-FULL',out,self.inputs,selected=[unit],boundary=SnapshotProcessBoundary(self.inputs,self.root/'guest'),fixture=True)
+  self.assertEqual('pass',value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+  rows,clean,details=o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],details);self.assertTrue(clean)
+  import copy,acceptance_mcp_dependencies as dependencies
+  inputs=copy.deepcopy(self.inputs);path=out/'units'/unit/'result.json';inputs['references']={unit:{'directory':str(out),'result_sha256':m.sha256(path)}}
+  capability=dependencies.verify_acc008(inputs,root=ROOT,fixture=True);self.assertFalse(capability['prestop_audit_failure_proven']);self.assertEqual('startup-corrupt-snapshot-recovery-only',capability['scope'])
+  with self.assertRaisesRegex(ValueError,'fixture'):
+   dependencies.verify_acc008(inputs,root=ROOT,fixture=False)
+  result=m.read(path);result['status']='fail';path.write_text(json.dumps(result));inputs['references'][unit]['result_sha256']=m.sha256(path)
+  with self.assertRaisesRegex(ValueError,'not verified'):
+   dependencies.verify_acc008(inputs,root=ROOT,fixture=True)
+  result['status']='pass';path.write_text(json.dumps(result));inputs['references'][unit]['result_sha256']=m.sha256(path)
+  inputs['identity']['candidate_id']='wrong'
+  with self.assertRaisesRegex(ValueError,'identity differs'):dependencies.verify_acc008(inputs,root=ROOT,fixture=True)
+ def test_missing_predecessor_stops_before_native_factory(self):
+  with mock.patch.object(m,'NativeBoundary',side_effect=AssertionError('no service action')):
+   with self.assertRaisesRegex(ValueError,'requires this execution'):m.run('MCP-P04-FULL',self.root/'missing',self.inputs,selected=['ACC-019'])
+  self.assertFalse((self.root/'missing').exists())
+
 if __name__=='__main__':unittest.main()

@@ -362,3 +362,8 @@ LOOPBACK原PCAP检查现仅使用完整UDP载荷的准确标记; 管理TCP命令
 原件位于`main-mcp-r18/control-03`、`control-config-01`、`control-foreign-01`、`control-invalid-01`、`initialization-01`和`special-public-02`. 同正式catalog的plan/execute/独立judge已走控制/非法配置/双栈环回正常链及正确更新引用hash后的坏PCAP拒绝, 没用替代catalog. 实机和整个SPECIAL/P03/P04仍未验/未完成, 未声明MCP完整通过.
 
 P03原S2初始化、S3监听线程异常、S6精确受管子进程退出已补OS内存边界正常及错child身份回放; S3原内外层重复写独占证据名导致FileExistsError, 已将外层改为scenario-checks而保留原判断. lifecycle-additional-01失败保留, additional-02两tests三subtests通过; lifecycle-impacted-01相关63tests44subtests/29.08s通过. 原生线程/进程/恢复仍未验, P03其余能力未完成.
+
+
+ACC019前序引用现在由中央控制器从同一次run的`results/MCP-P03-FULL/driver/units/ACC-008/result.json`生成, 不读旧cwd或最新目录. 引用冻结result SHA, 先核同候选/部署VM/配置/manifest和来源闭包, 再对ACC008原业务函数与直接字节单独重判; 与被依赖能力无关的其它P03失败不代替该项判定. 缺失、失败、变更或跨身份在本轮服务动作前拒绝, fixture不授native引用信用. 输入首次配置不需要每轮人工填写前序路径. 原ACC008损坏快照拒启只支持启动恢复子能力, 明确不授ACC019预停审计失败或完整定位信用; ACC019新受控停服与完整能力引用其余接线仍未完成.
+
+`predecessor-01/02`使用实际StateSnapshot/BaselineStore字节及原ACC008函数/原validator的OS内存边界, 包括快照损坏、写失败、监听残留和先备份再精确清理原路径. 仅证明编排/原判据接通, 不证明真实Windows ACL/SCM/原子写或故障恢复. 前序单项回放只读取明确本次目录, 不枚举历史结果.

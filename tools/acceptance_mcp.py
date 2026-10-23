@@ -69,7 +69,7 @@ def source_paths(root=ROOT):
  # Explicit original business closure; no dynamic source selected by results.
  names=('helpers','run_p01_acc','run_p02_acc','run_p03_acc','run_p04_acc','run_p05_release','run_ipc_cases','run_initialization_case','run_control_cases','evidence_integrity','ipc_evidence','artifact_transfer','bounded_mcp','sst_fault_evidence','scenario_fault_evidence','release_matrix')
  paths=['test/mcp/acceptance/'+n+'.py' for n in names]
- paths += ['tools/acceptance_mcp.py','tools/acceptance_mcp_oracles.py','tools/build_fakenetng_mcp_wine.py','fakenet/mcp/server.py','fakenet/mcp/tools.py']
+ paths += ['tools/acceptance_mcp.py','tools/acceptance_mcp_oracles.py','tools/acceptance_mcp_dependencies.py','tools/build_fakenetng_mcp_wine.py','fakenet/mcp/server.py','fakenet/mcp/tools.py']
  import ast
  pending=list(paths);seen=set(paths)
  while pending:
@@ -96,7 +96,7 @@ def source_pins(root=ROOT):
 
 def validate_inputs(value,case,selected=None,*,fixture=False):
  if case not in CHECKS: raise ValueError('unknown MCP case')
- if not isinstance(value,dict) or set(value)!={'schema','identity','package','manifest','manifest_sha256','target','config_identity','endpoint','listen_ip','allowed_host','channel','actions','work_root','installation_root','programdata_root','guest_work_root'}:
+ if not isinstance(value,dict) or set(value)-{'references'}!={'schema','identity','package','manifest','manifest_sha256','target','config_identity','endpoint','listen_ip','allowed_host','channel','actions','work_root','installation_root','programdata_root','guest_work_root'}:
   raise ValueError('explicit MCP input fields required; commands/artifacts are not inputs')
  if value['schema']!='fakenet.mcp-input.v2':raise ValueError('MCP input schema')
  identity=value['identity']
@@ -133,6 +133,7 @@ def validate_inputs(value,case,selected=None,*,fixture=False):
  verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(verifier)
  try:verifier.verify_package_zip(Path(value['package']),manifest)
  except (RuntimeError,KeyError,OSError,ValueError) as exc:raise ValueError('original MCP package verification refused: '+str(exc)) from exc
+ if 'references' in value and (not isinstance(value['references'],dict) or set(value['references'])-{'ACC-008'}):raise ValueError('unknown MCP predecessor reference')
  selected=list(CHECKS[case] if selected is None else selected)
  if not selected or len(selected)!=len(set(selected)) or any(k not in SELECTABLE_CHECKS[case] for k in selected):raise ValueError('MCP selection not declared by case')
  return copy.deepcopy(value),selected
@@ -411,7 +412,10 @@ def invoke_unit(unit,args,channel,writer,mods):
  if unit=='INCIDENT-INTEGRITY':return p4.run_incident_integrity(base,channel,writer,args)
  if unit=='ACC-014':return p4.run_acc014(base,channel,writer,args)
  if unit=='ACC-015':return p4.run_acc015(base,channel,writer,args.allowed_host)
- if unit=='ACC-019':return p4.run_acc019(base,channel,writer,args)
+ if unit=='ACC-019':
+  args.acc008_capability=__import__('acceptance_mcp_dependencies').verify_acc008(channel.inputs,root=ROOT,fixture=channel.boundary.fixture)
+  writer.add_evidence('acc019-ACC008-reference',args.acc008_capability)
+  return p4.run_acc019(base,channel,writer,args)
  if unit in FAULTS:
   from types import SimpleNamespace as NS
   gate=mods['run_p05_release'].ReleaseGate(NS(**{**vars(args),'output_root':str(writer.out_dir)}));gate.channel=channel
@@ -532,6 +536,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT):
 
 def run(case,output,inputs,*,selected=None,boundary=None,fixture=False,root=ROOT):
  inputs,selected=validate_inputs(inputs,case,selected,fixture=fixture)
+ if 'ACC-019' in selected:__import__('acceptance_mcp_dependencies').verify_acc008(inputs,root=root,fixture=fixture)
  out=Path(output).resolve()
  if not out.is_relative_to(Path(inputs['work_root']).resolve()):raise ValueError('MCP output outside fixed owned root')
  if out.exists():raise FileExistsError('MCP output exists; no overwrite or replay')

@@ -6,15 +6,16 @@ import tempfile
 import acceptance_mcp as m
 
 
-def evaluate(root,original,case,checks,expected_inputs=None,*,allow_fixture=False):
+def evaluate(root,original,case,checks,expected_inputs=None,*,allow_fixture=False,subset=False):
  original=Path(original).resolve();value=m.read(original/'mcp-result.json');inputs=m.read(original/'inputs.json')
  if expected_inputs is None:raise ValueError('frozen MCP inputs required for independent judgment')
  if inputs!=expected_inputs:raise ValueError('MCP inputs differ from frozen plan')
  m.validate_inputs(inputs,case,checks,fixture=allow_fixture)
  if (value.get('schema')!=m.SCHEMA or value.get('case')!=case or value.get('identity')!=inputs['identity'] or value.get('target')!=inputs['target'] or value.get('config_identity')!=inputs['config_identity']):raise ValueError('MCP result identity differs')
  if value.get('fixture') is not False and not allow_fixture:raise ValueError('MCP fixture has no native credit')
- if set(value.get('checks',{}))!=set(checks):raise ValueError('MCP selected unit set differs')
+ if (not subset and set(value.get('checks',{}))!=set(checks)) or (subset and not set(checks)<=set(value.get('checks',{}))):raise ValueError('MCP selected unit set differs')
  if m.read(original/'source-pins.json')!=m.source_pins(root):raise ValueError('MCP original source closure changed')
+ if 'ACC-019' in checks:__import__('acceptance_mcp_dependencies').verify_acc008(inputs,root=root,fixture=allow_fixture)
  mods=m.modules(root);rows=[];details={};clean=True
  for unit in checks:
   if value['checks'][unit]=={'status':'not_run','result':None,'trace':None}:
