@@ -2810,7 +2810,8 @@
             "negative": "one sub-item does not substitute the whole group; no 150/100"
           },
           "oracle": {
-            "kind": "native-json"
+            "kind": "mcp-result",
+            "driver": "mcp-headless"
           },
           "resources": [
             "windows-vm",
@@ -2830,8 +2831,8 @@
           "sources": [
             "test/mcp/acceptance/run_p01_acc.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "mcp-p01"
+          "blocked_reason": "requires explicit MCP/VM/HTTP identity and actions; this round uses only the memory boundary",
+          "native_driver": "mcp-headless"
         }
       ]
     },
@@ -2887,7 +2888,8 @@
             "negative": "one sub-item does not substitute the whole group; no 150/100"
           },
           "oracle": {
-            "kind": "native-json"
+            "kind": "mcp-result",
+            "driver": "mcp-headless"
           },
           "resources": [
             "windows-vm",
@@ -2907,8 +2909,8 @@
           "sources": [
             "test/mcp/acceptance/run_p02_acc.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "mcp-p02"
+          "blocked_reason": "requires explicit MCP/VM/HTTP identity and actions; this round uses only the memory boundary",
+          "native_driver": "mcp-headless"
         }
       ]
     },
@@ -2964,7 +2966,8 @@
             "negative": "one sub-item does not substitute the whole group; no 150/100"
           },
           "oracle": {
-            "kind": "native-json"
+            "kind": "mcp-result",
+            "driver": "mcp-headless"
           },
           "resources": [
             "windows-vm",
@@ -2984,8 +2987,8 @@
           "sources": [
             "test/mcp/acceptance/run_p03_acc.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "mcp-p03"
+          "blocked_reason": "requires explicit MCP/VM/HTTP identity and actions; this round uses only the memory boundary",
+          "native_driver": "mcp-headless"
         }
       ]
     },
@@ -3041,7 +3044,8 @@
             "negative": "one sub-item does not substitute the whole group; no 150/100"
           },
           "oracle": {
-            "kind": "native-json"
+            "kind": "mcp-result",
+            "driver": "mcp-headless"
           },
           "resources": [
             "windows-vm",
@@ -3061,8 +3065,8 @@
           "sources": [
             "test/mcp/acceptance/run_p04_acc.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "mcp-p04"
+          "blocked_reason": "requires explicit MCP/VM/HTTP identity and actions; this round uses only the memory boundary",
+          "native_driver": "mcp-headless"
         }
       ]
     },
@@ -3226,7 +3230,8 @@
             "negative": "destructive diagnostics are not run by default"
           },
           "oracle": {
-            "kind": "native-json"
+            "kind": "mcp-result",
+            "driver": "mcp-headless"
           },
           "resources": [
             "windows-vm",
@@ -3246,8 +3251,8 @@
             "test/mcp/acceptance/run_ipc_cases.py",
             "test/mcp/acceptance/run_control_cases.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "mcp-special"
+          "blocked_reason": "requires explicit MCP/VM/HTTP identity and actions; this round uses only the memory boundary",
+          "native_driver": "mcp-headless"
         },
         {
           "id": "MCP-SPECIAL-FAULT-RECOVERY",
@@ -3265,7 +3270,7 @@
               "listener_stop",
               "diverter_stop",
               "child_hang",
-              "capture_fault"
+              "cleanup_error"
             ]
           },
           "steps": [
@@ -3278,7 +3283,8 @@
             "negative": "no 150-round or 100-scenario credit"
           },
           "oracle": {
-            "kind": "native-json"
+            "kind": "mcp-result",
+            "driver": "mcp-headless"
           },
           "resources": [
             "windows-vm",
@@ -3300,8 +3306,8 @@
             "test/mcp/acceptance/helpers.py",
             "fakenet/mcp/faultinject.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "mcp-special"
+          "blocked_reason": "requires explicit MCP/VM/HTTP identity and actions; this round uses only the memory boundary",
+          "native_driver": "mcp-headless"
         }
       ]
     },
@@ -4239,6 +4245,7 @@
       "egress-windows",
       "linux-runtime",
       "manual-headless",
+      "mcp-headless",
       "mcp-p01",
       "mcp-p02",
       "mcp-p03",
@@ -4258,6 +4265,7 @@
       "upstream-singlehost"
     ],
     "implemented": [
+      "mcp-headless",
       "payload-headless",
       "policy-combined",
       "policy-domain",
@@ -4283,6 +4291,6 @@
       "upstream-multihost",
       "upstream-singlehost"
     ],
-    "note": "Exact local-target upstream and both PCAP functional paths are implemented. Windows-MCP/Velo host execution and original evidence return are fixture-tested. Process-redirect and payload headless drivers now construct the original PE/FNPR and TCP/UDP artifacts and run the original verifiers under a pure-memory boundary; real Windows VM/core/pktmon execution and native credit remain NOT_RUN."
+    "note": "Exact local-target upstream and both PCAP functional paths are implemented. Process/payload and MCP P01-P04/SPECIAL headless adapters now run production-shaped inputs, memory HTTP/process/channel boundaries and original content validators; real Windows VM/MCP/core and native credit remain NOT_RUN."
   }
 }

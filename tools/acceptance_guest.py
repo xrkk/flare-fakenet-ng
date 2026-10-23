@@ -16,8 +16,14 @@ def execute(request,root):
     from acceptance_runtime import require_target,write_json
     fields={'schema','case_id','case','checks','source_hashes','candidate',
             'target','output_root','execution_id','actions'}
-    if set(request) not in (fields, fields|{'policy'}, fields|{'headless'},
-                            fields|{'policy','headless'}) or request['schema']!='fakenet.native-guest-request.v1':
+    allowed = {frozenset(fields), frozenset(fields|{'policy'}),
+               frozenset(fields|{'headless'}),
+               frozenset(fields|{'mcp'}),
+               frozenset(fields|{'policy','headless'}),
+               frozenset(fields|{'policy','mcp'}),
+               frozenset(fields|{'headless','mcp'}),
+               frozenset(fields|{'policy','headless','mcp'})}
+    if frozenset(request) not in allowed or request['schema']!='fakenet.native-guest-request.v1':
         raise ValueError('invalid guest request schema/fields')
     if request['actions']!=['native']:
         raise ValueError('guest native action not authorized')
@@ -37,6 +43,8 @@ def execute(request,root):
         environment['policy']=request['policy']
     if 'headless' in request:
         environment['headless']=request['headless']
+    if 'mcp' in request:
+        environment['mcp']=request['mcp']
     driver,checks=native.validate_case(matches[0],root,environment)
     if not driver.get('production_kind') or checks!=request['checks']:
         raise ValueError('guest fixed driver/check selection mismatch')

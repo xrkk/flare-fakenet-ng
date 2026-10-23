@@ -14,6 +14,7 @@
 - `tools/acceptance_native.py`: native driver 注册表, 固定 argv/子检查/oracle, 不执行未授权 native.
 - `tools/acceptance_policy.py`: 无GUI策略配置/固定生命周期/结果入口; `tools/acceptance_policy_oracles.py`: 重读配置/日志/PCAP并独立判定.
 - `tools/acceptance_headless.py`: EXE改址/双向载荷的固定输入、生命周期和纯内存边界; `tools/acceptance_headless_oracles.py`: 调用原verifier重判PE/client/PCAP/raw/converted/HTML.
+- `tools/acceptance_mcp.py`: MCP六case固定输入、HTTP/process/channel/clock内存边界; `tools/acceptance_mcp_oracles.py`: 复用原MCP result/round/incident/IPC validator.
 - `test/test_acceptance_regression.py`: 真实 CLI 的 plan/execute/judge 闭环与负例自测.
 - `test/test_upstream_runner_contract.py`: 原 `test.py` 退出/重试/名单夹具/SMTP SSL 的离线合同自测.
 
@@ -141,6 +142,17 @@ python tools/acceptance_headless.py --mode payload --memory --output <未占用�
 ```
 
 原件根Logs/acceptance-regression-20261022/main-headless-r16包含正式CLI本机/Windows通道内存正常链及三种已知坏原件独立重判. 相关回归129 passed、31 subtests passed, 只证明实现和离线设施行为; 实际Windows PE/WinDivert/物理NIC/pktmon语法与完整恢复仍NOT_RUN. 之前T005/R01的COMPLETED自报未获主控接受, 原错误原件/结果保留.
+
+### MCP P01-P04 与 SPECIAL
+
+`mcp-headless` 固定读取候选/VM/配置身份、P01..04/SPECIAL选择、动作授权和输出根; `mcp-substitute` 仅替换HTTP/process/channel/clock边界. 六case为 `MCP-P01-FULL`..`MCP-SPECIAL-FAULT-RECOVERY`; 原 `evidence_integrity`、`ipc_evidence` 和 incident export validator实际读取生成的原件, 不把status布尔当通过. 正常内存链覆盖六case及坏identity/evidence/capture/IPC/fault反例.
+
+```text
+python tools/acceptance_mcp.py --case MCP-P01-FULL --memory --output <未占用目录>
+python tools/acceptance_mcp.py --case MCP-SPECIAL-FAULT-RECOVERY --memory --output <未占用目录>
+```
+
+结果标记 `fixture_contract_pass`, 不产生 native/full 信用; 真实Windows MCP/VM/HTTP/服务仍未运行.
 
 ### 策略生产与安全替身
 

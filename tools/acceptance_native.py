@@ -391,6 +391,84 @@ def driver_table(root):
                      '--mode', 'payload', '--memory',
                      '--output', '{output}/driver', '--checks', '{checks}'],
         },
+        'mcp-headless': {
+            'implemented': True, 'production_kind': 'mcp-headless',
+            'exact_filters': True,
+            'platforms': ['windows'], 'modes': ['native'],
+            'checks': ['identity', 'install', 'service', 'firewall',
+                       'protocol', 'exposure', 'config-crud', 'path-hash',
+                       'errors', 'idempotency', 'concurrency', 'transaction',
+                       'core', 'control', 'health', 'ipc',
+                       'failure-recovery', 'config-lock', 'custom',
+                       'artifacts', 'query', 'filter', 'export', 'scm-stop',
+                       'upgrade', 'recovery', 'ipc_once_timeout',
+                       'ipc_permanent_timeout', 'ipc_eof', 'ipc_wrong_run',
+                       'ipc_repeat', 'ipc_reverse', 'policy_pause',
+                       'listener_stop', 'diverter_stop', 'child_hang',
+                       'cleanup_error'],
+            'check_filters': {
+                'MCP-P01-FULL': ['identity', 'install', 'service', 'firewall',
+                                 'protocol', 'exposure'],
+                'MCP-P02-FULL': ['config-crud', 'path-hash', 'errors',
+                                 'idempotency', 'concurrency', 'transaction'],
+                'MCP-P03-FULL': ['core', 'control', 'health', 'ipc',
+                                 'failure-recovery', 'config-lock', 'custom'],
+                'MCP-P04-FULL': ['artifacts', 'query', 'filter', 'export',
+                                 'scm-stop', 'upgrade', 'concurrency', 'recovery'],
+                'MCP-SPECIAL-IPC': ['ipc_once_timeout',
+                                    'ipc_permanent_timeout', 'ipc_eof',
+                                    'ipc_wrong_run', 'ipc_repeat',
+                                    'ipc_reverse'],
+                'MCP-SPECIAL-FAULT-RECOVERY': ['policy_pause',
+                                               'listener_stop',
+                                               'diverter_stop', 'child_hang',
+                                               'cleanup_error'],
+            },
+            'requires': ['native'], 'package_required': False,
+            'resources': ['windows-vm', 'mcp-service', 'controller'],
+            'oracle': {'kind': 'mcp-result', 'artifact': 'driver/mcp-result.json'},
+            'argv': ['{python}', '{root}/tools/acceptance_mcp.py',
+                     '--case', '{case_id}', '--inputs', '{mcp_inputs}',
+                     '--output', '{output}/driver'],
+        },
+        'mcp-substitute': {
+            'implemented': True, 'fixture': True, 'exact_filters': True,
+            'platforms': ['linux', 'windows'], 'modes': ['native'],
+            'checks': ['identity', 'install', 'service', 'firewall',
+                       'protocol', 'exposure', 'config-crud', 'path-hash',
+                       'errors', 'idempotency', 'concurrency', 'transaction',
+                       'core', 'control', 'health', 'ipc',
+                       'failure-recovery', 'config-lock', 'custom',
+                       'artifacts', 'query', 'filter', 'export', 'scm-stop',
+                       'upgrade', 'recovery', 'ipc_once_timeout',
+                       'ipc_permanent_timeout', 'ipc_eof', 'ipc_wrong_run',
+                       'ipc_repeat', 'ipc_reverse', 'policy_pause',
+                       'listener_stop', 'diverter_stop', 'child_hang',
+                       'cleanup_error'],
+            'check_filters': {
+                'MCP-P01-FULL': ['identity', 'install', 'service', 'firewall',
+                                 'protocol', 'exposure'],
+                'MCP-P02-FULL': ['config-crud', 'path-hash', 'errors',
+                                 'idempotency', 'concurrency', 'transaction'],
+                'MCP-P03-FULL': ['core', 'control', 'health', 'ipc',
+                                 'failure-recovery', 'config-lock', 'custom'],
+                'MCP-P04-FULL': ['artifacts', 'query', 'filter', 'export',
+                                 'scm-stop', 'upgrade', 'concurrency', 'recovery'],
+                'MCP-SPECIAL-IPC': ['ipc_once_timeout',
+                                    'ipc_permanent_timeout', 'ipc_eof',
+                                    'ipc_wrong_run', 'ipc_repeat',
+                                    'ipc_reverse'],
+                'MCP-SPECIAL-FAULT-RECOVERY': ['policy_pause',
+                                               'listener_stop',
+                                               'diverter_stop', 'child_hang',
+                                               'cleanup_error'],
+            },
+            'resources': ['windows-vm', 'mcp-service', 'controller'],
+            'oracle': {'kind': 'mcp-result', 'artifact': 'driver/mcp-result.json'},
+            'argv': ['{python}', '{root}/tools/acceptance_mcp.py',
+                     '--case', '{case_id}', '--memory',
+                     '--output', '{output}/driver'],
+        },
         'mcp-p01': {
             'implemented': False,
             'missing': 'P01 needs candidate/package/plan/Vm identity arguments and a live MCP channel',
@@ -475,6 +553,8 @@ def select_checks(driver, case, environment=None):
             raise ValueError('unmapped original upstream check: '+identity)
         return [name for name in checks if family(name)==case['id']]
     filters=(driver.get('check_filters') or {}).get(case['id'])
+    if filters and driver.get('exact_filters'):
+        return list(filters)
     return [name for name in checks if any(token in name for token in filters)] if filters else list(checks)
 
 
@@ -579,7 +659,7 @@ def run_driver(root, case, plan, output_dir, python):
         'root': root,
         'package_manifest': candidate.get('package_manifest') or '',
         'package_sha256': candidate.get('package_sha256') or '',
-        'checks': ','.join(checks),
+        'case_id': case['id'], 'checks': ','.join(checks),
     }
     argv = fixed_argv(driver, context)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -671,7 +751,7 @@ def judge_driver(case, receipt, plan, root):
         'root': str(root),
         'package_manifest': plan.get('candidate', {}).get('package_manifest') or '',
         'package_sha256': plan.get('candidate', {}).get('package_sha256') or '',
-        'checks': ','.join(checks)})
+        'case_id': case['id'], 'checks': ','.join(checks)})
     if receipt.get('command') != expected_argv:
         return {'status': 'fail', 'reason': 'receipt argv differs from the registered driver'}
     if receipt.get('required_checks') != checks:
@@ -787,6 +867,15 @@ def _read_oracle(kind, path):
             status = {'failed': 'fail', 'refused': 'blocked'}.get(status, status)
             rows.append({'id': name, 'status': status})
         return rows
+    if kind == 'mcp-result':
+        import acceptance_mcp_oracles
+        value = json.loads(_read(path))
+        case = value.get('case')
+        ids = [item.get('id') for item in value.get('checks') or []
+               if isinstance(item, dict) and isinstance(item.get('id'), str)]
+        rows, unused, unused_detail = acceptance_mcp_oracles.evaluate(
+            Path(__file__).resolve().parents[1], Path(path).parent, case, ids)
+        return rows
     if kind == 'headless-result':
         import acceptance_headless_oracles
         value = json.loads(_read(path))
@@ -886,7 +975,8 @@ def production_command(root,case,plan,output_dir,python):
              'output':str(Path(output_dir).resolve()),'modes':','.join(checks),
              'policy_inputs':str(Path(output_dir).resolve()/'policy-inputs.json'),
              'headless_inputs':str(Path(output_dir).resolve()/'headless-inputs.json'),
-             'checks':','.join(checks)}
+             'mcp_inputs':str(Path(output_dir).resolve()/'mcp-inputs.json'),
+             'case_id':case['id'], 'checks':','.join(checks)}
     if driver['production_kind'] in ('process-redirect','payload-three-way'):
         headless_inputs(plan['environment'],driver,checks)
     if driver['production_kind'].startswith('policy-'):
@@ -1258,7 +1348,7 @@ def native_source_pins(root):
         if path.is_file():paths.add(path)
     for name in ('acceptance.py','acceptance_native.py','acceptance_runtime.py','acceptance_oracles.py',
                  'acceptance_guest.py','acceptance_windows.py','acceptance_linux.py','acceptance_multihost.py',
-                 'acceptance_collection.py','acceptance_orchestration.py','acceptance_policy.py','acceptance_policy_oracles.py','acceptance_headless.py','acceptance_headless_oracles.py'):
+                 'acceptance_collection.py','acceptance_orchestration.py','acceptance_policy.py','acceptance_policy_oracles.py','acceptance_headless.py','acceptance_headless_oracles.py','acceptance_mcp.py','acceptance_mcp_oracles.py'):
         path=root/'tools'/name
         if path.is_file():paths.add(path)
     path=root/'docs/acceptance/catalog.json'
