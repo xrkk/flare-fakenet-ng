@@ -124,7 +124,11 @@ upstream singlehost/MultiHost、Windows/Linux 双 PCAP 和四个策略 driver �
 
 ## 有界离线调度
 
-`tools/acceptance_scheduler.py` 仅对已核 `CORE-TLSHELLO` 与 `CORE-DUALPCAP-WRITER` 两个无共享副作用的离线组启用最多 2 个工作者; 其它离线组串行, 嵌套深度大于 0 时容量固定为 1. 每个 case 使用自己的 `results/<case>/tmp` 和输出目录, 主线程按计划顺序写唯一 `results.json`; 前驱失败只阻断依赖项, 独立项继续. native 的停止/恢复仍由原驱动单一负责, 调度层不重发 stop/recover.
+`tools/acceptance_scheduler.py` 对已核 `CORE-TLSHELLO` 与 `CORE-DUALPCAP-WRITER` 使用最多 2 个工作者, 还受可用 CPU/内存约束; 未知容量及嵌套调用保守取 1. 其它组串行, 同一显式互斥资源不重叠. 所有 adapter 走同一前驱队列, 不再提前执行全部离线组. 子进程独占 `results/<case>/tmp`, 禁止共享 pytest 缓存; 子环境递增嵌套深度并保持产品导入根, 主线程按原计划顺序关闭唯一 `results.json`.
+
+前驱/资源状态由原件 judge 重判后推进, 不信 `cleanup.recovered` 字段单独授予恢复. 未恢复只阻断实际目标/资源与其依赖, 物理身份不明按相关目标保守处理; 已知独立目标和只读包校验可继续. 主控独立 judge 重建阻断原因, 错原因、缺过程原件或重hash谎报不能过关. 工作者设施异常保留原始错误和完整索引, 退出 3, 独立项继续; 产品失败和超时原件保留.
+
+离线 Python 启动记录本次进程出生及独占进程组/Job, 超时只回收本次拥有的子树, 原件 `process.json` 包含清理前后观察, 不能只取消 Future 或声明 cleanup=true. 无法确认退出时保留 unknown/受影响资源不可复用. Linux 使用保留 leader 身份的 WNOWAIT 观察、按出生身份/pidfd 跟踪的后代(含新 session)及后置检查; Windows Job 分支未做原生验证. native 的停止/恢复仍由原驱动负责, 调度不重发 stop/recover. 这些设施代码/良性 fixture 检查不代表 Windows/Linux 原生产品或完整方案验收通过.
 
 native 的 plan 只展开固定子检查; execute 只在 action/平台/候选包身份齐全时按固定 argv 运行; judge 核 argv/子检查/全部原件/必需 stdout-stderr/退出与 cleanup 一致性. T003/R02 修复了重复/缺失/额外/矛盾超时/缺日志/假 resources 的误判; fixture 通过只给 `fixture_contract_pass`, 不授 `full_functional_pass` 或当前 native 信用.
 

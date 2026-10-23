@@ -945,7 +945,7 @@ def collect_nodes(root, case, python, tmp_dir, log_dir):
     tmp_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / (case['id'] + '-collection.log')
     env = _python_env(root, tmp_dir)
-    command = [str(python), '-B', '-m', 'pytest', '--collect-only', '-q',
+    command = [str(python), '-B', '-m', 'pytest', '--collect-only', '-q', '-p', 'no:cacheprovider',
                '--rootdir', str(root)] + [str(item) for item in modules]
     completed = subprocess.run(command, cwd=root, env=env, capture_output=True,
                                text=True, timeout=case['timeout'], check=False)
@@ -965,11 +965,13 @@ def collect_nodes(root, case, python, tmp_dir, log_dir):
 def _python_env(root, tmp_dir):
     import os
     env = os.environ.copy()
-    inherited = [item for item in env.get('PYTHONPATH', '').split(os.pathsep) if item]
-    env['PYTHONPATH'] = os.pathsep.join(inherited + [str(root)])
+    env['PYTHONPATH'] = str(root)
+    env['FN_ACCEPTANCE_NESTED_DEPTH'] = str(acceptance_scheduler.depth_from_environment(env) + 1)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
     env['TMPDIR'] = str(tmp_dir)
+    env['TMP'] = str(tmp_dir)
+    env['TEMP'] = str(tmp_dir)
     return env
 
 
@@ -1092,98 +1094,86 @@ def _hash_record(path, fmt):
 
 
 def execute_plan(root, plan_path):
-    root = Path(root)
-    plan_path = Path(plan_path)
+    root, plan_path = Path(root), Path(plan_path)
     plan = read_json(plan_path)
-    # Validate registry, mode, sources, environment actions and block state
-    # before creating any output or starting any subprocess.
-    validate_plan_registry(root, plan, plan_path, require_execute_action=True)
-    run_dir = plan_path.parent.resolve()
-    results_dir = run_dir / 'results'
+    unused_catalog, registered = validate_plan_registry(root, plan, plan_path, require_execute_action=True)
+    results_dir = plan_path.parent.resolve() / 'results'
     if results_dir.exists():
         raise InputError('results directory already exists: %s' % results_dir)
     results_dir.mkdir(parents=True)
     python = plan['environment']['interpreters']['python']
-    tmp_dir = run_dir / 'tmp'
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    receipts = []
-    native_recovery_block = None
-    blocked_resources = set()
-    offline = []
-    for case_id in plan['required_cases']:
-        case = plan['cases'][case_id]
-        if case['adapter'] == 'offline-pytest' and case_id not in plan.get('blocked', {}):
-            offline.append(case)
-    offline_receipts = {}
-    offline_blocked = {}
-    if offline:
-        def _run_scheduled(case):
-            case_dir = results_dir / case['id']
-            case_dir.mkdir(parents=True, exist_ok=True)
-            return _run_offline_case(root, plan, case, case_dir, python,
-                                     case_dir / 'tmp')
-        offline_receipts, offline_blocked = acceptance_scheduler.run_cases(
-            offline, _run_scheduled)
-    for case_id in plan['required_cases']:
-        case = plan['cases'][case_id]
-        case_dir = results_dir / case_id
-        case_dir.mkdir(exist_ok=True)
-        receipt = {
-            'schema': RECEIPT_V2,
-            'execution_id': plan['execution_id'],
-            'suite_id': case['suite_id'],
-            'case_id': case_id,
-            'attempt': 1,
-            'adapter': case['adapter'],
-            'oracle_kind': case['oracle']['kind'],
-            'candidate': plan['candidate'],
-            'environment': plan['environment'],
+    receipts = {}
+
+    def base_receipt(case):
+        return {
+            'schema': RECEIPT_V2, 'execution_id': plan['execution_id'],
+            'suite_id': case['suite_id'], 'case_id': case['id'], 'attempt': 1,
+            'adapter': case['adapter'], 'oracle_kind': case['oracle']['kind'],
+            'candidate': plan['candidate'], 'environment': plan['environment'],
             'config_sha256': _sha256_json(case),
-            'evidence_level': 'offline' if case['adapter'] == 'offline-pytest' else 'native',
+            'evidence_level': ('offline' if case['adapter'] == 'offline-pytest' else
+                               'fixture' if case['adapter'] == 'native' and
+                               (plan['candidate'].get('offline_fixture') is True or
+                                acceptance_native.is_fixture(case, root)) else 'native'),
         }
-        case_resources = acceptance_scheduler._resources(case)
-        blocked = (case_id in plan.get('blocked', {}) or
-                   case_id in offline_blocked or
-                   (case['adapter']=='native' and bool(case_resources & blocked_resources)))
-        if blocked:
-            receipt.update({
-                'status': 'blocked',
-                'reason': plan['blocked'].get(case_id) or offline_blocked.get(case_id) or 'resource recovery unresolved',
-                'returncode': None,
-                'command': None,
-                'started_at': None,
-                'ended_at': utc_now(),
-                'duration_seconds': 0.0,
-                'artifacts': [],
-                'cleanup': {'source': 'adapter', 'resources': [],
-                            'process_exit': None, 'temp_roots': []},
-            })
-        elif case['adapter'] == 'offline-pytest':
-            receipt.update(offline_receipts[case_id])
-        elif case['adapter'] == 'native':
-            receipt['native_driver'] = case.get('native_driver')
-            receipt.update(acceptance_native.run_driver(root, case, plan, case_dir, python))
-            receipt['evidence_level'] = ('fixture' if plan['candidate'].get('offline_fixture') is True or acceptance_native.is_fixture(case, root)
-                                         else 'native')
-            production = acceptance_native.validate_case(case,root,plan['environment'])[0].get('production_kind')
-            if production and receipt.get('cleanup',{}).get('recovered') is not True:
-                native_recovery_block = 'prior native driver recovery unresolved: '+case_id
-                blocked_resources |= case_resources
-        else:
-            raise ToolError('unregistered adapter: %s' % case['adapter'])
-        receipt_path = case_dir / 'receipt.json'
-        _write_json(receipt_path, receipt)
-        receipts.append({'case_id': case_id, 'path': str(receipt_path.resolve()),
-                         'sha256': sha256(receipt_path), 'status': receipt['status']})
-    index = {'schema': RESULTS_V2, 'execution_id': plan['execution_id'],
-             'plan': str(plan_path.resolve()), 'plan_sha256': sha256(plan_path),
-             'receipts': receipts}
-    index_path = results_dir / 'results.json'
-    _write_json(index_path, index)
-    summary = judge_v2(root, plan_path, results_dir, run_dir / 'summary.json')
-    summary['paths'] = {'plan': str(plan_path.resolve()),
-                        'results': str(results_dir.resolve()),
-                        'summary': str((run_dir / 'summary.json').resolve())}
+
+    def run_case(case):
+        directory = results_dir / case['id']
+        directory.mkdir()
+        receipt = base_receipt(case)
+        try:
+            if case['adapter'] == 'offline-pytest':
+                receipt.update(_run_offline_case(root, plan, case, directory, python, directory / 'tmp'))
+            elif case['adapter'] == 'native':
+                receipt['native_driver'] = case.get('native_driver')
+                receipt.update(acceptance_native.run_driver(root, case, plan, directory, python))
+            else:
+                raise ToolError('unregistered executable adapter: %s' % case['adapter'])
+        except Exception as exc:
+            error = {'type': type(exc).__name__, 'message': str(exc)}
+            error_path = directory / 'facility-error.json'
+            _write_json(error_path, error)
+            receipt.update(status='unknown', returncode=None, command=None,
+                           artifacts=[_hash_record(error_path, 'log')],
+                           cleanup={'source': 'adapter', 'resources': [], 'process_exit': None},
+                           ended_at=utc_now(), facility_error=error)
+        return receipt
+
+    def observe(case, receipt):
+        # Each worker owns only case artifacts. This owner thread closes every
+        # receipt and judges original artifacts before releasing its resources.
+        path = results_dir / case['id'] / 'receipt.json'
+        _write_json(path, receipt)
+        receipts[case['id']] = receipt
+        return _judge_execution_case(root, plan, registered[case['id']], receipt)
+
+    cases = [plan['cases'][cid] for cid in plan['required_cases']]
+    results, blocked = acceptance_scheduler.run_cases(
+        cases, run_case, judge=observe, plan=plan, initial=plan['blocked'])
+    for cid, reason in blocked.items():
+        case = plan['cases'][cid]
+        directory = results_dir / cid
+        directory.mkdir()
+        receipt = base_receipt(case)
+        receipt.update(status='blocked', reason=reason, returncode=None, command=None,
+                       started_at=None, ended_at=utc_now(), duration_seconds=0.0,
+                       artifacts=[], cleanup={'source': 'adapter', 'resources': [],
+                                              'process_exit': None, 'temp_roots': []})
+        _write_json(directory / 'receipt.json', receipt)
+        receipts[cid] = receipt
+    entries = []
+    for cid in plan['required_cases']:
+        path = results_dir / cid / 'receipt.json'
+        if cid not in receipts:
+            raise ToolError('scheduler did not settle case: ' + cid)
+        entries.append({'case_id': cid, 'path': str(path), 'sha256': sha256(path),
+                        'status': receipts[cid]['status']})
+    _write_json(results_dir / 'results.json', {
+        'schema': RESULTS_V2, 'execution_id': plan['execution_id'],
+        'plan': str(plan_path.resolve()), 'plan_sha256': sha256(plan_path), 'receipts': entries})
+    summary = judge_v2(root, plan_path, results_dir, plan_path.parent / 'summary.json')
+    summary['paths'] = {'plan': str(plan_path.resolve()), 'results': str(results_dir),
+                        'summary': str((plan_path.parent / 'summary.json').resolve())}
     return summary
 
 
@@ -1203,20 +1193,16 @@ def _run_offline_case(root, plan, case, case_dir, python, tmp_dir):
     stderr_path = case_dir / 'stderr.log'
     tmp_dir = Path(tmp_dir)
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    command = [str(python), '-B', '-m', 'pytest', '-q', '--disable-warnings',
+    command = [str(python), '-B', '-m', 'pytest', '-q', '-p', 'no:cacheprovider', '--disable-warnings',
                '--rootdir', str(root), '--junitxml', str(junit_path)] + list(run_nodes)
     env = _python_env(root, tmp_dir)
-    timed_out = False
-    try:
-        with stdout_path.open('xb') as stdout, stderr_path.open('xb') as stderr:
-            completed = subprocess.run(command, cwd=root, env=env, stdout=stdout,
-                                       stderr=stderr, timeout=case['timeout'], check=False)
-            returncode = completed.returncode
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        returncode = None
-    except OSError as error:
-        raise ToolError('cannot start adapter for %s: %s' % (case['id'], error)) from error
+    with stdout_path.open('xb') as stdout, stderr_path.open('xb') as stderr:
+        observation = acceptance_scheduler.run_owned_process(
+            command, cwd=root, env=env, stdout=stdout, stderr=stderr, timeout=case['timeout'])
+    returncode = observation['returncode']
+    timed_out = observation['timed_out']
+    process_path = case_dir / 'process.json'
+    _write_json(process_path, observation)
     ended = datetime.now(timezone.utc)
     artifacts = []
     rows = []
@@ -1243,6 +1229,10 @@ def _run_offline_case(root, plan, case, case_dir, python, tmp_dir):
         detail = 'pytest rc=%s; %s' % (returncode, detail)
     artifacts.append(_hash_record(stdout_path, 'log'))
     artifacts.append(_hash_record(stderr_path, 'log'))
+    artifacts.append(_hash_record(process_path, 'log'))
+    if observation['forced'] and not timed_out:
+        status = 'unknown' if status == 'pass' else status
+        detail = 'owned descendants required termination; ' + detail
     return {
         'status': status,
         'detail': detail,
@@ -1255,7 +1245,7 @@ def _run_offline_case(root, plan, case, case_dir, python, tmp_dir):
         'cleanup': {
             'source': 'adapter',
             'resources': [],
-            'process_exit': {'exited': True, 'returncode': returncode,
+            'process_exit': {'exited': observation['tree_exited'], 'returncode': returncode,
                              'timed_out': timed_out},
             'temp_roots': [str(case_dir.resolve())],
         },
@@ -1281,7 +1271,138 @@ def _cleanup_derived(receipt, run_dir):
         path = Path(root)
         if not path.is_absolute() or not path.resolve().is_relative_to(base):
             return False, 'adapter temp root escapes the run directory'
+    path = base / 'results' / receipt['case_id'] / 'process.json'
+    matches = [item for item in receipt.get('artifacts', []) if item.get('path') == str(path)]
+    if len(matches) != 1 or matches[0].get('format') != 'log' or not path.is_file():
+        return False, 'owned process observation missing'
+    if sha256(path) != matches[0].get('sha256'):
+        return False, 'owned process observation changed'
+    observed = read_json(path)
+    if (observed.get('argv') != receipt.get('command') or
+            observed.get('returncode') != process_exit.get('returncode') or
+            observed.get('returncode') != receipt.get('returncode') or
+            observed.get('timed_out') is not process_exit.get('timed_out')):
+        return False, 'owned process observation differs from receipt'
+    created = observed.get('created', {})
+    pid = created.get('pid')
+    if type(pid) is not int or pid <= 0 or observed.get('tree_exited') is not True:
+        return False, 'owned process tree exit unconfirmed'
+    if created.get('kind') == 'windows-job':
+        if (type(created.get('birth_filetime')) is not int or created['birth_filetime'] <= 0 or
+                observed.get('active_after_cleanup') != 0):
+            return False, 'owned Job observation incomplete'
+    else:
+        final = observed.get('final_members')
+        if (created.get('pgid') != pid or created.get('sid') != pid or
+                type(created.get('birth_ticks')) is not int or not isinstance(final, list) or
+                any(item.get('pgid') != pid or item.get('sid') != pid or
+                    item.get('state') not in ('Z', 'X') for item in final)):
+            return False, 'owned process group not quiescent'
+        leader = [item for item in final if item.get('pid') == pid]
+        if len(leader) != 1 or leader[0].get('birth_ticks') != created['birth_ticks']:
+            return False, 'owned leader birth observation differs'
+        children = observed.get('descendants_created')
+        after = observed.get('descendants_after_cleanup')
+        if not isinstance(children, list) or not isinstance(after, list):
+            return False, 'owned descendant observations missing'
+        before_ids = {(item.get('pid'), item.get('birth_ticks')) for item in children}
+        after_ids = {(item.get('pid'), item.get('birth_ticks')) for item in after}
+        if (len(before_ids) != len(children) or len(after_ids) != len(after) or
+                before_ids != after_ids or
+                any(item.get('state') not in ('Z', 'X', 'gone', 'reused') for item in after)):
+            return False, 'owned descendant birth/exit observations differ'
     return True, ''
+
+
+def _validate_execution_receipt(root, plan, reference, receipt):
+    cid = reference['id']
+    expected = {
+        'schema': RECEIPT_V2, 'execution_id': plan['execution_id'],
+        'suite_id': reference['suite_id'], 'case_id': cid,
+        'adapter': reference['adapter'], 'oracle_kind': reference['oracle']['kind'],
+        'candidate': plan['candidate'], 'environment': plan['environment'],
+        'config_sha256': _sha256_json(plan['cases'][cid]),
+        'evidence_level': ('offline' if reference['adapter'] == 'offline-pytest' else
+                           'fixture' if reference['adapter'] == 'native' and
+                           (plan['candidate'].get('offline_fixture') is True or
+                            acceptance_native.is_fixture(reference, root)) else 'native'),
+    }
+    for name, value in expected.items():
+        if receipt.get(name) != value:
+            raise InputError('receipt %s mismatch: %s' % (name, cid))
+    if receipt.get('status') not in CASE_STATUSES:
+        raise InputError('invalid receipt status: ' + cid)
+
+
+def _judge_execution_case(root, plan, reference, receipt):
+    """Replay one closed case; no target actions and no recovery state machine."""
+    _validate_execution_receipt(root, plan, reference, receipt)
+    cid = reference['id']
+    base = {'case_id': cid, 'suite_id': reference['suite_id']}
+    if 'facility_error' in receipt:
+        path = Path(plan['run_dir']) / 'results' / cid / 'facility-error.json'
+        artifacts = receipt.get('artifacts', [])
+        if (len(artifacts) != 1 or artifacts[0].get('path') != str(path) or
+                artifacts[0].get('format') != 'log' or not path.is_file() or
+                sha256(path) != artifacts[0].get('sha256') or
+                read_json(path) != receipt['facility_error'] or receipt['status'] != 'unknown'):
+            raise InputError('facility error original differs: ' + cid)
+        return dict(base, status='unknown', cleanup_ok=False,
+                    reason='facility error', facility_error=read_json(path))
+    if reference['adapter'] == 'native':
+        if receipt.get('native_driver') != reference.get('native_driver'):
+            raise InputError('native driver mismatch: ' + cid)
+        judged = acceptance_native.judge_driver(reference, receipt, plan, root)
+        clean = judged.get('cleanup_ok') is True
+        status = judged.get('status', 'unknown')
+        if not clean and status == 'pass':
+            status = 'unknown'
+        return dict(base, status=status, cleanup_ok=clean,
+                    reason=judged.get('reason', ''), evaluation=judged.get('evaluation'))
+    if reference['adapter'] != 'offline-pytest':
+        raise InputError('unregistered executed adapter: ' + cid)
+    oracle_kind = reference['oracle']['kind']
+    if oracle_kind not in ('junit', 'tsv'):
+        raise InputError('offline oracle differs: ' + cid)
+    parsed, paths, count = [], [], 0
+    for artifact in receipt.get('artifacts') or []:
+        path = Path(artifact.get('path', ''))
+        if not path.is_absolute() or not path.is_file() or sha256(path) != artifact.get('sha256'):
+            raise InputError('artifact changed or missing: ' + cid)
+        paths.append(str(path))
+        fmt = artifact.get('format')
+        if fmt not in (oracle_kind, 'log'):
+            raise InputError('unexpected artifact format for ' + cid)
+        if fmt == oracle_kind:
+            count += 1
+            try:
+                parsed.extend(parse_junit(path) if fmt == 'junit' else parse_tsv(path))
+            except (ET.ParseError, ValueError, UnicodeError) as exc:
+                raise ToolError('cannot parse original artifact for %s: %s' % (cid, exc)) from exc
+    process_exit = (receipt.get('cleanup') or {}).get('process_exit') or {}
+    if count != 1 and not (count == 0 and process_exit.get('timed_out') is True):
+        raise InputError('expected exactly one %s artifact: %s' % (oracle_kind, cid))
+    checks = plan['required_checks'].get(cid) or []
+    if not checks:
+        raise InputError('planned checks are empty: ' + cid)
+    evaluation = judge_rows_exact(parsed, checks)
+    status = ('fail' if evaluation['verdict'] == 'fail' or receipt['status'] == 'fail' else
+              'pass' if evaluation['verdict'] == 'pass' and receipt['status'] == 'pass' else 'unknown')
+    reason = ''
+    rc = receipt.get('returncode')
+    if type(rc) is not int:
+        status = 'fail' if status == 'fail' else 'unknown'
+        reason = 'process exit was not observed'
+    elif rc != 0:
+        status, reason = 'fail', 'process returncode %r' % rc
+    if process_exit.get('timed_out') is True:
+        status = 'fail' if status == 'fail' else 'unknown'
+        reason = 'case timed out'
+    clean, cleanup_reason = _cleanup_derived(receipt, plan['run_dir'])
+    if not clean and status == 'pass':
+        status, reason = 'unknown', cleanup_reason
+    return dict(base, status=status, reason=reason, evaluation=evaluation,
+                cleanup_ok=clean, artifacts=paths)
 
 
 def judge_v2(root, plan_path, results_dir, output=None):
@@ -1323,139 +1444,34 @@ def judge_v2(root, plan_path, results_dir, output=None):
         if receipt.get('case_id') != case_id:
             raise InputError('receipt case_id differs from index: %s' % case_id)
         receipts[case_id] = receipt
-    outcomes = []
-    timings = []
-    cleanup_results = []
-    fixture_used = plan.get('candidate',{}).get('offline_fixture') is True
-    for case_id in plan['required_cases']:
-        reference = registered[case_id]
-        case = plan['cases'][case_id]
-        receipt = receipts[case_id]
-        if receipt.get('schema') != RECEIPT_V2:
-            raise InputError('unknown receipt schema: %s' % case_id)
-        if receipt.get('execution_id') != plan['execution_id']:
-            raise InputError('execution mismatch: %s' % case_id)
-        if receipt.get('suite_id') != reference['suite_id']:
-            raise InputError('receipt suite mismatch: %s' % case_id)
-        if receipt.get('case_id') != case_id:
-            raise InputError('receipt case mismatch: %s' % case_id)
-        if receipt.get('adapter') != reference['adapter']:
-            raise InputError('receipt adapter mismatch: %s' % case_id)
-        if receipt.get('oracle_kind') != reference['oracle']['kind']:
-            raise InputError('receipt oracle kind mismatch: %s' % case_id)
-        if receipt.get('candidate') != plan['candidate']:
-            raise InputError('candidate mismatch: %s' % case_id)
-        if receipt.get('environment') != plan['environment']:
-            raise InputError('receipt environment mismatch: %s' % case_id)
-        if receipt.get('config_sha256') != _sha256_json(case):
-            raise InputError('case config changed: %s' % case_id)
-        expected_level = ('offline' if reference['adapter'] == 'offline-pytest'
-                          else 'fixture' if reference['adapter'] == 'native'
-                          and (plan['candidate'].get('offline_fixture') is True or acceptance_native.is_fixture(reference, root)) else 'native')
-        if receipt.get('evidence_level') != expected_level:
-            raise InputError('evidence level mismatch: %s' % case_id)
-        receipt_status = receipt.get('status')
-        if receipt_status not in CASE_STATUSES:
-            raise InputError('invalid receipt status: %s' % case_id)
-        if reference['adapter'] == 'native':
-            if receipt_status == 'blocked':
-                outcomes.append({'case_id': case_id, 'suite_id': reference['suite_id'],
-                                 'status': 'blocked',
-                                 'reason': receipt.get('reason') or 'native driver blocked'})
-                continue
-            if receipt.get('native_driver') != reference.get('native_driver'):
-                raise InputError('native driver mismatch: %s' % case_id)
-            judged = acceptance_native.judge_driver(reference, receipt, plan, root)
-            status = judged.get('status', 'unknown')
-            cleanup_ok = bool(judged.get('cleanup_ok', False))
-            cleanup_results.append(cleanup_ok)
-            if not cleanup_ok and status == 'pass':
-                status = 'unknown'
-            fixture_used = fixture_used or receipt.get('evidence_level') == 'fixture'
-            outcomes.append({'case_id': case_id, 'suite_id': reference['suite_id'],
-                             'status': status,
-                             'reason': judged.get('reason', ''),
-                             'evaluation': judged.get('evaluation')})
-            if isinstance(receipt.get('duration_seconds'), (int, float)):
-                timings.append({'case_id': case_id, 'seconds': receipt['duration_seconds']})
-            continue
-        if reference['adapter'] != 'offline-pytest':
-            if receipt_status != 'blocked':
-                raise InputError('native case cannot receive offline credit: %s' % case_id)
-            outcomes.append({'case_id': case_id, 'suite_id': reference['suite_id'],
-                             'status': 'blocked',
-                             'reason': receipt.get('reason') or 'adapter is not implemented'})
-            continue
-        if receipt_status == 'blocked':
-            if case_id not in plan.get('blocked', {}):
-                raise InputError('blocked receipt for an unblocked case: %s' % case_id)
-            outcomes.append({'case_id': case_id, 'suite_id': reference['suite_id'],
-                             'status': 'blocked',
-                             'reason': receipt.get('reason') or plan['blocked'][case_id]})
-            continue
-        if case_id in plan.get('blocked', {}):
-            raise InputError('blocked plan case has an execution receipt: %s' % case_id)
-        oracle_kind = reference['oracle']['kind']
-        if oracle_kind not in ('junit', 'tsv'):
-            raise InputError('offline adapter cannot claim oracle %r: %s' % (oracle_kind, case_id))
-        expected_format = oracle_kind
-        parsed = []
-        artifact_paths = []
-        oracle_artifacts = 0
-        for artifact in receipt.get('artifacts') or []:
-            path = Path(artifact.get('path', ''))
-            if not path.is_absolute() or not path.is_file() or sha256(path) != artifact.get('sha256'):
-                raise InputError('artifact changed or missing: %s' % case_id)
-            artifact_paths.append(str(path))
-            fmt = artifact.get('format')
-            if fmt not in (expected_format, 'log'):
-                raise InputError('unexpected artifact format %r for %s' % (fmt, case_id))
-            if fmt == expected_format:
-                oracle_artifacts += 1
-                try:
-                    if fmt == 'junit':
-                        parsed.extend(parse_junit(path))
-                    else:
-                        parsed.extend(parse_tsv(path))
-                except (ET.ParseError, ValueError, UnicodeError) as error:
-                    raise ToolError('cannot parse original artifact for %s: %s' % (case_id, error))
-        if oracle_artifacts != 1:
-            raise InputError('expected exactly one %s artifact: %s' % (expected_format, case_id))
-        checks = plan['required_checks'].get(case_id) or []
-        if not checks:
-            raise InputError('planned checks are empty for an executed case: %s' % case_id)
-        evaluation = judge_rows_exact(parsed, checks)
-        eval_status = evaluation['verdict']
-        if eval_status == 'fail' or receipt_status == 'fail':
-            status = 'fail'
-        elif eval_status != 'pass' or receipt_status != 'pass':
-            status = 'unknown'
+    facts, taints = {}, {}
+    cases = [plan['cases'][cid] for cid in plan['required_cases']]
+    order, order_blocks = acceptance_scheduler.ordered_cases(cases, plan)
+    initial = dict(order_blocks, **plan.get('blocked', {}))
+    for cid in order + [item for item in plan['required_cases'] if item not in order]:
+        reference, receipt = registered[cid], receipts[cid]
+        _validate_execution_receipt(root, plan, reference, receipt)
+        reason = acceptance_scheduler.block_reason(plan['cases'][cid], facts, taints,
+                                                   plan=plan, initial=initial)
+        if receipt['status'] == 'blocked':
+            if not reason or receipt.get('reason') != reason:
+                raise InputError('blocked receipt for an unblocked case or wrong reason: ' + cid)
+            facts[cid] = {'case_id': cid, 'suite_id': reference['suite_id'],
+                          'status': 'blocked', 'reason': reason}
         else:
-            status = 'pass'
-        reason = ''
-        returncode = receipt.get('returncode')
-        if not isinstance(returncode, int):
-            status = 'fail' if status == 'fail' else 'unknown'
-            reason = 'process exit was not observed'
-        elif returncode != 0:
-            status = 'fail'
-            reason = 'process returncode %r' % returncode
-        cleanup = receipt.get('cleanup') or {}
-        process_exit = cleanup.get('process_exit') or {}
-        if process_exit.get('timed_out') is True:
-            status = 'fail' if status == 'fail' else 'unknown'
-            reason = 'case timed out'
-        cleanup_ok, cleanup_reason = _cleanup_derived(receipt, plan['run_dir'])
-        cleanup_results.append(cleanup_ok)
-        if not cleanup_ok and status == 'pass':
-            status = 'unknown'
-            reason = cleanup_reason
-        outcomes.append({'case_id': case_id, 'suite_id': reference['suite_id'],
-                         'status': status, 'reason': reason,
-                         'evaluation': evaluation,
-                         'artifacts': artifact_paths})
-        if isinstance(receipt.get('duration_seconds'), (int, float)):
-            timings.append({'case_id': case_id, 'seconds': receipt['duration_seconds']})
+            if reason:
+                raise InputError('executed case had blocked dependency/resource: ' + cid)
+            facts[cid] = _judge_execution_case(root, plan, reference, receipt)
+            if facts[cid].get('cleanup_ok') is False:
+                taints[cid] = acceptance_scheduler._resources(plan['cases'][cid], plan['environment'])
+    outcomes = [facts[cid] for cid in plan['required_cases']]
+    timings = [{'case_id': cid, 'seconds': receipts[cid]['duration_seconds']}
+               for cid in plan['required_cases']
+               if isinstance(receipts[cid].get('duration_seconds'), (int, float))]
+    cleanup_results = [item['cleanup_ok'] for item in outcomes if 'cleanup_ok' in item]
+    errors = [item['facility_error'] for item in outcomes if item.get('facility_error')]
+    fixture_used = (plan['candidate'].get('offline_fixture') is True or
+                    any(receipts[cid].get('evidence_level') == 'fixture' for cid in plan['required_cases']))
     passed = [row['case_id'] for row in outcomes if row['status'] == 'pass']
     failed = [row['case_id'] for row in outcomes if row['status'] == 'fail']
     unverified = [row['case_id'] for row in outcomes
@@ -1489,6 +1505,7 @@ def judge_v2(root, plan_path, results_dir, output=None):
         'fixture_contract_pass': fixture_contract_pass,
         'unverified': unverified,
         'failures': failed,
+        'errors': errors,
         'timings': timings,
         'generated_at': utc_now(),
     }
@@ -1501,6 +1518,8 @@ def judge_v2(root, plan_path, results_dir, output=None):
 
 
 def exit_code_for(summary):
+    if summary.get('errors'):
+        return EXIT_TOOL
     if summary.get('verdict') == 'fail':
         return EXIT_FAIL
     if summary.get('verdict') == 'unknown':

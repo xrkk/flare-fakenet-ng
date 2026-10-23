@@ -125,7 +125,10 @@
             "offline"
           ],
           "input": {
-            "module": "test/test_acceptance_catalog.py"
+            "modules": [
+              "test/test_acceptance_catalog.py",
+              "test/test_acceptance_scheduler.py"
+            ]
           },
           "steps": [
             "pytest --collect-only -q test/test_acceptance_catalog.py",
