@@ -54,7 +54,10 @@ def probe_during(action, base, seconds=4.0):
     box = {}
 
     def run_action():
-        box['result'] = action()
+        try:
+            box['result'] = action()
+        except Exception as exc:
+            box['error'] = {'type': type(exc).__name__, 'message': str(exc)}
 
     worker = threading.Thread(target=run_action, daemon=True)
     worker.start()
@@ -72,6 +75,8 @@ def probe_during(action, base, seconds=4.0):
             break
         time.sleep(0.5)
     worker.join(30)
+    if box.get('error'):
+        raise StepError('concurrent acceptance action failed: ' + json.dumps(box['error']))
     return timeline, box.get('result')
 
 
@@ -362,7 +367,7 @@ def acc004_s2_init_failure(base, channel, writer):
     return run_initialization_failure(base, channel, writer)
 
 
-def exercise_listener_exception(base, channel, writer, tag, fault="listener_exception"):
+def exercise_listener_exception(base, channel, writer, tag, fault="listener_exception", verify_lifecycle=False):
     """Arm after healthy; require actual worker stack, nonce and recovery."""
     if fault not in ("listener_exception", "capture_exception"):
         raise StepError("unsupported worker exception")
@@ -372,11 +377,15 @@ def exercise_listener_exception(base, channel, writer, tag, fault="listener_exce
     ready, initial = wait_state(base, lambda x: x.get('state') == 'stopped' and not x.get('run_id'), timeout=60)
     if not ready:
         raise StepError('fault mode entry not stopped; preserve scene')
-    started = load_and_start(base)
+    from health_composition import verified_start
+    started = verified_start(base, channel, writer, tag + '-strict') if verify_lifecycle else load_and_start(base)
     writer.add_evidence(tag + '-start', started)
     healthy, initial = wait_state(base, lambda x: x.get('state') == 'healthy', timeout=30)
     if not healthy or not initial.get('run_id'):
         raise StepError('exception precondition not healthy; preserve scene')
+    if verify_lifecycle:
+        from health_composition import healthy_origin
+        healthy_origin(base, channel, writer, tag + '-pre-arm', started, initial)
     run_id = initial['run_id']
     import uuid
     uuid.UUID(run_id)
@@ -434,6 +443,7 @@ def exercise_listener_exception(base, channel, writer, tag, fault="listener_exce
         rows = [json.loads(line) for line in timing['parent'].splitlines()]
         transitions = [row for row in rows if row['event'] == 'health_state' and
                        (row.get('frame') or {}).get('state') == 'failed' and
+                       (not verify_lifecycle or (row.get('frame') or {}).get('run_id') == run_id) and
                        row['monotonic'] >= timing['trigger']['monotonic']]
         checks['actual_capture_revocation_within_four_seconds'] = bool(transitions) and (
             transitions[0]['monotonic'] - timing['trigger']['monotonic'] <= 4)
@@ -600,13 +610,15 @@ def terminate_current_managed_child(channel, snapshot):
     return channel.powershell(command, timeout=80)
 
 
-def acc004_s6_uncontrolled_exit(base, channel, writer):
+def acc004_s6_uncontrolled_exit(base, channel, writer, verify_lifecycle=False):
     """The managed child exits; the same supervisor remains reachable."""
-    started = load_and_start(base)
+    from health_composition import verified_start, healthy_origin
+    started = verified_start(base, channel, writer, 'acc006-process') if verify_lifecycle else load_and_start(base)
     writer.add_evidence('acc004-s6-start', started)
     healthy, initial = wait_state(base, lambda x: x.get('state') == 'healthy', timeout=30)
     if not healthy:
         raise StepError('child-exit precondition not healthy; preserve scene')
+    origin = healthy_origin(base, channel, writer, 'acc006-process-pin', started, initial) if verify_lifecycle else None
     def terminate_and_recover():
         raw = terminate_current_managed_child(channel, initial)
         settled, final = wait_state(base, lambda x: x.get('state') == 'stopped' and not x.get('run_id'), timeout=420)
@@ -617,7 +629,7 @@ def acc004_s6_uncontrolled_exit(base, channel, writer):
     if not result:
         raise StepError('child-exit action missing evidence')
     actual = json.loads(result['termination']['output'])
-    return {
+    checks = {
         'exact_managed_child_terminated': actual['child']['pid'] == initial['health']['identity']['pid'] and
             actual['child']['creation_time'] == initial['health']['identity']['creation_time'] and
             actual['child']['run_id'] == initial['run_id'],
@@ -626,6 +638,12 @@ def acc004_s6_uncontrolled_exit(base, channel, writer):
         'control_link_survives_entire_recovery': bool(timeline) and all(x['ok'] for x in timeline),
         'protective_recovery_completed': result['settled'] and result['final'].get('last_run_outcome') == 'failed',
     }
+
+    if verify_lifecycle:
+        from process_recovery import observe_service, identity
+        after = observe_service(base, channel, writer, 'acc006-process-supervisor-after')
+        checks['same_supervisor_birth'] = identity(after) == identity(origin['service'])
+    return checks
 
 
 ACC004_SCENARIOS = (
@@ -677,32 +695,47 @@ def no_listener_config(content):
     return output.getvalue()
 
 
-def exercise_no_listener_health(base, writer):
+def exercise_no_listener_health(base, writer, channel=None, verify_lifecycle=False):
     """Original ACC006 initialization negative, independently selectable."""
+    from health_composition import require_mutation, verified_stop, config_identity
     checks = {}
     builtin = call(base, 'read_config', {'name': 'default.ini'}, controller=None)
     writer.add_evidence('acc006-nolistener-source', builtin)
     if builtin.get('error') or not builtin.get('content'):
         return {'actual_default_config_available': False}
     no_listener_ini = no_listener_config(builtin['content'])
-    name = 'nolisten-%s.ini' % unique_command('nl')[:6]
+    import uuid
+    name = 'nolisten-' + uuid.uuid4().hex + '.ini' if verify_lifecycle else 'nolisten-%s.ini' % unique_command('nl')[:6]
+    create_command = unique_command('a6-nl'); create_version = status(base)['state_version']
     created = call(base, 'create_config',
                    {'name': name, 'content': no_listener_ini,
-                    'command_id': unique_command('a6-nl'),
-                    'expected_state_version': status(base)['state_version']}, timeout=120)
+                    'command_id': create_command,
+                    'expected_state_version': create_version}, timeout=120)
     writer.add_evidence('acc006-nolistener-create', created)
     if created.get('error'):
         return {'no_listener_config_created': False}
+    if verify_lifecycle:
+        require_mutation(created, create_command, create_version)
+    load_command = unique_command('a6-nl-l')
     loaded = call(base, 'load_config',
-                  {'name': name, 'command_id': unique_command('a6-nl-l'),
+                  {'name': name, 'command_id': load_command,
                    'expected_state_version': created['state_version']}, timeout=120)
     writer.add_evidence('acc006-nolistener-load', loaded)
     if loaded.get('error'):
         return {'no_listener_config_loaded': False}
+    if verify_lifecycle:
+        require_mutation(loaded, load_command, created['state_version'])
+        if not config_identity(loaded.get('config_identity'), name, sha_of(no_listener_ini)):
+            raise StepError('ACC006 no-listener configuration bytes differ')
+    start_command = unique_command('a6-nl-s')
     started = call(base, 'start',
-                   {'command_id': unique_command('a6-nl-s'),
+                   {'command_id': start_command,
                     'expected_state_version': loaded['state_version']}, timeout=120)
     writer.add_evidence('acc006-nolistener-start', started)
+    if verify_lifecycle:
+        require_mutation(started, start_command, loaded['state_version'])
+        if started.get('config_identity') != loaded.get('config_identity'):
+            raise StepError('ACC006 no-listener start config differs')
     checks['no_listener_start_attempted'] = started.get('error') is None and started.get('changed') is True
     observations = [started]
     deadline = time.monotonic() + 3 * HEALTH_INTERVAL_S + 2.0
@@ -715,14 +748,20 @@ def exercise_no_listener_health(base, writer):
     writer.add_evidence('acc006-nolistener-status', observed)
     writer.add_evidence('acc006-nolistener-window', observations)
     checks['no_init_evidence_never_healthy'] = all(
-        not item.get('error') and item.get('state') != 'healthy' for item in observations)
+        not item.get('error') and item.get('state') != 'healthy' and
+        (not verify_lifecycle or (item.get('config_identity') == loaded.get('config_identity') and item.get('run_id') in (None, started.get('run_id')))) for item in observations)
     checks['fake_healthy_negative'] = ((observed.get('health') or {}).get('init_evidence') is False
                                       or observed.get('state') in ('starting', 'degraded', 'failed'))
-    stopped = stop_run(base)
+    stopped = verified_stop(base, channel, writer, 'acc006-nolistener', started.get('run_id'), loaded['config_identity'], allow_stopped=True) if verify_lifecycle else stop_run(base)
     checks['no_listener_stop_completed'] = not stopped.get('error') and stopped.get('state') == 'stopped'
+    restore_command = unique_command('a6-restore'); restore_version = status(base)['state_version']
     restored = call(base, 'load_config',
-                    {'name': 'default.ini', 'command_id': unique_command('a6-restore'),
-                     'expected_state_version': status(base)['state_version']})
+                    {'name': 'default.ini', 'command_id': restore_command,
+                     'expected_state_version': restore_version})
+    if verify_lifecycle:
+        require_mutation(restored, restore_command, restore_version)
+        if not config_identity(restored.get('config_identity'), 'default.ini', builtin.get('sha256')):
+            raise StepError('ACC006 default config restoration bytes differ')
     checks['default_config_restored'] = (not restored.get('error') and
                                        (restored.get('config_identity') or {}).get('name') == 'default.ini')
     writer.add_evidence('acc006-nolistener-restore', restored)
@@ -731,48 +770,10 @@ def exercise_no_listener_health(base, writer):
 
 
 def run_acc006(base, channel, writer):
-    writer.action('acc006', 'real health: three conditions, no fake healthy')
-    from run_ipc_cases import run_ipc_matrix, IPC_CASES
-    checks = run_ipc_matrix(base, channel, writer)
-    if set(checks) != set(IPC_CASES) or not all(checks.values()):
-        writer.add_evidence('acc006-ipc-matrix-incomplete', checks)
-        return EXIT_FAIL
-    started = load_and_start(base)
-    writer.add_evidence('acc006-start-payload', started)
-    checks['start_ok'] = started.get('error') is None
-    healthy, snap = wait_state(
-        base, lambda s: s.get('state') == 'healthy', timeout=30)
-    checks['healthy_reached'] = healthy
-    checks['health_fields_present'] = all(
-        key in (snap or {}).get('health', {})
-        for key in ('process_alive', 'init_evidence', 'probe'))
+    writer.action('acc006', 'complete current-run health/IPC/anomaly/process collection')
+    from health_composition import run_complete_health
+    return run_complete_health(base, channel, writer)
 
-    # End the healthy control run before changing the service test mode.
-    writer.add_evidence('acc006-stop-control', stop_run(base))
-    checks.update(exercise_listener_exception(base, channel, writer, 'acc006-anomaly'))
-    capture_checks = exercise_listener_exception(base, channel, writer, 'acc006-capture', 'capture_exception')
-    checks.update({'capture_' + key: value for key, value in capture_checks.items()})
-
-    from run_active_probe import run_active_probe_loss
-    active_checks = run_active_probe_loss(base, channel, writer)
-    checks.update({'active_' + key: value for key, value in active_checks.items()})
-    if not all(active_checks.values()):
-        writer.add_evidence('acc006-checks', checks)
-        return EXIT_FAIL
-
-    checks.update(exercise_no_listener_health(base, writer))
-
-    # (d) process condition: in the in-process model the service process IS
-    # the run; breaking it is the uncontrolled-exit kill covered end-to-end
-    # by ACC-004(6)/ACC-007 with recovery evidence (cross-referenced).
-    final = status(base)
-    stopped, _ = wait_state(base, lambda s: s.get('state') == 'stopped',
-                            timeout=60)
-    checks['stop_returns_to_stopped'] = stopped
-    writer.add_evidence('acc006-final', final)
-    writer.add_evidence('acc006-checks', checks)
-    checked = [v for v in checks.values() if v is not None]
-    return EXIT_PASS if all(checked) else EXIT_FAIL
 
 
 def crash_current_service(channel, snapshot, service=None):

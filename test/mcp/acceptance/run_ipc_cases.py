@@ -10,7 +10,7 @@ IPC_CASES = ('ipc_once_timeout', 'ipc_permanent_timeout', 'ipc_eof',
              'ipc_wrong_run', 'ipc_repeat', 'ipc_reverse')
 
 
-def run_ipc_matrix(base, channel, writer, selected=None):
+def run_ipc_matrix(base, channel, writer, selected=None, verify_lifecycle=False):
     from run_p03_acc import load_and_start, wait_state, stop_run, probe_during, disarm_fault, status
     checks = {}
     writer.add_evidence('ipc-test-mode', configure_fault_service(channel, True, 5))
@@ -21,11 +21,15 @@ def run_ipc_matrix(base, channel, writer, selected=None):
     if not selected or len(set(selected)) != len(selected) or any(x not in IPC_CASES for x in selected):
         raise ValueError('invalid original IPC selection')
     for fault in selected:
-        started = load_and_start(base)
+        from health_composition import verified_start, verified_stop
+        started = verified_start(base, channel, writer, 'strict-' + fault) if verify_lifecycle else load_and_start(base)
         writer.add_evidence(fault + '-start', started)
         healthy, initial = wait_state(base, lambda x: x.get('state') == 'healthy', timeout=30)
         if not healthy:
             raise StepError('IPC case did not reach healthy: ' + fault)
+        if verify_lifecycle:
+            from health_composition import healthy_origin
+            healthy_origin(base, channel, writer, fault + '-pre-arm', started, initial)
         run_id = str(uuid.UUID(initial['run_id']))
         def action():
             armed = arm_fault_file(channel, fault)
@@ -35,7 +39,7 @@ def run_ipc_matrix(base, channel, writer, selected=None):
                 recovered, recovery = wait_state(base, lambda x: x.get('state') in ('healthy', 'failed'), timeout=12)
                 recovered = recovered and recovery.get('state') == 'healthy' and recovery.get('run_id') == run_id
                 if recovered:
-                    stop = stop_run(base)
+                    stop = verified_stop(base, channel, writer, 'strict-' + fault, run_id, initial['config_identity']) if verify_lifecycle else stop_run(base)
                     writer.add_evidence(fault + '-normal-stop', stop)
                     if stop.get('error') or stop.get('state') != 'stopped':
                         return dict(armed=armed, revoked=revoked, revoked_status=snap,

@@ -232,3 +232,40 @@ ACL/PowerShell/Job/SCM, deployed-candidate behavior and full/native remain
 unverified. Same-catalog CLI replay rejects a wrong controller even after inner
 byte hashes and outer receipts are updated. This is limited integration and
 predicate credit, not complete P03/MCP acceptance.
+
+
+### Complete current-run health collection (ACC006)
+
+ACC006 declares its complete section/key set before execution: all six IPC
+faults, a healthy control run, listener/capture exceptions, active probe loss,
+no-listener initialization negative and the managed-process condition. Missing,
+extra, false or None checks cannot become an empty/filtered pass. The original
+standalone slices remain separately selectable and do not replace this set.
+
+The complete entry opts the existing original functions into strict lifecycle
+checks: actual configuration content/SHA and accepted load/start/stop commands,
+current run/config/child and all three health conditions. Handle-pinned native
+observations bind the managed image/ancestry and current run.log bytes; the
+unchanged product health predicate is applied to those bytes. Identity and
+health are checked again immediately before arming each fault. The original
+observation windows, private IPC validator, incident bytes, exception stacks,
+capture trigger timing and recovery requirements remain. Capture transitions
+must identify this run. Unknown/refused mutations or recovery stop dependent
+work and preserve the scene. Worker failures now propagate to the caller as
+actual errors rather than disappearing into a missing concurrent result.
+
+The process condition executes the existing managed-child termination scenario
+and verifies the same supervisor birth afterward. The obsolete in-process
+service/run equivalence is not used. A final stop must have its exact receipt
+and an observed stopped state, without a live child or unintended config change.
+No-listener setup/restoration also binds its actual content and receipts.
+
+Tests use the real ConfigStore/coordinator, parser, health predicate and original
+acceptance/IPC/incident functions; only native file/process/HTTP/clock edges are
+simulated. The complete original function is replayed through the same catalog
+CLI. Wrong/None health, run/child/config/log identity, unknown start/stop,
+untriggered capture, incomplete sections and changed supervisor fail. Updated
+outer hashes cannot hide a wrong nonce or a missing process-scenario record.
+These tests provide offline integration/predicate credit only. Windows PS/SCM,
+actual IPC faults/listeners/termination, native/full and the three outstanding
+diagnostic-producer gaps remain unverified. No GUI/100/150 or T007 work is added.

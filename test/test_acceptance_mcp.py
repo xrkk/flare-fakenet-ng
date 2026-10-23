@@ -2264,3 +2264,218 @@ class SnapshotServiceIdentityTests(unittest.TestCase):
         for mutate in (lambda v: v['service'].update(image='C:\\foreign\\fakenetng-mcp.exe'), lambda v: v['service'].update(creation_time=''), lambda v: v.update(endpoint_owned=False), lambda v: v['service'].update(state='Unknown')):
             bad = copy.deepcopy(value); mutate(bad)
             with self.assertRaisesRegex(Exception, 'identity|service|state'): files_match(channel, bad)
+
+
+class CompleteHealthBoundary(ActiveProbeProcessBoundary):
+    """Real config/coordinator/parser/health predicate; native OS edges in memory."""
+    def __init__(self, inputs, root, fault_mode=None):
+        super().__init__(inputs)
+        self.domain = DomainBoundary(inputs, root)
+        self.fault_mode = fault_mode
+        self.serial = 0
+        self.arms = []
+        self.stops = []
+        self.http_calls = []
+        self.origin_calls = 0
+        self.clocks = {}
+        self.child = {'pid': 121, 'creation_time': '123456'}
+        self.service = {'pid': 12, 'creation_time': '1234'}
+        self.domain.context.runner.health_detail = self.health_edge
+
+    def health_edge(self, state):
+        from fakenet.mcp.testdouble import LifecycleDouble
+        detail = LifecycleDouble.health_detail(state)
+        detail['probe'] = state == 'healthy'
+        if self.running: detail['identity'] = dict(self.child)
+        if self.fault_mode in ('false-health', 'none-health') and state == 'healthy': detail['probe'] = None if self.fault_mode == 'none-health' else False
+        return detail
+
+    def pipe_bytes(self):
+        if self.fault and self.fault['fault'] == 'diverter_stop':
+            rows = [{'event': 'request', 'monotonic': 100., 'frame': {'kind': 'health', 'seq': 1, 'run_id': self.run_id}},
+                    {'event': 'response', 'monotonic': 100.1, 'frame': {'seq': 1, 'run_id': self.run_id, 'result': {'init_evidence': True, 'probe': False, 'listeners': [{'alive': True}]}}},
+                    {'event': 'health_state', 'monotonic': 100.2, 'frame': {'state': 'failed', 'identity': self.child, 'run_id': self.run_id}}]
+            return {'parent': '\n'.join(json.dumps(r) for r in rows), 'child': '', 'receipt': self.fault}
+        return super().pipe_bytes()
+
+    def exchange(self, kind, value):
+        import base64, re, copy
+        from pathlib import PureWindowsPath
+        with self.guard:
+            if kind in ('time', 'monotonic', 'sleep'):
+                thread = __import__('threading').current_thread().name
+                tick = self.clocks.get(thread, 1700000000.)
+                tick += value['seconds'] if kind == 'sleep' else .01
+                self.clocks[thread] = tick
+                return None if kind == 'sleep' else tick
+            if kind == 'http':
+                request = json.loads(value['data']); tool = request['params']['name']; args = request['params'].get('arguments') or {}
+                self.http_calls.append(tool)
+                if tool == 'ping': return FaultProcessBoundary.exchange(self, kind, value)
+                if self.fault_mode == 'rejected-start' and tool == 'start':
+                    return self.response({'error': {'code': 'not_allowed_in_state'}, 'state': 'stopped'})
+                if self.fault_mode == 'stop-rejected' and tool == 'stop':
+                    self.stops.append(args); return self.response({'error': {'code': 'not_allowed_in_state'}})
+                if self.fault_mode == 'missing-no-listener' and tool == 'create_config' and args.get('name', '').startswith('nolisten-'):
+                    return self.response({'error': {'code': 'validation_failed'}})
+                if tool == 'start':
+                    from fakenet.fakenet import Fakenet
+                    from fakenet.mcp.supervisor import evaluate_health_evidence
+                    config = self.domain.context.coordinator.snapshot()['config_identity']
+                    path = (self.domain.context.store.builtin_root if config['builtin'] else self.domain.context.store.custom_root) / config['name']
+                    parsed = Fakenet(); parsed.parse_config(str(path))
+                    ok, reason = evaluate_health_evidence({'process_alive': True, 'init_evidence': bool(parsed.listeners_config), 'probe': True}, '')
+                    if not ok: self.domain.context.runner.fail_next_start = reason
+                    self.fault = None; self.step = 0; self.terminal = False
+                    self.serial += 1; self.child = {'pid': 120 + self.serial, 'creation_time': str(123456 + self.serial)}
+                if tool == 'get_status' and self.running and self.fault:
+                    self.step += 1
+                    coord = self.domain.context.coordinator
+                    if self.step == 1: coord.update_health_state('degraded' if 'timeout' in self.fault['fault'] else 'failed')
+                    elif self.fault['fault'] == 'ipc_once_timeout': coord.update_health_state('healthy')
+                    else:
+                        coord.restore_responsibility(None, 'failed' if self.fault_mode == 'unknown-recovery' else 'stopped', last_run_outcome='failed')
+                        self.running = False; self.terminal = True
+                result = self.domain.exchange(kind, value)
+                payload = json.loads(json.loads(result['body'])['result']['content'][0]['text'])
+                if tool == 'start':
+                    self.running = payload.get('state') == 'healthy'
+                    if payload.get('run_id'): self.run_id = payload['run_id']
+                    # The response itself is sampled after start completion.
+                    payload['health'] = self.health_edge(payload.get('state'))
+                elif tool == 'stop':
+                    self.stops.append(args); self.running = False
+                    payload['health'] = self.health_edge(payload.get('state'))
+                    if self.fault_mode == 'unknown-stop': payload = {}
+                if tool == 'get_status' and payload.get('state') == 'healthy':
+                    if self.fault_mode == 'wrong-run': payload['run_id'] = '99999999-9999-4999-8999-999999999999'
+                    if self.fault_mode == 'wrong-child': payload['health']['identity'] = dict(self.child, pid=999)
+                    if self.fault_mode == 'wrong-config': payload['config_identity'] = dict(payload['config_identity'], name='foreign.ini')
+                if self.fault_mode == 'unknown-start' and tool == 'start': payload = {}
+                self.version = self.domain.context.coordinator.snapshot()['state_version']
+                return self.response(payload)
+            if kind == 'powershell':
+                command = value['command']
+                if 'health SCM precondition' in command:
+                    self.origin_calls += 1
+                    expected = json.loads(base64.b64decode(re.search(r"FromBase64String\('([^']+)'\)", command).group(1)))
+                    log = b'Unhandled exception in current run' if self.fault_mode == 'bad-log' else b'benign current healthy run\n'
+                    facts = {'run_id': self.run_id,
+                        'child': dict(self.child, parent_pid=12, image=str(PureWindowsPath(self.inputs['installation_root']) / 'fakenetng-mcp-managed.exe'), run_id=self.run_id),
+                        'service': dict(self.service, image=str(PureWindowsPath(self.inputs['installation_root']) / 'fakenetng-mcp.exe'), state='Running'),
+                        'log': {'path': str(PureWindowsPath(self.inputs['programdata_root']) / 'artifacts/runs' / self.run_id / 'run.log'), 'body': base64.b64encode(log).decode(), 'size': len(log), 'sha256': hashlib.sha256(log).hexdigest()}}
+                    if self.fault_mode == 'wrong-log-run': facts['log']['path'] = str(PureWindowsPath(self.inputs['programdata_root']) / 'artifacts/runs' / '99999999-9999-4999-8999-999999999999' / 'run.log')
+                    output = json.dumps(facts)
+                elif '$expected =' in command and 'endpoint_owned=' in command:
+                    facts = dict(self.service, state='Running', image=str(PureWindowsPath(self.inputs['installation_root']) / 'fakenetng-mcp.exe'), endpoint_owned=True, sampled_at=self.t, marker=None)
+                    if self.fault_mode == 'changed-supervisor': facts['creation_time'] = '9999'
+                    output = json.dumps(facts)
+                elif "throw 'child scope mismatch'" in command:
+                    self.domain.context.coordinator.restore_responsibility(None, 'stopped', last_run_outcome='failed')
+                    self.running = False; self.terminal = True
+                    output = json.dumps({'child': dict(self.child, run_id=self.run_id), 'exit_code': -1, 'service_pid_before': 12, 'service_pid_after': 12, 'service_state_after': 'Running'})
+                elif 'capture-exception-time.json' in command:
+                    payload = {'trigger': {'monotonic': 100.}, 'parent': json.dumps({'event': 'health_state', 'monotonic': 100.2, 'frame': {'state': 'failed', 'run_id': self.run_id}})}
+                    if self.fault_mode == 'capture-not-triggered': payload['parent'] = ''
+                    output = json.dumps(payload)
+                elif "$b=[Text.Encoding]::ASCII.GetBytes('fakenet-capture-" in command:
+                    output = json.dumps({'sent': 52, 'destination': '127.0.0.1:39999'})
+                else:
+                    if '[IO.File]::WriteAllText($path,' in command and 'fault-injection.json' in command:
+                        armed = json.loads(re.search(r"WriteAllText\(\$path,'(\{.*?\})'", command).group(1)); self.arms.append(armed['fault'])
+                    return super().exchange(kind, value)
+                return {'output': output, 'raw': output, 'exit_code': 0, 'is_error': False}
+            return super().exchange(kind, value)
+
+
+class CompleteHealthTests(unittest.TestCase):
+    setUp = OriginalMcpTests.setUp
+
+    def full(self, label, fault=None):
+        boundary = CompleteHealthBoundary(self.inputs, self.root / (label + '-domain'), fault)
+        out = self.root / label
+        result = m.run('MCP-P03-FULL', out, self.inputs, selected=['ACC-006'], boundary=boundary, fixture=True)
+        return result, out, boundary
+
+    def test_original_all_sections_config_domain_and_independent_replay(self):
+        result, out, boundary = self.full('healthy')
+        self.assertEqual('pass', result['checks']['ACC-006']['status'], {name: m.read(path) for name in ('acc006-complete-health',) if (path := out / 'units/ACC-006' / (name + '.json')).is_file()})
+        from health_composition import REQUIRED
+        collection = m.read(out / 'units/ACC-006/acc006-complete-health.json')
+        self.assertEqual(set(REQUIRED), set(collection['sections']))
+        self.assertEqual(6, len(collection['sections']['ipc']['checks']))
+        self.assertTrue(all(section['passed'] for section in collection['sections'].values()))
+        rows, clean, details = o.evaluate(ROOT, out, 'MCP-P03-FULL', ['ACC-006'], self.inputs, allow_fixture=True)
+        self.assertEqual('pass', rows[0]['status'], details); self.assertTrue(clean, details)
+
+    def test_wrong_current_health_identity_log_or_start_never_arms_a_fault(self):
+        for fault in ('false-health', 'none-health', 'wrong-run', 'wrong-child', 'wrong-config', 'bad-log', 'wrong-log-run', 'rejected-start', 'unknown-start'):
+            with self.subTest(fault=fault):
+                result, out, boundary = self.full(fault, fault)
+                self.assertNotEqual('pass', result['checks']['ACC-006']['status'])
+                self.assertEqual([], boundary.arms)
+                result = m.read(out / 'units/ACC-006/result.json')
+                reason = 'receipt unconfirmed' if fault in ('rejected-start', 'unknown-start') else 'start child identity changed' if fault == 'wrong-child' else 'log original differs' if fault == 'wrong-log-run' else 'health/log predicate' if fault == 'bad-log' else 'three healthy conditions'
+                self.assertIn(reason, json.dumps(result.get('blocker')))
+
+    def test_unknown_stop_untriggered_capture_missing_section_and_changed_process_rejected(self):
+        for fault in ('stop-rejected', 'unknown-stop', 'capture-not-triggered', 'missing-no-listener', 'changed-supervisor'):
+            with self.subTest(fault=fault):
+                result, out, boundary = self.full(fault, fault)
+                self.assertNotEqual('pass', result['checks']['ACC-006']['status'])
+                unit = out / 'units/ACC-006'
+                if fault in ('stop-rejected', 'unknown-stop'):
+                    self.assertEqual(['ipc_once_timeout'], boundary.arms)
+                    self.assertIn('receipt unconfirmed', json.dumps(m.read(unit / 'result.json').get('blocker')))
+                elif fault == 'capture-not-triggered':
+                    self.assertFalse(m.read(unit / 'acc006-section-capture.json')['checks']['actual_capture_revocation_within_four_seconds'])
+                elif fault == 'missing-no-listener':
+                    self.assertTrue(m.read(unit / 'acc006-section-no-listener.json')['missing'])
+                    self.assertFalse((unit / 'acc006-section-process.json').exists())
+                else:
+                    self.assertFalse(m.read(unit / 'acc006-section-process.json')['checks']['same_supervisor_birth'])
+
+
+class PublicCompleteHealthCliTests(unittest.TestCase):
+    setUp = PublicMcpCliTests.setUp
+    cli = PublicMcpCliTests.cli
+    prepare = PublicMcpCliTests.prepare
+
+    def test_same_catalog_complete_health_and_bad_nonce_or_missing_process_evidence(self):
+        self.prepare('MCP-P03-FULL', ['ACC-006'])
+        with mock.patch.object(m, 'NativeBoundary', side_effect=lambda *a, **kw: CompleteHealthBoundary(self.inputs, self.base / 'domain')):
+            result = self.cli('execute', '--plan', self.run / 'plan.json')
+        self.assertEqual(0, result[0], result)
+        judged = self.cli('judge', '--plan', self.run / 'plan.json', '--results', self.run / 'results', '--output', self.run / 'positive.json')
+        self.assertEqual(0, judged[0], judged)
+        summary = m.read(self.run / 'positive.json')
+        self.assertTrue(summary['fixture_contract_pass']); self.assertFalse(summary['full_functional_pass'])
+        case_dir = self.run / 'results/MCP-P03-FULL'; path = case_dir / 'driver/units/ACC-006/trace.json'
+        original = path.read_bytes(); (self.base / 'positive-trace-original.json').write_bytes(original)
+        import copy
+        for mode in ('bad-nonce', 'missing-process'):
+            trace = json.loads(original); hits = 0
+            if mode == 'bad-nonce':
+                for row in trace['records']:
+                    if row['kind'] == 'powershell' and '@{parent=(Get-Content' in row['input']['command']:
+                        observed = json.loads(row['output']['output'])
+                        if observed.get('receipt', {}).get('fault') == 'diverter_stop':
+                            observed['receipt']['nonce'] = '00000000-0000-4000-8000-000000000099'; hits += 1
+                            row['output']['output'] = json.dumps(observed); row['output']['raw'] = row['output']['output']
+            else:
+                records = []
+                for row in trace['records']:
+                    if row['kind'] == 'powershell' and "throw 'child scope mismatch'" in row['input']['command']:
+                        hits += 1; continue
+                    records.append(row)
+                trace['records'] = records
+            self.assertEqual(1, hits, mode)
+            path.write_text(json.dumps(trace)); receipt = m.read(case_dir / 'receipt.json')
+            for artifact in receipt['artifacts']: artifact['sha256'] = m.sha256(artifact['path'])
+            (case_dir / 'receipt.json').write_text(json.dumps(receipt)); index = m.read(self.run / 'results/results.json')
+            for item in index['receipts']:
+                if item['case_id'] == 'MCP-P03-FULL': item['sha256'] = m.sha256(case_dir / 'receipt.json')
+            (self.run / 'results/results.json').write_text(json.dumps(index))
+            result = self.cli('judge', '--plan', self.run / 'plan.json', '--results', self.run / 'results', '--output', self.run / (mode + '.json'))
+            self.assertNotEqual(0, result[0], result)
+            self.assertFalse(m.read(self.run / (mode + '.json'))['fixture_contract_pass'])

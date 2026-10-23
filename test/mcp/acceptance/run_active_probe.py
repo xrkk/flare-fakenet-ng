@@ -32,17 +32,21 @@ def probe_loss_observation(rows, run_id, identity):
     return bool(broken), False
 
 
-def run_active_probe_loss(base, channel, writer):
+def run_active_probe_loss(base, channel, writer, verify_lifecycle=False):
     from run_p03_acc import load_and_start, wait_state, probe_during
     writer.add_evidence('active-probe-mode', configure_fault_service(channel, True, 5))
     ready, initial = wait_state(base, lambda s: s.get('state') in ('stopped', 'failed'), timeout=60)
     if not ready or initial.get('state') != 'stopped' or initial.get('run_id'):
         raise StepError('active probe requires clean entry')
-    started = load_and_start(base)
+    from health_composition import verified_start
+    started = verified_start(base, channel, writer, 'active-probe-strict') if verify_lifecycle else load_and_start(base)
     writer.add_evidence('active-probe-start', started)
     healthy, initial = wait_state(base, lambda s: s.get('state') == 'healthy', timeout=30)
     if not healthy:
         raise StepError('active probe did not first become healthy')
+    if verify_lifecycle:
+        from health_composition import healthy_origin
+        healthy_origin(base, channel, writer, 'active-probe-pre-arm', started, initial)
     writer.add_evidence('active-probe-healthy', initial)
     run_id = str(uuid.UUID(initial['run_id']))
     def trigger():
