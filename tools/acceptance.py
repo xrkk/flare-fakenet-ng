@@ -48,7 +48,9 @@ ENVIRONMENT_V2 = 'fakenet.acceptance-environment.v2'
 STATUSES = {'pass', 'fail', 'unknown', 'not_run', 'blocked', 'skip', 'observed'}
 CASE_STATUSES = {'pass', 'fail', 'not_run', 'unknown', 'blocked', 'not_applicable'}
 ADAPTERS = {'offline-pytest', 'native', 'native-blocked', 'manual-blocked'}
-ORACLES = {'junit', 'tsv', 'native-json', 'pcap', 'manual', 'none'}
+ORACLES = {'junit', 'tsv', 'native-json', 'pcap', 'policy-result',
+           'upstream-result', 'upstream-multihost', 'dual-pcap-windows',
+           'dual-pcap-linux', 'manual', 'none'}
 EXIT_OK, EXIT_FAIL, EXIT_INPUT, EXIT_TOOL = 0, 1, 2, 3
 
 

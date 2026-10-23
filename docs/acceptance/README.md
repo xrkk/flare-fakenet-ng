@@ -2,7 +2,7 @@
 
 本目录集中现有 Windows/Linux 核心、策略、GUI、PCAP、载荷报告、MCP、发布和辅助验收. 目标是修改产品或接口后, 能明确选择并执行同一份回归清单, 对照原始结果判断是否破坏已有功能.
 
-当前状态: **盘点 + S1/R02 离线闭环 + S2 native 判定骨架(T003/R02 部分)**. `catalog.json` 已升级为 v2, `tools/acceptance.py` 已具备候选/环境绑定的 `plan --mode`、`execute` 和严格 `judge --results`; R02 增加了注册表/模式/源/环境动作校验、JUnit 精确节点集合判定、receipt 身份与 oracle 类型校验、adapter 派生 cleanup, 并接通 12 个安全离线 case. 原 `test.py` 的退出、Host 名单夹具、SMTP SSL 拒收/错误、stop 失败和 MultiHost 就绪也已修, 并有离线合同自测. S2 仅完成部分 native adapter 代码与离线 fixture, 真实原生运行、S3 资源调度、S4 完整验收尚未完成. 当前没有任何新的原生实机通过, 不能把本目录或 S1/S2 fixture 当作完整设施验收.
+当前状态: **盘点 + S1/R02 离线闭环 + S2 native 判定骨架 + 无GUI策略单元(T004/R01 部分)**. `catalog.json` 已升级为 v2, `tools/acceptance.py` 已具备候选/环境绑定的 `plan --mode`、`execute` 和严格 `judge --results`; R02 增加了注册表/模式/源/环境动作校验、JUnit 精确节点集合判定、receipt 身份与 oracle 类型校验、adapter 派生 cleanup, 并接通 12 个安全离线 case. 原 `test.py` 的退出、Host 名单夹具、SMTP SSL 拒收/错误、stop 失败和 MultiHost 就绪也已修, 并有离线合同自测. S2 已完成策略配置/生命周期/独立judge的离线合同和 fixture, 但真实策略探针、真实原生运行、S3 资源调度、S4 完整验收尚未完成. 当前没有任何新的原生实机通过, 不能把本目录或 S1/S2 fixture 当作完整设施验收.
 
 排除范围保持用户裁决: GUI 窗口/点击/UAC/三轮停止、旧 100 场景、150 轮发布和新出口验证接口不进入 full; 它们的共享核心已按断言/调用用途抽取为独立 case, 没有因目录名删除.
 
@@ -12,6 +12,7 @@
 - `清单.md`: 由 `tools/acceptance.py inventory --format markdown` 程序派生, 不手改.
 - `tools/acceptance.py`: 兼容入口. v1 的 `inventory`/`check`/`plan --output`/`run --suite`/`judge --result` 保持原语义; v2 新增模式化 plan、离线 execute 和严格 judge.
 - `tools/acceptance_native.py`: native driver 注册表, 固定 argv/子检查/oracle, 不执行未授权 native.
+- `tools/acceptance_policy.py`: 无GUI策略配置/固定生命周期/结果入口; `tools/acceptance_policy_oracles.py`: 重读配置/日志/PCAP并独立判定.
 - `test/test_acceptance_regression.py`: 真实 CLI 的 plan/execute/judge 闭环与负例自测.
 - `test/test_upstream_runner_contract.py`: 原 `test.py` 退出/重试/名单夹具/SMTP SSL 的离线合同自测.
 
@@ -116,15 +117,15 @@ Logs/acceptance/<run>/
 
 本轮停用未适配的生产包装: `upstream-singlehost` 仍会整跑 test.py, `egress-windows`/`reviewed-ipv4-windows`/`process-redirect-windows` 仍有固定路径、占位、依赖安装或压力步骤; 它们不再标为可用, 原 case 与功能保留待改.
 
-已注册但明确 blocked (代码未接入, 不缺项静默丢弃): 上述四个 plus `upstream-multihost`, `pcap-windows-functional`, `pcap-linux-functional`, `policy-headless`, `payload-headless`, `mcp-p01`..`mcp-p04`, `mcp-special`, `linux-runtime`, `manual-headless`, `build-identity`.
 已注册但明确 blocked (代码未接入, 不缺项静默丢弃): `upstream-multihost`, `pcap-windows-functional`, `pcap-linux-functional`, `policy-headless`, `payload-headless`, `mcp-p01`..`mcp-p04`, `mcp-special`, `linux-runtime`, `manual-headless`, `build-identity`.
+本轮新增 `policy-domain`/`policy-ipv4`/`policy-takeover`/`policy-combined` 四个 Windows singlehost driver: 固定配置来自仓库内已审 INI 模板, 生命周期有真实就绪/停止/退出观察, oracle 重读原配置/日志/PCAP并核对 attempt/nonce/五元组/双向服务. 当前只完成离线 fixture 和结构合同, 真实探针未实现, 生产结果一律 `not_run`; 不产生 native 或 full 信用.
 
 native 的 plan 只展开固定子检查; execute 只在 action/平台/候选包身份齐全时按固定 argv 运行; judge 核 argv/子检查/全部原件/必需 stdout-stderr/退出与 cleanup 一致性. T003/R02 修复了重复/缺失/额外/矛盾超时/缺日志/假 resources 的误判; fixture 通过只给 `fixture_contract_pass`, 不授 `full_functional_pass` 或当前 native 信用.
 
 ## 尚未完成 (S2..S4)
 
 - 原生适配器: DOMAIN-EGRESS/DOMAIN-IP/PROCESS-REDIRECT/PCAP/PAYLOAD/MCP/LINUX-RUNTIME/GAP-MANUAL/GAP-APPLICATION 仍为 `blocked`, 需要真实 VM、受控端点、Sentinel/Sink 和逐 case 的原 oracle 解析.
-- `judge` 目前只解析 JUnit/TSV; 原生 `result.json`、PCAP、HTML 报告适配器尚未接入. 原生 case 不能因文件存在或包成功签通过.
+- `judge` 已解析 JUnit/TSV 和策略 `policy-result`; 上游/PCAP/HTML 报告适配器仍按各自 oracle 接入. 原生 case 不能因文件存在或包成功签通过.
 - 资源调度/并行/恢复 (IMP-008) 和完整原生集成 (IMP-009/ACC-014) 未开始.
 - 100/150/新出口保持排除; 历史原生失败 (SMTP SSL、Windows IRC、Linux 进程黑名单) 保留原记录, 只有当前真实运行才能重判.
 

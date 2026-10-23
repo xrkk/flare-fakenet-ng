@@ -1673,8 +1673,8 @@
             "negative": "wrong IP/port/UDP cases must not be allowed"
           },
           "oracle": {
-            "kind": "tsv",
-            "driver": "reviewed-ipv4-windows"
+            "kind": "policy-result",
+            "driver": "policy-ipv4"
           },
           "resources": [
             "windows-vm",
@@ -1695,8 +1695,8 @@
             "test/public_ipv4_allowlist_vm/Run-ReviewedIPv4Tests.ps1",
             "test/analyze_reviewed_ipv4_pcap.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "reviewed-ipv4-windows"
+          "blocked_reason": "live policy probes are not implemented; production result is not_run",
+          "native_driver": "policy-ipv4"
         },
         {
           "id": "IP-TAKEOVER-COEXIST",
@@ -1723,8 +1723,8 @@
             "negative": "reviewed-IP events must not appear in takeover profile"
           },
           "oracle": {
-            "kind": "tsv",
-            "driver": "reviewed-ipv4-windows"
+            "kind": "policy-result",
+            "driver": "policy-combined"
           },
           "resources": [
             "windows-vm",
@@ -1744,8 +1744,8 @@
             "test/public_ipv4_allowlist_vm/Run-ReviewedIPv4Tests.ps1",
             "test/analyze_reviewed_ipv4_pcap.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "reviewed-ipv4-windows"
+          "blocked_reason": "live policy probes are not implemented; production result is not_run",
+          "native_driver": "policy-combined"
         }
       ]
     },
@@ -2045,7 +2045,8 @@
             "negative": "deny query must still reach the listener"
           },
           "oracle": {
-            "kind": "native-json"
+            "kind": "policy-result",
+            "driver": "policy-domain"
           },
           "resources": [
             "windows-vm",
@@ -2066,8 +2067,8 @@
           "sources": [
             "test/gui_vm/run_policy_feature_tests.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "policy-headless"
+          "blocked_reason": "live policy probes are not implemented; production result is not_run",
+          "native_driver": "policy-domain"
         },
         {
           "id": "POL-TAKEOVER",
@@ -2094,7 +2095,8 @@
             "negative": "adjacent private address is not allowed"
           },
           "oracle": {
-            "kind": "native-json"
+            "kind": "policy-result",
+            "driver": "policy-takeover"
           },
           "resources": [
             "windows-vm",
@@ -2113,8 +2115,8 @@
           "sources": [
             "test/gui_vm/run_policy_feature_tests.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "policy-headless"
+          "blocked_reason": "live policy probes are not implemented; production result is not_run",
+          "native_driver": "policy-takeover"
         },
         {
           "id": "POL-TCP-UDP-RECOVERY",
@@ -2144,7 +2146,8 @@
             "negative": "allow count must not change"
           },
           "oracle": {
-            "kind": "native-json"
+            "kind": "policy-result",
+            "driver": "policy-takeover"
           },
           "resources": [
             "windows-vm",
@@ -2165,8 +2168,8 @@
           "sources": [
             "test/gui_vm/run_policy_feature_tests.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "policy-headless"
+          "blocked_reason": "live policy probes are not implemented; production result is not_run",
+          "native_driver": "policy-takeover"
         }
       ]
     },
@@ -4243,12 +4246,21 @@
       "payload-headless",
       "pcap-linux-functional",
       "pcap-windows-functional",
+      "policy-combined",
+      "policy-domain",
       "policy-headless",
+      "policy-ipv4",
+      "policy-takeover",
       "process-redirect-windows",
       "reviewed-ipv4-windows",
       "upstream-singlehost"
     ],
-    "implemented": [],
+    "implemented": [
+      "policy-combined",
+      "policy-domain",
+      "policy-ipv4",
+      "policy-takeover"
+    ],
     "blocked": [
       "build-identity",
       "egress-windows",
@@ -4268,6 +4280,6 @@
       "upstream-multihost",
       "upstream-singlehost"
     ],
-    "note": "Exact local-target upstream and both PCAP functional paths are implemented. Windows-MCP/Velo host execution and original evidence return are fixture-tested. REMnux SDK and MultiHost owner/probe interfaces exist; Linux catalog execution and two-target orchestration remain unfinished. No native/full credit from fixtures."
+    "note": "Exact local-target upstream and both PCAP functional paths are implemented. Windows-MCP/Velo host execution and original evidence return are fixture-tested. REMnux SDK and MultiHost owner/probe interfaces exist; Linux catalog execution and two-target orchestration remain unfinished. The policy drivers have deterministic configuration, bounded lifecycle and an independent original oracle, but their live probes and native credit remain NOT_RUN. No native/full credit from fixtures."
   }
 }
