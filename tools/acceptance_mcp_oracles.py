@@ -1,71 +1,38 @@
-#!/usr/bin/env python3
-"""Independent MCP oracle: reuse original validators on original bytes."""
+"""Re-execute original MCP assertions over the closed transport bytes."""
 from __future__ import annotations
-
 import json
 from pathlib import Path
-
-CASES = ('MCP-P01-FULL', 'MCP-P02-FULL', 'MCP-P03-FULL', 'MCP-P04-FULL',
-         'MCP-SPECIAL-IPC', 'MCP-SPECIAL-FAULT-RECOVERY')
-
-
-def _load(root, relative):
-    import importlib.util
-    import sys
-    root = str(Path(root).resolve())
-    if root not in sys.path:
-        sys.path.insert(0, root)
-    spec = importlib.util.spec_from_file_location('mcp_original_' + Path(relative).stem,
-                                                   Path(root) / relative)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+import tempfile
+import acceptance_mcp as m
 
 
-def evaluate(root, original, case, checks, expected_identity=None):
-    original = Path(original)
-    value = json.loads((original / 'mcp-result.json').read_text(encoding='utf-8'))
-    if value.get('case') != case:
-        raise ValueError('MCP result case mismatch')
-    identity = value.get('identity') or {key: value.get(key) for key in
-                                         ('candidate_id', 'source_commit',
-                                          'package_sha256', 'requirements_blob',
-                                          'master_plan_blob')}
-    expected = dict(expected_identity or identity)
-    evidence = _load(root, 'test/mcp/acceptance/evidence_integrity.py')
-    rows = {}
-    detail = {}
-    try:
-        if case in ('MCP-P01-FULL', 'MCP-P02-FULL'):
-            failures = evidence.validate_result(value, expected, original)
-            rows = {name: 'pass' if not failures else 'fail' for name in checks}
-            detail['failures'] = failures
-        elif case in ('MCP-P03-FULL', 'MCP-P04-FULL'):
-            failures = evidence.validate_round(value, expected)
-            rows = {name: 'pass' if not failures else 'fail' for name in checks}
-            detail['failures'] = failures
-        elif case == 'MCP-SPECIAL-IPC':
-            ipc = _load(root, 'test/mcp/acceptance/ipc_evidence.py')
-            for fault in checks:
-                item = (value.get('ipc') or {}).get(fault) or {}
-                rows_data = [json.loads(line) for line in
-                             Path(item['rows']).read_text().splitlines()]
-                failures = ipc.check_ipc_case(fault, item['run_id'], rows_data)
-                rows[fault] = 'pass' if not failures else 'fail'
-                detail[fault] = failures
-        elif case == 'MCP-SPECIAL-FAULT-RECOVERY':
-            by_class = {item.get('class'): item for item in value.get('faults') or []}
-            for fault in checks:
-                item = by_class.get(fault)
-                failures = (['missing fault class'] if item is None else
-                            evidence.validate_round(item, expected))
-                rows[fault] = 'pass' if not failures else 'fail'
-                detail[fault] = failures
-    except Exception as exc:
-        rows = {name: 'fail' for name in checks}
-        detail['error'] = '%s: %s' % (type(exc).__name__, exc)
-    out = [{'id': name, 'status': rows.get(name, 'fail')} for name in checks]
-    clean = (all(row['status'] == 'pass' for row in out) and
-             (value.get('stop') or {}).get('exited') is True and
-             (value.get('stop') or {}).get('returncode') == 0)
-    return out, clean, detail
+def evaluate(root,original,case,checks,expected_inputs=None,*,allow_fixture=False):
+ original=Path(original).resolve();value=m.read(original/'mcp-result.json');inputs=m.read(original/'inputs.json')
+ if expected_inputs is None:raise ValueError('frozen MCP inputs required for independent judgment')
+ if inputs!=expected_inputs:raise ValueError('MCP inputs differ from frozen plan')
+ m.validate_inputs(inputs,case,checks,fixture=allow_fixture)
+ if (value.get('schema')!=m.SCHEMA or value.get('case')!=case or value.get('identity')!=inputs['identity'] or value.get('target')!=inputs['target'] or value.get('config_identity')!=inputs['config_identity']):raise ValueError('MCP result identity differs')
+ if value.get('fixture') is not False and not allow_fixture:raise ValueError('MCP fixture has no native credit')
+ if set(value.get('checks',{}))!=set(checks):raise ValueError('MCP selected unit set differs')
+ if m.read(original/'source-pins.json')!=m.source_pins(root):raise ValueError('MCP original source closure changed')
+ mods=m.modules(root);rows=[];details={};clean=True
+ for unit in checks:
+  expected={'status':value['checks'][unit].get('status'),'result':'units/'+unit+'/result.json','trace':'units/'+unit+'/trace.json'}
+  if value['checks'][unit]!=expected:raise ValueError('MCP unit output path changed')
+  path=original/expected['result'];result=m.read(path);trace=m.read(original/expected['trace'])
+  failures=mods['evidence_integrity'].validate_result(result,inputs['identity'],path.parent)
+  if (trace.get('schema')!='fakenet.mcp-unit-trace.v1' or trace.get('unit')!=unit or trace.get('identity')!=inputs['identity'] or trace.get('target')!=inputs['target'] or trace.get('config_identity')!=inputs['config_identity']):failures.append('unit trace identity mismatch')
+  if trace.get('returncode')!=0 or trace.get('error') or trace.get('recovery_observed') is not True:failures.append('original unit did not pass')
+  # Re-run the unchanged business assertions. A forged summary or rehashed
+  # failed response still reaches the original error/version/content checks.
+  if not failures:
+   replay=m.ReplayBoundary(trace['records'])
+   try:
+    scratch=original.parent.parent/'mcp-rejudge';scratch.mkdir(exist_ok=True)
+    temp=tempfile.mkdtemp(prefix='unit-',dir=scratch)
+    replayed,replay_trace=m.run_unit(unit,inputs,Path(temp)/'unit',replay,root=root)
+    if replayed['status']!='pass' or replay_trace['returncode']!=0:failures.append('original assertions reject transport contents')
+   except (OSError,ValueError,KeyError,TypeError,AssertionError) as exc:failures.append('original replay refused: '+str(exc))
+  status='fail' if failures else 'pass';rows.append({'id':unit,'status':status,'reasons':failures});details[unit]=failures
+  clean=clean and not failures
+ return rows,clean,details

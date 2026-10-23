@@ -423,6 +423,9 @@ def run_acc009_pre(base, channel, writer):
          'expected_sha256': builtin.get('sha256', 'x'),
          'command_id': unique_command('bi'),
          'expected_state_version': version})) == 'builtin_readonly'
+    # A rejected accepted command can publish a terminal version. Read the
+    # current version before the next independent management transaction.
+    version = status(base)['state_version']
     # custom full management
     created = call(base, 'create_config',
                    {'name': 'mgmt.ini', 'content': VALID_INI,
@@ -447,7 +450,7 @@ def run_acc009_pre(base, channel, writer):
                    {'name': 'mgmt.ini', 'new_name': 'mgmt2.ini',
                     'expected_sha256': sha_of(OTHER_INI),
                     'command_id': unique_command('mg-r'),
-                    'expected_state_version': edited.get('state_version', version)},
+                    'expected_state_version': status(base)['state_version']},
                    timeout=180)
     checks['rename_ok'] = renamed.get('error') is None
     deleted = call(base, 'delete_config',

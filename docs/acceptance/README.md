@@ -145,14 +145,15 @@ python tools/acceptance_headless.py --mode payload --memory --output <未占用�
 
 ### MCP P01-P04 与 SPECIAL
 
-`mcp-headless` 固定读取候选/VM/配置身份、P01..04/SPECIAL选择、动作授权和输出根; `mcp-substitute` 仅替换HTTP/process/channel/clock边界. 六case为 `MCP-P01-FULL`..`MCP-SPECIAL-FAULT-RECOVERY`; 原 `evidence_integrity`、`ipc_evidence` 和 incident export validator实际读取生成的原件, 不把status布尔当通过. 正常内存链覆盖六case及坏identity/evidence/capture/IPC/fault反例.
+MCP原入口是宿主控制器, 通过既有Windows MCP通道操作已核来宾, 不把控制器复制进VM运行. 正式六case现统一绑定`mcp-headless`固定驱动. `environment.mcp`的`fakenet.mcp-input.v2`输入包括原候选/包与manifest完整身份、VM UUID、配置SHA、显式私网端点/允许源、原通道配置引用、具体actions、宿主证据根、已安装路径及来宾E/D工作根. 不支持操作者任意`commands`或自填产物补全. 原候选ZIP逐文件验证器保留; 包外SHA与内嵌manifest分别核验, manifest不要求不可能自引用的ZIP哈希.
 
-```text
-python tools/acceptance_mcp.py --case MCP-P01-FULL --memory --output <未占用目录>
-python tools/acceptance_mcp.py --case MCP-SPECIAL-FAULT-RECOVERY --memory --output <未占用目录>
-```
+每个原ACC按固定映射直接调用原业务函数. 记录原HTTP/PowerShell/进程与必要socket边界的完整输入输出, 原EvidenceWriter保存断言与原件; 独立judge在禁止真实副作用的回放边界上重新执行同一原业务函数及原validator, 不依据成功摘要或文件存在授予通过. 记录改变但引用hash同步正确的业务失败仍须失败. 输出原件与回放工作根分开, 新回放不污染已关闭原件索引. 只有`candidate.offline_fixture=true`可使用测试边界; 内存结果不授native/full信用.
 
-结果标记 `fixture_contract_pass`, 不产生 native/full 信用; 真实Windows MCP/VM/HTTP/服务仍未运行.
+动作前验证实际VM/已安装映像SHA与出生身份、ping的构建manifest/source、服务空闲及当前配置. 仅回收有本轮成功回执的run/临时配置, 按SHA恢复原配置并核原故障模式与独立前后网络; 未知属主/未恢复状态保留, 不重试或杀同名进程. 每组全功能检查是原ACC集合, full模式不允许用`mcp_checks`缩为一项. selected模式可定点运行, 结果只代表选中断言.
+
+当前MCP实现仍在实施中: P02原四组配置/控制者/并发幂等及管理断言已经在实际工具域(ConfigStore/Coordinator/原tools)和纯内存OS边界验证; 同正式catalog公共CLI的ACC005正常与重hash坏响应判别已验证. 其它P01/P03/P04/SPECIAL完整正常链、故障/IPC三旧误判整改与实机均未验, 不能据此宣称完整MCP或方案通过. 原GUI/100/150和旧硬编码历史候选资料链排除, 共享产品功能保留. 原P01会改写ZCode认证/模型的付费旧客户端探针不执行; 复用原无副作用协议断言与既有客户端引用, 不改用户配置.
+
+来源证据: `Logs/acceptance-regression-20261022/main-mcp-r18/`. package01夹具时间戳失败、public01候选身份夹具错误、public02缺具体失败摘要、public03最小非MCP夹具被全闭包读取影响、domain01/02原runner过期版本复用失败均保留. 对应定点修复后的package02、public04、domain04和transport01通过. 真实VM/MCP/HTTP网络/监听/核心/构建安装操作均未执行.
 
 ### 策略生产与安全替身
 

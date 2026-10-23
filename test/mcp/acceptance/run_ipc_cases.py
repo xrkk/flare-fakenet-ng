@@ -10,14 +10,17 @@ IPC_CASES = ('ipc_once_timeout', 'ipc_permanent_timeout', 'ipc_eof',
              'ipc_wrong_run', 'ipc_repeat', 'ipc_reverse')
 
 
-def run_ipc_matrix(base, channel, writer):
+def run_ipc_matrix(base, channel, writer, selected=None):
     from run_p03_acc import load_and_start, wait_state, stop_run, probe_during, disarm_fault, status
     checks = {}
     writer.add_evidence('ipc-test-mode', configure_fault_service(channel, True, 5))
     ready, initial = wait_state(base, lambda x: x.get('state') == 'stopped' and not x.get('run_id'), timeout=60)
     if not ready:
         raise StepError('IPC matrix requires stopped entry; preserve scene')
-    for fault in IPC_CASES:
+    selected = list(IPC_CASES if selected is None else selected)
+    if not selected or len(set(selected)) != len(selected) or any(x not in IPC_CASES for x in selected):
+        raise ValueError('invalid original IPC selection')
+    for fault in selected:
         started = load_and_start(base)
         writer.add_evidence(fault + '-start', started)
         healthy, initial = wait_state(base, lambda x: x.get('state') == 'healthy', timeout=30)

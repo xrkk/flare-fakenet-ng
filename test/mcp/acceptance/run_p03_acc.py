@@ -175,6 +175,49 @@ def wait_state(base, predicate, timeout=60):
 
 
 # ---------------------------------------------------------------------------
+def run_acc001_headless(base, channel, writer, args=None):
+    writer.action('acc001', 'single headless supervisor, no GUI')
+    checks = {}
+    service = channel.powershell(
+        'sc.exe query fakenetng-mcp | Out-String', timeout=90)
+    writer.add_evidence('acc001-service-gui', service)
+    checks['service_running'] = 'RUNNING' in service['output']
+    checks['initial_stopped'] = status(base)['state'] == 'stopped'
+
+    # Second service instance attempt: starting the exe manually must exit 3
+    second = channel.powershell(
+        "$p = Start-Process -FilePath "
+        "'C:\\Progra~1\\FakeNet-NG-MCP\\fakenetng-mcp.exe' "
+        "-ArgumentList 'debug' -PassThru -WindowStyle Hidden; "
+        '$p.WaitForExit(); $p.ExitCode', timeout=120)
+    writer.add_evidence('acc001-second-instance', second)
+    exit_seen = second['output'].strip().splitlines()[-1].strip()
+    checks['second_instance_rejected'] = exit_seen in ('1', '3')
+
+    # GUI co-control: no GUI process for fakenet; the managed instance is
+    # unique through the coordinator (start while running => conflict).
+    loaded = call(base, 'load_config',
+                  {'name': 'default.ini',
+                   'command_id': unique_command('a1-load'),
+                   'expected_state_version':
+                       status(base)['state_version']})
+    started = call(base, 'start',
+                   {'command_id': unique_command('a1-start'),
+                    'expected_state_version': loaded['state_version']})
+    checks['start_ok'] = started.get('error') is None
+    second_start = call(base, 'start',
+                        {'command_id': unique_command('a1-start2'),
+                         'expected_state_version':
+                             status(base)['state_version']})
+    writer.add_evidence('acc001-second-start', second_start)
+    checks['second_managed_instance_rejected'] = err_of(second_start) in (
+        'state_conflict', 'operation_busy', 'not_allowed_in_state')
+    stop_run(base)
+
+    writer.add_evidence('acc001-headless-checks', checks)
+    return EXIT_PASS if checks and all(v is True for v in checks.values()) else EXIT_FAIL
+
+
 def run_acc001(base, channel, writer, args=None):
     writer.action('acc001', 'single headless supervisor, no GUI')
     checks = {}

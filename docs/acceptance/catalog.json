@@ -2831,7 +2831,7 @@
           "sources": [
             "test/mcp/acceptance/run_p01_acc.py"
           ],
-          "blocked_reason": "requires explicit MCP/VM/HTTP identity and actions; this round uses only the memory boundary",
+          "blocked_reason": "requires fixed candidate/VM/config/actions and existing Windows channel; original-function integration in progress, no native credit",
           "native_driver": "mcp-headless"
         }
       ]
@@ -2909,7 +2909,7 @@
           "sources": [
             "test/mcp/acceptance/run_p02_acc.py"
           ],
-          "blocked_reason": "requires explicit MCP/VM/HTTP identity and actions; this round uses only the memory boundary",
+          "blocked_reason": "requires fixed candidate/VM/config/actions and existing Windows channel; original-function integration in progress, no native credit",
           "native_driver": "mcp-headless"
         }
       ]
@@ -2987,7 +2987,7 @@
           "sources": [
             "test/mcp/acceptance/run_p03_acc.py"
           ],
-          "blocked_reason": "requires explicit MCP/VM/HTTP identity and actions; this round uses only the memory boundary",
+          "blocked_reason": "requires fixed candidate/VM/config/actions and existing Windows channel; original-function integration in progress, no native credit",
           "native_driver": "mcp-headless"
         }
       ]
@@ -3065,7 +3065,7 @@
           "sources": [
             "test/mcp/acceptance/run_p04_acc.py"
           ],
-          "blocked_reason": "requires explicit MCP/VM/HTTP identity and actions; this round uses only the memory boundary",
+          "blocked_reason": "requires fixed candidate/VM/config/actions and existing Windows channel; original-function integration in progress, no native credit",
           "native_driver": "mcp-headless"
         }
       ]
@@ -3251,7 +3251,7 @@
             "test/mcp/acceptance/run_ipc_cases.py",
             "test/mcp/acceptance/run_control_cases.py"
           ],
-          "blocked_reason": "requires explicit MCP/VM/HTTP identity and actions; this round uses only the memory boundary",
+          "blocked_reason": "requires fixed candidate/VM/config/actions and existing Windows channel; original-function integration in progress, no native credit",
           "native_driver": "mcp-headless"
         },
         {
@@ -3306,7 +3306,7 @@
             "test/mcp/acceptance/helpers.py",
             "fakenet/mcp/faultinject.py"
           ],
-          "blocked_reason": "requires explicit MCP/VM/HTTP identity and actions; this round uses only the memory boundary",
+          "blocked_reason": "requires fixed candidate/VM/config/actions and existing Windows channel; original-function integration in progress, no native credit",
           "native_driver": "mcp-headless"
         }
       ]
@@ -4291,6 +4291,6 @@
       "upstream-multihost",
       "upstream-singlehost"
     ],
-    "note": "Exact local-target upstream and both PCAP functional paths are implemented. Process/payload and MCP P01-P04/SPECIAL headless adapters now run production-shaped inputs, memory HTTP/process/channel boundaries and original content validators; real Windows VM/MCP/core and native credit remain NOT_RUN."
+    "note": "Upstream/dual-PCAP and policy/EXE/payload retain their existing limited code/fixture credit. MCP fixed host-controller/original-function and transport-replay chain is under implementation; original P02 domain assertions and selected public CLI normal/rehashed-negative are verified, remaining P01/P03/P04/SPECIAL and real native are NOT_VERIFIED."
   }
 }

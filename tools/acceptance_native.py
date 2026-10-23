@@ -392,82 +392,15 @@ def driver_table(root):
                      '--output', '{output}/driver', '--checks', '{checks}'],
         },
         'mcp-headless': {
-            'implemented': True, 'production_kind': 'mcp-headless',
-            'exact_filters': True,
+            'implemented': True, 'production_kind': 'mcp-controller',
             'platforms': ['windows'], 'modes': ['native'],
-            'checks': ['identity', 'install', 'service', 'firewall',
-                       'protocol', 'exposure', 'config-crud', 'path-hash',
-                       'errors', 'idempotency', 'concurrency', 'transaction',
-                       'core', 'control', 'health', 'ipc',
-                       'failure-recovery', 'config-lock', 'custom',
-                       'artifacts', 'query', 'filter', 'export', 'scm-stop',
-                       'upgrade', 'recovery', 'ipc_once_timeout',
-                       'ipc_permanent_timeout', 'ipc_eof', 'ipc_wrong_run',
-                       'ipc_repeat', 'ipc_reverse', 'policy_pause',
-                       'listener_stop', 'diverter_stop', 'child_hang',
-                       'cleanup_error'],
-            'check_filters': {
-                'MCP-P01-FULL': ['identity', 'install', 'service', 'firewall',
-                                 'protocol', 'exposure'],
-                'MCP-P02-FULL': ['config-crud', 'path-hash', 'errors',
-                                 'idempotency', 'concurrency', 'transaction'],
-                'MCP-P03-FULL': ['core', 'control', 'health', 'ipc',
-                                 'failure-recovery', 'config-lock', 'custom'],
-                'MCP-P04-FULL': ['artifacts', 'query', 'filter', 'export',
-                                 'scm-stop', 'upgrade', 'concurrency', 'recovery'],
-                'MCP-SPECIAL-IPC': ['ipc_once_timeout',
-                                    'ipc_permanent_timeout', 'ipc_eof',
-                                    'ipc_wrong_run', 'ipc_repeat',
-                                    'ipc_reverse'],
-                'MCP-SPECIAL-FAULT-RECOVERY': ['policy_pause',
-                                               'listener_stop',
-                                               'diverter_stop', 'child_hang',
-                                               'cleanup_error'],
-            },
-            'requires': ['native'], 'package_required': False,
-            'resources': ['windows-vm', 'mcp-service', 'controller'],
-            'oracle': {'kind': 'mcp-result', 'artifact': 'driver/mcp-result.json'},
-            'argv': ['{python}', '{root}/tools/acceptance_mcp.py',
-                     '--case', '{case_id}', '--inputs', '{mcp_inputs}',
-                     '--output', '{output}/driver'],
-        },
-        'mcp-substitute': {
-            'implemented': True, 'fixture': True, 'exact_filters': True,
-            'platforms': ['linux', 'windows'], 'modes': ['native'],
-            'checks': ['identity', 'install', 'service', 'firewall',
-                       'protocol', 'exposure', 'config-crud', 'path-hash',
-                       'errors', 'idempotency', 'concurrency', 'transaction',
-                       'core', 'control', 'health', 'ipc',
-                       'failure-recovery', 'config-lock', 'custom',
-                       'artifacts', 'query', 'filter', 'export', 'scm-stop',
-                       'upgrade', 'recovery', 'ipc_once_timeout',
-                       'ipc_permanent_timeout', 'ipc_eof', 'ipc_wrong_run',
-                       'ipc_repeat', 'ipc_reverse', 'policy_pause',
-                       'listener_stop', 'diverter_stop', 'child_hang',
-                       'cleanup_error'],
-            'check_filters': {
-                'MCP-P01-FULL': ['identity', 'install', 'service', 'firewall',
-                                 'protocol', 'exposure'],
-                'MCP-P02-FULL': ['config-crud', 'path-hash', 'errors',
-                                 'idempotency', 'concurrency', 'transaction'],
-                'MCP-P03-FULL': ['core', 'control', 'health', 'ipc',
-                                 'failure-recovery', 'config-lock', 'custom'],
-                'MCP-P04-FULL': ['artifacts', 'query', 'filter', 'export',
-                                 'scm-stop', 'upgrade', 'concurrency', 'recovery'],
-                'MCP-SPECIAL-IPC': ['ipc_once_timeout',
-                                    'ipc_permanent_timeout', 'ipc_eof',
-                                    'ipc_wrong_run', 'ipc_repeat',
-                                    'ipc_reverse'],
-                'MCP-SPECIAL-FAULT-RECOVERY': ['policy_pause',
-                                               'listener_stop',
-                                               'diverter_stop', 'child_hang',
-                                               'cleanup_error'],
-            },
-            'resources': ['windows-vm', 'mcp-service', 'controller'],
-            'oracle': {'kind': 'mcp-result', 'artifact': 'driver/mcp-result.json'},
-            'argv': ['{python}', '{root}/tools/acceptance_mcp.py',
-                     '--case', '{case_id}', '--memory',
-                     '--output', '{output}/driver'],
+            'checks': sorted({name for names in __import__('acceptance_mcp').CHECKS.values() for name in names}),
+            'check_filters': __import__('acceptance_mcp').CHECKS,
+            'exact_filters': True, 'requires': ['native'], 'package_required': True,
+            'resources': ['windows-vm','mcp-service','controller'],
+            'oracle': {'kind':'mcp-result','artifact':'driver/mcp-result.json'},
+            'argv': ['{python}','{root}/tools/acceptance_mcp.py','--case','{case_id}',
+                     '--inputs','{mcp_inputs}','--output','{output}/driver','--checks','{checks}'],
         },
         'mcp-p01': {
             'implemented': False,
@@ -554,6 +487,10 @@ def select_checks(driver, case, environment=None):
         return [name for name in checks if family(name)==case['id']]
     filters=(driver.get('check_filters') or {}).get(case['id'])
     if filters and driver.get('exact_filters'):
+        if driver.get('production_kind')=='mcp-controller':
+            selected=(environment or {}).get('mcp_checks',{}).get(case['id'],filters)
+            if not selected or len(selected)!=len(set(selected)) or any(x not in filters for x in selected):raise ValueError('unknown MCP original unit selection')
+            return list(selected)
         return list(filters)
     return [name for name in checks if any(token in name for token in filters)] if filters else list(checks)
 
@@ -572,6 +509,22 @@ def validate_case(case, root, environment=None):
 
 
 def runtime_block(case, environment):
+    if case.get('native_driver')=='mcp-headless':
+        try:
+            import acceptance_mcp
+            inputs=environment.get('mcp')
+            acceptance_mcp.validate_inputs(inputs,case['id'],environment.get('mcp_checks',{}).get(case['id']))
+            if not {'native','vm-execute'}.issubset(environment.get('allowed_actions',[])):
+                return 'MCP existing-channel execute is not authorized'
+            runtime=environment.get('native_runtime') or {}
+            if runtime.get('transport')!='windows-mcp-velo' or runtime.get('identity',{}).get('platform')!='windows':
+                return 'MCP requires the existing explicit Windows channel'
+            if any(runtime.get(k)!=inputs['channel'].get(k) for k in ('mcp_config_ref','mcp_server')):
+                return 'MCP channel differs from frozen environment'
+            if any(inputs['target'][k]!=runtime['identity'].get(k) for k in ('platform','hostname')):
+                return 'MCP target differs from frozen Windows target'
+            return None
+        except (OSError,ValueError,KeyError,TypeError) as exc:return 'MCP original input refused: '+str(exc)
     if case.get('stress'):
         return 'functional native driver does not run stress'
     runtime=environment.get('native_runtime')
@@ -634,6 +587,7 @@ def fixed_argv(driver, context):
 
 def run_driver(root, case, plan, output_dir, python):
     driver, unused=validate_case(case,root,plan['environment'])
+    if driver.get('production_kind')=='mcp-controller':return run_mcp_controller(root,case,plan,output_dir,python)
     if driver.get('production_kind')=='upstream-multihost':
         from acceptance_orchestration import run_multihost
         return run_multihost(root,case,plan,output_dir)
@@ -735,6 +689,7 @@ def run_driver(root, case, plan, output_dir, python):
 
 def judge_driver(case, receipt, plan, root):
     driver,unused=validate_case(case,root,plan['environment'])
+    if driver.get('production_kind')=='mcp-controller':return judge_mcp_controller(case,receipt,plan,root)
     if driver.get('production_kind')=='upstream-multihost':
         from acceptance_orchestration import judge_multihost
         return judge_multihost(case,receipt,plan,root)
@@ -868,14 +823,7 @@ def _read_oracle(kind, path):
             rows.append({'id': name, 'status': status})
         return rows
     if kind == 'mcp-result':
-        import acceptance_mcp_oracles
-        value = json.loads(_read(path))
-        case = value.get('case')
-        ids = [item.get('id') for item in value.get('checks') or []
-               if isinstance(item, dict) and isinstance(item.get('id'), str)]
-        rows, unused, unused_detail = acceptance_mcp_oracles.evaluate(
-            Path(__file__).resolve().parents[1], Path(path).parent, case, ids)
-        return rows
+        raise ValueError('MCP original judgment requires frozen inputs and selection')
     if kind == 'headless-result':
         import acceptance_headless_oracles
         value = json.loads(_read(path))
@@ -1343,7 +1291,8 @@ def judge_remote(case,receipt,plan,root):
 def native_source_pins(root):
     root=Path(root)
     paths=set((root/'fakenet').rglob('*.py'))
-    for relative in ('test/mcp/acceptance/helpers.py','test/mcp/acceptance/evidence_integrity.py'):
+    import acceptance_mcp
+    for relative in acceptance_mcp.source_paths():
         path=root/relative
         if path.is_file():paths.add(path)
     for name in ('acceptance.py','acceptance_native.py','acceptance_runtime.py','acceptance_oracles.py',
@@ -1354,3 +1303,75 @@ def native_source_pins(root):
     path=root/'docs/acceptance/catalog.json'
     if path.is_file():paths.add(path)
     return {path.relative_to(root).as_posix():sha256(path) for path in sorted(paths)}
+
+
+def mcp_inputs(plan,case,root):
+    import acceptance_mcp
+    driver,checks=validate_case(case,root,plan['environment'])
+    value,unused=acceptance_mcp.validate_inputs(plan['environment'].get('mcp'),case['id'],checks,
+        fixture=plan.get('candidate',{}).get('offline_fixture') is True)
+    if plan.get('mode')=='full' and checks!=__import__('acceptance_mcp').CHECKS[case['id']]:raise ValueError('full MCP requires the entire original unit set')
+    candidate=plan['candidate']
+    for key in ('source_commit','package_sha256'):
+        if candidate.get(key)!=value['identity'][key]:raise ValueError('MCP candidate differs from frozen '+key)
+    return value,checks
+
+
+def run_mcp_controller(root,case,plan,output_dir,python):
+    # Original MCP runners are host controllers. They drive the already-bound
+    # Windows channel; no copy of a controller is launched inside the VM.
+    import acceptance_mcp as m
+    from acceptance_runtime import write_json
+    from datetime import datetime,timezone
+    inputs,checks=mcp_inputs(plan,case,root);output=Path(output_dir).resolve()
+    if runtime_block(case,plan['environment']):raise ValueError(runtime_block(case,plan['environment']))
+    output.mkdir(parents=True,exist_ok=True)
+    request={'schema':'fakenet.mcp-controller-request.v1','case':case['id'],'checks':checks,
+             'inputs':inputs,'candidate':plan['candidate'],'execution_id':plan['execution_id'],
+             'source_pins':m.source_pins(root),'output_root':str(output/'driver')}
+    write_json(output/'request.json',request)
+    started=datetime.now(timezone.utc).isoformat();error=None
+    try:
+        m.run(case['id'],output/'driver',inputs,selected=checks,
+              fixture=plan['candidate'].get('offline_fixture') is True,root=root)
+        import acceptance_mcp_oracles
+        rows,clean,detail=acceptance_mcp_oracles.evaluate(root,output/'driver',case['id'],checks,inputs,
+              allow_fixture=plan['candidate'].get('offline_fixture') is True)
+        evaluation=_judge_rows(rows,checks);status=evaluation['verdict']
+    except (OSError,ValueError,KeyError,TypeError,AssertionError) as exc:
+        status='unknown';clean=False;detail={'error_type':type(exc).__name__,'message':str(exc)}
+    write_json(output/'controller-result.json',{'status':status,'clean':clean,'details':detail})
+    ended=datetime.now(timezone.utc).isoformat()
+    artifacts=[{'path':str(p.resolve()),'sha256':sha256(p),'format':'native-evidence'}
+               for p in sorted(output.rglob('*')) if p.is_file()]
+    return {'status':status,'detail':detail,'started_at':started,'ended_at':ended,
+        'required_checks':checks,'artifacts':artifacts,'native_target':inputs['target'],
+        'cleanup':{'source':'original-business-and-observation','recovered':clean},
+        'command':['original-mcp-controller',case['id'],*checks]}
+
+
+def judge_mcp_controller(case,receipt,plan,root):
+    import acceptance_mcp as m
+    import acceptance_mcp_oracles as oracle
+    output=Path(plan['run_dir'])/'results'/case['id']
+    try:
+        inputs,checks=mcp_inputs(plan,case,root)
+        if receipt.get('command')!=['original-mcp-controller',case['id'],*checks] or receipt.get('required_checks')!=checks or receipt.get('native_target')!=inputs['target']:raise ValueError('MCP controller receipt identity differs')
+        paths=[]
+        for item in receipt.get('artifacts',[]):
+            path=Path(item['path'])
+            if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(output.resolve()) or sha256(path)!=item['sha256']:raise ValueError('MCP closed original missing/changed/outside root')
+            paths.append(str(path.resolve()))
+        actual={str(p.resolve()) for p in output.rglob('*') if p.is_file() and p.name!='receipt.json'}
+        if not paths or len(paths)!=len(set(paths)) or set(paths)!=actual:raise ValueError('MCP closed original index not exact')
+        expected={'schema':'fakenet.mcp-controller-request.v1','case':case['id'],'checks':checks,
+            'inputs':inputs,'candidate':plan['candidate'],'execution_id':plan['execution_id'],
+            'source_pins':m.source_pins(root),'output_root':str(output.resolve()/'driver')}
+        if m.read(output/'request.json')!=expected:raise ValueError('MCP original request differs from frozen plan')
+        rows,clean,details=oracle.evaluate(root,output/'driver',case['id'],checks,inputs,
+            allow_fixture=plan['candidate'].get('offline_fixture') is True)
+        evaluation=_judge_rows(rows,checks);evaluation['details']=rows
+        reasons=[reason for row in rows for reason in row.get('reasons',[])]
+        return {'status':evaluation['verdict'] if clean else 'fail','cleanup_ok':clean,'evaluation':evaluation,'details':details,'reason':'; '.join(reasons)}
+    except (OSError,ValueError,KeyError,TypeError,AssertionError) as exc:
+        return {'status':'fail' if receipt.get('status')=='fail' else 'unknown','cleanup_ok':False,'reason':str(exc)}
