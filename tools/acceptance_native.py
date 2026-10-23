@@ -1292,7 +1292,7 @@ def native_source_pins(root):
     root=Path(root)
     paths=set((root/'fakenet').rglob('*.py'))
     import acceptance_mcp
-    for relative in acceptance_mcp.source_paths():
+    for relative in acceptance_mcp.source_paths(root):
         path=root/relative
         if path.is_file():paths.add(path)
     for name in ('acceptance.py','acceptance_native.py','acceptance_runtime.py','acceptance_oracles.py',

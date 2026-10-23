@@ -61,15 +61,34 @@ def modules(root=ROOT):
  if directory not in sys.path:sys.path.insert(0,directory)
  return {n:importlib.import_module(n) for n in ('helpers','run_p01_acc','run_p02_acc','run_p03_acc','run_p04_acc','run_p05_release','run_ipc_cases','run_initialization_case','run_control_cases','artifact_transfer','evidence_integrity','ipc_evidence')}
 
-def source_paths():
+def source_paths(root=ROOT):
  # Explicit original business closure; no dynamic source selected by results.
  names=('helpers','run_p01_acc','run_p02_acc','run_p03_acc','run_p04_acc','run_p05_release','run_ipc_cases','run_initialization_case','run_control_cases','evidence_integrity','ipc_evidence','artifact_transfer','bounded_mcp','sst_fault_evidence','scenario_fault_evidence','release_matrix')
  paths=['test/mcp/acceptance/'+n+'.py' for n in names]
  paths += ['tools/acceptance_mcp.py','tools/acceptance_mcp_oracles.py','tools/build_fakenetng_mcp_wine.py','fakenet/mcp/server.py','fakenet/mcp/tools.py']
- return paths
+ import ast
+ pending=list(paths);seen=set(paths)
+ while pending:
+  relative=pending.pop();path=Path(root)/relative
+  if not path.is_file() or path.suffix!='.py':continue
+  tree=ast.parse(path.read_text())
+  for node in ast.walk(tree):
+   candidates=[]
+   if isinstance(node,ast.Import):candidates=[item.name for item in node.names]
+   elif isinstance(node,ast.ImportFrom) and node.module:candidates=[node.module]
+   for name in candidates:
+    if '.' not in name:
+     found=Path('test/mcp/acceptance')/(name+'.py')
+     if (Path(root)/found).is_file() and found.as_posix() not in seen:seen.add(found.as_posix());pending.append(found.as_posix())
+   if isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute) and node.func.attr=='with_name' and len(node.args)==1 and isinstance(node.args[0],ast.Constant) and isinstance(node.args[0].value,str):
+    name=node.args[0].value
+    if '/' not in name and '\\' not in name:
+     found=Path(relative).parent/name
+     if (Path(root)/found).is_file():seen.add(found.as_posix())
+ return sorted(seen)
 
 def source_pins(root=ROOT):
- return {p:sha256(Path(root)/p) for p in source_paths()}
+ return {p:sha256(Path(root)/p) for p in source_paths(root)}
 
 def validate_inputs(value,case,selected=None,*,fixture=False):
  if case not in CHECKS: raise ValueError('unknown MCP case')
@@ -418,7 +437,7 @@ def service_preflight(session,inputs):
 def run_unit(unit,inputs,out,boundary,*,root=ROOT):
  mods=modules(root);session=BoundarySession(boundary,inputs);out=Path(out);writer=mods['helpers'].EvidenceWriter(out,'original-unit')
  args=original_args(inputs,out)
- code=3;error=None;before=None;after=None;service_before=None
+ code=3;error=None;before=None;after=None;service_before=None;recovery_error=None
  with session.activate():
   # Original classes importing a channel still get this same recorded transport.
   from unittest.mock import patch
@@ -464,6 +483,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT):
         if deleted.get('error'):raise ValueError('owned config cleanup rejected')
        final=mods['run_p02_acc'].status(args.target_base_url)
       writer.add_evidence('final-status',final)
+      if any((final.get('config_identity') or {}).get(k)!=inputs['config_identity'][k] for k in ('name','sha256')):raise ValueError('restored configuration identity not observed')
       if service_before is not None:
        restored_mode=mods['helpers'].configure_fault_service(session,service_before['enabled'],service_before['grace'])
        writer.add_evidence('service-settings-restored',restored_mode)
@@ -475,10 +495,10 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT):
       writer.add_evidence('environment-diff',differences)
       if differences or final.get('state')!='stopped' or final.get('run_id'):raise ValueError('MCP recovery not established; preserve original failed state')
      except Exception as exc:
-      error={'type':type(exc).__name__,'message':str(exc)};writer.blocker=error;code=1
+      recovery_error={'type':type(exc).__name__,'message':str(exc)};error=error or recovery_error;writer.blocker=error;code=1
  status={0:'pass',1:'fail',2:'blocked',3:'unknown'}.get(code,'unknown')
  result=writer.write_result(acc_id=unit,p_id='headless',**inputs['identity'],environment_identity=json.dumps(inputs['target'],sort_keys=True),status=status)
- trace={'schema':'fakenet.mcp-unit-trace.v1','unit':unit,'identity':inputs['identity'],'target':inputs['target'],'config_identity':inputs['config_identity'],'unit_root':str(out.resolve()),'records':session.records,'returncode':code,'error':error,'recovery_observed':before is not None and after is not None}
+ trace={'schema':'fakenet.mcp-unit-trace.v1','unit':unit,'identity':inputs['identity'],'target':inputs['target'],'config_identity':inputs['config_identity'],'unit_root':str(out.resolve()),'records':session.records,'returncode':code,'error':error,'recovery_observed':before is not None and after is not None,'recovery_error':recovery_error}
  if isinstance(boundary,ReplayBoundary):boundary.finish()
  return result,trace
 
@@ -492,11 +512,14 @@ def run(case,output,inputs,*,selected=None,boundary=None,fixture=False,root=ROOT
  write(out/'inputs.json',inputs);write(out/'source-pins.json',source_pins(root))
  boundary=boundary or NativeBoundary(root,inputs,out/'channel')
  if bool(boundary.fixture)!=bool(fixture):raise ValueError('fixture boundary requires explicit candidate fixture identity')
- results={}
+ results={};unresolved=False
  for unit in selected:
+  if unresolved:
+   results[unit]={'status':'not_run','result':None,'trace':None};continue
   result,trace=run_unit(unit,inputs,out/'units'/unit,boundary,root=root)
   write(out/'units'/unit/'trace.json',trace)
   results[unit]={'status':result['status'],'result':'units/'+unit+'/result.json','trace':'units/'+unit+'/trace.json'}
+  unresolved=trace.get('recovery_observed') is not True or trace.get('recovery_error') is not None
  write(out/'mcp-result.json',{'schema':SCHEMA,'case':case,'identity':inputs['identity'],'target':inputs['target'],'config_identity':inputs['config_identity'],'fixture':fixture,'checks':results,'exclusions':EXCLUSIONS})
  return read(out/'mcp-result.json')
 

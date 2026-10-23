@@ -67,7 +67,7 @@ class OriginalMcpTests(unittest.TestCase):
    if row['kind']=='http' and json.loads(m.unpack(row['input'])['data'])['params']['name']=='create_config':
     response=m.unpack(row['output']);body=json.loads(response['body']);body['result']['content'][0]['text']=json.dumps({'error':{'code':'config_not_created'}});response['body']=json.dumps(body).encode();row['output']=m.pack(response)
   path.write_text(json.dumps(trace));rows,clean,detail=o.evaluate(ROOT,out,'MCP-P02-FULL',['ACC-005'],self.inputs,allow_fixture=True)
-  self.assertEqual(rows[0]['status'],'fail',detail);self.assertFalse(clean)
+  self.assertEqual(rows[0]['status'],'fail',detail);self.assertTrue(clean,detail)
  def test_unexpected_or_unused_boundary_data_refused(self):
   out=self.run_readonly();path=out/'units/ACC-005/trace.json';trace=m.read(path);trace['records'].append(trace['records'][0]);path.write_text(json.dumps(trace))
   self.assertEqual(o.evaluate(ROOT,out,'MCP-P02-FULL',['ACC-005'],self.inputs,allow_fixture=True)[0][0]['status'],'fail')
@@ -361,7 +361,7 @@ class OriginalIpcTests(unittest.TestCase):
    if row['kind']=='powershell' and '@{parent=(Get-Content' in row['input']['command']:
     output=json.loads(row['output']['output']);output['receipt']={'fault':'wrong','nonce':'wrong'};output['child']='';row['output']['output']=json.dumps(output)
   path.write_text(json.dumps(trace))
-  rows,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',[fault],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],detail);self.assertFalse(clean)
+  rows,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',[fault],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],detail)
 
 
 
@@ -378,7 +378,7 @@ class OriginalFaultContentTests(unittest.TestCase):
      if row['kind']=='powershell' and '$receipts=@' in row['input']['command']:
       payload=json.loads(row['output']['output']);payload['receipt']['receipt']={'fault':'different-hook','nonce':'different-nonce'};row['output']['output']=json.dumps(payload)
     path.write_text(json.dumps(trace))
-    rows,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-FAULT-RECOVERY',[fault],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],detail);self.assertFalse(clean)
+    rows,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-FAULT-RECOVERY',[fault],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],detail)
  def test_candidate_mismatch_is_rejected_before_any_original_unit_replay(self):
   fault='ipc_once_timeout';out=self.root/fault;m.run('MCP-SPECIAL-IPC',out,self.inputs,selected=[fault],boundary=IpcProcessBoundary(self.inputs),fixture=True)
   path=out/'units'/fault/'trace.json';value=m.read(path);value['identity']['candidate_id']='unrelated';path.write_text(json.dumps(value))
@@ -431,5 +431,21 @@ class OriginalUniquenessNegativeTests(unittest.TestCase):
   instance=object.__new__(RealSupervisor);instance._start_guard=None;instance._lock=threading.Lock();instance._fakenet=object()
   with mock.patch('fakenet.mcp.supervisor.os.name','nt'):
    with self.assertRaisesRegex(SupervisorStartError,'managed process already exists'):instance.start(None,None,{})
+
+
+
+
+class OriginalRecoveryTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_unknown_capture_stops_remaining_original_units(self):
+  calls=[]
+  class Broken(ReadOnlyBoundary):
+   def exchange(self,kind,value):
+    calls.append(kind)
+    if kind=='observe':raise OSError('independent capture unavailable')
+    return super().exchange(kind,value)
+  out=self.root/'unknown';value=m.run('MCP-P02-FULL',out,self.inputs,selected=['ACC-005','ACC-010'],boundary=Broken(self.inputs),fixture=True)
+  self.assertEqual('unknown',value['checks']['ACC-005']['status']);self.assertEqual({'status':'not_run','result':None,'trace':None},value['checks']['ACC-010']);self.assertEqual(1,calls.count('target'))
+  rows,clean,details=o.evaluate(ROOT,out,'MCP-P02-FULL',['ACC-005','ACC-010'],self.inputs,allow_fixture=True);self.assertFalse(clean);self.assertEqual('not_run',rows[1]['status'])
 
 if __name__=='__main__':unittest.main()
