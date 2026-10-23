@@ -463,35 +463,32 @@ def acc004_s4_invalid_protection(base, channel, writer):
     checks = {}
     builtin = call(base, 'read_config', {'name': 'default.ini'},
                    controller=None)
+    writer.add_evidence('acc004-s4-builtin', builtin)
+    if builtin.get('error') or not builtin.get('content') or '[Diverter]' not in builtin['content']:
+        return {'actual_default_config_available': False}
     # The diverter reads these keys from its OWN section, so patch [Diverter].
-    bad_filter_ini = (builtin.get('content') or VALID_INI).replace(
+    bad_filter_ini = builtin['content'].replace(
         '[Diverter]', '[Diverter]\nControlLinkExcludeIp: not-an-ip\n'
         'ControlLinkExcludePort: 28788', 1)
-    created = loaded = None
-    for _ in range(3):
-        version = status(base)['state_version']
-        created = call(base, 'create_config',
-                       {'name': 'badfilter-%s.ini' %
-                        unique_command('bf')[:6],
-                        'content': bad_filter_ini,
-                        'command_id': unique_command('a4-bf'),
-                        'expected_state_version': version})
-        if created.get('error'):
-            checks['config_loads_for_filter_layer'] = False
-            writer.add_evidence('acc004-s4-create-rejected', created)
-            break
-        loaded = call(base, 'load_config',
-                      {'name': created.get('name', ''),
-                       'command_id': unique_command('a4-bf-l'),
-                       'expected_state_version':
-                           created.get('state_version')}, timeout=120)
-        if not loaded.get('error'):
-            checks['config_loads_for_filter_layer'] = True
-            break
-        time.sleep(1.0)
-    else:
-        checks['config_loads_for_filter_layer'] = \
-            bool(loaded and not loaded.get('error'))
+    # MutationResponse reports config_identity, not a top-level name.
+    # Bind the accepted create to our original request; never retry a mutation
+    # or fall back to the previously loaded default when load was rejected.
+    name = 'badfilter-%s.ini' % unique_command('bf')[:6]
+    created = call(base, 'create_config',
+                   {'name': name, 'content': bad_filter_ini,
+                    'command_id': unique_command('a4-bf'),
+                    'expected_state_version': status(base)['state_version']})
+    writer.add_evidence('acc004-s4-create', created)
+    if created.get('error'):
+        writer.add_evidence('acc004-s4-create-rejected', created)
+        return {'config_loads_for_filter_layer': False}
+    loaded = call(base, 'load_config',
+                  {'name': name, 'command_id': unique_command('a4-bf-l'),
+                   'expected_state_version': created['state_version']}, timeout=120)
+    writer.add_evidence('acc004-s4-load', loaded)
+    checks['config_loads_for_filter_layer'] = not loaded.get('error')
+    if not checks['config_loads_for_filter_layer']:
+        return checks
 
     def start_attempt():
         return call(base, 'start',

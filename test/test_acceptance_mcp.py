@@ -1158,4 +1158,78 @@ class PublicCapabilityCliTests(unittest.TestCase):
   result=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'negative.json');self.assertNotEqual(0,result[0],result)
   summary=m.read(self.run/'negative.json');self.assertFalse(summary['fixture_contract_pass']);self.assertFalse(summary['full_functional_pass'])
 
+class ProtectionParsedDomainBoundary(LifecycleDomainBoundary):
+ """Original config/tools/coordinator plus real parsed protection injection.
+
+ Successful lifecycle OS operations remain the existing benign double. This
+ boundary does not repair or normalize product parser keys to force a pass.
+ """
+ def __init__(self,inputs,root):
+  super().__init__(inputs,root);self.protection_observations=[]
+ def exchange(self,kind,value):
+  if kind=='http':
+   request=json.loads(value['data']);tool=request.get('params',{}).get('name')
+   if tool=='start':
+    from fakenet.fakenet import Fakenet
+    from fakenet.mcp.supervisor import RealSupervisor,SupervisorStartError
+    identity=self.context.coordinator.snapshot()['config_identity'];path=(self.context.store.builtin_root if identity['builtin'] else self.context.store.custom_root)/identity['name']
+    parsed=Fakenet();parsed.parse_config(str(path));before=dict(parsed.diverter_config)
+    supervisor=object.__new__(RealSupervisor);supervisor._exclusion={'ip':self.inputs['allowed_host'],'port':'28788'}
+    try:supervisor._inject_exclusion(parsed);rejection=None
+    except SupervisorStartError as exc:rejection=str(exc)
+    self.protection_observations.append({'before':before,'after':dict(parsed.diverter_config),'rejection':rejection})
+    if rejection:
+     return {'status':200,'headers':{'Content-Type':'application/json'},'body':json.dumps({'result':{'content':[{'text':json.dumps({'state':'failed','error':{'code':'invalid_request','message':rejection}})}]}}).encode(),'http_error':False}
+  return super().exchange(kind,value)
+
+class OriginalProtectionRegressionTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_real_parser_keycase_failure_is_reported_by_original_s4(self):
+  unit='ACC-004-S4';out=self.root/unit;boundary=ProtectionParsedDomainBoundary(self.inputs,self.root/'domain')
+  value=m.run('MCP-P03-FULL',out,self.inputs,selected=[unit],boundary=boundary,fixture=True)
+  rows,clean,details=o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True)
+  observations=boundary.protection_observations;bad=[row for row in observations if row['before'].get('controllinkexcludeip')=='not-an-ip'];self.assertTrue(bad)
+  # A successful test of the facility can preserve a real product failure.
+  # Do not normalize keys or assert native/product acceptance from this test.
+  if bad[0]['rejection'] is None:
+   self.assertEqual('fail',value['checks'][unit]['status']);self.assertEqual('fail',rows[0]['status'],details)
+   original=m.read(out/'units'/unit/'acc004-s4-scenario-checks.json');self.assertFalse(original['invalid_protection_fails_closed']);self.assertFalse(original['rejection_names_protection_params'])
+  else:
+   self.assertIn('protection',bad[0]['rejection'].lower());self.assertEqual('pass',value['checks'][unit]['status']);self.assertEqual('pass',rows[0]['status'],details)
+  self.assertTrue(clean,details)
+  m.write(self.root/'actual-protection-observation.json',{'observations':observations,'product_unit_status':value['checks'][unit]['status'],'fixture_only':True,'native_operation':False})
+
+ def test_rejected_create_or_load_never_starts_old_default_or_retries(self):
+  for rejected in ('create_config','load_config'):
+   with self.subTest(rejected=rejected):
+    class Rejected(ProtectionParsedDomainBoundary):
+     def exchange(self,kind,value):
+      if kind=='http':
+       request=json.loads(value['data']);params=request.get('params',{});args=params.get('arguments',{})
+       if params.get('name')==rejected and args.get('name','').startswith('badfilter-'):
+        return {'status':200,'headers':{'Content-Type':'application/json'},'body':json.dumps({'result':{'content':[{'text':json.dumps({'error':{'code':'validation_failed','message':'fixture refusal'},'state_version':3})}]}}).encode(),'http_error':False}
+      return super().exchange(kind,value)
+    unit='ACC-004-S4';out=self.root/rejected;boundary=Rejected(self.inputs,self.root/('domain-'+rejected));value=m.run('MCP-P03-FULL',out,self.inputs,selected=[unit],boundary=boundary,fixture=True)
+    self.assertEqual('fail',value['checks'][unit]['status']);self.assertEqual([],boundary.protection_observations)
+    trace=m.read(out/'units'/unit/'trace.json');requests=[json.loads(m.unpack(row['input'])['data'])['params'] for row in trace['records'] if row['kind']=='http']
+    self.assertFalse(any(row['name']=='start' for row in requests));self.assertEqual(1,sum(row['name']==rejected and row['arguments'].get('name','').startswith('badfilter-') for row in requests))
+    rows,clean,details=o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],details);self.assertTrue(clean)
+
+class PublicProtectionCliTests(unittest.TestCase):
+ setUp=PublicMcpCliTests.setUp
+ cli=PublicMcpCliTests.cli
+ prepare=PublicMcpCliTests.prepare
+ def test_current_product_protection_failure_is_not_signed_as_fixture_pass(self):
+  self.prepare('MCP-P03-FULL',['ACC-004-S4'])
+  boundary=ProtectionParsedDomainBoundary(self.inputs,self.base/'domain')
+  with mock.patch.object(m,'NativeBoundary',return_value=boundary):
+   executed=self.cli('execute','--plan',self.run/'plan.json')
+  result=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'independent.json')
+  summary=m.read(self.run/'independent.json');self.assertFalse(summary['full_functional_pass'])
+  accepted=any(row['before'].get('controllinkexcludeip')=='not-an-ip' and row['rejection'] is None for row in boundary.protection_observations)
+  if accepted:
+   self.assertNotEqual(0,executed[0],executed);self.assertNotEqual(0,result[0],result);self.assertFalse(summary['fixture_contract_pass'])
+  else:
+   self.assertEqual(0,executed[0],executed);self.assertEqual(0,result[0],result)
+
 if __name__=='__main__':unittest.main()

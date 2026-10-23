@@ -70,3 +70,17 @@ identity/object/acceptance rejection, unchanged originals and rehashed bad
 quotes through the production catalog's `plan/execute/judge`. Synthetic rounds,
 ZIP bytes and reviewer names prove interface discrimination only, not actual
 independence, the three missing producers, dump generation or native capability.
+
+
+P03 protection-parameter regression uses the actual `Fakenet.parse_config`,
+configuration store, tools and `RealSupervisor._inject_exclusion`, with benign
+lifecycle/process edges. The current product lowercases parsed keys but the
+injection validator reads mixed-case keys. A configured `not-an-ip` is therefore
+accepted at that layer and overwritten; the original S4 assertion correctly
+reports a product failure. This is a code-level finding, not a native observation.
+Product core is outside this implementation's write scope and remains unchanged.
+The S4 runner now binds load to the original accepted create request name,
+not a nonexistent top-level `MutationResponse.name`; create/load failure stops
+before start and never retries an accepted mutation or tests the stale default.
+The production catalog's selected `plan/execute/judge` retains this failure.
+A successful facility discrimination test does not mark the product unit passed.
