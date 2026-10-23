@@ -231,7 +231,7 @@ def run_acc016(args, channel, writer):
     names = {t['name'] for t in tools}
     # Closed surface: every exposed tool belongs to the frozen domain set
     # (P01: ping; P02 sub-plan §3 adds the domain tools).
-    checks['tool_surface_closed'] = names == frozen_surface
+    checks['tool_surface_closed'] = names == set(getattr(args,'expected_tool_surface',frozen_surface))
     writer.add_evidence('vm-tools-list', text)
     writer.observe(json.dumps(checks, ensure_ascii=False))
     passed = all(checks.values())
@@ -405,12 +405,16 @@ def run_acc003(args, channel, writer):
 
     # Firewall-enabled negative/positive round with channel protection.
     fw = channel.powershell(
-        '$fw=Get-NetFirewallProfile | Select-Object Name,Enabled; '
-        '$fw | Format-Table -AutoSize | Out-String', timeout=60)
+        '$fw=@(Get-NetFirewallProfile | Select-Object Name,Enabled); '
+        'ConvertTo-Json -InputObject $fw -Compress', timeout=60)
     writer.add_evidence('vm-fw-before', fw)
     enabled_round = None
+    firewall_before = json.loads(fw['output'])
+    if not isinstance(firewall_before,list) or not firewall_before or any(set(item)!={'Name','Enabled'} or item['Name'] not in ('Domain','Private','Public') or type(item['Enabled']) is not bool for item in firewall_before):
+        raise StepError('firewall profile observation invalid; preserve scene')
     if True:  # CHK-027: firewall round is now mandatory
         protect = channel.powershell(
+            "if(Get-NetFirewallRule -DisplayName 'P01-ACC003-TEMP-Win10VM-28787' -ErrorAction SilentlyContinue){throw 'foreign temporary firewall rule exists'}; "
             'New-NetFirewallRule -DisplayName "P01-ACC003-TEMP-Win10VM-28787" '
             '-Direction Inbound -Action Allow -Protocol TCP -LocalPort 28787 '
             '-RemoteAddress %s | Out-Null; '
@@ -427,10 +431,8 @@ def run_acc003(args, channel, writer):
                              'non_allowed_probe': negative_probe,
                              'non_allowed_detail': negative_detail}
         finally:
-            restore = channel.powershell(
-                'Set-NetFirewallProfile -All -Enabled False; '
-                'Remove-NetFirewallRule -DisplayName '
-                '"P01-ACC003-TEMP-Win10VM-28787"; "RESTORED"', timeout=120)
+            restore_command = '; '.join('Set-NetFirewallProfile -Profile '+item['Name']+' -Enabled $'+str(item['Enabled']).lower() for item in firewall_before)
+            restore = channel.powershell(restore_command + '; Remove-NetFirewallRule -DisplayName \"P01-ACC003-TEMP-Win10VM-28787\"; \"RESTORED\"', timeout=120)
             writer.add_evidence('vm-fw-restore', restore)
         writer.add_evidence('fw-enabled-round', enabled_round)
 
@@ -498,8 +500,10 @@ def helpers_probe(base_url):
     try:
         status, _, text = http_post(base_url + '/mcp', ping_body(),
                                     dict(PING_HEADERS), timeout=8)
-        return status == 200 and '"fakenetng-mcp"' in text
-    except (urllib.error.URLError, OSError):
+        outer = json.loads(text)
+        payload = json.loads(outer['result']['content'][0]['text'])
+        return status == 200 and payload.get('service') == 'fakenetng-mcp'
+    except (urllib.error.URLError, OSError, ValueError, KeyError, IndexError, TypeError):
         return False
 
 

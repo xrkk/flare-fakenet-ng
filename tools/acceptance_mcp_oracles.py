@@ -26,10 +26,11 @@ def evaluate(root,original,case,checks,expected_inputs=None,*,allow_fixture=Fals
   # Re-run the unchanged business assertions. A forged summary or rehashed
   # failed response still reaches the original error/version/content checks.
   if not failures:
-   replay=m.ReplayBoundary(trace['records'])
+   if trace.get('unit_root')!=str(path.parent.resolve()):failures.append('original unit root differs')
    try:
     scratch=original.parent.parent/'mcp-rejudge';scratch.mkdir(exist_ok=True)
     temp=tempfile.mkdtemp(prefix='unit-',dir=scratch)
+    replay=m.ReplayBoundary(trace['records'],trace['unit_root'],str((Path(temp)/'unit').resolve()))
     replayed,replay_trace=m.run_unit(unit,inputs,Path(temp)/'unit',replay,root=root)
     if replayed['status']!='pass' or replay_trace['returncode']!=0:failures.append('original assertions reject transport contents')
    except (OSError,ValueError,KeyError,TypeError,AssertionError) as exc:failures.append('original replay refused: '+str(exc))

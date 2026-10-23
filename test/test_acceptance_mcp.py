@@ -21,7 +21,7 @@ def inputs_at(root):
  import zipfile
  with zipfile.ZipFile(package,'w') as archive:archive.writestr(zipfile.ZipInfo('fakenetng-mcp.exe',(2000,1,1,0,0,0)),body);archive.writestr('mcp-candidate-manifest.json',manifest.read_bytes())
  identity['package_sha256']=m.sha256(package)
- return {'schema':'fakenet.mcp-input.v2','identity':identity,'package':str(package),'manifest':str(manifest),'manifest_sha256':m.sha256(manifest),'target':{'platform':'windows','hostname':'DESKTOP-3FI41GR','vm_uuid':'564de0b3-b23d-3d9f-4d52-3ec22c4cfdc0'},'config_identity':{'name':'default.ini','sha256':m.sha256(ROOT/'fakenet/configs/default.ini')},'endpoint':'http://192.168.204.149:28788','listen_ip':'192.168.204.149','allowed_host':'192.168.204.1','channel':{'mcp_config_ref':str(root/'protected-reference.toml'),'mcp_server':'windows'},'actions':['observe','mcp','core','service','fault','network','config','artifact'],'work_root':str(root),'installation_root':'C:\\Program Files\\FakeNet-NG-MCP','programdata_root':'C:\\ProgramData\\FakeNet-NG-MCP','client_config_ref':str(root/'protected-reference.toml'),'guest_work_root':'E:/acceptance-evidence'}
+ return {'schema':'fakenet.mcp-input.v2','identity':identity,'package':str(package),'manifest':str(manifest),'manifest_sha256':m.sha256(manifest),'target':{'platform':'windows','hostname':'DESKTOP-3FI41GR','vm_uuid':'564de0b3-b23d-3d9f-4d52-3ec22c4cfdc0'},'config_identity':{'name':'default.ini','sha256':m.sha256(ROOT/'fakenet/configs/default.ini')},'endpoint':'http://192.168.204.149:28788','listen_ip':'192.168.204.149','allowed_host':'192.168.204.1','channel':{'mcp_config_ref':str(root/'protected-reference.toml'),'mcp_server':'windows'},'actions':['observe','mcp','core','service','fault','network','config','artifact'],'work_root':str(root),'installation_root':'C:\\Program Files\\FakeNet-NG-MCP','programdata_root':'C:\\ProgramData\\FakeNet-NG-MCP','guest_work_root':'E:/acceptance-evidence'}
 
 
 class ReadOnlyBoundary:
@@ -199,5 +199,237 @@ class OriginalDomainTests(unittest.TestCase):
     self.assertEqual('pass',original['status'],original)
     rows,clean,details=o.evaluate(ROOT,out,'MCP-P02-FULL',[unit],self.inputs,allow_fixture=True)
     self.assertEqual('pass',rows[0]['status'],details);self.assertTrue(clean)
+
+
+
+
+class ProtocolBoundary(ReadOnlyBoundary):
+ def exchange(self,kind,value):
+  if kind=='sdk':
+   # SDK transport boundary only: the asyncio SDK cannot run under the
+   # zero-socket guard (its event loop creates a wake-up socketpair).
+   # No claim that a real SDK connection ran is made by this fixture.
+   from mcp.types import ListToolsResult,Tool,CallToolResult,TextContent
+   return {'tools':ListToolsResult(tools=[Tool(name='ping',inputSchema={})]).model_dump(mode='json',by_alias=True),'ping':CallToolResult(content=[TextContent(type='text',text=json.dumps({'service':'fakenetng-mcp'}))]).model_dump(mode='json',by_alias=True)}
+  if kind=='http':
+   body=json.loads(value['data']);meta=body.get('params',{}).get('_meta',{});headers={k.lower():v for k,v in value['headers'].items()}
+   version=headers.get('mcp-protocol-version')
+   if version and version!='2026-07-28':return {'status':400,'headers':{'Content-Type':'application/json'},'body':json.dumps({'error':{'code':-32022}}).encode(),'http_error':True}
+   if body['method']=='server/discover':return {'status':200,'headers':{'Content-Type':'application/json'},'body':json.dumps({'result':{}}).encode(),'http_error':False}
+   if body['method']=='tools/list':return {'status':200,'headers':{'Content-Type':'application/json'},'body':json.dumps({'result':{'tools':[{'name':n} for n in m.current_tool_surface()]}}).encode(),'http_error':False}
+   if body.get('params',{}).get('name')=='ping':
+    reply={'service':'fakenetng-mcp','controller_header':'valid_uuid' if 'x-fakenet-controller-id' in headers else 'missing','build_identity':{'source_commit':self.inputs['identity']['source_commit'],'manifest_sha256':self.inputs['manifest_sha256']}}
+    return {'status':200,'headers':{'Content-Type':'application/json'},'body':json.dumps({'result':{'content':[{'text':json.dumps(reply)}]}}).encode(),'http_error':False}
+  if kind=='powershell':
+   command=value['command']
+   if 'sc.exe qc' in command:output='AUTO_START LocalSystem RUNNING'
+   elif 'OWNER=' in command:output='OWNER=NT AUTHORITY\\SYSTEM'
+   elif 'netstat' in command:output='TCP 192.168.204.149:28788 0.0.0.0:0 LISTENING 12'
+   elif 'Get-ChildItem $d' in command:output='configs\\custom \\state \\logs \\baselines \\artifacts service.json'
+   elif 'net use' in command:output='No entries'
+   else:return super().exchange(kind,value)
+   return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+  return super().exchange(kind,value)
+
+
+class OriginalProtocolTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_original_protocol_service_and_closed_current_surface(self):
+  for unit in ('ACC-002','ACC-016','P01-ENTRY'):
+   with self.subTest(unit=unit):
+    out=self.root/unit;value=m.run('MCP-P01-FULL',out,self.inputs,selected=[unit],boundary=ProtocolBoundary(self.inputs),fixture=True)
+    self.assertEqual('pass',value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+    rows,clean,detail=o.evaluate(ROOT,out,'MCP-P01-FULL',[unit],self.inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],detail)
+
+
+
+
+class FaultProcessBoundary(ReadOnlyBoundary):
+ """Remote process/capture/file bytes only; all original fault logic runs."""
+ def __init__(self,inputs):
+  super().__init__(inputs);self.t=1700000000.;self.n=0;self.fault=None;self.version=7;self.enabled=False;self.grace=60;self.run_id='11111111-1111-4111-8111-111111111111';self.guard=__import__('threading').RLock()
+ def archive(self):
+  import io,zipfile
+  from fakenet.mcp.incident import BASIC_ITEMS
+  members={name:('benign remote '+name).encode() for name,unused in BASIC_ITEMS};members['userdump.dmp']=b'MDMP benign in-memory process bytes'
+  self.manifest={'run_id':self.run_id,'complete':True,'entries':[{'item':name,'result':'ok','failure_reason':None,'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest()} for name,raw in members.items()]}
+  self.manifest_bytes=json.dumps(self.manifest).encode();stream=io.BytesIO()
+  with zipfile.ZipFile(stream,'w') as archive:
+   archive.writestr('manifest.json',self.manifest_bytes)
+   for name,raw in members.items():archive.writestr(name,raw)
+  self.zip_bytes=stream.getvalue()
+ def response(self,payload):return {'status':200,'headers':{'Content-Type':'application/json'},'body':json.dumps({'result':{'content':[{'text':json.dumps(payload)}]}}).encode(),'http_error':False}
+ def exchange(self,kind,value):
+  with self.guard:
+   if kind in ('time','monotonic'):self.t+=0.01;return self.t
+   if kind=='uuid':self.n+=1;return '00000000-0000-4000-8000-%012d'%self.n
+   if kind=='sleep':self.t+=value['seconds'];return None
+   if kind=='http':
+    req=json.loads(value['data']);tool=req['params']['name']
+    state={'service':'fakenetng-mcp','state':'stopped','state_version':self.version,'run_id':None,'controller':None,'config_identity':self.inputs['config_identity'],'last_run_outcome':'failed' if self.fault else None,'error':None}
+    if tool in ('load_config','start','stop'):
+     self.version+=1;state['state_version']=self.version
+     if tool=='start':state['run_id']=self.run_id
+     return self.response(state)
+    if tool=='get_status':return self.response(state)
+   if kind=='powershell':
+    command=value['command']
+    if 'fault_exists=' in command:
+     payload=json.loads(super().exchange(kind,value)['output']);payload.update(enabled=self.enabled,grace=self.grace);output=json.dumps(payload)
+    elif 'grace=$cfg.stop_grace_seconds' in command:output=json.dumps({'enabled':self.enabled,'grace':self.grace})
+    elif 'Add-Member -NotePropertyName stop_grace_seconds' in command:
+     import re
+     self.enabled="$preserved + @('FAKENETNG_MCP_FAULT_INJECTION=1')" in command;self.grace=int(re.search(r'NotePropertyValue (\d+)',command).group(1));output='configured'
+    elif '[IO.File]::WriteAllText($path,' in command and 'fault-injection.json' in command:
+     import re
+     self.fault=json.loads(re.search(r"WriteAllText\(\$path,'(\{.*?\})'",command).group(1));self.archive();output=json.dumps(self.fault)
+    elif 'boot=$os.LastBootUpTime' in command:output=json.dumps({'computer':self.inputs['target']['hostname'],'boot':'boot1','pid':12,'created':'birth1','state':'Running'})
+    elif 'Get-DnsClientServerAddress' in command:output=json.dumps([{'InterfaceAlias':'Ethernet','ServerAddresses':['192.168.204.2']}])
+    elif '$receipts=@' in command:output=json.dumps({'receipt':{'run_id':self.run_id,'receipt':self.fault},'incidents':[{'path':'C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\'+self.run_id+'\\incident\\manifest.json','manifest':self.manifest}]})
+    elif 'Compress-Archive' in command:output=json.dumps({'size':len(self.zip_bytes),'sha256':hashlib.sha256(self.zip_bytes).hexdigest(),'manifest_sha256':hashlib.sha256(self.manifest_bytes).hexdigest()})
+    elif '[IO.File]::OpenRead(' in command:
+     import re,base64
+     offset=int(re.search(r'\.Seek\((\d+),',command).group(1));count=int(re.search(r'byte\[\] (\d+)',command).group(1));output=base64.b64encode(self.zip_bytes[offset:offset+count]).decode()
+    elif 'route.exe print' in command or 'netstat -ano' in command or 'WinDivert' in command or 'Get-Service dnscache,mpssvc' in command:output='fixed original remote section'
+    elif 'controlled pre-stop failed' in command or 'unconsumed fault' in command:output='controlled service stop completed'
+    else:raise AssertionError('unexpected fault OS command: '+command)
+    return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+   return super().exchange(kind,value)
+
+
+class OriginalFaultTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_original_five_faults_produce_and_rejudge_original_incident_bytes(self):
+  for fault in m.FAULTS:
+   with self.subTest(fault=fault):
+    out=self.root/fault;value=m.run('MCP-SPECIAL-FAULT-RECOVERY',out,self.inputs,selected=[fault],boundary=FaultProcessBoundary(self.inputs),fixture=True)
+    self.assertEqual('pass',value['checks'][fault]['status'],m.read(out/'units'/fault/'result.json'))
+    rows,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-FAULT-RECOVERY',[fault],self.inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],detail);self.assertTrue(clean)
+
+
+
+
+class IpcProcessBoundary(FaultProcessBoundary):
+ def __init__(self,inputs):super().__init__(inputs);self.running=False;self.step=0;self.terminal=False
+ def pipe_bytes(self):
+  fault=self.fault['fault'];run=self.run_id
+  rows=[{'event':'failure','monotonic':100.0,'frame':{'kind':'health','run_id':run,'seq':1}}]
+  if fault in ('ipc_once_timeout','ipc_permanent_timeout'):
+   rows.append({'event':'health_state','monotonic':100.1,'frame':{'state':'degraded','run_id':run}})
+   if fault=='ipc_once_timeout':rows.extend([{'event':'response','monotonic':101.,'frame':{'run_id':run,'seq':2,'result':{'init_evidence':True,'probe':True}}},{'event':'health_state','monotonic':101.1,'frame':{'state':'healthy','run_id':run}}])
+   else:rows.extend([{'event':'failure','monotonic':101.,'frame':{'kind':'health','run_id':run,'seq':2}},{'event':'health_state','monotonic':101.1,'frame':{'state':'failed','run_id':run}}])
+  else:rows.append({'event':'health_state','monotonic':100.1,'frame':{'state':'failed','run_id':run}})
+  action='drop' if 'timeout' in fault else 'eof' if fault=='ipc_eof' else 'send'
+  return {'parent':'\n'.join(json.dumps(row) for row in rows),'child':json.dumps({'event':action,'frame':{'run_id':run,'seq':1}}),'receipt':self.fault}
+ def exchange(self,kind,value):
+  with self.guard:
+   if kind=='http':
+    req=json.loads(value['data']);tool=req['params']['name']
+    if tool in ('get_status','start','stop','load_config'):
+     if tool=='start':self.running=True;self.fault=None;self.step=0;self.terminal=False
+     if tool=='stop':self.running=False;self.terminal=True
+     state='healthy' if self.running else 'stopped'
+     if tool=='get_status' and self.fault and self.running:
+      self.step+=1
+      if self.step==1:state='degraded' if 'timeout' in self.fault['fault'] else 'failed'
+      elif self.fault['fault']=='ipc_once_timeout':state='healthy'
+      else:self.running=False;self.terminal=True;state='stopped'
+     if tool!='get_status':self.version+=1
+     payload={'service':'fakenetng-mcp','state':state,'state_version':self.version,'run_id':self.run_id if self.running else None,'controller':None,'config_identity':self.inputs['config_identity'],'last_run_outcome':'failed' if self.terminal else None,'error':None}
+     return self.response(payload)
+   if kind=='powershell':
+    command=value['command']
+    if '@{parent=(Get-Content' in command:output=json.dumps(self.pipe_bytes())
+    elif '$names=@(Get-ChildItem' in command:output=json.dumps(['incident'])
+    else:return super().exchange(kind,value)
+    return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+   return super().exchange(kind,value)
+
+
+class OriginalIpcTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_original_six_ipc_functions_and_exact_receipt_replay(self):
+  for fault in m.IPC:
+   with self.subTest(fault=fault):
+    out=self.root/fault;value=m.run('MCP-SPECIAL-IPC',out,self.inputs,selected=[fault],boundary=IpcProcessBoundary(self.inputs),fixture=True)
+    self.assertEqual('pass',value['checks'][fault]['status'],m.read(out/'units'/fault/'result.json'))
+    rows,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',[fault],self.inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],detail)
+ def test_wrong_receipt_and_missing_child_are_content_failures(self):
+  fault='ipc_once_timeout';out=self.root/fault;m.run('MCP-SPECIAL-IPC',out,self.inputs,selected=[fault],boundary=IpcProcessBoundary(self.inputs),fixture=True)
+  path=out/'units'/fault/'trace.json';trace=m.read(path)
+  for row in trace['records']:
+   if row['kind']=='powershell' and '@{parent=(Get-Content' in row['input']['command']:
+    output=json.loads(row['output']['output']);output['receipt']={'fault':'wrong','nonce':'wrong'};output['child']='';row['output']['output']=json.dumps(output)
+  path.write_text(json.dumps(trace))
+  rows,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',[fault],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],detail);self.assertFalse(clean)
+
+
+
+
+class OriginalFaultContentTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_each_wrong_hook_nonce_is_rejected_after_normal_original_baseline(self):
+  for fault in m.FAULTS:
+   with self.subTest(fault=fault):
+    out=self.root/fault;m.run('MCP-SPECIAL-FAULT-RECOVERY',out,self.inputs,selected=[fault],boundary=FaultProcessBoundary(self.inputs),fixture=True)
+    self.assertEqual('pass',o.evaluate(ROOT,out,'MCP-SPECIAL-FAULT-RECOVERY',[fault],self.inputs,allow_fixture=True)[0][0]['status'])
+    path=out/'units'/fault/'trace.json';trace=m.read(path)
+    for row in trace['records']:
+     if row['kind']=='powershell' and '$receipts=@' in row['input']['command']:
+      payload=json.loads(row['output']['output']);payload['receipt']['receipt']={'fault':'different-hook','nonce':'different-nonce'};row['output']['output']=json.dumps(payload)
+    path.write_text(json.dumps(trace))
+    rows,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-FAULT-RECOVERY',[fault],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],detail);self.assertFalse(clean)
+ def test_candidate_mismatch_is_rejected_before_any_original_unit_replay(self):
+  fault='ipc_once_timeout';out=self.root/fault;m.run('MCP-SPECIAL-IPC',out,self.inputs,selected=[fault],boundary=IpcProcessBoundary(self.inputs),fixture=True)
+  path=out/'units'/fault/'trace.json';value=m.read(path);value['identity']['candidate_id']='unrelated';path.write_text(json.dumps(value))
+  rows,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',[fault],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],detail)
+
+
+
+
+class LifecycleDomainBoundary(DomainBoundary):
+ def exchange(self,kind,value):
+  if kind=='powershell':
+   command=value['command']
+   if 'sc.exe query fakenetng-mcp' in command:output='RUNNING'
+   elif "-ArgumentList 'debug'" in command:output='3'
+   else:return super().exchange(kind,value)
+   return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+  return super().exchange(kind,value)
+
+
+class OriginalGroupTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_entire_p02_group_one_boundary_and_closed_original_rejudge(self):
+  out=self.root/'p02-group';value=m.run('MCP-P02-FULL',out,self.inputs,boundary=DomainBoundary(self.inputs,self.root/'domain'),fixture=True)
+  self.assertEqual(set(m.CHECKS['MCP-P02-FULL']),set(value['checks']))
+  self.assertTrue(all(row['status']=='pass' for row in value['checks'].values()),value)
+  rows,clean,detail=o.evaluate(ROOT,out,'MCP-P02-FULL',m.CHECKS['MCP-P02-FULL'],self.inputs,allow_fixture=True);self.assertTrue(all(row['status']=='pass' for row in rows),detail);self.assertTrue(clean)
+ def test_original_headless_uniqueness_and_normal_takeover(self):
+  for unit in ('ACC-004-S1',):
+   with self.subTest(unit=unit):
+    out=self.root/unit;value=m.run('MCP-P03-FULL',out,self.inputs,selected=[unit],boundary=LifecycleDomainBoundary(self.inputs,self.root/('domain-'+unit)),fixture=True)
+    self.assertEqual('pass',value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+    rows,clean,detail=o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],detail)
+
+
+
+
+class OriginalUniquenessNegativeTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_lifecycle_without_duplicate_start_guard_is_not_a_pass(self):
+  # LifecycleDouble has no process ownership gate: use it as a bad process
+  # boundary, never as a successful fixture for supervisor uniqueness.
+  unit='ACC-001-HEADLESS';out=self.root/unit
+  value=m.run('MCP-P03-FULL',out,self.inputs,selected=[unit],boundary=LifecycleDomainBoundary(self.inputs,self.root/'domain'),fixture=True)
+  self.assertEqual('fail',value['checks'][unit]['status'])
+  checks=m.read(out/'units'/unit/'acc001-headless-checks.json');self.assertFalse(checks['second_managed_instance_rejected'])
+  self.assertEqual('fail',o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True)[0][0]['status'])
+ def test_real_supervisor_existing_process_gate_is_not_weakened(self):
+  import threading
+  from fakenet.mcp.supervisor import RealSupervisor,SupervisorStartError
+  instance=object.__new__(RealSupervisor);instance._start_guard=None;instance._lock=threading.Lock();instance._fakenet=object()
+  with mock.patch('fakenet.mcp.supervisor.os.name','nt'):
+   with self.assertRaisesRegex(SupervisorStartError,'managed process already exists'):instance.start(None,None,{})
 
 if __name__=='__main__':unittest.main()

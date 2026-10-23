@@ -151,7 +151,9 @@ MCP原入口是宿主控制器, 通过既有Windows MCP通道操作已核来宾,
 
 动作前验证实际VM/已安装映像SHA与出生身份、ping的构建manifest/source、服务空闲及当前配置. 仅回收有本轮成功回执的run/临时配置, 按SHA恢复原配置并核原故障模式与独立前后网络; 未知属主/未恢复状态保留, 不重试或杀同名进程. 每组全功能检查是原ACC集合, full模式不允许用`mcp_checks`缩为一项. selected模式可定点运行, 结果只代表选中断言.
 
-当前MCP实现仍在实施中: P02原四组配置/控制者/并发幂等及管理断言已经在实际工具域(ConfigStore/Coordinator/原tools)和纯内存OS边界验证; 同正式catalog公共CLI的ACC005正常与重hash坏响应判别已验证. 其它P01/P03/P04/SPECIAL完整正常链、故障/IPC三旧误判整改与实机均未验, 不能据此宣称完整MCP或方案通过. 原GUI/100/150和旧硬编码历史候选资料链排除, 共享产品功能保留. 原P01会改写ZCode认证/模型的付费旧客户端探针不执行; 复用原无副作用协议断言与既有客户端引用, 不改用户配置.
+当前MCP实现仍在实施中: P02原四组配置/控制者/并发幂等及管理断言已经在实际工具域(ConfigStore/Coordinator/原tools)和纯内存OS边界验证; 同正式catalog公共CLI的ACC005正常与重hash坏响应判别已验证. 后续已接原P01协议/SDK调用接口、安装服务身份和当前声明工具面的原函数, 五类原故障/incident字节和六类原IPC父子记录/receipt/恢复函数及三旧坏内容拒绝. 这些只在HTTP/PS/process/socket/clock边界替身下验证, 原业务和validator未替换. SDK传输实际未运行: 异步事件循环需要socketpair而零socket guard拒绝, 测试只验证SDK返回结构和接口后的业务判断. SDK认证接入改动被自动审批拒绝, 未执行; 当前不修改认证, 不要求无用途客户端认证参数.
+
+P03正常接管和P02同一工具域整组已验证. 现有LifecycleDouble缺进程唯一性门禁, 因而无GUI重复启动用例被保留为正确失败反例; 真实Supervisor已有进程的拒绝分支单独离线核对, 不拿生命周期替身当唯一实例正常通过. P01访问源/防火墙完整闭环, P03其余异常/恢复/锁, P04全部产物和受控退出, SPECIAL初始化/控制/loopback等仍未完整验证, 真实MCP/native全未验. 原GUI/100/150和旧硬编码历史候选资料链排除, 原产品断言保留. 既有IPv6网络loopback用例没有移除, 缺环境须未验, 不新增IPv6产品支持.
 
 来源证据: `Logs/acceptance-regression-20261022/main-mcp-r18/`. package01夹具时间戳失败、public01候选身份夹具错误、public02缺具体失败摘要、public03最小非MCP夹具被全闭包读取影响、domain01/02原runner过期版本复用失败均保留. 对应定点修复后的package02、public04、domain04和transport01通过. 真实VM/MCP/HTTP网络/监听/核心/构建安装操作均未执行.
 
@@ -342,3 +344,5 @@ PowerShell syntax/execution, authenticated/deployed channel operation, Linux
 NFQUEUE, Windows WinDivert and complete native acceptance are still unverified.
 All other planned policy, payload, MCP, Linux deployment/manual, package identity,
 scheduling/reuse/recovery and final full regression work remains required.
+
+本轮补充原件: `main-mcp-r18/fault-01`五fault原函数通过; `ipc-01`单次timeout并发回放未消费完整记录失败, 将原线程存活观察纳入OS记录后`ipc-02`通过且未缩时间窗口. `content-01`相关41tests/27subtests通过, 五类错误hook/nonce和IPC错receipt/缺child/跨candidate不再通过. `protocol-01`发现原P01对嵌套JSON字符串直接匹配误拒, 改按协议解析service后`protocol-02`通过. `sdk-01`被零socket guard拒绝事件循环socketpair, 原失败保留; 后续只SDK边界结构替身, 不授实际SDK信用. `groups-01`生命周期替身缺重复启动保护保留为反例, 正常接管另验; `resume-02`相关45tests/28subtests通过. `no-auth-change-01`当前20tests/28subtests通过. 无真实VM/网络/监听/核心/构建安装.

@@ -38,7 +38,7 @@ CHECKS = {
  'MCP-P02-FULL': ['ACC-005','ACC-010','ACC-011','ACC-009-PRE'],
  'MCP-P03-FULL': ['ACC-001-HEADLESS']+['ACC-004-S%d'%i for i in range(1,7)]+['ACC-006','ACC-007','ACC-008','ACC-009'],
  'MCP-P04-FULL': ['FAULT-POINTS','ACC-014','ACC-015','ACC-019'],
- 'MCP-SPECIAL-IPC': list(IPC)+['INITIALIZATION-FAILURE','CONTROL-DEFAULT','CONTROL-INVALID']+['CONTROL-EXTRA-%d'%p for p in (28787,28790,29095,29094)]+['LOOPBACK-V4'],
+ 'MCP-SPECIAL-IPC': list(IPC)+['INITIALIZATION-FAILURE','CONTROL-DEFAULT','CONTROL-INVALID']+['CONTROL-EXTRA-%d'%p for p in (28787,28790,29095,29094)]+['LOOPBACK-V4','LOOPBACK-V6'],
  'MCP-SPECIAL-FAULT-RECOVERY': list(FAULTS),
 }
 CASES = tuple(CHECKS)
@@ -47,7 +47,6 @@ EXCLUSIONS = {
  'ACC-018-HISTORY': 'Hard-coded previous candidate fix/retest documentation is not a current product prerequisite. Current assertions remain in P01..P04.',
  'P05-RELEASE': 'No 150 publication loop; each of the five original fault classes runs once.',
  'P06-SCENARIOS': 'No historical 100-scenario driver.',
- 'LOOPBACK-V6': 'No IPv6 expansion; IPv4 product path remains required.',
  'ACC-002-ZCODE-CONFIG-WRITE': 'Historical paid client probe rewrites credentials/model config. Keep raw protocol assertions and existing MCP SDK interoperability without editing client config.',
 }
 
@@ -64,9 +63,9 @@ def modules(root=ROOT):
 
 def source_paths():
  # Explicit original business closure; no dynamic source selected by results.
- names=('helpers','run_p01_acc','run_p02_acc','run_p03_acc','run_p04_acc','run_p05_release','run_ipc_cases','run_initialization_case','run_control_cases','evidence_integrity','ipc_evidence','artifact_transfer','bounded_mcp','sst_fault_evidence','scenario_fault_evidence')
+ names=('helpers','run_p01_acc','run_p02_acc','run_p03_acc','run_p04_acc','run_p05_release','run_ipc_cases','run_initialization_case','run_control_cases','evidence_integrity','ipc_evidence','artifact_transfer','bounded_mcp','sst_fault_evidence','scenario_fault_evidence','release_matrix')
  paths=['test/mcp/acceptance/'+n+'.py' for n in names]
- paths += ['tools/acceptance_mcp.py','tools/acceptance_mcp_oracles.py','tools/build_fakenetng_mcp_wine.py']
+ paths += ['tools/acceptance_mcp.py','tools/acceptance_mcp_oracles.py','tools/build_fakenetng_mcp_wine.py','fakenet/mcp/server.py','fakenet/mcp/tools.py']
  return paths
 
 def source_pins(root=ROOT):
@@ -74,7 +73,7 @@ def source_pins(root=ROOT):
 
 def validate_inputs(value,case,selected=None,*,fixture=False):
  if case not in CHECKS: raise ValueError('unknown MCP case')
- if not isinstance(value,dict) or set(value)!={'schema','identity','package','manifest','manifest_sha256','target','config_identity','endpoint','listen_ip','allowed_host','channel','actions','work_root','installation_root','programdata_root','client_config_ref','guest_work_root'}:
+ if not isinstance(value,dict) or set(value)!={'schema','identity','package','manifest','manifest_sha256','target','config_identity','endpoint','listen_ip','allowed_host','channel','actions','work_root','installation_root','programdata_root','guest_work_root'}:
   raise ValueError('explicit MCP input fields required; commands/artifacts are not inputs')
  if value['schema']!='fakenet.mcp-input.v2':raise ValueError('MCP input schema')
  identity=value['identity']
@@ -96,7 +95,7 @@ def validate_inputs(value,case,selected=None,*,fixture=False):
  if not isinstance(config,dict) or set(config)!={'name','sha256'} or len(config['sha256'])!=64 or any(c not in '0123456789abcdef' for c in config['sha256']):raise ValueError('explicit active configuration identity required')
  required={'observe','mcp','core','service','fault','network','config','artifact'}
  if not isinstance(value['actions'],list) or len(value['actions'])!=len(set(value['actions'])) or not required<=set(value['actions']) or set(value['actions'])-required-{'deploy'}:raise ValueError('explicit MCP action authorization required')
- for key in ('package','manifest','work_root','client_config_ref'):
+ for key in ('package','manifest','work_root'):
   if not isinstance(value[key],str) or not Path(value[key]).is_absolute():raise ValueError('MCP absolute path required: '+key)
  for key in ('installation_root','programdata_root','guest_work_root'):
   from pathlib import PureWindowsPath
@@ -128,11 +127,29 @@ def unpack(value):
  if isinstance(value,dict):return {k:unpack(v) for k,v in value.items()}
  return value
 
+
+def translate_paths(value,old,new):
+ if isinstance(value,str):return value.replace(old,new)
+ if isinstance(value,bytes):return value.replace(old.encode(),new.encode())
+ if isinstance(value,list):return [translate_paths(x,old,new) for x in value]
+ if isinstance(value,dict):return {k:translate_paths(v,old,new) for k,v in value.items()}
+ return value
+
 class ReplayMismatch(ValueError):pass
 class RecordedResponse(io.BytesIO):
  def __init__(self,value):super().__init__(value['body']);self.status=value['status'];self.code=self.status;self.headers=value['headers']
  def getcode(self):return self.status
  def info(self):return self.headers
+
+
+def sdk_probe(server):
+ import anyio
+ from mcp import Client
+ async def probe():
+  async with Client(server,read_timeout_seconds=60) as client:
+   tools=await client.list_tools();ping=await client.call_tool('ping',{})
+   return {'tools':tools.model_dump(mode='json',by_alias=True),'ping':ping.model_dump(mode='json',by_alias=True)}
+ return anyio.run(probe)
 
 class NativeBoundary:
  fixture=False
@@ -161,6 +178,7 @@ class NativeBoundary:
    if kind=='socket-timeout':stream.settimeout(value['seconds']);return None
    if kind=='socket-close':stream.close();return {'fileno':stream.fileno()}
    raise ValueError('unknown socket operation')
+  if kind=='sdk':return sdk_probe(value['url'])
   if kind=='time':return self._time()
   if kind=='monotonic':return self._mono()
   if kind=='sleep':self._sleep(value['seconds']);return None
@@ -178,17 +196,21 @@ class NativeBoundary:
 
 class ReplayBoundary:
  fixture=True
- def __init__(self,records):
-  self.records=copy.deepcopy(records);self.offsets={};self.lock=threading.RLock()
+ def __init__(self,records,recorded_root='',replay_root=''):
+  self.records=copy.deepcopy(records);self.recorded_root=recorded_root;self.replay_root=replay_root;self.offsets={};self.lock=threading.RLock()
  def exchange(self,kind,value,thread='main'):
   with self.lock:
    rows=[r for r in self.records if r['thread']==thread];index=self.offsets.get(thread,0)
    if index>=len(rows):raise ReplayMismatch('unexpected boundary operation '+thread+'/'+kind)
    row=rows[index]
-   if row['kind']!=kind or row['input']!=pack(value):raise ReplayMismatch('boundary request differs: '+thread+'/'+kind)
+   expected=unpack(row['input'])
+   if self.recorded_root and self.replay_root:
+    expected=translate_paths(expected,self.recorded_root,'$UNIT');value=translate_paths(value,self.replay_root,'$UNIT')
+   if row['kind']!=kind or expected!=value:raise ReplayMismatch('boundary request differs: '+thread+'/'+kind)
    self.offsets[thread]=index+1
    if row.get('error'):raise OSError(row['error']['message'])
-   return unpack(row['output'])
+   result=unpack(row['output'])
+   return translate_paths(result,self.recorded_root,self.replay_root) if self.recorded_root and self.replay_root else result
  def finish(self):
   if sum(self.offsets.values())!=len(self.records):raise ReplayMismatch('unused recorded operations')
 
@@ -211,6 +233,14 @@ class BoundarySession:
    row['error']={'type':type(exc).__name__,'message':str(exc)};raise
   finally:self._local.inside_transport=False
   row['output']=pack(result);return result
+ def local_observation(self,kind,value,observe):
+  if getattr(self._local,'inside_transport',False):return observe()
+  thread=threading.current_thread().name
+  if thread=='MainThread':thread='main'
+  with self.lock:
+   if isinstance(self.boundary,ReplayBoundary):return self.boundary.exchange(kind,value,thread)
+   row={'thread':thread,'kind':kind,'input':pack(value),'output':pack(observe())};self.records.append(row)
+   return unpack(row['output'])
  def powershell(self,command,timeout=120):
   if self.inputs:
    # Keep the original scripts, bind their historical constants to this input.
@@ -286,12 +316,13 @@ class BoundarySession:
  @contextlib.contextmanager
  def activate(self):
   from unittest.mock import patch
-  real_thread_init=threading.Thread.__init__
+  real_thread_init=threading.Thread.__init__;real_alive=threading.Thread.is_alive
   def init_thread(thread,*args,**kwargs):
    with self.lock:self._thread_count+=1;number=self._thread_count
    kwargs['name']='mcp-worker-%d'%number
    real_thread_init(thread,*args,**kwargs)
   with contextlib.ExitStack() as stack:
+   stack.enter_context(patch.object(threading.Thread,'is_alive',lambda thread:self.local_observation('thread-alive',{'name':thread.name},lambda:real_alive(thread))))
    for obj,name,replacement in ((urllib.request,'urlopen',self.urlopen),(subprocess,'run',self.run_process),(time,'time',lambda:self.operation('time',{})),(time,'monotonic',lambda:self.operation('monotonic',{})),(time,'sleep',lambda n:self.operation('sleep',{'seconds':n})),(uuid,'uuid4',lambda:uuid.UUID(self.operation('uuid',{}))),(threading.Thread,'__init__',init_thread)):
     stack.enter_context(patch.object(obj,name,replacement))
    import artifact_transfer
@@ -301,24 +332,39 @@ class BoundarySession:
    yield
 
 
+def current_tool_surface(root=ROOT):
+ import ast
+ names=[]
+ for relative in ('fakenet/mcp/server.py','fakenet/mcp/tools.py'):
+  tree=ast.parse((Path(root)/relative).read_text())
+  for node in ast.walk(tree):
+   if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and any(isinstance(d,ast.Call) and isinstance(d.func,ast.Attribute) and d.func.attr=='tool' for d in node.decorator_list):names.append(node.name)
+ if len(names)!=len(set(names)):raise ValueError('ambiguous candidate tool surface')
+ return sorted(names)
+
 def original_args(inputs,out):
  identity=inputs['identity'];url=urllib.parse.urlparse(inputs['endpoint'])
  return SimpleNamespace(**identity,package=inputs['package'],manifest=inputs['manifest'],
   vm_identity=json.dumps(inputs['target'],sort_keys=True),config_identity=json.dumps(inputs['config_identity'],sort_keys=True),
   target_base_url=inputs['endpoint'].rstrip('/'),listen_ip=inputs['listen_ip'],listen_port=url.port,allowed_host=inputs['allowed_host'],
   controller_uuid='11111111-2222-4333-8444-555555555555',vm_package_dir=inputs['installation_root'],win10vm_mcp='existing-config-reference',
-  extra_exclude_port=[],run_firewall_round=True,deploy='deploy' in inputs['actions'],output_root=str(out),fault_record=[],localization_record='')
+  expected_tool_surface=current_tool_surface(),extra_exclude_port=[],run_firewall_round=True,deploy='deploy' in inputs['actions'],output_root=str(out),fault_record=[],localization_record='')
 
 def invoke_unit(unit,args,channel,writer,mods):
  base=args.target_base_url;p1=mods['run_p01_acc'];p2=mods['run_p02_acc'];p3=mods['run_p03_acc'];p4=mods['run_p04_acc']
  if unit=='P01-ENTRY':return p1.run_p01_entry(args,channel,writer,args.package_sha256)
- if unit=='ACC-002':return p1.run_acc002(args,channel,writer,target_client_probe=False)
+ if unit=='ACC-002':
+  code=p1.run_acc002(args,channel,writer,target_client_probe=False)
+  if code!=0:return code
+  result=channel.operation('sdk',{'url':base+'/mcp'});writer.add_evidence('existing-sdk-discovery-ping',result)
+  ping=result['ping'];payload=json.loads(ping['content'][0]['text'])
+  return 0 if ping.get('isError') is not True and payload.get('service')=='fakenetng-mcp' and any(item.get('name')=='ping' for item in result['tools']['tools']) else 1
  if unit in ('ACC-003','ACC-016'):return getattr(p1,'run_acc'+unit[4:])(args,channel,writer)
  if unit in ('ACC-005','ACC-010'):return getattr(p2,'run_acc'+unit[4:])(base,writer)
  if unit=='ACC-011':return p2.run_acc011(base,channel,writer)
  if unit=='ACC-009-PRE':return p2.run_acc009_pre(base,channel,writer)
  if unit=='ACC-001-HEADLESS':return p3.run_acc001_headless(base,channel,writer,args)
- if unit.startswith('ACC-004-S'):return p3.run_acc004_scenario(base,channel,writer,unit)
+ if unit.startswith('ACC-004-S'):return p3.run_acc004_scenario(base,channel,writer,unit[-2:])
  if unit in ('ACC-006','ACC-007','ACC-008','ACC-009'):return getattr(p3,'run_acc'+unit[4:])(base,channel,writer)
  if unit=='FAULT-POINTS':return p4.run_fault_point_proof(base,channel,writer,args)
  if unit=='ACC-014':return p4.run_acc014(base,channel,writer,args)
@@ -341,7 +387,7 @@ def invoke_unit(unit,args,channel,writer,mods):
  if unit=='CONTROL-DEFAULT':checks=control.case_control_default(writer)
  elif unit=='CONTROL-INVALID':checks=control.case_control_invalid(writer)
  elif unit.startswith('CONTROL-EXTRA-'):checks=control.case_control_extra(writer,int(unit.rsplit('-',1)[1]))
- elif unit=='LOOPBACK-V4':checks=control.case_loopback(writer,'V4')
+ elif unit in ('LOOPBACK-V4','LOOPBACK-V6'):checks=control.case_loopback(writer,unit[-2:])
  else:raise ValueError('unknown original unit '+unit)
  writer.add_evidence('case-checks',checks);return 0 if checks and all(v is True for v in checks.values()) else 1
 
@@ -432,7 +478,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT):
       error={'type':type(exc).__name__,'message':str(exc)};writer.blocker=error;code=1
  status={0:'pass',1:'fail',2:'blocked',3:'unknown'}.get(code,'unknown')
  result=writer.write_result(acc_id=unit,p_id='headless',**inputs['identity'],environment_identity=json.dumps(inputs['target'],sort_keys=True),status=status)
- trace={'schema':'fakenet.mcp-unit-trace.v1','unit':unit,'identity':inputs['identity'],'target':inputs['target'],'config_identity':inputs['config_identity'],'records':session.records,'returncode':code,'error':error,'recovery_observed':before is not None and after is not None}
+ trace={'schema':'fakenet.mcp-unit-trace.v1','unit':unit,'identity':inputs['identity'],'target':inputs['target'],'config_identity':inputs['config_identity'],'unit_root':str(out.resolve()),'records':session.records,'returncode':code,'error':error,'recovery_observed':before is not None and after is not None}
  if isinstance(boundary,ReplayBoundary):boundary.finish()
  return result,trace
 
