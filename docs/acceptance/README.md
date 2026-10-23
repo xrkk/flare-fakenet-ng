@@ -125,16 +125,22 @@ native 的 plan 只展开固定子检查; execute 只在 action/平台/候选包
 
 ### EXE改址与双向载荷
 
-`process-redirect-headless` 固定读取目标/非目标PE路径和SHA、A/B地址、端口、owner预算与客户端/核心命令; `payload-headless` 固定读取核心、良性客户端和 pktmon 产物路径. 两者都要求明确环境输入, 缺项在动作前拒绝. `process-substitute`/`payload-substitute` 只把 socket/process/channel 边界替换为纯内存实现, 仍构造真实FNPR/1、TCP/UDP字节并运行原 `verify_process_redirect.py`、`verify_payload_integrity.py`、`verify_payload_report.py`、`verify_reassembly.py`.
+四个正式case保持原ID: PR-REDIRECT-POSITIVE、PR-OWNER-BOUNDED、PR-PCAP-RESTORE、PAYLOAD-THREE-WAY. 生产适配器为process-redirect-headless/payload-headless, 使用同一tools/acceptance_headless.py编排. 外部任意commands和事后artifacts不再是输入. 程序生成固定INI、核心和原生客户端argv, 观察就绪、NIC捕获/转换、受控停止, 保留映像副本、客户端属主/出生身份、网络前后和原字节, 独立judge调用原EXE及三个payload验证器.
 
-本机安全替身:
+环境headless对象schema=fakenet.headless-input.v2, 必需source_ip(被选VM)、target_ip(同接口子网的RFC1918宿主B)、original_ip(原A, 沿core认可的公网/文档IPv4)、port、upstream_dns. EXE组另需target_path/non_target_path为已部署的两份原良性native PE绝对路径, target_sha256/non_target_sha256为其完整内容身份; 名单、映像路径/字节和进程出生/流不能相互替代. payload组不需要这四个PE字段. 不自动编译、部署或选择实际目标.
+
+正常Windows host-to-VM使用现有windows-mcp-velo通道, 仍要求native/vm-execute/vm-transfer动作; 响应端额外使用已授权policy-services动作及headless_service={bind_ipv4: 与target_ip同值, allowed_peer_ipv4: 与source_ip同值, max_seconds: 1..300}. 复用原有界FNPR宿主响应端, 闭合原始字节/nonce/五元组/属主生命周期与来宾证据相互核对. 远程未知不拉活动原件或重放, finally只停本端服务. 所有生产字段必须显式, 缺项/未知选择在进程前拒绝; 原生验证当前未执行.
+
+EXE功能有界owner流的并发量从实际core token bucket源码和hash派生, 保留真实已审预算拒绝事件及成功回包, 不要求最终每个TCP重试都失败. 原10000/64压力定义保留为可选stress, 不作为日常功能门槛. NIC窗口位于非目标对照之后, A线上包不能与core的A/B观察视图混计. 配置关闭、映像/owner不符、错nonce/回包、无关单向包、双PCAP错字节、载荷缺方向/gap/conflict/多PID均不能通过; 无观测/端点故障保持未验, 网络前后或属主停止不成立不获恢复信用.
+
+纯内存边界与生产使用同一编排和正式catalog; candidate.offline_fixture=true才由统一适配器加--memory. socket/process/capture/channel边界模拟OS返回, 原协议字节及内容验证器真实执行, 不改catalog换成fixture驱动. 历史process-substitute/payload-substitute仅兼容设施测试入口, 不给原生信用.
 
 ```text
 python tools/acceptance_headless.py --mode process --memory --output <未占用目录>
 python tools/acceptance_headless.py --mode payload --memory --output <未占用目录>
 ```
 
-结果标记 `fixture_contract_pass`, 不产生 native/full 信用; 真实Windows VM/core/pktmon/NIC仍未运行.
+原件根Logs/acceptance-regression-20261022/main-headless-r16包含正式CLI本机/Windows通道内存正常链及三种已知坏原件独立重判. 相关回归129 passed、31 subtests passed, 只证明实现和离线设施行为; 实际Windows PE/WinDivert/物理NIC/pktmon语法与完整恢复仍NOT_RUN. 之前T005/R01的COMPLETED自报未获主控接受, 原错误原件/结果保留.
 
 ### 策略生产与安全替身
 

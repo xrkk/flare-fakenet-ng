@@ -791,8 +791,7 @@ def _read_oracle(kind, path):
         import acceptance_headless_oracles
         value = json.loads(_read(path))
         mode = 'process' if value.get('mode') == 'process' else 'payload'
-        ids = [item.get('id') for item in value.get('checks') or []
-               if isinstance(item, dict) and isinstance(item.get('id'), str)]
+        ids = value.get('selection') or []
         rows, unused, unused_detail = acceptance_headless_oracles.evaluate(
             Path(__file__).resolve().parents[1], Path(path).parent, mode, ids,
             allow_fixture=True)
@@ -867,6 +866,20 @@ def policy_inputs(environment, fixture=False, scenario="domain"):
     return value
 
 
+def headless_inputs(environment, driver, checks):
+    import acceptance_headless
+    mode='process' if driver['production_kind']=='process-redirect' else 'payload'
+    value=environment.get('headless')
+    acceptance_headless.validate_inputs(mode,value,checks)
+    return value
+
+
+def headless_service_policy(environment):
+    value=environment['headless']
+    return {'sink_ip':value['target_ip'],'sink_port':value['port'],
+            'local_source':value['source_ip'],'host_service':environment.get('headless_service')}
+
+
 def production_command(root,case,plan,output_dir,python):
     driver,checks=validate_case(case,root,plan['environment'])
     context={'root':str(Path(root).resolve()),'python':str(python),
@@ -875,8 +888,7 @@ def production_command(root,case,plan,output_dir,python):
              'headless_inputs':str(Path(output_dir).resolve()/'headless-inputs.json'),
              'checks':','.join(checks)}
     if driver['production_kind'] in ('process-redirect','payload-three-way'):
-        if not isinstance(plan['environment'].get('headless'),dict):
-            raise ValueError('environment.headless inputs are required')
+        headless_inputs(plan['environment'],driver,checks)
     if driver['production_kind'].startswith('policy-'):
         policy_inputs(plan['environment'],plan.get('candidate',{}).get('offline_fixture') is True,driver['production_kind'].split('-',1)[1])
     argv=fixed_argv(driver,context)
@@ -907,7 +919,8 @@ def original_evaluation(root,case,plan,output_dir):
               else 'payload')
         rows,clean,detail=acceptance_headless_oracles.evaluate(
             root,directory,mode,checks,
-            allow_fixture=plan.get('candidate',{}).get('offline_fixture') is True)
+            allow_fixture=plan.get('candidate',{}).get('offline_fixture') is True,
+            expected_inputs=plan['environment'].get('headless'))
     else:
         platform=driver['production_kind'].rsplit('-',1)[1]
         rows,clean=acceptance_oracles.dual_pcap(root,directory,checks,platform)
@@ -929,6 +942,8 @@ def run_production(root,case,plan,output_dir,python):
     selected_driver,selected_checks=validate_case(case,root,plan['environment'])
     if selected_driver.get('production_kind','').startswith('policy-'):
         policy_inputs(plan['environment'],plan.get('candidate',{}).get('offline_fixture') is True,selected_driver['production_kind'].split('-',1)[1])
+    if selected_driver.get('production_kind') in ('process-redirect','payload-three-way'):
+        headless_inputs(plan['environment'],selected_driver,selected_checks)
     actual=require_target(runtime['identity'])
     if (plan.get('candidate') or {}).get('deployed_identity')!=actual:
         raise ValueError('candidate.deployed_identity differs from observed native target')
@@ -940,7 +955,7 @@ def run_production(root,case,plan,output_dir,python):
     if driver['production_kind'].startswith('policy-'):
         write_json(output_dir/'policy-inputs.json',policy_inputs(plan['environment'],plan.get('candidate',{}).get('offline_fixture') is True,driver['production_kind'].split('-',1)[1]))
     if driver['production_kind'] in ('process-redirect','payload-three-way'):
-        write_json(output_dir/'headless-inputs.json',plan['environment']['headless'])
+        write_json(output_dir/'headless-inputs.json',headless_inputs(plan['environment'],driver,checks))
     write_json(output_dir/'request.json',request)
     write_json(output_dir/'target.json',actual)
     started=datetime.now(timezone.utc)
@@ -1032,7 +1047,7 @@ def judge_production(case,receipt,plan,root):
 
 
 
-def remote_guest_command(driver,runtime,output_root,checks):
+def remote_guest_command(driver,runtime,output_root,checks,fixture=False):
     context={'root':runtime['source_root'],'python':runtime['python'],
              'output':output_root,'modes':','.join(checks),
              'policy_inputs':str(output_root)+'/policy-inputs.json',
@@ -1041,6 +1056,7 @@ def remote_guest_command(driver,runtime,output_root,checks):
     argv=fixed_argv(driver,context)
     if driver.get('production_kind')=='dual-pcap-linux':
         for mode in checks:argv.extend(['--case',mode])
+    if fixture and driver.get('production_kind') in ('process-redirect','payload-three-way'):argv.append('--memory')
     return argv
 
 
@@ -1059,6 +1075,8 @@ def run_remote(root,case,plan,output_dir,python):
              'checks':checks,'source_hashes':source_hashes,'candidate':plan['candidate'],
              'target':runtime['identity'],'output_root':remote_output,
              'execution_id':plan['execution_id'],'actions':['native']}
+    if driver['production_kind'] in ('process-redirect','payload-three-way'):
+        request['headless']=headless_inputs(plan['environment'],driver,checks)
     if driver['production_kind'].startswith('policy-'):
         request['policy']=policy_inputs(plan['environment'],scenario=driver['production_kind'].split('-',1)[1])
     # Planned records also carry derived 'sources'; compare using the actual
@@ -1071,6 +1089,11 @@ def run_remote(root,case,plan,output_dir,python):
         from acceptance_policy import HostServices
         HostServices.validate(request['policy'],checks,plan['environment']['allowed_actions'])
         services=HostServices(request['policy'],checks,plan['environment']['allowed_actions'],output_dir/'host-services')
+    if driver['production_kind'] in ('process-redirect','payload-three-way'):
+        from acceptance_policy import HostServices
+        service_policy=headless_service_policy(plan['environment'])
+        HostServices.validate(service_policy,['sink_tcp','sink_udp'],plan['environment']['allowed_actions'])
+        services=HostServices(service_policy,['sink_tcp','sink_udp'],plan['environment']['allowed_actions'],output_dir/'host-services')
     channel=ExistingWindowsChannel(root,runtime,output_dir/'transport')
     started=datetime.now(timezone.utc);terminal=None;status='unknown';detail='';clean=False
     try:
@@ -1096,8 +1119,12 @@ def run_remote(root,case,plan,output_dir,python):
         if services is not None:services.stop()
     if services is not None and terminal and terminal.get('process_exited') is True:
         try:
-            from acceptance_policy_oracles import verify_host_services
-            verify_host_services(output_dir/'incoming/originals/driver',output_dir/'host-services',checks,request['policy'])
+            if driver['production_kind'] in ('process-redirect','payload-three-way'):
+                from acceptance_headless_oracles import verify_services
+                verify_services(output_dir/'incoming/originals/driver',output_dir/'host-services',request['headless'])
+            else:
+                from acceptance_policy_oracles import verify_host_services
+                verify_host_services(output_dir/'incoming/originals/driver',output_dir/'host-services',checks,request['policy'])
         except (OSError,ValueError,KeyError,TypeError) as exc:
             clean=False;status='fail';detail+='; owned host endpoint original refused: '+str(exc)
     ended=datetime.now(timezone.utc)
@@ -1106,7 +1133,7 @@ def run_remote(root,case,plan,output_dir,python):
         if path.is_symlink():raise ValueError('remote result symlink')
         if path.is_file():artifacts.append({'path':str(path.resolve()),'sha256':sha256(path),'format':'remote-evidence'})
     return {'status':status,'detail':detail,'returncode':None if terminal is None else terminal.get('returncode'),
-            'command':None if terminal is None else remote_guest_command(driver,runtime,remote_output,checks),
+            'command':None if terminal is None else remote_guest_command(driver,runtime,remote_output,checks,plan.get('candidate',{}).get('offline_fixture') is True),
             'started_at':started.isoformat(),'ended_at':ended.isoformat(),'duration_seconds':(ended-started).total_seconds(),
             'required_checks':checks,'native_target':runtime['identity'],'artifacts':artifacts,
             'cleanup':{'source':'driver','resources':driver['resources'],'recovered':clean,
@@ -1128,10 +1155,12 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
     catalog=json.loads(_read(Path(root)/'docs/acceptance/catalog.json'))
     registered=next(c for suite in catalog['suites'] for c in suite.get('cases',[]) if c['id']==case['id'])
     expected_request={'schema':'fakenet.native-guest-request.v1','case_id':case['id'],'case':registered,'checks':checks,'source_hashes':hashes,'candidate':plan['candidate'],'target':runtime['identity'],'output_root':expected_output,'execution_id':plan['execution_id'],'actions':['native']}
+    if driver['production_kind'] in ('process-redirect','payload-three-way'):
+        expected_request['headless']=headless_inputs(plan['environment'],driver,checks)
     if driver['production_kind'].startswith('policy-'):
         expected_request['policy']=policy_inputs(plan['environment'],scenario=driver['production_kind'].split('-',1)[1])
     if request!=expected_request:raise ValueError('remote original request differs from frozen plan')
-    expected=remote_guest_command(driver,plan['environment']['native_runtime'],request['output_root'],checks)
+    expected=remote_guest_command(driver,plan['environment']['native_runtime'],request['output_root'],checks,plan.get('candidate',{}).get('offline_fixture') is True)
     if receipt.get('command')!=expected or receipt.get('native_target')!=request['target'] or receipt.get('required_checks')!=checks:
         raise ValueError('guest command/target/checks mismatch')
     # Verify every original remote artifact using its preserved relative mapping.
@@ -1157,6 +1186,11 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
         rows,clean=acceptance_policy_oracles.evaluate(
             Path(original)/'driver',driver['production_kind'].split('-',1)[1],
             checks,expected_inputs=plan['environment'].get('policy'))
+    elif driver['production_kind'] in ('process-redirect','payload-three-way'):
+        import acceptance_headless_oracles
+        mode='process' if driver['production_kind']=='process-redirect' else 'payload'
+        rows,clean,detail=acceptance_headless_oracles.evaluate(root,Path(original)/'driver',mode,checks,
+            allow_fixture=plan.get('candidate',{}).get('offline_fixture') is True,expected_inputs=plan['environment']['headless'],producer_directory=str(path_type(request['output_root'])/'driver'),source_root=runtime['source_root'])
     else:
         rows,clean=acceptance_oracles.dual_pcap(root,Path(original)/'driver',checks,runtime['identity']['platform'])
     if driver['production_kind'].startswith('policy-') and {'sink_tcp','sink_udp'}&set(checks):
@@ -1195,6 +1229,9 @@ def judge_remote(case,receipt,plan,root):
         if driver['production_kind'].startswith('policy-') and {'sink_tcp','sink_udp'}&set(checks):
             from acceptance_policy_oracles import verify_host_services
             verify_host_services(original/'driver',output/'host-services',checks,plan['environment']['policy'])
+        if driver['production_kind'] in ('process-redirect','payload-three-way'):
+            from acceptance_headless_oracles import verify_services
+            verify_services(original/'driver',output/'host-services',plan['environment']['headless'])
     except (OSError,ValueError,KeyError,TypeError,AssertionError) as error:
         return {'status':'fail' if receipt.get('status')=='fail' else 'unknown','cleanup_ok':False,'reason':'remote original oracle refused: %s' % error}
     if receipt.get('command')!=guest['receipt'].get('command') or receipt.get('native_target')!=request['target']:
