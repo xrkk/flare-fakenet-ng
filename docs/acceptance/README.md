@@ -157,7 +157,7 @@ python tools/acceptance_headless.py --mode payload --memory --output <未占用�
 
 ### MCP P01-P04 与 SPECIAL
 
-MCP原入口是宿主控制器, 通过既有Windows MCP通道操作已核来宾, 不把控制器复制进VM运行. 正式六case现统一绑定`mcp-headless`固定驱动. `environment.mcp`的`fakenet.mcp-input.v2`输入包括原候选/包与manifest完整身份、VM UUID、配置SHA、显式私网端点/允许源、原通道配置引用、具体actions、宿主证据根、已安装路径及来宾E/D工作根. 不支持操作者任意`commands`或自填产物补全. 原候选ZIP逐文件验证器保留; 包外SHA与内嵌manifest分别核验, manifest不要求不可能自引用的ZIP哈希.
+MCP原入口是宿主控制器, 通过既有Windows MCP通道操作已核来宾, 不把控制器复制进VM运行. 配置基线现在区分实际初态`config_identity=null`、输入被测配置和本轮接受操作: null初态只做`read_config`只读绑定, 初末相同不`load_config`; 只有本轮已接受且状态/命令身份可解释的load才恢复原非null name/hash并回读. 未闭合/外来/不可恢复变更保留recovery_required, 文件清理核本轮响应name/hash. 正式六case现统一绑定`mcp-headless`固定驱动. `environment.mcp`的`fakenet.mcp-input.v2`输入包括原候选/包与manifest完整身份、VM UUID、配置SHA、显式私网端点/允许源、原通道配置引用、具体actions、宿主证据根、已安装路径及来宾E/D工作根. 不支持操作者任意`commands`或自填产物补全. 原候选ZIP逐文件验证器保留; 包外SHA与内嵌manifest分别核验, manifest不要求不可能自引用的ZIP哈希.
 
 每个原ACC按固定映射直接调用原业务函数. 记录原HTTP/PowerShell/进程与必要socket边界的完整输入输出, 原EvidenceWriter保存断言与原件; 独立judge在禁止真实副作用的回放边界上重新执行同一原业务函数及原validator, 不依据成功摘要或文件存在授予通过. 记录改变但引用hash同步正确的业务失败仍须失败. 输出原件与回放工作根分开, 新回放不污染已关闭原件索引. 只有`candidate.offline_fixture=true`可使用测试边界; 内存结果不授native/full信用.
 

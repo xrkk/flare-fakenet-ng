@@ -251,9 +251,48 @@ class ReplayBoundary:
  def finish(self):
   if sum(self.offsets.values())!=len(self.records):raise ReplayMismatch('unused recorded operations')
 
+_CONFIG_MUTATIONS = frozenset({
+ 'create_config', 'import_config', 'edit_config', 'rename_config',
+ 'delete_config', 'load_config', 'save_config'})
+_STATUS_KEYS = ('state', 'state_version', 'run_id', 'config_identity')
+
+
+def _config_identity(value):
+ if value is None:return None
+ if not isinstance(value,dict) or not isinstance(value.get('name'),str) or not value['name']:
+  raise ValueError('configuration identity name missing')
+ if (not isinstance(value.get('sha256'),str) or len(value['sha256'])!=64
+         or any(c not in '0123456789abcdef' for c in value['sha256'])):
+  raise ValueError('configuration identity SHA-256 missing')
+ if set(value)-{'name','sha256','builtin'}:raise ValueError('configuration identity has unknown fields')
+ if 'builtin' in value and type(value['builtin']) is not bool:raise ValueError('configuration builtin flag invalid')
+ return {'name':value['name'],'sha256':value['sha256']}
+
+
+def _status_snapshot(value):
+ if not isinstance(value,dict) or any(key not in value for key in _STATUS_KEYS):
+  raise ValueError('initial status is not a complete snapshot')
+ if not isinstance(value['state'],str) or not value['state']:
+  raise ValueError('status state missing')
+ if type(value['state_version']) is not int or value['state_version']<0:
+  raise ValueError('status state_version is not a nonnegative integer')
+ run=value['run_id']
+ if run is not None and (not isinstance(run,str) or not run):
+  raise ValueError('status run_id is not null or a nonempty string')
+ identity=_config_identity(value['config_identity'])
+ return {'state':value['state'],'state_version':value['state_version'],
+         'run_id':run,'config_identity':identity,
+         'controller':value.get('controller')}
+
+
+def _same_config(a,b):
+ if a is None or b is None:return a is None and b is None
+ return a.get('name')==b.get('name') and a.get('sha256')==b.get('sha256')
+
+
 class BoundarySession:
  def __init__(self,boundary,inputs=None,logical_root=None):
-  self.boundary=boundary;self.inputs=inputs;self.logical_root=logical_root;self.records=[];self.lock=threading.RLock();self.thread_names={};self._thread_count=0;self._socket_count=0;self.owned_runs=set();self.owned_configs=set();self._local=threading.local();self._original={'time':time.time,'monotonic':time.monotonic,'sleep':time.sleep,'uuid':uuid.uuid4,'socket':socket.create_connection,'http_connection':http.client.HTTPConnection}
+  self.boundary=boundary;self.inputs=inputs;self.logical_root=logical_root;self.records=[];self.config_operations=[];self.config_owned_files={};self.lock=threading.RLock();self.thread_names={};self._thread_count=0;self._socket_count=0;self.owned_runs=set();self.owned_configs=set();self._local=threading.local();self._original={'time':time.time,'monotonic':time.monotonic,'sleep':time.sleep,'uuid':uuid.uuid4,'socket':socket.create_connection,'http_connection':http.client.HTTPConnection}
  def operation(self,kind,value):
   if getattr(self._local,'inside_transport',False) and kind in self._original:
    if kind=='sleep':return self._original[kind](value['seconds'])
@@ -299,15 +338,42 @@ class BoundarySession:
   if isinstance(request,str):request=urllib.request.Request(request)
   value=self.operation('http',{'url':request.full_url,'method':request.get_method(),'headers':dict(request.header_items()),'data':request.data,'timeout':timeout})
   if value.get('http_error'):raise urllib.error.HTTPError(request.full_url,value['status'],'recorded HTTP error',value['headers'],io.BytesIO(value['body']))
+  operation=None
   try:
    request_body=json.loads(request.data or b'{}');params=request_body.get('params') or {};tool=params.get('name');arguments=params.get('arguments') or {}
+   if tool in _CONFIG_MUTATIONS:
+    operation={'tool':tool,'arguments':copy.deepcopy(arguments),
+               'request_command_id':arguments.get('command_id'),
+               'request_expected_version':arguments.get('expected_state_version')}
+    self.config_operations.append(operation)
    response_body=json.loads(value['body']);payload=json.loads(response_body.get('result',{}).get('content',[{}])[0].get('text','{}'))
+   if operation is not None:
+    operation['response']=copy.deepcopy(payload)
+    operation['accepted']=not payload.get('error')
+    operation['response_command_id']=payload.get('command_id')
+    operation['response_state_version']=payload.get('state_version')
+    operation['changed']=payload.get('changed')
+    operation['config_identity']=copy.deepcopy(payload.get('config_identity'))
+    operation['name']=payload.get('name')
    if not payload.get('error'):
     if tool in ('start','restart') and payload.get('run_id'):self.owned_runs.add(payload['run_id'])
-    if tool in ('create_config','import_config') and arguments.get('name'):self.owned_configs.add(arguments['name'])
-    if tool=='rename_config' and arguments.get('name') in self.owned_configs:self.owned_configs.remove(arguments['name']);self.owned_configs.add(arguments['new_name'])
-    if tool=='delete_config':self.owned_configs.discard(arguments.get('name'))
-  except (ValueError,KeyError,IndexError,TypeError):pass
+    receipt=payload.get('config_result') if isinstance(payload.get('config_result'),dict) else {}
+    returned_name=receipt.get('name') or payload.get('name') or arguments.get('name')
+    returned_sha=receipt.get('sha256') or payload.get('sha256')
+    if tool in ('create_config','import_config') and arguments.get('name') and payload.get('changed') is not False:
+     self.owned_configs.add(returned_name or arguments['name'])
+     if isinstance(returned_sha,str):self.config_owned_files[returned_name or arguments['name']]=returned_sha
+    if tool=='edit_config' and arguments.get('name') and payload.get('changed') is True and isinstance(returned_sha,str):
+     self.config_owned_files[returned_name or arguments['name']]=returned_sha
+    if tool=='rename_config' and arguments.get('name') in self.owned_configs and payload.get('changed') is not False:
+     old=arguments['name'];new=returned_name or arguments.get('new_name');self.owned_configs.remove(old)
+     if isinstance(new,str):
+      self.owned_configs.add(new)
+      if old in self.config_owned_files:self.config_owned_files[new]=self.config_owned_files.pop(old)
+    if tool=='delete_config' and payload.get('changed') is not False:
+     name=arguments.get('name');self.owned_configs.discard(name);self.config_owned_files.pop(name,None)
+  except (ValueError,KeyError,IndexError,TypeError):
+   if operation is not None:operation['response_unknown']=True
   return RecordedResponse(value)
  def http_connection(self,host,port=None,timeout=30,source_address=None,**kwargs):
   if getattr(self._local,'inside_transport',False):return self._original['http_connection'](host,port,timeout=timeout,source_address=source_address,**kwargs)
@@ -474,6 +540,79 @@ def service_preflight(session,inputs):
  if value.get('fault_exists') is not False or type(value.get('enabled')) is not bool or type(value.get('grace')) is not int or not isinstance(value.get('service_config'),dict):raise ValueError('unknown fault residue or service settings; preserve scene')
  return value
 
+def _accepted_load_operation(session, initial, final):
+ """Find only a current-run accepted load that explains the actual active config."""
+ candidates=[]
+ for number,operation in enumerate(session.config_operations):
+  if operation.get('tool')!='load_config':continue
+  if operation.get('response_unknown'):raise ValueError('configuration load response is unresolved')
+  response=operation.get('response')
+  if not isinstance(response,dict) or response.get('error'):continue
+  command=operation.get('request_command_id')
+  expected=operation.get('request_expected_version')
+  if (not isinstance(command,str) or not command
+          or type(expected) is not int or expected<0
+          or response.get('command_id')!=command
+          or type(response.get('state_version')) is not int
+          or response['state_version']<expected):
+   raise ValueError('accepted configuration load identity/version differs')
+  identity=_config_identity(response.get('config_identity'))
+  request_name=(operation.get('arguments') or {}).get('name')
+  if not isinstance(request_name,str) or not request_name:
+   raise ValueError('accepted configuration load lacks requested name')
+  if identity is None or not _same_config(identity,final):
+   continue
+  if initial is not None and not _same_config(initial,final):
+   candidates.append((number,operation,identity))
+ if not candidates:raise ValueError('active configuration changed without current-run accepted load')
+ number,operation,identity=candidates[-1]
+ if operation.get('changed') is not True:
+  raise ValueError('accepted load did not report an actual configuration change')
+ return operation
+
+
+def _restore_config(mods,base,session,inputs,initial,current,writer):
+ name=inputs['config_identity']['name'];digest=inputs['config_identity']['sha256']
+ frozen=mods['run_p02_acc'].call(base,'read_config',{'name':name},controller=None)
+ if frozen.get('error') or frozen.get('name')!=name or frozen.get('sha256')!=digest:
+  raise ValueError('original configuration binding changed; do not restore by name alone')
+ command=mods['run_p02_acc'].unique_command('owned-restore-config')
+ restored=mods['run_p02_acc'].call(base,'load_config',{
+  'name':name,'command_id':command,'expected_state_version':current['state_version']})
+ if (not isinstance(restored,dict) or restored.get('error')
+         or restored.get('command_id')!=command
+         or type(restored.get('state_version')) is not int
+         or restored['state_version']<current['state_version']
+         or restored.get('changed') is not True
+         or not _same_config(_config_identity(restored.get('config_identity')),initial)):
+  raise ValueError('configuration restore was not accepted with exact original identity')
+ writer.add_evidence('owned-restore-config',restored)
+ return restored
+
+
+def _cleanup_owned_configs(mods,base,session,writer):
+ for name in sorted(session.owned_configs.copy()):
+  item=mods['run_p02_acc'].call(base,'read_config',{'name':name},controller=None)
+  if item.get('error'):raise ValueError('owned config observation missing')
+  expected=session.config_owned_files.get(name)
+  if expected is not None and item.get('sha256')!=expected:
+   raise ValueError('owned config content changed; do not delete foreign bytes')
+  if expected is None:
+   raise ValueError('owned config lacks accepted content identity')
+  state=mods['run_p02_acc'].status(base)
+  command=mods['run_p02_acc'].unique_command('owned-config-delete')
+  deleted=mods['run_p02_acc'].call(base,'delete_config',{
+   'name':name,'expected_sha256':item['sha256'],
+   'command_id':command,'expected_state_version':state['state_version']})
+  writer.add_evidence('owned-config-delete-'+str(len(writer.evidence)),deleted)
+  if (not isinstance(deleted,dict) or deleted.get('error')
+          or deleted.get('command_id')!=command
+          or type(deleted.get('state_version')) is not int
+          or deleted['state_version']<state['state_version']):
+   raise ValueError('owned config cleanup rejected')
+ return None
+
+
 def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
  mods=modules(root);session=BoundarySession(boundary,inputs);out=Path(out);writer=mods['helpers'].EvidenceWriter(out,'original-unit')
  args=original_args(inputs,out)
@@ -489,7 +628,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
   result=writer.write_result(acc_id=unit,p_id='headless',**inputs['identity'],environment_identity=json.dumps(inputs['target'],sort_keys=True),status=status)
   trace={'schema':'fakenet.mcp-unit-trace.v1','unit':unit,'identity':inputs['identity'],'target':inputs['target'],'config_identity':inputs['config_identity'],'unit_root':str(out.resolve()),'records':[],'returncode':code,'error':error,'recovery_observed':True,'recovery_error':None,'origin':'closed-independent-capability-no-native-action'}
   return result,trace
- code=3;error=None;before=None;after=None;service_before=None;recovery_error=None
+ code=3;error=None;before=None;after=None;service_before=None;recovery_error=None;initial=None;final=None
  with session.activate():
   # Original classes importing a channel still get this same recorded transport.
   from unittest.mock import patch
@@ -499,13 +638,21 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
    try:
     actual=session.operation('target',{})
     if actual!=inputs['target']:raise ValueError('observed VM differs from frozen identity')
-    initial=mods['run_p02_acc'].status(args.target_base_url)
-    if initial.get('state')!='stopped' or initial.get('run_id'):raise ValueError('MCP entry not idle; preserve foreign run')
+    initial_raw=mods['run_p02_acc'].status(args.target_base_url)
+    initial=_status_snapshot(initial_raw)
+    writer.add_evidence('initial-status',initial_raw)
+    if initial['state']!='stopped' or initial['run_id']:raise ValueError('MCP entry not idle; preserve foreign run')
     ping=mods['run_p02_acc'].call(args.target_base_url,'ping',controller=None)
     build=ping.get('build_identity') or {}
     if build.get('source_commit')!=args.source_commit or build.get('manifest_sha256')!=inputs['manifest_sha256']:raise ValueError('deployed candidate build differs')
-    active=initial.get('config_identity')
-    if active and any(active.get(k)!=inputs['config_identity'][k] for k in ('name','sha256')):raise ValueError('active configuration differs')
+    active=initial['config_identity']
+    if active is not None:
+     if not _same_config(active,inputs['config_identity']):raise ValueError('active configuration differs')
+    else:
+     binding=mods['run_p02_acc'].call(args.target_base_url,'read_config',{'name':inputs['config_identity']['name']},controller=None)
+     if binding.get('error') or binding.get('name')!=inputs['config_identity']['name'] or binding.get('sha256')!=inputs['config_identity']['sha256']:
+      raise ValueError('input configuration binding differs')
+     writer.add_evidence('initial-config-binding',binding)
     service_before=service_preflight(session,inputs);writer.add_evidence('installed-service-before',service_before)
     before=session.operation('observe',{})
     writer.add_evidence('environment-before',before)
@@ -515,28 +662,40 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
     if before is not None:
      try:
       if getattr(session,'preserve_scene',False):raise ValueError('controlled operation unresolved; preserve scene')
-      final=mods['run_p02_acc'].status(args.target_base_url)
-      if final.get('run_id') in session.owned_runs:
+      final_raw=mods['run_p02_acc'].status(args.target_base_url)
+      final=_status_snapshot(final_raw)
+      if final['run_id'] in session.owned_runs:
        stopped=mods['run_p02_acc'].call(args.target_base_url,'stop',{'command_id':mods['run_p02_acc'].unique_command('owned-final-stop'),'expected_state_version':final['state_version']},timeout=420)
-       writer.add_evidence('owned-final-stop',stopped);final=mods['run_p02_acc'].status(args.target_base_url)
-      if final.get('state')=='stopped' and not final.get('run_id'):
-       current=final.get('config_identity') or {}
-       if any(current.get(k)!=inputs['config_identity'][k] for k in ('name','sha256')):
-        frozen=mods['run_p02_acc'].call(args.target_base_url,'read_config',{'name':inputs['config_identity']['name']},controller=None)
-        if frozen.get('sha256')!=inputs['config_identity']['sha256']:raise ValueError('frozen configuration changed; do not restore by name alone')
-        restored=mods['run_p02_acc'].call(args.target_base_url,'load_config',{'name':inputs['config_identity']['name'],'command_id':mods['run_p02_acc'].unique_command('owned-restore-config'),'expected_state_version':final['state_version']})
-        writer.add_evidence('owned-restore-config',restored)
-        if restored.get('error'):raise ValueError('configuration restore rejected')
-       for name in sorted(session.owned_configs.copy()):
-        item=mods['run_p02_acc'].call(args.target_base_url,'read_config',{'name':name},controller=None)
-        if item.get('error'):raise ValueError('owned config observation missing')
-        state=mods['run_p02_acc'].status(args.target_base_url)
-        deleted=mods['run_p02_acc'].call(args.target_base_url,'delete_config',{'name':name,'expected_sha256':item['sha256'],'command_id':mods['run_p02_acc'].unique_command('owned-config-delete'),'expected_state_version':state['state_version']})
-        writer.add_evidence('owned-config-delete-'+str(len(writer.evidence)),deleted)
-        if deleted.get('error'):raise ValueError('owned config cleanup rejected')
-       final=mods['run_p02_acc'].status(args.target_base_url)
-      writer.add_evidence('final-status',final)
-      if any((final.get('config_identity') or {}).get(k)!=inputs['config_identity'][k] for k in ('name','sha256')):raise ValueError('restored configuration identity not observed')
+       writer.add_evidence('owned-final-stop',stopped);final_raw=mods['run_p02_acc'].status(args.target_base_url);final=_status_snapshot(final_raw)
+      writer.add_evidence('pre-recovery-status',final_raw)
+      writer.add_evidence('config-operations-initial',copy.deepcopy(session.config_operations))
+      if final['state']!='stopped' or final['run_id'] is not None:
+       raise ValueError('final service state is not idle; preserve recovery required')
+      if final['state_version']<initial['state_version']:
+       raise ValueError('state version regressed during the unit')
+      if any(op.get('response_unknown') for op in session.config_operations):
+       raise ValueError('configuration operation response is unresolved')
+      initial_config=initial['config_identity'];final_config=final['config_identity']
+      if initial_config is None:
+       if final_config is not None:raise ValueError('configuration appeared from null initial state; no safe restore')
+       if any(op.get('tool')=='load_config' and op.get('accepted') is True and op.get('changed') is True and not op.get('response_unknown') for op in session.config_operations):
+        raise ValueError('null configuration changed without safe restore')
+       _cleanup_owned_configs(mods,args.target_base_url,session,writer)
+      elif _same_config(initial_config,final_config):
+       _cleanup_owned_configs(mods,args.target_base_url,session,writer)
+      elif final_config is None:
+       raise ValueError('active configuration disappeared; preserve recovery required')
+      else:
+       _accepted_load_operation(session,initial_config,final_config)
+       _restore_config(mods,args.target_base_url,session,inputs,initial_config,final,writer)
+       _cleanup_owned_configs(mods,args.target_base_url,session,writer)
+      final_raw=mods['run_p02_acc'].status(args.target_base_url)
+      final=_status_snapshot(final_raw)
+      writer.add_evidence('final-status',final_raw)
+      if initial_config is None:
+       if final['config_identity'] is not None:raise ValueError('restored configuration is not null')
+      elif not _same_config(final['config_identity'],initial_config):
+       raise ValueError('restored configuration identity not observed')
       if service_before is not None:
        restored_mode=mods['helpers'].configure_fault_service(session,service_before['enabled'],service_before['grace'])
        writer.add_evidence('service-settings-restored',restored_mode)
@@ -551,7 +710,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
       recovery_error={'type':type(exc).__name__,'message':str(exc)};error=error or recovery_error;writer.blocker=error;code=1
  status={0:'pass',1:'fail',2:'blocked',3:'unknown'}.get(code,'unknown')
  result=writer.write_result(acc_id=unit,p_id='headless',**inputs['identity'],environment_identity=json.dumps(inputs['target'],sort_keys=True),status=status)
- trace={'schema':'fakenet.mcp-unit-trace.v1','unit':unit,'identity':inputs['identity'],'target':inputs['target'],'config_identity':inputs['config_identity'],'unit_root':str(out.resolve()),'records':session.records,'returncode':code,'error':error,'recovery_observed':before is not None and after is not None,'recovery_error':recovery_error}
+ trace={'schema':'fakenet.mcp-unit-trace.v1','unit':unit,'identity':inputs['identity'],'target':inputs['target'],'config_identity':inputs['config_identity'],'unit_root':str(out.resolve()),'records':session.records,'returncode':code,'error':error,'initial_status':initial,'final_status':final,'config_operations':session.config_operations,'recovery_observed':before is not None and after is not None and recovery_error is None,'recovery_error':recovery_error}
  if isinstance(boundary,ReplayBoundary):
   try:boundary.finish()
   except ReplayMismatch as exc:

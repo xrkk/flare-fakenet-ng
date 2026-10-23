@@ -163,7 +163,8 @@
             "docs/acceptance/catalog.json",
             "test/test_acceptance_scheduler.py",
             "test/test_acceptance_combo.py",
-            "test/test_acceptance_mcp_identity.py"
+            "test/test_acceptance_mcp_identity.py",
+            "test/test_acceptance_mcp_baseline.py"
           ]
         },
         {
