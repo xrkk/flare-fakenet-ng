@@ -636,7 +636,7 @@ def run_acc004_scenario(base, channel, writer, tag):
             # the restart (a hung child would wedge the next start).
             disarm_fault(channel, base)
         normalize_service(base, channel)
-    writer.add_evidence('acc004-%s-checks' % tag.lower(), checks)
+    writer.add_evidence('acc004-%s-scenario-checks' % tag.lower(), checks)
     checked = [v for v in checks.values() if v is not None]
     return EXIT_PASS if all(checked) else EXIT_FAIL
 

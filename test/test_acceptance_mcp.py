@@ -739,4 +739,40 @@ class PublicSpecialMcpCliTests(unittest.TestCase):
   result=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'negative.json');self.assertNotEqual(0,result[0],result)
   summary=m.read(self.run/'negative.json');self.assertFalse(summary['fixture_contract_pass']);self.assertIn('loopback PCAP content identity differs',json.dumps(summary))
 
+
+class ListenerProcessBoundary(IpcProcessBoundary):
+ def exchange(self,kind,value):
+  with self.guard:
+   if kind=='http':
+    result=super().exchange(kind,value);body=json.loads(result['body']);payload=json.loads(body['result']['content'][0]['text'])
+    if payload.get('state')=='healthy':payload['health']={'identity':{'pid':121,'creation_time':'123456'},'process_alive':True,'init_evidence':True,'probe':True}
+    body['result']['content'][0]['text']=json.dumps(payload);result['body']=json.dumps(body).encode();return result
+   if kind=='powershell':
+    cmd=value['command']
+    if 'stdout_stderr.log' in cmd and '@{receipt=' in cmd:
+     fault=self.fault['fault'];log=('Traceback (most recent call last)\nservice_actions\nRuntimeError: injected listener thread exception' if fault=='listener_exception' else 'Traceback (most recent call last)\n_inbound_capture_loop\ncapture_checkpoint\nRuntimeError: injected capture thread exception');output=json.dumps({'receipt':self.fault,'log':log,'stderr':log})
+    elif "throw 'child scope mismatch'" in cmd:
+     self.running=False;self.terminal=True;output=json.dumps({'child':{'pid':121,'creation_time':'123456','run_id':self.run_id},'exit_code':-1,'service_pid_before':12,'service_pid_after':12,'service_state_after':'Running'})
+    elif 'Get-Service fakenetng-mcp | Select-Object Name,Status' in cmd:output=json.dumps({'Name':'fakenetng-mcp','Status':'Running'})
+    else:return super().exchange(kind,value)
+    return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+   return super().exchange(kind,value)
+
+class OriginalLifecycleAdditionalTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_original_initialization_listener_and_pinned_child_scenarios(self):
+  for unit,boundary_class in (('ACC-004-S2',InitializationProcessBoundary),('ACC-004-S3',ListenerProcessBoundary),('ACC-004-S6',ListenerProcessBoundary)):
+   with self.subTest(unit=unit):
+    out=self.root/unit;value=m.run('MCP-P03-FULL',out,self.inputs,selected=[unit],boundary=boundary_class(self.inputs),fixture=True)
+    self.assertEqual('pass',value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+    rows,clean,details=o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],details);self.assertTrue(clean)
+ def test_wrong_terminated_child_identity_cannot_pass(self):
+  unit='ACC-004-S6';out=self.root/unit;m.run('MCP-P03-FULL',out,self.inputs,selected=[unit],boundary=ListenerProcessBoundary(self.inputs),fixture=True)
+  self.assertEqual('pass',o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True)[0][0]['status'])
+  path=out/'units'/unit/'trace.json';trace=m.read(path)
+  for row in trace['records']:
+   if row['kind']=='powershell' and "throw 'child scope mismatch'" in row['input']['command']:
+    data=json.loads(row['output']['output']);data['child']['pid']=999;row['output']['output']=json.dumps(data)
+  path.write_text(json.dumps(trace));rows,clean,details=o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],details);self.assertTrue(clean)
+
 if __name__=='__main__':unittest.main()

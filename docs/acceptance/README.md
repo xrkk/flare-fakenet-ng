@@ -360,3 +360,5 @@ P04功能与信用映射见[mcp-capability-map.md](mcp-capability-map.md). 新`I
 LOOPBACK原PCAP检查现仅使用完整UDP载荷的准确标记; 管理TCP命令文字或子串不能证明捕获活跃, 重定向环回标记必须失败. PCAP原字节大小/SHA与解析和原恢复断言均保留, 既有IPv6用例只保留原适用范围, 不扩大IPv6产品支持. CONTROL-INVALID从本次启动前记录的日志偏移读新增错误, 历史尾部拒绝文字不能证明本次非法值被拒绝. 初始化用例仍检查有效配置、真实初始化调用栈/nonce/child失败/从未健康及incident与恢复原函数; 内存边界不是实机证据.
 
 原件位于`main-mcp-r18/control-03`、`control-config-01`、`control-foreign-01`、`control-invalid-01`、`initialization-01`和`special-public-02`. 同正式catalog的plan/execute/独立judge已走控制/非法配置/双栈环回正常链及正确更新引用hash后的坏PCAP拒绝, 没用替代catalog. 实机和整个SPECIAL/P03/P04仍未验/未完成, 未声明MCP完整通过.
+
+P03原S2初始化、S3监听线程异常、S6精确受管子进程退出已补OS内存边界正常及错child身份回放; S3原内外层重复写独占证据名导致FileExistsError, 已将外层改为scenario-checks而保留原判断. lifecycle-additional-01失败保留, additional-02两tests三subtests通过; lifecycle-impacted-01相关63tests44subtests/29.08s通过. 原生线程/进程/恢复仍未验, P03其余能力未完成.
