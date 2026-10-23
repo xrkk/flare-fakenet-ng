@@ -524,9 +524,18 @@ def acc004_s4_invalid_protection(base, channel, writer):
 def acc004_s5_hang(base, channel, writer):
     """Pause the real managed stop phase; keep probing through cleanup."""
     checks = {}
-    writer.add_evidence('acc004-s5-fault-arm', arm_fault(channel, 'policy_pause', base))
+    armed = arm_fault(channel, 'policy_pause', base)
+    writer.add_evidence('acc004-s5-fault-arm', armed)
     started = load_and_start(base)
     checks['start_ok'] = started.get('error') is None
+    if not checks['start_ok']:
+        return checks
+    healthy, current = wait_state(base, lambda s: s.get('state') == 'healthy', timeout=45)
+    if not healthy:
+        raise StepError('hang precondition not healthy; preserve scene')
+    import uuid
+    run_id = str(uuid.UUID(current['run_id']))
+    writer.add_evidence('acc004-s5-current-run', current)
     ok, timeline = continuous_probe(base, 8)
     writer.add_evidence('acc004-s5-hang-probe', timeline)
     checks['link_alive_during_core_thread_hang'] = ok
@@ -539,6 +548,22 @@ def acc004_s5_hang(base, channel, writer):
     if hung_stop is None:
         raise StepError('stop fault action missing result; preserve scene')
     writer.add_evidence('acc004-s5-hang-stop', hung_stop)
+    # Arming alone is not an observed hang. The real hook consumes its
+    # nonce into this run's fixed receipt before entering the stop pause.
+    command = (
+        "$ErrorActionPreference='Stop'; "
+        "$run='RUN_ID'; $dir=Join-Path $env:ProgramData "
+        "('FakeNet-NG-MCP\\artifacts\\runs\\' + $run); "
+        "$receipt=Get-Content (Join-Path $dir 'fault-triggered.json') -Raw | ConvertFrom-Json; "
+        "@{run_id=$run;receipt=$receipt} | ConvertTo-Json -Depth 5 -Compress"
+    ).replace('RUN_ID', run_id)
+    raw = channel.powershell(command, timeout=30)
+    writer.add_evidence('acc004-s5-triggered-receipt', raw)
+    observed = json.loads(raw['output'])
+    checks['actual_policy_pause_triggered'] = (
+        raw.get('exit_code') == 0 and raw.get('is_error') is not True and
+        observed.get('run_id') == run_id and
+        observed.get('receipt') == {key: armed[key] for key in ('fault', 'nonce')})
     checks['hang_stop_bounded'] = hung_stop.get('state') in (
         'failed', 'stopped')
     ok_after, _ = continuous_probe(base, 4)

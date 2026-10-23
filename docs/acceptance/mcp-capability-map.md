@@ -99,3 +99,28 @@ keeps original same-run pipe request/response, live listeners, same child,
 four-second revocation, nonce, incident bytes and recovery predicates.
 All current slice evidence remains guarded, benign process/HTTP/clock fixtures;
 actual health revocation, WinDivert and native recovery remain unverified.
+
+Three conditional diagnostic producers were checked against the actual source
+before adding any action. They remain mandatory and unimplemented as complete
+stimulus-to-classification chains:
+
+| Class | Existing mechanism | Missing part and current disposition |
+| --- | --- | --- |
+| `stacks_unavailable` | `managed_stacks.read_stacks` validates run/process/time; `incident_task.prepare` escalates missing live/snapshot stacks for a pinned managed dump target. | No verified fixed action selectively makes the live stack reply and fallback observations unavailable while preserving the intended live child. IPC health-drop hooks do not establish that condition. Keep the gap; do not arm an unsupported hook or erase stack evidence to manufacture it. |
+| `native_crash` | Managed exit evidence can supply a precollected dump; P03 has handle-pinned termination and supervisor restart tests. | Those termination tests do not establish a native exception. No pinned benign native-exception stimulus with its complete exit/dump/recovery chain is integrated here. Keep the gap; a collected dump alone is not a native-crash producer. |
+| `unknown_cause` | Existing incident preparation and conditional dumps collect observations for a pinned run/process. | No verified stimulus plus observed unclassified cause and independent package-only localization is connected. Writing this class into a record or supplying a reason string is not an observed unknown cause. Keep the gap. |
+
+These findings do not declare the whole product incapable of the conditions;
+they identify the missing mechanical acceptance chains. Product hooks and
+validators remain unchanged. No real fault or dump was executed.
+
+The independent P03 `ACC-004-S5` path now requires a healthy current run and
+the exact `policy_pause` nonce consumed by the real hook into that run's
+`fault-triggered.json`, in addition to the existing entire-stop control-link
+probes and bounded stop/recovery checks. Arming a hook and observing a normal
+stop no longer count as a triggered hang. A failed receipt read cannot supply
+successful recovery credit. The source, replay judge and unchanged production
+catalog are exercised with process/HTTP/clock boundaries only: wrong nonce,
+class, run and channel exit code fail; rehashing the outer receipts does not
+make bad content pass. This is limited offline integration credit, not a native
+hang, complete P03/MCP acceptance, or any of the three missing classes above.

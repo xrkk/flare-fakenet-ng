@@ -1292,3 +1292,132 @@ class PublicHealthSliceCliTests(unittest.TestCase):
     self.assertEqual(0,result[0],result);result=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'judged.json');self.assertEqual(0,result[0],result);summary=m.read(self.run/'judged.json');self.assertTrue(summary['fixture_contract_pass']);self.assertFalse(summary['full_functional_pass'])
 
 if __name__=='__main__':unittest.main()
+
+
+class HangProcessBoundary(FaultProcessBoundary):
+    """Only remote process, HTTP and clock edges; original S5 executes."""
+    def __init__(self, inputs):
+        super().__init__(inputs)
+        self.running = False
+
+    def exchange(self, kind, value):
+        with self.guard:
+            if kind == 'http':
+                tool = json.loads(value['data'])['params']['name']
+                if tool in ('get_status', 'start', 'stop', 'load_config'):
+                    if tool == 'start':
+                        self.running = True
+                    elif tool == 'stop':
+                        self.running = False
+                    if tool != 'get_status':
+                        self.version += 1
+                    return self.response({
+                        'service': 'fakenetng-mcp',
+                        'state': 'healthy' if self.running else 'stopped',
+                        'state_version': self.version,
+                        'run_id': self.run_id if self.running else None,
+                        'controller': None,
+                        'config_identity': self.inputs['config_identity'],
+                        'last_run_outcome': 'failed' if self.fault and not self.running else None,
+                        'error': None,
+                    })
+            if kind == 'powershell' and '@{run_id=$run;receipt=$receipt}' in value['command']:
+                output = json.dumps({'run_id': self.run_id, 'receipt': self.fault})
+                return {'output': output, 'raw': output, 'exit_code': 0, 'is_error': False}
+            return super().exchange(kind, value)
+
+
+class OriginalHangReceiptTests(unittest.TestCase):
+    setUp = OriginalMcpTests.setUp
+
+    def test_actual_hook_receipt_and_original_control_window(self):
+        unit = 'ACC-004-S5'
+        out = self.root / 'hang'
+        value = m.run('MCP-P03-FULL', out, self.inputs, selected=[unit],
+                      boundary=HangProcessBoundary(self.inputs), fixture=True)
+        self.assertEqual('pass', value['checks'][unit]['status'],
+                         m.read(out / 'units' / unit / 'result.json'))
+        rows, clean, details = o.evaluate(ROOT, out, 'MCP-P03-FULL', [unit],
+                                          self.inputs, allow_fixture=True)
+        self.assertEqual('pass', rows[0]['status'], details)
+        self.assertTrue(clean, details)
+        trace_path = out / 'units' / unit / 'trace.json'
+        original = trace_path.read_text()
+        for mutation in ('nonce', 'fault', 'run_id', 'exit_code'):
+            with self.subTest(mutation=mutation):
+                trace = json.loads(original)
+                hits = 0
+                for row in trace['records']:
+                    if row['kind'] != 'powershell' or '@{run_id=$run;receipt=$receipt}' not in row['input']['command']:
+                        continue
+                    hits += 1
+                    raw = row['output']
+                    observed = json.loads(raw['output'])
+                    if mutation in ('nonce', 'fault'):
+                        observed['receipt'][mutation] = 'wrong-' + mutation
+                    elif mutation == 'run_id':
+                        observed['run_id'] = '22222222-2222-4222-8222-222222222222'
+                    else:
+                        raw['exit_code'] = 1
+                    raw['output'] = json.dumps(observed)
+                    raw['raw'] = raw['output']
+                self.assertEqual(1, hits)
+                trace_path.write_text(json.dumps(trace))
+                rows, clean, details = o.evaluate(ROOT, out, 'MCP-P03-FULL', [unit],
+                                                  self.inputs, allow_fixture=True)
+                self.assertEqual('fail', rows[0]['status'], details)
+                if mutation == 'exit_code':
+                    # A failed channel read aborts the original sequence;
+                    # no successful restoration may be inferred from it.
+                    self.assertFalse(clean, details)
+                    self.assertIn('original replay refused', str(details))
+                else:
+                    self.assertTrue(clean, details)
+        trace_path.write_text(original)
+
+
+class PublicHangMcpCliTests(unittest.TestCase):
+    setUp = PublicMcpCliTests.setUp
+    cli = PublicMcpCliTests.cli
+    prepare = PublicMcpCliTests.prepare
+
+    def test_same_catalog_hang_and_rehashed_wrong_receipt(self):
+        self.prepare('MCP-P03-FULL', ['ACC-004-S5'])
+        with mock.patch.object(m, 'NativeBoundary',
+                               side_effect=lambda *args, **kwargs: HangProcessBoundary(self.inputs)):
+            result = self.cli('execute', '--plan', self.run / 'plan.json')
+        self.assertEqual(0, result[0], result)
+        result = self.cli('judge', '--plan', self.run / 'plan.json', '--results',
+                          self.run / 'results', '--output', self.run / 'positive.json')
+        self.assertEqual(0, result[0], result)
+        summary = m.read(self.run / 'positive.json')
+        self.assertTrue(summary['fixture_contract_pass'])
+        self.assertFalse(summary['full_functional_pass'])
+        case_dir = self.run / 'results/MCP-P03-FULL'
+        trace_path = case_dir / 'driver/units/ACC-004-S5/trace.json'
+        trace = m.read(trace_path)
+        hits = 0
+        for row in trace['records']:
+            if row['kind'] == 'powershell' and '@{run_id=$run;receipt=$receipt}' in row['input']['command']:
+                hits += 1
+                observed = json.loads(row['output']['output'])
+                observed['receipt']['nonce'] = 'wrong-consumed-nonce'
+                row['output']['output'] = json.dumps(observed)
+                row['output']['raw'] = row['output']['output']
+        self.assertEqual(1, hits)
+        trace_path.write_text(json.dumps(trace))
+        receipt = m.read(case_dir / 'receipt.json')
+        for artifact in receipt['artifacts']:
+            artifact['sha256'] = m.sha256(artifact['path'])
+        (case_dir / 'receipt.json').write_text(json.dumps(receipt))
+        index = m.read(self.run / 'results/results.json')
+        for item in index['receipts']:
+            if item['case_id'] == 'MCP-P03-FULL':
+                item['sha256'] = m.sha256(case_dir / 'receipt.json')
+        (self.run / 'results/results.json').write_text(json.dumps(index))
+        result = self.cli('judge', '--plan', self.run / 'plan.json', '--results',
+                          self.run / 'results', '--output', self.run / 'negative.json')
+        self.assertNotEqual(0, result[0], result)
+        summary = m.read(self.run / 'negative.json')
+        self.assertFalse(summary['fixture_contract_pass'])
+        self.assertIn('original assertions', json.dumps(summary))
