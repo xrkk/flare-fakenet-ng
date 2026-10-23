@@ -157,7 +157,8 @@
           "sources": [
             "test/test_acceptance_catalog.py",
             "tools/acceptance.py",
-            "docs/acceptance/catalog.json"
+            "docs/acceptance/catalog.json",
+            "test/test_acceptance_scheduler.py"
           ]
         },
         {
@@ -4333,6 +4334,6 @@
       "upstream-multihost",
       "upstream-singlehost"
     ],
-    "note": "Upstream/dual-PCAP and policy/EXE/payload retain their existing limited code/fixture credit. MCP fixed host-controller/original-function and transport-replay chain is under implementation; original P02 domain assertions and selected public CLI normal/rehashed-negative are verified, remaining P01/P03/P04/SPECIAL and real native are NOT_VERIFIED."
+    "note": "Upstream/dual-PCAP and policy/EXE/payload retain their existing limited code/fixture credit. MCP fixed host-controller/original-function and transport-replay chain is under implementation; original P02 domain assertions and selected public CLI normal/rehashed-negative are verified, remaining P01/P03/P04/SPECIAL and real native are NOT_VERIFIED. Bounded offline scheduling is implemented for the explicit TLS/dual-PCAP safe group; other groups remain serial and native recovery remains driver-owned."
   }
 }

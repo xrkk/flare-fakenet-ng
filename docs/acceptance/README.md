@@ -122,6 +122,10 @@ Logs/acceptance/<run>/
 upstream singlehost/MultiHost、Windows/Linux 双 PCAP 和四个策略 driver 的代码已接入, 真实环境未验. 仍未接入: `policy-headless`, `payload-headless`, `mcp-p01`..`mcp-p04`, `mcp-special`, `linux-runtime`, `manual-headless`, `build-identity`.
 本轮新增 `policy-domain`/`policy-ipv4`/`policy-takeover`/`policy-combined` 四个 Windows singlehost driver: 固定配置来自仓库内已审 INI 模板, 生产路径发送真实 DNS/TCP/UDP/TLS FNPR/1 请求, oracle 重读实际 INI/日志/PCAP 帧并核对 attempt/nonce/五元组/双向服务. 另有 `policy-substitute-*` 仅用于本机安全替身: 同 CLI 的 plan/execute/judge 覆盖 8 个策略/组合 case (`EGRESS-*`、`IP-*`、`POL-*`), 结果为 `fixture_contract_pass` 且 `full_functional_pass=false`, 不产生 native 信用.
 
+## 有界离线调度
+
+`tools/acceptance_scheduler.py` 仅对已核 `CORE-TLSHELLO` 与 `CORE-DUALPCAP-WRITER` 两个无共享副作用的离线组启用最多 2 个工作者; 其它离线组串行, 嵌套深度大于 0 时容量固定为 1. 每个 case 使用自己的 `results/<case>/tmp` 和输出目录, 主线程按计划顺序写唯一 `results.json`; 前驱失败只阻断依赖项, 独立项继续. native 的停止/恢复仍由原驱动单一负责, 调度层不重发 stop/recover.
+
 native 的 plan 只展开固定子检查; execute 只在 action/平台/候选包身份齐全时按固定 argv 运行; judge 核 argv/子检查/全部原件/必需 stdout-stderr/退出与 cleanup 一致性. T003/R02 修复了重复/缺失/额外/矛盾超时/缺日志/假 resources 的误判; fixture 通过只给 `fixture_contract_pass`, 不授 `full_functional_pass` 或当前 native 信用.
 
 ### EXE改址与双向载荷

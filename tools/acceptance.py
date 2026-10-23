@@ -27,6 +27,7 @@ import uuid
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import acceptance_scheduler
 try:
     import acceptance_native
 except ImportError:  # pragma: no cover - the module is shipped with this entry
@@ -964,7 +965,8 @@ def collect_nodes(root, case, python, tmp_dir, log_dir):
 def _python_env(root, tmp_dir):
     import os
     env = os.environ.copy()
-    env['PYTHONPATH'] = str(root)
+    inherited = [item for item in env.get('PYTHONPATH', '').split(os.pathsep) if item]
+    env['PYTHONPATH'] = os.pathsep.join(inherited + [str(root)])
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
     env['TMPDIR'] = str(tmp_dir)
@@ -1106,10 +1108,26 @@ def execute_plan(root, plan_path):
     tmp_dir.mkdir(parents=True, exist_ok=True)
     receipts = []
     native_recovery_block = None
+    blocked_resources = set()
+    offline = []
+    for case_id in plan['required_cases']:
+        case = plan['cases'][case_id]
+        if case['adapter'] == 'offline-pytest' and case_id not in plan.get('blocked', {}):
+            offline.append(case)
+    offline_receipts = {}
+    offline_blocked = {}
+    if offline:
+        def _run_scheduled(case):
+            case_dir = results_dir / case['id']
+            case_dir.mkdir(parents=True, exist_ok=True)
+            return _run_offline_case(root, plan, case, case_dir, python,
+                                     case_dir / 'tmp')
+        offline_receipts, offline_blocked = acceptance_scheduler.run_cases(
+            offline, _run_scheduled)
     for case_id in plan['required_cases']:
         case = plan['cases'][case_id]
         case_dir = results_dir / case_id
-        case_dir.mkdir()
+        case_dir.mkdir(exist_ok=True)
         receipt = {
             'schema': RECEIPT_V2,
             'execution_id': plan['execution_id'],
@@ -1123,10 +1141,14 @@ def execute_plan(root, plan_path):
             'config_sha256': _sha256_json(case),
             'evidence_level': 'offline' if case['adapter'] == 'offline-pytest' else 'native',
         }
-        if case_id in plan.get('blocked', {}) or (case['adapter']=='native' and native_recovery_block):
+        case_resources = acceptance_scheduler._resources(case)
+        blocked = (case_id in plan.get('blocked', {}) or
+                   case_id in offline_blocked or
+                   (case['adapter']=='native' and bool(case_resources & blocked_resources)))
+        if blocked:
             receipt.update({
                 'status': 'blocked',
-                'reason': plan['blocked'].get(case_id) or native_recovery_block,
+                'reason': plan['blocked'].get(case_id) or offline_blocked.get(case_id) or 'resource recovery unresolved',
                 'returncode': None,
                 'command': None,
                 'started_at': None,
@@ -1137,7 +1159,7 @@ def execute_plan(root, plan_path):
                             'process_exit': None, 'temp_roots': []},
             })
         elif case['adapter'] == 'offline-pytest':
-            receipt.update(_run_offline_case(root, plan, case, case_dir, python, tmp_dir))
+            receipt.update(offline_receipts[case_id])
         elif case['adapter'] == 'native':
             receipt['native_driver'] = case.get('native_driver')
             receipt.update(acceptance_native.run_driver(root, case, plan, case_dir, python))
@@ -1146,6 +1168,7 @@ def execute_plan(root, plan_path):
             production = acceptance_native.validate_case(case,root,plan['environment'])[0].get('production_kind')
             if production and receipt.get('cleanup',{}).get('recovered') is not True:
                 native_recovery_block = 'prior native driver recovery unresolved: '+case_id
+                blocked_resources |= case_resources
         else:
             raise ToolError('unregistered adapter: %s' % case['adapter'])
         receipt_path = case_dir / 'receipt.json'
@@ -1178,6 +1201,8 @@ def _run_offline_case(root, plan, case, case_dir, python, tmp_dir):
     junit_path = case_dir / 'junit.xml'
     stdout_path = case_dir / 'stdout.log'
     stderr_path = case_dir / 'stderr.log'
+    tmp_dir = Path(tmp_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
     command = [str(python), '-B', '-m', 'pytest', '-q', '--disable-warnings',
                '--rootdir', str(root), '--junitxml', str(junit_path)] + list(run_nodes)
     env = _python_env(root, tmp_dir)
