@@ -366,12 +366,6 @@ class BoundarySession:
      operation.update(accepted=False,response_unknown=False)
     else:
      command=operation['request_command_id'];expected=operation['request_expected_version'];version=payload.get('state_version')
-     if (payload.get('changed') is False and payload.get('command_id') is None
-             and not payload.get('replayed') and type(version) is int
-             and type(expected) is int and expected >= 0 and version >= expected
-             and payload.get('in_progress') is not True):
-      operation.update(accepted=True,no_op=True,response_unknown=False)
-      return RecordedResponse(value)
      if (not isinstance(command,str) or not command or type(expected) is not int or expected<0 or payload.get('command_id')!=command or type(version) is not int or (payload.get('replayed') is not True and version<=expected) or type(payload.get('changed')) is not bool or payload.get('in_progress') is True):
       raise ValueError('accepted mutation command/version receipt incomplete')
      replay=payload.get('replayed') is True
@@ -585,7 +579,7 @@ def _verified_version_chain(session,initial,final):
  intervals=[];seen=set()
  for op in operations:
   response=op.get('response') or {}
-  if not op.get('accepted') or op.get('replay') or op.get('no_op'):continue
+  if not op.get('accepted') or op.get('replay'):continue
   command=op['request_command_id']
   if command in seen:raise ValueError('duplicate mutation without replay identity')
   seen.add(command);intervals.append((op['request_expected_version'],response['state_version']))
