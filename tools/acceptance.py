@@ -49,7 +49,7 @@ STATUSES = {'pass', 'fail', 'unknown', 'not_run', 'blocked', 'skip', 'observed'}
 CASE_STATUSES = {'pass', 'fail', 'not_run', 'unknown', 'blocked', 'not_applicable'}
 ADAPTERS = {'offline-pytest', 'native', 'native-blocked', 'manual-blocked'}
 ORACLES = {'junit', 'tsv', 'native-json', 'pcap', 'policy-result',
-           'manual', 'none'}
+           'headless-result', 'manual', 'none'}
 EXIT_OK, EXIT_FAIL, EXIT_INPUT, EXIT_TOOL = 0, 1, 2, 3
 
 

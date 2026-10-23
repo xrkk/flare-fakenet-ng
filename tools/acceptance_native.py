@@ -331,12 +331,65 @@ def driver_table(root):
             'platforms': ['windows'], 'modes': ['singlehost'],
             'checks': [], 'requires': ['native'], 'package_required': True,
         },
-        'payload-headless': {
-            'implemented': False,
-            'missing': 'headless payload driver (core + benign client + verifiers) '
-                       'is not implemented in this round',
+        'process-redirect-headless': {
+            'implemented': True, 'production_kind': 'process-redirect',
             'platforms': ['windows'], 'modes': ['singlehost'],
-            'checks': [], 'requires': ['native'], 'package_required': True,
+            'checks': ['identity', 'target-positive', 'non-target-negative',
+                       'owner-bounded', 'budget', 'pcap-restore'],
+            'check_filters': {
+                'PR-REDIRECT-POSITIVE': ['identity', 'target-positive',
+                                         'non-target-negative'],
+                'PR-OWNER-BOUNDED': ['owner-bounded', 'budget'],
+                'PR-PCAP-RESTORE': ['pcap-restore'],
+            },
+            'requires': ['native'], 'package_required': False,
+            'resources': ['core', 'network', 'capture', 'process'],
+            'oracle': {'kind': 'headless-result',
+                       'artifact': 'driver/headless-result.json'},
+            'argv': ['{python}', '{root}/tools/acceptance_headless.py',
+                     '--mode', 'process', '--inputs', '{headless_inputs}',
+                     '--output', '{output}/driver', '--checks', '{checks}'],
+        },
+        'payload-headless': {
+            'implemented': True, 'production_kind': 'payload-three-way',
+            'platforms': ['windows'], 'modes': ['singlehost'],
+            'checks': ['integrity', 'report', 'reassembly'],
+            'requires': ['native'], 'package_required': False,
+            'resources': ['core', 'network', 'capture'],
+            'oracle': {'kind': 'headless-result',
+                       'artifact': 'driver/headless-result.json'},
+            'argv': ['{python}', '{root}/tools/acceptance_headless.py',
+                     '--mode', 'payload', '--inputs', '{headless_inputs}',
+                     '--output', '{output}/driver', '--checks', '{checks}'],
+        },
+        'process-substitute': {
+            'implemented': True, 'fixture': True,
+            'platforms': ['linux', 'windows'], 'modes': ['singlehost'],
+            'checks': ['identity', 'target-positive', 'non-target-negative',
+                       'owner-bounded', 'budget', 'pcap-restore'],
+            'check_filters': {
+                'PR-REDIRECT-POSITIVE': ['identity', 'target-positive',
+                                         'non-target-negative'],
+                'PR-OWNER-BOUNDED': ['owner-bounded', 'budget'],
+                'PR-PCAP-RESTORE': ['pcap-restore'],
+            },
+            'resources': ['core', 'network', 'capture', 'process'],
+            'oracle': {'kind': 'headless-result',
+                       'artifact': 'driver/headless-result.json'},
+            'argv': ['{python}', '{root}/tools/acceptance_headless.py',
+                     '--mode', 'process', '--memory',
+                     '--output', '{output}/driver', '--checks', '{checks}'],
+        },
+        'payload-substitute': {
+            'implemented': True, 'fixture': True,
+            'platforms': ['linux', 'windows'], 'modes': ['singlehost'],
+            'checks': ['integrity', 'report', 'reassembly'],
+            'resources': ['core', 'network', 'capture'],
+            'oracle': {'kind': 'headless-result',
+                       'artifact': 'driver/headless-result.json'},
+            'argv': ['{python}', '{root}/tools/acceptance_headless.py',
+                     '--mode', 'payload', '--memory',
+                     '--output', '{output}/driver', '--checks', '{checks}'],
         },
         'mcp-p01': {
             'implemented': False,
@@ -734,6 +787,16 @@ def _read_oracle(kind, path):
             status = {'failed': 'fail', 'refused': 'blocked'}.get(status, status)
             rows.append({'id': name, 'status': status})
         return rows
+    if kind == 'headless-result':
+        import acceptance_headless_oracles
+        value = json.loads(_read(path))
+        mode = 'process' if value.get('mode') == 'process' else 'payload'
+        ids = [item.get('id') for item in value.get('checks') or []
+               if isinstance(item, dict) and isinstance(item.get('id'), str)]
+        rows, unused, unused_detail = acceptance_headless_oracles.evaluate(
+            Path(__file__).resolve().parents[1], Path(path).parent, mode, ids,
+            allow_fixture=True)
+        return rows
     if kind == 'policy-result':
         import acceptance_policy_oracles
         value = json.loads(_read(path))
@@ -809,7 +872,11 @@ def production_command(root,case,plan,output_dir,python):
     context={'root':str(Path(root).resolve()),'python':str(python),
              'output':str(Path(output_dir).resolve()),'modes':','.join(checks),
              'policy_inputs':str(Path(output_dir).resolve()/'policy-inputs.json'),
+             'headless_inputs':str(Path(output_dir).resolve()/'headless-inputs.json'),
              'checks':','.join(checks)}
+    if driver['production_kind'] in ('process-redirect','payload-three-way'):
+        if not isinstance(plan['environment'].get('headless'),dict):
+            raise ValueError('environment.headless inputs are required')
     if driver['production_kind'].startswith('policy-'):
         policy_inputs(plan['environment'],plan.get('candidate',{}).get('offline_fixture') is True,driver['production_kind'].split('-',1)[1])
     argv=fixed_argv(driver,context)
@@ -817,6 +884,8 @@ def production_command(root,case,plan,output_dir,python):
         for mode in checks:argv.extend(['--case',mode])
     if driver['production_kind'].startswith('policy-') and plan.get('candidate',{}).get('offline_fixture') is True:
         argv.append('--substitute')
+    if driver['production_kind'] in ('process-redirect','payload-three-way') and plan.get('candidate',{}).get('offline_fixture') is True:
+        argv.append('--memory')
     return argv
 
 
@@ -831,6 +900,13 @@ def original_evaluation(root,case,plan,output_dir):
         rows,clean=acceptance_policy_oracles.evaluate(
             directory,driver['production_kind'].split('-',1)[1],checks,
             expected_inputs=plan['environment'].get('policy'),
+            allow_fixture=plan.get('candidate',{}).get('offline_fixture') is True)
+    elif driver['production_kind'] in ('process-redirect','payload-three-way'):
+        import acceptance_headless_oracles
+        mode=('process' if driver['production_kind']=='process-redirect'
+              else 'payload')
+        rows,clean,detail=acceptance_headless_oracles.evaluate(
+            root,directory,mode,checks,
             allow_fixture=plan.get('candidate',{}).get('offline_fixture') is True)
     else:
         platform=driver['production_kind'].rsplit('-',1)[1]
@@ -863,6 +939,8 @@ def run_production(root,case,plan,output_dir,python):
              'checks':checks,'work_root':str(output_dir/'driver')}
     if driver['production_kind'].startswith('policy-'):
         write_json(output_dir/'policy-inputs.json',policy_inputs(plan['environment'],plan.get('candidate',{}).get('offline_fixture') is True,driver['production_kind'].split('-',1)[1]))
+    if driver['production_kind'] in ('process-redirect','payload-three-way'):
+        write_json(output_dir/'headless-inputs.json',plan['environment']['headless'])
     write_json(output_dir/'request.json',request)
     write_json(output_dir/'target.json',actual)
     started=datetime.now(timezone.utc)
@@ -958,6 +1036,7 @@ def remote_guest_command(driver,runtime,output_root,checks):
     context={'root':runtime['source_root'],'python':runtime['python'],
              'output':output_root,'modes':','.join(checks),
              'policy_inputs':str(output_root)+'/policy-inputs.json',
+             'headless_inputs':str(output_root)+'/headless-inputs.json',
              'checks':','.join(checks)}
     argv=fixed_argv(driver,context)
     if driver.get('production_kind')=='dual-pcap-linux':
@@ -1139,7 +1218,7 @@ def native_source_pins(root):
         if path.is_file():paths.add(path)
     for name in ('acceptance.py','acceptance_native.py','acceptance_runtime.py','acceptance_oracles.py',
                  'acceptance_guest.py','acceptance_windows.py','acceptance_linux.py','acceptance_multihost.py',
-                 'acceptance_collection.py','acceptance_orchestration.py','acceptance_policy.py','acceptance_policy_oracles.py'):
+                 'acceptance_collection.py','acceptance_orchestration.py','acceptance_policy.py','acceptance_policy_oracles.py','acceptance_headless.py','acceptance_headless_oracles.py'):
         path=root/'tools'/name
         if path.is_file():paths.add(path)
     path=root/'docs/acceptance/catalog.json'

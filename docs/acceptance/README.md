@@ -2,7 +2,7 @@
 
 本目录集中现有 Windows/Linux 核心、策略、GUI、PCAP、载荷报告、MCP、发布和辅助验收. 目标是修改产品或接口后, 能明确选择并执行同一份回归清单, 对照原始结果判断是否破坏已有功能.
 
-当前状态: **集中盘点、S1 离线闭环和部分 S2 生产代码; 原生与完整验收未完成**. `catalog.json` 已升级为 v2, `tools/acceptance.py` 已具备候选/环境绑定的 `plan --mode`、`execute` 和严格 `judge --results`; R02 增加了注册表/模式/源/环境动作校验、JUnit 精确节点集合判定、receipt 身份与 oracle 类型校验、adapter 派生 cleanup, 并接通 12 个安全离线 case. 原 `test.py` 的退出、Host 名单夹具、SMTP SSL 拒收/错误、stop 失败和 MultiHost 就绪也已修, 并有离线合同自测. S2 已完成策略配置/生命周期/真实DNS/TCP/UDP/TLS探针/PCAP内容judge的代码, 并可用本机替身执行同CLI的plan/execute/judge; 真实Windows原生运行、S3资源调度、S4完整验收尚未完成. 当前没有任何新的原生实机通过, 不能把本目录或 S1/S2 fixture 当作完整设施验收.
+当前状态: **集中盘点、S1 离线闭环和部分 S2 生产代码; 原生与完整验收未完成**. `catalog.json` 已升级为 v2, `tools/acceptance.py` 已具备候选/环境绑定的 `plan --mode`、`execute` 和严格 `judge --results`; R02 增加了注册表/模式/源/环境动作校验、JUnit 精确节点集合判定、receipt 身份与 oracle 类型校验、adapter 派生 cleanup, 并接通 12 个安全离线 case. 原 `test.py` 的退出、Host 名单夹具、SMTP SSL 拒收/错误、stop 失败和 MultiHost 就绪也已修, 并有离线合同自测. S2 已完成策略及进程改址/双向载荷的配置、探针、原verifier和独立judge代码; 进程改址/载荷四case可用纯内存边界执行同CLI的plan/execute/judge. 真实Windows原生运行、S3资源调度、S4完整验收尚未完成. 当前没有任何新的原生实机通过, 不能把本目录或 S1/S2 fixture 当作完整设施验收.
 
 排除范围保持用户裁决: GUI 窗口/点击/UAC/三轮停止、旧 100 场景、150 轮发布和新出口验证接口不进入 full; 它们的共享核心已按断言/调用用途抽取为独立 case, 没有因目录名删除.
 
@@ -13,6 +13,7 @@
 - `tools/acceptance.py`: 兼容入口. v1 的 `inventory`/`check`/`plan --output`/`run --suite`/`judge --result` 保持原语义; v2 新增模式化 plan、离线 execute 和严格 judge.
 - `tools/acceptance_native.py`: native driver 注册表, 固定 argv/子检查/oracle, 不执行未授权 native.
 - `tools/acceptance_policy.py`: 无GUI策略配置/固定生命周期/结果入口; `tools/acceptance_policy_oracles.py`: 重读配置/日志/PCAP并独立判定.
+- `tools/acceptance_headless.py`: EXE改址/双向载荷的固定输入、生命周期和纯内存边界; `tools/acceptance_headless_oracles.py`: 调用原verifier重判PE/client/PCAP/raw/converted/HTML.
 - `test/test_acceptance_regression.py`: 真实 CLI 的 plan/execute/judge 闭环与负例自测.
 - `test/test_upstream_runner_contract.py`: 原 `test.py` 退出/重试/名单夹具/SMTP SSL 的离线合同自测.
 
@@ -121,6 +122,19 @@ upstream singlehost/MultiHost、Windows/Linux 双 PCAP 和四个策略 driver �
 本轮新增 `policy-domain`/`policy-ipv4`/`policy-takeover`/`policy-combined` 四个 Windows singlehost driver: 固定配置来自仓库内已审 INI 模板, 生产路径发送真实 DNS/TCP/UDP/TLS FNPR/1 请求, oracle 重读实际 INI/日志/PCAP 帧并核对 attempt/nonce/五元组/双向服务. 另有 `policy-substitute-*` 仅用于本机安全替身: 同 CLI 的 plan/execute/judge 覆盖 8 个策略/组合 case (`EGRESS-*`、`IP-*`、`POL-*`), 结果为 `fixture_contract_pass` 且 `full_functional_pass=false`, 不产生 native 信用.
 
 native 的 plan 只展开固定子检查; execute 只在 action/平台/候选包身份齐全时按固定 argv 运行; judge 核 argv/子检查/全部原件/必需 stdout-stderr/退出与 cleanup 一致性. T003/R02 修复了重复/缺失/额外/矛盾超时/缺日志/假 resources 的误判; fixture 通过只给 `fixture_contract_pass`, 不授 `full_functional_pass` 或当前 native 信用.
+
+### EXE改址与双向载荷
+
+`process-redirect-headless` 固定读取目标/非目标PE路径和SHA、A/B地址、端口、owner预算与客户端/核心命令; `payload-headless` 固定读取核心、良性客户端和 pktmon 产物路径. 两者都要求明确环境输入, 缺项在动作前拒绝. `process-substitute`/`payload-substitute` 只把 socket/process/channel 边界替换为纯内存实现, 仍构造真实FNPR/1、TCP/UDP字节并运行原 `verify_process_redirect.py`、`verify_payload_integrity.py`、`verify_payload_report.py`、`verify_reassembly.py`.
+
+本机安全替身:
+
+```text
+python tools/acceptance_headless.py --mode process --memory --output <未占用目录>
+python tools/acceptance_headless.py --mode payload --memory --output <未占用目录>
+```
+
+结果标记 `fixture_contract_pass`, 不产生 native/full 信用; 真实Windows VM/core/pktmon/NIC仍未运行.
 
 ### 策略生产与安全替身
 

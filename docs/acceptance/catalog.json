@@ -1813,8 +1813,8 @@
             "negative": "non-target must not receive sentinel response"
           },
           "oracle": {
-            "kind": "tsv",
-            "driver": "process-redirect-windows"
+            "kind": "headless-result",
+            "driver": "process-redirect-headless"
           },
           "resources": [
             "windows-vm",
@@ -1835,8 +1835,8 @@
             "test/process_redirect_vm/Run-ProcessRedirectTests.ps1",
             "test/process_redirect_vm/verify_process_redirect.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "process-redirect-windows"
+          "blocked_reason": "requires explicit Windows PE/endpoint inputs and a live VM; this round uses only the memory boundary",
+          "native_driver": "process-redirect-headless"
         },
         {
           "id": "PR-OWNER-BOUNDED",
@@ -1861,8 +1861,8 @@
             "negative": "unbounded 10000/64 is stress only"
           },
           "oracle": {
-            "kind": "tsv",
-            "driver": "process-redirect-windows"
+            "kind": "headless-result",
+            "driver": "process-redirect-headless"
           },
           "resources": [
             "windows-vm"
@@ -1881,8 +1881,8 @@
             "test/process_redirect_vm/Run-ProcessRedirectTests.ps1",
             "test/process_redirect_vm/verify_process_redirect.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "process-redirect-windows"
+          "blocked_reason": "requires explicit Windows PE/endpoint inputs and a live VM; this round uses only the memory boundary",
+          "native_driver": "process-redirect-headless"
         },
         {
           "id": "PR-OWNER-STRESS",
@@ -1953,8 +1953,8 @@
             "negative": "suspend/resume/policy_exception/traceback fail"
           },
           "oracle": {
-            "kind": "tsv",
-            "driver": "process-redirect-windows"
+            "kind": "headless-result",
+            "driver": "process-redirect-headless"
           },
           "resources": [
             "windows-vm"
@@ -1973,8 +1973,8 @@
             "test/process_redirect_vm/Run-ProcessRedirectTests.ps1",
             "test/process_redirect_vm/verify_process_redirect.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "process-redirect-windows"
+          "blocked_reason": "requires explicit Windows PE/endpoint inputs and a live VM; this round uses only the memory boundary",
+          "native_driver": "process-redirect-headless"
         }
       ]
     },
@@ -2683,7 +2683,8 @@
             "negative": "gap/conflict/missing direction/multiple PIDs fail"
           },
           "oracle": {
-            "kind": "native-json"
+            "kind": "headless-result",
+            "driver": "payload-headless"
           },
           "resources": [
             "windows-vm",
@@ -2706,7 +2707,7 @@
             "test/gui_vm/verify_payload_integrity.py",
             "test/gui_vm/verify_reassembly.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
+          "blocked_reason": "requires explicit Windows core/pktmon inputs and a live VM; this round uses only the memory boundary",
           "native_driver": "payload-headless"
         },
         {
@@ -4251,15 +4252,18 @@
       "policy-headless",
       "policy-ipv4",
       "policy-takeover",
+      "process-redirect-headless",
       "process-redirect-windows",
       "reviewed-ipv4-windows",
       "upstream-singlehost"
     ],
     "implemented": [
+      "payload-headless",
       "policy-combined",
       "policy-domain",
       "policy-ipv4",
-      "policy-takeover"
+      "policy-takeover",
+      "process-redirect-headless"
     ],
     "blocked": [
       "build-identity",
@@ -4271,7 +4275,6 @@
       "mcp-p03",
       "mcp-p04",
       "mcp-special",
-      "payload-headless",
       "pcap-linux-functional",
       "pcap-windows-functional",
       "policy-headless",
@@ -4280,6 +4283,6 @@
       "upstream-multihost",
       "upstream-singlehost"
     ],
-    "note": "Exact local-target upstream and both PCAP functional paths are implemented. Windows-MCP/Velo host execution and original evidence return are fixture-tested. REMnux SDK and MultiHost owner/probe interfaces exist; Linux catalog execution and two-target orchestration remain unfinished. The policy drivers now run real DNS/TCP/UDP/TLS probes and judge actual INI/log/PCAP content; the local substitute exercises the same CLI, but native Windows execution and native credit remain NOT_RUN."
+    "note": "Exact local-target upstream and both PCAP functional paths are implemented. Windows-MCP/Velo host execution and original evidence return are fixture-tested. Process-redirect and payload headless drivers now construct the original PE/FNPR and TCP/UDP artifacts and run the original verifiers under a pure-memory boundary; real Windows VM/core/pktmon execution and native credit remain NOT_RUN."
   }
 }
