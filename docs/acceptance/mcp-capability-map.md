@@ -84,3 +84,18 @@ not a nonexistent top-level `MutationResponse.name`; create/load failure stops
 before start and never retries an accepted mutation or tests the stale default.
 The production catalog's selected `plan/execute/judge` retains this failure.
 A successful facility discrimination test does not mark the product unit passed.
+
+
+ACC006 keeps the complete IPC, healthy control, listener/capture exception,
+active handle loss and no-initialization-evidence checks. `HEALTH-NO-LISTENER`
+and `HEALTH-ACTIVE-PROBE` expose those same original functions as selected-only
+slices; full does not repeat them or treat a slice as complete ACC006 credit.
+The no-listener configuration now disables every parsed listener section,
+including passive FTP, and loads the accepted request name. It records the
+accepted start and the complete original observation window, then checks
+controlled stop/default restoration. A rejected mutation or transient healthy
+sample cannot count as the intended no-initialization test. Active-probe loss
+keeps original same-run pipe request/response, live listeners, same child,
+four-second revocation, nonce, incident bytes and recovery predicates.
+All current slice evidence remains guarded, benign process/HTTP/clock fixtures;
+actual health revocation, WinDivert and native recovery remain unverified.

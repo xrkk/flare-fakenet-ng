@@ -638,6 +638,73 @@ def run_acc004_scenario(base, channel, writer, tag):
     return EXIT_PASS if all(checked) else EXIT_FAIL
 
 
+def no_listener_config(content):
+    """Disable every listener section, including passive/dynamically added ones."""
+    import configparser
+    import io
+    parser = configparser.ConfigParser()
+    parser.read_string(content)
+    for section in parser.sections():
+        if section not in ('FakeNet', 'Diverter'):
+            parser.set(section, 'Enabled', 'False')
+    output = io.StringIO()
+    parser.write(output)
+    return output.getvalue()
+
+
+def exercise_no_listener_health(base, writer):
+    """Original ACC006 initialization negative, independently selectable."""
+    checks = {}
+    builtin = call(base, 'read_config', {'name': 'default.ini'}, controller=None)
+    writer.add_evidence('acc006-nolistener-source', builtin)
+    if builtin.get('error') or not builtin.get('content'):
+        return {'actual_default_config_available': False}
+    no_listener_ini = no_listener_config(builtin['content'])
+    name = 'nolisten-%s.ini' % unique_command('nl')[:6]
+    created = call(base, 'create_config',
+                   {'name': name, 'content': no_listener_ini,
+                    'command_id': unique_command('a6-nl'),
+                    'expected_state_version': status(base)['state_version']}, timeout=120)
+    writer.add_evidence('acc006-nolistener-create', created)
+    if created.get('error'):
+        return {'no_listener_config_created': False}
+    loaded = call(base, 'load_config',
+                  {'name': name, 'command_id': unique_command('a6-nl-l'),
+                   'expected_state_version': created['state_version']}, timeout=120)
+    writer.add_evidence('acc006-nolistener-load', loaded)
+    if loaded.get('error'):
+        return {'no_listener_config_loaded': False}
+    started = call(base, 'start',
+                   {'command_id': unique_command('a6-nl-s'),
+                    'expected_state_version': loaded['state_version']}, timeout=120)
+    writer.add_evidence('acc006-nolistener-start', started)
+    checks['no_listener_start_attempted'] = started.get('error') is None and started.get('changed') is True
+    observations = [started]
+    deadline = time.monotonic() + 3 * HEALTH_INTERVAL_S + 2.0
+    while True:
+        observations.append(status(base))
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.5)
+    observed = observations[-1]
+    writer.add_evidence('acc006-nolistener-status', observed)
+    writer.add_evidence('acc006-nolistener-window', observations)
+    checks['no_init_evidence_never_healthy'] = all(
+        not item.get('error') and item.get('state') != 'healthy' for item in observations)
+    checks['fake_healthy_negative'] = ((observed.get('health') or {}).get('init_evidence') is False
+                                      or observed.get('state') in ('starting', 'degraded', 'failed'))
+    stopped = stop_run(base)
+    checks['no_listener_stop_completed'] = not stopped.get('error') and stopped.get('state') == 'stopped'
+    restored = call(base, 'load_config',
+                    {'name': 'default.ini', 'command_id': unique_command('a6-restore'),
+                     'expected_state_version': status(base)['state_version']})
+    checks['default_config_restored'] = (not restored.get('error') and
+                                       (restored.get('config_identity') or {}).get('name') == 'default.ini')
+    writer.add_evidence('acc006-nolistener-restore', restored)
+    writer.add_evidence('acc006-nolistener-checks', checks)
+    return checks
+
+
 def run_acc006(base, channel, writer):
     writer.action('acc006', 'real health: three conditions, no fake healthy')
     from run_ipc_cases import run_ipc_matrix, IPC_CASES
@@ -668,50 +735,7 @@ def run_acc006(base, channel, writer):
         writer.add_evidence('acc006-checks', checks)
         return EXIT_FAIL
 
-    # (c) key-initialization condition broken: a config with every listener
-    # disabled produces no init evidence; it must NEVER report healthy
-    # (fake-healthy counterexample) while the service keeps answering.
-    builtin = call(base, 'read_config', {'name': 'default.ini'},
-                   controller=None)
-    no_listener_ini = (builtin.get('content') or VALID_INI)
-    for section in ('ProxyTCPListener', 'ProxyUDPListener', 'RawTCPListener',
-                    'RawUDPListener', 'DNS Server', 'DNS TCP Server',
-                    'HTTPListener80', 'HTTPListener443', 'SMTPListener',
-                    'FTPListener21', 'IRCServer', 'TFTPListener', 'POPServer'):
-        import re as _re
-        no_listener_ini = _re.sub(
-            r'(\[%s\][^\[]*?Enabled:)\s*True' % _re.escape(section),
-            r'\1 False', no_listener_ini)
-    version = status(base)['state_version']
-    created = call(base, 'create_config',
-                   {'name': 'nolisten-%s.ini' % unique_command('nl')[:6],
-                    'content': no_listener_ini,
-                    'command_id': unique_command('a6-nl'),
-                    'expected_state_version': version}, timeout=120)
-    loaded = call(base, 'load_config',
-                  {'name': created.get('name', ''),
-                   'command_id': unique_command('a6-nl-l'),
-                   'expected_state_version':
-                       created.get('state_version', version)}, timeout=120)
-    started_nl = call(base, 'start',
-                      {'command_id': unique_command('a6-nl-s'),
-                       'expected_state_version':
-                           loaded.get('state_version', version)},
-                      timeout=120)
-    writer.add_evidence('acc006-nolistener-start', started_nl)
-    time.sleep(3 * HEALTH_INTERVAL_S + 2.0)
-    snap4 = status(base)
-    writer.add_evidence('acc006-nolistener-status', snap4)
-    checks['no_init_evidence_never_healthy'] = \
-        snap4.get('state') != 'healthy'
-    checks['fake_healthy_negative'] = \
-        (snap4.get('health', {}) or {}).get('init_evidence') is False or \
-        snap4.get('state') in ('starting', 'degraded', 'failed')
-    stop_run(base)
-    # restore default config for later ACCs
-    call(base, 'load_config',
-         {'name': 'default.ini', 'command_id': unique_command('a6-restore'),
-          'expected_state_version': status(base)['state_version']})
+    checks.update(exercise_no_listener_health(base, writer))
 
     # (d) process condition: in the in-process model the service process IS
     # the run; breaking it is the uncontrolled-exit kill covered end-to-end

@@ -45,6 +45,7 @@ CHECKS = {
 # Selected-only slice; full ACC-014 already executes these same assertions.
 SELECTABLE_CHECKS = {case: list(checks) for case, checks in CHECKS.items()}
 SELECTABLE_CHECKS['MCP-P04-FULL'].append('INCIDENT-INTEGRITY')
+SELECTABLE_CHECKS['MCP-P03-FULL'].extend(['HEALTH-NO-LISTENER','HEALTH-ACTIVE-PROBE'])
 CASES = tuple(CHECKS)
 EXCLUSIONS = {
  'ACC-001-GUI': 'GUI launch, window and co-control interactions excluded; headless service/core uniqueness retained.',
@@ -413,6 +414,13 @@ def invoke_unit(unit,args,channel,writer,mods):
  if unit=='ACC-001-HEADLESS':return p3.run_acc001_headless(base,channel,writer,args)
  if unit.startswith('ACC-004-S'):return p3.run_acc004_scenario(base,channel,writer,unit[-2:])
  if unit in ('ACC-006','ACC-007','ACC-008','ACC-009'):return getattr(p3,'run_acc'+unit[4:])(base,channel,writer)
+ if unit=='HEALTH-NO-LISTENER':
+  checks=p3.exercise_no_listener_health(base,writer)
+  return 0 if checks and all(value is True for value in checks.values()) else 1
+ if unit=='HEALTH-ACTIVE-PROBE':
+  from run_active_probe import run_active_probe_loss
+  checks=run_active_probe_loss(base,channel,writer)
+  return 0 if checks and all(value is True for value in checks.values()) else 1
  if unit=='FAULT-POINTS':return p4.run_fault_point_proof(base,channel,writer,args)
  if unit=='INCIDENT-INTEGRITY':return p4.run_incident_integrity(base,channel,writer,args)
  if unit=='ACC-014':return p4.run_acc014(base,channel,writer,args)

@@ -1232,4 +1232,63 @@ class PublicProtectionCliTests(unittest.TestCase):
   else:
    self.assertEqual(0,executed[0],executed);self.assertEqual(0,result[0],result)
 
+class NoListenerParsedDomainBoundary(ProtectionParsedDomainBoundary):
+ def __init__(self,inputs,root,fake_healthy=False):
+  super().__init__(inputs,root);self.fake_healthy=fake_healthy;self.no_listener_observations=[]
+ def exchange(self,kind,value):
+  if kind=='http' and json.loads(value['data']).get('params',{}).get('name')=='start':
+   from fakenet.fakenet import Fakenet
+   from fakenet.mcp.supervisor import evaluate_health_evidence
+   identity=self.context.coordinator.snapshot()['config_identity'];path=(self.context.store.builtin_root if identity['builtin'] else self.context.store.custom_root)/identity['name'];parsed=Fakenet();parsed.parse_config(str(path));self.no_listener_observations.append(list(parsed.listeners_config))
+   healthy,reason=evaluate_health_evidence({'process_alive':True,'init_evidence':bool(parsed.listeners_config),'probe':True},'')
+   if not healthy and not self.fake_healthy:self.context.runner.fail_next_start=reason
+  return super().exchange(kind,value)
+
+class ActiveProbeProcessBoundary(ListenerProcessBoundary):
+ def pipe_bytes(self):
+  if self.fault and self.fault['fault']=='diverter_stop':
+   run=self.run_id;identity={'pid':121,'creation_time':'123456'}
+   rows=[{'event':'request','monotonic':100.,'frame':{'kind':'health','seq':1,'run_id':run}},
+         {'event':'response','monotonic':100.1,'frame':{'seq':1,'run_id':run,'result':{'init_evidence':True,'probe':False,'listeners':[{'alive':True}]}}},
+         {'event':'health_state','monotonic':100.2,'frame':{'state':'failed','identity':identity,'run_id':run}}]
+   return {'parent':'\n'.join(json.dumps(row) for row in rows),'child':'','receipt':self.fault}
+  return super().pipe_bytes()
+
+class OriginalHealthSliceTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_no_listener_uses_actual_parser_and_rejects_fake_healthy(self):
+  for bad in (False,True):
+   with self.subTest(fake_healthy=bad):
+    unit='HEALTH-NO-LISTENER';out=self.root/str(bad);boundary=NoListenerParsedDomainBoundary(self.inputs,self.root/('domain-'+str(bad)),bad);value=m.run('MCP-P03-FULL',out,self.inputs,selected=[unit],boundary=boundary,fixture=True)
+    self.assertEqual([[]],boundary.no_listener_observations);expected='fail' if bad else 'pass';self.assertEqual(expected,value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+    rows,clean,details=o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True);self.assertEqual(expected,rows[0]['status'],details);self.assertTrue(clean)
+ def test_active_probe_requires_same_child_and_timely_actual_pipe_revocation(self):
+  unit='HEALTH-ACTIVE-PROBE';out=self.root/unit;value=m.run('MCP-P03-FULL',out,self.inputs,selected=[unit],boundary=ActiveProbeProcessBoundary(self.inputs),fixture=True)
+  self.assertEqual('pass',value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'));self.assertEqual('pass',o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True)[0][0]['status'])
+  import copy
+  path=out/'units'/unit/'trace.json';original=m.read(path)
+  for mode in ('child','late','nonce','listener'):
+   with self.subTest(mode=mode):
+    trace=copy.deepcopy(original)
+    for row in trace['records']:
+     if row['kind']=='powershell' and '@{parent=(Get-Content' in row['input']['command']:
+      facts=json.loads(row['output']['output']);pipe=[json.loads(line) for line in facts['parent'].splitlines()]
+      if mode=='child':pipe[-1]['frame']['identity']['pid']=999
+      elif mode=='late':pipe[-1]['monotonic']=107.
+      elif mode=='nonce':facts['receipt']['nonce']='wrong-nonce'
+      else:pipe[1]['frame']['result']['listeners'][0]['alive']=False
+      facts['parent']='\n'.join(json.dumps(item) for item in pipe);row['output']['output']=json.dumps(facts)
+    path.write_text(json.dumps(trace));rows,clean,details=o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],details);self.assertTrue(clean)
+
+class PublicHealthSliceCliTests(unittest.TestCase):
+ setUp=PublicMcpCliTests.setUp
+ cli=PublicMcpCliTests.cli
+ prepare=PublicMcpCliTests.prepare
+ def test_same_catalog_selected_health_slices_never_replace_full(self):
+  for unit,boundary_class in [('HEALTH-NO-LISTENER',NoListenerParsedDomainBoundary),('HEALTH-ACTIVE-PROBE',ActiveProbeProcessBoundary)]:
+   with self.subTest(unit=unit):
+    self.setUp();self.prepare('MCP-P03-FULL',[unit]);boundary=(boundary_class(self.inputs,self.base/'domain') if unit=='HEALTH-NO-LISTENER' else boundary_class(self.inputs))
+    with mock.patch.object(m,'NativeBoundary',return_value=boundary):result=self.cli('execute','--plan',self.run/'plan.json')
+    self.assertEqual(0,result[0],result);result=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'judged.json');self.assertEqual(0,result[0],result);summary=m.read(self.run/'judged.json');self.assertTrue(summary['fixture_contract_pass']);self.assertFalse(summary['full_functional_pass'])
+
 if __name__=='__main__':unittest.main()
