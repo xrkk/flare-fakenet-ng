@@ -622,20 +622,29 @@ def _check(case_id, status, attempt, observation, nonce, tuple_value,
             'evidence': evidence or [], 'reason': reason}
 
 
-def _run_checks(scenario, output, inputs, log_text, capture, core=None, selected=None, baseline=False):
+def _combo_binding(context):
+    return {key: context[key] for key in
+            ('run_id', 'config_sha256', 'owner', 'started_at')}
+
+
+def _combo_trace(context):
+    return {'combo_binding': _combo_binding(context)} if context else {}
+
+
+def _run_checks(scenario, output, inputs, log_text, capture, core=None, selected=None, baseline=False, combo_context=None):
     selected=set(CHECKS[scenario]) if selected is None else set(selected)
-    attempts=[];checks=[];nonce_base=uuid.uuid4().hex
+    attempts=[];checks=[];nonce_base=combo_context['run_id'] if combo_context else uuid.uuid4().hex
     evidence_dir=Path(output)/('controls' if baseline else 'probes');evidence_dir.mkdir(exist_ok=False)
     def probe(name,kind,dst,port,positive,domain=None,tls=False,resolution=None):
         if name not in selected:return
-        trace={};nonce=nonce_base+'-'+name
+        trace=_combo_trace(combo_context);nonce=nonce_base+'-'+name
         log=Path(output)/'core.log';start=log.stat().st_size if log.exists() else 0
         if kind=='DNS':
             rcode,answers=_dns_query(domain,dst,port,3,capture,io=core,trace=trace)
             valid=bool(answers) if positive else rcode!='timeout' and not answers
         else:
-            if scenario=='combo' and name in ('sink_tcp','sink_udp'):
-                resolution={};rcode,answers=_dns_query(inputs['denied_domain'],inputs['dns_address'],inputs['dns_port'],3,capture,io=core,trace=resolution)
+            if scenario=='combo' and not baseline and name in ('sink_tcp','sink_udp'):
+                resolution=_combo_trace(combo_context);rcode,answers=_dns_query(inputs['denied_domain'],inputs['dns_address'],inputs['dns_port'],3,capture,io=core,trace=resolution)
                 resolution_path=evidence_dir/(name+'-dns.json');resolution_path.write_text(json.dumps(resolution)+'\n')
                 trace['dns_resolution']={'path':str(resolution_path.relative_to(output)),'sha256':sha256(resolution_path),'answers':answers,'rcode':rcode}
                 if answers!=[inputs['sink_ip']]:
@@ -661,7 +670,7 @@ def _run_checks(scenario, output, inputs, log_text, capture, core=None, selected
         probe(name,'DNS',inputs['dns_address'],inputs['dns_port'],name in ('exact_domain','wildcard_domain'),domain)
     if 'tls_application' in selected:
         # Never fall back to a different address after DNS failure.
-        dns_trace={};rcode,answers=_dns_query(inputs['allowed_domain'],inputs['dns_address'],inputs['dns_port'],3,capture,io=core,trace=dns_trace)
+        dns_trace=_combo_trace(combo_context);rcode,answers=_dns_query(inputs['allowed_domain'],inputs['dns_address'],inputs['dns_port'],3,capture,io=core,trace=dns_trace)
         resolution_path=evidence_dir/'tls-resolution.json';resolution_path.write_text(json.dumps(dns_trace))
         if answers:probe('tls_application','TCP',answers[0],inputs['reviewed_port'],True,inputs['allowed_domain'],True,{'path':str(resolution_path.relative_to(output)),'sha256':sha256(resolution_path)})
         else:
@@ -771,6 +780,8 @@ def run(scenario, output, core_command=None, timeout=120, inputs=None,
         substitute=False, fixture_run=False, selected=None):
     if selected is None: selected=set(CHECKS[scenario])
     selected=set(selected)
+    if scenario == 'combo' and selected != set(CHECKS['combo']):
+        raise ValueError('combo requires the complete twelve-check selection')
     if not selected or not selected.issubset(CHECKS[scenario]):
         raise ValueError('unknown/empty policy selection')
     if substitute:
@@ -795,6 +806,7 @@ def run(scenario, output, core_command=None, timeout=120, inputs=None,
     forced = False
     error = None
     controls = []
+    combo_context = None
     code = None
     exited = False
     before = {'memory_fixture': True, 'routes': []} if substitute else _snapshot()
@@ -816,14 +828,24 @@ def run(scenario, output, core_command=None, timeout=120, inputs=None,
             owned.start(timeout=timeout)
             process=owned.process
             birth=psutil.Process(process.pid).create_time()
+        if scenario == 'combo':
+            run_id = uuid.uuid4().hex
+            owner = ({'kind': 'memory-fixture', 'id': run_id} if substitute else
+                     {'kind': 'owned-child', 'pid': process.pid, 'birth': birth})
+            combo_context = {'schema': 'fakenet.combo-context.v1',
+                             'scenario': 'combo', 'run_id': run_id,
+                             'config_sha256': sha256(config), 'owner': owner,
+                             'started_at': time.time()}
         attempts, checks = _run_checks(scenario, output, inputs,
                                        log.read_text(encoding='utf-8',
                                                     errors='replace')
                                        if log.is_file() else '',
-                                       capture, core, selected)
+                                       capture, core, selected, combo_context=combo_context)
     except BaseException as exc:
         error=type(exc).__name__+': '+str(exc)
     finally:
+        if combo_context is not None:
+            combo_context['ended_at'] = time.time()
         if substitute and core is not None:
             core.stop();exited=True;code=0
         elif owned is not None:
@@ -847,12 +869,29 @@ def run(scenario, output, core_command=None, timeout=120, inputs=None,
     route_before = before.get('routes', before.get('routes4'))
     route_after = after.get('routes', after.get('routes4'))
     (output/'core-lifecycle.json').write_text(json.dumps({'source':'owned-child','pid':None if process is None else process.pid,'birth':birth,'exited':bool(exited),'returncode':code,'forced':forced,'timed_out':not exited,'memory_fixture':substitute}))
+    if combo_context is not None:
+        lifecycle_path = output / 'core-lifecycle.json'
+        lifecycle = json.loads(lifecycle_path.read_text())
+        lifecycle.update(combo_run_id=combo_context['run_id'],
+                         combo_owner=combo_context['owner'],
+                         combo_window={key: combo_context[key] for key in
+                                       ('started_at', 'ended_at')})
+        lifecycle_path.write_text(json.dumps(lifecycle) + '\n')
+        combo_context['config_sha256_after'] = sha256(config)
+        combo_context['lifecycle'] = {'path': 'core-lifecycle.json',
+                                      'sha256': sha256(lifecycle_path)}
+        combo_context['pcap'] = [{'path': path.name, 'sha256': sha256(path)}
+                                 for path in pcap_paths]
+        (output / 'combo-context.json').write_text(json.dumps(combo_context) + '\n')
     if not log.exists():log.write_text('')
     value = _result(scenario, output, inputs, attempts, checks, pcap_paths, log,
             config, bool(exited), code, bool(exited), before, after,
             route_before, route_after, fixture_run=fixture_run or substitute,
             selected=selected)
     value['controls']=controls;value['error']=error
+    if combo_context is not None:
+        value['combo_context'] = {'path': 'combo-context.json',
+                                  'sha256': sha256(output / 'combo-context.json')}
     (output/'policy-result.json').write_text(json.dumps(value,indent=2)+'\n')
     return 1 if error else 0
 

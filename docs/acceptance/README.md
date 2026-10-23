@@ -122,6 +122,10 @@ Logs/acceptance/<run>/
 upstream singlehost/MultiHost、Windows/Linux 双 PCAP 和四个策略 driver 的代码已接入, 真实环境未验. 仍未接入: `policy-headless`, `payload-headless`, `mcp-p01`..`mcp-p04`, `mcp-special`, `linux-runtime`, `manual-headless`, `build-identity`.
 本轮新增 `policy-domain`/`policy-ipv4`/`policy-takeover`/`policy-combined`/`policy-combo` 五个 Windows singlehost driver: 固定配置来自仓库内已审 INI 模板, 生产路径发送真实 DNS/TCP/UDP/TLS FNPR/1 请求, oracle 重读实际 INI/日志/PCAP 帧并核对 attempt/nonce/五元组/双向服务. 另有 `policy-substitute-*` 仅用于本机安全替身: 同 CLI 的 plan/execute/judge 覆盖策略/组合 case, 结果为 `fixture_contract_pass` 且 `full_functional_pass=false`, 不产生 native 信用. 新 `policy-combo` 以单个最终 INI/核心/捕获窗口覆盖 12 项组合检查; `sink_tcp`/`sink_udp` 先消费 denied_domain 的实际 DNS sink 回答, 不回落固定地址.
 
+`policy-combo` 现在另外保存 `combo-context.json`, 把本轮配置指纹、核心出生身份、起止窗口、捕获和各探针绑定在一起. DNS 后的应用探针必须使用同轮实际 DNS 发送/应答原字节, sink 的停止态探针保持固定端点对照. 新 oracle 拒绝跨配置/轮次拼接、未发送/错误入口/无原包/晚到 DNS 和虚假恢复. 这些新增要求只适用于 combo, 原四个原子策略合同保持.
+
+当前离线自验为 9 tests/4 subtests 通过; 真实注册的三个父策略和 combo 经正式 plan/execute/judge 及 4 个真实纯 substitute 子进程执行, 仍为 fixture 信用. 测试使用的 TemporaryDirectory 已清理临时探针/CLI原件, 留存测试 stdout/退出/进程/旧新 oracle 对比记录; 这批临时路径不作为可离线重放的归档验收原件. 实际用户执行目录的原件保留机制未改变, 原生集成及其归档重判仍未验.
+
 ## 有界离线调度
 
 `tools/acceptance_scheduler.py` 对已核 `CORE-TLSHELLO` 与 `CORE-DUALPCAP-WRITER` 使用最多 2 个工作者, 还受可用 CPU/内存约束; 未知容量及嵌套调用保守取 1. 其它组串行, 同一显式互斥资源不重叠. 所有 adapter 走同一前驱队列, 不再提前执行全部离线组. 子进程独占 `results/<case>/tmp`, 禁止共享 pytest 缓存; 子环境递增嵌套深度并保持产品导入根, 主线程按原计划顺序关闭唯一 `results.json`.

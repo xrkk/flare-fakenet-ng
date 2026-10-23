@@ -32,7 +32,7 @@ T007/R02 只实现 `GAP-NCSI` 与 `GAP-RAW-DATE`; 其余 9 个手工 case 和 2 
 
 ## 组合场景
 
-`GAP-COMBO-SCENARIO` 已从 `manual-headless` 接到 `policy-combo`; 精确 12 checks 为 exact_domain/wildcard_domain/tls_application/reviewed_ip_tls/sink_tcp/sink_udp/port_80_denied/port_444_denied/udp443_denied/other_ip_denied/adjacent_denied/route_restore. sink 探针消费 denied_domain 的实际 DNS sink 回答, 失败不回退固定地址. 真实主机核心/网络仍未验.
+`GAP-COMBO-SCENARIO` 已从 `manual-headless` 接到 `policy-combo`; 精确 12 checks 为 exact_domain/wildcard_domain/tls_application/reviewed_ip_tls/sink_tcp/sink_udp/port_80_denied/port_444_denied/udp443_denied/other_ip_denied/adjacent_denied/route_restore. sink 探针消费 denied_domain 的实际 DNS sink 回答, 失败不回退固定地址. combo-context 及同轮 DNS 原包/消费时序/固定停止态端点对照已接入; 原子用例不变. 当前只取得代码与 fixture 自验信用, 临时自测原件未保留为归档重判材料. 真实主机核心/网络仍未验.
 
 ## 中央集成
 

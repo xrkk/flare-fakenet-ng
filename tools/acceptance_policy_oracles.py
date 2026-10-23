@@ -346,6 +346,96 @@ def _stream(packets):
     return bytes(data[i] for i in range(len(data)))
 
 
+COMBO_CHECKS = {'exact_domain', 'wildcard_domain', 'tls_application',
+                'reviewed_ip_tls', 'sink_tcp', 'sink_udp', 'port_80_denied',
+                'port_444_denied', 'udp443_denied', 'other_ip_denied',
+                'adjacent_denied', 'route_restore'}
+
+
+def _combo_interval(value):
+    import math
+    start, end = value['started_at'], value['ended_at']
+    if (any(type(v) not in (int, float) or not math.isfinite(v) for v in (start, end))
+            or not 0 < start <= end):
+        raise ValueError('combo evidence has an invalid time window')
+    return start, end
+
+
+def _combo_context(original, value, fixture, checks):
+    if set(checks) != COMBO_CHECKS or len(checks) != len(COMBO_CHECKS):
+        raise ValueError('combo requires its exact twelve-check set')
+    context = _load_json(original, value.get('combo_context'), 'combo context')
+    if context.get('schema') != 'fakenet.combo-context.v1' or context.get('scenario') != 'combo':
+        raise ValueError('combo context schema/scenario differs')
+    if not __import__('re').fullmatch('[0-9a-f]{32}', str(context.get('run_id', ''))):
+        raise ValueError('combo run identity missing')
+    _combo_interval(context)
+    config = _safe_file(original, value.get('config'), 'combo configuration')
+    if context.get('config_sha256') != _sha256(config) or context.get('config_sha256_after') != _sha256(config):
+        raise ValueError('combo configuration changed during the single run')
+    if context.get('lifecycle') != value.get('observations', {}).get('core-lifecycle'):
+        raise ValueError('combo lifecycle differs from original observation')
+    life = _load_json(original, context['lifecycle'], 'combo owned lifecycle')
+    owner = context.get('owner')
+    expected = ({'kind': 'memory-fixture', 'id': context['run_id']} if fixture else
+                {'kind': 'owned-child', 'pid': life.get('pid'), 'birth': life.get('birth')})
+    if (owner != expected or life.get('combo_owner') != owner
+            or life.get('combo_run_id') != context['run_id']
+            or life.get('combo_window') != {key: context[key] for key in ('started_at', 'ended_at')}
+            or life.get('memory_fixture') is not fixture):
+        raise ValueError('combo core birth/run/window does not match')
+    if not fixture and (type(life.get('pid')) is not int or life['pid'] <= 0 or not life.get('birth')):
+        raise ValueError('combo native core birth missing')
+    declared = [{'path': p['path'], 'sha256': p['sha256']} for p in value.get('pcap', [])]
+    if not declared or context.get('pcap') != declared:
+        raise ValueError('combo capture belongs to a different run')
+    return context
+
+
+def _combo_trace_binding(trace, context):
+    expected = {key: context[key] for key in ('run_id', 'config_sha256', 'owner', 'started_at')}
+    if trace.get('combo_binding') != expected:
+        raise ValueError('probe belongs to a different combo configuration/core/run')
+    start, end = _combo_interval(trace)
+    if not context['started_at'] <= start <= end <= context['ended_at']:
+        raise ValueError('probe is outside the single combo capture window')
+    return start, end
+
+
+def _combo_dns(original, reference, domain, context, inputs, packets, consumer_start):
+    trace = _load_json(original, reference, 'combo consumed DNS')
+    start, end = _combo_trace_binding(trace, context)
+    flow = trace['tuple']
+    if (trace.get('sent') is not True or trace.get('domain') != domain
+            or flow.get('proto') != 'UDP' or flow.get('src') != inputs['local_source']
+            or flow.get('dst') != inputs['dns_address'] or flow.get('port') != inputs['dns_port']
+            or type(flow.get('sport')) is not int or not 1 <= flow['sport'] <= 65535
+            or end > consumer_start):
+        raise ValueError('combo DNS send/endpoint/consumption order differs')
+    request, response = bytes.fromhex(trace['request_hex']), bytes.fromhex(trace['response_hex'])
+    code, answers = _dns_content(request, response, domain)
+    matched = _matching(packets, flow, start, end)
+    if (code != 0 or not answers
+            or not any(p['direction'] == 'out' and p['payload'] == request for p in matched)
+            or not any(p['direction'] == 'in' and p['payload'] == response for p in matched)):
+        raise ValueError('combo consumed DNS has no matching original wire exchange')
+    return answers
+
+
+def _combo_sink_control(original, control, flow, context):
+    if not control:
+        raise ValueError('combo fixed sink stopped-state control missing')
+    trace = _load_json(original, control.get('probe'), 'combo stopped sink control')
+    start, end = _combo_interval(trace)
+    observed = trace.get('tuple') or {}
+    if (trace.get('sent') is not True or end > context['started_at']
+            or trace.get('id') != control.get('id') or trace.get('nonce') != control.get('nonce')
+            or control.get('tuple') != observed
+            or any(observed.get(k) != flow.get(k) for k in ('proto', 'src', 'dst', 'port'))
+            or bytes.fromhex(trace.get('response_hex', '')) != ('FNPR/1|%s|OK\n' % control.get('nonce')).encode()):
+        raise ValueError('combo fixed sink stopped-state endpoint did not succeed')
+
+
 def evaluate(original, scenario, checks, *, allow_fixture=False, expected_inputs=None):
     original=Path(original);value=json.loads(_read(original/'policy-result.json'))
     if value.get('schema')!=SCHEMA or value.get('scenario')!=scenario:raise ValueError('policy schema/scenario mismatch')
@@ -382,6 +472,12 @@ def evaluate(original, scenario, checks, *, allow_fixture=False, expected_inputs
         clean=(bool(before) and before==after and life.get('exited') is True and life.get('returncode')==0 and life.get('timed_out') is False and life.get('forced',False) is False and life.get('source')=='owned-child')
         if not fixture:clean=clean and not before.get('memory_fixture') and not after.get('memory_fixture') and type(life.get('pid')) is int and life['pid']>0 and bool(life.get('birth'))
     except (OSError,ValueError,TypeError):clean=False
+    combo_context = None
+    if scenario == 'combo':
+        try:
+            combo_context = _combo_context(original, value, fixture, checks)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            return [{'id': name, 'status': 'fail', 'reason': str(error)} for name in checks], False
     rows=[];seen=set()
     for row in value.get('checks') or []:
         name=row.get('id');status=row.get('status');reason=''
@@ -421,6 +517,10 @@ def evaluate(original, scenario, checks, *, allow_fixture=False, expected_inputs
                     raise ValueError('probe/attempt/check identity differs')
                 if trace.get('sent') is not True:raise ValueError('probe was not sent')
                 start,end=float(trace['started_at']),float(trace['ended_at'])
+                if combo_context is not None:
+                    _combo_trace_binding(trace, combo_context)
+                    if trace.get('nonce') != combo_context['run_id'] + '-' + name:
+                        raise ValueError('probe nonce differs from the single combo run')
                 if end<start or a.get('started_at')!=start or a.get('ended_at')!=end:raise ValueError('probe time window differs')
                 flow=trace['tuple'];matched=_matching(packets,flow,start,end)
                 outgoing=[p for p in matched if p['direction']=='out'];incoming=[p for p in matched if p['direction']=='in']
@@ -457,9 +557,15 @@ def evaluate(original, scenario, checks, *, allow_fixture=False, expected_inputs
                     if name=='tls_application':
                         resolution=_load_json(original,trace.get('resolution'),'TLS DNS prerequisite');_,addresses=_dns_content(bytes.fromhex(resolution['request_hex']),bytes.fromhex(resolution['response_hex']),inputs['allowed_domain'])
                         if flow['dst'] not in addresses:raise ValueError('TLS destination differs from original DNS prerequisite')
+                        if combo_context is not None:
+                            consumed = _combo_dns(original, trace.get('resolution'), inputs['allowed_domain'],
+                                                  combo_context, inputs, packets, start)
+                            if flow['dst'] not in consumed:
+                                raise ValueError('combo application did not consume its actual DNS answer')
                     if scenario=='combo' and name in ('sink_tcp','sink_udp'):
-                        resolution=_load_json(original,trace.get('dns_resolution'),'sink DNS prerequisite')
-                        _,addresses=_dns_content(bytes.fromhex(resolution['request_hex']),bytes.fromhex(resolution['response_hex']),inputs['denied_domain'])
+                        addresses = _combo_dns(original, trace.get('dns_resolution'), inputs['denied_domain'],
+                                               combo_context, inputs, packets, start)
+                        _combo_sink_control(original, controls.get(name), flow, combo_context)
                         if addresses!=[inputs['sink_ip']] or flow['dst']!=inputs['sink_ip']:
                             raise ValueError('sink was not consumed from denied-domain DNS answer')
                     if not trace.get('tls') or fixture:
