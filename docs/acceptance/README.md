@@ -2,7 +2,7 @@
 
 本目录集中现有 Windows/Linux 核心、策略、GUI、PCAP、载荷报告、MCP、发布和辅助验收. 目标是修改产品或接口后, 能明确选择并执行同一份回归清单, 对照原始结果判断是否破坏已有功能.
 
-当前状态: **盘点 + S1/R02 离线闭环 + S2 native 判定骨架 + 无GUI策略单元(T004/R01 部分)**. `catalog.json` 已升级为 v2, `tools/acceptance.py` 已具备候选/环境绑定的 `plan --mode`、`execute` 和严格 `judge --results`; R02 增加了注册表/模式/源/环境动作校验、JUnit 精确节点集合判定、receipt 身份与 oracle 类型校验、adapter 派生 cleanup, 并接通 12 个安全离线 case. 原 `test.py` 的退出、Host 名单夹具、SMTP SSL 拒收/错误、stop 失败和 MultiHost 就绪也已修, 并有离线合同自测. S2 已完成策略配置/生命周期/真实DNS/TCP/UDP/TLS探针/PCAP内容judge的代码, 并可用本机替身执行同CLI的plan/execute/judge; 真实Windows原生运行、S3资源调度、S4完整验收尚未完成. 当前没有任何新的原生实机通过, 不能把本目录或 S1/S2 fixture 当作完整设施验收.
+当前状态: **集中盘点、S1 离线闭环和部分 S2 生产代码; 原生与完整验收未完成**. `catalog.json` 已升级为 v2, `tools/acceptance.py` 已具备候选/环境绑定的 `plan --mode`、`execute` 和严格 `judge --results`; R02 增加了注册表/模式/源/环境动作校验、JUnit 精确节点集合判定、receipt 身份与 oracle 类型校验、adapter 派生 cleanup, 并接通 12 个安全离线 case. 原 `test.py` 的退出、Host 名单夹具、SMTP SSL 拒收/错误、stop 失败和 MultiHost 就绪也已修, 并有离线合同自测. S2 已完成策略配置/生命周期/真实DNS/TCP/UDP/TLS探针/PCAP内容judge的代码, 并可用本机替身执行同CLI的plan/execute/judge; 真实Windows原生运行、S3资源调度、S4完整验收尚未完成. 当前没有任何新的原生实机通过, 不能把本目录或 S1/S2 fixture 当作完整设施验收.
 
 排除范围保持用户裁决: GUI 窗口/点击/UAC/三轮停止、旧 100 场景、150 轮发布和新出口验证接口不进入 full; 它们的共享核心已按断言/调用用途抽取为独立 case, 没有因目录名删除.
 
@@ -115,29 +115,42 @@ Logs/acceptance/<run>/
 
 `tools/acceptance_native.py` 是本套 native 的固定注册表. 每个 driver 声明平台/模式、固定 argv 数组、固定子检查表、单一 oracle、候选包要求和收尾责任; 不接受调用方传入 shell/cmd 字符串. `environment.allowed_actions` 必须包含 `native` 才会解除 native 的 blocked 状态; 本轮所有实际 native 运行预算为 0, 因此真实运行仍为 NOT_RUN.
 
-本轮停用未适配的生产包装: `upstream-singlehost` 仍会整跑 test.py, `egress-windows`/`reviewed-ipv4-windows`/`process-redirect-windows` 仍有固定路径、占位、依赖安装或压力步骤; 它们不再标为可用, 原 case 与功能保留待改.
+历史 T003/R01 的整跑 test.py 问题已由精确选择修复; 仍停用的旧包装为 `egress-windows`/`reviewed-ipv4-windows`/`process-redirect-windows` 仍有固定路径、占位、依赖安装或压力步骤; 它们不再标为可用, 原 case 与功能保留待改.
 
-已注册但明确 blocked (代码未接入, 不缺项静默丢弃): `upstream-multihost`, `pcap-windows-functional`, `pcap-linux-functional`, `policy-headless`, `payload-headless`, `mcp-p01`..`mcp-p04`, `mcp-special`, `linux-runtime`, `manual-headless`, `build-identity`.
+upstream singlehost/MultiHost、Windows/Linux 双 PCAP 和四个策略 driver 的代码已接入, 真实环境未验. 仍未接入: `policy-headless`, `payload-headless`, `mcp-p01`..`mcp-p04`, `mcp-special`, `linux-runtime`, `manual-headless`, `build-identity`.
 本轮新增 `policy-domain`/`policy-ipv4`/`policy-takeover`/`policy-combined` 四个 Windows singlehost driver: 固定配置来自仓库内已审 INI 模板, 生产路径发送真实 DNS/TCP/UDP/TLS FNPR/1 请求, oracle 重读实际 INI/日志/PCAP 帧并核对 attempt/nonce/五元组/双向服务. 另有 `policy-substitute-*` 仅用于本机安全替身: 同 CLI 的 plan/execute/judge 覆盖 8 个策略/组合 case (`EGRESS-*`、`IP-*`、`POL-*`), 结果为 `fixture_contract_pass` 且 `full_functional_pass=false`, 不产生 native 信用.
 
 native 的 plan 只展开固定子检查; execute 只在 action/平台/候选包身份齐全时按固定 argv 运行; judge 核 argv/子检查/全部原件/必需 stdout-stderr/退出与 cleanup 一致性. T003/R02 修复了重复/缺失/额外/矛盾超时/缺日志/假 resources 的误判; fixture 通过只给 `fixture_contract_pass`, 不授 `full_functional_pass` 或当前 native 信用.
 
 ### 策略生产与安全替身
 
-生产 driver 需要 `environment.policy` 显式提供 `allowed_domain`, `wildcard_domain`, `apex_domain`, `denied_domain`, `upstream_dns`, `reviewed_ip`, `reviewed_port`, `sink_ip`, `sink_port`, `adjacent_ip`, `adjacent_port`; 缺项在启动 core 前拒绝. 生产路径发送真实 DNS/TCP/UDP/TLS FNPR/1 请求, 读取真实 INI/core 日志/PCAP 帧, 不把 DNS 成功或空的 24 字节 PCAP 当作应用或 native 信用.
+生产 driver 必须在 environment.policy 中显式提供全部输入, 不默认填公网或历史地址:
 
-本机安全替身只替换 core/网络边界, 使用同一探针和内容 oracle:
+- 域名: allowed_domain, wildcard_domain, apex_domain, denied_domain. 拒绝域名不得被允许通配覆盖.
+- DNS 和 VM 源: upstream_dns, dns_address, dns_port, local_source.
+- 审核目标: reviewed_ip, reviewed_port, denied_http_port, denied_alt_port, denied_udp_port, other_ip, other_port.
+- 宿主端和非目标对照: sink_ip, sink_port, adjacent_ip, adjacent_port.
+
+输入只服务于集中策略回归, 不要求恶意软件分析使用同一配置. 缺项在 core 启动前拒绝; 不自动改变 VM 网络. 选择在动作前应用, 只选 route_restore 不发送 DNS/TCP/UDP/ping. ExternalAllowedIPv4Rules 使用实际 core 的 TCP/IPv4/PORT 语法.
+
+应用测试复用良性 FNPR/1 nonce 请求/响应协议. 目标须具备对应响应能力; 任意公共 HTTPS 站点不会仅凭连接成功得到应用信用. TLS 正常验证证书, 可通过 tls_ca_file 引用已有 CA、tls_peer_sha256 固定已有证书 DER 身份, 不创建或传递私钥. IPv6 只有显式 ipv6_target 与 local_source_ipv6 才能运行, 缺少时保持未验, 不修改 VM IPv6.
+
+Windows 远程宿主 TCP/UDP 项由原 MCP/Velo 通道编排, 额外要求已授权 policy-services 动作和 host_service 对象: bind_ipv4 等于 sink_ip, allowed_peer_ipv4 等于 local_source, max_seconds 为 1..300 的整数. 程序先核 VM 身份, 然后只在选定本机接口/端口启动有界属主响应端, 记录源端口、nonce、原始收发字节及属主出生/结束身份. 正常、失败和远程状态未知都停止自己的服务; 未观察远程生产者退出时不拉取活动证据、不重放, 保持 unknown. 最终 judge 关联独立宿主原件与来宾流和字节.
+
+oracle 重读实际 INI、日志范围、probe JSON、PCAP/PCAPNG 完整五元组/时窗/方向和应用内容. 禁止端口有成功响应会失败, 超时不能单独证明拒绝, 还须匹配当前策略决定及停止态可达对照. 恢复来自独立前后网络快照和本轮 core 属主退出原件; 无观察不能填相同伪值冒通过.
+
+纯内存自测不改正式 catalog 或 driver: candidate 显式 offline_fixture=true 才选择内存 socket/process 边界. 同 plan/execute/独立 judge 覆盖八个原策略 case; 不绑定端口、不发送网络包、不执行 ping/core. fixture_contract_pass 不给予 native/full 信用. 旧 policy-substitute 入口仅保留兼容.
 
 ```text
 python tools/acceptance_policy.py --scenario domain --substitute --output <未占用目录>
-python tools/acceptance_policy_oracles.py --original <目录> --scenario domain --checks exact_domain,wildcard_domain,apex_denied,default_deny,tls_application
+python tools/acceptance_policy_oracles.py --original <目录> --scenario domain --checks exact_domain,wildcard_domain,apex_denied,default_deny,tls_application,route_restore --allow-fixture
 ```
 
-`fixture` 仍是空捕获适配器契约, 生产默认 oracle 拒绝; 替身结果标记 `fixture_contract_pass`, `full_functional_pass=false`. 真实 Windows VM/native 执行仍未运行.
+fixture 空捕获不能通过内容判定, 默认 oracle 拒绝 fixture. allow-fixture 只用于设施自测. 本次相关离线回归 115 passed、19 subtests passed; 原件在 Logs/acceptance-regression-20261022/main-policy-r14/. 原 R02 的 loopback 服务/ping 超出当轮零网络预算事实及失败原件保留, 后续修复不抹除历史. 当前没有新的实机通过.
 
 ## 尚未完成 (S2..S4)
 
-- 原生适配器: DOMAIN-EGRESS/DOMAIN-IP/PROCESS-REDIRECT/PCAP/PAYLOAD/MCP/LINUX-RUNTIME/GAP-MANUAL/GAP-APPLICATION 仍为 `blocked`, 需要真实 VM、受控端点、Sentinel/Sink 和逐 case 的原 oracle 解析.
+- S2 其余 EXE/载荷、MCP P01..P04/SPECIAL、Linux 部署/手工功能、包身份仍有未实现项; 已接入 upstream/PCAP/策略的真实环境验收也未执行, 未实现与未验分别保留.
 - `judge` 已解析 JUnit/TSV 和策略 `policy-result`; 策略内容 oracle 需要实际非空 PCAP 帧、配置选中值、attempt 时间窗和日志策略事件. 上游/PCAP/HTML 报告适配器仍按各自 oracle 接入.
 - 资源调度/并行/恢复 (IMP-008) 和完整原生集成 (IMP-009/ACC-014) 未开始.
 - 100/150/新出口保持排除; 历史原生失败 (SMTP SSL、Windows IRC、Linux 进程黑名单) 保留原记录, 只有当前真实运行才能重判.

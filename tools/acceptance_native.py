@@ -795,15 +795,12 @@ if __name__ == '__main__':
     raise SystemExit(main())
 
 
-def policy_inputs(environment):
+def policy_inputs(environment, fixture=False, scenario="domain"):
     value=environment.get('policy')
     if not isinstance(value,dict):
         raise ValueError('environment.policy inputs are required for policy drivers')
-    required={'allowed_domain','wildcard_domain','apex_domain','denied_domain',
-              'upstream_dns','reviewed_ip','reviewed_port','sink_ip','sink_port',
-              'adjacent_ip','adjacent_port'}
-    missing=sorted(required-set(value))
-    if missing:raise ValueError('environment.policy missing: %r' % missing)
+    import acceptance_policy
+    acceptance_policy._validate_inputs(scenario,value,strict=not fixture)
     return value
 
 
@@ -814,10 +811,12 @@ def production_command(root,case,plan,output_dir,python):
              'policy_inputs':str(Path(output_dir).resolve()/'policy-inputs.json'),
              'checks':','.join(checks)}
     if driver['production_kind'].startswith('policy-'):
-        policy_inputs(plan['environment'])
+        policy_inputs(plan['environment'],plan.get('candidate',{}).get('offline_fixture') is True,driver['production_kind'].split('-',1)[1])
     argv=fixed_argv(driver,context)
     if driver['production_kind']=='dual-pcap-linux':
         for mode in checks:argv.extend(['--case',mode])
+    if driver['production_kind'].startswith('policy-') and plan.get('candidate',{}).get('offline_fixture') is True:
+        argv.append('--substitute')
     return argv
 
 
@@ -831,7 +830,8 @@ def original_evaluation(root,case,plan,output_dir):
         import acceptance_policy_oracles
         rows,clean=acceptance_policy_oracles.evaluate(
             directory,driver['production_kind'].split('-',1)[1],checks,
-            expected_inputs=plan['environment'].get('policy'))
+            expected_inputs=plan['environment'].get('policy'),
+            allow_fixture=plan.get('candidate',{}).get('offline_fixture') is True)
     else:
         platform=driver['production_kind'].rsplit('-',1)[1]
         rows,clean=acceptance_oracles.dual_pcap(root,directory,checks,platform)
@@ -850,6 +850,9 @@ def run_production(root,case,plan,output_dir,python):
     reason=runtime_block(case,plan['environment'])
     if reason:raise ValueError(reason)
     runtime=plan['environment']['native_runtime']
+    selected_driver,selected_checks=validate_case(case,root,plan['environment'])
+    if selected_driver.get('production_kind','').startswith('policy-'):
+        policy_inputs(plan['environment'],plan.get('candidate',{}).get('offline_fixture') is True,selected_driver['production_kind'].split('-',1)[1])
     actual=require_target(runtime['identity'])
     if (plan.get('candidate') or {}).get('deployed_identity')!=actual:
         raise ValueError('candidate.deployed_identity differs from observed native target')
@@ -859,7 +862,7 @@ def run_production(root,case,plan,output_dir,python):
     request={'schema':'fakenet.upstream-selection.v1','target':actual,
              'checks':checks,'work_root':str(output_dir/'driver')}
     if driver['production_kind'].startswith('policy-'):
-        write_json(output_dir/'policy-inputs.json',policy_inputs(plan['environment']))
+        write_json(output_dir/'policy-inputs.json',policy_inputs(plan['environment'],plan.get('candidate',{}).get('offline_fixture') is True,driver['production_kind'].split('-',1)[1]))
     write_json(output_dir/'request.json',request)
     write_json(output_dir/'target.json',actual)
     started=datetime.now(timezone.utc)
@@ -978,17 +981,23 @@ def run_remote(root,case,plan,output_dir,python):
              'target':runtime['identity'],'output_root':remote_output,
              'execution_id':plan['execution_id'],'actions':['native']}
     if driver['production_kind'].startswith('policy-'):
-        request['policy']=policy_inputs(plan['environment'])
+        request['policy']=policy_inputs(plan['environment'],scenario=driver['production_kind'].split('-',1)[1])
     # Planned records also carry derived 'sources'; compare using the actual
     # registered catalog object instead of sending derived plan-only metadata.
     catalog=json.loads(_read(Path(root)/'docs/acceptance/catalog.json'))
     request['case']=next(item for suite in catalog['suites'] for item in suite.get('cases',[]) if item['id']==case['id'])
     request_path=output_dir/'guest-request.json';write_new(request_path,request)
+    services=None
+    if driver['production_kind'].startswith('policy-') and {'sink_tcp','sink_udp'}&set(checks):
+        from acceptance_policy import HostServices
+        HostServices.validate(request['policy'],checks,plan['environment']['allowed_actions'])
+        services=HostServices(request['policy'],checks,plan['environment']['allowed_actions'],output_dir/'host-services')
     channel=ExistingWindowsChannel(root,runtime,output_dir/'transport')
     started=datetime.now(timezone.utc);terminal=None;status='unknown';detail='';clean=False
     try:
         if channel.identity()!=runtime['identity']:
             raise ChannelError('MCP target identity differs from selected VM')
+        if services is not None:services.start()
         channel.transfer('push-request','push',[{'absolute_path':str(request_path.resolve()),'relative_path':'request.json'}],str(remote_base/'input'),producer_reference=str(request_path))
         terminal=channel.execute(str(remote_base/'input/request.json'),digest(request_path),remote_output,source_hashes,case['timeout'])
         if terminal.get('process_exited') is not True:
@@ -1004,6 +1013,14 @@ def run_remote(root,case,plan,output_dir,python):
     except (ChannelError,OSError,ValueError,KeyError,AssertionError,TypeError) as error:
         detail='%s: %s' % (type(error).__name__,error)
         if terminal and terminal.get('returncode') not in (None,0):status='fail'
+    finally:
+        if services is not None:services.stop()
+    if services is not None and terminal and terminal.get('process_exited') is True:
+        try:
+            from acceptance_policy_oracles import verify_host_services
+            verify_host_services(output_dir/'incoming/originals/driver',output_dir/'host-services',checks,request['policy'])
+        except (OSError,ValueError,KeyError,TypeError) as exc:
+            clean=False;status='fail';detail+='; owned host endpoint original refused: '+str(exc)
     ended=datetime.now(timezone.utc)
     artifacts=[]
     for path in sorted(output_dir.rglob('*')):
@@ -1033,7 +1050,7 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
     registered=next(c for suite in catalog['suites'] for c in suite.get('cases',[]) if c['id']==case['id'])
     expected_request={'schema':'fakenet.native-guest-request.v1','case_id':case['id'],'case':registered,'checks':checks,'source_hashes':hashes,'candidate':plan['candidate'],'target':runtime['identity'],'output_root':expected_output,'execution_id':plan['execution_id'],'actions':['native']}
     if driver['production_kind'].startswith('policy-'):
-        expected_request['policy']=policy_inputs(plan['environment'])
+        expected_request['policy']=policy_inputs(plan['environment'],scenario=driver['production_kind'].split('-',1)[1])
     if request!=expected_request:raise ValueError('remote original request differs from frozen plan')
     expected=remote_guest_command(driver,plan['environment']['native_runtime'],request['output_root'],checks)
     if receipt.get('command')!=expected or receipt.get('native_target')!=request['target'] or receipt.get('required_checks')!=checks:
@@ -1063,6 +1080,13 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
             checks,expected_inputs=plan['environment'].get('policy'))
     else:
         rows,clean=acceptance_oracles.dual_pcap(root,Path(original)/'driver',checks,runtime['identity']['platform'])
+    if driver['production_kind'].startswith('policy-') and {'sink_tcp','sink_udp'}&set(checks):
+        from acceptance_policy_oracles import verify_host_services
+        # During initial execution the host writer can still be active; only
+        # closed lifecycle evidence is granted final controller credit.
+        service_dir=Path(original).parents[1]/'host-services'
+        if (service_dir/'lifecycle.json').exists():
+            verify_host_services(Path(original)/'driver',service_dir,checks,plan['environment']['policy'])
     cleanup=receipt.get('cleanup') or {};process=cleanup.get('process_exit') or {}
     clean=(clean and cleanup.get('source')=='driver' and cleanup.get('resources')==driver['resources'] and
            cleanup.get('recovered') is True and process.get('exited') is True and process.get('timed_out') is False and
@@ -1073,6 +1097,7 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
 
 
 def judge_remote(case,receipt,plan,root):
+    driver,checks=validate_case(case,root,plan['environment'])
     output=Path(plan['run_dir'])/'results'/case['id'];paths=[]
     for artifact in receipt.get('artifacts') or []:
         path=Path(artifact.get('path',''))
@@ -1088,6 +1113,9 @@ def judge_remote(case,receipt,plan,root):
         original=output/'incoming/originals'
         guest=json.loads(_read(original/'guest-result.json'))
         evaluation,clean=_remote_original_evaluation(root,case,plan,request,guest,original)
+        if driver['production_kind'].startswith('policy-') and {'sink_tcp','sink_udp'}&set(checks):
+            from acceptance_policy_oracles import verify_host_services
+            verify_host_services(original/'driver',output/'host-services',checks,plan['environment']['policy'])
     except (OSError,ValueError,KeyError,TypeError,AssertionError) as error:
         return {'status':'fail' if receipt.get('status')=='fail' else 'unknown','cleanup_ok':False,'reason':'remote original oracle refused: %s' % error}
     if receipt.get('command')!=guest['receipt'].get('command') or receipt.get('native_target')!=request['target']:

@@ -37,6 +37,8 @@ def execute(request,root):
     driver,checks=native.validate_case(matches[0],root,environment)
     if not driver.get('production_kind') or checks!=request['checks']:
         raise ValueError('guest fixed driver/check selection mismatch')
+    if driver.get('production_kind','').startswith('policy-'):
+        native.policy_inputs(environment,request['candidate'].get('offline_fixture') is True,driver['production_kind'].split('-',1)[1])
     output=Path(request['output_root'])
     if not output.is_absolute():raise ValueError('guest output root must be absolute')
     output.mkdir(parents=True,exist_ok=False)
