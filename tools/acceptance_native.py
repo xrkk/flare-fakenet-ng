@@ -921,6 +921,8 @@ def original_evaluation(root,case,plan,output_dir):
             root,directory,mode,checks,
             allow_fixture=plan.get('candidate',{}).get('offline_fixture') is True,
             expected_inputs=plan['environment'].get('headless'))
+        evaluation=_judge_rows(rows,checks);evaluation['details']=rows
+        return evaluation,clean
     else:
         platform=driver['production_kind'].rsplit('-',1)[1]
         rows,clean=acceptance_oracles.dual_pcap(root,directory,checks,platform)
@@ -1205,6 +1207,7 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
            cleanup.get('recovered') is True and process.get('exited') is True and process.get('timed_out') is False and
            process.get('returncode')==receipt.get('returncode'))
     result=_judge_rows(rows,checks)
+    if driver['production_kind'] in ('process-redirect','payload-three-way'):result['details']=rows
     if receipt.get('returncode')!=0 or receipt.get('status')=='fail':result['verdict']='fail'
     return result,clean
 

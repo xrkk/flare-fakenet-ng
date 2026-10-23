@@ -146,7 +146,7 @@ class ProductionCliTests(unittest.TestCase):
     def test_wrong_config_rehashed_production_cli(self):
         case='PR-REDIRECT-POSITIVE';self.execute([case])
         summary=self.mutate_and_judge(case,lambda d:(d/'session.ini').write_text('[Diverter]\nExternalProcessRedirectEnabled=No\nDumpPackets=No\n'))
-        self.assertIn('configuration',json.dumps(summary))
+        self.assertEqual('fail',summary['cases'][0]['status']);self.assertIn('configuration',json.dumps(summary))
     def test_changed_network_rehashed_production_cli(self):
         case='PR-PCAP-RESTORE';self.execute([case])
         summary=self.mutate_and_judge(case,lambda d:H.write_json(d/'network-after.json',{'routes':['changed']}))
