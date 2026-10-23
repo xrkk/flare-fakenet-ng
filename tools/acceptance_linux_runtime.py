@@ -35,7 +35,8 @@ def external(case,out,inputs):
  return json.loads((Path(out)/'linux-result.json').read_text())
 def run(case,out,inputs=None,memory_mode=False):
  if case not in CASES: raise ValueError('unknown case')
- return memory(case,out,inputs) if memory_mode else external(case,out,inputs)
+ raise NotImplementedError('Linux runtime/deploy production path is not implemented in T007/R02')
+
 def main(argv=None):
  p=argparse.ArgumentParser(); p.add_argument('--case',choices=CASES,required=True); p.add_argument('--output',required=True); p.add_argument('--inputs'); p.add_argument('--memory',action='store_true'); a=p.parse_args(argv); inputs=json.loads(Path(a.inputs).read_text()) if a.inputs else {}; r=run(a.case,a.output,inputs,a.memory); print(json.dumps({'status':'pass','case':r['case'],'fixture':r.get('fixture')})); return 0
 if __name__=='__main__': raise SystemExit(main())

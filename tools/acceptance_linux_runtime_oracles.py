@@ -6,6 +6,7 @@ from pathlib import Path
 CHECKS={'LINUX-SINGLEHOST':['singlehost','multihost','nfqueue','ipv6-block','restore'],'LINUX-DEPLOY-UPDATE':['install','idle-update','transaction','token','rollback']}
 def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def evaluate(root,original,case,checks=None,allow_fixture=False):
+ raise NotImplementedError('Linux runtime/deploy oracle is not implemented in T007/R02')
  v=json.loads((Path(original)/'linux-result.json').read_text())
  if v.get('case')!=case: raise ValueError('case mismatch')
  if v.get('fixture') is True and not allow_fixture: raise ValueError('fixture cannot native credit')

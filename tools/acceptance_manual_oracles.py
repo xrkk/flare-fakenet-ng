@@ -1,43 +1,50 @@
 #!/usr/bin/env python3
-"""Independent manual-feature oracle; rereads emitted bytes, never status only."""
+"""Independent oracle for the two real manual product paths."""
 from __future__ import annotations
-import hashlib,json
+import hashlib,json,re
 from pathlib import Path
-CASES=('GAP-EXECUTECMD','GAP-NCSI','GAP-STANDALONE-LISTENERS','GAP-CTRLC-IPC','GAP-DIVERTER-SWITCH','GAP-SYSLOG-ICMP-LOG','GAP-DUMPPACKETS','GAP-LINUX-FLUSH-INTERFACE','GAP-NETWORK-FIX','GAP-RAW-DATE','GAP-LIST-MUTEX')
+IDENTITY=('candidate_id','source_commit','package_sha256','execution_id')
 def _read(p): return Path(p).read_text(encoding='utf-8',errors='replace')
-def evaluate(root,original,case,expected_inputs=None,allow_fixture=False):
+def _sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+def evaluate(root,original,case,expected_inputs,allow_fixture=False):
+    if case not in ('GAP-NCSI','GAP-RAW-DATE'):
+        raise NotImplementedError('case is not implemented in this round: '+case)
+    if not isinstance(expected_inputs,dict): raise ValueError('expected_inputs object required')
     v=json.loads((Path(original)/'manual-result.json').read_text())
-    if v.get('case')!=case: raise ValueError('case mismatch')
+    if v.get('case')!=case or v.get('schema')!='fakenet.manual-result.v1': raise ValueError('case/schema mismatch')
     if v.get('fixture') is True and not allow_fixture: raise ValueError('fixture cannot native credit')
-    rows={}
-    def mark(name,ok): rows[name]='pass' if ok else 'fail'
-    try:
-        if case=='GAP-EXECUTECMD':
-            t=_read(v['log']); mark('command',v.get('command')=='/bin/echo'); mark('first-connection',v['connection']['first'] and 'first-connection=true' in t); mark('non-connection',not v['connection']['second'] and 'non-connection=sentinel' in t)
-        elif case=='GAP-NCSI':
-            lines=[json.loads(x) for x in _read(v['dns']).splitlines()]; mark('ncsi-ipv4',any(x['q']=='dns.msftncsi.com' and '131.107.255.225' in x['a'] for x in lines)); mark('other-domain',any(x['q']=='other.example' and x['a'] and x['a']!=['131.107.255.225'] for x in lines)); mark('dns-evidence',len(lines)==2)
-        elif case=='GAP-STANDALONE-LISTENERS':
-            raw=bytes.fromhex(v['request'])+bytes.fromhex(v['response']); mark('listener-bytes',b'FNPR/1|manual|' in raw and raw.count(b'FNPR/1')==2); mark('listener-close',v.get('closed') is True)
-        elif case=='GAP-CTRLC-IPC':
-            t=_read(v['log']); mark('ctrlc','SIGINT' in t); mark('ipc-stop','stop flag' in t and v.get('ipc')=='halt'); mark('owned-exit',v.get('exit')==0 and 'core_exit=0' in t)
-        elif case=='GAP-DIVERTER-SWITCH':
-            t=_read(v['config']); mark('on','DivertTraffic: Yes' in t); mark('off',v.get('modes')==['on','off']); mark('restore',v['before']==v['after']=={'rules':0})
-        elif case=='GAP-SYSLOG-ICMP-LOG':
-            t=_read(v['log']); mark('syslog','SYSLOG' in t); mark('icmp',v.get('icmp') is True and 'ICMP' in t); mark('owner',v.get('owner')==4242 and 'pid=4242' in t)
-        elif case=='GAP-DUMPPACKETS':
-            data=Path(v['pcap']).read_bytes(); mark('enabled',v.get('enabled') is True); mark('disabled',len(data)>24); mark('prefix',v.get('prefix')=='manual'); mark('content',len(data)>24 and data[:4]==b'\xd4\xc3\xb2\xa1')
-        elif case=='GAP-LINUX-FLUSH-INTERFACE':
-            t=_read(v['config']); mark('flush-iptables','LinuxFlushIptables: Yes' in t); mark('flush-dns','LinuxFlushDNSCommand' in t); mark('restrict-interface','LinuxRestrictInterface: eth0' in t and v.get('rules')=={'iptables':['-F']})
-        elif case=='GAP-NETWORK-FIX':
-            t=_read(v['config']); mark('fix-gateway','FixGateway: Yes' in t); mark('fix-dns','FixDNS: Yes' in t); mark('modify-local-dns','ModifyLocalDNS: Yes' in t); mark('stop-dns','StopDNSService: No' in t and v['before']==v['after'])
-        elif case=='GAP-RAW-DATE':
-            t=_read(v['response']); mark('raw-date',v.get('date') in t and 'Date:' in t); mark('preserved-bytes',v.get('preserved') in t)
-        elif case=='GAP-LIST-MUTEX':
-            d=json.loads(_read(v['lists'])); mark('blacklist','b.example' in d['blacklist']); mark('whitelist','w.example' in d['whitelist']); mark('mutex',d.get('mutex') is False)
-    except Exception as exc:
-        rows={x:'fail' for x in rows or []}; rows['error']='%s: %s' % (type(exc).__name__,exc)
-    out=[{'id':x,'status':rows.get(x,'fail')} for x in expected_inputs or []]
-    if not out:
-        out=[{'id':x,'status':'pass' if rows.get(x)=='pass' else 'fail'} for x in rows if x in ('command','first-connection','non-connection','ncsi-ipv4','other-domain','dns-evidence','listener-bytes','listener-close','ctrlc','ipc-stop','owned-exit','on','off','restore','syslog','icmp','owner','enabled','disabled','prefix','content','flush-iptables','flush-dns','restrict-interface','fix-gateway','fix-dns','modify-local-dns','stop-dns','raw-date','preserved-bytes','blacklist','whitelist','mutex')]
-    clean=all(x['status']=='pass' for x in out) and v.get('cleanup',{}).get('stopped') is True and v.get('cleanup',{}).get('network_restored') is True
-    return out,clean,rows
+    for key in IDENTITY:
+        if v.get('identity',{}).get(key)!=expected_inputs.get(key): raise ValueError('identity mismatch: '+key)
+    if case=='GAP-NCSI':
+        from dnslib import DNSRecord,QTYPE
+        expected_ncsi='131.107.255.225'; expected_other=str(expected_inputs.get('responsea','192.0.2.55'))
+        seen=set(); failures=[]
+        for row in v.get('queries',[]):
+            try:
+                q=DNSRecord.parse(Path(row['query']).read_bytes()); r=DNSRecord.parse(Path(row['response']).read_bytes())
+                if q.header.id!=r.header.id: raise ValueError('id mismatch')
+                if q.header.qr!=0 or r.header.qr!=1: raise ValueError('QR mismatch')
+                name=str(q.q.qname).rstrip('.'); want=expected_ncsi if name=='dns.msftncsi.com' else expected_other
+                if q.q.qtype!=QTYPE.A: raise ValueError('qtype mismatch')
+                answers=[str(a.rdata) for a in r.rr if a.rtype==QTYPE.A]
+                if answers!=[want]: raise ValueError('A answer mismatch %r/%r'%(answers,want))
+                seen.add(row['transport'])
+            except Exception as exc: failures.append('%s: %s'%(row.get('transport'),exc))
+        if seen!={'udp','tcp'}: failures.append('UDP/TCP coverage missing')
+        rows=[{'id':'ncsi-ipv4','status':'pass' if not failures else 'fail'},{'id':'other-domain','status':'pass' if not failures else 'fail'},{'id':'dns-evidence','status':'pass' if not failures else 'fail'}]
+        clean=not failures
+        return rows,clean,{'failures':failures}
+    if case=='GAP-RAW-DATE':
+        template=Path(v['raw_template']).read_bytes(); actual=Path(v['raw_response']).read_bytes(); date=str(v.get('date',''))
+        expected=template.replace(b'<RAW-DATE>',date.encode())
+        static=Path(v['static_response']).read_bytes(); static_template=_read(v['static_template'])
+        failures=[]
+        if actual!=expected: failures.append('raw bytes not exact replacement')
+        if b'<RAW-DATE>' in actual: failures.append('raw placeholder remains')
+        if date.encode() not in static: failures.append('static date missing')
+        if b'static-'+date.encode() not in static: failures.append('static body replacement missing')
+        if v.get('raw_matched') is not True or v.get('non_match') is not False: failures.append('host/URI matching failed')
+        if '<RAW-DATE>' in static_template: pass
+        rows=[{'id':'raw-date','status':'pass' if not failures else 'fail'},{'id':'preserved-bytes','status':'pass' if not failures else 'fail'}]
+        return rows,not failures,{'failures':failures}
+    raise ValueError('unknown case')
