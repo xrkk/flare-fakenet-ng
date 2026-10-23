@@ -177,7 +177,8 @@
               "test/test_acceptance_native_oracles.py",
               "test/test_acceptance_native_channels.py",
               "test/test_upstream_runner_contract.py",
-              "test/test_acceptance_orchestration.py"
+              "test/test_acceptance_orchestration.py",
+              "test/test_acceptance_package.py"
             ]
           },
           "steps": [
@@ -224,7 +225,10 @@
             "test/test.py",
             "tools/acceptance_collection.py",
             "tools/acceptance_orchestration.py",
-            "test/test_acceptance_orchestration.py"
+            "test/test_acceptance_orchestration.py",
+            "test/test_acceptance_package.py",
+            "tools/acceptance_package.py",
+            "tools/build_fakenetng_mcp_wine.py"
           ]
         },
         {
@@ -3345,7 +3349,8 @@
             "offline"
           ],
           "input": {
-            "entry": "tools/build_*.py / Build-*.ps1"
+            "entry": "tools/build_*.py / Build-*.ps1",
+            "supported_manifest": "fakenet.mcp-candidate-manifest.v1"
           },
           "steps": [
             "verify source commit and package hashes without running a full build"
@@ -3361,7 +3366,7 @@
             "build-artifacts"
           ],
           "readiness": [
-            "candidate package"
+            "frozen candidate ZIP and manifest"
           ],
           "timeout": 600,
           "cleanup": "none",
@@ -3372,10 +3377,11 @@
           "stress": false,
           "sources": [
             "tools/build_gui_vm_package_wine.py",
-            "tools/build_fakenetng_mcp_wine.py"
+            "tools/build_fakenetng_mcp_wine.py",
+            "tools/acceptance_package.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "build-identity"
+          "native_driver": "build-identity",
+          "blocked_reason": "requires a supported MCP ZIP with frozen source, manifest and package identity"
         }
       ]
     },

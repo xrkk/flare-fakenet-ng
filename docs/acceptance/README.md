@@ -185,7 +185,7 @@ fixture 空捕获不能通过内容判定, 默认 oracle 拒绝 fixture. allow-f
 
 ## 尚未完成 (S2..S4)
 
-- S2 其余 EXE/载荷、MCP P01..P04/SPECIAL、Linux 部署/手工功能、包身份仍有未实现项; 已接入 upstream/PCAP/策略的真实环境验收也未执行, 未实现与未验分别保留.
+- S2 其余 EXE/载荷、MCP P01..P04/SPECIAL、Linux 部署/手工功能、未支持格式的包身份仍有未实现项; MCP ZIP 只读身份已接入, 见下文; 已接入 upstream/PCAP/策略的真实环境验收也未执行, 未实现与未验分别保留.
 - `judge` 已解析 JUnit/TSV 和策略 `policy-result`; 策略内容 oracle 需要实际非空 PCAP 帧、配置选中值、attempt 时间窗和日志策略事件. 上游/PCAP/HTML 报告适配器仍按各自 oracle 接入.
 - 资源调度/并行/恢复 (IMP-008) 和完整原生集成 (IMP-009/ACC-014) 未开始.
 - 100/150/新出口保持排除; 历史原生失败 (SMTP SSL、Windows IRC、Linux 进程黑名单) 保留原记录, 只有当前真实运行才能重判.
@@ -393,3 +393,34 @@ P03 selected可用`HEALTH-NO-LISTENER`和`HEALTH-ACTIVE-PROBE`定点复验原ACC
 接受的start及整个原观察窗口都保留, 结束后核受控停止与default恢复.
 主动探测沿原pipe/当前child/时间/nonce/incident/恢复判据重判.
 当前仅离线判别验证, 实机结果未验.
+
+### 只读候选包身份检查
+
+`BUILD-PACKAGE-IDENTITY` 已接入同一 `plan/execute/judge` 入口. 当前明确支持
+`fakenet.mcp-candidate-manifest.v1` 的 MCP ZIP, 不执行包内文件、不重建或部署,
+也不要求 VM 通道. 其它包格式仍未验, 不因这个适配完成而删除其必要范围.
+
+candidate 除现有 `source_commit` 外, 填写 `package_path`, `package_manifest`
+的规范绝对路径及 `package_sha256`. `plan` 自动冻结 manifest 原字节的
+`package_manifest_sha256`, 不要求逐轮手抄它. 源提交仍按既有规则与当前仓库
+HEAD 相符. 缺少/不支持的包输入只使该 case blocked, 不替其它独立组增加门禁.
+环境可仅授权 `allowed_actions: ["offline-artifacts"]`; 原 `native` 授权兼容,
+但此 case 本身只读本地原件.
+
+```bash
+python tools/acceptance.py plan --mode selected --case BUILD-PACKAGE-IDENTITY --candidate /absolute/candidate.json --environment /absolute/environment.json --output /absolute/Logs/acceptance/package-check/plan.json
+python tools/acceptance.py execute --plan /absolute/Logs/acceptance/package-check/plan.json
+python tools/acceptance.py judge --plan /absolute/Logs/acceptance/package-check/plan.json --results /absolute/Logs/acceptance/package-check/results --output /absolute/Logs/acceptance/package-check/independent.json
+```
+
+独立 judge 重新读取已冻结的包/manifest 原件, 复用原构建器的
+`verify_package_zip`, 保留成员集合/大小/SHA/固定时间及嵌入 manifest 断言.
+额外拒绝重复及大小写/Unicode 别名、越界或文件/目录冲突路径、链接、重复
+JSON 键与缺失身份字段. 不解压到调用方路径. 有界读取限制为 manifest 16 MiB,
+单成员 512 MiB, 全包解压总量 4 GiB, 成员数 50000; 超界明确拒绝, 不跳过成员.
+
+证据保留本次执行/candidate 请求、manifest 原字节副本及原验证结果, 引用的
+原包继续只读保存. 结果或外层 receipt/index 重新计算哈希后, 错源/错成员及
+篡改判定仍不能通过. 原 manifest 的 `qualification_status` 和 `native_gaps`
+原样输出, `PARTIAL` 不会升格; 包自洽不证明可复现构建、当前部署或任何 VM 功能.
+良性小包自测只授 fixture 信用, selected 通过不授 full.

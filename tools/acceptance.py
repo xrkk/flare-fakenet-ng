@@ -740,7 +740,7 @@ def case_applicable(case, platforms):
     return bool(declared & platforms) or 'any' in declared
 
 
-def expected_block(case, actions, platforms, root=ROOT, environment=None):
+def expected_block(case, actions, platforms, root=ROOT, environment=None, candidate=None):
     """Return the only admissible blocked reason, or None if runnable."""
     if case['adapter'] == 'native':
         if acceptance_native is None:
@@ -754,6 +754,12 @@ def expected_block(case, actions, platforms, root=ROOT, environment=None):
             return driver.get('missing') or 'native driver is not implemented'
         if not case_applicable(case, platforms):
             return 'platform not available in environment'
+        if driver.get('production_kind') == 'package-identity':
+            try:
+                __import__('acceptance_package').freeze_candidate({k:v for k,v in (candidate or {}).items() if k != 'package_identity_error'})
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                return 'package identity input unavailable: ' + str(exc)
+            return None if ('offline-artifacts' in actions or 'native' in actions) else 'environment does not allow read-only offline-artifacts'
         if 'native' not in actions:
             return 'environment does not allow native execution'
         if driver.get('production_kind'):
@@ -829,6 +835,7 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
                           for item in required)
         blocked_now = plan.get('blocked') or {}
         has_native = any(registered[item]['adapter'] == 'native'
+                         and registered[item].get('native_driver') != 'build-identity'
                          and item not in blocked_now for item in required)
         if has_offline and 'offline-pytest' not in actions:
             raise InputError('environment.allowed_actions does not permit offline-pytest execution')
@@ -853,7 +860,7 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
             raise InputError('planned case is not an object: %s' % case_id)
         if case_identity(stored) != case_identity(reference):
             raise InputError('planned case identity differs from catalog: %s' % case_id)
-        expected_reason = expected_block(reference, actions, platforms, root, environment)
+        expected_reason = expected_block(reference, actions, platforms, root, environment, candidate)
         actual_reason = blocked.get(case_id)
         if (expected_reason or None) != (actual_reason or None):
             raise InputError('blocked state differs from registry: %s expected=%r actual=%r'
@@ -976,6 +983,11 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
         raise InputError('candidate.source_commit %s does not match current HEAD %s'
                          % (candidate['source_commit'], head))
     selected, exclusions = select_cases(catalog, mode, suite_ids, case_ids)
+    if any(case.get('native_driver') == 'build-identity' for case in selected):
+        try:
+            candidate = __import__('acceptance_package').freeze_candidate(candidate)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            candidate = dict(candidate, package_identity_error=str(exc))
     import acceptance_mcp_dependencies
     selected, environment = acceptance_mcp_dependencies.plan_selection(selected,catalog,environment,mode)
     output = Path(output)
@@ -1007,7 +1019,7 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
         source_hashes[case['id']] = hashes
         record = dict(case)
         record['sources'] = sources
-        reason = expected_block(case, actions, platforms, root, environment)
+        reason = expected_block(case, actions, platforms, root, environment, candidate)
         collectable = (case['adapter'] == 'offline-pytest'
                        and case.get('collection_safe')
                        and 'collection' in actions

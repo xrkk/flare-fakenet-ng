@@ -449,11 +449,11 @@ def driver_table(root):
             'checks': [], 'requires': ['native'], 'package_required': False,
         },
         'build-identity': {
-            'implemented': False,
-            'missing': 'package identity oracle adapter is not implemented; only a '
-                       'manifest/SHA read-only check exists',
+            'implemented': True, 'production_kind': 'package-identity',
             'platforms': ['windows', 'linux'], 'modes': ['offline'],
-            'checks': [], 'requires': [], 'package_required': True,
+            'checks': __import__('acceptance_package').CHECKS,
+            'requires': [], 'package_required': True,
+            'formats': ['fakenet.mcp-candidate-manifest.v1'],
         },
     }
     return drivers
@@ -509,6 +509,8 @@ def validate_case(case, root, environment=None):
 
 
 def runtime_block(case, environment):
+    if case.get('native_driver') == 'build-identity':
+        return None  # Host-side read-only package check; no target channel.
     if case.get('native_driver')=='mcp-headless':
         try:
             import acceptance_mcp
@@ -587,6 +589,8 @@ def fixed_argv(driver, context):
 
 def run_driver(root, case, plan, output_dir, python):
     driver, unused=validate_case(case,root,plan['environment'])
+    if driver.get('production_kind') == 'package-identity':
+        return __import__('acceptance_package').run(root,case,plan,output_dir)
     if driver.get('production_kind')=='mcp-controller':return run_mcp_controller(root,case,plan,output_dir,python)
     if driver.get('production_kind')=='upstream-multihost':
         from acceptance_orchestration import run_multihost
@@ -689,6 +693,8 @@ def run_driver(root, case, plan, output_dir, python):
 
 def judge_driver(case, receipt, plan, root):
     driver,unused=validate_case(case,root,plan['environment'])
+    if driver.get('production_kind') == 'package-identity':
+        return __import__('acceptance_package').judge(root,case,receipt,plan)
     if driver.get('production_kind')=='mcp-controller':return judge_mcp_controller(case,receipt,plan,root)
     if driver.get('production_kind')=='upstream-multihost':
         from acceptance_orchestration import judge_multihost
@@ -1297,7 +1303,7 @@ def native_source_pins(root):
         if path.is_file():paths.add(path)
     for name in ('acceptance.py','acceptance_native.py','acceptance_runtime.py','acceptance_oracles.py',
                  'acceptance_guest.py','acceptance_windows.py','acceptance_linux.py','acceptance_multihost.py',
-                 'acceptance_collection.py','acceptance_orchestration.py','acceptance_policy.py','acceptance_policy_oracles.py','acceptance_headless.py','acceptance_headless_oracles.py','acceptance_mcp.py','acceptance_mcp_oracles.py'):
+                 'acceptance_collection.py','acceptance_package.py','acceptance_orchestration.py','acceptance_policy.py','acceptance_policy_oracles.py','acceptance_headless.py','acceptance_headless_oracles.py','acceptance_mcp.py','acceptance_mcp_oracles.py'):
         path=root/'tools'/name
         if path.is_file():paths.add(path)
     path=root/'docs/acceptance/catalog.json'
