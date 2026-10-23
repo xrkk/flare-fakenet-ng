@@ -128,6 +128,9 @@ class PolicyCliSubstituteTests(unittest.TestCase):
             'POL-TCP-UDP-RECOVERY': 'policy-substitute-takeover',
             'IP-REVIEWED-TLS-MATRIX': 'policy-substitute-ipv4',
             'IP-TAKEOVER-COEXIST': 'policy-substitute-combined',
+            'EGRESS-ALLOW-CHAIN': 'policy-substitute-domain',
+            'EGRESS-NEGATIVES': 'policy-substitute-domain',
+            'EGRESS-RESTORE': 'policy-substitute-domain',
         }
         for suite in catalog['suites']:
             for case in suite.get('cases') or []:
@@ -176,7 +179,7 @@ class PolicyCliSubstituteTests(unittest.TestCase):
         summary = json.loads((run / 'summary-independent.json').read_text())
         self.assertTrue(summary['fixture_contract_pass'])
         self.assertFalse(summary['full_functional_pass'])
-        self.assertEqual(5, summary['checks']['passed'])
+        self.assertEqual(8, summary['checks']['passed'])
 
 
 class PolicySubstituteTests(unittest.TestCase):

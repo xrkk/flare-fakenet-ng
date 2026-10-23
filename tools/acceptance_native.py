@@ -216,13 +216,20 @@ def driver_table(root):
             'implemented': True, 'production_kind': 'policy-domain',
             'platforms': ['windows'], 'modes': ['singlehost'],
             'checks': ['exact_domain', 'wildcard_domain', 'apex_denied',
-                       'default_deny', 'tls_application'],
+                       'default_deny', 'tls_application', 'route_restore'],
+            'check_filters': {
+                'EGRESS-ALLOW-CHAIN': ['exact_domain', 'wildcard_domain',
+                                       'tls_application'],
+                'EGRESS-NEGATIVES': ['apex_denied', 'default_deny'],
+                'EGRESS-RESTORE': ['route_restore'],
+            },
             'requires': ['native'], 'package_required': False,
             'resources': ['core', 'network', 'capture'],
             'oracle': {'kind': 'policy-result', 'artifact': 'driver/policy-result.json'},
             'argv': ['{python}', '{root}/tools/acceptance_policy.py',
                      '--scenario', 'domain', '--output', '{output}/driver',
-                     '--python', '{python}', '--inputs', '{policy_inputs}'],
+                     '--python', '{python}', '--inputs', '{policy_inputs}',
+                     '--checks', '{checks}'],
         },
         'policy-ipv4': {
             'implemented': True, 'production_kind': 'policy-ipv4',
@@ -234,7 +241,8 @@ def driver_table(root):
             'oracle': {'kind': 'policy-result', 'artifact': 'driver/policy-result.json'},
             'argv': ['{python}', '{root}/tools/acceptance_policy.py',
                      '--scenario', 'ipv4', '--output', '{output}/driver',
-                     '--python', '{python}', '--inputs', '{policy_inputs}'],
+                     '--python', '{python}', '--inputs', '{policy_inputs}',
+                     '--checks', '{checks}'],
         },
         'policy-combined': {
             'implemented': True, 'production_kind': 'policy-combined',
@@ -246,7 +254,8 @@ def driver_table(root):
             'oracle': {'kind': 'policy-result', 'artifact': 'driver/policy-result.json'},
             'argv': ['{python}', '{root}/tools/acceptance_policy.py',
                      '--scenario', 'combined', '--output', '{output}/driver',
-                     '--python', '{python}', '--inputs', '{policy_inputs}'],
+                     '--python', '{python}', '--inputs', '{policy_inputs}',
+                     '--checks', '{checks}'],
         },
         'policy-takeover': {
             'implemented': True, 'production_kind': 'policy-takeover',
@@ -258,19 +267,26 @@ def driver_table(root):
             'oracle': {'kind': 'policy-result', 'artifact': 'driver/policy-result.json'},
             'argv': ['{python}', '{root}/tools/acceptance_policy.py',
                      '--scenario', 'takeover', '--output', '{output}/driver',
-                     '--python', '{python}', '--inputs', '{policy_inputs}'],
+                     '--python', '{python}', '--inputs', '{policy_inputs}',
+                     '--checks', '{checks}'],
         },
         'policy-substitute-domain': {
             'implemented': True, 'fixture': True,
             'platforms': ['linux', 'windows'], 'modes': ['singlehost'],
             'checks': ['exact_domain', 'wildcard_domain', 'apex_denied',
-                       'default_deny', 'tls_application'],
+                       'default_deny', 'tls_application', 'route_restore'],
+            'check_filters': {
+                'EGRESS-ALLOW-CHAIN': ['exact_domain', 'wildcard_domain',
+                                       'tls_application'],
+                'EGRESS-NEGATIVES': ['apex_denied', 'default_deny'],
+                'EGRESS-RESTORE': ['route_restore'],
+            },
             'resources': ['core', 'network', 'capture'],
             'oracle': {'kind': 'policy-result',
                        'artifact': 'driver/policy-result.json'},
             'argv': ['{python}', '{root}/tools/acceptance_policy.py',
                      '--scenario', 'domain', '--substitute',
-                     '--output', '{output}/driver'],
+                     '--output', '{output}/driver', '--checks', '{checks}'],
         },
         'policy-substitute-ipv4': {
             'implemented': True, 'fixture': True,
@@ -282,7 +298,7 @@ def driver_table(root):
                        'artifact': 'driver/policy-result.json'},
             'argv': ['{python}', '{root}/tools/acceptance_policy.py',
                      '--scenario', 'ipv4', '--substitute',
-                     '--output', '{output}/driver'],
+                     '--output', '{output}/driver', '--checks', '{checks}'],
         },
         'policy-substitute-takeover': {
             'implemented': True, 'fixture': True,
@@ -294,7 +310,7 @@ def driver_table(root):
                        'artifact': 'driver/policy-result.json'},
             'argv': ['{python}', '{root}/tools/acceptance_policy.py',
                      '--scenario', 'takeover', '--substitute',
-                     '--output', '{output}/driver'],
+                     '--output', '{output}/driver', '--checks', '{checks}'],
         },
         'policy-substitute-combined': {
             'implemented': True, 'fixture': True,
@@ -306,7 +322,7 @@ def driver_table(root):
                        'artifact': 'driver/policy-result.json'},
             'argv': ['{python}', '{root}/tools/acceptance_policy.py',
                      '--scenario', 'combined', '--substitute',
-                     '--output', '{output}/driver'],
+                     '--output', '{output}/driver', '--checks', '{checks}'],
         },
         'policy-headless': {
             'implemented': False,
@@ -510,6 +526,7 @@ def run_driver(root, case, plan, output_dir, python):
         'root': root,
         'package_manifest': candidate.get('package_manifest') or '',
         'package_sha256': candidate.get('package_sha256') or '',
+        'checks': ','.join(checks),
     }
     argv = fixed_argv(driver, context)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -600,7 +617,8 @@ def judge_driver(case, receipt, plan, root):
         'output': str(Path(plan['run_dir']) / 'results' / case['id']),
         'root': str(root),
         'package_manifest': plan.get('candidate', {}).get('package_manifest') or '',
-        'package_sha256': plan.get('candidate', {}).get('package_sha256') or ''})
+        'package_sha256': plan.get('candidate', {}).get('package_sha256') or '',
+        'checks': ','.join(checks)})
     if receipt.get('command') != expected_argv:
         return {'status': 'fail', 'reason': 'receipt argv differs from the registered driver'}
     if receipt.get('required_checks') != checks:
@@ -793,7 +811,8 @@ def production_command(root,case,plan,output_dir,python):
     driver,checks=validate_case(case,root,plan['environment'])
     context={'root':str(Path(root).resolve()),'python':str(python),
              'output':str(Path(output_dir).resolve()),'modes':','.join(checks),
-             'policy_inputs':str(Path(output_dir).resolve()/'policy-inputs.json')}
+             'policy_inputs':str(Path(output_dir).resolve()/'policy-inputs.json'),
+             'checks':','.join(checks)}
     if driver['production_kind'].startswith('policy-'):
         policy_inputs(plan['environment'])
     argv=fixed_argv(driver,context)
@@ -935,7 +954,8 @@ def judge_production(case,receipt,plan,root):
 def remote_guest_command(driver,runtime,output_root,checks):
     context={'root':runtime['source_root'],'python':runtime['python'],
              'output':output_root,'modes':','.join(checks),
-             'policy_inputs':str(output_root)+'/policy-inputs.json'}
+             'policy_inputs':str(output_root)+'/policy-inputs.json',
+             'checks':','.join(checks)}
     argv=fixed_argv(driver,context)
     if driver.get('production_kind')=='dual-pcap-linux':
         for mode in checks:argv.extend(['--case',mode])

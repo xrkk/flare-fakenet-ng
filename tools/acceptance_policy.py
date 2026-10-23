@@ -53,7 +53,7 @@ READY = {
 }
 CHECKS = {
     'domain': ['exact_domain', 'wildcard_domain', 'apex_denied',
-               'default_deny', 'tls_application'],
+               'default_deny', 'tls_application', 'route_restore'],
     'ipv4': ['reviewed_ip_tls', 'port_80_denied', 'port_444_denied',
              'udp443_denied', 'other_ip_denied'],
     'takeover': ['sink_tcp', 'sink_udp', 'adjacent_denied', 'icmp_denied',
@@ -691,7 +691,8 @@ def _check(case_id, status, attempt, observation, nonce, tuple_value,
             'evidence': evidence or [], 'reason': reason}
 
 
-def _run_checks(scenario, output, inputs, log_text, capture, core=None):
+def _run_checks(scenario, output, inputs, log_text, capture, core=None,
+                selected=None):
     checks = []
     attempts = []
     nonce_base = uuid.uuid4().hex
@@ -877,6 +878,9 @@ def _run_checks(scenario, output, inputs, log_text, capture, core=None):
         tcp_check('sink_tcp', inputs['sink_ip'], inputs['sink_port'], 'allow',
                   marker='ALLOW_TAKEOVER_SINK')
         udp_check('sink_udp', inputs['sink_ip'], inputs['sink_port'], 'allow')
+    if selected is not None:
+        attempts[:] = [item for item in attempts if item['id'] in selected]
+        checks[:] = [item for item in checks if item['id'] in selected]
     return attempts, checks
 
 
@@ -892,11 +896,11 @@ def _wait_ready(log_path, marker, timeout):
 
 def _result(scenario, output, inputs, attempts, checks, pcap_paths, log,
             config, stopped, code, exited, network_before, network_after,
-            route_before, route_after, fixture_run=False):
+            route_before, route_after, fixture_run=False, selected=None):
     network_match = network_before == network_after
     route_match = route_before == route_after
     route_check = [item for item in checks if item['id'] == 'route_restore']
-    if scenario in ('takeover', 'combined'):
+    if 'route_restore' in (selected or CHECKS[scenario]):
         route_restored = route_match and network_match and (
             'TAKEOVER_ROUTE_RESTORED' in Path(log).read_text(
                 encoding='utf-8', errors='replace') or
@@ -919,6 +923,9 @@ def _result(scenario, output, inputs, attempts, checks, pcap_paths, log,
                                  evidence=['core.log'],
                                  reason='' if route_restored else
                                  'route identity did not restore'))
+    if selected is not None:
+        attempts[:] = [item for item in attempts if item['id'] in selected]
+        checks[:] = [item for item in checks if item['id'] in selected]
     value = {
         'schema': SCHEMA, 'scenario': scenario, 'fixture': fixture_run,
         'inputs': inputs,
@@ -947,7 +954,7 @@ def _result(scenario, output, inputs, attempts, checks, pcap_paths, log,
 
 
 def run(scenario, output, core_command=None, timeout=120, inputs=None,
-        substitute=False, fixture_run=False):
+        substitute=False, fixture_run=False, selected=None):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     inputs = _inputs(inputs)
@@ -1002,7 +1009,7 @@ def run(scenario, output, core_command=None, timeout=120, inputs=None,
                                        log.read_text(encoding='utf-8',
                                                     errors='replace')
                                        if log.is_file() else '',
-                                       capture, core)
+                                       capture, core, selected)
     finally:
         if substitute and core is not None:
             core.stop()
@@ -1033,7 +1040,8 @@ def run(scenario, output, core_command=None, timeout=120, inputs=None,
             route_after = dict(route_before or {})
     _result(scenario, output, inputs, attempts, checks, pcap_paths, log,
             config, bool(exited), code, bool(exited), before, after,
-            route_before, route_after, fixture_run=fixture_run)
+            route_before, route_after, fixture_run=fixture_run,
+            selected=selected)
     return 0
 
 
@@ -1046,13 +1054,15 @@ def main(argv=None):
     parser.add_argument('--python', default=sys.executable)
     parser.add_argument('--timeout', type=int, default=120)
     parser.add_argument('--inputs', help='JSON object with explicit policy inputs')
+    parser.add_argument('--checks', help='comma-separated selected check ids')
     args = parser.parse_args(argv)
     inputs = json.loads(Path(args.inputs).read_text(encoding='utf-8')) if args.inputs else {}
+    selected = set(item for item in (args.checks or '').split(',') if item) or None
     if args.fixture:
         return fixture(args.scenario, args.output)
     return run(args.scenario, args.output,
                [args.python, '-m', 'fakenet.fakenet'], args.timeout,
-               inputs=inputs, substitute=args.substitute)
+               inputs=inputs, substitute=args.substitute, selected=selected)
 
 
 if __name__ == '__main__':
