@@ -2250,3 +2250,17 @@ class SnapshotBaselineIdentityTests(unittest.TestCase):
         self.assertTrue((unit / 'acc008-normal-stopped-files.json').is_file())
         self.assertFalse((unit / 'acc008-corrupt-injected.json').exists())
         self.assertIn('baseline bytes disappeared or changed', json.dumps(m.read(unit / 'result.json')))
+
+
+class SnapshotServiceIdentityTests(unittest.TestCase):
+    setUp = OriginalMcpTests.setUp
+    def test_wrong_service_image_birth_endpoint_and_unknown_state_rejected(self):
+        m.modules(); from snapshot_evidence import files_match
+        from types import SimpleNamespace
+        import copy
+        boundary = SnapshotRecoveryBoundary(self.inputs, self.root / 'guest')
+        value = boundary.file_read(); channel = SimpleNamespace(inputs=self.inputs)
+        self.assertEqual(value, files_match(channel, value))
+        for mutate in (lambda v: v['service'].update(image='C:\\foreign\\fakenetng-mcp.exe'), lambda v: v['service'].update(creation_time=''), lambda v: v.update(endpoint_owned=False), lambda v: v['service'].update(state='Unknown')):
+            bad = copy.deepcopy(value); mutate(bad)
+            with self.assertRaisesRegex(Exception, 'identity|service|state'): files_match(channel, bad)

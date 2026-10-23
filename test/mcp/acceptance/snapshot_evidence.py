@@ -49,6 +49,14 @@ def files_match(channel, value):
         path = PureWindowsPath(row['path'])
         if path.parent != root / 'baselines' or path.suffix != '.json':
             raise StepError('baseline path outside fixed root')
+    service = value.get('service') or {}
+    install = PureWindowsPath((getattr(channel, 'inputs', None) or {}).get('installation_root', r'C:\Program Files\FakeNet-NG-MCP'))
+    if service.get('state') == 'Running':
+        identity(service)
+        if PureWindowsPath(service.get('image', '')) != install / 'fakenetng-mcp.exe' or value.get('endpoint_owned') is not True:
+            raise StepError('snapshot current service/endpoint image differs')
+    elif service.get('state') != 'Stopped' or service.get('pid') != 0:
+        raise StepError('snapshot SCM state unknown')
     return value
 
 
