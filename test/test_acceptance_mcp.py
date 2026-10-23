@@ -16,7 +16,7 @@ def inputs_at(root):
  root=Path(root);root.mkdir(parents=True,exist_ok=True)
  package=root/'benign-package.zip'
  body=b'benign candidate test bytes';identity={'candidate_id':'memory-mcp','source_commit':__import__('acceptance').git_head(ROOT),'package_sha256':'','requirements_blob':'b'*40,'master_plan_blob':'c'*40}
- manifest_value={'schema':'fakenet.mcp-candidate-manifest.v1','source_commit':identity['source_commit'],'files':[{'path':'fakenetng-mcp.exe','sha256':hashlib.sha256(body).hexdigest(),'size':len(body)}]}
+ manifest_value={'schema':'fakenet.mcp-candidate-manifest.v1','source_commit':identity['source_commit'],'source_snapshot_mode':'commit','exe_sha256':hashlib.sha256(body).hexdigest(),'qualification_status':'PARTIAL','native_gaps':['benign fixture'],'zip_entry_timestamp_utc':'2000-01-01T00:00:00Z','files':[{'path':'fakenetng-mcp.exe','sha256':hashlib.sha256(body).hexdigest(),'size':len(body)}]}
  manifest=root/'manifest.json';manifest.write_text(json.dumps(manifest_value))
  import zipfile
  with zipfile.ZipFile(package,'w') as archive:archive.writestr(zipfile.ZipInfo('fakenetng-mcp.exe',(2000,1,1,0,0,0)),body);archive.writestr('mcp-candidate-manifest.json',manifest.read_bytes())
