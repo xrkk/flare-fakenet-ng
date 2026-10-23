@@ -159,3 +159,38 @@ not complete P03/MCP or native/full acceptance. The centralized facility selftes
 now includes `test/test_acceptance_mcp.py`, and source identity includes the
 fixed PowerShell probe. No GUI, historical scenario/release driver or T007 test
 is added by this registration.
+
+
+### Atomic creation windows and process recovery (ACC007)
+
+The fixed original ACC007 runner retains all six creation stages and the healthy
+run case. Load/start receipts and the consumed creation nonce, stage, command,
+run, current marker and SCM birth must match before termination. Early creation
+windows require no child; later windows require the actual child in the Job and
+the exact allowed creation prefix, without a start frame or PCAP.
+
+The fixed PowerShell helpers hold process handles, verify FILETIME, executable,
+run and parent ancestry, and terminate only the pinned supervisor. The managed
+image is `fakenetng-mcp-managed.exe`, as used by the current product. A separate
+fixed PowerShell sleep process uses CreateNoWindow and proves unrelated process
+survival; cleanup targets only that invocation's canary. Descendants are observed
+through their retained handles, with explicit surviving/escaped process results.
+
+Recovery uses the actual new SCM PID/birth and endpoint owner. The real product's
+per-instance EventLog supplies the ordered recovering/stopped audit, with a new
+epoch and timestamps inside that instance's lifetime. The old runner searched
+for a `startup recovery outcome` log string that the current product does not
+emit. A RESTART configuration label alone cannot establish recovery. The entire
+read-only no-replay window is bracketed by the same SCM/endpoint identity and
+requires the old marker to be retained with only needs_recovery cleared, no
+command replay and no automatic FakeNet continuation.
+
+Tests invoke the unmodified creation evidence producer and EventLog with benign
+file, process-identity and clock boundaries, then run the original acceptance
+functions and independent replay through the same catalog CLI. Bad birth,
+ancestry, stage, takeover, canary, SCM, epoch, recovery marker and run observations
+are rejected; updating outer hashes cannot make wrong tree content pass. These
+are offline integration and predicate checks. PowerShell parsing/execution,
+Windows Job/handle/SCM behavior, native crash exceptions/dumps/root-cause
+localization and full P03/MCP remain unverified. No real VM/service/kill/network
+operation or T007 check is performed by these offline tests.

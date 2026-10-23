@@ -1660,3 +1660,278 @@ class PublicConfigLockCliTests(unittest.TestCase):
         result = self.cli('judge', '--plan', self.run / 'plan.json', '--results', self.run / 'results', '--output', self.run / 'negative.json')
         self.assertNotEqual(0, result[0], result)
         self.assertFalse(m.read(self.run / 'negative.json')['fixture_contract_pass'])
+
+
+class ProcessRecoveryBoundary(FaultProcessBoundary):
+    """Only OS process/file/HTTP/clock edges; real creation producer/EventLog."""
+    def __init__(self, inputs, root, fault=None):
+        super().__init__(inputs)
+        self.root = Path(root)
+        self.root.mkdir()
+        self.fault_mode = fault
+        self.t = 1700001000.0
+        self.serial = 0
+        self.process_pid = 100
+        self.marker = None
+        self.receipt = None
+        self.creation_rows = []
+        self.receipt_ready = __import__('threading').Event()
+        self.crashes = []
+        self.running = False
+        self.current_command = None
+        self.stage = None
+        self.enabled = True
+        self.grace = 5
+        self._new_instance()
+
+    def _new_instance(self):
+        from fakenet.mcp.coordination import EventLog
+        self.process_pid += 1
+        self.birth = str(int((self.t - 1) * 10000000) + 116444736000000000)
+        self.events = EventLog()
+        self.event('recovery', state='recovering')
+        self.event('recovery', state='stopped')
+
+    def event(self, kind, **fields):
+        from unittest.mock import patch
+        with patch('time.time', return_value=self.t):
+            self.events.record(kind, **fields)
+
+    def process(self):
+        return {'pid': self.process_pid, 'creation_time': self.birth}
+
+    def service(self):
+        return dict(self.process(), image=str(Path('unused')), state='Running',
+                    endpoint_owned=True, marker=self.marker, sampled_at=self.t)
+
+    def _creation(self):
+        import copy, os
+        from fakenet.mcp import creation_evidence as producer, service_stop
+        from unittest.mock import patch
+        directory = self.root / self.run_id
+        directory.mkdir()
+        programdata = self.root / 'programdata'
+        armed = programdata / 'FakeNet-NG-MCP/logs/fault-injection.json'
+        armed.parent.mkdir(parents=True, exist_ok=True)
+        armed.write_text(json.dumps(self.fault))
+        child = self.child
+        owner = self
+        class Job:
+            pid = child['pid']
+            def members(self): return [child['pid']]
+        def process_times(pid):
+            return copy.deepcopy(child if pid == child['pid'] else owner.process())
+        with patch.dict(os.environ, {'PROGRAMDATA': str(programdata), 'FAKENETNG_MCP_FAULT_INJECTION': '1'}), patch.object(service_stop, 'process_identity', side_effect=process_times), patch('time.time', return_value=self.t):
+            for stage in producer.CREATION_STAGES:
+                job = Job() if stage in ('after_api', 'before_start') else None
+                if stage == self.stage:
+                    # The native clock reaches the bounded wait deadline; the
+                    # unmodified producer has already fsynced/unlinked receipt.
+                    import threading, time
+                    producer_thread = threading.current_thread()
+                    prior_clock = time.monotonic
+                    ticks = iter((0, 0, 121))
+                    def producer_clock():
+                        if threading.current_thread() is producer_thread:
+                            return next(ticks, 121)
+                        return prior_clock()
+                    with patch('time.monotonic', side_effect=producer_clock):
+                        try: producer.observe_creation(self.run_id, directory, job, stage)
+                        except TimeoutError: pass
+                    break
+                producer.observe_creation(self.run_id, directory, job, stage)
+        self.receipt = json.loads((directory / 'creation-fault-triggered.json').read_text())
+        self.creation_rows = [json.loads(line) for line in (directory / 'creation.jsonl').read_text().splitlines()]
+        if self.fault_mode == 'wrong-nonce': self.receipt['nonce'] = '00000000-0000-4000-8000-000000000099'
+        if self.fault_mode == 'wrong-stage': self.receipt['observation']['stage'] = 'before_start'
+        if self.fault_mode == 'wrong-supervisor-birth': self.receipt['observation']['supervisor']['creation_time'] = '9'
+        self.receipt_ready.set()
+
+    def exchange(self, kind, value):
+        import copy, re, base64
+        from pathlib import PureWindowsPath
+        if kind == 'http':
+            request = json.loads(value['data'])
+            tool = request['params']['name']
+            args = request['params'].get('arguments') or {}
+            with self.guard:
+                if tool == 'ping': return super().exchange(kind, value)
+                if tool == 'get_events':
+                    rows = self.events.snapshot()
+                    if self.fault_mode == 'old-recovery' and self.crashes:
+                        rows = self.old_events
+                    if self.fault_mode == 'unknown-recovery' and self.crashes:
+                        rows = [r for r in rows if r.get('state') != 'stopped']
+                    return self.response({'events': rows, 'error': None})
+                if tool in ('load_config', 'start'):
+                    self.version += 1
+                    self.current_command = args['command_id']
+                    self.event('command.accepted', command_id=self.current_command)
+                    if tool == 'start':
+                        self.serial += 1
+                        self.run_id = '00000000-0000-4000-9000-%012d' % self.serial
+                        self.child = {'pid': 200 + self.serial, 'creation_time': str(int(self.birth) + 100)}
+                        self.marker = {'run_id': self.run_id, 'command_id': self.current_command, 'needs_recovery': True}
+                        self.stage = self.fault['fault'][7:] if self.fault and self.fault['fault'].startswith('create_') else None
+                        self.running = True
+                        if self.stage: self._creation()
+                if tool not in ('load_config', 'start', 'get_status'):
+                    return super().exchange(kind, value)
+                payload = {'state': 'starting' if self.running and self.stage else 'healthy' if self.running else 'stopped',
+                    'state_version': self.version, 'run_id': self.run_id if self.running else None,
+                    'config_identity': self.inputs['config_identity'], 'error': None,
+                    'health': {'process_alive': self.running, 'identity': getattr(self, 'child', None)}}
+                if tool != 'get_status': payload['command_id'] = self.current_command
+                if self.fault_mode == 'reject-load' and tool == 'load_config': payload['error'] = {'code': 'rejected'}
+                if self.fault_mode == 'resumed-run' and self.crashes and tool == 'get_status': payload['run_id'] = self.run_id
+                return self.response(payload)
+        if kind == 'powershell':
+            command = value['command']
+            if '[Convert]::FromBase64String(' in command and '$expected =' in command:
+                encoded = re.search(r"FromBase64String\('([^']+)'\)", command).group(1)
+                expected = json.loads(base64.b64decode(encoded))
+                if '$creationWindow =' not in command:
+                    payload = self.service()
+                    payload['image'] = str(PureWindowsPath(self.inputs['installation_root']) / 'fakenetng-mcp.exe')
+                    if self.fault_mode == 'old-scm' and self.crashes: payload.update(self.old_process)
+                    if self.fault_mode == 'foreign-endpoint': payload['endpoint_owned'] = False
+                else:
+                    self.crashes.append(copy.deepcopy(expected))
+                    self.old_process = self.process()
+                    self.old_events = self.events.snapshot()
+                    child = expected.get('child')
+                    tree = [] if child is None else [dict(child, parent_pid=self.process_pid,
+                        image=str(PureWindowsPath(self.inputs['installation_root']) / 'fakenetng-mcp-managed.exe'), run_id=self.run_id)]
+                    payload = {'run_id': self.run_id, 'supervisor': self.process(), 'supervisor_exited': True,
+                        'observed_tree': tree, 'remaining_pids': [], 'escaped': [], 'canary': {'pid': 900, 'creation_time': self.birth},
+                        'canary_survived': self.fault_mode != 'canary-killed', 'marker': copy.deepcopy(self.marker)}
+                    if expected.get('nonce'): payload['receipt'] = copy.deepcopy(self.receipt)
+                    if self.fault_mode == 'wrong-child-birth' and tree: tree[0]['creation_time'] = '1'
+                    if self.fault_mode == 'foreign-parent' and tree: tree[0]['parent_pid'] = 999
+                    if self.fault_mode == 'missing-member' and tree: payload['observed_tree'] = []
+                    if self.fault_mode == 'tree-alive': payload['remaining_pids'] = [self.child['pid']]
+                    self.marker = dict(self.marker, needs_recovery=(self.fault_mode == 'uncleared-marker'))
+                    self.running = False
+                    self._new_instance()
+                    self.fault = None
+                output = json.dumps(payload)
+            elif 'creation-fault-triggered.json' in command and '$m=Get-Content' in command:
+                self.receipt_ready.wait(2)
+                output = json.dumps(self.receipt)
+            elif 'creation=(Get-Content' in command:
+                rows = copy.deepcopy(self.creation_rows)
+                if self.fault_mode == 'missing-stage': rows = rows[1:]
+                payload = {'creation': '\n'.join(json.dumps(r) for r in rows), 'ipc': '', 'pcaps': []}
+                if self.fault_mode == 'early-start': payload['ipc'] = json.dumps({'frame': {'kind': 'start'}})
+                if self.fault_mode == 'early-capture': payload['pcaps'] = [{'Name': 'unexpected.pcap'}]
+                output = json.dumps(payload)
+            elif "state\\state.json' -Raw" in command:
+                output = json.dumps(self.marker)
+            elif '[IO.File]::WriteAllText($path,' in command and 'fault-injection.json' in command:
+                self.fault = json.loads(re.search(r"WriteAllText\(\$path,'(\{.*?\})'", command).group(1))
+                self.receipt = None
+                self.receipt_ready.clear()
+                output = json.dumps(self.fault)
+            else: return super().exchange(kind, value)
+            return {'output': output, 'raw': output, 'exit_code': 0, 'is_error': False}
+        return super().exchange(kind, value)
+
+
+class OriginalProcessRecoveryTests(unittest.TestCase):
+    setUp = OriginalMcpTests.setUp
+
+    def process_run(self, label, fault=None):
+        boundary = ProcessRecoveryBoundary(self.inputs, self.root / (label + '-os'), fault)
+        out = self.root / label
+        result = m.run('MCP-P03-FULL', out, self.inputs, selected=['ACC-007'], boundary=boundary, fixture=True)
+        return result, out, boundary
+
+    def test_all_six_real_creation_producer_receipts_and_healthy_tree_rejudge(self):
+        result, out, boundary = self.process_run('normal')
+        self.assertEqual('pass', result['checks']['ACC-007']['status'], m.read(out / 'units/ACC-007/result.json'))
+        self.assertEqual(7, len(boundary.crashes))
+        self.assertEqual(list(__import__('process_recovery').CREATION_STAGES), [x['observation']['stage'] for x in boundary.crashes[:6]])
+        rows, clean, detail = o.evaluate(ROOT, out, 'MCP-P03-FULL', ['ACC-007'], self.inputs, allow_fixture=True)
+        self.assertEqual('pass', rows[0]['status'], detail)
+        self.assertTrue(clean, detail)
+
+    def test_unknown_load_or_unconsumed_stage_identity_never_terminates(self):
+        for fault in ('reject-load', 'wrong-nonce', 'wrong-stage', 'wrong-supervisor-birth', 'foreign-endpoint'):
+            with self.subTest(fault=fault):
+                result, out, boundary = self.process_run(fault, fault)
+                self.assertNotEqual('pass', result['checks']['ACC-007']['status'])
+                self.assertEqual([], boundary.crashes)
+
+    def test_target_birth_ownership_prefix_canary_and_recovery_bad_cases_rejected(self):
+        for fault in ('wrong-child-birth', 'foreign-parent', 'missing-member', 'tree-alive',
+                      'missing-stage', 'early-start', 'early-capture', 'canary-killed',
+                      'old-scm', 'old-recovery', 'unknown-recovery', 'resumed-run', 'uncleared-marker'):
+            with self.subTest(fault=fault):
+                result, out, boundary = self.process_run(fault, fault)
+                self.assertNotEqual('pass', result['checks']['ACC-007']['status'], fault)
+                count = 5 if fault in ('wrong-child-birth', 'foreign-parent', 'missing-member') else 1
+                self.assertEqual(count, len(boundary.crashes), m.read(out / 'units/ACC-007/result.json'))
+                stage = 'after_api' if count == 5 else 'before_job'
+                reasons = m.read(out / ('units/ACC-007/' + stage + '-checks.json'))['failures']
+                self.assertTrue(reasons, fault)
+                expected = ('birth/image/ancestry' if count == 5 else
+                            'tree not collapsed' if fault in ('tree-alive', 'canary-killed') else
+                            'stage prefix' if fault == 'missing-stage' else
+                            'takeover before' if fault in ('early-start', 'early-capture') else
+                            'new SCM' if fault == 'old-scm' else
+                            'startup recovery audit' if fault in ('old-recovery', 'unknown-recovery') else
+                            'no continuation' if fault == 'resumed-run' else 'responsibility')
+                self.assertIn(expected, json.dumps(reasons))
+
+    def test_fixed_scripts_use_dedicated_managed_image_handles_and_headless_canary(self):
+        pins = m.source_pins(ROOT)
+        for name in ('process_scope.ps1', 'observe_process_service.ps1', 'crash_current_service.ps1', 'crash_creation_window.ps1', 'process_recovery.py'):
+            path = 'test/mcp/acceptance/' + name
+            self.assertEqual(m.sha256(ROOT / path), pins[path])
+        for name in ('crash_current_service.ps1', 'crash_creation_window.ps1'):
+            text = (ROOT / 'test/mcp/acceptance' / name).read_text()
+            self.assertNotIn('notepad', text.lower())
+            self.assertIn('fakenetng-mcp-managed.exe', text)
+            self.assertIn('$parent.handle.Kill()', text)
+        self.assertIn('CreateNoWindow = $true', (ROOT / 'test/mcp/acceptance/process_scope.ps1').read_text())
+
+
+class PublicProcessRecoveryCliTests(unittest.TestCase):
+    setUp = PublicMcpCliTests.setUp
+    cli = PublicMcpCliTests.cli
+    prepare = PublicMcpCliTests.prepare
+
+    def test_same_catalog_original_acc007_and_rehashed_wrong_tree(self):
+        self.prepare('MCP-P03-FULL', ['ACC-007'])
+        with mock.patch.object(m, 'NativeBoundary', side_effect=lambda *a, **kw: ProcessRecoveryBoundary(self.inputs, self.base / 'os')):
+            executed = self.cli('execute', '--plan', self.run / 'plan.json')
+        self.assertEqual(0, executed[0], executed)
+        judged = self.cli('judge', '--plan', self.run / 'plan.json', '--results', self.run / 'results', '--output', self.run / 'positive.json')
+        self.assertEqual(0, judged[0], judged)
+        summary = m.read(self.run / 'positive.json')
+        self.assertTrue(summary['fixture_contract_pass'])
+        self.assertFalse(summary['full_functional_pass'])
+        case_dir = self.run / 'results/MCP-P03-FULL'
+        path = case_dir / 'driver/units/ACC-007/trace.json'
+        trace = m.read(path)
+        hits = 0
+        for row in trace['records']:
+            if row['kind'] == 'powershell' and '$creationWindow =' in row['input']['command']:
+                actual = json.loads(row['output']['output'])
+                if actual.get('observed_tree'):
+                    hits += 1
+                    actual['observed_tree'][0]['parent_pid'] = 99999
+                    row['output']['output'] = json.dumps(actual)
+                    row['output']['raw'] = row['output']['output']
+        self.assertGreater(hits, 0)
+        path.write_text(json.dumps(trace))
+        receipt = m.read(case_dir / 'receipt.json')
+        for item in receipt['artifacts']: item['sha256'] = m.sha256(item['path'])
+        (case_dir / 'receipt.json').write_text(json.dumps(receipt))
+        index = m.read(self.run / 'results/results.json')
+        for item in index['receipts']:
+            if item['case_id'] == 'MCP-P03-FULL': item['sha256'] = m.sha256(case_dir / 'receipt.json')
+        (self.run / 'results/results.json').write_text(json.dumps(index))
+        judged = self.cli('judge', '--plan', self.run / 'plan.json', '--results', self.run / 'results', '--output', self.run / 'negative.json')
+        self.assertNotEqual(0, judged[0], judged)
+        self.assertFalse(m.read(self.run / 'negative.json')['fixture_contract_pass'])

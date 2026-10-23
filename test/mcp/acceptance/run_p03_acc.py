@@ -775,94 +775,72 @@ def run_acc006(base, channel, writer):
     return EXIT_PASS if all(checked) else EXIT_FAIL
 
 
-def crash_current_service(channel, snapshot):
-    """Pin SCM supervisor and current child; never terminate by process name."""
-    import uuid
-    run_id = str(uuid.UUID(snapshot['run_id']))
-    identity = snapshot['health']['identity']
-    child_pid = int(identity['pid'])
-    created = str(identity['creation_time'])
-    if child_pid <= 0 or not created.isdecimal():
-        raise StepError('invalid managed child identity')
-    script = Path(__file__).with_name('crash_current_service.ps1').read_text()
-    script = script.replace('__CHILD_PID__', str(child_pid)).replace(
-        '__CREATION__', created).replace('__RUN_ID__', run_id)
-    return channel.powershell(script, timeout=60)
+def crash_current_service(channel, snapshot, service=None):
+    """Pin the healthy run and its service before any destructive operation."""
+    from process_recovery import canonical_run, identity, marker_matches, images, script
+    if (snapshot.get('state') != 'healthy' or snapshot.get('error') or
+            (snapshot.get('health') or {}).get('process_alive') is not True or not service):
+        raise StepError('ACC007 healthy current instance unconfirmed')
+    run = canonical_run(snapshot['run_id'])
+    child = identity(snapshot['health']['identity'])
+    marker = service.get('marker') or {}
+    if not marker_matches(marker, run, marker.get('command_id')):
+        raise StepError('ACC007 healthy run responsibility differs')
+    expected = dict(run_id=run, command_id=marker['command_id'],
+                    supervisor=identity(service), child=child, managed_image=images(channel)[1])
+    Path(__file__).with_name('crash_current_service.ps1')
+    actual, raw = script(channel, 'crash_current_service.ps1', expected)
+    return actual, raw, expected
 
 
 def run_acc007(base, channel, writer):
-    writer.action('acc007', 'kill MCP => job collapses tree, SCM restarts, '
-                            'recovery without FakeNet continuation')
+    writer.action('acc007', 'six atomic creation windows, pinned tree exit and same-incarnation startup recovery')
     from run_creation_cases import run_creation_matrix, CREATION_STAGES
+    from process_recovery import (require_mutation, observe_service, crash_failures,
+                                  confirm_recovery, identity, marker_matches)
     creation = run_creation_matrix(base, channel, writer)
     writer.add_evidence('acc007-creation-matrix', creation)
     if set(creation) != set(CREATION_STAGES) or not all(creation.values()):
+        channel.preserve_scene = True
         return EXIT_FAIL
-    checks = {}
-    started = load_and_start(base)
-    checks['start_ok'] = started.get('error') is None
-    writer.add_evidence('acc007-start', started)
-    healthy, initial = wait_state(base, lambda x: x.get('state') == 'healthy', timeout=45)
-    if not healthy:
-        raise StepError('ACC007 requires a healthy current run; preserve scene')
-    run_id = initial['run_id']
-
-    # SCM recovery configuration is part of the contract's restart path.
-    qfailure = channel.powershell('sc.exe qfailure fakenetng-mcp',
-                                  timeout=60)
-    writer.add_evidence('acc007-sc-qfailure', qfailure)
-    checks['scm_recovery_configured'] = 'RESTART' in (qfailure['output'] or
-                                                      '').upper()
-
-    recovery_log_query = (
-        "Select-String -Path (Join-Path $env:ProgramData "
-        "'FakeNet-NG-MCP\\logs\\service.log') -Pattern "
-        "'startup recovery outcome' | ForEach-Object {$_.Line}")
-    recovery_before = channel.powershell(recovery_log_query, timeout=30)
-    writer.add_evidence('acc007-recovery-log-before', recovery_before)
-    marker_before = channel.powershell(
-        "Get-Content 'C:\\ProgramData\\FakeNet-NG-MCP\\state\\state.json' -Raw", timeout=30)
-    writer.add_evidence('acc007-recovery-marker-before', marker_before)
-    raw = crash_current_service(channel, initial)
-    writer.add_evidence('acc007-exact-crash-and-tree', raw)
-    observed = json.loads(raw['output'])
-    checks['only_pinned_supervisor_killed'] = observed['supervisor_exited']
-    checks['unrelated_process_survives'] = observed['canary_survived']
-    checks['observed_tree_collapsed'] = bool(observed['observed_tree']) and not observed['remaining_pids']
-
-    recovered, snap = wait_state(
-        base, lambda s: s.get('state') in ('stopped', 'failed'), timeout=420)
-    writer.add_evidence('acc007-post-restart-status', snap or {})
-    service_after = channel.powershell(
-        'Get-CimInstance Win32_Service -Filter "Name=\'fakenetng-mcp\'" | '
-        'Select-Object ProcessId,State | ConvertTo-Json -Compress', timeout=30)
-    writer.add_evidence('acc007-new-scm-instance', service_after)
-    new_service = json.loads(service_after['output'])
-    checks['scm_restarted_mcp'] = (recovered and new_service['State'] == 'Running' and
-        new_service['ProcessId'] > 0 and new_service['ProcessId'] != observed['supervisor']['pid'])
-    checks['recovery_completed_stopped'] = (snap or {}).get('state') == 'stopped'
-    checks['no_fakenet_continuation'] = (snap or {}).get('run_id') is None
-    checks['not_auto_started'] = (snap or {}).get('state') != 'healthy'
-
-    # Recovery audit actually ran: the service log must carry the startup
-    # recovery outcome for this incarnation.
-    relog = channel.powershell(recovery_log_query, timeout=90)
-    writer.add_evidence('acc007-recovery-log', relog)
-    from collections import Counter
-    new_lines = Counter(relog['output'].splitlines()) - Counter(
-        recovery_before['output'].splitlines())
-    checks['recovery_audit_evidenced'] = any(
-        'startup recovery outcome' in line and line.rstrip().endswith('stopped')
-        for line in new_lines)
-
-    from replay_observation import observe_no_replay
-    checks['old_command_not_resumed_evidence'] = (
-        checks['recovery_completed_stopped'] and observe_no_replay(
-            base, channel, writer, 'acc007', json.loads(marker_before['output'])))
-    checks['atomic_creation_window_matrix'] = all(creation.values())
-    writer.add_evidence('acc007-checks', checks)
-    checked = [v for v in checks.values() if v is not None]
-    return EXIT_PASS if all(checked) else EXIT_FAIL
+    try:
+        ready, initial = wait_state(base, lambda x: x.get('state') in ('stopped', 'failed'), timeout=60)
+        if not ready or initial.get('state') != 'stopped' or initial.get('run_id'):
+            raise StepError('ACC007 requires clean stopped entry')
+        command = unique_command('acc007-load')
+        loaded = call(base, 'load_config', {'name': 'default.ini', 'command_id': command,
+                      'expected_state_version': initial['state_version']})
+        writer.add_evidence('acc007-load', loaded)
+        require_mutation(loaded, command, initial['state_version'])
+        command = unique_command('acc007-start')
+        started = call(base, 'start', {'command_id': command,
+                       'expected_state_version': loaded['state_version']}, timeout=90)
+        writer.add_evidence('acc007-start', started)
+        require_mutation(started, command, loaded['state_version'])
+        healthy, current = wait_state(base, lambda x: x.get('state') == 'healthy', timeout=45)
+        if (not healthy or not started.get('run_id') or current.get('run_id') != started['run_id'] or
+                current.get('config_identity') != loaded.get('config_identity') or not loaded.get('config_identity')):
+            raise StepError('ACC007 healthy run/config receipt differs')
+        before = observe_service(base, channel, writer, 'acc007-pinned-before')
+        if not marker_matches(before.get('marker'), current['run_id'], command):
+            raise StepError('ACC007 start command responsibility differs')
+        old_events = call(base, 'get_events', {'limit': 500}, controller=None)
+        writer.add_evidence('acc007-events-before', old_events)
+        if old_events.get('error') or not old_events.get('events'):
+            raise StepError('ACC007 original incarnation events absent')
+        actual, raw, expected = crash_current_service(channel, current, before)
+        writer.add_evidence('acc007-exact-crash-and-tree', raw)
+        failures = crash_failures(actual, expected)
+        if not failures:
+            failures.extend(confirm_recovery(base, channel, writer, 'acc007', before, old_events, actual['marker']))
+        writer.add_evidence('acc007-checks', {'failures': failures,
+            'atomic_creation_window_matrix': True})
+        if failures:
+            channel.preserve_scene = True
+        return EXIT_FAIL if failures else EXIT_PASS
+    except Exception:
+        channel.preserve_scene = True
+        raise
 
 
 def _recovery_outcome(channel):
