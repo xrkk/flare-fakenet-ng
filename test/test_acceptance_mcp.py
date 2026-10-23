@@ -100,14 +100,15 @@ class PublicMcpCliTests(unittest.TestCase):
   stdout,stderr=io.StringIO(),io.StringIO()
   with contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stderr):code=a.main(['--root',str(ROOT)]+[str(x) for x in args])
   return code,stdout.getvalue(),stderr.getvalue()
- def prepare(self):
+ def prepare(self,case='MCP-P02-FULL',checks=None):
+  checks=['ACC-005'] if checks is None else checks
   import acceptance as a
   candidate={'schema':a.CANDIDATE_V2,'source_commit':self.inputs['identity']['source_commit'],'package_sha256':self.inputs['identity']['package_sha256'],'package_path':self.inputs['package'],'package_manifest':self.inputs['manifest'],'offline_fixture':True}
   environment={'schema':a.ENVIRONMENT_V2,'targets':['windows-vm'],'interpreters':{'python':sys.executable},'work_root':str(self.base),'allowed_actions':['native','vm-execute'],'endpoints':[],'auth_refs':[],
-   'native_runtime':{'transport':'windows-mcp-velo','identity':self.inputs['target'],**self.inputs['channel']},'mcp':self.inputs,'mcp_checks':{'MCP-P02-FULL':['ACC-005']}}
+   'native_runtime':{'transport':'windows-mcp-velo','identity':self.inputs['target'],**self.inputs['channel']},'mcp':self.inputs,'mcp_checks':{case:checks}}
   (self.base/'candidate.json').write_text(json.dumps(candidate));(self.base/'environment.json').write_text(json.dumps(environment))
   original=m.sha256(ROOT/'docs/acceptance/catalog.json')
-  result=self.cli('plan','--mode','selected','--case','MCP-P02-FULL','--candidate',self.base/'candidate.json','--environment',self.base/'environment.json','--output',self.run/'plan.json');self.assertEqual(0,result[0],result)
+  result=self.cli('plan','--mode','selected','--case',case,'--candidate',self.base/'candidate.json','--environment',self.base/'environment.json','--output',self.run/'plan.json');self.assertEqual(0,result[0],result)
   self.assertEqual(original,m.sha256(ROOT/'docs/acceptance/catalog.json'))
  def test_production_registry_original_business_and_rehashed_bad_response(self):
   self.prepare()
@@ -980,5 +981,66 @@ class ControlledExitPendingTests(unittest.TestCase):
     return super().exchange(kind,value)
   out=self.root/'unknown';boundary=Unknown(inputs,self.root/'guest');result=m.run('MCP-P04-FULL',out,inputs,selected=['ACC-019','ACC-015'],boundary=boundary,fixture=True)
   self.assertIsNotNone(boundary.pending);self.assertEqual('not_run',result['checks']['ACC-015']['status']);trace=m.read(out/'units/ACC-019/trace.json');self.assertIsNotNone(trace['recovery_error']);self.assertIn('preserve scene',trace['recovery_error']['message'])
+
+
+class PublicIncidentSliceCliTests(unittest.TestCase):
+ setUp=PublicMcpCliTests.setUp
+ cli=PublicMcpCliTests.cli
+ prepare=PublicMcpCliTests.prepare
+ def test_selected_slice_uses_formal_driver_without_expanding_full(self):
+  self.prepare('MCP-P04-FULL',['INCIDENT-INTEGRITY'])
+  with mock.patch.object(m,'NativeBoundary',side_effect=lambda *args,**kwargs:MultiRunFaultBoundary(self.inputs)):
+   result=self.cli('execute','--plan',self.run/'plan.json')
+  self.assertEqual(0,result[0],result)
+  result=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'independent.json');self.assertEqual(0,result[0],result)
+  summary=m.read(self.run/'independent.json');self.assertTrue(summary['fixture_contract_pass']);self.assertFalse(summary['full_functional_pass']);self.assertNotIn('INCIDENT-INTEGRITY',m.CHECKS['MCP-P04-FULL'])
+
+
+class ArtifactProcessBoundary(FaultProcessBoundary):
+ def __init__(self,inputs,root,foreign=False,bad_transfer=False):
+  super().__init__(inputs);self.archive();self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self.foreign=foreign;self.bad_transfer=bad_transfer;self.metadata_requests=0
+  import io,dpkt,socket
+  stream=io.BytesIO();writer=dpkt.pcap.Writer(stream,linktype=dpkt.pcap.DLT_RAW);udp=dpkt.udp.UDP(sport=40000,dport=53,data=b'benign-artifact-flow');udp.ulen=len(udp);ip=dpkt.ip.IP(src=socket.inet_aton('192.168.204.149'),dst=socket.inet_aton('192.168.204.2'),p=17,ttl=64,data=udp);ip.len=len(ip);writer.writepkt(bytes(ip),ts=1.);self.pcap=stream.getvalue()
+  from fakenet.mcp.artifacts import ArtifactRegistry,write_publication
+  incident=self.root/self.run_id/'incident';incident.mkdir(parents=True)
+  (incident/'manifest.json').write_bytes(self.manifest_bytes);write_publication(incident,[incident/'manifest.json'])
+  run=self.root/'runs'/self.run_id;run.mkdir(parents=True);capture=run/'packets.pcap';capture.write_bytes(self.pcap);write_publication(run,[capture]);self.registry=ArtifactRegistry(self.root)
+ def exchange(self,kind,value):
+  import re,base64
+  if kind=='http':
+   req=json.loads(value['data']);tool=req['params']['name']
+   if tool=='list_artifacts':
+    self.metadata_requests+=1;rows=self.registry.metadata()
+    for row in rows:
+     relative=Path(row['path']).relative_to(self.root);row['path']=str(__import__('pathlib').PureWindowsPath(self.inputs['programdata_root'])/'artifacts'/relative)
+     if self.foreign and row['type']=='pcap':row['path']=row['path'].replace(self.run_id,'44444444-4444-4444-8444-444444444444')
+    return self.response({'artifacts':rows})
+   if tool=='download_artifact':return {'status':200,'headers':{'Content-Type':'application/json'},'body':json.dumps({'error':{'code':-32602,'message':'unknown tool download_artifact'}}).encode(),'http_error':False}
+  if kind=='powershell':
+   cmd=value['command']
+   if '$names=@(Get-ChildItem' in cmd:output=json.dumps(['incident'])
+   elif '@{size=(Get-Item -LiteralPath $p).Length' in cmd:output=json.dumps({'size':len(self.pcap),'sha256':hashlib.sha256(self.pcap).hexdigest()})
+   elif '[IO.File]::OpenRead(' in cmd and 'packets.pcap' in cmd:
+    offset=int(re.search(r'\.Seek\((\d+),',cmd).group(1));count=int(re.search(r'byte\[\] (\d+)',cmd).group(1));data=self.pcap[offset:offset+count];output=base64.b64encode((b'X'*len(data)) if self.bad_transfer else data).decode()
+   else:return super().exchange(kind,value)
+   return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+  return super().exchange(kind,value)
+
+class OriginalArtifactTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_original_metadata_incident_and_exact_pcap_transfer(self):
+  unit='ACC-015';out=self.root/unit;boundary=ArtifactProcessBoundary(self.inputs,self.root/'artifacts')
+  value=m.run('MCP-P04-FULL',out,self.inputs,selected=[unit],boundary=boundary,fixture=True)
+  self.assertEqual('pass',value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+  rows,clean,details=o.evaluate(ROOT,out,'MCP-P04-FULL',[unit],self.inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],details);self.assertTrue(clean)
+ def test_artifact_scope_uses_frozen_programdata_root(self):
+  self.inputs['programdata_root']='D:/FakeNet-MCP-State'
+  self.test_original_metadata_incident_and_exact_pcap_transfer()
+ def test_foreign_run_or_changed_transfer_bytes_cannot_pass(self):
+  for foreign,bad in ((True,False),(False,True)):
+   with self.subTest(foreign=foreign,bad_transfer=bad):
+    self.setUp();unit='ACC-015';out=self.root/unit;boundary=ArtifactProcessBoundary(self.inputs,self.root/'artifacts',foreign,bad)
+    value=m.run('MCP-P04-FULL',out,self.inputs,selected=[unit],boundary=boundary,fixture=True);self.assertNotEqual('pass',value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+    rows,clean,details=o.evaluate(ROOT,out,'MCP-P04-FULL',[unit],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],details)
 
 if __name__=='__main__':unittest.main()

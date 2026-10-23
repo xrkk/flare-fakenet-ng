@@ -374,3 +374,5 @@ ACC019当前生产链已改接现有安装CLI的两阶段stop与install升级预
 预停审计失败另做本run baseline受控扰动, 先保存原字节并绑定run/SHA, 验证stop与upgrade均非零、同PID/出生/instance保持Running且状态failed/原因可读、标准STOP仍拒绝、映像/配置未替换. 只恢复本轮仍未变baseline原字节, 再走现有受控退出与重启恢复. 它不是用ACC008启动恢复布尔代替. CLI与wrapper都须有匹配nonce/argv/出生和实际退出观察; 提交后结果未知/未退出时保留现场及基线恢复责任、不与其并行重启清理，后续单元not_run.
 
 正常/三种错误实现和未知回执的direct原件在controlled-exit-01/02、exit-wrapper-01与exit-planned-dependency-01. 同正式catalog public CLI自动串跑ACC008→ACC019并独立重判, 更新正确引用hash后的错误attempt不得通过. exit-public-01因夹具预建结果不满足空run目录而失败且保留, public-02改为实际同plan生产链后通过. exit-impacted-01误写不存在测试文件导致零测试, 正确exit-impacted-02相关126tests54subtests通过、1项Windows分享句柄测试在Linux跳过. 这些都在零网络guard和OS边界替身下, 实际Windows PowerShell/SCM/升级/ACL/Job/审计恢复仍未验证, 不授完整P04/MCP/native信用; 根因定位/terminal三条件取证及其它未完保持.
+
+ACC015已补原ArtifactRegistry元数据/incident原ZIP/PCAP字节导出及unknown-download-tool负向完整OS边界链, 当前programdata_root显式绑定, 原默认保留. 正常、跨run、传输字节变化和D盘根在artifact01/02验证; 都只良性内存VM边界/本地原字节, 实际导出仍未验. 新selected-only INCIDENT-INTEGRITY已进入正式driver过滤器, 默认full仍只原完整检查名单; incident-public01经正式catalog plan/execute/judge通过且不授full信用. artifact-impacted01相关124tests56subtests/59.30s通过, 局部编译/diff通过; 这些不替代完整P04/native验收.

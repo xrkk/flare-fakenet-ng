@@ -157,7 +157,8 @@ def _wait_terminal(base, timeout=90):
                       ('failed', 'degraded', 'stopped'), timeout=timeout)
 
 
-def run_acc015(base, channel, writer, allowed_client='192.168.204.149'):
+def run_acc015(base, channel, writer, allowed_client='192.168.204.149',
+               programdata_root='C:/ProgramData/FakeNet-NG-MCP'):
     """Export actual incidents and a PCAP belonging to the same run."""
     from pathlib import PureWindowsPath
     import uuid
@@ -170,7 +171,7 @@ def run_acc015(base, channel, writer, allowed_client='192.168.204.149'):
     if not items or listing.get('error') or any(set(item) != {'path', 'type', 'size', 'complete', 'sha256'} for item in items):
         writer.blocker = {'reason': 'actual metadata-only artifact listing missing or invalid'}
         return EXIT_BLOCKED
-    root = PureWindowsPath('C:/ProgramData/FakeNet-NG-MCP/artifacts')
+    root = PureWindowsPath(programdata_root) / 'artifacts'
     incident_runs, pcaps = set(), []
     for item in items:
         path = PureWindowsPath(item['path'])

@@ -394,8 +394,8 @@ def driver_table(root):
         'mcp-headless': {
             'implemented': True, 'production_kind': 'mcp-controller',
             'platforms': ['windows'], 'modes': ['native'],
-            'checks': sorted({name for names in __import__('acceptance_mcp').CHECKS.values() for name in names}),
-            'check_filters': __import__('acceptance_mcp').CHECKS,
+            'checks': sorted({name for names in __import__('acceptance_mcp').SELECTABLE_CHECKS.values() for name in names}),
+            'check_filters': __import__('acceptance_mcp').SELECTABLE_CHECKS,
             'exact_filters': True, 'requires': ['native'], 'package_required': True,
             'resources': ['windows-vm','mcp-service','controller'],
             'oracle': {'kind':'mcp-result','artifact':'driver/mcp-result.json'},
@@ -488,7 +488,7 @@ def select_checks(driver, case, environment=None):
     filters=(driver.get('check_filters') or {}).get(case['id'])
     if filters and driver.get('exact_filters'):
         if driver.get('production_kind')=='mcp-controller':
-            selected=(environment or {}).get('mcp_checks',{}).get(case['id'],filters)
+            selected=(environment or {}).get('mcp_checks',{}).get(case['id'],__import__('acceptance_mcp').CHECKS[case['id']])
             if not selected or len(selected)!=len(set(selected)) or any(x not in filters for x in selected):raise ValueError('unknown MCP original unit selection')
             return list(selected)
         return list(filters)
