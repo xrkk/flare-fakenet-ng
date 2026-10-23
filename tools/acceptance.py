@@ -978,11 +978,20 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
         raise InputError('plan --mode requires catalog v2')
     candidate = load_candidate(candidate_path)
     environment = load_environment(environment_path)
-    head = _resolve_source_commit(root, candidate)
+    selected, exclusions = select_cases(catalog, mode, suite_ids, case_ids)
+    # This registered adapter reads immutable artifact bytes only. The package
+    # keeps its builder source; existing plan pins bind our current verifier.
+    # Mixed/source/runtime selections still require their original HEAD gate.
+    native_only = all(case.get('adapter') == 'native' for case in selected)
+    drivers = (acceptance_native.driver_table(root)
+               if native_only and acceptance_native is not None else {})
+    artifact_only = all(case.get('adapter') == 'native' and
+                        drivers.get(case.get('native_driver'), {}).get('production_kind') == 'package-identity'
+                        for case in selected)
+    head = candidate['source_commit'] if artifact_only else _resolve_source_commit(root, candidate)
     if candidate['source_commit'] != head:
         raise InputError('candidate.source_commit %s does not match current HEAD %s'
                          % (candidate['source_commit'], head))
-    selected, exclusions = select_cases(catalog, mode, suite_ids, case_ids)
     if any(case.get('native_driver') == 'build-identity' for case in selected):
         try:
             candidate = __import__('acceptance_package').freeze_candidate(candidate)

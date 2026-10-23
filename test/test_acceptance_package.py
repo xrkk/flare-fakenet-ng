@@ -176,3 +176,112 @@ class PackagePublicCliTests(unittest.TestCase):
         self.assertIn('package identity input unavailable', plan['blocked'][package.CASE])
         self.assertFalse((self.run / 'results').exists())
         self.assertNotIn('native_runtime', plan['environment'])
+
+
+class ArtifactSourceLayerTests(PackagePublicCliTests):
+    # Reuse helpers, without rerunning inherited test methods here.
+    test_same_catalog_offline_channel_and_rehashed_bad_result = None
+
+    def old_candidate(self, directory):
+        value = make_candidate(directory, 'source')
+        value['source_commit'] = 'a' * 40
+        return value
+
+    def select_old(self):
+        self.candidate = self.old_candidate(self.base / 'old-candidate')
+        self.candidate_path = self.base / 'old-candidate.json'
+        self.candidate_path.write_text(json.dumps(self.candidate))
+        return self.candidate
+
+    def test_old_original_package_current_verifier_same_cli_and_no_qualification_upgrade(self):
+        candidate = self.select_old()
+        frozen = {key: Path(candidate[key]).read_bytes() for key in ('package_path', 'package_manifest')}
+        input_bytes = self.candidate_path.read_bytes()
+        plan = self.plan()
+        self.assertEqual('a' * 40, plan['source_commit'])
+        self.assertEqual('a' * 40, plan['candidate']['source_commit'])
+        self.assertEqual(plan['schema'], entry.PLAN_V2)
+        self.assertEqual(package.sha256(ROOT / 'tools/acceptance_package.py'), plan['native_source_hashes']['tools/acceptance_package.py'])
+        result = self.cli('execute', '--plan', self.run / 'plan.json')
+        self.assertEqual(0, result[0], result)
+        result = self.cli('judge', '--plan', self.run / 'plan.json', '--results', self.run / 'results', '--output', self.run / 'independent.json')
+        self.assertEqual(0, result[0], result)
+        summary = json.loads((self.run / 'independent.json').read_text())
+        self.assertTrue(summary['fixture_contract_pass']); self.assertFalse(summary['full_functional_pass'])
+        facts = json.loads((self.run / 'results' / package.CASE / 'package-result.json').read_text())['facts']
+        self.assertEqual('a' * 40, facts['source_commit']); self.assertEqual('PARTIAL', facts['qualification_status'])
+        self.assertEqual(['benign fixture has no native qualification'], facts['native_gaps'])
+        self.assertFalse(facts['native_functionality_evaluated']); self.assertFalse(facts['reproducible_build_evaluated'])
+        for key, original in frozen.items(): self.assertEqual(original, Path(candidate[key]).read_bytes())
+        self.assertEqual(input_bytes, self.candidate_path.read_bytes())
+
+    def test_runtime_source_and_mixed_selection_do_not_inherit_artifact_exception(self):
+        self.select_old()
+        for cases in (['CORE-REGRESSION-SELFTEST'], ['MCP-P03-FULL'],
+                      [package.CASE, 'CORE-REGRESSION-SELFTEST']):
+            with self.subTest(cases=cases):
+                output = self.base / ('mixed' if len(cases) > 1 else cases[0]) / 'plan.json'
+                args = ['plan', '--mode', 'selected']
+                for case in cases: args += ['--case', case]
+                result = self.cli(*args, '--candidate', self.candidate_path, '--environment', self.environment_path, '--output', output)
+                self.assertNotEqual(0, result[0], result)
+                self.assertIn('does not match current HEAD', result[2])
+                self.assertFalse(output.exists())
+
+    def test_new_artifact_plan_never_rewrites_existing_current_source_plan(self):
+        previous = self.plan()
+        old_plan_path = self.run / 'plan.json'; old_bytes = old_plan_path.read_bytes()
+        old_input_path = self.candidate_path; old_input = old_input_path.read_bytes()
+        self.select_old(); self.run = self.base / 'next-artifact-run'; current = self.plan()
+        self.assertNotEqual(previous['execution_id'], current['execution_id'])
+        self.assertEqual(old_bytes, old_plan_path.read_bytes()); self.assertEqual(old_input, old_input_path.read_bytes())
+
+    def test_relabeling_source_or_forging_verifier_pins_is_rejected_before_execute(self):
+        self.select_old(); original = self.plan(); path = self.run / 'plan.json'
+        import copy
+        for mode in ('relabel', 'pins', 'missing-source'):
+            with self.subTest(mode=mode):
+                plan = copy.deepcopy(original)
+                if mode == 'relabel':
+                    plan['candidate']['source_commit'] = entry.git_head(ROOT); plan['source_commit'] = entry.git_head(ROOT)
+                elif mode == 'pins':
+                    plan['native_source_hashes']['tools/acceptance_package.py'] = 'f' * 64
+                else:
+                    del plan['source_hashes'][package.CASE]['tools/build_fakenetng_mcp_wine.py']
+                path.write_text(json.dumps(plan))
+                result = self.cli('execute', '--plan', path)
+                self.assertNotEqual(0, result[0], result)
+                self.assertFalse((self.run / 'results/results.json').exists())
+        path.write_text(json.dumps(original))
+
+    def test_full_and_stress_do_not_inherit_artifact_exception(self):
+        self.select_old()
+        for mode in ('full', 'stress'):
+            with self.subTest(mode=mode):
+                output = self.base / mode / 'plan.json'
+                result = self.cli('plan', '--mode', mode, '--candidate', self.candidate_path,
+                                  '--environment', self.environment_path, '--output', output)
+                self.assertEqual(2, result[0], result)
+                self.assertIn('does not match current HEAD', result[2])
+                self.assertFalse(output.exists())
+
+    def test_old_package_drift_stays_failed_under_current_verifier(self):
+        for changed in ('package_path', 'package_manifest'):
+            with self.subTest(changed=changed):
+                self.candidate = self.old_candidate(self.base / changed)
+                self.candidate_path = self.base / (changed + '.json')
+                self.candidate_path.write_text(json.dumps(self.candidate))
+                self.run = self.base / ('run-' + changed)
+                self.plan()
+                path = Path(self.candidate[changed])
+                path.write_bytes(path.read_bytes() + b' ')
+                result = self.cli('execute', '--plan', self.run / 'plan.json')
+                self.assertNotEqual(0, result[0], result)
+                if changed == 'package_manifest':
+                    self.assertIn('blocked state differs from registry', result[2])
+                    self.assertFalse((self.run / 'results').exists())
+                else:
+                    summary = json.loads((self.run / 'summary.json').read_text())
+                    self.assertEqual('fail', summary['verdict'])
+                    evidence = json.loads((self.run / 'results' / package.CASE / 'package-result.json').read_text())
+                    self.assertIn('package bytes differ from frozen', evidence['reason'])

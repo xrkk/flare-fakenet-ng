@@ -52,7 +52,7 @@ python tools/acceptance.py judge --plan Logs/acceptance/<run>/plan.json --result
 }
 ```
 
-纯源码离线组只要求真实 `source_commit`; 原生组才需要实际包/部署身份. 候选与实际 HEAD 不一致时 `plan` 拒绝; 不自动重建或换候选.
+纯源码离线组只要求真实 `source_commit`; 原生组才需要实际包/部署身份. 源码、运行及混合集合仍保留当前产品 HEAD 约束. 仅选择已注册的只读 `BUILD-PACKAGE-IDENTITY` 时, 允许校验其它提交的原包: candidate/plan 的 source_commit 保持原 manifest 源提交, 当前校验器由既有 source_hashes/native_source_hashes 精确绑定. 不改原包、旧候选或旧计划, 不证明旧包等于当前产品或满足新的构建资格/运行要求. 其余跨提交复用尚未实现, 不自动重建、换填源提交或用目录白名单绕过.
 
 ### environment.json
 
