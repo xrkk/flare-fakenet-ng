@@ -445,8 +445,14 @@ def preserve_owned_state(channel, writer, run_ids):
         "ConvertTo-Json -InputObject $rows -Depth 4 -Compress", timeout=60)
     records = json.loads(raw['output'])
     from pathlib import PureWindowsPath
+    root = PureWindowsPath((getattr(channel, 'inputs', None) or {}).get('programdata_root', r'C:\ProgramData\FakeNet-NG-MCP'))
+    if not isinstance(records, list) or len({str(row.get('path', '')).casefold() for row in records}) != len(records):
+        raise StepError('state export missing or duplicate paths')
     for item in records:
         path = PureWindowsPath(item['path'])
+        if (not path.is_absolute() or '..' in path.parts or
+                (path != root / 'state/state.json' and path.parent != root / 'baselines')):
+            raise StepError('state export outside fixed owned roots')
         body = base64.b64decode(item['body'], validate=True)
         if len(body) != item['size'] or hashlib.sha256(body).hexdigest() != item['sha256']:
             raise StepError('state export hash mismatch')

@@ -1935,3 +1935,318 @@ class PublicProcessRecoveryCliTests(unittest.TestCase):
         judged = self.cli('judge', '--plan', self.run / 'plan.json', '--results', self.run / 'results', '--output', self.run / 'negative.json')
         self.assertNotEqual(0, judged[0], judged)
         self.assertFalse(m.read(self.run / 'negative.json')['fixture_contract_pass'])
+
+
+class SnapshotRecoveryBoundary(SnapshotProcessBoundary):
+    """Real snapshot/baseline/RealSupervisor.recover; only native OS edges."""
+    def __init__(self, inputs, root, fault=None):
+        super().__init__(inputs, root)
+        self.fault_mode = fault
+        self.sddl = 'O:SYG:SYD:(A;;FA;;;SY)'
+        self.process_pid = 500
+        self.calls = []
+        self.deletions = []
+        self.normalizations = 0
+        self.service_running = True
+        self._recover()
+
+    def _recover(self):
+        import time, subprocess
+        from fakenet.mcp.supervisor import RealSupervisor
+        from fakenet.mcp.coordination import Coordinator
+        self.runner = RealSupervisor(snapshot=self.snapshot, baseline_store=self.baselines)
+        self.coord = Coordinator(self.runner)
+        def native(command, **kw):
+            text = 'TCP 127.0.0.1:47889 0.0.0.0:0 LISTENING 125' if command[0] == 'netstat' and self.listener else 'unchanged'
+            return subprocess.CompletedProcess(command, 0, text, '')
+        def advance(seconds): self.t += seconds
+        with mock.patch.object(subprocess, 'run', side_effect=native), mock.patch('time.time', side_effect=lambda: self.t), mock.patch('time.monotonic', side_effect=lambda: self.t), mock.patch('time.sleep', side_effect=advance):
+            self.runner.recover(self.coord)
+        snap = self.coord.snapshot()
+        self.state = snap['state']
+        self.run_id = snap['run_id']
+        self.normalizations += 1
+        self.process_pid += 1
+        self.birth = str(int((self.t - 200) * 10000000) + 116444736000000000)
+        self.sampled = self.t + 1
+
+    def normalize_recovery(self): self._recover()
+
+    def view(self, raw):
+        from pathlib import PureWindowsPath
+        try: value = json.loads(raw)
+        except ValueError: return raw
+        if 'baseline_path' in value:
+            value['baseline_path'] = str(PureWindowsPath(self.inputs['programdata_root']) / 'baselines' / Path(value['baseline_path']).name)
+            return (json.dumps(value, ensure_ascii=False, indent=2) + '\n').encode()
+        return raw
+
+    def file_record(self, path):
+        from pathlib import PureWindowsPath
+        raw = self.view(path.read_bytes())
+        virtual = str(PureWindowsPath(self.inputs['programdata_root']) / ('state/state.json' if path == self.snapshot.path else 'baselines/' + path.name))
+        return {'path': virtual, 'body': __import__('base64').b64encode(raw).decode(), 'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+
+    def file_read(self):
+        from pathlib import PureWindowsPath
+        marker = self.file_record(self.snapshot.path) if self.snapshot.path.exists() else None
+        service = {'pid': self.process_pid, 'creation_time': self.birth, 'image': str(PureWindowsPath(self.inputs['installation_root']) / 'fakenetng-mcp.exe'), 'state': 'Running' if self.service_running else 'Stopped'}
+        if not self.service_running: service['pid'] = 0
+        return {'marker': marker, 'baselines': [self.file_record(p) for p in self.baselines.root.glob('*.json')], 'service': service, 'sampled_at': self.t + 1, 'endpoint_owned': True}
+
+    def exchange(self, kind, value):
+        import base64, re, copy
+        if kind == 'http':
+            req = json.loads(value['data']); tool = req['params']['name']; args = req['params'].get('arguments') or {}
+            self.calls.append(tool)
+            if tool == 'read_config':
+                raw = (ROOT / 'fakenet/configs/default.ini').read_bytes()
+                return self.response({'name': 'default.ini', 'content': raw.decode(), 'sha256': hashlib.sha256(raw).hexdigest()})
+            if tool == 'get_events':
+                rows = self.coord.events_window()[1]
+                if self.fault_mode == 'old-events' and self.normalizations > 1: rows = self.previous_events
+                return self.response({'events': rows, 'error': None})
+            if tool == 'start' and self.state == 'failed' and self.snapshot.read()[1]:
+                from fakenet.mcp import supervisor
+                from types import SimpleNamespace
+                proxy = SimpleNamespace(**{k: getattr(supervisor.os, k) for k in dir(supervisor.os)})
+                proxy.name = 'nt'
+                try:
+                    with mock.patch.object(supervisor, 'os', proxy):
+                        self.runner.start(self.coord, '11111111-2222-4333-8444-555555555555', self.inputs['config_identity'])
+                except supervisor.SupervisorStartError as exc:
+                    return self.response({'state': 'failed', 'error': {'code': 'internal_error', 'message': str(exc)}})
+                raise AssertionError('real corrupt snapshot start unexpectedly succeeded')
+            if tool == 'start' and self.denied:
+                from fakenet.mcp.snapshot import SnapshotError
+                marker, _ = self.snapshot.read()
+                try:
+                    with mock.patch('os.replace', side_effect=PermissionError('controlled file-write OS boundary')):
+                        self.snapshot.write(**dict(marker, needs_recovery=True, command_id=args['command_id']))
+                except SnapshotError as exc:
+                    self.state = 'failed'
+                    return self.response({'state': 'failed', 'run_id': None, 'failure_reason': str(exc), 'error': None})
+                raise AssertionError('write-denied boundary unexpectedly succeeded')
+            result = super().exchange(kind, value)
+            if tool in ('load_config', 'start', 'stop', 'get_status'):
+                body = json.loads(result['body']); payload = json.loads(body['result']['content'][0]['text'])
+                payload['health'] = {'process_alive': self.state == 'healthy'}
+                if tool != 'get_status':
+                    payload['command_id'] = args['command_id']
+                    if tool in ('start', 'stop') and not payload.get('error'):
+                        marker, bad = self.snapshot.read()
+                        if marker: self.snapshot.write(**dict(marker, command_id=args['command_id'], state_version=payload['state_version']))
+                if self.fault_mode == 'reject-load' and tool == 'load_config': payload['error'] = {'code': 'not_allowed_in_state'}
+                return self.response(payload)
+            return result
+        if kind == 'powershell':
+            cmd = value['command']
+            if '$expected =' in cmd and "switch ($expected.operation)" in cmd:
+                expected = json.loads(base64.b64decode(re.search(r"FromBase64String\('([^']+)'\)", cmd).group(1)))
+                op = expected['operation']; result = {'operation': op, 'token': expected['token']}
+                if op == 'read':
+                    result.update(self.file_read())
+                    if self.fault_mode == 'changed-baseline' and result['baselines'] and self.state != 'healthy':
+                        item = result['baselines'][0]
+                        payload = json.loads(base64.b64decode(item['body'])); payload['sections']['routes'] = 'foreign route'
+                        raw = json.dumps(payload).encode(); item.update(body=base64.b64encode(raw).decode(), size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+                    if self.fault_mode == 'wrong-marker' and self.state == 'healthy':
+                        marker = json.loads(base64.b64decode(result['marker']['body'])); marker['command_id'] = 'foreign'
+                        raw = json.dumps(marker).encode(); result['marker'].update(body=base64.b64encode(raw).decode(), size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+                elif op in ('replace', 'restore-failed'):
+                    before = self.file_record(self.snapshot.path) if self.snapshot.path.exists() else None
+                    if (before or {}).get('sha256') != expected['before_sha256']: raise ValueError('state preimage changed')
+                    raw = base64.b64decode(expected['body'])
+                    try: payload = json.loads(raw)
+                    except ValueError: payload = None
+                    if payload and 'baseline_path' in payload:
+                        from pathlib import PureWindowsPath
+                        payload['baseline_path'] = str(self.baselines.root / PureWindowsPath(payload['baseline_path']).name)
+                        raw = (json.dumps(payload, ensure_ascii=False, indent=2) + '\n').encode()
+                    self.snapshot.path.write_bytes(raw)
+                    result.update(before=before, after=self.file_record(self.snapshot.path))
+                elif op == 'acl-read': result['sddl'] = self.sddl
+                elif op == 'acl-deny':
+                    if expected['before'] != self.sddl: raise ValueError('ACL preimage changed')
+                    if self.fault_mode == 'existing-deny':
+                        result.update(available=False, before=self.sddl)
+                    else: result.update(available=True, before=self.sddl, after=self.sddl + '(D;;FW;;;SY)')
+                    if result['available']: self.sddl = result['after']; self.denied = True
+                elif op == 'acl-restore':
+                    if expected['after'] != self.sddl: raise ValueError('ACL changed after this attempt')
+                    self.sddl = expected['before']; self.denied = False; result['sddl'] = self.sddl
+                    if self.fault_mode == 'unknown-acl': result['sddl'] += 'foreign'
+                elif op == 'scan':
+                    root = self.inputs['installation_root'] + '\\_internal'
+                    result.update(root=root, attempted=True, complete=True, pyc_count=1, count=1, files=[{'path': root + '\\core.pyc', 'size': 3}])
+                    if self.fault_mode == 'scan-short': result.update(pyc_count=0, files=[], count=0)
+                    if self.fault_mode == 'scan-banned': result.update(count=2, files=result['files'] + [{'path': root + '\\sqlite3.pyd', 'size': 3}])
+                else: raise AssertionError('unexpected fixed snapshot operation ' + op)
+                output = json.dumps(result)
+            elif "Start-Service fakenetng-mcp; 'START_REQUESTED'" in cmd:
+                self.previous_events = self.coord.events_window()[1]
+                self.service_running = True; self._recover(); output = 'START_REQUESTED'
+            elif 'CreateNoWindow=$true' in cmd and 'TcpListener' not in cmd:
+                self.listener = True; output = json.dumps({'pid': 125, 'created': 123456})
+            elif 'port preoccupied' in cmd:
+                self.listener = True; output = json.dumps({'pid': 125, 'created': 123456})
+            elif "throw 'listener birth changed'" in cmd: output = 'OWNED_READY'
+            elif 'controlled pre-stop failed' in cmd:
+                self._recover(); self.service_running = False; output = 'controlled service stop completed'
+            elif 'owned file changed' in cmd and 'Remove-Item' in cmd:
+                from pathlib import PureWindowsPath
+                name = PureWindowsPath(re.search(r"\$p='([^']+)'", cmd).group(1)).name
+                path = self.snapshot.path if name == 'state.json' else self.baselines.root / name
+                expected = re.search(r"-ne '([a-f0-9]{64})'", cmd).group(1)
+                if self.file_record(path)['sha256'] != expected: raise ValueError('owned file changed')
+                path.unlink(); self.deletions.append(name); output = 'REMOVED'
+            elif '$rows=@($files' in cmd:
+                records = [self.file_record(p) | {'name': p.name} for p in list(self.baselines.root.glob('*.json')) + ([self.snapshot.path] if self.snapshot.path.exists() else [])]
+                if self.fault_mode == 'export-outside': records[-1]['path'] = 'C:\\Windows\\state.json'
+                output = json.dumps(records)
+            else: return super().exchange(kind, value)
+            return {'output': output, 'raw': output, 'exit_code': 0, 'is_error': False}
+        return super().exchange(kind, value)
+
+
+# Existing snapshot tests keep exercising the same original catalog unit.
+SnapshotProcessBoundary = SnapshotRecoveryBoundary
+
+
+class SnapshotEvidenceTests(unittest.TestCase):
+    setUp = OriginalMcpTests.setUp
+    def test_complete_original_snapshot_unit_uses_real_recover_and_rejudge(self):
+        unit = 'ACC-008'; out = self.root / 'snapshot'
+        boundary = SnapshotRecoveryBoundary(self.inputs, self.root / 'guest')
+        result = m.run('MCP-P03-FULL', out, self.inputs, selected=[unit], boundary=boundary, fixture=True)
+        self.assertEqual('pass', result['checks'][unit]['status'], m.read(out / 'units/ACC-008/result.json'))
+        self.assertGreaterEqual(boundary.normalizations, 7)
+        rows, clean, detail = o.evaluate(ROOT, out, 'MCP-P03-FULL', [unit], self.inputs, allow_fixture=True)
+        self.assertEqual('pass', rows[0]['status'], detail); self.assertTrue(clean, detail)
+
+    def test_wrong_identity_old_recovery_acl_and_scan_content_never_pass(self):
+        for fault in ('reject-load', 'wrong-marker', 'old-events', 'unknown-acl', 'scan-short', 'scan-banned'):
+            with self.subTest(fault=fault):
+                out = self.root / fault
+                boundary = SnapshotRecoveryBoundary(self.inputs, self.root / (fault + '-guest'), fault)
+                result = m.run('MCP-P03-FULL', out, self.inputs, selected=['ACC-008'], boundary=boundary, fixture=True)
+                self.assertNotEqual('pass', result['checks']['ACC-008']['status'], fault)
+                unit = out / 'units/ACC-008'
+                expected_label = {'reject-load': 'acc008-normal-load', 'wrong-marker': 'acc008-normal-active-files', 'old-events': 'acc008-corrupt-recovery-events', 'unknown-acl': 'acc008-original-acl-restored', 'scan-short': 'acc008-framework-scan', 'scan-banned': 'acc008-framework-scan'}[fault]
+                self.assertTrue((unit / (expected_label + '.json')).is_file(), m.read(unit / 'result.json'))
+                if fault != 'scan-banned':
+                    reasons = {'reject-load': 'receipt unconfirmed', 'wrong-marker': 'content differs', 'old-events': 'incarnation', 'unknown-acl': 'ACL restoration', 'scan-short': 'scan incomplete'}
+                    self.assertIn(reasons[fault], json.dumps(m.read(unit / 'result.json')))
+
+
+class PublicSnapshotCliTests(unittest.TestCase):
+    setUp = PublicMcpCliTests.setUp
+    cli = PublicMcpCliTests.cli
+    prepare = PublicMcpCliTests.prepare
+
+    def test_same_catalog_snapshot_and_rehashed_wrong_controller(self):
+        self.prepare('MCP-P03-FULL', ['ACC-008'])
+        with mock.patch.object(m, 'NativeBoundary', side_effect=lambda *a, **kw: SnapshotRecoveryBoundary(self.inputs, self.base / 'guest')):
+            result = self.cli('execute', '--plan', self.run / 'plan.json')
+        self.assertEqual(0, result[0], result)
+        result = self.cli('judge', '--plan', self.run / 'plan.json', '--results', self.run / 'results', '--output', self.run / 'positive.json')
+        self.assertEqual(0, result[0], result)
+        self.assertTrue(m.read(self.run / 'positive.json')['fixture_contract_pass'])
+        self.assertFalse(m.read(self.run / 'positive.json')['full_functional_pass'])
+        case_dir = self.run / 'results/MCP-P03-FULL'
+        path = case_dir / 'driver/units/ACC-008/trace.json'
+        trace = m.read(path); hits = 0
+        import base64
+        for row in trace['records']:
+            if row['kind'] == 'powershell' and 'switch ($expected.operation)' in row['input']['command']:
+                observed = json.loads(row['output']['output'])
+                if observed.get('operation') == 'read' and observed.get('marker'):
+                    try: marker = json.loads(base64.b64decode(observed['marker']['body']))
+                    except ValueError: continue
+                    if marker.get('needs_recovery') is True:
+                        marker['controller_id'] = '33333333-3333-4333-8333-333333333333'
+                        raw = json.dumps(marker).encode()
+                        observed['marker'].update(body=base64.b64encode(raw).decode(), size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+                        row['output']['output'] = json.dumps(observed); row['output']['raw'] = row['output']['output']; hits += 1
+        self.assertGreater(hits, 0)
+        path.write_text(json.dumps(trace))
+        receipt = m.read(case_dir / 'receipt.json')
+        for artifact in receipt['artifacts']: artifact['sha256'] = m.sha256(artifact['path'])
+        (case_dir / 'receipt.json').write_text(json.dumps(receipt)); index = m.read(self.run / 'results/results.json')
+        for item in index['receipts']:
+            if item['case_id'] == 'MCP-P03-FULL': item['sha256'] = m.sha256(case_dir / 'receipt.json')
+        (self.run / 'results/results.json').write_text(json.dumps(index))
+        result = self.cli('judge', '--plan', self.run / 'plan.json', '--results', self.run / 'results', '--output', self.run / 'negative.json')
+        self.assertNotEqual(0, result[0], result)
+        self.assertFalse(m.read(self.run / 'negative.json')['fixture_contract_pass'])
+
+
+class SnapshotOwnedScopeTests(unittest.TestCase):
+    setUp = OriginalMcpTests.setUp
+
+    def test_foreign_baseline_only_blocks_missing_slice_and_is_preserved(self):
+        from fakenet.mcp.baseline import BASELINE_FIELDS
+        boundary = SnapshotRecoveryBoundary(self.inputs, self.root / 'guest')
+        run = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        saved = boundary.baselines.save(run, {key: 'unchanged' for key in BASELINE_FIELDS})
+        boundary.snapshot.write(run_id=run, controller_id=None, state_version=1, command_id='old-clean', config_sha256=self.inputs['config_identity']['sha256'], baseline_path=saved['path'], needs_recovery=False)
+        boundary._recover()
+        original = Path(saved['path']).read_bytes()
+        out = self.root / 'foreign'
+        result = m.run('MCP-P03-FULL', out, self.inputs, selected=['ACC-008'], boundary=boundary, fixture=True)
+        self.assertEqual('blocked', result['checks']['ACC-008']['status'], m.read(out / 'units/ACC-008/result.json'))
+        self.assertEqual(original, Path(saved['path']).read_bytes())
+        self.assertTrue((out / 'units/ACC-008/acc008-framework-scan.json').is_file())
+        self.assertTrue((out / 'units/ACC-008/acc008-missing-slice-blocked.json').is_file())
+        self.assertFalse((out / 'units/ACC-008/acc008-preserved-state-bodies.json').exists())
+
+    def test_framework_scan_requires_listing_and_rejects_banned_parent(self):
+        m.modules(); from snapshot_evidence import scan_matches
+        from types import SimpleNamespace
+        root = self.inputs['installation_root'] + '\\_internal'
+        channel = SimpleNamespace(inputs=self.inputs)
+        base = {'root': root, 'attempted': True, 'complete': True, 'pyc_count': 1, 'count': 1, 'files': [{'path': root + '\\core.pyc'}]}
+        self.assertTrue(scan_matches(channel, base))
+        import copy
+        for mutate in (lambda v: v.update(complete=False), lambda v: v.update(count=2), lambda v: v.update(files=[]), lambda v: v.update(pyc_count=0)):
+            value = copy.deepcopy(base); mutate(value)
+            with self.assertRaisesRegex(Exception, 'scan|count'): scan_matches(channel, value)
+        base.update(count=2, files=base['files'] + [{'path': root + '\\dbm', 'directory': True}])
+        self.assertFalse(scan_matches(channel, base))
+
+
+class SnapshotAdditionalScopeTests(unittest.TestCase):
+    setUp = OriginalMcpTests.setUp
+
+    def test_existing_system_deny_does_not_remove_acl_or_skip_independent_scan(self):
+        boundary = SnapshotRecoveryBoundary(self.inputs, self.root / 'guest', 'existing-deny')
+        original = boundary.sddl
+        out = self.root / 'existing-deny'
+        result = m.run('MCP-P03-FULL', out, self.inputs, selected=['ACC-008'], boundary=boundary, fixture=True)
+        self.assertEqual('blocked', result['checks']['ACC-008']['status'], m.read(out / 'units/ACC-008/result.json'))
+        self.assertEqual(original, boundary.sddl)
+        self.assertTrue((out / 'units/ACC-008/acc008-framework-scan.json').is_file())
+        self.assertTrue((out / 'units/ACC-008/acc008-write-slice-blocked.json').is_file())
+        self.assertFalse((out / 'units/ACC-008/acc008-original-acl-restored.json').exists())
+
+    def test_wrong_export_path_never_deletes_any_owned_or_foreign_file(self):
+        boundary = SnapshotRecoveryBoundary(self.inputs, self.root / 'guest', 'export-outside')
+        out = self.root / 'outside'
+        result = m.run('MCP-P03-FULL', out, self.inputs, selected=['ACC-008'], boundary=boundary, fixture=True)
+        self.assertNotEqual('pass', result['checks']['ACC-008']['status'])
+        self.assertEqual([], boundary.deletions)
+        self.assertIn('outside fixed owned roots', json.dumps(m.read(out / 'units/ACC-008/result.json')))
+        self.assertTrue(list(boundary.baselines.root.glob('*.json')))
+
+
+class SnapshotBaselineIdentityTests(unittest.TestCase):
+    setUp = OriginalMcpTests.setUp
+    def test_recorded_baseline_drift_stops_before_any_fault_injection(self):
+        boundary = SnapshotRecoveryBoundary(self.inputs, self.root / 'guest', 'changed-baseline')
+        out = self.root / 'changed-baseline'
+        result = m.run('MCP-P03-FULL', out, self.inputs, selected=['ACC-008'], boundary=boundary, fixture=True)
+        self.assertNotEqual('pass', result['checks']['ACC-008']['status'])
+        unit = out / 'units/ACC-008'
+        self.assertTrue((unit / 'acc008-normal-stopped-files.json').is_file())
+        self.assertFalse((unit / 'acc008-corrupt-injected.json').exists())
+        self.assertIn('baseline bytes disappeared or changed', json.dumps(m.read(unit / 'result.json')))

@@ -194,3 +194,41 @@ are offline integration and predicate checks. PowerShell parsing/execution,
 Windows Job/handle/SCM behavior, native crash exceptions/dumps/root-cause
 localization and full P03/MCP remain unverified. No real VM/service/kill/network
 operation or T007 check is performed by these offline tests.
+
+
+### Snapshot conditions and exact owned state (ACC008)
+
+The original ACC008 entry now checks accepted load/start/stop receipts and
+configuration bytes, all seven snapshot fields, the exact controller/command/
+version/run/config identity, and the original same-run baseline bytes. Recorded
+baseline hashes remain fixed across subsequent reads. Corrupt-marker, inconsistent
+residue, snapshot-write failure, missing-marker/no-residue and forbidden framework
+conditions all remain required. The scan needs a complete in-root listing and
+actual pyc entries; empty or truncated output cannot prove absence.
+
+Startup faults are reproduced using the exact pending marker captured from the
+current healthy run, after a controlled service stop. The owned preimage is
+checked before corruption/replacement; residue uses a separately owned headless
+listener. This supplies the disk and residue conditions consumed by actual
+startup recovery. Abrupt supervisor/Job collapse remains ACC007's separate test;
+this ACC008 driver does not claim a new abrupt-crash or native-crash experiment.
+Recovery uses new SCM birth/endpoint identity and actual per-instance recovery
+events. Corrupt-start refusal must identify unresolved recovery responsibility
+after a valid configuration load, without marker change or takeover.
+
+ACL injection preserves the full original SDDL, refuses concurrent changes,
+and restores only the exact descriptor changed by this attempt. Existing SYSTEM
+deny rules are preserved and only that fault slice is not evaluated. Existing
+foreign baselines similarly block only the missing-marker/no-residue slice;
+other snapshot checks and the independent scan continue. Unknown recovery
+preserves the scene. Cleanup backs up exact bytes and rejects duplicate or
+out-of-root paths before any deletion; foreign baselines are never removed.
+
+Offline tests invoke unchanged StateSnapshot, BaselineStore and
+RealSupervisor.recover, including real audit comparisons and recovery events.
+Only native process, filesystem permission, HTTP and clock edges are simulated.
+The Linux test path skips Windows compensation and endpoint observers; Windows
+ACL/PowerShell/Job/SCM, deployed-candidate behavior and full/native remain
+unverified. Same-catalog CLI replay rejects a wrong controller even after inner
+byte hashes and outer receipts are updated. This is limited integration and
+predicate credit, not complete P03/MCP acceptance.
