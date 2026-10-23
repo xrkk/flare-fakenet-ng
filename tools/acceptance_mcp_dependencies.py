@@ -14,7 +14,7 @@ def verify_acc008(inputs, *, root, fixture=False):
     import acceptance_mcp as m
     import acceptance_mcp_oracles as oracle
     references = inputs.get('references', {})
-    if set(references) != {'ACC-008'}:
+    if 'ACC-008' not in references:
         raise ValueError('ACC-019 requires this execution original ACC-008 reference')
     reference = references['ACC-008']
     if not isinstance(reference, dict) or set(reference) != {'directory', 'result_sha256'}:
@@ -28,7 +28,7 @@ def verify_acc008(inputs, *, root, fixture=False):
     if path.is_symlink() or not path.resolve().is_relative_to(directory) or m.sha256(path) != reference['result_sha256']:
         raise ValueError('ACC-008 original result changed')
     predecessor = m.read(directory / 'inputs.json')
-    if predecessor.get('references'):
+    if predecessor.get('references',{}).get('ACC-008'):
         raise ValueError('ACC-008 predecessor cannot recursively reference results')
     for key in ('identity', 'target', 'config_identity', 'manifest_sha256'):
         if predecessor.get(key) != inputs[key]:

@@ -1043,4 +1043,119 @@ class OriginalArtifactTests(unittest.TestCase):
     value=m.run('MCP-P04-FULL',out,self.inputs,selected=[unit],boundary=boundary,fixture=True);self.assertNotEqual('pass',value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
     rows,clean,details=o.evaluate(ROOT,out,'MCP-P04-FULL',[unit],self.inputs,allow_fixture=True);self.assertEqual('fail',rows[0]['status'],details)
 
+
+def fixture_capability(root,inputs,legacy=False):
+ """Explicit synthetic closed originals, never a real independent verdict."""
+ import copy,io,zipfile
+ import acceptance_mcp_capabilities as cap
+ root=Path(root);root.mkdir();seed=root/'mechanical-seed'
+ m.run('MCP-P04-FULL',seed,inputs,selected=['INCIDENT-INTEGRITY'],boundary=MultiRunFaultBoundary(inputs),fixture=True)
+ seed_record=m.read(seed/'units/INCIDENT-INTEGRITY/fault-policy_pause.json');local=dict(inputs['identity'],incidents=[]);refs=[]
+ classes=list(m.FAULTS)+['ipc_permanent_timeout','ipc_eof','ipc_wrong_run','ipc_repeat','ipc_reverse','stacks_unavailable','native_crash','unknown_cause']
+ for i,klass in enumerate(classes):
+  directory=root/klass;directory.mkdir();run='55555555-5555-4555-8555-%012d'%(i+1);record=copy.deepcopy(seed_record);record.update({'class':klass,'run_id':run,'nonce':'fixture-nonce-'+str(i)})
+  record['fault_evidence']['receipt']={'run_id':run,'receipt':{'fault':klass,'nonce':record['nonce']}}
+  exported=record['incident_exports'][0];original=Path(exported['path']);target=directory/'incident.zip'
+  with zipfile.ZipFile(original) as src,zipfile.ZipFile(target,'w') as dst:
+   for name in src.namelist():
+    raw=src.read(name)
+    if name=='manifest.json':manifest=json.loads(raw);manifest['run_id']=run;raw=json.dumps(manifest).encode()
+    dst.writestr(name,raw)
+  exported.update({'path':str(target),'run_id':run,'sha256':m.sha256(target),'size':target.stat().st_size,'manifest':manifest})
+  record['incident_exports']=[exported];record['fault_evidence']['incidents']=[{'path':'C:\\ProgramData\\FakeNet-NG-MCP\\artifacts\\'+run+'\\incident\\manifest.json','manifest':manifest}]
+  path=directory/'round.json';path.write_text(json.dumps(record));refs.append({'path':str(path),'sha256':m.sha256(path)})
+  local['incidents'].append({'run_id':run,'component':'fixture-only-component','failure_chain':'fixture-only-package-reference','references':[{'incident_name':'incident','member':'exception.txt','quote':'benign remote exception.txt'}]})
+ lp=root/'localization.json';lp.write_text(json.dumps(local));event={'RUN_ID':'fixture-capability','TYPE':'AUDIT','AUDIT_ID':'FIXTURE-CAPABILITY-01'}
+ task=root/'task.md';task.write_text('Fixture only independent product ACC014 review. No native acceptance.\n'+json.dumps(event))
+ reviewer='fixture-independent';controller='fixture-controller'
+ report={'capability':'ACC-014','verdict':'pass','evidence_level':'fixture','implementers':[controller],'identity':inputs['identity'],'target':inputs['target'],'config_identity':inputs['config_identity'],'manifest_sha256':inputs['manifest_sha256'],'dependencies':cap.source_pins(ROOT),'fault_records':refs,'localization':{'path':str(lp),'sha256':m.sha256(lp)}}
+ report_path=root/'report.md';report_path.write_text('# Fixture capability original\n\n```json\n'+json.dumps({'older':report} if legacy else report)+'\n```\n')
+ result_path=root/'result.md';result=dict(event,STATUS='COMPLETED',WORK_STOPPED=True,native_session=reviewer,controller_native=controller,audit_path=str(report_path),audit_sha256=m.sha256(report_path));result_path.write_text('```json\n'+json.dumps(result)+'\n```\n')
+ receipt_path=root/'received.json';receipt=dict(event,STATUS='RECEIVED',receiver_session=controller,result_path=str(result_path),result_sha256=m.sha256(result_path));receipt_path.write_text(json.dumps(receipt))
+ receive_path=root/'receive.json';receive={'event':event,'task':str(task),'task_sha256':m.sha256(task),'result':str(result_path)};receive_path.write_text(json.dumps(receive))
+ accepted_path=root/'accepted.md';accepted={'author_native':controller,'decision':'pass','reviewed_result':m.sha256(result_path)};accepted_path.write_text('```json\n'+json.dumps(accepted)+'\n```\n')
+ files={'task':task,'receive_config':receive_path,'result':result_path,'receipt':receipt_path,'report':report_path,'acceptance':accepted_path};mapping={}
+ for key in cap.FIELDS:
+  if key in report:mapping[key]={'file':'report','pointer':('/older' if legacy else '')+'/'+key}
+ mapping.update(reviewer={'file':'result','pointer':'/native_session'},controller={'file':'result','pointer':'/controller_native'},report_path={'file':'result','pointer':'/audit_path'},report_sha256={'file':'result','pointer':'/audit_sha256'},accepted_verdict={'file':'acceptance','pointer':'/decision'},accepted_result_sha256={'file':'acceptance','pointer':'/reviewed_result'},accepting_controller={'file':'acceptance','pointer':'/author_native'})
+ return {'schema':cap.SCHEMA,'files':{key:{'path':str(path),'sha256':m.sha256(path)} for key,path in files.items()},'mapping':mapping}
+
+def rehash_capability(ref):
+ """Fixture mutation only: preserve valid links to target semantic rejection."""
+ import acceptance_mcp_capabilities as cap
+ def update(name,**fields):
+  path=Path(ref['files'][name]['path']);value=cap.data(path.read_bytes());value.update(fields);path.write_text(json.dumps(value));ref['files'][name]['sha256']=m.sha256(path)
+ for name in ref['files']:ref['files'][name]['sha256']=m.sha256(ref['files'][name]['path'])
+ update('result',audit_sha256=ref['files']['report']['sha256'])
+ update('receipt',result_sha256=ref['files']['result']['sha256'])
+ update('acceptance',reviewed_result=ref['files']['result']['sha256'])
+
+class OriginalCapabilityReferenceTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def evaluate(self,ref,output):
+  import copy
+  inputs=copy.deepcopy(self.inputs);inputs['references']={'ACC-014':ref}
+  with mock.patch.object(m.NativeBoundary,'exchange',side_effect=AssertionError('closed reference must not perform native action')):
+   value=m.run('MCP-P04-FULL',output,inputs,selected=['ACC-014'],boundary=ReadOnlyBoundary(inputs),fixture=True)
+  rows,clean,details=o.evaluate(ROOT,output,'MCP-P04-FULL',['ACC-014'],inputs,allow_fixture=True)
+  return value,rows,clean,details
+ def test_closed_fixture_originals_and_legacy_pointers_rejudge_full_original_rules(self):
+  for legacy in (False,True):
+   with self.subTest(legacy=legacy):
+    ref=fixture_capability(self.root/str(legacy),self.inputs,legacy);before={key:m.sha256(row['path']) for key,row in ref['files'].items()};value,rows,clean,details=self.evaluate(ref,self.root/('output-'+str(legacy)))
+    self.assertEqual('pass',value['checks']['ACC-014']['status'],m.read(self.root/('output-'+str(legacy))/'units/ACC-014/result.json'));self.assertEqual('pass',rows[0]['status'],details);self.assertTrue(clean)
+    self.assertEqual(before,{key:m.sha256(row['path']) for key,row in ref['files'].items()})
+    import acceptance_mcp_capabilities as cap
+    with self.assertRaisesRegex(ValueError,'non-native'):cap.load(ref,self.inputs,ROOT,fixture=False)
+ def test_wrong_event_nonindependent_plan_audit_and_unaccepted_result_rejected(self):
+  import acceptance_mcp_capabilities as cap
+  changes=[('receipt',lambda v:v.update(AUDIT_ID='wrong'),'event differs'),('result',lambda v:v.update(native_session='fixture-controller'),'independence'),('report',lambda v:v.update(capability='workflow-plan-audit'),'product ACC014'),('acceptance',lambda v:v.update(decision='not accepted'),'product ACC014')]
+  for i,(name,mutate,reason) in enumerate(changes):
+   with self.subTest(name=name):
+    ref=fixture_capability(self.root/('original-'+str(i)),self.inputs);path=Path(ref['files'][name]['path']);raw=cap.data(path.read_bytes());mutate(raw);path.write_text(json.dumps(raw));rehash_capability(ref)
+    with self.assertRaisesRegex(ValueError,reason):cap.load(ref,self.inputs,ROOT,fixture=True)
+    value,rows,clean,details=self.evaluate(ref,self.root/('bad-output-'+str(i)));self.assertNotEqual('pass',value['checks']['ACC-014']['status']);self.assertEqual('fail',rows[0]['status'],details);self.assertTrue(clean)
+ def test_malformed_reference_fields_are_controlled_rejections(self):
+  import copy,acceptance_mcp_capabilities as cap
+  original=fixture_capability(self.root/'original',self.inputs)
+  mutations=[lambda x:x.update(files=None),lambda x:x.update(mapping=None),lambda x:x['mapping'].update(verdict=None),lambda x:x['mapping']['fault_records'].update(pointer='/missing/999'),lambda x:x['files']['report'].update(path=None)]
+  for i,mutate in enumerate(mutations):
+   with self.subTest(index=i):
+    ref=copy.deepcopy(original);mutate(ref)
+    with self.assertRaises(cap.CapabilityUnavailable):cap.load(ref,self.inputs,ROOT,fixture=True)
+    value,rows,clean,details=self.evaluate(ref,self.root/('invalid-'+str(i)));self.assertEqual('blocked',value['checks']['ACC-014']['status']);self.assertTrue(clean,details)
+ def test_rehashed_invalid_archive_is_controlled_and_never_passes(self):
+  import acceptance_mcp_capabilities as cap
+  ref=fixture_capability(self.root/'original',self.inputs);report_path=Path(ref['files']['report']['path']);report=cap.data(report_path.read_bytes());record_path=Path(report['fault_records'][0]['path']);record=m.read(record_path);archive=Path(record['incident_exports'][0]['path']);archive.write_bytes(b'not a ZIP archive');record['incident_exports'][0].update(sha256=m.sha256(archive),size=archive.stat().st_size);record_path.write_text(json.dumps(record));report['fault_records'][0]['sha256']=m.sha256(record_path);report_path.write_text(json.dumps(report));rehash_capability(ref)
+  value,rows,clean,details=self.evaluate(ref,self.root/'bad-archive');self.assertNotEqual('pass',value['checks']['ACC-014']['status']);self.assertEqual('fail',rows[0]['status']);self.assertTrue(clean,details)
+ def test_rehash_wrong_localization_quote_does_not_grant_capability(self):
+  import acceptance_mcp_capabilities as cap
+  ref=fixture_capability(self.root/'original',self.inputs);report_path=Path(ref['files']['report']['path']);report=cap.data(report_path.read_bytes());local_path=Path(report['localization']['path']);local=m.read(local_path);local['incidents'][0]['references'][0]['quote']='not in original package';local_path.write_text(json.dumps(local));report['localization']['sha256']=m.sha256(local_path)
+  report_path.write_text(json.dumps(report));ref['files']['report']['sha256']=m.sha256(report_path)
+  result_path=Path(ref['files']['result']['path']);result=cap.data(result_path.read_bytes());result['audit_sha256']=m.sha256(report_path);result_path.write_text(json.dumps(result));ref['files']['result']['sha256']=m.sha256(result_path)
+  receipt_path=Path(ref['files']['receipt']['path']);receipt=m.read(receipt_path);receipt['result_sha256']=m.sha256(result_path);receipt_path.write_text(json.dumps(receipt));ref['files']['receipt']['sha256']=m.sha256(receipt_path)
+  accepted_path=Path(ref['files']['acceptance']['path']);accepted=cap.data(accepted_path.read_bytes());accepted['reviewed_result']=m.sha256(result_path);accepted_path.write_text(json.dumps(accepted));ref['files']['acceptance']['sha256']=m.sha256(accepted_path)
+  value,rows,clean,details=self.evaluate(ref,self.root/'bad-quote');self.assertEqual('fail',value['checks']['ACC-014']['status']);self.assertEqual('fail',rows[0]['status'],details);self.assertTrue(clean)
+
+class PublicCapabilityCliTests(unittest.TestCase):
+ setUp=PublicMcpCliTests.setUp
+ cli=PublicMcpCliTests.cli
+ prepare=PublicMcpCliTests.prepare
+ def test_same_catalog_closed_reference_and_rehashed_wrong_quote(self):
+  import acceptance_mcp_capabilities as cap
+  self.inputs['references']={'ACC-014':fixture_capability(self.base/'original',self.inputs)}
+  self.prepare('MCP-P04-FULL',['ACC-014'])
+  with mock.patch.object(m,'NativeBoundary',side_effect=AssertionError('reference must not construct auth/target channel')):
+   result=self.cli('execute','--plan',self.run/'plan.json')
+  self.assertEqual(0,result[0],result)
+  result=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'positive.json');self.assertEqual(0,result[0],result)
+  summary=m.read(self.run/'positive.json');self.assertTrue(summary['fixture_contract_pass']);self.assertFalse(summary['full_functional_pass'])
+  ref=self.inputs['references']['ACC-014'];report_path=Path(ref['files']['report']['path']);report=cap.data(report_path.read_bytes());local_path=Path(report['localization']['path']);local=m.read(local_path);local['incidents'][0]['references'][0]['quote']='wrong package quote';local_path.write_text(json.dumps(local));report['localization']['sha256']=m.sha256(local_path);report_path.write_text(json.dumps(report));rehash_capability(ref)
+  # A fresh frozen plan with all valid updated hashes must still fail original assertions.
+  self.run=self.base/'negative-run';self.prepare('MCP-P04-FULL',['ACC-014'])
+  with mock.patch.object(m,'NativeBoundary',side_effect=AssertionError('reference must not construct auth/target channel')):
+   result=self.cli('execute','--plan',self.run/'plan.json')
+  result=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'negative.json');self.assertNotEqual(0,result[0],result)
+  summary=m.read(self.run/'negative.json');self.assertFalse(summary['fixture_contract_pass']);self.assertFalse(summary['full_functional_pass'])
+
 if __name__=='__main__':unittest.main()

@@ -31,10 +31,42 @@ configuration, fault and requirement identities remain applicable and whose
 original bytes and localization references still validate. A changed or
 unverified dependency invalidates its affected credit. The source of semantic
 localization is an independent capability acceptance, not a human template
-that every unchanged daily run must refill. The reuse interface and required
-minimal additional fault producers are not implemented by this extraction.
-Until they are integrated and accepted, full P04/MCP remains incomplete.
+that every unchanged daily run must refill. The read-only reuse interface is now connected through
+`mcp.references.ACC-014` in the frozen environment inputs. The minimal additional
+fault producers and actual independent native originals remain unfinished;
+full P04/MCP remains incomplete.
 
 Current extraction tests use benign in-memory channel/process bytes and the
 unchanged original business functions/validators under the zero-network
 guard. No actual VM, MCP service, fault injection, dump or recovery ran.
+
+The reference has schema `fakenet.mcp-capability-reference.v1`, `files` and
+`mapping`. `files` explicitly pins six immutable originals (`task`,
+`receive_config`, `result`, `receipt`, `report`, `acceptance`) by absolute `path`
+and full `sha256`. Each mapping contains only `{file, pointer}` and locates an
+existing JSON field or a field in the sole JSON block of a Markdown original.
+It supplies no new reviewer, verdict or capability facts. Report fields are
+`capability`, `verdict`, `evidence_level`, `implementers`, `identity`, `target`,
+`config_identity`, `manifest_sha256`, `dependencies`, `fault_records` and
+`localization`. Result fields locate `reviewer`, `controller`, `report_path`
+and `report_sha256`; acceptance locates `accepted_verdict`,
+`accepted_result_sha256` and `accepting_controller`. `fault_records` and
+`localization` themselves pin their original files by path and SHA-256.
+
+The loader checks matching original event/task/result/receive, closed work,
+independence from controller/implementers, product ACC014 object and accepted
+conclusion, current candidate/target/config/manifest and relevant product source
+closure. It reexports only pinned original ZIP bytes into a new judgment root
+and calls the unchanged full `run_acc014` assertions over original round and
+localization records. Missing terminal classes/dumps or invalid package quotes
+still fail. Selection containing only this reference constructs no authentication
+or target channel. This rejudges historical capability; it does not observe the
+current deployment or replace current-run mechanical checks. The native path
+requires native originals; explicit synthetic fixtures are rejected there.
+No actual matching independent product originals are currently available.
+
+The bounded synthetic fixture tests cover parsing, matching links, semantic
+identity/object/acceptance rejection, unchanged originals and rehashed bad
+quotes through the production catalog's `plan/execute/judge`. Synthetic rounds,
+ZIP bytes and reviewer names prove interface discrimination only, not actual
+independence, the three missing producers, dump generation or native capability.

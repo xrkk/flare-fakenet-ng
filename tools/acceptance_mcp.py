@@ -69,7 +69,7 @@ def source_paths(root=ROOT):
  # Explicit original business closure; no dynamic source selected by results.
  names=('helpers','run_p01_acc','run_p02_acc','run_p03_acc','run_p04_acc','run_p05_release','run_ipc_cases','run_initialization_case','run_control_cases','evidence_integrity','ipc_evidence','artifact_transfer','bounded_mcp','sst_fault_evidence','scenario_fault_evidence','release_matrix')
  paths=['test/mcp/acceptance/'+n+'.py' for n in names]
- paths += ['tools/acceptance_mcp.py','tools/acceptance_mcp_oracles.py','tools/acceptance_mcp_dependencies.py','tools/build_fakenetng_mcp_wine.py','fakenet/mcp/server.py','fakenet/mcp/tools.py']
+ paths += ['tools/acceptance_mcp.py','tools/acceptance_mcp_oracles.py','tools/acceptance_mcp_dependencies.py','tools/acceptance_mcp_capabilities.py','tools/build_fakenetng_mcp_wine.py','fakenet/mcp/server.py','fakenet/mcp/tools.py']
  import ast
  pending=list(paths);seen=set(paths)
  while pending:
@@ -133,7 +133,7 @@ def validate_inputs(value,case,selected=None,*,fixture=False):
  verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(verifier)
  try:verifier.verify_package_zip(Path(value['package']),manifest)
  except (RuntimeError,KeyError,OSError,ValueError) as exc:raise ValueError('original MCP package verification refused: '+str(exc)) from exc
- if 'references' in value and (not isinstance(value['references'],dict) or set(value['references'])-{'ACC-008'}):raise ValueError('unknown MCP predecessor reference')
+ if 'references' in value and (not isinstance(value['references'],dict) or set(value['references'])-{'ACC-008','ACC-014'}):raise ValueError('unknown MCP predecessor reference')
  selected=list(CHECKS[case] if selected is None else selected)
  if not selected or len(selected)!=len(set(selected)) or any(k not in SELECTABLE_CHECKS[case] for k in selected):raise ValueError('MCP selection not declared by case')
  return copy.deepcopy(value),selected
@@ -174,6 +174,11 @@ def sdk_probe(server):
    tools=await client.list_tools();ping=await client.call_tool('ping',{})
    return {'tools':tools.model_dump(mode='json',by_alias=True),'ping':ping.model_dump(mode='json',by_alias=True)}
  return anyio.run(probe)
+
+class ClosedReferenceBoundary:
+ """A closed-reference judgment never constructs a target/auth channel."""
+ def __init__(self,fixture):self.fixture=fixture
+ def exchange(self,kind,value):raise ValueError('closed capability reference cannot perform native actions')
 
 class NativeBoundary:
  fixture=False
@@ -461,9 +466,21 @@ def service_preflight(session,inputs):
  if value.get('fault_exists') is not False or type(value.get('enabled')) is not bool or type(value.get('grace')) is not int or not isinstance(value.get('service_config'),dict):raise ValueError('unknown fault residue or service settings; preserve scene')
  return value
 
-def run_unit(unit,inputs,out,boundary,*,root=ROOT):
+def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
  mods=modules(root);session=BoundarySession(boundary,inputs);out=Path(out);writer=mods['helpers'].EvidenceWriter(out,'original-unit')
  args=original_args(inputs,out)
+ if unit=='ACC-014' and 'ACC-014' in inputs.get('references',{}):
+  writer.add_evidence('capability-request-reference',inputs['references']['ACC-014'])
+  writer.add_evidence('capability-reference-scope',{'native_operation_performed':False,'reused_capability_only':True,'current_deployment_observed':False})
+  code=2;error=None
+  try:
+   code=__import__('acceptance_mcp_capabilities').evaluate(inputs['references']['ACC-014'],inputs,root,writer,fixture=bool(boundary.fixture) if fixture is None else fixture)
+  except (OSError,ValueError,KeyError,TypeError,AssertionError) as exc:
+   error={'type':type(exc).__name__,'message':str(exc)};writer.blocker=error
+  status={0:'pass',1:'fail',2:'blocked',3:'unknown'}.get(code,'unknown')
+  result=writer.write_result(acc_id=unit,p_id='headless',**inputs['identity'],environment_identity=json.dumps(inputs['target'],sort_keys=True),status=status)
+  trace={'schema':'fakenet.mcp-unit-trace.v1','unit':unit,'identity':inputs['identity'],'target':inputs['target'],'config_identity':inputs['config_identity'],'unit_root':str(out.resolve()),'records':[],'returncode':code,'error':error,'recovery_observed':True,'recovery_error':None,'origin':'closed-independent-capability-no-native-action'}
+  return result,trace
  code=3;error=None;before=None;after=None;service_before=None;recovery_error=None
  with session.activate():
   # Original classes importing a channel still get this same recorded transport.
@@ -545,13 +562,15 @@ def run(case,output,inputs,*,selected=None,boundary=None,fixture=False,root=ROOT
  if out.exists():raise FileExistsError('MCP output exists; no overwrite or replay')
  out.mkdir(parents=True)
  write(out/'inputs.json',inputs);write(out/'source-pins.json',source_pins(root))
- boundary=boundary or NativeBoundary(root,inputs,out/'channel')
+ if boundary is None:
+  boundary=(ClosedReferenceBoundary(fixture) if selected==['ACC-014'] and 'ACC-014' in inputs.get('references',{})
+            else NativeBoundary(root,inputs,out/'channel'))
  if bool(boundary.fixture)!=bool(fixture):raise ValueError('fixture boundary requires explicit candidate fixture identity')
  results={};unresolved=False
  for unit in selected:
   if unresolved:
    results[unit]={'status':'not_run','result':None,'trace':None};continue
-  result,trace=run_unit(unit,inputs,out/'units'/unit,boundary,root=root)
+  result,trace=run_unit(unit,inputs,out/'units'/unit,boundary,root=root,fixture=fixture)
   write(out/'units'/unit/'trace.json',trace)
   results[unit]={'status':result['status'],'result':'units/'+unit+'/result.json','trace':'units/'+unit+'/trace.json'}
   unresolved=trace.get('recovery_observed') is not True or trace.get('recovery_error') is not None

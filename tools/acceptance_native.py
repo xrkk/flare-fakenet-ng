@@ -1312,7 +1312,7 @@ def mcp_inputs(plan,case,root):
         fixture=plan.get('candidate',{}).get('offline_fixture') is True)
     if plan.get('mode')=='full' and checks!=__import__('acceptance_mcp').CHECKS[case['id']]:raise ValueError('full MCP requires the entire original unit set')
     if 'ACC-019' in checks:
-        value['references']={'ACC-008':__import__('acceptance_mcp_dependencies').acc008_reference(plan)}
+        value.setdefault('references',{})['ACC-008']=__import__('acceptance_mcp_dependencies').acc008_reference(plan)
     candidate=plan['candidate']
     for key in ('source_commit','package_sha256'):
         if candidate.get(key)!=value['identity'][key]:raise ValueError('MCP candidate differs from frozen '+key)

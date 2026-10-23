@@ -37,7 +37,7 @@ def evaluate(root,original,case,checks,expected_inputs=None,*,allow_fixture=Fals
     scratch=original.parent.parent/'mcp-rejudge';scratch.mkdir(exist_ok=True)
     temp=tempfile.mkdtemp(prefix='unit-',dir=scratch)
     replay=m.ReplayBoundary(trace['records'],trace['unit_root'],str((Path(temp)/'unit').resolve()))
-    replayed,replay_trace=m.run_unit(unit,inputs,Path(temp)/'unit',replay,root=root)
+    replayed,replay_trace=m.run_unit(unit,inputs,Path(temp)/'unit',replay,root=root,fixture=allow_fixture)
     unit_clean=replay_trace.get('recovery_observed') is True and replay_trace.get('recovery_error') is None
     if replayed['status']!='pass' or replay_trace['returncode']!=0:failures.append('original assertions reject transport contents')
    except (OSError,ValueError,KeyError,TypeError,AssertionError) as exc:failures.append('original replay refused: '+str(exc))

@@ -376,3 +376,12 @@ ACC019当前生产链已改接现有安装CLI的两阶段stop与install升级预
 正常/三种错误实现和未知回执的direct原件在controlled-exit-01/02、exit-wrapper-01与exit-planned-dependency-01. 同正式catalog public CLI自动串跑ACC008→ACC019并独立重判, 更新正确引用hash后的错误attempt不得通过. exit-public-01因夹具预建结果不满足空run目录而失败且保留, public-02改为实际同plan生产链后通过. exit-impacted-01误写不存在测试文件导致零测试, 正确exit-impacted-02相关126tests54subtests通过、1项Windows分享句柄测试在Linux跳过. 这些都在零网络guard和OS边界替身下, 实际Windows PowerShell/SCM/升级/ACL/Job/审计恢复仍未验证, 不授完整P04/MCP/native信用; 根因定位/terminal三条件取证及其它未完保持.
 
 ACC015已补原ArtifactRegistry元数据/incident原ZIP/PCAP字节导出及unknown-download-tool负向完整OS边界链, 当前programdata_root显式绑定, 原默认保留. 正常、跨run、传输字节变化和D盘根在artifact01/02验证; 都只良性内存VM边界/本地原字节, 实际导出仍未验. 新selected-only INCIDENT-INTEGRITY已进入正式driver过滤器, 默认full仍只原完整检查名单; incident-public01经正式catalog plan/execute/judge通过且不授full信用. artifact-impacted01相关124tests56subtests/59.30s通过, 局部编译/diff通过; 这些不替代完整P04/native验收.
+
+
+ACC014闭合原件复用入口已接通, 输入及信用边界见
+[mcp-capability-map.md](mcp-capability-map.md). 首次在实际environment.mcp.references中
+固定原task/接收配置/result/received/报告/作者接受原件的路径与完整SHA,
+用JSON pointer只定位原件已有字段, 不要求改写已关闭报告. 程序核独立身份、
+产品对象和接受结论、当前适用身份/相关产品依赖, 再跑原完整ACC014判据;
+单独选引用时不创建认证/VM通道. 无当前真实独立产品原件仍未验,
+fixture通过不授native/full信用, 不替代本次运行的机械检查或三类producer.
