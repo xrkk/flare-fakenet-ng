@@ -12,6 +12,7 @@ import copy
 import hashlib
 import importlib
 import io
+import http.client
 import ipaddress
 import json
 import os
@@ -176,17 +177,25 @@ class NativeBoundary:
   from acceptance_windows import ExistingWindowsChannel
   self.root=Path(root);self.inputs=inputs;self.journal=Path(journal)
   self.channel=ExistingWindowsChannel(root,inputs['channel'],journal)
-  self._urlopen=urllib.request.urlopen;self._run=subprocess.run;self._socket=socket.create_connection;self._time=time.time;self._mono=time.monotonic;self._sleep=time.sleep;self._uuid=uuid.uuid4;self.sockets={}
+  self._http_connection=http.client.HTTPConnection;self._urlopen=urllib.request.urlopen;self._run=subprocess.run;self._socket=socket.create_connection;self._time=time.time;self._mono=time.monotonic;self._sleep=time.sleep;self._uuid=uuid.uuid4;self.sockets={}
  def exchange(self,kind,value):
   if kind=='http':
    request=urllib.request.Request(value['url'],data=value['data'],headers=value['headers'],method=value['method'])
    try:
     with self._urlopen(request,timeout=value['timeout']) as response:return {'status':response.status,'headers':dict(response.headers),'body':response.read(),'http_error':False}
    except urllib.error.HTTPError as exc:return {'status':exc.code,'headers':dict(exc.headers),'body':exc.read(),'http_error':True}
+  if kind=='http-source':
+   connection=self._http_connection(value['host'],value['port'],timeout=value['timeout'],source_address=tuple(value['source_address']))
+   try:
+    connection.request(value['method'],value['path'],body=value['body'],headers=value['headers'])
+    response=connection.getresponse()
+    return {'status':response.status,'headers':dict(response.getheaders()),'body':response.read()}
+   finally:connection.close()
   if kind=='powershell':return self.channel.powershell(value['command'],timeout=value['timeout'])
   if kind=='process':
    done=self._run(value['argv'],cwd=value['cwd'],capture_output=True,text=False,timeout=value['timeout'],shell=False)
    return {'returncode':done.returncode,'stdout':done.stdout,'stderr':done.stderr}
+  if kind=='sdk':return sdk_probe(value['url'])
   if kind=='socket-open':
    self.sockets[value['handle']]=self._socket(tuple(value['address']),value['timeout'],value.get('source_address'))
    return {'connected':True}
@@ -197,7 +206,6 @@ class NativeBoundary:
    if kind=='socket-timeout':stream.settimeout(value['seconds']);return None
    if kind=='socket-close':stream.close();return {'fileno':stream.fileno()}
    raise ValueError('unknown socket operation')
-  if kind=='sdk':return sdk_probe(value['url'])
   if kind=='time':return self._time()
   if kind=='monotonic':return self._mono()
   if kind=='sleep':self._sleep(value['seconds']);return None
@@ -235,7 +243,7 @@ class ReplayBoundary:
 
 class BoundarySession:
  def __init__(self,boundary,inputs=None,logical_root=None):
-  self.boundary=boundary;self.inputs=inputs;self.logical_root=logical_root;self.records=[];self.lock=threading.RLock();self.thread_names={};self._thread_count=0;self._socket_count=0;self.owned_runs=set();self.owned_configs=set();self._local=threading.local();self._original={'time':time.time,'monotonic':time.monotonic,'sleep':time.sleep,'uuid':uuid.uuid4,'socket':socket.create_connection}
+  self.boundary=boundary;self.inputs=inputs;self.logical_root=logical_root;self.records=[];self.lock=threading.RLock();self.thread_names={};self._thread_count=0;self._socket_count=0;self.owned_runs=set();self.owned_configs=set();self._local=threading.local();self._original={'time':time.time,'monotonic':time.monotonic,'sleep':time.sleep,'uuid':uuid.uuid4,'socket':socket.create_connection,'http_connection':http.client.HTTPConnection}
  def operation(self,kind,value):
   if getattr(self._local,'inside_transport',False) and kind in self._original:
    if kind=='sleep':return self._original[kind](value['seconds'])
@@ -291,6 +299,16 @@ class BoundarySession:
     if tool=='delete_config':self.owned_configs.discard(arguments.get('name'))
   except (ValueError,KeyError,IndexError,TypeError):pass
   return RecordedResponse(value)
+ def http_connection(self,host,port=None,timeout=30,source_address=None,**kwargs):
+  if getattr(self._local,'inside_transport',False):return self._original['http_connection'](host,port,timeout=timeout,source_address=source_address,**kwargs)
+  if kwargs or not source_address:raise ValueError('explicit source required for raw HTTP probe')
+  owner=self
+  class Connection:
+   def request(self,method,path,body=None,headers=None):
+    self.response=owner.operation('http-source',{'host':host,'port':port,'timeout':timeout,'source_address':list(source_address),'method':method,'path':path,'body':body,'headers':headers or {}})
+   def getresponse(self):return RecordedResponse(self.response)
+   def close(self):pass  # Native operation closes its socket before returning bytes.
+  return Connection()
  def socket_connection(self,address,timeout=30,source_address=None,**kwargs):
   if getattr(self._local,'inside_transport',False):return self._original['socket'](address,timeout,source_address,**kwargs)
   if kwargs:raise ValueError('unsupported socket options')
@@ -344,6 +362,7 @@ class BoundarySession:
    stack.enter_context(patch.object(threading.Thread,'is_alive',lambda thread:self.local_observation('thread-alive',{'name':thread.name},lambda:real_alive(thread))))
    for obj,name,replacement in ((urllib.request,'urlopen',self.urlopen),(subprocess,'run',self.run_process),(time,'time',lambda:self.operation('time',{})),(time,'monotonic',lambda:self.operation('monotonic',{})),(time,'sleep',lambda n:self.operation('sleep',{'seconds':n})),(uuid,'uuid4',lambda:uuid.UUID(self.operation('uuid',{}))),(threading.Thread,'__init__',init_thread)):
     stack.enter_context(patch.object(obj,name,replacement))
+   stack.enter_context(patch.object(http.client,'HTTPConnection',self.http_connection))
    import artifact_transfer
    stack.enter_context(patch.object(artifact_transfer,'receive_artifact',self.receive_artifact))
    # A direct unrecorded socket path must never silently evade the evidence.

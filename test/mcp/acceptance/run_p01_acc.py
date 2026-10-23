@@ -449,31 +449,31 @@ def run_acc003(args, channel, writer):
     if enabled_round is not None:
         checks['allowed_host_reachable_with_fw_on'] = \
             enabled_round['allowed_host_ping']
-        if enabled_round.get('non_allowed_probe') is not None:
-            # CHK-051: the block verdict requires the same facility to
-            # have reached the endpoint from the allowed source; an
-            # unattributed failure blocks the leg instead of passing.
-            if not enabled_round.get('allowed_host_ping'):
-                checks['non_allowed_source_blocked'] = None
-            else:
-                checks['non_allowed_source_blocked'] = \
-                    not enabled_round['non_allowed_probe']
+        negative = enabled_round.get('non_allowed_probe')
+        checks['non_allowed_source_blocked'] = (
+            not negative if negative is not None and
+            enabled_round.get('allowed_host_ping') else None)
     writer.observe(json.dumps(checks, ensure_ascii=False))
+    if any(value is None for value in checks.values()):
+        writer.blocker = {'reason': 'non-allowed source outcome unattributed',
+                          'probe': enabled_round}
+        return EXIT_BLOCKED
     return EXIT_PASS if all(checks.values()) else EXIT_FAIL
 
 
 def probe_from_non_allowed_source(base_url, source_ip='192.168.255.1',
                                   timeout=8):
-    """(reachable, detail) for a probe from a local address that is NOT in
-    the firewall rule's RemoteIP list. CHK-051: the outcome carries the
-    failure attribution — a refused/timed-out connection is a BLOCK only
-    when the same facility reaches the endpoint from the allowed source;
-    an unrelated bind/route failure must not masquerade as a block."""
+    """Return reachable, denied, or unknown from the requested source.
+
+    A bind/route failure or timeout cannot establish remote access control.
+    Only an actual endpoint response establishes this probe's outcome.
+    """
     import http.client
     from urllib.parse import urlsplit
 
     parts = urlsplit(base_url)
     detail = {'source_ip': source_ip, 'phase': 'connect'}
+    connection = None
     try:
         connection = http.client.HTTPConnection(
             parts.hostname, parts.port or 80, timeout=timeout,
@@ -487,12 +487,25 @@ def probe_from_non_allowed_source(base_url, source_ip='192.168.255.1',
         detail['phase'] = 'response'
         response = connection.getresponse()
         body = response.read().decode('utf-8', 'replace')
-        connection.close()
         detail['status'] = response.status
-        return response.status == 200 and '"fakenetng-mcp"' in body, detail
-    except OSError as exc:
+        if response.status in (401, 403):
+            detail['attribution'] = 'endpoint-access-denial'
+            return False, detail
+        if response.status == 200:
+            outer = json.loads(body)
+            payload = json.loads(outer['result']['content'][0]['text'])
+            if payload.get('service') == 'fakenetng-mcp':
+                detail['attribution'] = 'endpoint-reachable'
+                return True, detail
+        detail['attribution'] = 'unexpected-endpoint-response'
+        return None, detail
+    except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
         detail['error'] = '%s: %s' % (type(exc).__name__, exc)
-        return False, detail
+        detail['attribution'] = 'unknown'
+        return None, detail
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def helpers_probe(base_url):

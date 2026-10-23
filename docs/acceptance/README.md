@@ -346,3 +346,8 @@ All other planned policy, payload, MCP, Linux deployment/manual, package identit
 scheduling/reuse/recovery and final full regression work remains required.
 
 本轮补充原件: `main-mcp-r18/fault-01`五fault原函数通过; `ipc-01`单次timeout并发回放未消费完整记录失败, 将原线程存活观察纳入OS记录后`ipc-02`通过且未缩时间窗口. `content-01`相关41tests/27subtests通过, 五类错误hook/nonce和IPC错receipt/缺child/跨candidate不再通过. `protocol-01`发现原P01对嵌套JSON字符串直接匹配误拒, 改按协议解析service后`protocol-02`通过. `sdk-01`被零socket guard拒绝事件循环socketpair, 原失败保留; 后续只SDK边界结构替身, 不授实际SDK信用. `groups-01`生命周期替身缺重复启动保护保留为反例, 正常接管另验; `resume-02`相关45tests/28subtests通过. `no-auth-change-01`当前20tests/28subtests通过. 无真实VM/网络/监听/核心/构建安装.
+
+
+MCP恢复判定与业务结果独立: 业务断言失败但配置SHA、服务模式和独立前后环境均恢复时, 保留业务失败并单独记录clean=true. 恢复未观察到或恢复失败时, 不执行该组剩余单元, 记录not_run及未决原因. 来源索引递归绑定固定原模块的本地传递依赖和静态脚本引用; 不从结果提供的任意路径加载代码.
+
+P01非允许源探针现在记录源地址HTTP边界供独立回放. 绑定/路由失败、连接超时或无关HTTP错误只能判未知/blocked, 不作为远端阻断通过; 实际端点拒绝与正常协议响应分别判定. 默认探针来源仍须现场可用, 当前未证明实际防火墙全链. firewall-attribution-02正常/反例及firewall-impacted-02相关49tests/31subtests仅为guard下的内存边界信用, 不授真实网络或整体验收通过.

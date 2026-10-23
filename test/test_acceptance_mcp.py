@@ -448,4 +448,46 @@ class OriginalRecoveryTests(unittest.TestCase):
   self.assertEqual('unknown',value['checks']['ACC-005']['status']);self.assertEqual({'status':'not_run','result':None,'trace':None},value['checks']['ACC-010']);self.assertEqual(1,calls.count('target'))
   rows,clean,details=o.evaluate(ROOT,out,'MCP-P02-FULL',['ACC-005','ACC-010'],self.inputs,allow_fixture=True);self.assertFalse(clean);self.assertEqual('not_run',rows[1]['status'])
 
+
+class OriginalFirewallAttributionTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def run_firewall(self,response=None,error=None):
+  class FirewallBoundary(ProtocolBoundary):
+   def exchange(self,kind,value):
+    if kind=='powershell':
+     cmd=value['command']
+     if 'Select-String -Pattern' in cmd:output='1'
+     elif 'Get-NetFirewallProfile' in cmd:output=json.dumps([{'Name':'Domain','Enabled':False},{'Name':'Private','Enabled':True},{'Name':'Public','Enabled':False}])
+     elif 'show rule' in cmd:output='FakeNet-NG MCP 192.168.204.1 28788'
+     elif 'README-SECURITY' in cmd:output='DNS rebinding'
+     elif 'New-NetFirewallRule' in cmd:output='PROTECTED+ON'
+     elif 'Remove-NetFirewallRule' in cmd:output='RESTORED'
+     else:return super().exchange(kind,value)
+     return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+    if kind=='sleep':return None
+    return super().exchange(kind,value)
+  out=self.root/'firewall'
+  boundary=FirewallBoundary(self.inputs)
+  original=boundary.exchange
+  def exchange(kind,value):
+   if kind=='http-source':
+    if error:raise error
+    return {'status':response[0],'headers':{},'body':response[1]}
+   return original(kind,value)
+  boundary.exchange=exchange
+  value=m.run('MCP-P01-FULL',out,self.inputs,selected=['ACC-003'],boundary=boundary,fixture=True)
+  rows,clean,details=o.evaluate(ROOT,out,'MCP-P01-FULL',['ACC-003'],self.inputs,allow_fixture=True)
+  return value,rows,clean,details
+ def test_observed_denial_replays_original_access_check(self):
+  value,rows,clean,details=self.run_firewall(response=(403,b'forbidden'))
+  self.assertEqual('pass',value['checks']['ACC-003']['status']);self.assertEqual('pass',rows[0]['status'],details);self.assertTrue(clean)
+ def test_bind_route_or_timeout_is_not_a_remote_block(self):
+  for error in (OSError(99,'Cannot assign requested address'),OSError(101,'Network is unreachable'),TimeoutError('no response')):
+   with self.subTest(error=error):
+    self.setUp();value,rows,clean,details=self.run_firewall(error=error)
+    self.assertEqual('blocked',value['checks']['ACC-003']['status']);self.assertEqual('fail',rows[0]['status']);self.assertTrue(clean,details)
+ def test_unrelated_http_error_is_not_a_remote_block(self):
+  value,rows,clean,details=self.run_firewall(response=(500,b'internal error'))
+  self.assertEqual('blocked',value['checks']['ACC-003']['status']);self.assertEqual('fail',rows[0]['status'])
+
 if __name__=='__main__':unittest.main()
