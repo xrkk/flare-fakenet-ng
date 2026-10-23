@@ -14,7 +14,9 @@ def file_sha(path):
 def execute(request,root):
     import acceptance_native as native
     from acceptance_runtime import require_target,write_json
-    if set(request)!={'schema','case_id','case','checks','source_hashes','candidate','target','output_root','execution_id','actions'} or request['schema']!='fakenet.native-guest-request.v1':
+    fields={'schema','case_id','case','checks','source_hashes','candidate',
+            'target','output_root','execution_id','actions'}
+    if set(request) not in (fields, fields|{'policy'}) or request['schema']!='fakenet.native-guest-request.v1':
         raise ValueError('invalid guest request schema/fields')
     if request['actions']!=['native']:
         raise ValueError('guest native action not authorized')
@@ -30,6 +32,8 @@ def execute(request,root):
     if len(matches)!=1 or matches[0]!=request['case']:
         raise ValueError('guest catalog case differs from selected candidate')
     environment={'native_runtime':{'transport':'local-target','identity':request['target']}}
+    if 'policy' in request:
+        environment['policy']=request['policy']
     driver,checks=native.validate_case(matches[0],root,environment)
     if not driver.get('production_kind') or checks!=request['checks']:
         raise ValueError('guest fixed driver/check selection mismatch')

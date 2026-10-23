@@ -1695,7 +1695,7 @@
             "test/public_ipv4_allowlist_vm/Run-ReviewedIPv4Tests.ps1",
             "test/analyze_reviewed_ipv4_pcap.py"
           ],
-          "blocked_reason": "live policy probes are not implemented; production result is not_run",
+          "blocked_reason": "requires explicit Windows policy inputs and a live VM; this round uses only the local substitute",
           "native_driver": "policy-ipv4"
         },
         {
@@ -1744,7 +1744,7 @@
             "test/public_ipv4_allowlist_vm/Run-ReviewedIPv4Tests.ps1",
             "test/analyze_reviewed_ipv4_pcap.py"
           ],
-          "blocked_reason": "live policy probes are not implemented; production result is not_run",
+          "blocked_reason": "requires explicit Windows policy inputs and a live VM; this round uses only the local substitute",
           "native_driver": "policy-combined"
         }
       ]
@@ -2067,7 +2067,7 @@
           "sources": [
             "test/gui_vm/run_policy_feature_tests.py"
           ],
-          "blocked_reason": "live policy probes are not implemented; production result is not_run",
+          "blocked_reason": "requires explicit Windows policy inputs and a live VM; this round uses only the local substitute",
           "native_driver": "policy-domain"
         },
         {
@@ -2115,7 +2115,7 @@
           "sources": [
             "test/gui_vm/run_policy_feature_tests.py"
           ],
-          "blocked_reason": "live policy probes are not implemented; production result is not_run",
+          "blocked_reason": "requires explicit Windows policy inputs and a live VM; this round uses only the local substitute",
           "native_driver": "policy-takeover"
         },
         {
@@ -2168,7 +2168,7 @@
           "sources": [
             "test/gui_vm/run_policy_feature_tests.py"
           ],
-          "blocked_reason": "live policy probes are not implemented; production result is not_run",
+          "blocked_reason": "requires explicit Windows policy inputs and a live VM; this round uses only the local substitute",
           "native_driver": "policy-takeover"
         }
       ]
@@ -4280,6 +4280,6 @@
       "upstream-multihost",
       "upstream-singlehost"
     ],
-    "note": "Exact local-target upstream and both PCAP functional paths are implemented. Windows-MCP/Velo host execution and original evidence return are fixture-tested. REMnux SDK and MultiHost owner/probe interfaces exist; Linux catalog execution and two-target orchestration remain unfinished. The policy drivers have deterministic configuration, bounded lifecycle and an independent original oracle, but their live probes and native credit remain NOT_RUN. No native/full credit from fixtures."
+    "note": "Exact local-target upstream and both PCAP functional paths are implemented. Windows-MCP/Velo host execution and original evidence return are fixture-tested. REMnux SDK and MultiHost owner/probe interfaces exist; Linux catalog execution and two-target orchestration remain unfinished. The policy drivers now run real DNS/TCP/UDP/TLS probes and judge actual INI/log/PCAP content; the local substitute exercises the same CLI, but native Windows execution and native credit remain NOT_RUN."
   }
 }
