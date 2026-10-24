@@ -469,7 +469,7 @@ def driver_table(root):
             'missing': 'SingleHost originals driver available, but full Linux case still lacks independent MultiHost and accepted-base deployment recovery',
             'partial': 'SingleHost produces originals; MultiHost/deployment recovery remain blocked or fail the full required case',
             'platforms': ['linux'], 'modes': ['singlehost', 'multihost', 'native'],
-            'checks': [], 'requires': ['native'], 'package_required': False,
+            'checks': [], 'requires': ['native'], 'package_required': True,
             'resources': ['linux-vm', 'root'],
             'argv': ['{python}', '{root}/tools/acceptance_linux_runtime.py',
                      '--case', '{case_id}', '--inputs', '{linux_inputs}', '--output', '{output}/driver'],
