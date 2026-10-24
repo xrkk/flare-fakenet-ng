@@ -95,37 +95,67 @@ def real_ncsi(case,out,inputs):
     return dict(queries=rows,listener={'bind':'127.0.0.1','transports':states})
 
 def real_list_mutex(case,out,inputs):
-    from fakenet.diverters.diverterbase import ListenerMeta,ListenerPorts,ListenerBlackWhiteList
-    out=Path(out); rows=[]; ports=ListenerPorts()
-    def add(proto,port,proc_bl=None,proc_wl=None,host_bl=None,host_wl=None):
-        meta=ListenerMeta(proto,port)
-        if proc_bl is not None:meta.setProcessBlacklist(proc_bl)
-        if proc_wl is not None:meta.setProcessWhitelist(proc_wl)
-        if host_bl is not None:meta.setHostBlacklist(host_bl)
-        if host_wl is not None:meta.setHostWhitelist(host_wl)
-        ports.addListener(meta);return meta
-    add('TCP',8080,proc_bl='evil.exe, helper.exe')
-    add('TCP',8081,proc_wl='good.exe')
-    add('TCP',8082,host_bl='evil.test, bad.test')
-    add('TCP',8083,host_wl='good.test')
-    rows.append({'name':'proc-black','hit':ports.isProcessBlackListHit('TCP',8080,'evil.exe'),'allow':ports.isProcessBlackListHit('TCP',8080,'clean.exe')})
-    rows.append({'name':'proc-white','miss_allowed':ports.isProcessWhiteListMiss('TCP',8081,'other.exe'),'miss_denied':ports.isProcessWhiteListMiss('TCP',8081,'good.exe')})
-    rows.append({'name':'host-black','hit':ports.isHostBlackListHit('TCP',8082,'evil.test'),'allow':ports.isHostBlackListHit('TCP',8082,'good.test')})
-    rows.append({'name':'host-white','miss_allowed':ports.isHostWhiteListMiss('TCP',8083,'other.test'),'miss_denied':ports.isHostWhiteListMiss('TCP',8083,'good.test')})
+    from fakenet.diverters.diverterbase import ListenerMeta,ListenerPorts,ListenerBlackWhiteList,DiverterBase
+    import logging
+    out=Path(out)
+    config={'proc-black':{'protocol':'TCP','port':'8080','processblacklist':'evil.exe, helper.exe'},
+            'proc-white':{'protocol':'TCP','port':'8081','processwhitelist':'good.exe'},
+            'host-black':{'protocol':'TCP','port':'8082','hostblacklist':'evil.test, bad.test'},
+            'host-white':{'protocol':'TCP','port':'8083','hostwhitelist':'good.test'}}
+    parser=configparser.ConfigParser();parser.read_dict(config)
+    directory=out/'config';directory.mkdir()
+    path=directory/'list-mutex.ini'
+    with path.open('x') as stream:parser.write(stream)
+    # Parse the retained configuration through the original production parser.
+    diverter=DiverterBase.__new__(DiverterBase)
+    diverter.logger=logging.getLogger('manual-list-mutex')
+    diverter.listener_ports=ListenerPorts();diverter.configure({})
+    loaded=configparser.ConfigParser();loaded.read(path)
+    diverter.parse_listeners_config({name:dict(loaded.items(name)) for name in loaded.sections()})
+    ports=diverter.listener_ports
+    rows=[{'name':'proc-black','hit':ports.isProcessBlackListHit('TCP',8080,'evil.exe'),'allow':ports.isProcessBlackListHit('TCP',8080,'clean.exe')},
+          {'name':'proc-white','miss_allowed':ports.isProcessWhiteListMiss('TCP',8081,'other.exe'),'miss_denied':ports.isProcessWhiteListMiss('TCP',8081,'good.exe')},
+          {'name':'host-black','hit':ports.isHostBlackListHit('TCP',8082,'evil.test'),'allow':ports.isHostBlackListHit('TCP',8082,'good.test')},
+          {'name':'host-white','miss_allowed':ports.isHostWhiteListMiss('TCP',8083,'other.test'),'miss_denied':ports.isHostWhiteListMiss('TCP',8083,'good.test')}]
+    queries=[]
+    for method,port,positive,negative in [('isProcessBlackListHit',8080,'evil.exe','clean.exe'),
+            ('isProcessWhiteListMiss',8081,'other.exe','good.exe'),
+            ('isHostBlackListHit',8082,'evil.test','good.test'),
+            ('isHostWhiteListMiss',8083,'other.test','good.test')]:
+        for proto,number,subject in [('TCP',port,positive),('TCP',port,negative),('UDP',port,positive),('TCP',65500,positive)]:
+            queries.append({'method':method,'protocol':proto,'port':number,'subject':subject,
+                            'result':getattr(ports,method)(proto,number,subject)})
     mutex=[]
     for kind in ('process','host'):
-        meta=ListenerMeta('TCP',8090+(0 if kind=='process' else 1))
+        meta=ListenerMeta('TCP',8090 if kind=='process' else 8091)
         try:
-            if kind=='process':
-                meta.setProcessBlacklist('a.exe');meta.setProcessWhitelist('b.exe')
-            else:
-                meta.setHostBlacklist('a.test');meta.setHostWhitelist('b.test')
+            if kind=='process':meta.setProcessBlacklist('a.exe');meta.setProcessWhitelist('b.exe')
+            else:meta.setHostBlacklist('a.test');meta.setHostWhitelist('b.test')
             error=None
-        except ListenerBlackWhiteList as exc:
-            error={'type':type(exc).__name__,'message':str(exc)}
-        mutex.append({'kind':kind,'error':error,'process_cleared':(meta.proc_wl is None and meta.proc_bl is None),'host_cleared':(meta.host_wl is None and meta.host_bl is None)})
-    good=all([rows[0]['hit'] and not rows[0]['allow'],rows[1]['miss_allowed'] and not rows[1]['miss_denied'],rows[2]['hit'] and not rows[2]['allow'],rows[3]['miss_allowed'] and not rows[3]['miss_denied'],all(x['error'] and x['process_cleared'] and x['host_cleared'] for x in mutex)])
-    value={'schema':SCHEMA,'case':case,'fixture':bool(inputs.get('fixture',False)),'inputs':inputs,'list_mutex':{'ports':[8080,8081,8082,8083],'observations':rows,'mutex':mutex},'started_at':datetime.now(timezone.utc).isoformat(),'cleanup':{'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True},'checks':[{'id':x,'status':'pass' if good else 'fail'} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
+        except ListenerBlackWhiteList as exc:error={'type':type(exc).__name__,'message':str(exc)}
+        mutex.append({'kind':kind,'error':error,'process_cleared':meta.proc_wl is None and meta.proc_bl is None,'host_cleared':meta.host_wl is None and meta.host_bl is None})
+    parser_conflicts=[]
+    for scope in ('listener-process','listener-host','global-process'):
+        obj=DiverterBase.__new__(DiverterBase);obj.logger=diverter.logger;obj.listener_ports=ListenerPorts();obj.configure({})
+        try:
+            if scope=='global-process':
+                obj.configure({'processblacklist':'bad.exe','processwhitelist':'good.exe'});obj.parse_diverter_config()
+            else:
+                keys=('processblacklist','processwhitelist') if scope=='listener-process' else ('hostblacklist','hostwhitelist')
+                obj.parse_listeners_config({'conflict':dict(protocol='TCP',port='8099',**{keys[0]:'a',keys[1]:'b'})})
+            error=None
+        except SystemExit as exc:error={'type':'SystemExit','code':exc.code}
+        parser_conflicts.append({'scope':scope,'error':error,'registered_ports':obj.listener_ports.getPortList('TCP')})
+    ports.protos.clear()
+    source=Path(__file__).resolve().parents[1]
+    pins={name:sha256(source/name) for name in ('fakenet/diverters/diverterbase.py','fakenet/diverters/fnconfig.py')}
+    value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,
+      'list_mutex':{'ports':[8080,8081,8082,8083],'observations':rows,'queries':queries,'mutex':mutex,
+                    'parser_conflicts':parser_conflicts,'ports_after':ports.getPortList('TCP')},
+      'configuration':{'path':'config/list-mutex.ini','sha256':sha256(path)},'source_hashes':pins,
+      'started_at':datetime.now(timezone.utc).isoformat(),
+      'cleanup':{'stopped':not ports.protos,'threads_joined':True,'sockets_closed':True,'network_restored':True},
+      'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
     _json(out/'manual-result.json',value);return value
 
 def real_raw_date(case,out,inputs):

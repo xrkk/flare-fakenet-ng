@@ -13,38 +13,72 @@ RAW=b'HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nX-Test: <RAW-DATE>\r\nContent-Lengt
 STATIC=b'static-<RAW-DATE>'
 
 def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
-    from fakenet.diverters.diverterbase import ListenerMeta,ListenerPorts,ListenerBlackWhiteList
-    base=Path(original).resolve();v=json.loads((base/'manual-result.json').read_text())
+    from fakenet.diverters.diverterbase import ListenerMeta,ListenerPorts,ListenerBlackWhiteList,DiverterBase
+    import logging
+    base=Path(original).resolve();path=base/'manual-result.json'
+    if path.is_symlink() or not path.is_file():raise ValueError('original missing or linked')
+    v=json.loads(path.read_text())
     if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!='GAP-LIST-MUTEX':raise ValueError('case/schema mismatch')
-    if v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
+    if not isinstance(expected_inputs,dict) or v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
     for k in ('candidate_id','source_commit','package_sha256','execution_id'):
         if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
-    if v.get('fixture') and not allow_fixture:raise ValueError('fixture cannot native credit')
+    if type(v.get('fixture')) is not bool or v['fixture']!=(expected_inputs.get('fixture') is True):raise ValueError('fixture identity missing/changed')
+    if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
     if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
-    rows=v.get('list_mutex',{}).get('observations',[]);mutex=v.get('list_mutex',{}).get('mutex',[])
-    ports=ListenerPorts()
-    def add(meta):ports.addListener(meta)
-    m=ListenerMeta('TCP',8080);m.setProcessBlacklist('evil.exe, helper.exe');add(m)
-    m=ListenerMeta('TCP',8081);m.setProcessWhitelist('good.exe');add(m)
-    m=ListenerMeta('TCP',8082);m.setHostBlacklist('evil.test, bad.test');add(m)
-    m=ListenerMeta('TCP',8083);m.setHostWhitelist('good.test');add(m)
-    expected=[{'name':'proc-black','hit':ports.isProcessBlackListHit('TCP',8080,'evil.exe'),'allow':ports.isProcessBlackListHit('TCP',8080,'clean.exe')},
-      {'name':'proc-white','miss_allowed':ports.isProcessWhiteListMiss('TCP',8081,'other.exe'),'miss_denied':ports.isProcessWhiteListMiss('TCP',8081,'good.exe')},
-      {'name':'host-black','hit':ports.isHostBlackListHit('TCP',8082,'evil.test'),'allow':ports.isHostBlackListHit('TCP',8082,'good.test')},
-      {'name':'host-white','miss_allowed':ports.isHostWhiteListMiss('TCP',8083,'other.test'),'miss_denied':ports.isHostWhiteListMiss('TCP',8083,'good.test')}]
-    errors=[]
-    if rows!=expected:errors.append('original list predicates disagree')
-    if len(mutex)!=2:errors.append('mutex coverage missing')
+    wanted={'proc-black':{'protocol':'TCP','port':'8080','processblacklist':'evil.exe, helper.exe'},
+            'proc-white':{'protocol':'TCP','port':'8081','processwhitelist':'good.exe'},
+            'host-black':{'protocol':'TCP','port':'8082','hostblacklist':'evil.test, bad.test'},
+            'host-white':{'protocol':'TCP','port':'8083','hostwhitelist':'good.test'}}
+    config=base/'config/list-mutex.ini'
+    if config.is_symlink() or not config.is_file() or not config.resolve().is_relative_to(base):raise ValueError('configuration original missing/escaped')
+    if v.get('configuration')!={'path':'config/list-mutex.ini','sha256':hashlib.sha256(config.read_bytes()).hexdigest()}:raise ValueError('configuration hash differs')
+    parser=configparser.ConfigParser();parser.read(config)
+    if {sec:dict(parser.items(sec)) for sec in parser.sections()}!=wanted:raise ValueError('frozen list configuration/target changed')
+    names=('fakenet/diverters/diverterbase.py','fakenet/diverters/fnconfig.py')
+    if v.get('source_hashes')!={name:hashlib.sha256((Path(root)/name).read_bytes()).hexdigest() for name in names}:raise ValueError('production source binding mismatch')
+    obj=DiverterBase.__new__(DiverterBase);obj.logger=logging.getLogger('oracle-list-mutex');obj.listener_ports=ListenerPorts();obj.configure({})
+    obj.parse_listeners_config({sec:dict(parser.items(sec)) for sec in parser.sections()})
+    ports=obj.listener_ports;queries=[];errors=[]
+    for method,port,positive,negative in [('isProcessBlackListHit',8080,'evil.exe','clean.exe'),
+            ('isProcessWhiteListMiss',8081,'other.exe','good.exe'),
+            ('isHostBlackListHit',8082,'evil.test','good.test'),
+            ('isHostWhiteListMiss',8083,'other.test','good.test')]:
+        for index,(proto,number,subject) in enumerate([('TCP',port,positive),('TCP',port,negative),('UDP',port,positive),('TCP',65500,positive)]):
+            observed=getattr(ports,method)(proto,number,subject)
+            if observed is not (index==0):errors.append('production predicate violates positive/negative target '+method)
+            queries.append({'method':method,'protocol':proto,'port':number,'subject':subject,'result':observed})
+    data=v.get('list_mutex') or {}
+    expected_rows=[{'name':'proc-black','hit':True,'allow':False}, {'name':'proc-white','miss_allowed':True,'miss_denied':False},
+                   {'name':'host-black','hit':True,'allow':False}, {'name':'host-white','miss_allowed':True,'miss_denied':False}]
+    if data.get('observations')!=expected_rows or data.get('queries')!=queries:errors.append('original list observations disagree')
+    if data.get('ports')!=[8080,8081,8082,8083] or data.get('ports_after')!=[]:errors.append('port identity/lifecycle mismatch')
+    mutex=[]
     for kind in ('process','host'):
         meta=ListenerMeta('TCP',8090 if kind=='process' else 8091)
         try:
             if kind=='process':meta.setProcessBlacklist('a.exe');meta.setProcessWhitelist('b.exe')
             else:meta.setHostBlacklist('a.test');meta.setHostWhitelist('b.test')
-            errors.append(kind+' mutex unexpectedly accepted')
-        except ListenerBlackWhiteList as exc:
-            if not str(exc) or meta.proc_wl is not None or meta.proc_bl is not None or meta.host_wl is not None or meta.host_bl is not None:errors.append(kind+' mutex not cleared')
-    checks=['blacklist','whitelist','mutex'];out=[{'id':k,'status':'fail' if errors else 'pass'} for k in checks]
-    return out,not errors,{'failures':errors}
+            error=None;errors.append(kind+' mutex unexpectedly accepted')
+        except ListenerBlackWhiteList as exc:error={'type':type(exc).__name__,'message':str(exc)}
+        mutex.append({'kind':kind,'error':error,'process_cleared':meta.proc_wl is None and meta.proc_bl is None,'host_cleared':meta.host_wl is None and meta.host_bl is None})
+    if data.get('mutex')!=mutex:errors.append('original mutex records missing/duplicate/foreign/error mismatch')
+    conflicts=[]
+    for scope in ('listener-process','listener-host','global-process'):
+        d=DiverterBase.__new__(DiverterBase);d.logger=obj.logger;d.listener_ports=ListenerPorts();d.configure({})
+        try:
+            if scope=='global-process':d.configure({'processblacklist':'bad.exe','processwhitelist':'good.exe'});d.parse_diverter_config()
+            else:
+                keys=('processblacklist','processwhitelist') if scope=='listener-process' else ('hostblacklist','hostwhitelist')
+                d.parse_listeners_config({'conflict':dict(protocol='TCP',port='8099',**{keys[0]:'a',keys[1]:'b'})})
+            error=None;errors.append(scope+' parser accepted conflict')
+        except SystemExit as exc:
+            error={'type':'SystemExit','code':exc.code}
+            if exc.code!=1:errors.append('unexpected conflict exit')
+        conflicts.append({'scope':scope,'error':error,'registered_ports':d.listener_ports.getPortList('TCP')})
+    if data.get('parser_conflicts')!=conflicts:errors.append('original parser conflict observations differ')
+    if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True}:errors.append('pure-logic lifecycle missing/changed')
+    if v.get('checks')!=[{'id':k} for k in ('blacklist','whitelist','mutex')]:errors.append('exact check set differs')
+    return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('blacklist','whitelist','mutex')],not errors,{'failures':errors}
 
 def evaluate(root,original,case,expected_inputs,allow_fixture=False):
     if case=='GAP-LIST-MUTEX':return _evaluate_list_mutex(root,original,expected_inputs,allow_fixture)

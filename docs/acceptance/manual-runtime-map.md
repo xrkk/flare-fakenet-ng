@@ -14,7 +14,7 @@
 
 ## 手工功能
 
-T007/R02 只实现 `GAP-NCSI` 与 `GAP-RAW-DATE`; 其余 9 个手工 case 和 2 个 Linux case 在默认入口明确 `not_implemented`, 不返回 pass.
+当前已接入 `GAP-NCSI`, `GAP-RAW-DATE` 和 `GAP-LIST-MUTEX`; 其余 8 个手工 case 和 2 个 Linux case 的完整链仍未实现, 不返回 pass. 历史 T007/R02 仅交付前两项.
 
 | Case | 原来源 | 关键正反判据 |
 | --- | --- | --- |
@@ -28,7 +28,7 @@ T007/R02 只实现 `GAP-NCSI` 与 `GAP-RAW-DATE`; 其余 9 个手工 case 和 2 
 | GAP-LINUX-FLUSH-INTERFACE (NOT_IMPLEMENTED) | LinuxFlushIptables/LinuxFlushDNSCommand/LinuxRestrictInterface | 三个独立字段及实际清理/接口 |
 | GAP-NETWORK-FIX (NOT_IMPLEMENTED) | FixGateway/FixDNS/ModifyLocalDNS/StopDNSService | 逐平台实际语义及前后恢复 |
 | GAP-RAW-DATE | fakenet/listeners/HTTPListener.py CustomResponse | 真实 raw/static respond；日期替换、逐字节保留、非匹配拒绝 |
-| GAP-LIST-MUTEX (NOT_IMPLEMENTED) | black/white list | 互斥配置与允许/拒绝对照 |
+| GAP-LIST-MUTEX | DiverterBase.parse_listeners_config, ListenerMeta, ListenerPorts | 四类名单的 16 项允许/拒绝/错协议/错端口; 两类明确互斥异常和三类 parser 冲突; 原配置/源码身份与独立重判 |
 
 ## 组合场景
 
@@ -63,6 +63,22 @@ existing `native` action must be explicit. Catalog platforms remain unchanged.
 This grants fixture/code credit only, never Windows VM or full functional credit.
 All runtime evidence stays in the selected run directory under `Logs/`.
 
-The other manual cases remain unimplemented. A missing default HTTP web file
+Eight other manual cases remain unimplemented. A missing default HTTP web file
 currently exposes an existing product TypeError; preserve that failure instead
 of treating it as a prerequisite to repair product behavior during facility work.
+
+## Current list mutual-exclusion execution
+
+`GAP-LIST-MUTEX` uses `manual-list-mutex` through the same central
+`plan`, `execute`, and independent `judge` commands. It retains
+`config/list-mutex.ini`, the production parser/predicate observations, precise
+mutual-exclusion errors and source hashes. The oracle independently parses the
+configuration, checks semantic expected values and rejects altered identity,
+queries, ports, errors, fixture status or lifecycle records. This is a pure
+in-memory list/parser case; it opens no listener, driver or network socket.
+
+T022/R01 verified the local offline fixture, including the central CLI with
+only its OS process boundary substituted by in-process execution of the original
+manual entry. Actual child transport and Windows native execution remain untested;
+these results do not grant native or full functional credit. Existing NCSI and
+RAW-DATE evidence is inherited without rerunning those cases.
