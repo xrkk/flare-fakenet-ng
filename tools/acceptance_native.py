@@ -722,6 +722,17 @@ def linux_inputs(plan, case, output_dir, root=None):
         if candidate.get('offline_fixture') is True:
             value['fixture'] = True
         return value
+    if case['id'] == 'LINUX-DEPLOY-UPDATE' and options.get('schema') == 'fakenet.linux-deploy-options.v2':
+        fields={'schema','system_root','install_package','install_manifest_sha256','update_template','update_template_sha256','operation','fault','binding'}
+        if set(options)!=fields:
+            raise ValueError('exact phase deployment options and execution operation required')
+        pins=pins[:6]+['tools/acceptance_linux_recovery.py']
+        return dict(common,schema='fakenet.linux-runtime-input.v3',
+                    source_hashes={rel:sha256(source_root/rel) for rel in pins},
+                    owned_root=str(Path(output_dir)/'driver'),
+                    fixture=candidate.get('offline_fixture') is True,
+                    actions=list(plan['environment'].get('allowed_actions',[])),
+                    **{key:options[key] for key in fields-{'schema'}})
     if case['id'] == 'LINUX-DEPLOY-UPDATE':
         if options.get('schema') != 'fakenet.linux-deploy-options.v1':
             raise ValueError('explicit fixed Linux deployment options required')
@@ -754,6 +765,13 @@ def runtime_block(case, environment):
                 return 'explicit exact Linux composite options required'
             return None
         if case['id'] == 'LINUX-DEPLOY-UPDATE':
+            if options.get('schema') == 'fakenet.linux-deploy-options.v2':
+                fields={'schema','system_root','install_package','install_manifest_sha256','update_template','update_template_sha256','operation','fault','binding'}
+                if set(options)!=fields:
+                    return 'explicit exact phase deployment options required'
+                if not environment.get('native_runtime',{}).get('transport')=='local-target':
+                    return 'phase deployment requires explicit local-target execution'
+                return None
             if options.get('schema') != 'fakenet.linux-deploy-options.v1' or set(options) != {
                     'schema', 'accepted_update_root', 'install_package', 'install_manifest_sha256',
                     'update_package', 'update_manifest_sha256', 'operation'}:

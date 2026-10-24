@@ -518,3 +518,23 @@ install/update/recovery tests are retained, but this source unit does not replac
 those production preconditions or claim native rollback. A separate explicit
 system-root/output and initial-service recovery contract is required before that
 case can execute safely. No runtime/deploy source or current candidate ZIP changed.
+
+### Linux clean installation and phase-bound update (v3)
+
+`fakenet.linux-deploy-options.v2` selects `fakenet.linux-runtime-input.v3` for
+LINUX-DEPLOY-UPDATE. Native execution requires system_root `/`, a previously
+absent installation, explicit installation/service/fault-recovery actions and
+current VM, boot, control-service birth, control epoch and interpreter bindings.
+Evidence lives in a separate owned directory. Existing installations are refused.
+The initial immutable update template contains the exact two incoming sources
+and original updater, without a fabricated future token inode. After the original
+installer completes, the driver freezes separate normal and optional named fault
+packages from the actual installed inode and old source bytes, preserving parent
+template/install-receipt identities. The independent consumer checks copied
+originals and this lineage after cleanup; it never needs the live system tree.
+The import-start fault retains the original failed receipt and uses separately
+recorded atomic recovery, refusing foreign byte drift or live writers. A run
+without the fault cannot pass rollback. Legacy v1/v2 behavior remains available.
+Controlled provider tests prove filesystem/transaction and central dispatch
+behavior only; native installation, service recovery and full acceptance remain
+unverified until separately authorized real-target execution.

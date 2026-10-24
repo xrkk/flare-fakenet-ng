@@ -451,7 +451,134 @@ def _deploy_update(out, value, record, boundary=None):
                          'system_service_used': not fixture,
                          'writers_exited': True}
 
+
+def validate_phase_inputs(case, out, value, boundary):
+    from acceptance_linux_recovery import template_data
+    common={'schema','case','candidate_id','source_commit','package_sha256','execution_id','target','source_hashes'}
+    specific={'owned_root','system_root','install_package','install_manifest_sha256','update_template','update_template_sha256','operation','fixture','actions','fault','binding'}
+    if case!='LINUX-DEPLOY-UPDATE' or set(value)!=common|specific or value['schema']!='fakenet.linux-runtime-input.v3':
+        raise ValueError('exact versioned Linux deployment input required')
+    if type(value['fixture']) is not bool or value['fixture']!=(boundary is not None):raise ValueError('isolated provider must have explicit fixture identity')
+    if boundary is not None and getattr(boundary,'fixture',None) is not True:raise ValueError('fixture provider cannot impersonate production')
+    if (not re.fullmatch('[0-9a-f]{40}',value['source_commit']) or not re.fullmatch('[0-9a-f]{64}',value['package_sha256'])
+            or not re.fullmatch('[A-Za-z0-9-]{8,72}',value['operation']) or not isinstance(value['execution_id'],str) or not value['execution_id']
+            or value['target'].get('platform')!='linux' or set(value['target'])!={'platform','hostname'}):
+        raise ValueError('Linux deployment candidate/operation/target identity invalid')
+    destination=Path(out);system=Path(value['system_root'])
+    if (str(destination)!=value['owned_root'] or not destination.is_absolute() or destination.exists()
+            or any(p.is_symlink() for p in (destination,*destination.parents))
+            or not system.is_absolute() or not system.is_dir() or any(p.is_symlink() for p in (system,*system.parents))):
+        raise ValueError('distinct owned evidence and real system root required')
+    if value['fixture']:
+        if system==Path('/') or not system.is_relative_to(destination.parent) or destination.is_relative_to(system):raise ValueError('fixture system root escaped its owned parent')
+    elif system!=Path('/') or not {'native','linux-install','linux-service','linux-fault-recovery'}.issubset(value['actions']):
+        raise ValueError('native deployment requires explicit root and installation authority')
+    if any(destination==system/name or destination.is_relative_to(system/name) for name in ('opt/fakenet-ng','etc/fakenet-ng-linux','etc/systemd/system')):
+        raise ValueError('evidence must not be inside a mutated installation root')
+    if value['fault'] not in ('none','import-start'):raise ValueError('unregistered update fault schedule')
+    pins=value['source_hashes'];required={'fakenet/mcp/linuxrunner.py','fakenet/diverters/linuxnetpolicy.py','deploy/linux/deploy.sh','deploy/linux/update-idle.py','tools/acceptance_linux_runtime.py','tools/acceptance_linux_runtime_oracles.py','tools/acceptance_linux_recovery.py'}
+    if set(pins)!=required or any(sha(ROOT/name)!=pin for name,pin in pins.items()):raise ValueError('exact phase producer/consumer/original source pins required')
+    if not isinstance(value['binding'],dict) or set(value['binding'])!={'vm_uuid','boot_id','control_services','control_state','interpreter_sha256','service_argv'}:
+        raise ValueError('typed current deployment binding required')
+    installer=_deploy_module()
+    if boundary is not None:installer.OWNER=boundary.owner
+    installer.validate_package(Path(value['install_package']),value['install_manifest_sha256'])
+    if not value['fixture'] and value['install_manifest_sha256']!=_update_module().BASE_MANIFEST:
+        raise ValueError('original accepted installation base cannot be weakened')
+    data=template_data(value['update_template'],value['update_template_sha256'],ROOT/'deploy/linux/update-idle.py')
+    if data['source_commit']!=value['source_commit'] or data['interpreter_sha256']!=value['binding']['interpreter_sha256']:
+        raise ValueError('template differs from frozen source/interpreter identity')
+    return destination
+
+
+def run_phase_deployment(case, out, value, boundary=None):
+    from acceptance_linux_recovery import NativeDeployment, phase_package, recover_published_update
+    destination=validate_phase_inputs(case,out,value,boundary)
+    from acceptance_runtime import require_target
+    require_target(value['target'])
+    provider=boundary if boundary is not None else NativeDeployment(value)
+    before=provider.clean()  # before output or original installation mutation
+    destination.mkdir(mode=0o700,parents=True,exist_ok=False)
+    system=Path(value['system_root']);operation=value['operation'];m=_deploy_module();u=_update_module()
+    if boundary is not None:m.OWNER=u.OWNER=provider.owner
+    record=dict(schema='fakenet.linux-runtime-result.v3',case=case,inputs=value,fixture=value['fixture'],phase={},cleanup=dict(restored=False),error=None)
+    phase=record['phase'];phase.update(initial=before,binding=value['binding'],commands=[])
+    def observed(branch,function,argv):
+        row=dict(branch=branch,argv=list(argv));phase['commands'].append(row)
+        try:
+            answer=function(argv);row['returned']=answer if isinstance(answer,(str,int,bool,type(None))) else 'original-command-completed'
+            return answer
+        except Exception as exc:row['error']=type(exc).__name__+': '+str(exc);raise
+    def copy_original(source,name):
+        source=Path(source);target=destination/name;target.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+        if source.is_symlink() or not source.is_file():raise ValueError('linked/missing original phase file')
+        target.write_bytes(source.read_bytes())
+        return dict(path=name,sha256=sha(target),source=str(source))
+    expected_cleanup=None
+    try:
+        install=lambda argv:observed('install',provider.install_run,argv)
+        idle=(lambda target:None) if boundary is not None else m.no_active_install
+        receipt=m.install(Path(value['install_package']),value['install_manifest_sha256'],operation,root=system,run=install,idle=idle)
+        phase['installation']=provider.installed(receipt)
+        phase['install']=copy_original(system/'opt'/('.fakenet-deploy-'+operation)/'receipt.json','originals/install.json')
+        count=len(phase['commands'])
+        m.install(Path(value['install_package']),value['install_manifest_sha256'],operation,root=system,run=install,idle=idle)
+        phase['install_reentry_commands']=phase['commands'][count:]
+        token=system/'etc/fakenet-ng-linux/token';status=token.stat()
+        phase['token']=dict(inode=status.st_ino,mode=status.st_mode&0o777,sha256=sha(token))
+        phase['installed_files']={name:copy_original(system/name,'installed/'+name) for name in receipt['installed_files']}
+        phase['installed_sources']={name:copy_original(system/'opt/fakenet-ng'/name,'initial-source/'+name) for name in u.FILES}
+        (destination/'derived').mkdir(mode=0o700)
+        phase['identity']={key:value[key] for key in ('candidate_id','source_commit','package_sha256','execution_id','operation','target')}
+        phase['normal']=dict(package='derived/normal')
+        phase['normal']['lineage']=phase_package(value['update_template'],value['update_template_sha256'],system,destination/'derived/normal',system/'opt'/('.fakenet-deploy-'+operation)/'receipt.json',operation,value['binding'],ROOT/'deploy/linux/update-idle.py')
+        if value['fault']=='import-start':
+            phase['fault']=dict(package='derived/fault')
+            phase['fault']['lineage']=phase_package(value['update_template'],value['update_template_sha256'],system,destination/'derived/fault',system/'opt'/('.fakenet-deploy-'+operation)/'receipt.json',operation,value['binding'],ROOT/'deploy/linux/update-idle.py',fault=True)
+            package=destination/'derived/fault';error=None
+            try:
+                u.update(package,sha(package/'manifest.json'),operation+'-fault',root=system,preflight=provider.preflight,run=lambda argv:observed('fault-update',provider.command,argv),get_status=provider.status)
+            except Exception as exc:error=type(exc).__name__+': '+str(exc)
+            failed=system/'opt'/('.fakenet-update-'+operation+'-fault')/'receipt.json'
+            phase['fault']['error']=error;phase['fault']['receipt']=copy_original(failed,'originals/fault.json')
+            raw=json.loads(failed.read_text())
+            if not error or raw.get('phase')!='failed' or raw.get('failure_at')!='published' or set(raw.get('published',[]))!=set(u.FILES):
+                raise ValueError('registered original start failure was not actually observed')
+            phase['fault']['backups']={name:copy_original(row['backup'],'backups/'+name) for name,row in raw['originals'].items()}
+            phase['fault']['published']={name:copy_original(system/'opt/fakenet-ng'/name,'failed-published/'+name) for name in u.FILES}
+            phase['fault']['quiet']=provider.stop()
+            phase['recovery']=recover_published_update(failed,system,package,provider.quiet)
+            phase['recovery']['observed']={name:copy_original(system/'opt/fakenet-ng'/name,'restored/'+name) for name in u.FILES}
+            provider.command(['systemctl','start',u.UNIT]);phase['recovery']['service']=provider.started()
+        package=destination/'derived/normal';run=lambda argv:observed('normal-update',provider.command,argv)
+        normal=u.update(package,sha(package/'manifest.json'),operation+'-normal',root=system,preflight=provider.preflight,run=run,get_status=provider.status)
+        phase['normal']['service']=provider.started()
+        phase['normal']['backups']={name:copy_original(row['backup'],'normal-backups/'+name) for name,row in normal['originals'].items()}
+        phase['normal']['receipt']=copy_original(system/'opt'/('.fakenet-update-'+operation+'-normal')/'receipt.json','originals/normal.json')
+        count=len(phase['commands'])
+        u.update(package,sha(package/'manifest.json'),operation+'-normal',root=system,preflight=provider.preflight,run=run,get_status=provider.status)
+        phase['normal']['reentry_commands']=phase['commands'][count:]
+        phase['normal']['observed']={name:copy_original(system/'opt/fakenet-ng'/name,'final-source/'+name) for name in u.FILES}
+        phase['final_token']=dict(inode=token.stat().st_ino,mode=token.stat().st_mode&0o777,sha256=sha(token))
+        if phase['final_token']!=phase['token']:raise ValueError('installed token identity changed')
+        phase['final_status']=provider.status()
+        expected_cleanup={'opt/fakenet-ng/'+name:sha(system/'opt/fakenet-ng'/name) for name in u.FILES}
+    except Exception as exc:record['error']=type(exc).__name__+': '+str(exc)
+    finally:
+        try:
+            if expected_cleanup is None:
+                # Do not guess which incomplete or foreign bytes can be removed.
+                provider.stop();record['cleanup']=dict(restored=False,recovery_required=True,reason='incomplete phase; preserve original ownership and files')
+            else:record['cleanup']=provider.cleanup(expected_cleanup)
+        except Exception as exc:record['cleanup']=dict(restored=False,recovery_required=True,error=type(exc).__name__+': '+str(exc))
+        record['originals']={p.relative_to(destination).as_posix():sha(p) for p in sorted(destination.rglob('*')) if p.is_file()}
+        _json(destination/'linux-result.json',record)
+    return record
+
 def run(case, out, inputs=None, memory_mode=False, os_boundary=None):
+    if isinstance(inputs,dict) and inputs.get('schema')=='fakenet.linux-runtime-input.v3':
+        if memory_mode:raise ValueError('synthetic phase deployment forbidden')
+        return run_phase_deployment(case,out,inputs,boundary=os_boundary)
     if isinstance(inputs, dict) and inputs.get('schema') == 'fakenet.linux-composite-input.v1':
         if case != 'LINUX-SINGLEHOST' or memory_mode:
             raise ValueError('composite input requires LINUX-SINGLEHOST without memory mode')

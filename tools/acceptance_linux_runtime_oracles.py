@@ -195,6 +195,87 @@ def _evaluate_deploy_update(root, folder, expected_inputs, allow_fixture, value)
             all(status == 'pass' for status in rows.values()), detail)
 
 
+def _evaluate_phase(root, folder, expected, allow_fixture):
+    rows={name:'fail' for name in CHECKS['LINUX-DEPLOY-UPDATE']};detail={}
+    def require(ok,why):
+        if not ok:raise ValueError(why)
+    try:
+        from acceptance_linux_recovery import template_data, verify_phase_package
+        value=_read(folder,'linux-result.json')
+        require(value.get('schema')=='fakenet.linux-runtime-result.v3' and value.get('case')=='LINUX-DEPLOY-UPDATE','phase result identity differs')
+        require(value.get('inputs')==expected and value.get('fixture')==expected.get('fixture'),'independent frozen phase identity differs')
+        require(not value['fixture'] or allow_fixture,'fixture cannot earn native credit')
+        require(value.get('error') is None,'phase producer failed: '+str(value.get('error')))
+        pins=value['originals'];actual={p.relative_to(folder).as_posix() for p in folder.rglob('*') if p.is_file() and p!=folder/'linux-result.json'}
+        require(isinstance(pins,dict) and set(pins)==actual,'phase original file set differs')
+        for name,pin in pins.items():
+            path=folder/name
+            require(not Path(name).is_absolute() and '..' not in Path(name).parts and not path.is_symlink() and path.resolve().is_relative_to(folder.resolve()) and sha(path)==pin,'phase original changed or escaped: '+name)
+        required={'fakenet/mcp/linuxrunner.py','fakenet/diverters/linuxnetpolicy.py','deploy/linux/deploy.sh','deploy/linux/update-idle.py','tools/acceptance_linux_runtime.py','tools/acceptance_linux_runtime_oracles.py','tools/acceptance_linux_recovery.py'}
+        require(set(expected['source_hashes'])==required,'phase source closure differs')
+        for name,pin in expected['source_hashes'].items():require(sha(Path(root)/name)==pin,'phase source changed')
+        data=template_data(expected['update_template'],expected['update_template_sha256'],Path(root)/'deploy/linux/update-idle.py')
+        require(data['source_commit']==expected['source_commit'] and data['interpreter_sha256']==expected['binding']['interpreter_sha256'],'phase template/binding differs')
+        phase=value['phase'];op=expected['operation'];token=phase['token']
+        require(phase['identity']=={key:expected[key] for key in ('candidate_id','source_commit','package_sha256','execution_id','operation','target')},'phase candidate/operation lineage differs')
+        require(phase['final_token']==token,'final token observation differs')
+        def original(row):
+            require(row['path'] in pins and pins[row['path']]==row['sha256'],'copied original reference differs')
+            return folder/row['path']
+        install=original(phase['install']);receipt=json.loads(install.read_bytes())
+        require(receipt.get('phase')=='completed' and receipt.get('operation')==op and receipt.get('manifest_sha256')==expected['install_manifest_sha256'],'original install receipt differs')
+        require(sha(Path(expected['install_package'])/'manifest.json')==expected['install_manifest_sha256'],'initial install package changed')
+        require(phase['install_reentry_commands']==[] and phase['initial']['service']['load']=='not-found' and phase['initial']['service']['pid']==0,'clean install/reentry not observed')
+        require(set(phase['installed_files'])==set(receipt['installed_files']),'installed original set differs')
+        for name,pin in receipt['installed_files'].items():require(sha(original(phase['installed_files'][name]))==pin,'installed bytes differ: '+name)
+        config=configparser.RawConfigParser();config.read(original(phase['installed_files']['opt/fakenet-ng/fakenet/configs/default.ini']))
+        for name in ('LinuxFlushIptables','FixGateway','FixDNS','ModifyLocalDNS','StopDNSService'):require(config.getboolean('Diverter',name) is False,'installed network option enabled')
+        require(not config.has_option('Diverter','LinuxFlushDNSCommand'),'installed DNS command remains')
+        require(type(token['inode']) is int and token['inode']>0 and token['mode']==0o600 and re.fullmatch('[a-f0-9]{64}',token['sha256']),'installed token metadata invalid')
+        normal=phase['normal'];package=folder/normal['package']
+        require(normal['package']=='derived/normal','unexpected normal artifact path')
+        manifest=verify_phase_package(package,normal['lineage'],expected['update_template'],expected['update_template_sha256'],install.read_bytes(),token,expected['binding'])
+        require(normal['lineage']['fault'] is False,'normal artifact is a fault')
+        for name,row in manifest['files'].items():require(sha(original(phase['installed_sources'][name]))==row['old_sha256'],'observed installed source does not bind update')
+        rows['install']='pass';rows['token']='pass'
+        normal_receipt=json.loads(original(normal['receipt']).read_bytes())
+        require(normal_receipt.get('phase')=='completed' and normal_receipt.get('operation')==op+'-normal' and normal_receipt.get('manifest')==normal['lineage']['manifest_sha256'],'normal update receipt differs')
+        require(normal['reentry_commands']==[],'normal reentry executed commands')
+        for name,row in manifest['files'].items():
+            require(sha(original(normal['observed'][name]))==row['new_sha256'],'updated byte observation differs')
+            require(sha(original(normal['backups'][name]))==row['old_sha256'] and normal_receipt['originals'][name]['sha256']==row['old_sha256'],'normal original backup differs')
+        commands=[row['argv'] for row in phase['commands'] if row['branch']=='normal-update']
+        require(['systemctl','stop','fakenet-ng-linux.service'] in commands and ['systemctl','start','fakenet-ng-linux.service'] in commands,'normal lifecycle missing')
+        require(commands.index(['systemctl','stop','fakenet-ng-linux.service'])<commands.index(['systemctl','start','fakenet-ng-linux.service']),'normal start precedes stop')
+        status=phase['final_status'];require(status.get('state')=='stopped' and status.get('run_id') is None and status.get('health',{}).get('process_alive') is False,'final protocol idle state differs')
+        require(value['cleanup'].get('restored') is True and value['cleanup']['service']['pid']==0 and set(value['cleanup']['paths_absent'])=={'opt/fakenet-ng','etc/fakenet-ng-linux','etc/systemd/system/fakenet-ng-linux.service'},'owned cleanup unresolved')
+        if not value['fixture']:
+            from acceptance_linux_recovery import stable_machine
+            require(stable_machine(phase['initial']['machine'])==stable_machine(value['cleanup']['machine']),'native initial network/control state not restored')
+            require(phase['initial']['machine']['vm_uuid']==expected['binding']['vm_uuid'] and phase['initial']['machine']['boot_id']==expected['binding']['boot_id'],'native original target identity differs')
+        rows['idle-update']='pass';rows['transaction']='pass'
+        if expected['fault']=='none':
+            rows['rollback']='blocked';detail['rollback']='registered failure and recovery not run'
+        else:
+            fault=phase['fault'];require(fault['package']=='derived/fault','unexpected fault artifact path')
+            fm=verify_phase_package(folder/fault['package'],fault['lineage'],expected['update_template'],expected['update_template_sha256'],install.read_bytes(),token,expected['binding'])
+            require(fault['lineage']['fault'] is True and fault.get('error'),'fault artifact/start failure missing')
+            fr=json.loads(original(fault['receipt']).read_bytes())
+            require(fr.get('phase')=='failed' and fr.get('failure_at')=='published' and fr.get('operation')==op+'-fault' and fr.get('manifest')==fault['lineage']['manifest_sha256'] and set(fr.get('published',[]))==set(fm['files']),'original failed phase differs')
+            require(fault['quiet']['pid']==0,'fault writer not quiet')
+            recovery=phase['recovery'];require(recovery.get('failed_receipt_preserved') is True and recovery.get('receipt_sha256')==fault['receipt']['sha256'] and recovery.get('operation')==op+'-fault','separate recovery identity differs')
+            for name,row in fm['files'].items():
+                require(row['old_sha256']==manifest['files'][name]['old_sha256'],'fault and normal base differs')
+                require(sha(original(fault['backups'][name]))==row['old_sha256'] and fr['originals'][name]['sha256']==row['old_sha256'],'failed original backup differs')
+                require(sha(original(fault['published'][name]))==row['new_sha256'],'failed published bytes differ')
+                require(sha(original(recovery['observed'][name]))==row['old_sha256'] and recovery['restored'][name]['sha256']==row['old_sha256'] and recovery['restored'][name]['mode']==fr['originals'][name]['mode'],'restored original bytes/mode differ')
+            require(recovery['service']['service']['pid']>0,'recovered service did not restart')
+            rows['rollback']='pass';detail['rollback']='original failed receipt retained; separate owned recovery verified'
+    except (OSError,ValueError,KeyError,TypeError) as exc:
+        rows={name:'fail' for name in rows};detail['error']=type(exc).__name__+': '+str(exc)
+    return [dict(id=name,status=status) for name,status in rows.items()],all(v=='pass' for v in rows.values()),detail
+
+
 def unchanged_stat(path, row):
     status = Path(path).stat()
     return (status.st_mode & 0o7777) == row.get('mode') and status.st_ino == row.get('inode') and status.st_size == row.get('size')
@@ -212,6 +293,8 @@ def evaluate(root, original, case, checks=None, allow_fixture=False, expected_in
             raise ValueError('composite original case differs')
         import acceptance_linux_composite as composite
         return composite.evaluate(root, original, expected_inputs, allow_fixture=allow_fixture)
+    if isinstance(expected_inputs,dict) and expected_inputs.get('schema')=='fakenet.linux-runtime-input.v3':
+        return _evaluate_phase(root,Path(original),expected_inputs,allow_fixture)
     rows = {name: 'fail' for name in identities}; detail = {}
     folder = Path(original)
     try:
