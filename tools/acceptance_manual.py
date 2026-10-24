@@ -305,6 +305,173 @@ def real_syslog_icmp(case, out, inputs):
     _json(out / 'manual-result.json', value)
     return value
 
+def real_ctrlc_ipc(case,out,inputs):
+    import logging
+    import os
+    import _thread
+    import signal
+    import sys
+    import threading
+    import time
+    from fakenet import fakenet as core
+    out=Path(out)
+    cfgdir=out/'config';cfgdir.mkdir()
+    cfg=cfgdir/'shutdown.ini'
+    cfg.write_text('[FakeNet]\nDivertTraffic: Yes\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n',encoding='ascii')
+    token=inputs['execution_id'];owner=os.getpid();started=datetime.now(timezone.utc).isoformat()
+    loggers=[logging.getLogger(''),logging.getLogger('FakeNet')]
+    saved=[(logger,list(logger.handlers),logger.level,logger.propagate,logger.disabled) for logger in loggers]
+    initial_ids={id(handler) for logger in loggers for handler in logger.handlers}
+    def snapshot():
+        return [{'name':logger.name,'handlers':[id(handler) for handler in logger.handlers],
+                 'level':logger.level,'propagate':logger.propagate,'disabled':logger.disabled}
+                for logger in loggers]
+    before=snapshot();created=[];errors=[];branches={}
+    old_argv=sys.argv;old_profile=sys.getprofile()
+    def signal_ids():
+        return {name:id(signal.getsignal(getattr(signal,name))) for name in ('SIGINT','SIGTERM')}
+    signal_before=signal_ids()
+    def collect_created():
+        for logger in loggers:
+            for handler in list(logger.handlers):
+                if id(handler) not in initial_ids and handler not in created:
+                    created.append(handler)
+    try:
+        for mode in ('ctrlc','ipc'):
+            folder=out/mode;folder.mkdir()
+            flag=folder/('stop-'+token+'-'+mode+'.flag')
+            unrelated=folder/'unrelated.flag'
+            unrelated_text='unrelated-'+token+'-'+mode
+            unrelated.write_text(unrelated_text+'\n',encoding='utf-8')
+            log=folder/'main.log'
+            wait_entered=threading.Event();done=threading.Event();fired=threading.Event();control_lock=threading.Lock()
+            holder={};events=[];watch_errors=[];observations={}
+            def observe(frame,event,arg):
+                code=frame.f_code
+                if event=='call':
+                    for method in ('parse_config','start','stop'):
+                        if code is getattr(core.Fakenet,method).__code__:
+                            events.append({'method':method,'event':'call'})
+                    if code is core.wait_for_shutdown.__code__:
+                        events.append({'method':'wait_for_shutdown','event':'call'})
+                        holder['fakenet']=frame.f_locals.get('fakenet')
+                        holder['stop_flag']=frame.f_locals.get('stop_flag')
+                        wait_entered.set()
+                elif event=='return':
+                    for method in ('parse_config','start','stop'):
+                        if code is getattr(core.Fakenet,method).__code__:
+                            events.append({'method':method,'event':'return','result':arg if method=='stop' else None})
+                    if code is core.wait_for_shutdown.__code__:
+                        events.append({'method':'wait_for_shutdown','event':'return','result':arg})
+                if old_profile is not None:old_profile(frame,event,arg)
+            def watcher():
+                if not wait_entered.wait(3.0):
+                    watch_errors.append('original wait_for_shutdown was not entered')
+                    return
+                if mode=='ipc':
+                    time.sleep(0.25)
+                    with control_lock:
+                        if done.is_set():return
+                        observations['unrelated_window_epoch']=time.time()
+                        observations['stop_calls_before_correct']=sum(1 for event in events if event.get('method')=='stop' and event.get('event')=='call')
+                        observations['stop_started_before_correct']=bool(getattr(holder.get('fakenet'),'_stop_started',False))
+                        observations['expected_existed_before_trigger']=flag.exists()
+                        observations['unrelated_existed_before_trigger']=unrelated.exists()
+                        if flag.exists():
+                            watch_errors.append('expected stop flag existed before trigger')
+                            return
+                        flag.write_text('stop-'+token+'\n',encoding='utf-8')
+                        observations['correct_flag_written_epoch']=time.time();fired.set()
+                else:
+                    time.sleep(0.05)
+                    with control_lock:
+                        if done.is_set():return
+                        observations['interrupt_main_epoch']=time.time()
+                        _thread.interrupt_main();fired.set()
+            thread=threading.Thread(target=watcher,name='owned-'+mode+'-'+token)
+            thread.start()
+            rc=None;error=None
+            try:
+                sys.argv=['fakenet','-c',str(cfg),'-f',str(flag),'-p','-n','-l',str(log)]
+                sys.setprofile(observe)
+                core.main()
+            except SystemExit as exc:
+                rc=exc.code
+            except BaseException as exc:
+                error={'type':type(exc).__name__,'message':str(exc)}
+            finally:
+                with control_lock:
+                    done.set()
+                thread.join(5.0)
+                if thread.is_alive():watch_errors.append('owned watcher thread did not join')
+                sys.setprofile(old_profile)
+                sys.argv=old_argv
+            collect_created()
+            f=holder.get('fakenet');backend=getattr(f,'diverter',None) if f is not None else None
+            def attr(obj,name):
+                return getattr(obj,name,None) if obj is not None else None
+            runtime={'fakenet_class':type(f).__name__ if f is not None else None,
+                     'listener_count':len(f.running_listener_providers) if f is not None else None,
+                     'diverter_class':type(backend).__name__ if backend is not None else None,
+                     'start_calls':attr(backend,'start_calls'),'stop_calls':attr(backend,'stop_calls'),
+                     'wait_calls':attr(backend,'wait_calls'),'backend_started':attr(backend,'started'),
+                     'backend_stopped':attr(backend,'stopped'),
+                     'stop_started':attr(f,'_stop_started'),
+                     'stop_complete':bool(f._stop_complete.is_set()) if f is not None else None,
+                     'stop_result':attr(f,'_stop_result'),
+                     'stop_error':(None if f is None or f._stop_error is None else {'type':type(f._stop_error).__name__,'message':str(f._stop_error)})}
+            branches[mode]={'config':str(cfg),'config_sha256':sha256(cfg),'log':str(log),
+                            'log_sha256':sha256(log) if log.is_file() else None,
+                            'flag':str(flag),'flag_exists_after':flag.exists(),
+                            'unrelated_flag':str(unrelated),'unrelated_exists_after':unrelated.exists(),
+                            'unrelated_text_after':unrelated.read_text(encoding='utf-8') if unrelated.is_file() else None,
+                            'rc':rc,'error':error,'calls':events,'wait_entered':wait_entered.is_set(),
+                            'watcher_fired':fired.is_set(),'watcher_alive':thread.is_alive(),
+                            'watcher_errors':watch_errors,'observations':observations,'runtime':runtime,
+                            'stop_flag_argument':holder.get('stop_flag')}
+        signal_after=signal_ids()
+    finally:
+        for handler in created:
+            try:
+                handler.flush();handler.close()
+            except Exception as exc:
+                errors.append(type(exc).__name__+': '+str(exc))
+        for logger,handlers,level,propagate,disabled in saved:
+            for handler in list(logger.handlers):
+                if handler not in handlers:
+                    try:handler.close()
+                    except Exception:pass
+            logger.handlers=handlers
+            logger.setLevel(level);logger.propagate=propagate;logger.disabled=disabled
+        sys.argv=old_argv;sys.setprofile(old_profile)
+    after=snapshot();thread_names=[thread.name for thread in threading.enumerate()]
+    owned_absent=not any(name.startswith('owned-') and token in name for name in thread_names)
+    branch_ok=bool(branches) and all(item['error'] is None and item['rc']==0 and item['wait_entered'] and item['watcher_fired']
+        and not item['watcher_alive'] and not item['watcher_errors'] and not item['flag_exists_after']
+        and item['stop_flag_argument']==item['flag'] and item['runtime']['stop_complete'] is True
+        and item['runtime']['stop_result'] is True and item['runtime']['stop_error'] is None
+        for item in branches.values())
+    lifecycle={'scope':'owned-main-ctrlc-file-ipc-and-runtime-state','signal_ids_before':signal_before,
+               'signal_ids_after':signal_after,'signals_restored':signal_before==signal_after,
+               'logger_before':before,'logger_after':after,'logger_restored':before==after,
+               'argv_restored':sys.argv is old_argv,'profile_restored':sys.getprofile() is old_profile,
+               'owned_threads_absent':owned_absent,'thread_names':thread_names,'errors':errors,
+               'pid':owner,'token':token,'created_handlers':[{'class':type(handler).__name__,'closed':bool(getattr(handler,'_closed',False))} for handler in created]}
+    _json(out/'lifecycle.json',lifecycle)
+    source=Path(__file__).resolve().parents[1]
+    value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,
+           'evidence_kind':'original-main-ctrl-c-and-file-ipc','ctrlc_ipc':{'config':str(cfg),'config_sha256':sha256(cfg),
+             'branches':branches,'owner_pid':owner,'execution_token':token,'checks':list(CHECKS[case])},
+           'source_hashes':{name:sha256(source/name) for name in ('fakenet/fakenet.py',)},
+           'started_at':started,'ended_at':datetime.now(timezone.utc).isoformat(),
+           'cleanup':{'scope':'owned-main-ctrlc-file-ipc-and-runtime-state','stopped':branch_ok,
+                      'threads_joined':owned_absent,'flags_removed':all(not item['flag_exists_after'] for item in branches.values()),
+                      'logger_restored':before==after,'argv_restored':sys.argv is old_argv,
+                      'profile_restored':sys.getprofile() is old_profile,'signals_restored':signal_before==signal_after,
+                      'system_network_restored':'not-exercised','system_console_used':False},
+           'checks':[{'id':name} for name in CHECKS[case]],'identity':{name:inputs[name] for name in IDENTITY}}
+    _json(out/'manual-result.json',value);return value
+
 def real_dumppackets(case, out, inputs):
     import logging
     from fakenet.diverters.diverterbase import DiverterBase
@@ -564,6 +731,11 @@ def run(case,out,inputs=None,memory_mode=False):
         if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
         out.mkdir(parents=True,exist_ok=False)
         return real_syslog_icmp(case,out,inputs)
+    if case=='GAP-CTRLC-IPC':
+        validate_inputs(case,inputs);out=Path(out).absolute()
+        if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
+        out.mkdir(parents=True,exist_ok=False)
+        return real_ctrlc_ipc(case,out,inputs)
     if case not in ('GAP-NCSI','GAP-RAW-DATE'):raise NotImplementedError('case is not implemented in this round: '+case)
     validate_inputs(case,inputs);out=Path(out).absolute()
     if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')

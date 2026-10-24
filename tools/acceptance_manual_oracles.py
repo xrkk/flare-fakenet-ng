@@ -68,6 +68,79 @@ def _evaluate_syslog_icmp(root, original, expected_inputs, allow_fixture=False):
         errors.append(type(exc).__name__ + ': ' + str(exc))
     return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in ('syslog', 'icmp', 'owner')], not errors, {'failures': errors}
 
+def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False):
+    base = Path(original).resolve()
+    errors = []
+    def require(ok, reason):
+        if not ok:
+            raise ValueError(reason)
+    def read(name):
+        path = base / name
+        require(path.is_file() and not path.is_symlink() and not any(part.is_symlink() for part in path.parents), 'missing/linked original: ' + name)
+        return path.read_bytes()
+    try:
+        v = json.loads(read('manual-result.json'))
+        require(str(base) == expected_inputs.get('owned_root') and v.get('inputs') == expected_inputs, 'owned/frozen inputs mismatch')
+        require(v.get('schema') == 'fakenet.manual-result.v1' and v.get('case') == 'GAP-CTRLC-IPC', 'case/schema mismatch')
+        require(v.get('evidence_kind') == 'original-main-ctrl-c-and-file-ipc', 'original branch provenance missing')
+        require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
+        require(type(v.get('fixture')) is bool and v['fixture'] == (expected_inputs.get('fixture') is True), 'fixture identity mismatch')
+        require(not v['fixture'] or allow_fixture, 'fixture cannot native credit')
+        require(v.get('checks') == [{'id': key} for key in ('ctrlc', 'ipc-stop', 'owned-exit')], 'checks mismatch')
+        d = v['ctrlc_ipc']
+        require(set(d.get('branches') or {}) == {'ctrlc', 'ipc'}, 'exact Ctr-C/IPC branch set differs')
+        pid = d.get('owner_pid'); token = d.get('execution_token')
+        require(type(pid) is int and pid > 0 and d.get('execution_token') == expected_inputs['execution_id'] and token, 'owner/token mismatch')
+        config = read('config/shutdown.ini')
+        require(config == b'[FakeNet]\nDivertTraffic: Yes\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n', 'exact configuration mismatch')
+        require(d.get('config') == str(base / 'config/shutdown.ini') and d.get('config_sha256') == hashlib.sha256(config).hexdigest(), 'configuration path/hash mismatch')
+        state = json.loads(read('lifecycle.json'))
+        require(state.get('pid') == pid and state.get('token') == token, 'lifecycle owner/token mismatch')
+        require(state.get('scope') == 'owned-main-ctrlc-file-ipc-and-runtime-state', 'lifecycle scope mismatch')
+        require(state.get('signals_restored') is True and state.get('logger_restored') is True and state.get('argv_restored') is True and state.get('profile_restored') is True, 'owned state not restored')
+        require(state.get('owned_threads_absent') is True and not any(name.startswith('owned-') and token in name for name in state.get('thread_names', [])), 'owned watcher thread remains')
+        require(state.get('errors') == [], 'producer errors present')
+        require(all(item.get('closed') is True for item in state.get('created_handlers', [])) and state.get('created_handlers'), 'owned logging handler not closed')
+        require(v.get('source_hashes') == {name: hashlib.sha256((Path(root) / name).read_bytes()).hexdigest() for name in ('fakenet/fakenet.py',)}, 'source binding mismatch')
+        for mode in ('ctrlc', 'ipc'):
+            item = d['branches'][mode]
+            log_path = base / mode / 'main.log'
+            flag_path = base / mode / ('stop-' + token + '-' + mode + '.flag')
+            unrelated_path = base / mode / 'unrelated.flag'
+            require(item.get('config') == str(base / 'config/shutdown.ini') and item.get('log') == str(log_path) and item.get('flag') == str(flag_path) and item.get('unrelated_flag') == str(unrelated_path), 'branch-owned parameter path mismatch: ' + mode)
+            require(item.get('config_sha256') == hashlib.sha256(config).hexdigest(), 'branch configuration hash mismatch: ' + mode)
+            require(item.get('log_sha256') == hashlib.sha256(read(mode + '/main.log')).hexdigest(), 'branch log hash mismatch: ' + mode)
+            require(item.get('stop_flag_argument') == str(flag_path), 'original -f argument mismatch: ' + mode)
+            require(item.get('flag_exists_after') is False and not flag_path.exists(), 'owned stop flag remains: ' + mode)
+            require(item.get('rc') == 0 and item.get('error') is None, 'original main did not exit cleanly: ' + mode)
+            require(item.get('wait_entered') is True and item.get('watcher_fired') is True and item.get('watcher_alive') is False and item.get('watcher_errors') == [], 'wait trigger/thread mismatch: ' + mode)
+            calls = item.get('calls') or []
+            call_methods = [row.get('method') for row in calls if row.get('event') == 'call']
+            # CPython stops delivering profile events once interrupt_main raises
+            # KeyboardInterrupt, so the Ctrl-C branch proves stop through the
+            # original log and actual runtime state; the file-IPC branch keeps
+            # the full profiled chain.
+            expected_calls = ['parse_config', 'start', 'wait_for_shutdown'] + (['stop'] if mode == 'ipc' else [])
+            require(call_methods == expected_calls, 'original main call chain mismatch: ' + mode)
+            if mode == 'ipc':
+                require(any(row.get('method') == 'stop' and row.get('event') == 'return' and row.get('result') is True for row in calls), 'original stop return missing/failed: ' + mode)
+            runtime = item.get('runtime') or {}
+            require(runtime.get('listener_count') == 0 and runtime.get('diverter_class') and runtime.get('start_calls') == 1 and runtime.get('stop_calls') == 1 and runtime.get('wait_calls') >= 1 and runtime.get('backend_started') is True and runtime.get('backend_stopped') is True and runtime.get('stop_started') is True and runtime.get('stop_complete') is True and runtime.get('stop_result') is True and runtime.get('stop_error') is None, 'original runtime start/stop state mismatch: ' + mode)
+            text = read(mode + '/main.log').decode('utf-8')
+            require(('pid=%s ' % pid) in text and ('Loaded configuration file: ' + str(base / 'config/shutdown.ini')) in text and ('Will seek stop flag at ' + str(flag_path)) in text and text.count('DEFAULT_INTERCEPTION_READY') == 1 and text.count('FakeNet-NG started successfully') == 1 and 'STOP_PHASE_BEGIN phase=complete' in text and 'STOP_PHASE_END phase=complete' in text and 'FakeNet-NG exiting: rc=0' in text, 'original main/log chain missing: ' + mode)
+            unrelated = unrelated_path.read_bytes()
+            require(item.get('unrelated_exists_after') is True and unrelated == ('unrelated-' + token + '-' + mode + '\n').encode(), 'unrelated flag damaged/changed: ' + mode)
+            observations = item.get('observations') or {}
+            if mode == 'ipc':
+                require('Stop flag found at ' + str(flag_path) in text and 'KeyboardInterrupt' not in text, 'IPC stop flag branch/log mismatch')
+                require(observations.get('expected_existed_before_trigger') is False and observations.get('unrelated_existed_before_trigger') is True and observations.get('stop_calls_before_correct') == 0 and observations.get('stop_started_before_correct') is False and observations.get('unrelated_window_epoch') < observations.get('correct_flag_written_epoch'), 'IPC unrelated/trigger ordering mismatch')
+            else:
+                require('KeyboardInterrupt' in text and 'Stop flag found' not in text and observations.get('interrupt_main_epoch'), 'Ctrl-C branch/log mismatch')
+        require(v.get('cleanup') == {'scope': 'owned-main-ctrlc-file-ipc-and-runtime-state', 'stopped': True, 'threads_joined': True, 'flags_removed': True, 'logger_restored': True, 'argv_restored': True, 'profile_restored': True, 'signals_restored': True, 'system_network_restored': 'not-exercised', 'system_console_used': False}, 'cleanup/provenance mismatch')
+    except Exception as exc:
+        errors.append(type(exc).__name__ + ': ' + str(exc))
+    return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in ('ctrlc', 'ipc-stop', 'owned-exit')], not errors, {'failures': errors}
+
 def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False):
     import configparser
     import dpkt
@@ -334,6 +407,7 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
 
 def evaluate(root,original,case,expected_inputs,allow_fixture=False):
     if case=='GAP-SYSLOG-ICMP-LOG':return _evaluate_syslog_icmp(root,original,expected_inputs,allow_fixture)
+    if case=='GAP-CTRLC-IPC':return _evaluate_ctrlc_ipc(root,original,expected_inputs,allow_fixture)
     if case=='GAP-DUMPPACKETS':return _evaluate_dumppackets(root,original,expected_inputs,allow_fixture)
     if case=='GAP-DIVERTER-SWITCH':return _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture)
     if case=='GAP-EXECUTECMD':return _evaluate_executecmd(root,original,expected_inputs,allow_fixture)
