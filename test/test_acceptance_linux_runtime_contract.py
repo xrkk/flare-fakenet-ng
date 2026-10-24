@@ -56,4 +56,19 @@ class ControllerTruthTests(unittest.TestCase):
   with self.assertRaises(ValueError):L.run('LINUX-SINGLEHOST',out,inputs)
   self.assertFalse(out.exists(),'invalid request created output before all inputs validated')
 
+class ControllerNoSummaryCreditTests(unittest.TestCase):
+ def test_booleans_and_packet_count_without_originals_never_pass(self):
+  import os,json
+  import acceptance_linux_runtime_oracles as oracle
+  root=Path(os.environ['FN_COMPAT_CHECK_DIR'])/'boolean-only-native'
+  root.mkdir();cfg=root/'config.ini'
+  cfg.write_text('[Diverter]\nNetworkMode: SingleHost\n')
+  value={'schema':L.SCHEMA,'case':'LINUX-SINGLEHOST','mode':'singlehost','config':str(cfg),
+   'runtime':{'multihost':True,'nfqueue':True},'traffic':{'packets':1},
+   'rules':{'v4':[['iptables','anything']], 'v6':[['ip6tables','anything']]},
+   'before':{'rules':0},'after':{'rules':0},'cleanup':{'stopped':True,'network_restored':True}}
+  (root/'linux-result.json').write_text(json.dumps(value))
+  rows,clean,detail=oracle.evaluate(ROOT,root,'LINUX-SINGLEHOST',allow_fixture=False)
+  self.assertFalse(clean,'summary booleans without runtime/PCAP/restore originals accepted: '+str(detail))
+
 if __name__=='__main__':unittest.main()
