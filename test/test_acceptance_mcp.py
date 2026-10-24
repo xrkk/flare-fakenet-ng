@@ -2052,7 +2052,7 @@ class SnapshotRecoveryBoundary(SnapshotProcessBoundary):
             if tool in ('load_config', 'start', 'stop', 'get_status'):
                 body = json.loads(result['body']); payload = json.loads(body['result']['content'][0]['text'])
                 payload['health'] = {'process_alive': self.state == 'healthy'}
-                if tool != 'get_status':
+                if tool != 'get_status' and not payload.get('error'):
                     payload['command_id'] = args['command_id']
                     if tool in ('start', 'stop') and not payload.get('error'):
                         marker, bad = self.snapshot.read()
