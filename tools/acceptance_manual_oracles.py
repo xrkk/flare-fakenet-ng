@@ -12,41 +12,84 @@ from pathlib import Path
 RAW=b'HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nX-Test: <RAW-DATE>\r\nContent-Length: 35\r\nConnection: close\r\n\r\nbody<RAW-DATE>\x00\xff'
 STATIC=b'static-<RAW-DATE>'
 
-def _evaluate_dumppackets(root,original,expected_inputs,allow_fixture=False):
-    import dpkt,socket
-    base=Path(original).resolve();path=base/'manual-result.json'
-    if path.is_symlink() or not path.is_file():raise ValueError('original missing or linked')
-    v=json.loads(path.read_text())
-    if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!='GAP-DUMPPACKETS':raise ValueError('case/schema mismatch')
-    if v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
-    for k in ('candidate_id','source_commit','package_sha256','execution_id'):
-        if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
-    if type(v.get('fixture')) is not bool or v['fixture']!=(expected_inputs.get('fixture') is True):raise ValueError('fixture identity mismatch')
-    if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
-    if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
-    expected=open(base/'packet-raw.bin','rb').read();errors=[];data=v.get('dumppackets') or {}
-    for mode,dump in (('enabled',True),('disabled',False)):
-        item=data.get(mode) or {};folder=Path(item.get('folder',''))
-        if not folder.is_dir() or item.get('error') is not None or item.get('dump') is not dump:errors.append(mode+' branch metadata/error mismatch')
-        files=item.get('pcap_files')
-        if dump:
-            if not files or len(files)!=2 or not all(name.startswith('customcap_') for name in files):errors.append('enabled custom prefix output missing')
-            else:
-                raw_path=next(folder/name for name in files if not name.endswith('-converted.pcap'));conv_path=next(folder/name for name in files if name.endswith('-converted.pcap'))
-                try:
-                    with raw_path.open('rb') as f:raws=[bytes(pkt) for ts,pkt in dpkt.pcap.Reader(f)]
-                    with conv_path.open('rb') as f:convs=[bytes(pkt) for ts,pkt in dpkt.pcap.Reader(f)]
-                    if raws!=[expected] or len(convs)!=1 or convs[0][14:]!=expected or convs[0][:14]!=b'\x02\x00\x00\x00\x00\x02\x02\x00\x00\x00\x00\x01\x08\x00':errors.append('PCAP bytes/frames differ from frozen packet')
-                except (OSError,dpkt.dpkt.NeedData,ValueError):errors.append('PCAP unreadable')
-            summary=item.get('summary') or {}
-            if summary.get('raw_write_count')!=1 or summary.get('ethernet_write_count')!=1 or summary.get('healthy') is not True or summary.get('discarded') is not False:errors.append('enabled writer/seal summary mismatch')
-            if item.get('writer_closed') is not True:errors.append('enabled writer not closed')
-        else:
-            if files:errors.append('disabled branch produced PCAP')
-            if item.get('summary') is not None or item.get('writer_closed') is not True:errors.append('disabled writer/close mismatch')
-    if v.get('source_hashes')!={n:hashlib.sha256((Path(root)/n).read_bytes()).hexdigest() for n in ('fakenet/diverters/diverterbase.py','fakenet/diverters/pcapwriter.py','fakenet/capture_originals.py')}:errors.append('source binding mismatch')
-    if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True}:errors.append('cleanup mismatch')
-    return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('enabled','disabled','prefix','content')],not errors,{'failures':errors}
+def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False):
+    import configparser
+    import dpkt
+    from fakenet.payload_report import load_capture_originals
+    base = Path(original).absolute()
+    errors = []
+    def require(condition, reason):
+        if not condition:
+            raise ValueError(reason)
+    def plain(path):
+        path = Path(path)
+        require(path.is_file(), 'missing original: ' + str(path))
+        require(not any(item.is_symlink() for item in (path, *path.parents)), 'linked original')
+        return path
+    try:
+        require(str(base) == expected_inputs.get('owned_root'), 'frozen owned root mismatch')
+        v = json.loads(plain(base / 'manual-result.json').read_text())
+        require(v.get('schema') == 'fakenet.manual-result.v1' and v.get('case') == 'GAP-DUMPPACKETS', 'case/schema mismatch')
+        require(v.get('inputs') == expected_inputs, 'frozen inputs mismatch')
+        require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
+        require(type(v.get('fixture')) is bool and v['fixture'] == (expected_inputs.get('fixture') is True), 'fixture identity mismatch')
+        require(not v['fixture'] or allow_fixture, 'fixture cannot native credit')
+        require(v.get('evidence_kind') == 'offline-packet-replay' and v.get('wire_capture') is False, 'packet replay provenance missing')
+        require(v.get('checks') == [{'id': key} for key in ('enabled', 'disabled', 'prefix', 'content')], 'checks mismatch')
+        require(v.get('cleanup') == {'scope': 'owned-capture-files', 'stopped': True, 'system_network_restored': 'not-exercised'}, 'owned cleanup mismatch')
+        # Independent literal packet truth, never selected by the producer's files.
+        expected = [bytes.fromhex('450000280001000040060000c000020ac00002149c401f9000000000000000005002200000000000'),
+                    bytes.fromhex('450000200002000040110000c000020ac00002149c411f91000c000074657374')]
+        for number, packet in enumerate(expected):
+            require(plain(base / ('packet-%d.bin' % number)).read_bytes() == packet, 'fixed packet input mismatch')
+        sources = ('fakenet/diverters/diverterbase.py', 'fakenet/diverters/fnconfig.py',
+                   'fakenet/diverters/pcapwriter.py', 'fakenet/capture_originals.py', 'fakenet/payload_report.py')
+        require(v.get('source_hashes') == {name: hashlib.sha256((Path(root) / name).read_bytes()).hexdigest() for name in sources}, 'source binding mismatch')
+        require(set(v.get('dumppackets', {})) == {'enabled', 'disabled'}, 'missing capture branch')
+        for mode, setting in (('enabled', 'Yes'), ('disabled', 'No')):
+            item = v['dumppackets'][mode]
+            folder = base / mode
+            cfg = base / 'config' / (mode + '.ini')
+            prefix = str(folder / 'customcap')
+            require(folder.is_dir() and not any(path.is_symlink() for path in (folder, *folder.parents)), 'owned branch path mismatch')
+            require(item.get('folder') == str(folder) and item.get('prefix') == prefix and item.get('config') == str(cfg), 'owned configuration/prefix mismatch')
+            require(plain(cfg).read_text() == '[Diverter]\nDumpPackets: ' + setting + '\nDumpPacketsFilePrefix: ' + prefix + '\n', 'exact configuration mismatch')
+            require(item.get('config_sha256') == hashlib.sha256(cfg.read_bytes()).hexdigest(), 'configuration hash mismatch')
+            parser = configparser.ConfigParser()
+            parser.read(cfg)
+            require(parser.getboolean('Diverter', 'DumpPackets') == (mode == 'enabled'), 'configured switch mismatch')
+            require(item.get('before') == [] and item.get('error') is None and item.get('writer_closed') is True, 'branch before/error/close mismatch')
+            files = sorted(path.name for path in folder.glob('*.pcap'))
+            require(item.get('pcap_files') == files, 'actual PCAP inventory mismatch')
+            lifecycle = json.loads(plain(base / ('lifecycle-' + mode + '.json')).read_text())
+            require(lifecycle.get('scope') == 'owned-capture-files' and lifecycle.get('streams_closed') is True and lifecycle.get('writer_closed') is True and lifecycle.get('originals_closed') is True and lifecycle.get('close_error') is None and lifecycle.get('capture_failure') is None, 'actual writer lifecycle mismatch')
+            if mode == 'disabled':
+                require(not list(folder.iterdir()) and item.get('summary') is None and lifecycle.get('writer_present') is False and lifecycle.get('originals_sealed') is False and lifecycle.get('observations') == [], 'disabled output/writer mismatch')
+                continue
+            require(len(files) == 2 and all(name.startswith('customcap_') and Path(name).name == name for name in files), 'enabled custom prefix output missing')
+            raw = plain(folder / next(name for name in files if not name.endswith('-converted.pcap')))
+            converted = plain(folder / next(name for name in files if name.endswith('-converted.pcap')))
+            loaded = load_capture_originals(raw, converted)
+            with raw.open('rb') as stream:
+                reader = dpkt.pcap.Reader(stream)
+                require(reader.datalink() == dpkt.pcap.DLT_RAW, 'raw linktype mismatch')
+                raws = [bytes(packet) for _, packet in reader]
+            with converted.open('rb') as stream:
+                reader = dpkt.pcap.Reader(stream)
+                require(reader.datalink() == dpkt.pcap.DLT_EN10MB, 'converted linktype mismatch')
+                converted_packets = [bytes(packet) for _, packet in reader]
+            header = bytes.fromhex('0200000000020200000000010800')
+            require(raws == expected and converted_packets == [header + packet for packet in expected], 'PCAP bytes/frames differ from independent fixed packets')
+            require(lifecycle.get('writer_present') is True and lifecycle.get('originals_sealed') is True and lifecycle.get('observations') == loaded.entries, 'sealed observations/lifecycle mismatch')
+            for number, entry in enumerate(loaded.entries):
+                require(entry.get('logical_packet_id') == 'dump-packet-%d' % number and entry.get('direction') == 'inbound' and entry.get('observation_role') == 'inbound', 'observation direction/identity mismatch')
+            require(len(loaded.entries) == len(expected), 'observation count mismatch')
+            require(set(path.name for path in folder.iterdir()) == {raw.name, converted.name, raw.name + '.observations.ndjson', raw.name + '.nbis.ndjson', raw.name + '.capture-originals.json'}, 'capture original inventory mismatch')
+            summary = item.get('summary') or {}
+            require(summary.get('raw_filename') == str(raw) and summary.get('ethernet_filename') == str(converted) and summary.get('raw_write_count') == len(expected) and summary.get('ethernet_write_count') == len(expected) and summary.get('healthy') is True and summary.get('discarded') is False, 'writer summary mismatch')
+    except Exception as exc:
+        errors.append(type(exc).__name__ + ': ' + str(exc))
+    return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in ('enabled', 'disabled', 'prefix', 'content')], not errors, {'failures': errors}
 
 def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False):
     base=Path(original).resolve();path=base/'manual-result.json'

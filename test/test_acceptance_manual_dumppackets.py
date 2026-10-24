@@ -5,7 +5,7 @@ ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'tools'))
 import acceptance_manual as M,acceptance_manual_oracles as O,acceptance_native as N
 class DumpPacketsTests(unittest.TestCase):
  def setUp(self):
-  self.t=tempfile.TemporaryDirectory();self.addCleanup(self.t.cleanup);self.base=Path(self.t.name)
+  self.base=Path(os.environ['FN_MANUAL_CHECK_DIR'])/'retained'/self.id().split('.')[-1];self.base.mkdir(parents=True,exist_ok=False)
  def inputs(self,out):
   return {'schema':'fakenet.manual-input.v1','case':'GAP-DUMPPACKETS','candidate_id':'pcap-fixture','source_commit':'a'*40,'package_sha256':'b'*64,'execution_id':'pcap-fixture-01','config':str(out/'config'),'owned_root':str(out),'fixture':True}
  def test_real_dual_pcap_enabled_disabled_prefix_content(self):
@@ -43,6 +43,69 @@ class DumpPacketsTests(unittest.TestCase):
   self.assertFalse(json.loads((run/'independent.json').read_text())['full_functional_pass'])
   path=run/'results/GAP-DUMPPACKETS/driver/manual-result.json';v=json.loads(path.read_text());v['dumppackets']['disabled']['pcap_files']=['fake.pcap'];path.write_text(json.dumps(v))
   result=cli('judge','--plan',run/'plan.json','--results',run/'results','--output',run/'rejected.json');self.assertNotEqual(0,result[0],result)
+  v['dumppackets']['disabled']['pcap_files']=[];path.write_text(json.dumps(v))
+  for name in ('seal','config','packet','missing-disabled','fake-cleanup','prefix'):
+   with self.subTest(central=name):
+    saved=path.read_bytes();target=None;old=None
+    if name=='seal':target=next((path.parent/'enabled').glob('*.capture-originals.json'));old=target.read_bytes();target.write_bytes(b'{}')
+    elif name=='config':target=path.parent/'config/enabled.ini';old=target.read_bytes();target.write_text('[Diverter]\nDumpPackets: No\n')
+    elif name=='packet':target=path.parent/'packet-0.bin';old=target.read_bytes();target.write_bytes(b'wrong')
+    else:
+     changed=json.loads(saved)
+     if name=='missing-disabled':del changed['dumppackets']['disabled']
+     elif name=='fake-cleanup':changed['cleanup']['scope']='whole-system'
+     elif name=='prefix':changed['dumppackets']['enabled']['prefix']='foreign'
+     path.write_text(json.dumps(changed))
+    try:
+     result=cli('judge','--plan',run/'plan.json','--results',run/'results','--output',run/('reject-'+name+'.json'));self.assertNotEqual(0,result[0],result)
+    finally:
+     path.write_bytes(saved)
+     if target is not None:target.write_bytes(old)
+
+
+ def test_real_parser_and_failure_close(self):
+  from fakenet.diverters.diverterbase import DiverterBase
+  from fakenet.diverters.pcapwriter import DualPcapWriter
+  seen=[];parse=DiverterBase.parse_diverter_config;close=DualPcapWriter.close
+  def observed(obj):seen.append(dict(obj._dict));return parse(obj)
+  def closed(obj,*args,**kw):seen.append('closed');return close(obj,*args,**kw)
+  out=self.base/'normal'
+  with mock.patch.object(DiverterBase,'parse_diverter_config',observed):M.run('GAP-DUMPPACKETS',out,self.inputs(out))
+  self.assertEqual(['yes','no'],[x['dumppackets'].lower() for x in seen])
+  seen.clear();out=self.base/'failure'
+  with mock.patch.object(DualPcapWriter,'write_ip_packet',side_effect=RuntimeError('injected writer failure')),mock.patch.object(DualPcapWriter,'close',closed):
+   value=M.run('GAP-DUMPPACKETS',out,self.inputs(out))
+  self.assertIn('closed',seen)
+  rows,clean,detail=O.evaluate(ROOT,out,'GAP-DUMPPACKETS',self.inputs(out),allow_fixture=True);self.assertFalse(clean,detail)
+ def test_independent_original_mutations(self):
+  mutations=('config','seed','seal','disabled-disk','prefix','checks','before','outside','fixture','identity','content','direction','fake-cleanup')
+  for name in mutations:
+   with self.subTest(name=name):
+    out=self.base/name;inputs=self.inputs(out);value=M.run('GAP-DUMPPACKETS',out,inputs);p=out/'manual-result.json';v=json.loads(p.read_text());en=v['dumppackets']['enabled']
+    if name=='config':Path(en['config']).write_text('[Diverter]\nDumpPackets: No\nDumpPacketsFilePrefix: ignored\n')
+    elif name=='seed':(out/'packet-0.bin').write_bytes(b'changed')
+    elif name=='seal':next((out/'enabled').glob('*.capture-originals.json')).unlink()
+    elif name=='disabled-disk':(out/'disabled/hidden.pcap').write_bytes(b'undeclared')
+    elif name=='prefix':en['prefix']=str(out/'wrong-prefix')
+    elif name=='checks':v['checks']=[]
+    elif name=='before':en['before']=5
+    elif name=='outside':en['folder']=str(self.base/'foreign')
+    elif name=='fixture':v['fixture']=False
+    elif name=='identity':v['identity']['execution_id']='foreign-id'
+    elif name=='direction':
+     journal=next((out/'enabled').glob('*.observations.ndjson'));journal.write_bytes(journal.read_bytes().replace(b'inbound',b'outbound'))
+    elif name=='fake-cleanup':v['cleanup']['scope']='whole-system'
+    elif name=='content':
+     raw=next(x for x in (out/'enabled').glob('*.pcap') if not x.name.endswith('-converted.pcap'));raw.write_bytes(raw.read_bytes()[:-1]+b'X')
+    p.write_text(json.dumps(v));rows,clean,detail=O.evaluate(ROOT,out,'GAP-DUMPPACKETS',inputs,allow_fixture=True);self.assertFalse(clean,detail);self.assertTrue(detail['failures'],detail);self.assertNotEqual('pass',N._judge_rows(rows,M.CHECKS['GAP-DUMPPACKETS'])['verdict'])
+ def test_same_wrong_writer_and_seed_rejected(self):
+  from fakenet.diverters.pcapwriter import DualPcapWriter
+  original=DualPcapWriter.write_ip_packet
+  def wrong(writer,packet):return original(writer,packet[:-1]+b'X')
+  out=self.base/'wrong';inputs=self.inputs(out)
+  with mock.patch.object(DualPcapWriter,'write_ip_packet',wrong):M.run('GAP-DUMPPACKETS',out,inputs)
+  (out/'packet-0.bin').write_bytes((out/'packet-0.bin').read_bytes()[:-1]+b'X')
+  rows,clean,detail=O.evaluate(ROOT,out,'GAP-DUMPPACKETS',inputs,allow_fixture=True);self.assertFalse(clean,detail)
 
  def test_central_driver_registration(self):
   self.assertEqual('manual-dumppackets',N.driver_table(ROOT)['manual-dumppackets']['production_kind'])

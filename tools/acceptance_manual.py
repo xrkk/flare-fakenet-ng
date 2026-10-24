@@ -158,31 +158,84 @@ def real_list_mutex(case,out,inputs):
       'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
     _json(out/'manual-result.json',value);return value
 
-def real_dumppackets(case,out,inputs):
-    import logging,dpkt,socket
+def real_dumppackets(case, out, inputs):
+    import logging
     from fakenet.diverters.diverterbase import DiverterBase
-    out=Path(out);cfgdir=out/'config';cfgdir.mkdir()
-    raw_packet_file=out/'packet-raw.bin'
-    tcp=dpkt.tcp.TCP(sport=40000,dport=8080,flags=dpkt.tcp.TH_SYN)
-    ip=dpkt.ip.IP(src=socket.inet_aton('192.0.2.10'),dst=socket.inet_aton('192.0.2.20'),p=6,data=tcp);ip.len=len(ip);raw_bytes=bytes(ip);raw_packet_file.write_bytes(raw_bytes)
-    result={}
-    for mode,dump in (('enabled','Yes'),('disabled','No')):
-        folder=out/mode;folder.mkdir();prefix=str(folder/'customcap')
-        cfg=cfgdir/(mode+'.ini');cfg.write_text('[Diverter]\nDumpPackets: '+dump+'\nDumpPacketsFilePrefix: '+prefix+'\n')
-        d=DiverterBase.__new__(DiverterBase);d.logger=logging.getLogger('manual-dumppackets');d._initialize_capture_state();d.dump_packets=(dump=='Yes');d.pcap_prefix=prefix
-        before=len(list(folder.glob('*.pcap')));summary=None;error=None
+    out = Path(out)
+    cfgdir = out / 'config'
+    cfgdir.mkdir()
+    started = datetime.now(timezone.utc).isoformat()
+    # Fixed benign IPv4/TCP and IPv4/UDP bytes, replayed into the real writer.
+    packets = [bytes.fromhex('450000280001000040060000c000020ac00002149c401f9000000000000000005002200000000000'),
+               bytes.fromhex('450000200002000040110000c000020ac00002149c411f91000c000074657374')]
+    for number, packet in enumerate(packets):
+        (out / ('packet-%d.bin' % number)).write_bytes(packet)
+    result = {}
+    for mode, setting in (('enabled', 'Yes'), ('disabled', 'No')):
+        folder = out / mode
+        folder.mkdir()
+        prefix = str(folder / 'customcap')
+        cfg = cfgdir / (mode + '.ini')
+        cfg.write_text('[Diverter]\nDumpPackets: ' + setting + '\nDumpPacketsFilePrefix: ' + prefix + '\n')
+        loaded = configparser.ConfigParser()
+        loaded.read(cfg)
+        d = DiverterBase.__new__(DiverterBase)
+        d.logger = logging.getLogger('manual-dumppackets')
+        d._initialize_capture_state()
+        d.configure(dict(loaded.items('Diverter')))
+        before = sorted(path.name for path in folder.iterdir())
+        summary = None
+        error = None
+        close_error = None
+        observations = []
         try:
+            d.parse_diverter_config()
             d._start_capture()
-            if d.dump_packets:
-                if not d.record_raw_capture(raw_bytes,observation_role='inbound',direction='inbound'):raise ValueError('capture rejected packet')
-            summary=d._close_capture()
-        except BaseException as exc:error={'type':type(exc).__name__,'message':str(exc)}
-        files=sorted(p.name for p in folder.glob('*.pcap'))
-        result[mode]={'config':str(cfg),'config_sha256':sha256(cfg),'folder':str(folder),'prefix':prefix,'dump':d.dump_packets,'before':before,'pcap_files':files,'summary':summary._asdict() if summary is not None else None,'error':error,'writer_closed':d.dual_pcap is None or d.dual_pcap._closed,'raw_packet':str(raw_packet_file),'raw_sha256':sha256(raw_packet_file)}
-    value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,'dumppackets':result,
-      'source_hashes':{n:sha256(Path(__file__).resolve().parents[1]/n) for n in ('fakenet/diverters/diverterbase.py','fakenet/diverters/pcapwriter.py','fakenet/capture_originals.py')},
-      'started_at':datetime.now(timezone.utc).isoformat(),'cleanup':{'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True},'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
-    _json(out/'manual-result.json',value);return value
+            if d.dual_pcap is not None:
+                for number, packet in enumerate(packets):
+                    observations.append(d.record_raw_capture(
+                        packet, observation_role='inbound', direction='inbound',
+                        logical_packet_id='dump-packet-%d' % number))
+        except Exception as exc:
+            error = {'type': type(exc).__name__, 'message': str(exc)}
+        finally:
+            try:
+                summary = d._close_capture()
+            except Exception as exc:
+                close_error = {'type': type(exc).__name__, 'message': str(exc)}
+        writer = d.dual_pcap
+        originals = d._capture_originals
+        streams = [getattr(writer, name, None) for name in ('_raw_file', '_ethernet_file')]
+        streams += [getattr(originals, name, None) for name in ('_observations_stream', '_nbis_stream')]
+        closed = all(stream is None or stream.closed for stream in streams)
+        lifecycle = {'scope': 'owned-capture-files', 'streams_closed': closed,
+                     'writer_present': writer is not None,
+                     'writer_closed': writer is None or writer._closed,
+                     'originals_closed': originals is None or originals._closed,
+                     'originals_sealed': originals is not None and originals.sealed,
+                     'capture_failure': str(d.capture_failure) if d.capture_failure else None,
+                     'close_error': close_error, 'observations': observations}
+        _json(out / ('lifecycle-' + mode + '.json'), lifecycle)
+        result[mode] = {'config': str(cfg), 'config_sha256': sha256(cfg),
+                        'folder': str(folder), 'prefix': prefix, 'dump': d.dump_packets,
+                        'before': before, 'pcap_files': sorted(path.name for path in folder.glob('*.pcap')),
+                        'summary': summary._asdict() if summary is not None else None,
+                        'error': error, 'writer_closed': closed and lifecycle['writer_closed']}
+    source = Path(__file__).resolve().parents[1]
+    sources = ('fakenet/diverters/diverterbase.py', 'fakenet/diverters/fnconfig.py',
+               'fakenet/diverters/pcapwriter.py', 'fakenet/capture_originals.py', 'fakenet/payload_report.py')
+    value = {'schema': SCHEMA, 'case': case, 'fixture': inputs.get('fixture') is True,
+             'evidence_kind': 'offline-packet-replay', 'wire_capture': False,
+             'inputs': inputs, 'dumppackets': result,
+             'source_hashes': {name: sha256(source / name) for name in sources},
+             'started_at': started, 'ended_at': datetime.now(timezone.utc).isoformat(),
+             'cleanup': {'scope': 'owned-capture-files',
+                         'stopped': all(item['writer_closed'] for item in result.values()),
+                         'system_network_restored': 'not-exercised'},
+             'checks': [{'id': name} for name in CHECKS[case]],
+             'identity': {name: inputs[name] for name in IDENTITY}}
+    _json(out / 'manual-result.json', value)
+    return value
 
 def real_diverter_switch(case,out,inputs):
     import logging,sys
