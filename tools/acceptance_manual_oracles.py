@@ -25,21 +25,28 @@ def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False):
         if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
     if type(v.get('fixture')) is not bool or v['fixture']!=(expected_inputs.get('fixture') is True):raise ValueError('fixture identity/credit mismatch')
     if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
-    if not v['fixture']:raise ValueError('actual OS command completion originals not yet implemented; native not credited')
+    if not v['fixture'] and (v.get('executecmd',{}).get('os_platform')!='windows'):raise ValueError('native command evidence requires Windows platform')
     if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
     data=v.get('executecmd') or {};cfg=base/'config/executecmd.ini';errors=[]
     if not cfg.is_file() or cfg.is_symlink() or data.get('configuration')!='config/executecmd.ini' or data.get('configuration_sha256')!=hashlib.sha256(cfg.read_bytes()).hexdigest():raise ValueError('configuration original missing/changed')
-    template='cmd.exe /c echo {pid} {procname} {src_addr} {src_port} {dst_addr} {dst_port}'
+    token=str(expected_inputs['execution_id']);output=base/'command-output.txt'
+    template='cmd.exe /c echo {pid} {procname} {src_addr} {src_port} {dst_addr} {dst_port} '+token+' >> "'+str(output)+'"'
     if cfg.read_text()!='[svc]\nProtocol: TCP\nPort: 8080\nExecuteCmd: '+template+'\n[plain]\nProtocol: TCP\nPort: 8090\n':errors.append('frozen configuration differs')
     diverter=DiverterBase.__new__(DiverterBase);diverter.logger=logging.getLogger('oracle-executecmd');diverter.sessions={};diverter.configure({});diverter.listener_ports=__import__('fakenet.diverters.diverterbase',fromlist=['ListenerPorts']).ListenerPorts()
     diverter.parse_listeners_config({'svc':{'protocol':'TCP','port':'8080','executecmd':template}})
     pkt=SimpleNamespace(proto='TCP',sport=40000,dport=8080,src_ip='192.0.2.10',dst_ip='192.0.2.20',src_ip0='192.0.2.10',dst_ip0='192.0.2.20',dport0=8080,_dport0=8080,ipver=4)
-    expected='cmd.exe /c echo 1234 benign.exe 192.0.2.10 40000 192.0.2.20 8080'
+    expected='cmd.exe /c echo 1234 benign.exe 192.0.2.10 40000 192.0.2.20 8080 '+token
     if diverter.build_cmd(pkt,1234,'benign.exe')!=expected:errors.append('production build_cmd differs')
     parms=DivertParms(diverter,pkt,1234,'benign.exe')
     if parms.first_packet_new_session is not True:errors.append('first session predicate false')
     diverter.addSession(pkt,1234,'benign.exe')
     if DivertParms(diverter,pkt,1234,'benign.exe').first_packet_new_session is not False:errors.append('duplicate session predicate true')
+    if data.get('command')!=expected or data.get('command_output')!=str(output) or not output.is_file() or output.is_symlink() or data.get('command_output_sha256')!=hashlib.sha256(output.read_bytes()).hexdigest():errors.append('command output original missing/changed')
+    try:
+        lines=output.read_text(encoding='utf-8').splitlines()
+        if lines!=[expected] or data.get('command_output_bytes')!=(expected+'\n'):errors.append('command output six fields/token or line count differs')
+    except (OSError,UnicodeError):errors.append('command output unreadable')
+    if data.get('token')!=token:errors.append('command token differs')
     if data.get('command')!=expected or data.get('first_packet') is not True or data.get('duplicate_first_packet') is not False:errors.append('command/session originals mismatch')
     executed=data.get('executed')
     if not isinstance(executed,list) or len(executed)!=1 or executed[0].get('command')!=expected or type(executed[0].get('pid')) is not int or executed[0]['pid']<=0:errors.append('first execution original mismatch')

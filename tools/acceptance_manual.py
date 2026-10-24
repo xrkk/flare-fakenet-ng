@@ -163,7 +163,8 @@ def real_executecmd(case,out,inputs):
     from fakenet.diverters.fnpacket import PacketCtx
     import dpkt,logging,sys,threading
     started=time.time();out=Path(out);cfgdir=out/'config';cfgdir.mkdir();cfg=cfgdir/'executecmd.ini'
-    template='cmd.exe /c echo {pid} {procname} {src_addr} {src_port} {dst_addr} {dst_port}'
+    token=str(inputs['execution_id']);output=out/'command-output.txt'
+    template='cmd.exe /c echo {pid} {procname} {src_addr} {src_port} {dst_addr} {dst_port} '+token+' >> "'+str(output)+'"'
     text='[svc]\nProtocol: TCP\nPort: 8080\nExecuteCmd: '+template+'\n[plain]\nProtocol: TCP\nPort: 8090\n'
     cfg.write_text(text)
     class Recorder(DiverterBase):
@@ -194,6 +195,10 @@ def real_executecmd(case,out,inputs):
     nonmatching=trigger('no-command-listener',packet(sport=40002,dport=8090),pid)
     no_default=trigger('no-default-protocol',packet(sport=40003,udp=True),pid)
     other_cmd=diverter.build_cmd(packet(dport=9090),pid,comm)
+    deadline=time.time()+2.0;output_bytes=None
+    while time.time()<deadline:
+        if output.is_file():output_bytes=output.read_bytes();break
+        time.sleep(0.02)
     bad=cfgdir/'bad.ini';bad.write_text('[bad]\nProtocol: TCP\nPort: 8081\nExecuteCmd: cmd {missing}\n')
     bad_error=None;bad_parser=configparser.ConfigParser();bad_parser.read(bad)
     try:
@@ -202,7 +207,7 @@ def real_executecmd(case,out,inputs):
     except SystemExit as exc:bad_error={'type':type(exc).__name__,'code':exc.code}
     diverter.sessions.clear();diverter.port_fwd_table.clear()
     value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,
-      'executecmd':{'configuration':'config/executecmd.ini','configuration_sha256':sha256(cfg),'template':template,'command':command,
+      'executecmd':{'configuration':'config/executecmd.ini','configuration_sha256':sha256(cfg),'template':template,'command':command,'command_output':str(output),'command_output_sha256':sha256(output) if output.is_file() else None,'command_output_bytes':output_bytes.decode('utf-8','replace') if output_bytes is not None else None,'token':token,
                    'first_packet':first['first_packet'],'duplicate_first_packet':duplicate['first_packet'],'executed':diverter.executed,
                    'missing_pid_executions':missing['executions'],'nonmatching_command':other_cmd,'bad_format_error':bad_error,
                    'actions':actions,'sessions_after':len(diverter.sessions),'port_forwards_after':len(diverter.port_fwd_table),
