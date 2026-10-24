@@ -30,22 +30,29 @@ def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False):
     data=v.get('executecmd') or {};cfg=base/'config/executecmd.ini';errors=[]
     if not cfg.is_file() or cfg.is_symlink() or data.get('configuration')!='config/executecmd.ini' or data.get('configuration_sha256')!=hashlib.sha256(cfg.read_bytes()).hexdigest():raise ValueError('configuration original missing/changed')
     token=str(expected_inputs['execution_id']);output=base/'command-output.txt'
-    template='cmd.exe /c echo {pid} {procname} {src_addr} {src_port} {dst_addr} {dst_port} '+token+' >> "'+str(output)+'"'
+    template='cmd.exe /c echo {pid} {procname} {src_addr} {src_port} {dst_addr} {dst_port} '+token+'>>"'+str(output)+'"'
     if cfg.read_text()!='[svc]\nProtocol: TCP\nPort: 8080\nExecuteCmd: '+template+'\n[plain]\nProtocol: TCP\nPort: 8090\n':errors.append('frozen configuration differs')
     diverter=DiverterBase.__new__(DiverterBase);diverter.logger=logging.getLogger('oracle-executecmd');diverter.sessions={};diverter.configure({});diverter.listener_ports=__import__('fakenet.diverters.diverterbase',fromlist=['ListenerPorts']).ListenerPorts()
     diverter.parse_listeners_config({'svc':{'protocol':'TCP','port':'8080','executecmd':template}})
     pkt=SimpleNamespace(proto='TCP',sport=40000,dport=8080,src_ip='192.0.2.10',dst_ip='192.0.2.20',src_ip0='192.0.2.10',dst_ip0='192.0.2.20',dport0=8080,_dport0=8080,ipver=4)
-    expected='cmd.exe /c echo 1234 benign.exe 192.0.2.10 40000 192.0.2.20 8080 '+token
+    payload='1234 benign.exe 192.0.2.10 40000 192.0.2.20 8080 '+token
+    expected='cmd.exe /c echo '+payload+'>>"'+str(output)+'"'
     if diverter.build_cmd(pkt,1234,'benign.exe')!=expected:errors.append('production build_cmd differs')
     parms=DivertParms(diverter,pkt,1234,'benign.exe')
     if parms.first_packet_new_session is not True:errors.append('first session predicate false')
     diverter.addSession(pkt,1234,'benign.exe')
     if DivertParms(diverter,pkt,1234,'benign.exe').first_packet_new_session is not False:errors.append('duplicate session predicate true')
-    if data.get('command')!=expected or data.get('command_output')!=str(output) or not output.is_file() or output.is_symlink() or data.get('command_output_sha256')!=hashlib.sha256(output.read_bytes()).hexdigest():errors.append('command output original missing/changed')
-    try:
-        lines=output.read_text(encoding='utf-8').splitlines()
-        if lines!=[expected] or data.get('command_output_bytes')!=(expected+'\n'):errors.append('command output six fields/token or line count differs')
-    except (OSError,UnicodeError):errors.append('command output unreadable')
+    raw=None
+    if data.get('command_output')!=str(output) or not output.is_file() or output.is_symlink():
+        errors.append('command output original missing/changed')
+    elif output.stat().st_size>4096:errors.append('command output exceeds fixed probe bound')
+    else:
+        raw=output.read_bytes()
+        if data.get('command_output_sha256')!=hashlib.sha256(raw).hexdigest():errors.append('command output original missing/changed')
+        if raw not in ((payload+'\n').encode('ascii'),(payload+'\r\n').encode('ascii')):
+            errors.append('command output six fields/token or line count differs')
+        if data.get('command_output_encoding')!='hex' or data.get('command_output_bytes')!=raw.hex():
+            errors.append('command output byte observation differs')
     if data.get('token')!=token:errors.append('command token differs')
     if data.get('command')!=expected or data.get('first_packet') is not True or data.get('duplicate_first_packet') is not False:errors.append('command/session originals mismatch')
     executed=data.get('executed')
@@ -65,7 +72,8 @@ def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False):
     if data.get('template')!=template:errors.append('command template identity differs')
     if v.get('checks')!=[{'id':k} for k in ('command','first-connection','non-connection')]:errors.append('exact check set differs')
     if v.get('source_hashes')!={n:hashlib.sha256((Path(root)/n).read_bytes()).hexdigest() for n in ('fakenet/diverters/diverterbase.py','fakenet/diverters/fnpacket.py')}:errors.append('source binding mismatch')
-    if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True}:errors.append('cleanup mismatch')
+    if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True,
+            'scope':'in-memory-case-state','child_exit':'not-observed','child_termination_performed':False}:errors.append('cleanup mismatch')
     out=[{'id':k,'status':'fail' if errors else 'pass'} for k in ('command','first-connection','non-connection')]
     return out,not errors,{'failures':errors}
 

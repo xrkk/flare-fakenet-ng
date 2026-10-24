@@ -162,9 +162,14 @@ def real_executecmd(case,out,inputs):
     from fakenet.diverters.diverterbase import DiverterBase,DivertParms,ListenerPorts
     from fakenet.diverters.fnpacket import PacketCtx
     import dpkt,logging,sys,threading
-    started=time.time();out=Path(out);cfgdir=out/'config';cfgdir.mkdir();cfg=cfgdir/'executecmd.ini'
-    token=str(inputs['execution_id']);output=out/'command-output.txt'
-    template='cmd.exe /c echo {pid} {procname} {src_addr} {src_port} {dst_addr} {dst_port} '+token+' >> "'+str(output)+'"'
+    started=time.time();out=Path(out);token=str(inputs['execution_id']);output=out/'command-output.txt'
+    if not re.fullmatch('[a-zA-Z0-9-]{4,80}',token):raise ValueError('unsafe command execution token')
+    if any(ord(ch)<32 or ord(ch)==127 or ch in chr(34)+chr(39)+'&|<>^%!{};$`()' for ch in str(output)):
+        raise ValueError('unsafe command output path')
+    if any(p.is_symlink() for p in (out,*out.parents)) or output.exists() or output.is_symlink():
+        raise ValueError('command output must be a new owned ordinary file')
+    cfgdir=out/'config';cfgdir.mkdir();cfg=cfgdir/'executecmd.ini'
+    template='cmd.exe /c echo {pid} {procname} {src_addr} {src_port} {dst_addr} {dst_port} '+token+'>>"'+str(output)+'"'
     text='[svc]\nProtocol: TCP\nPort: 8080\nExecuteCmd: '+template+'\n[plain]\nProtocol: TCP\nPort: 8090\n'
     cfg.write_text(text)
     class Recorder(DiverterBase):
@@ -197,7 +202,11 @@ def real_executecmd(case,out,inputs):
     other_cmd=diverter.build_cmd(packet(dport=9090),pid,comm)
     deadline=time.time()+2.0;output_bytes=None
     while time.time()<deadline:
-        if output.is_file():output_bytes=output.read_bytes();break
+        if output.is_symlink():raise ValueError('command output became linked')
+        if output.is_file():
+            if output.stat().st_size>4096:raise ValueError('command output exceeds fixed probe bound')
+            output_bytes=output.read_bytes()
+            if output_bytes:break
         time.sleep(0.02)
     bad=cfgdir/'bad.ini';bad.write_text('[bad]\nProtocol: TCP\nPort: 8081\nExecuteCmd: cmd {missing}\n')
     bad_error=None;bad_parser=configparser.ConfigParser();bad_parser.read(bad)
@@ -207,14 +216,15 @@ def real_executecmd(case,out,inputs):
     except SystemExit as exc:bad_error={'type':type(exc).__name__,'code':exc.code}
     diverter.sessions.clear();diverter.port_fwd_table.clear()
     value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,
-      'executecmd':{'configuration':'config/executecmd.ini','configuration_sha256':sha256(cfg),'template':template,'command':command,'command_output':str(output),'command_output_sha256':sha256(output) if output.is_file() else None,'command_output_bytes':output_bytes.decode('utf-8','replace') if output_bytes is not None else None,'token':token,
+      'executecmd':{'configuration':'config/executecmd.ini','configuration_sha256':sha256(cfg),'template':template,'command':command,'command_output':str(output),'command_output_sha256':sha256(output) if output.is_file() else None,'command_output_bytes':output_bytes.hex() if output_bytes is not None else None,'command_output_encoding':'hex','token':token,
                    'first_packet':first['first_packet'],'duplicate_first_packet':duplicate['first_packet'],'executed':diverter.executed,
                    'missing_pid_executions':missing['executions'],'nonmatching_command':other_cmd,'bad_format_error':bad_error,
                    'actions':actions,'sessions_after':len(diverter.sessions),'port_forwards_after':len(diverter.port_fwd_table),
                    'os_platform':'windows' if diverter.running_on_windows else 'posix'},
       'source_hashes':{n:sha256(Path(__file__).resolve().parents[1]/n) for n in ('fakenet/diverters/diverterbase.py','fakenet/diverters/fnpacket.py')},
       'started_epoch':started,'ended_epoch':time.time(),'cleanup':{'stopped':not diverter.sessions and not diverter.port_fwd_table,
-          'threads_joined':True,'sockets_closed':True,'network_restored':True},'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
+          'threads_joined':True,'sockets_closed':True,'network_restored':True,'scope':'in-memory-case-state',
+          'child_exit':'not-observed','child_termination_performed':False},'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
     _json(out/'manual-result.json',value);return value
 
 def real_raw_date(case,out,inputs):

@@ -8,10 +8,14 @@ class _Proc:
 
 def _popen(argv,**kwargs):
  import re
- if isinstance(argv,str):
-  match=re.search(r'echo (.*?) >> "([^"]+)"',argv)
-  if match:Path(match.group(2)).write_text(match.group(1)+'\n')
+ if not isinstance(argv,str):raise AssertionError('fixture accepts only fixed command strings')
+ match=re.fullmatch(r'cmd\.exe /c echo (1234 benign\.exe 192\.0\.2\.10 40000 192\.0\.2\.20 8080 [a-zA-Z0-9-]{4,80})>>"([^"\r\n]+)"',argv)
+ if not match:raise AssertionError('unexpected fixture command: '+repr(argv))
+ output=Path(match.group(2));owned=Path(os.environ['FN_MANUAL_CHECK_DIR']).resolve()
+ if not output.resolve().is_relative_to(owned):raise AssertionError('fixture target outside check root')
+ with output.open('ab') as stream:stream.write((match.group(1)+'\n').encode('ascii'))
  return _Proc()
+
 class ExecuteCmdTests(unittest.TestCase):
  def setUp(self):
   self.base=Path(os.environ['FN_MANUAL_CHECK_DIR'])/'retained'/self.id().split('.')[-1];self.base.mkdir(parents=True,exist_ok=False)
@@ -102,7 +106,8 @@ class ControllerExecuteCmdBoundaryTests(unittest.TestCase):
   out=self.base/'case';inputs=self.inputs(out)
   with mock.patch('subprocess.Popen',side_effect=_popen) as popen:M.run('GAP-EXECUTECMD',out,inputs)
   self.assertEqual(1,popen.call_count);args,options=popen.call_args
-  self.assertEqual('cmd.exe /c echo 1234 benign.exe 192.0.2.10 40000 192.0.2.20 8080',args[0])
+  expected='cmd.exe /c echo 1234 benign.exe 192.0.2.10 40000 192.0.2.20 8080 '+inputs['execution_id']+'>>"'+str(out/'command-output.txt')+'"'
+  self.assertEqual(expected,args[0])
   self.assertEqual({'creationflags','shell','close_fds','preexec_fn'},set(options))
   self.assertEqual(0,options['creationflags']);self.assertIs(True,options['shell']);self.assertIs(True,options['close_fds']);self.assertTrue(callable(options['preexec_fn']))
   (out/'os-fixture-observation.json').write_text(json.dumps({'command':args[0],'shell':options['shell'],'close_fds':options['close_fds'],'creationflags':options['creationflags'],'preexec_name':options['preexec_fn'].__name__,'fixture':True,'actual_child_executed':False}))
@@ -118,3 +123,41 @@ class ControllerExecuteCmdBoundaryTests(unittest.TestCase):
   rows,clean,detail=O.evaluate(ROOT,out,'GAP-EXECUTECMD',inputs,allow_fixture=True)
   self.assertFalse(clean,detail);self.assertIn('original first/duplicate/nontrigger action sequence differs',detail['failures'])
   (out/'duplicate-bug-rejected.json').write_text(json.dumps(detail))
+
+
+class ControllerExecuteOutputTests(unittest.TestCase):
+ setUp=ControllerExecuteCmdTests.setUp
+ inputs=ExecuteCmdTests.inputs
+ def test_output_missing_wrong_fields_token_and_duplicates_rejected(self):
+  import copy,hashlib
+  out=self.base/'case';inputs=self.inputs(out)
+  with mock.patch('subprocess.Popen',side_effect=_popen):M.run('GAP-EXECUTECMD',out,inputs)
+  path=out/'manual-result.json';base=json.loads(path.read_text());output=out/'command-output.txt';raw=output.read_bytes()
+  for fault in ('missing','fields','token','duplicate','bad-byte'):
+   with self.subTest(fault=fault):
+    value=copy.deepcopy(base)
+    if fault=='missing':output.unlink()
+    else:
+     altered=raw.replace(b'1234',b'9999',1) if fault=='fields' else raw.replace(inputs['execution_id'].encode(),b'foreign-token') if fault=='token' else raw+raw if fault=='duplicate' else raw+b'\xff'
+     output.write_bytes(altered);value['executecmd']['command_output_sha256']=hashlib.sha256(altered).hexdigest();value['executecmd']['command_output_bytes']=altered.hex()
+    path.write_text(json.dumps(value));rows,clean,detail=O.evaluate(ROOT,out,'GAP-EXECUTECMD',inputs,allow_fixture=True)
+    self.assertFalse(clean,(fault,detail))
+    reason='command output original missing/changed' if fault=='missing' else 'command output six fields/token or line count differs'
+    self.assertIn(reason,detail['failures']);(out/('output-'+fault+'-rejected.json')).write_text(json.dumps(detail))
+    output.write_bytes(raw)
+  path.write_text(json.dumps(base))
+ def test_explicit_windows_crlf_and_fixture_boundary(self):
+  import hashlib
+  out=self.base/'case';inputs=self.inputs(out)
+  with mock.patch('subprocess.Popen',side_effect=_popen):M.run('GAP-EXECUTECMD',out,inputs)
+  path=out/'manual-result.json';value=json.loads(path.read_text());output=out/'command-output.txt';raw=output.read_bytes().replace(b'\n',b'\r\n');output.write_bytes(raw)
+  value['executecmd']['command_output_sha256']=hashlib.sha256(raw).hexdigest();value['executecmd']['command_output_bytes']=raw.hex();path.write_text(json.dumps(value))
+  rows,clean,detail=O.evaluate(ROOT,out,'GAP-EXECUTECMD',inputs,allow_fixture=True);self.assertTrue(clean,detail)
+  with self.assertRaisesRegex(ValueError,'fixture cannot native credit'):O.evaluate(ROOT,out,'GAP-EXECUTECMD',inputs,allow_fixture=False)
+ def test_unsafe_path_is_rejected_before_os_boundary(self):
+  for marker in ('%','&','"','{','`'):
+   with self.subTest(marker=marker):
+    out=self.base/('unsafe'+marker);inputs=self.inputs(out)
+    with mock.patch('subprocess.Popen',side_effect=_popen) as popen:
+     with self.assertRaisesRegex(ValueError,'unsafe command output path'):M.run('GAP-EXECUTECMD',out,inputs)
+    self.assertEqual(0,popen.call_count);self.assertFalse((out/'config').exists())
