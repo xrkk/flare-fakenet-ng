@@ -159,39 +159,57 @@ def real_list_mutex(case,out,inputs):
     _json(out/'manual-result.json',value);return value
 
 def real_executecmd(case,out,inputs):
-    from types import SimpleNamespace
-    from fakenet.diverters.diverterbase import DiverterBase,DivertParms
-    import logging
-    out=Path(out);cfgdir=out/'config';cfgdir.mkdir();cfg=cfgdir/'executecmd.ini'
+    from fakenet.diverters.diverterbase import DiverterBase,DivertParms,ListenerPorts
+    from fakenet.diverters.fnpacket import PacketCtx
+    import dpkt,logging,sys,threading
+    started=time.time();out=Path(out);cfgdir=out/'config';cfgdir.mkdir();cfg=cfgdir/'executecmd.ini'
     template='cmd.exe /c echo {pid} {procname} {src_addr} {src_port} {dst_addr} {dst_port}'
-    text='[svc]\nProtocol: TCP\nPort: 8080\nExecuteCmd: '+template+'\n'
+    text='[svc]\nProtocol: TCP\nPort: 8080\nExecuteCmd: '+template+'\n[plain]\nProtocol: TCP\nPort: 8090\n'
     cfg.write_text(text)
     class Recorder(DiverterBase):
         def __init__(self):
-            self.logger=logging.getLogger('manual-executecmd');self.listener_ports=None;self.sessions={};self.executed=[];self.running_on_windows=False
+            self.logger=logging.getLogger('manual-executecmd');self.listener_ports=ListenerPorts();self.sessions={};self.executed=[]
+            self.running_on_windows=sys.platform=='win32';self.pdebug_level=0
+            self.default_listener={'TCP':8080};self.port_fwd_table={};self.port_fwd_table_lock=threading.Lock()
+            self.ip_addrs={4:['192.0.2.10']}
         def execute_detached(self,cmd):
             pid=super().execute_detached(cmd);self.executed.append({'command':cmd,'pid':pid});return pid
-    diverter=Recorder();diverter.configure({});diverter.listener_ports=__import__('fakenet.diverters.diverterbase',fromlist=['ListenerPorts']).ListenerPorts();diverter.sessions={}
-    diverter.parse_listeners_config({'svc':{'protocol':'TCP','port':'8080','executecmd':template}})
-    pkt=SimpleNamespace(proto='TCP',sport=40000,dport=8080,src_ip='192.0.2.10',dst_ip='192.0.2.20',src_ip0='192.0.2.10',dst_ip0='192.0.2.20',dport0=8080,_dport0=8080,ipver=4)
-    pid=1234;comm='benign.exe'
-    command=diverter.build_cmd(pkt,pid,comm)
-    parms=DivertParms(diverter,pkt,pid,comm);first=parms.first_packet_new_session
-    if first:diverter.maybeExecuteCmd(pkt,pid,comm)
-    diverter.addSession(pkt,pid,comm)
-    duplicate=DivertParms(diverter,pkt,pid,comm).first_packet_new_session
-    if duplicate:diverter.maybeExecuteCmd(pkt,pid,comm)
-    before_missing=len(diverter.executed);diverter.maybeExecuteCmd(pkt,None,comm);missing=len(diverter.executed)-before_missing
-    other=SimpleNamespace(**dict(vars(pkt),dport=9090,dport0=9090));other_cmd=diverter.build_cmd(other,pid,comm)
+    diverter=Recorder();diverter.configure({})
+    parser=configparser.ConfigParser();parser.read(cfg)
+    diverter.parse_listeners_config({section:dict(parser.items(section)) for section in parser.sections()})
+    def packet(sport=40000,dport=8080,udp=False):
+        transport=dpkt.udp.UDP(sport=sport,dport=dport) if udp else dpkt.tcp.TCP(sport=sport,dport=dport,flags=dpkt.tcp.TH_SYN)
+        ip=dpkt.ip.IP(src=socket.inet_aton('192.0.2.10'),dst=socket.inet_aton('192.0.2.20'),p=17 if udp else 6,data=transport)
+        ip.len=len(ip)
+        return PacketCtx('executecmd-benign',bytes(ip))
+    pkt=packet();pid=1234;comm='benign.exe';command=diverter.build_cmd(pkt,pid,comm);actions=[]
+    def trigger(name,packet,owner):
+        parms=DivertParms(diverter,packet,owner,comm);first=parms.first_packet_new_session;before=len(diverter.executed)
+        diverter.maybe_redir_port(parms,packet,owner,comm)
+        row={'name':name,'protocol':packet.proto,'source_port':packet.sport,'destination_port':packet.dport,'pid':owner,
+             'first_packet':first,'executions':len(diverter.executed)-before,'session_count':len(diverter.sessions)}
+        actions.append(row);return row
+    first=trigger('first',pkt,pid);duplicate=trigger('duplicate',packet(),pid)
+    missing=trigger('missing-pid',packet(sport=40001),None)
+    nonmatching=trigger('no-command-listener',packet(sport=40002,dport=8090),pid)
+    no_default=trigger('no-default-protocol',packet(sport=40003,udp=True),pid)
+    other_cmd=diverter.build_cmd(packet(dport=9090),pid,comm)
     bad=cfgdir/'bad.ini';bad.write_text('[bad]\nProtocol: TCP\nPort: 8081\nExecuteCmd: cmd {missing}\n')
-    bad_error=None
+    bad_error=None;bad_parser=configparser.ConfigParser();bad_parser.read(bad)
     try:
-        duplicate_diverter=Recorder();duplicate_diverter.configure({});duplicate_diverter.listener_ports=__import__('fakenet.diverters.diverterbase',fromlist=['ListenerPorts']).ListenerPorts();duplicate_diverter.sessions={};duplicate_diverter.parse_listeners_config({'bad':{'protocol':'TCP','port':'8081','executecmd':'cmd {missing}'}})
+        bad_diverter=Recorder();bad_diverter.configure({})
+        bad_diverter.parse_listeners_config({section:dict(bad_parser.items(section)) for section in bad_parser.sections()})
     except SystemExit as exc:bad_error={'type':type(exc).__name__,'code':exc.code}
+    diverter.sessions.clear();diverter.port_fwd_table.clear()
     value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,
-      'executecmd':{'configuration':'config/executecmd.ini','configuration_sha256':sha256(cfg),'template':template,'command':command,'first_packet':first,'duplicate_first_packet':duplicate,'executed':diverter.executed,'missing_pid_executions':missing,'nonmatching_command':other_cmd,'bad_format_error':bad_error},
+      'executecmd':{'configuration':'config/executecmd.ini','configuration_sha256':sha256(cfg),'template':template,'command':command,
+                   'first_packet':first['first_packet'],'duplicate_first_packet':duplicate['first_packet'],'executed':diverter.executed,
+                   'missing_pid_executions':missing['executions'],'nonmatching_command':other_cmd,'bad_format_error':bad_error,
+                   'actions':actions,'sessions_after':len(diverter.sessions),'port_forwards_after':len(diverter.port_fwd_table),
+                   'os_platform':'windows' if diverter.running_on_windows else 'posix'},
       'source_hashes':{n:sha256(Path(__file__).resolve().parents[1]/n) for n in ('fakenet/diverters/diverterbase.py','fakenet/diverters/fnpacket.py')},
-      'started_at':datetime.now(timezone.utc).isoformat(),'cleanup':{'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True},'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
+      'started_epoch':started,'ended_epoch':time.time(),'cleanup':{'stopped':not diverter.sessions and not diverter.port_fwd_table,
+          'threads_joined':True,'sockets_closed':True,'network_restored':True},'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
     _json(out/'manual-result.json',value);return value
 
 def real_raw_date(case,out,inputs):

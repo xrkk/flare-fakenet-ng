@@ -23,12 +23,14 @@ def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False):
     if v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
     for k in ('candidate_id','source_commit','package_sha256','execution_id'):
         if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
-    if v.get('fixture') is not True or not allow_fixture:raise ValueError('fixture identity/credit mismatch')
+    if type(v.get('fixture')) is not bool or v['fixture']!=(expected_inputs.get('fixture') is True):raise ValueError('fixture identity/credit mismatch')
+    if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
+    if not v['fixture']:raise ValueError('actual OS command completion originals not yet implemented; native not credited')
     if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
     data=v.get('executecmd') or {};cfg=base/'config/executecmd.ini';errors=[]
     if not cfg.is_file() or cfg.is_symlink() or data.get('configuration')!='config/executecmd.ini' or data.get('configuration_sha256')!=hashlib.sha256(cfg.read_bytes()).hexdigest():raise ValueError('configuration original missing/changed')
     template='cmd.exe /c echo {pid} {procname} {src_addr} {src_port} {dst_addr} {dst_port}'
-    if cfg.read_text()!='[svc]\nProtocol: TCP\nPort: 8080\nExecuteCmd: '+template+'\n':errors.append('frozen configuration differs')
+    if cfg.read_text()!='[svc]\nProtocol: TCP\nPort: 8080\nExecuteCmd: '+template+'\n[plain]\nProtocol: TCP\nPort: 8090\n':errors.append('frozen configuration differs')
     diverter=DiverterBase.__new__(DiverterBase);diverter.logger=logging.getLogger('oracle-executecmd');diverter.sessions={};diverter.configure({});diverter.listener_ports=__import__('fakenet.diverters.diverterbase',fromlist=['ListenerPorts']).ListenerPorts()
     diverter.parse_listeners_config({'svc':{'protocol':'TCP','port':'8080','executecmd':template}})
     pkt=SimpleNamespace(proto='TCP',sport=40000,dport=8080,src_ip='192.0.2.10',dst_ip='192.0.2.20',src_ip0='192.0.2.10',dst_ip0='192.0.2.20',dport0=8080,_dport0=8080,ipver=4)
@@ -40,11 +42,21 @@ def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False):
     if DivertParms(diverter,pkt,1234,'benign.exe').first_packet_new_session is not False:errors.append('duplicate session predicate true')
     if data.get('command')!=expected or data.get('first_packet') is not True or data.get('duplicate_first_packet') is not False:errors.append('command/session originals mismatch')
     executed=data.get('executed')
-    if not isinstance(executed,list) or len(executed)!=1 or executed[0].get('command')!=expected or not isinstance(executed[0].get('pid'),int):errors.append('first execution original mismatch')
+    if not isinstance(executed,list) or len(executed)!=1 or executed[0].get('command')!=expected or type(executed[0].get('pid')) is not int or executed[0]['pid']<=0:errors.append('first execution original mismatch')
     if data.get('missing_pid_executions')!=0:errors.append('missing PID executed')
     if data.get('nonmatching_command') is not None:errors.append('nonmatching port built command')
     bad=data.get('bad_format_error')
     if not isinstance(bad,dict) or bad.get('type')!='SystemExit' or bad.get('code')!=1:errors.append('bad format did not exit 1')
+    expected_actions=[
+      {'name':'first','protocol':'TCP','source_port':40000,'destination_port':8080,'pid':1234,'first_packet':True,'executions':1,'session_count':1},
+      {'name':'duplicate','protocol':'TCP','source_port':40000,'destination_port':8080,'pid':1234,'first_packet':False,'executions':0,'session_count':1},
+      {'name':'missing-pid','protocol':'TCP','source_port':40001,'destination_port':8080,'pid':None,'first_packet':True,'executions':0,'session_count':2},
+      {'name':'no-command-listener','protocol':'TCP','source_port':40002,'destination_port':8090,'pid':1234,'first_packet':True,'executions':0,'session_count':3},
+      {'name':'no-default-protocol','protocol':'UDP','source_port':40003,'destination_port':8080,'pid':1234,'first_packet':True,'executions':0,'session_count':3}]
+    if data.get('actions')!=expected_actions:errors.append('original first/duplicate/nontrigger action sequence differs')
+    if data.get('sessions_after')!=0 or data.get('port_forwards_after')!=0:errors.append('original in-memory state not restored')
+    if data.get('template')!=template:errors.append('command template identity differs')
+    if v.get('checks')!=[{'id':k} for k in ('command','first-connection','non-connection')]:errors.append('exact check set differs')
     if v.get('source_hashes')!={n:hashlib.sha256((Path(root)/n).read_bytes()).hexdigest() for n in ('fakenet/diverters/diverterbase.py','fakenet/diverters/fnpacket.py')}:errors.append('source binding mismatch')
     if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True}:errors.append('cleanup mismatch')
     out=[{'id':k,'status':'fail' if errors else 'pass'} for k in ('command','first-connection','non-connection')]
