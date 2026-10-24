@@ -14,7 +14,7 @@
 
 ## 手工功能
 
-当前已接入 `GAP-NCSI`, `GAP-RAW-DATE`, `GAP-LIST-MUTEX`, `GAP-EXECUTECMD`, `GAP-DIVERTER-SWITCH`, `GAP-SYSLOG-ICMP-LOG`, `GAP-DUMPPACKETS`, `GAP-CTRLC-IPC` 和 `GAP-LINUX-FLUSH-INTERFACE`; 其余 2 个手工 case 和 2 个 Linux case 的完整链仍未实现, 不返回 pass. 历史 T007/R02 仅交付前两项.
+当前已接入 `GAP-NCSI`, `GAP-RAW-DATE`, `GAP-LIST-MUTEX`, `GAP-EXECUTECMD`, `GAP-DIVERTER-SWITCH`, `GAP-SYSLOG-ICMP-LOG`, `GAP-DUMPPACKETS`, `GAP-CTRLC-IPC`, `GAP-LINUX-FLUSH-INTERFACE` 和 `GAP-NETWORK-FIX`; 其余 1 个手工 case 和 2 个 Linux case 的完整链仍未实现, 不返回 pass. 历史 T007/R02 仅交付前两项.
 
 | Case | 原来源 | 关键正反判据 |
 | --- | --- | --- |
@@ -26,7 +26,7 @@
 | GAP-SYSLOG-ICMP-LOG | fakenet.fakenet main -s, PacketCtx/check_log_icmp | 原 main -s/无-s/formatter 与原 PacketCtx ICMP 正反字节; PID/token 从原 LogRecord/主日志/owned stop flag 绑定, 不捏造 syslog 字段; finally 关闭本轮 handler 并恢复原 logger/argv/profile. 本机 OS sink fixture, 真实 syslog/EventLog/live ICMP 未验 |
 | GAP-DUMPPACKETS | DumpPackets/DumpPacketsFilePrefix, DualPcapWriter | 原 INI parser、enabled/disabled、custom prefix、TCP/UDP 固定原字节、真实 raw+converted/observation/seal parser 及 finally close; 独立文件/字节判据. 本机为保留原件的离线重放, 不授真实 wire/native/full, 系统网络恢复未运行 |
 | GAP-LINUX-FLUSH-INTERFACE | fakenet/diverters/linux.py start/stopCallback, linutil.py | 原 INI/字段解析、四表 flush 与独立采集的原 iptables-save/restore 字节、DNS argv/rc/原日志, 按原占用队列分配, MultiHost/SingleHost restrict 的 NFQUEUE 与规则 iface. producer 委托原系统调用并记录, 不依赖测试记录器/假快照; 本机 OS 边界 fixture, 真实系统效果/native 未验 |
-| GAP-NETWORK-FIX (NOT_IMPLEMENTED) | FixGateway/FixDNS/ModifyLocalDNS/StopDNSService | 逐平台实际语义及前后恢复 |
+| GAP-NETWORK-FIX | winutil.WinUtilMixin/Windows._restore_network_settings, linutil.LinUtilMixin | 原 Windows/Linux 构造、INI 和 start/stop 实际驱动网关/DNS及服务开关; producer 透明采原命令、registry/resolver/service 初中末值并独立重判, 测试仅替 OS/driver. Linux TODO/服务不支持及原 stop 不删除新增默认路由明确保留; 真实系统恢复与 native/full 仍未验 |
 | GAP-RAW-DATE | fakenet/listeners/HTTPListener.py CustomResponse | 真实 raw/static respond；日期替换、逐字节保留、非匹配拒绝 |
 | GAP-LIST-MUTEX | DiverterBase.parse_listeners_config, ListenerMeta, ListenerPorts | 四类名单的 16 项允许/拒绝/错协议/错端口; 两类明确互斥异常和三类 parser 冲突; 原配置/源码身份与独立重判 |
 

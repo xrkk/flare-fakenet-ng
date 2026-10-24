@@ -285,12 +285,11 @@ def _evaluate_linux_flush_interface(root, original, expected_inputs, allow_fixtu
         require(d.get('config_dir') == str(base / 'config') and d.get('log') == str(base / 'diverter.log') and d.get('os_calls') == str(base / 'os-calls.jsonl'), 'owned path mismatch')
         require(isinstance(d.get('owner_pid'), int) and d.get('owner_pid') > 0 and d.get('execution_token') == expected_inputs['execution_id'], 'owner/token mismatch')
         require(d.get('log_sha256') == hashlib.sha256(read('diverter.log')).hexdigest(), 'log hash mismatch')
-        require(d.get('os_calls_sha256') == hashlib.sha256(read('os-calls.jsonl')).hexdigest(), 'OS log hash mismatch')
         require(v.get('source_hashes') == {name: hashlib.sha256((Path(root) / name).read_bytes()).hexdigest() for name in ('fakenet/diverters/linux.py', 'fakenet/diverters/linutil.py', 'fakenet/diverters/diverterbase.py')}, 'source binding mismatch')
         require(set(d.get('branches') or {}) == set(scenarios), 'exact branch set differs')
         lifecycle=json.loads(read('observer-lifecycle.json'))
         require(lifecycle == {key:True for key in ('profile_restored','linux_module_restored','linutil_module_restored','logger_handlers_restored','logger_level_restored','handler_closed')}, 'observer/logger state not restored')
-        rows = [json.loads(line) for line in read('os-calls.jsonl').decode('utf-8').splitlines() if line.strip()]
+        rows = [json.loads(line) for line in read('producer-os-calls.jsonl').decode('utf-8').splitlines() if line.strip()]
         log_text = read('diverter.log').decode('utf-8')
         for branch, spec in scenarios.items():
             item = d['branches'][branch]
@@ -338,6 +337,90 @@ def _evaluate_linux_flush_interface(root, original, expected_inputs, allow_fixtu
     except Exception as exc:
         errors.append(type(exc).__name__ + ': ' + str(exc))
     return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in ('flush-iptables', 'flush-dns', 'restrict-interface')], not errors, {'failures': errors}
+
+def _evaluate_network_fix(root, original, expected_inputs, allow_fixture=False):
+    import configparser
+    base = Path(original).resolve()
+    errors = []
+    keys = ('fix-gateway', 'fix-dns', 'modify-local-dns', 'stop-dns')
+    def require(ok, reason):
+        if not ok: raise ValueError(reason)
+    def read(name):
+        path = base / name
+        require(path.is_file() and not path.is_symlink() and not any(p.is_symlink() for p in path.parents), 'missing/linked original: ' + str(name))
+        require(path.resolve().is_relative_to(base), 'original outside owned directory')
+        return path.read_bytes()
+    try:
+        v = json.loads(read('manual-result.json'))
+        require(str(base) == expected_inputs.get('owned_root') and v.get('inputs') == expected_inputs, 'owned/frozen inputs mismatch')
+        require(v.get('schema') == 'fakenet.manual-result.v1' and v.get('case') == 'GAP-NETWORK-FIX', 'case/schema mismatch')
+        require(v.get('evidence_kind') == 'original-network-fix-config-start-stop', 'original configuration/start-stop provenance missing')
+        require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
+        require(type(v.get('fixture')) is bool and v['fixture'] == (expected_inputs.get('fixture') is True), 'fixture identity mismatch')
+        require(not v['fixture'] or allow_fixture, 'fixture cannot native credit')
+        require(v.get('checks') == [{'id': key} for key in keys], 'checks mismatch')
+        d = v['network_fix']
+        require(d.get('config') == str(base / 'config/network-fix.ini') and d.get('config_sha256') == hashlib.sha256(read('config/network-fix.ini')).hexdigest(), 'configuration identity mismatch')
+        require(d.get('producer_calls') == str(base / 'producer-os-calls.jsonl') and d.get('producer_calls_sha256') == hashlib.sha256(read('producer-os-calls.jsonl')).hexdigest(), 'producer-owned command original mismatch')
+        require(d.get('log') == str(base / 'network-fix.log') and d.get('log_sha256') == hashlib.sha256(read('network-fix.log')).hexdigest(), 'log identity mismatch')
+        require(v.get('source_hashes') == {name: hashlib.sha256((Path(root) / name).read_bytes()).hexdigest() for name in ('fakenet/diverters/winutil.py', 'fakenet/diverters/windows.py', 'fakenet/diverters/linux.py', 'fakenet/diverters/linutil.py', 'fakenet/diverters/diverterbase.py')}, 'source mismatch')
+        rows = [json.loads(line) for line in read('producer-os-calls.jsonl').decode().splitlines() if line]
+        require(rows and type(d.get('owner_pid')) is int and d['owner_pid'] > 0 and all(row.get('owner_pid') == d['owner_pid'] and row.get('token') == expected_inputs['execution_id'] for row in rows), 'original owner/token mismatch')
+        require(d.get('execution_token') == expected_inputs['execution_id'], 'execution token mismatch')
+        logs = read('network-fix.log').decode()
+        branches = ('win_fix', 'win_existing', 'win_modify', 'win_off', 'linux_gateway', 'linux_modify', 'linux_off')
+        require(set(d.get('branches', {})) == set(branches), 'exact configuration branch set missing')
+        def events(branch, kind, op=None):
+            return [row for row in rows if row['branch'] == branch and row['kind'] == kind and (op is None or row.get('op') == op)]
+        def commands(branch):
+            return [row['args'][0] for row in events(branch, 'subprocess') if row['op'] in ('check_call', 'check_output', 'call')]
+        expected_fix = ['netsh interface ip set address name="Ethernet" static 192.0.2.10 255.255.255.0 192.0.2.1', 'netsh interface ip set dns name="Ethernet" static 192.0.2.10', 'ipconfig /flushdns', 'netsh interface ip set address name="Ethernet" dhcp', 'netsh interface ip delete dns name="Ethernet" all', 'netsh interface ip set dns "Ethernet" dhcp', 'ipconfig /flushdns']
+        require(commands('win_fix') == expected_fix and not any(row.get('error') for row in events('win_fix', 'subprocess')), 'Windows gateway/DNS commands or restoration failed')
+        for name in branches:
+            item = d['branches'][name]
+            require(item.get('config') == str(base / ('config/' + name + '.ini')), 'branch config path mismatch')
+            parser = configparser.ConfigParser(); parser.read_string(read('config/' + name + '.ini').decode())
+            parsed = dict(parser.items('Diverter'))
+            expected = {'networkmode': 'SingleHost', 'fixgateway': 'Yes' if name in ('win_fix', 'win_existing', 'linux_gateway') else 'No', 'fixdns': 'Yes' if name in ('win_fix', 'win_existing') else 'No', 'modifylocaldns': 'Yes' if name in ('win_modify', 'linux_modify') else 'No', 'stopdnsservice': 'Yes' if name == 'win_modify' else 'No'}
+            require(item.get('parsed') == parsed and all(parsed.get(key) == value for key, value in expected.items()), 'configuration values/parsed branch mismatch: ' + name)
+            require(item.get('start') is True and item.get('stop') is True and item.get('threads_stopped') is True, 'startup/stop/resource failure: ' + name)
+            method_rows = events(name, 'method')
+            platform_source = 'windows.py' if name.startswith('win') else 'linux.py'
+            require(any(row.get('source') == 'diverterbase.py' and row.get('method') == '__init__' for row in method_rows), 'original base initializer missing: ' + name)
+            for method in ('startCallback', 'stopCallback'):
+                require(any(row.get('source') == platform_source and row.get('method') == method and row.get('result') is True for row in method_rows), 'original successful callback missing: ' + name + '/' + method)
+            require(('MANUAL-NETWORK-BRANCH ' + name + ' token=' + expected_inputs['execution_id']) in logs and ('pid=%s ' % d['owner_pid']) in logs, 'original branch log missing')
+            if name.startswith('win'):
+                require(item['registry_before'] == item['registry_after'], 'registry not actually restored: ' + name)
+                require(item['service_before'] == item['service_after'] == 4, 'service not actually restored: ' + name)
+                queries = events(name, 'registry', 'QueryValueEx')
+                require(queries and (queries[0]['result'][0] or None) == item['registry_before'] and (queries[-1]['result'][0] or None) == item['registry_after'], 'raw registry initial/final mismatch')
+                if name == 'win_modify':
+                    require(item['registry_middle'] == '192.0.2.10' and item['service_middle'] == 1, 'DNS/service modification not observed')
+                    require(commands(name) == ['ipconfig /flushdns', 'ipconfig /flushdns'], 'nonowned adapter settings changed')
+                    controls = events(name, 'service', 'ControlService')
+                    require(controls and controls[0]['args'][1] == 1 and events(name, 'service', 'StartServiceA'), 'original service stop/start missing')
+                elif name != 'win_fix':
+                    require(commands(name) == ['ipconfig /flushdns', 'ipconfig /flushdns'], 'off/existing branch changed network')
+                    require(not events(name, 'service', 'ControlService') and not events(name, 'registry', 'SetValueEx'), 'off branch changed DNS/service')
+            else:
+                require(item['resolver_before'] == item['resolver_after'], 'resolver not restored: ' + name)
+                writes = events(name, 'resolver', 'write')
+                if name == 'linux_modify':
+                    require(item['resolver_middle'] == 'nameserver 192.0.2.10\n' and item['old_dns_after'] is None, 'resolver modification/restore not observed')
+                    require([row['data'] for row in writes] == [item['resolver_middle'], item['resolver_before']], 'raw resolver write bytes mismatch')
+                else:
+                    require(not writes, 'disabled resolver feature changed state')
+        require(d['windows']['fix']['gateway_result'] is True and d['windows']['fix']['dns_result'] is True, 'gateway/DNS original result mismatch')
+        require(d['windows']['existing']['gateway_result'] is False and d['windows']['existing']['dns_result'] is False, 'existing-state fix unexpectedly called')
+        require(d['linux']['gateway']['gateway_result'] is True, 'original Linux gateway path missing')
+        require(d['linux']['unsupported'] == {'fix_gateway_result': False, 'fix_dns_result': False, 'stop_dns_service_supported': False}, 'Linux unsupported facts changed')
+        require(d.get('observer_restored') is True and v.get('cleanup') == {'system_network_restored': 'not-exercised'}, 'observer/resource cleanup changed')
+        require(v.get('known_limits', {}).get('linux_new_gateway_restoration') == 'original stopCallback has no default-route removal; not proven restored', 'missing known Linux route restoration limitation')
+    except Exception as exc:
+        errors.append(type(exc).__name__ + ': ' + str(exc))
+    return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in keys], not errors, {'failures': errors, 'system_network_restoration': 'not-exercised', 'linux_route_restoration': 'original implementation does not remove newly added default route; full acceptance remains incomplete'}
+
 
 def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False):
     import configparser
@@ -607,6 +690,7 @@ def evaluate(root,original,case,expected_inputs,allow_fixture=False):
     if case=='GAP-SYSLOG-ICMP-LOG':return _evaluate_syslog_icmp(root,original,expected_inputs,allow_fixture)
     if case=='GAP-CTRLC-IPC':return _evaluate_ctrlc_ipc(root,original,expected_inputs,allow_fixture)
     if case=='GAP-LINUX-FLUSH-INTERFACE':return _evaluate_linux_flush_interface(root,original,expected_inputs,allow_fixture)
+    if case=='GAP-NETWORK-FIX':return _evaluate_network_fix(root,original,expected_inputs,allow_fixture)
     if case=='GAP-DUMPPACKETS':return _evaluate_dumppackets(root,original,expected_inputs,allow_fixture)
     if case=='GAP-DIVERTER-SWITCH':return _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture)
     if case=='GAP-EXECUTECMD':return _evaluate_executecmd(root,original,expected_inputs,allow_fixture)

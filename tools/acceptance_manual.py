@@ -666,6 +666,176 @@ def real_linux_flush_interface(case,out,inputs):
       'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
     _json(out/'manual-result.json',value);return value
 
+def real_network_fix(case, out, inputs):
+    import builtins
+    import configparser
+    import logging
+    import os
+    import sys
+    from fakenet.diverters import winutil, windows, linutil, linux
+    out = Path(out)
+    cfgdir = out / 'config'
+    cfgdir.mkdir()
+    token = inputs['execution_id']
+    log = out / 'network-fix.log'
+    handler = logging.FileHandler(log, mode='x', encoding='utf-8')
+    handler.setFormatter(logging.Formatter('%(levelname)s %(name)s pid=%(process)d %(message)s'))
+    loggers = [logging.getLogger(name) for name in ('WinUtil', 'Diverter')]
+    saved_loggers = [(logger, list(logger.handlers), logger.level, logger.propagate, logger.disabled) for logger in loggers]
+    for logger in loggers:
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+    calls = out / 'producer-os-calls.jsonl'
+    calls.touch(exist_ok=False)
+    branch = {'name': None}
+    results = {}
+    methods = []
+    undo = []
+    old_profile = sys.getprofile()
+    started = datetime.now(timezone.utc).isoformat()
+    def safe(value):
+        if value is None or isinstance(value, (str, int, float, bool)): return value
+        if isinstance(value, bytes): return {'hex': value.hex()}
+        if isinstance(value, (list, tuple)): return [safe(item) for item in value]
+        if isinstance(value, dict): return {str(k): safe(v) for k, v in value.items()}
+        if hasattr(value, 'value'): return safe(value.value)
+        return type(value).__name__
+    def record(kind, **fields):
+        row = {'branch': branch['name'], 'kind': kind, 'owner_pid': os.getpid(), 'token': token}
+        row.update({key: safe(value) for key, value in fields.items()})
+        with calls.open('a', encoding='utf-8') as stream: stream.write(json.dumps(row, sort_keys=True) + '\n')
+    def replace(obj, name, value):
+        present = hasattr(obj, name)
+        original = getattr(obj, name, None)
+        setattr(obj, name, value)
+        undo.append((obj, name, present, original))
+    def wrap(obj, name, kind):
+        original = getattr(obj, name, None)
+        if not callable(original): return
+        def delegated(*args, **kwargs):
+            try: value = original(*args, **kwargs)
+            except BaseException as exc:
+                record(kind, op=name, args=args, error=type(exc).__name__)
+                raise
+            record(kind, op=name, args=args, result=value)
+            return value
+        replace(obj, name, delegated)
+    class Proxy:
+        def __init__(self, module): self.module = module
+        def __getattr__(self, name): return getattr(self.module, name)
+    for module in (winutil, windows, linutil, linux):
+        proxy = Proxy(module.subprocess)
+        for name in ('check_call', 'check_output', 'call', 'Popen'):
+            if hasattr(module.subprocess, name):
+                setattr(proxy, name, getattr(module.subprocess, name))
+                wrap(proxy, name, 'subprocess')
+        replace(module, 'subprocess', proxy)
+    for name in ('OpenKey', 'QueryValueEx', 'CreateKeyEx', 'SetValueEx', 'CloseKey'):
+        wrap(winutil, name, 'registry')
+    windll = getattr(winutil, 'windll', None)
+    for group, names in (('advapi32', ('OpenSCManagerA', 'OpenServiceA', 'CloseServiceHandle', 'ChangeServiceConfigA', 'QueryServiceStatusEx', 'ControlService', 'StartServiceA')), ('dhcpcsvc', ('DhcpNotifyConfigChange',))):
+        api = getattr(windll, group, None)
+        if api is not None:
+            for name in names: wrap(api, name, 'service')
+    original_open = getattr(linutil, 'open', builtins.open)
+    class ResolverFile:
+        def __init__(self, stream, path, mode): self.stream, self.path, self.mode = stream, str(path), mode
+        def __enter__(self): self.stream.__enter__(); return self
+        def __exit__(self, *args): return self.stream.__exit__(*args)
+        def read(self, *args):
+            value = self.stream.read(*args); record('resolver', op='read', path=self.path, data=value); return value
+        def write(self, value):
+            result = self.stream.write(value); record('resolver', op='write', path=self.path, data=value); return result
+        def __getattr__(self, name): return getattr(self.stream, name)
+    def open_resolver(path, mode='r', *args, **kwargs):
+        return ResolverFile(original_open(path, mode, *args, **kwargs), path, mode)
+    replace(linutil, 'open', open_resolver)
+    def observe(frame, event, arg):
+        if event != 'return' or '/fakenet/diverters/' not in frame.f_code.co_filename: return
+        name = frame.f_code.co_name
+        if name in ('__init__', 'startCallback', 'stopCallback', '_restore_network_settings', 'fix_gateway', 'fix_dns', 'linux_set_default_gw'):
+            item = {'branch': branch['name'], 'method': name, 'source': Path(frame.f_code.co_filename).name, 'result': safe(arg)}
+            methods.append(item)
+            record('method', **{k: v for k, v in item.items() if k != 'branch'})
+    sys.setprofile(observe)
+    config_text = '[FakeNet]\nDivertTraffic: Yes\n[Diverter]\nNetworkMode: SingleHost\nFixGateway: Yes\nFixDNS: Yes\nModifyLocalDNS: Yes\nStopDNSService: Yes\n'
+    cfg = cfgdir / 'network-fix.ini'; cfg.write_text(config_text)
+    def configure(name, settings):
+        path = cfgdir / (name + '.ini')
+        parser = configparser.ConfigParser(); parser.read_string(config_text)
+        for key, value in settings.items(): parser.set('Diverter', key, value)
+        with path.open('w') as stream: parser.write(stream)
+        parsed = dict(parser.items('Diverter'))
+        return path, parsed
+    def reg_snapshot():
+        probe = winutil.WinUtilMixin(); probe.logger = logging.getLogger('WinUtil')
+        key = 'SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\{GUID}'
+        return probe.get_reg_value(winutil.HKEY_LOCAL_MACHINE, key, 'NameServer')
+    def service_snapshot():
+        probe = winutil.WinUtilMixin(); probe.logger = logging.getLogger('WinUtil')
+        manager = probe.open_sc_manager(); handle = probe.open_service(manager, 'Dnscache')
+        try:
+            value = probe.query_service_status_ex(handle)
+            return int(value.dwCurrentState) if value is not None else None
+        finally:
+            probe.close_service_handle(handle); probe.close_service_handle(manager)
+    def resolv():
+        with linutil.open('/etc/resolv.conf', 'r') as stream: return stream.read()
+    def active(name):
+        branch['name'] = name
+        (out / 'active-branch').write_text(name)
+        logging.getLogger('WinUtil' if name.startswith('win') else 'Diverter').info('MANUAL-NETWORK-BRANCH %s token=%s', name, token)
+    try:
+        for name in ('win_fix', 'win_existing', 'win_modify', 'win_off'):
+            active(name)
+            path, parsed = configure(name, {'FixGateway': 'Yes' if name in ('win_fix', 'win_existing') else 'No', 'FixDNS': 'Yes' if name in ('win_fix', 'win_existing') else 'No', 'ModifyLocalDNS': 'Yes' if name == 'win_modify' else 'No', 'StopDNSService': 'Yes' if name == 'win_modify' else 'No'})
+            before, service_before = reg_snapshot(), service_snapshot()
+            w = None
+            try:
+                w = windows.Diverter(parsed, {}, {4: ['192.0.2.10'], 6: []})
+                start = w.startCallback()
+                middle, service_middle = reg_snapshot(), service_snapshot()
+                owned_dhcp, owned_dns = list(w.adapters_dhcp_restore), list(w.adapters_dns_restore)
+                backups = dict(w.adapters_dns_server_backup)
+            finally:
+                if w is not None:
+                    stop = w.stopCallback()
+                    w._restore_network_settings()  # Original idempotent return path.
+            after, service_after = reg_snapshot(), service_snapshot()
+            results[name] = {'config': str(path), 'parsed': parsed, 'start': start, 'stop': stop, 'registry_before': before, 'registry_middle': middle, 'registry_after': after, 'service_before': service_before, 'service_middle': service_middle, 'service_after': service_after, 'owned_dhcp': owned_dhcp, 'owned_dns': owned_dns, 'backup': backups, 'threads_stopped': all(not getattr(w, n).is_alive() for n in ('diverter_thread',) if getattr(w, n, None)), 'network_restored_flag': w._network_restored}
+        for name in ('linux_gateway', 'linux_modify', 'linux_off'):
+            active(name)
+            path, parsed = configure(name, {'FixGateway': 'Yes' if name == 'linux_gateway' else 'No', 'FixDNS': 'No', 'ModifyLocalDNS': 'Yes' if name == 'linux_modify' else 'No', 'StopDNSService': 'No', 'LinuxFlushIptables': 'No'})
+            before = resolv(); l = None
+            try:
+                l = linux.Diverter(parsed, {}, {4: ['192.0.2.10'], 6: []})
+                start = l.startCallback(); middle = resolv(); old = l.old_dns
+            finally:
+                if l is not None: stop = l.stopCallback()
+            after = resolv()
+            results[name] = {'config': str(path), 'parsed': parsed, 'start': start, 'stop': stop, 'resolver_before': before, 'resolver_middle': middle, 'resolver_after': after, 'old_dns': old, 'old_dns_after': l.old_dns, 'threads_stopped': all(not q.thread_alive for q in l.nfqueues)}
+        active('linux_unsupported')
+        probe = linutil.LinUtilMixin()
+        unsupported = {'fix_gateway_result': probe.fix_gateway(), 'fix_dns_result': probe.fix_dns(), 'stop_dns_service_supported': hasattr(probe, 'stop_service_helper')}
+    finally:
+        sys.setprofile(old_profile)
+        for obj, name, present, original in reversed(undo):
+            if present: setattr(obj, name, original)
+            else: delattr(obj, name)
+        for logger, handlers, level, propagate, disabled in saved_loggers:
+            logger.handlers = handlers; logger.setLevel(level); logger.propagate = propagate; logger.disabled = disabled
+        handler.close()
+    def returned(branch_name, method):
+        return next((row['result'] for row in methods if row['branch'] == branch_name and row['method'] == method), False)
+    wf, we, wm = results['win_fix'], results['win_existing'], results['win_modify']
+    lm = results['linux_modify']
+    windows_result = {'fix': {'gateway_result': returned('win_fix', 'fix_gateway'), 'dns_result': returned('win_fix', 'fix_dns')}, 'existing': {'gateway_result': returned('win_existing', 'fix_gateway'), 'dns_result': returned('win_existing', 'fix_dns')}, 'modify': {'dns_server_backup': wm['backup'], 'registry_before': wm['registry_before'], 'registry_after_set': wm['registry_middle'], 'registry_after_restore': wm['registry_after']}}
+    linux_result = {'gateway': {'gateway_result': returned('linux_gateway', 'linux_set_default_gw')}, 'modify': {'resolv_restored': lm['resolver_before'] == lm['resolver_after'] and lm['old_dns_after'] is None}, 'unsupported': unsupported}
+    value = {'schema': SCHEMA, 'case': case, 'fixture': inputs.get('fixture') is True, 'evidence_kind': 'original-network-fix-config-start-stop', 'inputs': inputs, 'network_fix': {'config': str(cfg), 'config_sha256': sha256(cfg), 'windows': windows_result, 'linux': linux_result, 'branches': results, 'methods': methods, 'log': str(log), 'log_sha256': sha256(log), 'producer_calls': str(calls), 'producer_calls_sha256': sha256(calls), 'owner_pid': os.getpid(), 'execution_token': token, 'observer_restored': sys.getprofile() is old_profile and handler.stream is None}, 'source_hashes': {name: sha256(Path(__file__).resolve().parents[1] / name) for name in ('fakenet/diverters/winutil.py', 'fakenet/diverters/windows.py', 'fakenet/diverters/linux.py', 'fakenet/diverters/linutil.py', 'fakenet/diverters/diverterbase.py')}, 'cleanup': {'system_network_restored': 'not-exercised'}, 'known_limits': {'linux_new_gateway_restoration': 'original stopCallback has no default-route removal; not proven restored', 'linux_fix_dns': 'TODO returns False', 'linux_stop_dns_service': 'unsupported'}, 'started_at': started, 'ended_at': datetime.now(timezone.utc).isoformat(), 'checks': [{'id': x} for x in CHECKS[case]], 'identity': {k: inputs[k] for k in IDENTITY}}
+    _json(out / 'manual-result.json', value)
+    return value
+
+
 def real_dumppackets(case, out, inputs):
     import logging
     from fakenet.diverters.diverterbase import DiverterBase
@@ -935,6 +1105,11 @@ def run(case,out,inputs=None,memory_mode=False):
         if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
         out.mkdir(parents=True,exist_ok=False)
         return real_linux_flush_interface(case,out,inputs)
+    if case=='GAP-NETWORK-FIX':
+        validate_inputs(case,inputs);out=Path(out).absolute()
+        if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
+        out.mkdir(parents=True,exist_ok=False)
+        return real_network_fix(case,out,inputs)
     if case not in ('GAP-NCSI','GAP-RAW-DATE'):raise NotImplementedError('case is not implemented in this round: '+case)
     validate_inputs(case,inputs);out=Path(out).absolute()
     if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')

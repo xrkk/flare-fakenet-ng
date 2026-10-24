@@ -4055,8 +4055,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "manual-headless"
+          "blocked_reason": "native Windows/Linux target required; local OS-boundary fixture is not native credit",
+          "native_driver": "manual-network-fix"
         },
         {
           "id": "GAP-RAW-DATE",
