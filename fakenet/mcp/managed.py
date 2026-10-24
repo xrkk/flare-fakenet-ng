@@ -532,6 +532,7 @@ def child_main(run_id, run_dir):
                 fault.inject_diverter_stop(instance.diverter)
                 fault.inject_child_hang()
                 response['result'] = probe_instance(instance)
+                fault.bind_diagnostic(run_id, directory, identity, payload['config_path'])
             elif kind == 'health' and instance is not None:
                 response['result'] = probe_with_faults(instance, fault)
             elif kind == 'stacks':
@@ -578,10 +579,13 @@ def child_main(run_id, run_dir):
             logging.getLogger('managed').error(detail)
             response['error'] = detail
         if request.get('kind') in ('start', 'health', 'stacks') and instance is not None:
-            try:
-                save_stacks(directory, run_id, identity, IncidentCollector._thread_stacks())
-            except OSError as exc:
-                logging.getLogger('managed').warning('managed stack snapshot unavailable: %r', exc)
+            if fault.stacks_snapshot_allowed():
+                try:
+                    save_stacks(directory, run_id, identity, IncidentCollector._thread_stacks())
+                except OSError as exc:
+                    logging.getLogger('managed').warning('managed stack snapshot unavailable: %r', exc)
+        if request.get('kind') == 'health' and instance is not None:
+            fault.maybe_native_crash()
         action, response = fault.ipc_response(request, response)
         record_ipc(directory, 'child', action,
                    response if action == 'send' else request)

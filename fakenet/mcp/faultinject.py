@@ -28,7 +28,8 @@ FAULTS = ('policy_pause', 'listener_stop', 'diverter_stop', 'child_hang',
           'ipc_permanent_timeout', 'ipc_eof', 'ipc_wrong_run',
           'ipc_repeat', 'ipc_reverse', 'create_before_job', 'create_job_ready',
           'create_attributes_ready', 'create_before_api',
-          'create_after_api', 'create_before_start')
+          'create_after_api', 'create_before_start',
+          'stacks_unavailable', 'native_crash', 'unknown_cause')
 IPC_FAULTS = frozenset(fault for fault in FAULTS if fault.startswith('ipc_'))
 
 
@@ -41,6 +42,11 @@ def armed_fault():
     if path.is_file():
         try:
             data = json.loads(path.read_text(encoding='utf-8'))
+            from fakenet.mcp.diagnostic_faults import CLASSES, arm_shape
+            if not isinstance(data, dict):
+                return None
+            if data.get('fault') in CLASSES:
+                return data['fault'] if arm_shape(data) else None
             if set(data) == {'fault', 'nonce'} and data['fault'] in FAULTS and data['nonce']:
                 return data['fault']
         except (OSError, ValueError, TypeError):
@@ -58,8 +64,15 @@ def clear():
         receipt = Path.cwd() / 'fault-triggered.json'
         # Each run has its own directory. Retain the exact nonce/class for
         # the native runner; never overwrite another run's receipt.
+        raw = path.read_text(encoding='utf-8')
+        from fakenet.mcp.diagnostic_faults import CLASSES, arm_shape
+        value = json.loads(raw)
+        if isinstance(value, dict) and value.get('fault') in CLASSES:
+            if not arm_shape(value):
+                raise ValueError('diagnostic fault arm is incomplete')
+            raw = json.dumps({'fault': value['fault'], 'nonce': value['nonce']})
         with receipt.open('x', encoding='utf-8') as stream:
-            stream.write(path.read_text(encoding='utf-8'))
+            stream.write(raw)
         # A freshly written small JSON is routinely held for a moment by
         # antivirus filters; a sharing violation there must not crash the
         # fault hook (it replaced the injected fault with a PermissionError
@@ -83,13 +96,69 @@ class FaultInjector:
         self._child = None
         self._ipc_fault = None
 
+    def bind_diagnostic(self, run_id, run_dir, identity, config_path):
+        if not enabled() or armed_fault() not in (
+                'stacks_unavailable', 'native_crash', 'unknown_cause'):
+            self._diagnostic_context = None
+            self._diagnostic_stacks = False
+            return
+        import hashlib
+        arm = json.loads(_fault_file().read_text(encoding='utf-8'))
+        self._diagnostic_context = dict(run_id=run_id, run_dir=str(run_dir), nonce=arm['nonce'],
+            pid=identity['pid'], creation_time=identity['creation_time'],
+            config_path=str(config_path),
+            config_sha256=hashlib.sha256(Path(config_path).read_bytes()).hexdigest(),
+            initialized=True)
+        self._diagnostic_stacks = False
+
+    def _diagnostic_arm(self, name):
+        from fakenet.mcp.diagnostic_faults import matching_arm
+        value = matching_arm(getattr(self, '_diagnostic_context', None), _fault_file())
+        return value if value and value['fault'] == name else None
+
+    def stacks_snapshot_allowed(self):
+        if getattr(self, '_diagnostic_stacks', False):
+            return False
+        value = self._diagnostic_arm('stacks_unavailable')
+        if value is None:
+            return True
+        directory = Path(self._diagnostic_context['run_dir'])
+        # Late arming cannot erase a valid historical fallback. It does not
+        # establish this class and must not change the existing observations.
+        if any((directory / n).exists() for n in
+               ('managed-thread-stacks.json', 'stop-thread-stacks.txt')):
+            return True
+        self._diagnostic_stacks = True
+        return False
+
+    def maybe_native_crash(self):
+        value = self._diagnostic_arm('native_crash')
+        if value is not None:
+            from fakenet.mcp.diagnostic_faults import trigger_native_crash
+            trigger_native_crash(self._diagnostic_context, _fault_file())
+
+    def maybe_unknown_cause(self):
+        # Unsupported is not a reason to throw a fabricated known exception.
+        # The arm remains unconsumed for an honest, blocked producer result.
+        return None
+
     def ipc_response(self, request, response):
         """Alter only actual health responses on the private child pipe.
 
         A one-shot timeout drops one response entirely; it never queues a
         stale frame or changes the receiver's strict sequence validation.
         """
-        if not enabled() or request.get('kind') != 'health':
+        if not enabled():
+            return 'send', response
+        if (request.get('kind') == 'stacks'
+                and getattr(self, '_diagnostic_stacks', False)
+                and self._diagnostic_arm('stacks_unavailable') is not None):
+            from fakenet.mcp.diagnostic_faults import record_trigger
+            record_trigger(self._diagnostic_context,
+                           self._diagnostic_arm('stacks_unavailable'))
+            clear()
+            return 'drop', None
+        if request.get('kind') != 'health':
             return 'send', response
         armed = armed_fault()
         if armed in IPC_FAULTS:

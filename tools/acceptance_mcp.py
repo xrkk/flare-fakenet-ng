@@ -70,7 +70,7 @@ def source_paths(root=ROOT):
  # Explicit original business closure; no dynamic source selected by results.
  names=('helpers','run_p01_acc','run_p02_acc','run_p03_acc','run_p04_acc','run_p05_release','run_ipc_cases','run_initialization_case','run_control_cases','evidence_integrity','ipc_evidence','artifact_transfer','bounded_mcp','sst_fault_evidence','scenario_fault_evidence','release_matrix')
  paths=['test/mcp/acceptance/'+n+'.py' for n in names]
- paths += ['tools/acceptance_mcp.py','tools/acceptance_mcp_oracles.py','tools/acceptance_mcp_dependencies.py','tools/acceptance_mcp_capabilities.py','tools/build_fakenetng_mcp_wine.py','fakenet/mcp/server.py','fakenet/mcp/tools.py']
+ paths += ['tools/acceptance_mcp.py','tools/acceptance_mcp_oracles.py','tools/acceptance_mcp_dependencies.py','tools/acceptance_mcp_capabilities.py','tools/build_fakenetng_mcp_wine.py','fakenet/mcp/server.py','fakenet/mcp/tools.py','fakenet/mcp/faultinject.py','fakenet/mcp/managed.py','fakenet/mcp/diagnostic_faults.py']
  import ast
  pending=list(paths);seen=set(paths)
  while pending:
