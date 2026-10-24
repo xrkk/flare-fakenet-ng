@@ -61,6 +61,7 @@ def _dns_server(responsea):
         def isProcessBlackListed(self, proto, sport=None): return False, None, None
         def egressPolicyEnabled(self): return False
         def logEgressEvent(self, *args, **kwargs): return None
+        def logNbi(self, *args, **kwargs): return None
     class Server:
         socket_type=socket.SOCK_DGRAM
         config={'responsea': responsea}
@@ -73,60 +74,116 @@ def _dns_server(responsea):
 
 
 def real_ncsi(case,out,inputs):
+    import dnslib
     from dnslib import DNSRecord, QTYPE
+    from fakenet.listeners.DNSListener import DNSListener
     out=Path(out); out.mkdir(parents=True,exist_ok=False)
-    queries=[('udp','dns.msftncsi.com'),('tcp','dns.msftncsi.com'),
-             ('udp','other.example'),('tcp','other.example')]
-    rows=[]
-    for index,(transport,name) in enumerate(queries):
-        Server,Handler=_dns_server(inputs.get('responsea','192.0.2.55'))
-        Server.socket_type=socket.SOCK_DGRAM if transport=='udp' else socket.SOCK_STREAM
-        handler=Handler(); handler.server=Server; handler.client_address=('127.0.0.1',40000+index)
-        query=DNSRecord.question(name,'A').pack()
-        response=handler.parse(query)
-        qp=out/('query-%s-%d.bin'%(transport,index)); rp=out/('response-%s-%d.bin'%(transport,index)); qp.write_bytes(query); rp.write_bytes(response)
-        rows.append({'transport':transport,'name':name,'query':str(qp),'response':str(rp),
-                     'qtype':handler.qtype})
-    v={'schema':SCHEMA,'case':case,'fixture':bool(inputs.get('fixture',False)),
-       'inputs':inputs,'queries':rows,'started_at':datetime.now(timezone.utc).isoformat(),
-       'cleanup':{'stopped':True,'network_restored':True},'checks':[{'id':x} for x in CHECKS[case]],
-       'identity':{k:inputs[k] for k in ('candidate_id','source_commit','package_sha256','execution_id')}}
+    responsea=str(inputs.get('responsea','192.0.2.55'))
+    class Callbacks:
+        def isProcessBlackListed(self, proto, sport=None): return False, None, None
+        def egressPolicyEnabled(self): return False
+        def logEgressEvent(self, *args, **kwargs): return None
+        def logNbi(self, *args, **kwargs): return None
+    class Handler:
+        pass
+    rows=[]; listeners={}; states={}
+    for transport in ('udp','tcp'):
+        conf={'ipaddr':'127.0.0.1','port':0,'protocol':transport,'responsea':responsea,'nxdomains':0,'timeout':5}
+        listener=DNSListener(conf,name='manual-ncsi-'+transport)
+        listener.acceptDiverterListenerCallbacks(Callbacks())
+        listener.start()
+        port=int(listener.server.server_address[1]);states[transport]={'port':port,'bind':'127.0.0.1','started':True}
+        try:
+            for index,name in enumerate(('dns.msftncsi.com','other.example')):
+                query=DNSRecord.question(name,'A').pack()
+                client=socket.socket(socket.AF_INET,socket.SOCK_DGRAM if transport=='udp' else socket.SOCK_STREAM)
+                client.settimeout(5)
+                try:
+                    if transport=='udp':
+                        client.sendto(query,('127.0.0.1',port));response,peer=client.recvfrom(65535)
+                    else:
+                        client.connect(('127.0.0.1',port));client.sendall(struct.pack('!H',len(query))+query)
+                        length=struct.unpack('!H',client.recv(2))[0];response=b''
+                        while len(response)<length:
+                            block=client.recv(length-len(response))
+                            if not block:raise ValueError('short DNS TCP response')
+                            response+=block
+                        peer=client.getpeername()
+                finally:client.close()
+                qp=out/('query-%s-%d.bin'%(transport,index));rp=out/('response-%s-%d.bin'%(transport,index));qp.write_bytes(query);rp.write_bytes(response)
+                rows.append({'transport':transport,'name':name,'query':str(qp),'response':str(rp),'server_port':port,'client_port':int(peer[1]),'query_sha256':hashlib.sha256(query).hexdigest(),'response_sha256':hashlib.sha256(response).hexdigest(),'request_id':DNSRecord.parse(query).header.id,'response_id':DNSRecord.parse(response).header.id})
+        finally:
+            listener.stop();thread=getattr(listener,'server_thread',None)
+            if thread is not None:thread.join(5)
+            states[transport].update({'stopped':True,'thread_alive':bool(thread and thread.is_alive()),'socket_closed':getattr(listener.server,'socket',None) is None or listener.server.socket.fileno()==-1})
+            listeners[transport]=states[transport]
+    v={'schema':SCHEMA,'case':case,'status':'pass','fixture':bool(inputs.get('fixture',False)),
+       'inputs':inputs,'queries':rows,'listener':{'bind':'127.0.0.1','transports':listeners},
+       'started_at':datetime.now(timezone.utc).isoformat(),'date':datetime.now(timezone.utc).isoformat(),
+       'cleanup':{'stopped':all(x['stopped'] for x in listeners.values()),'threads_joined':all(not x['thread_alive'] for x in listeners.values()),'sockets_closed':all(x['socket_closed'] for x in listeners.values()),'network_restored':True},
+       'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in ('candidate_id','source_commit','package_sha256','execution_id')}}
     _json(out/'manual-result.json',v); return v
-
 
 def real_raw_date(case,out,inputs):
-    from fakenet.listeners.HTTPListener import CustomResponse
+    import configparser
+    from fakenet.listeners.HTTPListener import HTTPListener
     out=Path(out); out.mkdir(parents=True,exist_ok=False)
-    configroot=out/'config'; configroot.mkdir()
-    raw=configroot/'raw.bin'
-    raw_bytes=b'HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nX-Test: <RAW-DATE>\r\n\r\nbody<RAW-DATE>\x00\xff'
+    configroot=out/'config'; configroot.mkdir(); webroot=out/'webroot';webroot.mkdir()
+    raw=configroot/'raw.bin';raw_bytes=b'HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nX-Test: <RAW-DATE>\r\nContent-Length: 16\r\nConnection: close\r\n\r\nbody<RAW-DATE>\x00\xff'
     raw.write_bytes(raw_bytes)
-    raw_cr=CustomResponse('raw',{'httpuris':'/raw','httprawfile':'raw.bin'},str(configroot))
-    class Req:
-        def __init__(self,date): self.date=date; self.wfile=io.BytesIO(); self.headers=[]
-        def date_time_string(self): return self.date
-        def send_response(self,code): self.code=code
-        def send_header(self,k,v): self.headers.append((k,v))
-        def end_headers(self): pass
-    date='Mon, 01 Jan 2024 00:00:00 GMT'
-    raw_req=Req(date); matched=raw_cr.checkMatch('example.test','/raw'); raw_cr.respond(raw_req,'GET')
-    raw_response=raw_req.wfile.getvalue()
-    static_text='HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nContent-Type: text/plain\r\n\r\nstatic-<RAW-DATE>'
-    static_cr=CustomResponse('static',{'httpuris':'/static','httpstaticstring':static_text,'ContentType':'text/plain'},str(configroot))
-    static_req=Req(date); static_cr.respond(static_req,'GET')
-    static_response=(b'HTTP/1.1 200 OK\r\n'+
-        b''.join(('%s: %s\r\n'%(k,v)).encode() for k,v in static_req.headers)+b'\r\n'+static_req.wfile.getvalue())
-    rp=out/'raw-response.bin'; sp=out/'static-response.bin'; rp.write_bytes(raw_response); sp.write_bytes(static_response)
-    v={'schema':SCHEMA,'case':case,'fixture':bool(inputs.get('fixture',False)),
-       'inputs':inputs,'date':date,'raw_template':str(raw),'raw_response':str(rp),
-       'static_template':str(out/'static.txt'),'static_response':str(sp),
-       'raw_matched':matched,'non_match':raw_cr.checkMatch('other.test','/none'),
-       'started_at':datetime.now(timezone.utc).isoformat(),
-       'cleanup':{'stopped':True,'network_restored':True},'checks':[{'id':x} for x in CHECKS[case]],
-       'identity':{k:inputs[k] for k in ('candidate_id','source_commit','package_sha256','execution_id')}}
+    static_text='HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nstatic-<RAW-DATE>'
+    cfg=configparser.ConfigParser();cfg['raw']={'ListenerType':'HTTP','HttpUris':'/raw','HttpHosts':'example.test','HttpRawFile':'raw.bin'};cfg['static']={'ListenerType':'HTTP','HttpUris':'/static','HttpHosts':'example.test','HttpStaticString':static_text,'ContentType':'text/plain'}
+    custom=configroot/'custom.ini';cfg.write(custom.open('w'))
+    class Callbacks:
+        def logNbi(self, *args, **kwargs): return None
+        def isProcessBlackListed(self, proto, sport=None): return False, None, None
+        def egressPolicyEnabled(self): return False
+        def logEgressEvent(self, *args, **kwargs): return None
+    listener=HTTPListener({'ipaddr':'127.0.0.1','port':0,'webroot':str(webroot),'custom':str(custom),'configdir':str(configroot),'timeout':5,'version':'FakeNet/manual'},name='manual-raw-date')
+    listener.acceptDiverterListenerCallbacks(Callbacks())
+    listener.start();port=int(listener.server.server_address[1]);requests=[];responses={}
+    try:
+        for name,path in (('raw','/raw'),('static','/static'),('nonmatch','/none')):
+            request=(f'GET {path} HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n').encode()
+            client=socket.create_connection(('127.0.0.1',port),timeout=5);client.settimeout(1);client.sendall(request)
+            chunks=[]
+            while True:
+                try:block=client.recv(65535)
+                except socket.timeout:break
+                if not block:break
+                chunks.append(block)
+            client.close();response=b''.join(chunks)
+            requests.append({'name':name,'path':path,'request_sha256':hashlib.sha256(request).hexdigest(),'request':request.decode('latin1')})
+            responses[name]=response
+            (out/('%s-response.bin'%name)).write_bytes(response)
+    finally:
+        listener.stop();thread=getattr(listener,'server_thread',None)
+        if thread is not None:thread.join(5)
+    # Both matched responses must contain a date emitted by the real handler.
+    import email.utils
+    dates={}
+    for name in ('raw','static'):
+        text=responses[name].decode('latin1')
+        m=re.search(r'^Date:\s*(.+)$',text,re.M)
+        if not m:raise ValueError('real HTTP response has no Date header: '+name)
+        dates[name]=m.group(1).strip();email.utils.parsedate_to_datetime(dates[name])
+    raw_response=responses['raw'];static_response=responses['static']
+    raw_cr=listener.server.custom_responses[0]
+    non_match=raw_cr.checkMatch('other.test','/none')
+    date=dates['raw']
+    raw_expected=raw_bytes.replace(b'<RAW-DATE>',date.encode())
+    if raw_response!=raw_expected:raise ValueError('real raw response differs from template replacement')
+    if b'<RAW-DATE>' in raw_response or b'<RAW-DATE>' in static_response:raise ValueError('real response retained placeholder')
+    rp=out/'raw-response.bin';sp=out/'static-response.bin';rp.write_bytes(raw_response);sp.write_bytes(static_response)
     (out/'static.txt').write_text(static_text,encoding='utf-8')
+    v={'schema':SCHEMA,'case':case,'status':'pass','fixture':bool(inputs.get('fixture',False)),
+       'inputs':inputs,'date':date,'raw_template':str(raw),'raw_response':str(rp),'static_template':str(out/'static.txt'),'static_response':str(sp),
+       'listener':{'bind':'127.0.0.1','port':port,'stopped':True,'thread_alive':bool(thread and thread.is_alive()),'socket_closed':getattr(listener.server,'socket',None) is None or listener.server.socket.fileno()==-1},
+       'http':{'requests':requests,'raw_request_sha256':requests[0]['request_sha256'],'static_request_sha256':requests[1]['request_sha256'],'nonmatch_sha256':hashlib.sha256(responses['nonmatch']).hexdigest()},
+       'raw_matched':bool(raw_response),'non_match':non_match,
+       'started_at':datetime.now(timezone.utc).isoformat(),'cleanup':{'stopped':True,'threads_joined':not bool(thread and thread.is_alive()),'sockets_closed':getattr(listener.server,'socket',None) is None or listener.server.socket.fileno()==-1,'network_restored':True},
+       'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in ('candidate_id','source_commit','package_sha256','execution_id')}}
     _json(out/'manual-result.json',v); return v
-
 
 def run(case,out,inputs=None,memory_mode=False):
     if case not in CASES: raise ValueError('unknown case')

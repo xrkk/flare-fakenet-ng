@@ -3715,8 +3715,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "manual-headless"
+          "blocked_reason": "native Windows target required; local loopback fixture is not native credit",
+          "native_driver": "manual-ncsi"
         },
         {
           "id": "GAP-STANDALONE-LISTENERS",
@@ -4092,8 +4092,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "manual-headless"
+          "blocked_reason": "native Windows target required; local loopback fixture is not native credit",
+          "native_driver": "manual-raw-date"
         },
         {
           "id": "GAP-LIST-MUTEX",
