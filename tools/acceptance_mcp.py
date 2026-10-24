@@ -293,7 +293,7 @@ def _same_config(a,b):
 
 class BoundarySession:
  def __init__(self,boundary,inputs=None,logical_root=None):
-  self.boundary=boundary;self.inputs=inputs;self.logical_root=logical_root;self.records=[];self.mutation_operations=[];self.config_operations=[];self.config_owned_files={};self.lock=threading.RLock();self.thread_names={};self._thread_count=0;self._socket_count=0;self.owned_runs=set();self.owned_configs=set();self._local=threading.local();self._original_http_depth=0;self._original={'time':time.time,'monotonic':time.monotonic,'sleep':time.sleep,'uuid':uuid.uuid4,'socket':socket.create_connection,'http_connection':http.client.HTTPConnection}
+  self.boundary=boundary;self.inputs=inputs;self.logical_root=logical_root;self.records=[];self.mutation_operations=[];self.config_operations=[];self.config_owned_files={};self.lock=threading.RLock();self.thread_names={};self._thread_count=0;self._socket_count=0;self.owned_runs=set();self.owned_configs=set();self._local=threading.local();self._original_http_depth=0;self.operation_epoch=0;self.epoch_initial_versions={0:None};self._original={'time':time.time,'monotonic':time.monotonic,'sleep':time.sleep,'uuid':uuid.uuid4,'socket':socket.create_connection,'http_connection':http.client.HTTPConnection}
  @contextlib.contextmanager
  def original_http_contract(self):
   with self.lock:self._original_http_depth+=1
@@ -308,21 +308,37 @@ class BoundarySession:
   thread=threading.current_thread().name
   if thread=='MainThread':thread='main'
   with self.lock:
-   if isinstance(self.boundary,ReplayBoundary):return self.boundary.exchange(kind,value,thread)
-   row={'thread':thread,'kind':kind,'input':pack(value)};self.records.append(row)
+   if isinstance(self.boundary,ReplayBoundary):
+    result=self.boundary.exchange(kind,value,thread)
+    self._observe_service_restart(kind,value,result)
+    return result
+   row={'thread':thread,'kind':kind,'input':pack(value),'epoch':self.operation_epoch};self.records.append(row)
   try:
    self._local.inside_transport=True
    result=self.boundary.exchange(kind,value)
   except Exception as exc:
    row['error']={'type':type(exc).__name__,'message':str(exc)};raise
   finally:self._local.inside_transport=False
+  self._observe_service_restart(kind,value,result)
   row['output']=pack(result);return result
+ def _observe_service_restart(self,kind,value,result):
+  if kind!='powershell' or not isinstance(value,dict):return
+  if not re.search(r'(?i)\bsc(?:\.exe)?\s+start\s+fakenetng-mcp\b',value.get('command') or ''):return
+  if (not isinstance(result,dict) or result.get('exit_code')!=0
+      or result.get('is_error') is not False
+      or result.get('output','').strip()!='STARTED'):
+   return
+  with self.lock:
+   self.operation_epoch+=1;self.epoch_initial_versions[self.operation_epoch]=None
  def local_observation(self,kind,value,observe):
   if getattr(self._local,'inside_transport',False):return observe()
   thread=threading.current_thread().name
   if thread=='MainThread':thread='main'
   with self.lock:
-   if isinstance(self.boundary,ReplayBoundary):return self.boundary.exchange(kind,value,thread)
+   if isinstance(self.boundary,ReplayBoundary):
+    result=self.boundary.exchange(kind,value,thread)
+    self._observe_service_restart(kind,value,result)
+    return result
    row={'thread':thread,'kind':kind,'input':pack(value),'output':pack(observe())};self.records.append(row)
    return unpack(row['output'])
  def powershell(self,command,timeout=120):
@@ -353,6 +369,7 @@ class BoundarySession:
    operation={'tool':tool,'arguments':copy.deepcopy(arguments),
               'request_command_id':arguments.get('command_id'),
               'request_expected_version':arguments.get('expected_state_version'),
+              'epoch':self.operation_epoch,
               'response_unknown':True}
    with self.lock:
     self.mutation_operations.append(operation)
@@ -361,7 +378,19 @@ class BoundarySession:
    value=self.operation('http',{'url':request.full_url,'method':request.get_method(),'headers':dict(request.header_items()),'data':request.data,'timeout':timeout})
    if value.get('http_error'):raise urllib.error.HTTPError(request.full_url,value['status'],'recorded HTTP error',value['headers'],io.BytesIO(value['body']))
    with self.lock:original_call=self._original_http_depth>0
-   if original_call and operation is None:return RecordedResponse(value)
+   if original_call and operation is None:
+    if tool=='get_status':
+     try:
+      response_body=json.loads(value['body']);result=response_body.get('result')
+      payload=json.loads(result.get('content',[{}])[0].get('text','{}'))
+      version=payload.get('state_version')
+     except (ValueError,KeyError,TypeError,IndexError,json.JSONDecodeError,AttributeError):
+      version=None
+     if type(version) is int and version>=0:
+      with self.lock:
+       if self.operation_epoch in self.epoch_initial_versions and self.epoch_initial_versions[self.operation_epoch] is None:
+        self.epoch_initial_versions[self.operation_epoch]=version
+    return RecordedResponse(value)
    try:
     response_body=json.loads(value['body']);result=response_body.get('result')
     if not isinstance(result,dict) or result.get('isError') is True:raise ValueError('MCP operation result unavailable')
@@ -372,6 +401,12 @@ class BoundarySession:
     if operation is not None:
      operation['response_unknown']=True;self.preserve_scene=True
     return RecordedResponse(value)
+   if tool=='get_status':
+    version=payload.get('state_version')
+    if type(version) is int and version>=0:
+     with self.lock:
+      if self.operation_epoch in self.epoch_initial_versions and self.epoch_initial_versions[self.operation_epoch] is None:
+       self.epoch_initial_versions[self.operation_epoch]=version
    if operation is not None:
     operation.update(response=copy.deepcopy(payload),response_command_id=payload.get('command_id'),response_state_version=payload.get('state_version'),changed=payload.get('changed'),config_identity=copy.deepcopy(payload.get('config_identity')),name=payload.get('name'))
     error=payload.get('error')
@@ -385,7 +420,7 @@ class BoundarySession:
       raise ValueError('accepted mutation command/version receipt incomplete')
      replay=payload.get('replayed') is True
      if replay:
-      prior=[op for op in self.mutation_operations if op is not operation and op.get('accepted') and not op.get('response_unknown') and op.get('request_command_id')==command]
+      prior=[op for op in self.mutation_operations if op is not operation and op.get('accepted') and not op.get('response_unknown') and op.get('request_command_id')==command and op.get('epoch',0)==operation.get('epoch',0)]
       if len(prior)!=1:raise ValueError('foreign replay cannot establish mutation ownership')
       original=dict(prior[0]['response']);current=dict(payload);original.pop('replayed',None);current.pop('replayed',None)
       if original!=current:raise ValueError('replay differs from current-unit original')
@@ -593,19 +628,60 @@ def service_preflight(session,inputs):
 
 def _verified_version_chain(session,initial,final):
  operations=list(session.mutation_operations)
- if any(op.get('response_unknown') for op in operations):raise ValueError('configuration operation response is unresolved')
- intervals=[];seen=set()
+ if any(op.get('response_unknown') for op in operations):
+  raise ValueError('configuration operation response is unresolved')
+ epochs={}
  for op in operations:
-  response=op.get('response') or {}
-  if not op.get('accepted') or op.get('replay'):continue
-  command=op['request_command_id']
-  if command in seen:raise ValueError('duplicate mutation without replay identity')
-  seen.add(command);intervals.append((op['request_expected_version'],response['state_version']))
- version=initial['state_version']
- for start,end in sorted(intervals):
-  if start!=version:raise ValueError('state version continuity is unverified')
-  version=end
- if version!=final['state_version']:raise ValueError('state version continuity is unverified')
+  epoch=op.get('epoch',0)
+  if type(epoch) is not int or epoch<0 or epoch>session.operation_epoch:
+   raise ValueError('configuration operation epoch is unverified')
+  epochs.setdefault(epoch,[]).append(op)
+ if type(session.operation_epoch) is not int or session.operation_epoch<0:
+  raise ValueError('configuration operation epoch is unverified')
+ # Gates reject these errors before accepting/incrementing the operation.
+ # Execution errors can occur after acceptance; they still consume one version.
+ pre_gate={'state_conflict','operation_busy','controller_conflict',
+           'controller_identity_missing','invalid_command_id','invalid_version'}
+ for epoch in range(session.operation_epoch+1):
+  begin=initial['state_version'] if epoch==0 else session.epoch_initial_versions.get(epoch)
+  if type(begin) is not int or begin<0:
+   raise ValueError('configuration state version after restart is unverified')
+  seen=set();steps={};observed=[]
+  for op in epochs.get(epoch,[]):
+   response=op.get('response')
+   if not isinstance(response,dict):raise ValueError('configuration operation response is unresolved')
+   version=response.get('state_version');expected=op.get('request_expected_version')
+   if op.get('accepted'):
+    if type(version) is not int or version<0:
+     raise ValueError('configuration operation state version is unverified')
+    if op.get('replay'):
+     # A verified cached receipt may report an older version. It is not a
+     # new mutation, nor permission to advance the observed version chain.
+     continue
+    command=op.get('request_command_id')
+    if not isinstance(command,str) or not command or command in seen:
+     raise ValueError('duplicate mutation without replay identity')
+    seen.add(command)
+    if type(expected) is not int or expected<begin or version<expected+1:
+     raise ValueError('state version continuity is unverified')
+    if expected in steps:raise ValueError('multiple mutations accepted at one version')
+    steps[expected]=command;observed.append(version)
+   elif version is not None:
+    if type(version) is not int or version<begin:
+     raise ValueError('rejected mutation state version regressed')
+    observed.append(version)
+    error=(response.get('error') or {}).get('code')
+    if error not in pre_gate and type(expected) is int and version==expected+1:
+     if expected in steps:raise ValueError('rejected mutation conflicts with accepted version')
+     steps[expected]=op.get('request_command_id')
+  end=begin
+  for accepted_at in sorted(steps):
+   if accepted_at!=end:raise ValueError('state version continuity is unverified')
+   end+=1
+  if any(version>end for version in observed):
+   raise ValueError('state version advance lacks accepted operation evidence')
+  if epoch==session.operation_epoch and end!=final['state_version']:
+   raise ValueError('state version continuity is unverified')
 
 
 def _accepted_load_operation(session, initial, final):

@@ -200,3 +200,34 @@ def test_original_dump_parser_rejects_rehashed_wrong_pid(target):
     assert hashlib.sha256(dump.read_bytes()).hexdigest()
     with pytest.raises(RuntimeError,match='identity mismatch'):
         verify_dump(dump,4242)
+
+
+def test_version_chain_rejects_unexplained_advance_and_scoped_replay():
+    import acceptance_mcp as m
+    def operation(expected,end,command='one',accepted=True,replay=False,error=None):
+        return dict(epoch=0,accepted=accepted,replay=replay,response_unknown=False,
+                    request_command_id=command,request_expected_version=expected,
+                    response=dict(state_version=end,error=error))
+    def session(ops):
+        return SimpleNamespace(mutation_operations=ops,operation_epoch=0,
+                               epoch_initial_versions={0:1})
+    m._verified_version_chain(session([operation(1,2)]),{'state_version':1},{'state_version':2})
+    with pytest.raises(ValueError,match='advance lacks'):
+        m._verified_version_chain(session([operation(1,9)]),{'state_version':1},{'state_version':9})
+    with pytest.raises(ValueError,match='continuity'):
+        m._verified_version_chain(session([operation(2,3)]),{'state_version':1},{'state_version':3})
+    with pytest.raises(ValueError,match='advance lacks'):
+        m._verified_version_chain(session([operation(1,9,accepted=False,error={'code':'state_conflict'})]),{'state_version':1},{'state_version':9})
+    with pytest.raises(ValueError,match='duplicate'):
+        m._verified_version_chain(session([operation(1,2),operation(2,3)]),{'state_version':1},{'state_version':3})
+    ops=[operation(1,2),operation(2,3,'two'),operation(1,2,replay=True)]
+    m._verified_version_chain(session(ops),{'state_version':1},{'state_version':3})
+    boundary=object.__new__(m.BoundarySession)
+    boundary.operation_epoch=0;boundary.epoch_initial_versions={0:1};boundary.lock=__import__('threading').RLock()
+    command={'command':'sc.exe start fakenetng-mcp'}
+    boundary._observe_service_restart('powershell',command,{'exit_code':1,'is_error':False,'output':'STARTED'})
+    assert boundary.operation_epoch==0
+    boundary._observe_service_restart('powershell',command,{'exit_code':0,'is_error':False,'output':'GONE'})
+    assert boundary.operation_epoch==0
+    boundary._observe_service_restart('powershell',command,{'exit_code':0,'is_error':False,'output':'STARTED'})
+    assert boundary.operation_epoch==1

@@ -644,7 +644,8 @@ class InitializationProcessBoundary(IpcProcessBoundary):
   with self.guard:
    if kind=='http' and json.loads(value['data'])['params']['name']=='start':
     self.running=False;self.terminal=True;self.version+=1
-    return self.response({'service':'fakenetng-mcp','state':'stopped','state_version':self.version,'run_id':None,'controller':None,'config_identity':self.inputs['config_identity'],'last_run_outcome':'failed','error':None})
+    args=json.loads(value['data'])['params']['arguments']
+    return self.response({'service':'fakenetng-mcp','state':'stopped','state_version':self.version,'run_id':None,'controller':None,'config_identity':self.inputs['config_identity'],'last_run_outcome':'failed','error':None,'command_id':args['command_id'],'changed':True,'in_progress':False,'replayed':False})
    if kind=='powershell' and "throw 'S2 receipt not unique'" in value['command']:
     log='Traceback (most recent call last):\n  File "fakenet/mcp/managed.py", line 1, in child_main\n  File "fakenet/fakenet.py", line 2, in start\n  File "fakenet/mcp/faultinject.py", line 3, in initialize\nRuntimeError: injected managed initialization failure'
     output=json.dumps({'run_id':self.run_id,'receipt':self.fault,'log':log,'parent':json.dumps({'event':'health_state','frame':{'state':'failed','run_id':self.run_id}}),'child':json.dumps({'event':'send','frame':{'error':'injected managed initialization failure','run_id':self.run_id}})})
@@ -1228,7 +1229,7 @@ class OriginalProtectionRegressionTests(unittest.TestCase):
       if kind=='http':
        request=json.loads(value['data']);params=request.get('params',{});args=params.get('arguments',{})
        if params.get('name')==rejected and args.get('name','').startswith('badfilter-'):
-        return {'status':200,'headers':{'Content-Type':'application/json'},'body':json.dumps({'result':{'content':[{'text':json.dumps({'error':{'code':'validation_failed','message':'fixture refusal'},'state_version':3})}]}}).encode(),'http_error':False}
+        return {'status':200,'headers':{'Content-Type':'application/json'},'body':json.dumps({'result':{'content':[{'text':json.dumps({'error':{'code':'validation_failed','message':'fixture refusal'},'state_version':self.context.coordinator.snapshot()['state_version']})}]}}).encode(),'http_error':False}
       return super().exchange(kind,value)
     unit='ACC-004-S4';out=self.root/rejected;boundary=Rejected(self.inputs,self.root/('domain-'+rejected));value=m.run('MCP-P03-FULL',out,self.inputs,selected=[unit],boundary=boundary,fixture=True)
     self.assertEqual('fail',value['checks'][unit]['status']);self.assertEqual([],boundary.protection_observations)
@@ -1324,15 +1325,21 @@ class HangProcessBoundary(FaultProcessBoundary):
     def exchange(self, kind, value):
         with self.guard:
             if kind == 'http':
-                tool = json.loads(value['data'])['params']['name']
+                request = json.loads(value['data'])
+                tool = request['params']['name']
+                arguments = request['params'].get('arguments') or {}
                 if tool in ('get_status', 'start', 'stop', 'load_config'):
+                    was_running = self.running
+                    if tool != 'get_status' and arguments.get('expected_state_version') != self.version:
+                        return self.response({'error': {'code': 'state_conflict'},
+                            'state_version': self.version, 'changed': False})
                     if tool == 'start':
                         self.running = True
                     elif tool == 'stop':
                         self.running = False
                     if tool != 'get_status':
                         self.version += 1
-                    return self.response({
+                    payload = {
                         'service': 'fakenetng-mcp',
                         'state': 'healthy' if self.running else 'stopped',
                         'state_version': self.version,
@@ -1341,7 +1348,12 @@ class HangProcessBoundary(FaultProcessBoundary):
                         'config_identity': self.inputs['config_identity'],
                         'last_run_outcome': 'failed' if self.fault and not self.running else None,
                         'error': None,
-                    })
+                    }
+                    if tool != 'get_status':
+                        payload.update(command_id=arguments['command_id'],
+                            changed=(tool != 'stop' or was_running),
+                            in_progress=False, replayed=False)
+                    return self.response(payload)
             if kind == 'powershell' and '@{run_id=$run;receipt=$receipt}' in value['command']:
                 output = json.dumps({'run_id': self.run_id, 'receipt': self.fault})
                 return {'output': output, 'raw': output, 'exit_code': 0, 'is_error': False}
@@ -1802,8 +1814,11 @@ class ProcessRecoveryBoundary(FaultProcessBoundary):
                     'state_version': self.version, 'run_id': self.run_id if self.running else None,
                     'config_identity': self.inputs['config_identity'], 'error': None,
                     'health': {'process_alive': self.running, 'identity': getattr(self, 'child', None)}}
-                if tool != 'get_status': payload['command_id'] = self.current_command
-                if self.fault_mode == 'reject-load' and tool == 'load_config': payload['error'] = {'code': 'rejected'}
+                if tool != 'get_status':
+                    payload.update(command_id=self.current_command, changed=True,
+                                   in_progress=False, replayed=False)
+                if self.fault_mode == 'reject-load' and tool == 'load_config':
+                    payload.update(error={'code': 'rejected'}, changed=False)
                 if self.fault_mode == 'resumed-run' and self.crashes and tool == 'get_status': payload['run_id'] = self.run_id
                 return self.response(payload)
         if kind == 'powershell':
