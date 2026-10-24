@@ -661,6 +661,16 @@ def manual_fixture_block(environment, candidate):
 def manual_inputs(plan,case,output_dir):
     import acceptance_manual
     options=plan['environment'].get('manual')
+    if case['id']=='GAP-NETWORK-FIX' and isinstance(options,dict) and options.get('schema')=='fakenet.manual-options.v2':
+        if set(options)!={'schema','network'}:raise ValueError('exact network-fix options required')
+        target=plan['environment']['native_runtime'].get('identity',{})
+        candidate=plan['candidate'];directory=Path(output_dir).resolve()/'driver'
+        pins=['tools/acceptance_manual.py','tools/acceptance_manual_oracles.py','tools/acceptance_linux_recovery.py','fakenet/diverters/diverterbase.py']
+        pins += ['fakenet/diverters/'+name+'.py' for name in (('winutil','windows') if target.get('platform')=='windows' else ('linutil','linux'))]
+        source=Path(__file__).resolve().parents[1]
+        value=dict(schema='fakenet.manual-input.v2',case=case['id'],candidate_id=candidate.get('candidate_id') or 'manual-candidate',source_commit=candidate['source_commit'],package_sha256=candidate['package_sha256'],execution_id=plan['execution_id'],owned_root=str(directory),config=str(directory/'config'),fixture=candidate.get('offline_fixture') is True,platform=target.get('platform'),network=dict(options['network']),source_hashes={name:sha256(source/name) for name in pins})
+        acceptance_manual.validate_inputs(case['id'],value)
+        return value
     if not isinstance(options,dict) or options.get('schema')!='fakenet.manual-options.v1' or set(options)-{'schema','responsea'}:
         raise ValueError('explicit fixed manual options required')
     candidate=plan['candidate'];directory=Path(output_dir).resolve()/'driver'

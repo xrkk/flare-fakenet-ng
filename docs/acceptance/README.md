@@ -485,3 +485,36 @@ merge/package必须重判同scope/source的host身份; 错组、缺host或坏身
 当前只验证纯夹具/模拟OS边界, actualhost11/新的Wine构建/VM仍未运行.
 
 平台映射/真实host源根的固定纯夹具验证为46 passed/41 subtests passed, 一次0.6786825499730185秒owner; 实际host11及新的候选构建尚未执行, 不授native/full信用.
+
+
+### Platform-specific network repair and owned Linux route cleanup
+
+`GAP-NETWORK-FIX` accepts `manual.schema=fakenet.manual-options.v2` with exactly
+`network={ipv4,interface,adapter_guid}`. The central producer freezes the actual
+target platform and source pins in `fakenet.manual-input.v2`. Windows requires
+one bound active adapter/GUID; Linux uses a null adapter GUID and the explicitly
+selected interface. Only that platform's modules and original callbacks run.
+Legacy v1 combined fixtures and their original assertions remain unchanged.
+
+The Linux driver records default-route rows before start, while active, after
+the original stop, and after its own cleanup. It removes only an unambiguous row
+added by a successful original `route add`, after the original writer has stopped.
+Table, device, gateway, metric and other supported qualifiers remain part of the
+exact deletion. Foreign drift, live writers, missing originals and a no-op removal
+refuse clean recovery. A preexisting default route is preserved and the unexercised
+positive branch stays unknown. Raw route files, original call logs, source identity
+and an independent consumer are required through the same central execute/judge.
+
+This is driver cleanup, not a fix to the product's missing default-route removal.
+Linux FixDNS and StopDNSService remain unsupported/unknown in this new production
+result; neither fixture success nor cleanup makes the full case pass.
+
+The Linux deploy/update production path is still incomplete. Its fresh output root
+is also used as an installation prefix, while the original installer operates a
+system service. A real root `/` conflicts with the current fresh/accepted-root
+separation checks; an arbitrary prefix is not a real system deployment. The old
+updater additionally binds historical boot/PID/epoch values. Existing fixture
+install/update/recovery tests are retained, but this source unit does not replace
+those production preconditions or claim native rollback. A separate explicit
+system-root/output and initial-service recovery contract is required before that
+case can execute safely. No runtime/deploy source or current candidate ZIP changed.

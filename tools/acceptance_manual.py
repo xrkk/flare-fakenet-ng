@@ -22,7 +22,7 @@ def sha256(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def _json(p,v):Path(p).write_text(json.dumps(v,indent=2)+'\n',encoding='utf-8')
 def validate_inputs(case,inputs):
     if not isinstance(inputs,dict):raise ValueError('manual inputs must be an object')
-    if inputs.get('schema')!='fakenet.manual-input.v1' or inputs.get('case')!=case:raise ValueError('manual input schema/case mismatch')
+    if inputs.get('schema') not in ('fakenet.manual-input.v1','fakenet.manual-input.v2') or inputs.get('case')!=case:raise ValueError('manual input schema/case mismatch')
     for k in (*IDENTITY,'config','owned_root'):
         if not inputs.get(k):raise ValueError('manual inputs missing: '+k)
     if not re.fullmatch('[0-9a-f]{40}',inputs['source_commit']) or not re.fullmatch('[0-9a-f]{64}',inputs['package_sha256']):raise ValueError('manual content identity invalid')
@@ -30,6 +30,32 @@ def validate_inputs(case,inputs):
     for k in ('config','owned_root'):
         if not Path(inputs[k]).is_absolute() or Path(inputs[k]).is_symlink():raise ValueError('manual path must be absolute/no symlink: '+k)
     socket.inet_pton(socket.AF_INET,inputs.get('responsea','192.0.2.55'))
+    if inputs['schema']=='fakenet.manual-input.v2':
+        import ipaddress
+        if case!='GAP-NETWORK-FIX' or inputs.get('platform') not in ('windows','linux'):
+            raise ValueError('network-fix requires an explicit target platform')
+        network=inputs.get('network')
+        if not isinstance(network,dict) or set(network)!={'ipv4','interface','adapter_guid'}:
+            raise ValueError('exact network-fix target fields required')
+        address=ipaddress.IPv4Address(network['ipv4'])
+        if address.is_loopback or address.is_multicast or address.is_unspecified or not re.fullmatch(r'[a-zA-Z0-9_.: -]{1,64}',network['interface']):
+            raise ValueError('invalid bound network-fix address/interface')
+        if inputs['platform']=='windows' and not re.fullmatch(r'\{[a-zA-Z0-9-]+\}',network['adapter_guid'] or ''):
+            raise ValueError('explicit Windows adapter GUID required')
+        if inputs['platform']=='linux' and network['adapter_guid'] is not None:
+            raise ValueError('Linux must not contain a Windows adapter GUID')
+        required={'tools/acceptance_manual.py','tools/acceptance_manual_oracles.py','tools/acceptance_linux_recovery.py','fakenet/diverters/diverterbase.py'}
+        required.update('fakenet/diverters/'+name+'.py' for name in (('winutil','windows') if inputs['platform']=='windows' else ('linutil','linux')))
+        pins=inputs.get('source_hashes')
+        root=Path(__file__).resolve().parents[1]
+        if not isinstance(pins,dict) or set(pins)!=required or any(sha256(root/name)!=digest for name,digest in pins.items()):
+            raise ValueError('exact network-fix producer/consumer source bindings required')
+        if type(inputs.get('fixture')) is not bool:
+            raise ValueError('explicit network-fix evidence level required')
+        if not inputs['fixture']:
+            from acceptance_runtime import target_identity
+            if target_identity().get('platform')!=inputs['platform']:
+                raise ValueError('network-fix platform does not match actual target')
 class Callbacks:
     def isProcessBlackListed(self,*a,**kw):return False,None,None
     def egressPolicyEnabled(self):return False
@@ -672,7 +698,22 @@ def real_network_fix(case, out, inputs):
     import logging
     import os
     import sys
-    from fakenet.diverters import winutil, windows, linutil, linux
+    selected = inputs.get('platform') if inputs['schema']=='fakenet.manual-input.v2' else 'both'
+    winutil = windows = linutil = linux = None
+    if selected in ('windows','both'):
+        from fakenet.diverters import winutil, windows
+    if selected in ('linux','both'):
+        from fakenet.diverters import linutil, linux
+    ipv4 = inputs.get('network',{}).get('ipv4','192.0.2.10')
+    guid = inputs.get('network',{}).get('adapter_guid') or '{GUID}'
+    route_observer = None
+    if selected=='linux':
+        import acceptance_linux_recovery as route_observer
+    if selected=='windows':
+        probe=winutil.WinUtilMixin();probe.logger=logging.getLogger('WinUtil')
+        adapters=list(probe.get_active_ethernet_adapters())
+        if len(adapters)!=1 or adapters[0].AdapterName.decode().lower()!=guid.lower():
+            raise ValueError('native network-fix requires one exact bound Windows adapter')
     out = Path(out)
     cfgdir = out / 'config'
     cfgdir.mkdir()
@@ -723,7 +764,7 @@ def real_network_fix(case, out, inputs):
     class Proxy:
         def __init__(self, module): self.module = module
         def __getattr__(self, name): return getattr(self.module, name)
-    for module in (winutil, windows, linutil, linux):
+    for module in [m for m in (winutil, windows, linutil, linux) if m is not None]:
         proxy = Proxy(module.subprocess)
         for name in ('check_call', 'check_output', 'call', 'Popen'):
             if hasattr(module.subprocess, name):
@@ -749,7 +790,7 @@ def real_network_fix(case, out, inputs):
         def __getattr__(self, name): return getattr(self.stream, name)
     def open_resolver(path, mode='r', *args, **kwargs):
         return ResolverFile(original_open(path, mode, *args, **kwargs), path, mode)
-    replace(linutil, 'open', open_resolver)
+    if linutil is not None: replace(linutil, 'open', open_resolver)
     def observe(frame, event, arg):
         if event != 'return' or '/fakenet/diverters/' not in frame.f_code.co_filename: return
         name = frame.f_code.co_name
@@ -763,13 +804,14 @@ def real_network_fix(case, out, inputs):
     def configure(name, settings):
         path = cfgdir / (name + '.ini')
         parser = configparser.ConfigParser(); parser.read_string(config_text)
+        if selected=='linux':settings=dict(settings,LinuxRestrictInterface=inputs['network']['interface'])
         for key, value in settings.items(): parser.set('Diverter', key, value)
         with path.open('w') as stream: parser.write(stream)
         parsed = dict(parser.items('Diverter'))
         return path, parsed
     def reg_snapshot():
         probe = winutil.WinUtilMixin(); probe.logger = logging.getLogger('WinUtil')
-        key = 'SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\{GUID}'
+        key = 'SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\' + guid
         return probe.get_reg_value(winutil.HKEY_LOCAL_MACHINE, key, 'NameServer')
     def service_snapshot():
         probe = winutil.WinUtilMixin(); probe.logger = logging.getLogger('WinUtil')
@@ -786,13 +828,13 @@ def real_network_fix(case, out, inputs):
         (out / 'active-branch').write_text(name)
         logging.getLogger('WinUtil' if name.startswith('win') else 'Diverter').info('MANUAL-NETWORK-BRANCH %s token=%s', name, token)
     try:
-        for name in ('win_fix', 'win_existing', 'win_modify', 'win_off'):
+        for name in (('win_fix', 'win_existing', 'win_modify', 'win_off') if selected in ('windows','both') else ()):
             active(name)
             path, parsed = configure(name, {'FixGateway': 'Yes' if name in ('win_fix', 'win_existing') else 'No', 'FixDNS': 'Yes' if name in ('win_fix', 'win_existing') else 'No', 'ModifyLocalDNS': 'Yes' if name == 'win_modify' else 'No', 'StopDNSService': 'Yes' if name == 'win_modify' else 'No'})
             before, service_before = reg_snapshot(), service_snapshot()
             w = None
             try:
-                w = windows.Diverter(parsed, {}, {4: ['192.0.2.10'], 6: []})
+                w = windows.Diverter(parsed, {}, {4: [ipv4], 6: []})
                 start = w.startCallback()
                 middle, service_middle = reg_snapshot(), service_snapshot()
                 owned_dhcp, owned_dns = list(w.adapters_dhcp_restore), list(w.adapters_dns_restore)
@@ -803,20 +845,47 @@ def real_network_fix(case, out, inputs):
                     w._restore_network_settings()  # Original idempotent return path.
             after, service_after = reg_snapshot(), service_snapshot()
             results[name] = {'config': str(path), 'parsed': parsed, 'start': start, 'stop': stop, 'registry_before': before, 'registry_middle': middle, 'registry_after': after, 'service_before': service_before, 'service_middle': service_middle, 'service_after': service_after, 'owned_dhcp': owned_dhcp, 'owned_dns': owned_dns, 'backup': backups, 'threads_stopped': all(not getattr(w, n).is_alive() for n in ('diverter_thread',) if getattr(w, n, None)), 'network_restored_flag': w._network_restored}
-        for name in ('linux_gateway', 'linux_modify', 'linux_off'):
+        for name in (('linux_gateway', 'linux_modify', 'linux_off') if selected in ('linux','both') else ()):
             active(name)
             path, parsed = configure(name, {'FixGateway': 'Yes' if name == 'linux_gateway' else 'No', 'FixDNS': 'No', 'ModifyLocalDNS': 'Yes' if name == 'linux_modify' else 'No', 'StopDNSService': 'No', 'LinuxFlushIptables': 'No'})
             before = resolv(); l = None
+            start = stop = None; middle = before; old = None; branch_error = None
+            route_before = route_observer.route_snapshot() if route_observer else None
+            route_result = None
             try:
-                l = linux.Diverter(parsed, {}, {4: ['192.0.2.10'], 6: []})
+                l = linux.Diverter(parsed, {}, {4: [ipv4], 6: []})
                 start = l.startCallback(); middle = resolv(); old = l.old_dns
+            except Exception as exc:
+                if route_observer is None: raise
+                branch_error = type(exc).__name__ + ': ' + str(exc)
             finally:
-                if l is not None: stop = l.stopCallback()
+                route_active = route_stop = None
+                try:
+                    if route_observer:route_active=route_observer.route_snapshot()
+                except Exception as exc:
+                    branch_error='route observation: '+type(exc).__name__+': '+str(exc)
+                finally:
+                    if l is not None: stop = l.stopCallback()
+                if route_observer:
+                    try:route_stop = route_observer.route_snapshot()
+                    except Exception as exc:branch_error='route stop observation: '+str(exc)
+                    added = any(row['branch']==name and row['method']=='linux_set_default_gw' and row['result'] is True for row in methods)
+                    quiescent = l is not None and stop is True and all(not q.thread_alive for q in l.nfqueues)
+                    if route_active is None or route_stop is None:
+                        route_result=dict(before=route_before,active=route_active,after_stop=route_stop,after_recovery=None,original_add_succeeded=added,quiescent=quiescent,restored=False,error=branch_error,original_stop_restored=False)
+                    else:
+                        route_result = route_observer.recover_route(route_before,route_active,route_stop,ipv4,inputs['network']['interface'],added,quiescent)
+                    for phase in ('before','active','after_stop','after_recovery'):
+                        route_path=out/(name+'-route-'+phase+'.json');_json(route_path,route_result[phase])
+                    record('driver-route-recovery',original=route_result)
             after = resolv()
-            results[name] = {'config': str(path), 'parsed': parsed, 'start': start, 'stop': stop, 'resolver_before': before, 'resolver_middle': middle, 'resolver_after': after, 'old_dns': old, 'old_dns_after': l.old_dns, 'threads_stopped': all(not q.thread_alive for q in l.nfqueues)}
+            results[name] = {'config': str(path), 'parsed': parsed, 'start': start, 'stop': stop, 'resolver_before': before, 'resolver_middle': middle, 'resolver_after': after, 'old_dns': old, 'old_dns_after': l.old_dns if l else None, 'threads_stopped': l is not None and all(not q.thread_alive for q in l.nfqueues)}
+            if route_observer:results[name].update(route=route_result, error=branch_error)
         active('linux_unsupported')
-        probe = linutil.LinUtilMixin()
-        unsupported = {'fix_gateway_result': probe.fix_gateway(), 'fix_dns_result': probe.fix_dns(), 'stop_dns_service_supported': hasattr(probe, 'stop_service_helper')}
+        unsupported = None
+        if linutil is not None:
+            probe = linutil.LinUtilMixin()
+            unsupported = {'fix_gateway_result': probe.fix_gateway(), 'fix_dns_result': probe.fix_dns(), 'stop_dns_service_supported': hasattr(probe, 'stop_service_helper')}
     finally:
         sys.setprofile(old_profile)
         for obj, name, present, original in reversed(undo):
@@ -827,11 +896,19 @@ def real_network_fix(case, out, inputs):
         handler.close()
     def returned(branch_name, method):
         return next((row['result'] for row in methods if row['branch'] == branch_name and row['method'] == method), False)
-    wf, we, wm = results['win_fix'], results['win_existing'], results['win_modify']
-    lm = results['linux_modify']
-    windows_result = {'fix': {'gateway_result': returned('win_fix', 'fix_gateway'), 'dns_result': returned('win_fix', 'fix_dns')}, 'existing': {'gateway_result': returned('win_existing', 'fix_gateway'), 'dns_result': returned('win_existing', 'fix_dns')}, 'modify': {'dns_server_backup': wm['backup'], 'registry_before': wm['registry_before'], 'registry_after_set': wm['registry_middle'], 'registry_after_restore': wm['registry_after']}}
-    linux_result = {'gateway': {'gateway_result': returned('linux_gateway', 'linux_set_default_gw')}, 'modify': {'resolv_restored': lm['resolver_before'] == lm['resolver_after'] and lm['old_dns_after'] is None}, 'unsupported': unsupported}
+    windows_result = linux_result = None
+    if selected in ('windows','both'):
+        wf, we, wm = results['win_fix'], results['win_existing'], results['win_modify']
+        windows_result = {'fix': {'gateway_result': returned('win_fix', 'fix_gateway'), 'dns_result': returned('win_fix', 'fix_dns')}, 'existing': {'gateway_result': returned('win_existing', 'fix_gateway'), 'dns_result': returned('win_existing', 'fix_dns')}, 'modify': {'dns_server_backup': wm['backup'], 'registry_before': wm['registry_before'], 'registry_after_set': wm['registry_middle'], 'registry_after_restore': wm['registry_after']}}
+    if selected in ('linux','both'):
+        lm = results['linux_modify']
+        linux_result = {'gateway': {'gateway_result': returned('linux_gateway', 'linux_set_default_gw')}, 'modify': {'resolv_restored': lm['resolver_before'] == lm['resolver_after'] and lm['old_dns_after'] is None}, 'unsupported': unsupported}
     value = {'schema': SCHEMA, 'case': case, 'fixture': inputs.get('fixture') is True, 'evidence_kind': 'original-network-fix-config-start-stop', 'inputs': inputs, 'network_fix': {'config': str(cfg), 'config_sha256': sha256(cfg), 'windows': windows_result, 'linux': linux_result, 'branches': results, 'methods': methods, 'log': str(log), 'log_sha256': sha256(log), 'producer_calls': str(calls), 'producer_calls_sha256': sha256(calls), 'owner_pid': os.getpid(), 'execution_token': token, 'observer_restored': sys.getprofile() is old_profile and handler.stream is None}, 'source_hashes': {name: sha256(Path(__file__).resolve().parents[1] / name) for name in ('fakenet/diverters/winutil.py', 'fakenet/diverters/windows.py', 'fakenet/diverters/linux.py', 'fakenet/diverters/linutil.py', 'fakenet/diverters/diverterbase.py')}, 'cleanup': {'system_network_restored': 'not-exercised'}, 'known_limits': {'linux_new_gateway_restoration': 'original stopCallback has no default-route removal; not proven restored', 'linux_fix_dns': 'TODO returns False', 'linux_stop_dns_service': 'unsupported'}, 'started_at': started, 'ended_at': datetime.now(timezone.utc).isoformat(), 'checks': [{'id': x} for x in CHECKS[case]], 'identity': {k: inputs[k] for k in IDENTITY}}
+    if selected!='both':
+        value['schema']='fakenet.manual-result.v2';value['platform']=selected
+        value['network_fix'].pop('linux' if selected=='windows' else 'windows')
+        value['source_hashes'] = {name:sha256(Path(__file__).resolve().parents[1]/name) for name in inputs['source_hashes']}
+        if selected=='linux':value['network_fix']['route']=results['linux_gateway']['route']
     _json(out / 'manual-result.json', value)
     return value
 
