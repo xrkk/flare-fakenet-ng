@@ -476,18 +476,6 @@ def driver_table(root):
             'platforms': ['windows', 'linux'], 'modes': ['singlehost'],
             'checks': [], 'requires': ['native'], 'package_required': False,
         },
-        'manual-ncsi': {
-            'implemented': True, 'production_kind': 'manual-ncsi',
-            'platforms': ['windows', 'linux'], 'modes': ['singlehost'],
-            'checks': ['ncsi-ipv4','other-domain','dns-evidence'],
-            'requires': ['native'], 'package_required': False,
-        },
-        'manual-raw-date': {
-            'implemented': True, 'production_kind': 'manual-raw-date',
-            'platforms': ['windows', 'linux'], 'modes': ['singlehost'],
-            'checks': ['raw-date','preserved-bytes'],
-            'requires': ['native'], 'package_required': False,
-        },
         'build-identity': {
             'implemented': True, 'production_kind': 'package-identity',
             'platforms': ['windows', 'linux'], 'modes': ['offline'],
