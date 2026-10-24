@@ -476,6 +476,24 @@ def driver_table(root):
             'platforms': ['windows', 'linux'], 'modes': ['singlehost'],
             'checks': [], 'requires': ['native'], 'package_required': False,
         },
+        'manual-ncsi': {
+            'implemented': True, 'production_kind': 'manual-ncsi',
+            'platforms': ['windows'], 'modes': ['singlehost'],
+            'checks': ['ncsi-ipv4','other-domain','dns-evidence'],
+            'resources': ['owned-loopback-listeners'],
+            'requires': ['native'], 'package_required': False,
+            'argv': ['{python}','{root}/tools/acceptance_manual.py','--case','{case_id}',
+                     '--inputs','{manual_inputs}','--output','{output}/driver'],
+        },
+        'manual-raw-date': {
+            'implemented': True, 'production_kind': 'manual-raw-date',
+            'platforms': ['windows'], 'modes': ['singlehost'],
+            'checks': ['raw-date','preserved-bytes'],
+            'resources': ['owned-loopback-listeners'],
+            'requires': ['native'], 'package_required': False,
+            'argv': ['{python}','{root}/tools/acceptance_manual.py','--case','{case_id}',
+                     '--inputs','{manual_inputs}','--output','{output}/driver'],
+        },
         'build-identity': {
             'implemented': True, 'production_kind': 'package-identity',
             'platforms': ['windows', 'linux'], 'modes': ['offline'],
@@ -536,7 +554,38 @@ def validate_case(case, root, environment=None):
     return driver,checks
 
 
+def manual_fixture_block(environment, candidate):
+    from acceptance_runtime import target_identity
+    if candidate.get('offline_fixture') is not True:
+        return 'manual loopback fixture requires explicit offline_fixture'
+    if 'native' not in environment.get('allowed_actions',[]):
+        return 'manual loopback fixture action is not authorized'
+    runtime=environment.get('native_runtime') or {}
+    if runtime.get('transport')!='manual-loopback-fixture' or runtime.get('identity')!=target_identity():
+        return 'manual loopback fixture must bind actual local host identity'
+    if candidate.get('deployed_identity')!=runtime['identity']:
+        return 'manual candidate differs from actual fixture identity'
+    return None
+
+
+def manual_inputs(plan,case,output_dir):
+    import acceptance_manual
+    options=plan['environment'].get('manual')
+    if not isinstance(options,dict) or options.get('schema')!='fakenet.manual-options.v1' or set(options)-{'schema','responsea'}:
+        raise ValueError('explicit fixed manual options required')
+    candidate=plan['candidate'];directory=Path(output_dir).resolve()/'driver'
+    value=dict(schema='fakenet.manual-input.v1',case=case['id'],candidate_id='manual-candidate',source_commit=candidate['source_commit'],package_sha256=candidate['package_sha256'],execution_id=plan['execution_id'],owned_root=str(directory),config=str(directory/'config'),responsea=options.get('responsea','192.0.2.55'),fixture=candidate.get('offline_fixture') is True)
+    acceptance_manual.validate_inputs(case['id'],value)
+    return value
+
+
 def runtime_block(case, environment):
+    if case.get('native_driver') in ('manual-ncsi','manual-raw-date'):
+        runtime=environment.get('native_runtime') or {}
+        if runtime.get('transport')=='manual-loopback-fixture':
+            return None  # Full fixture/candidate/observed-host gate in expected_block and run_production.
+        if runtime.get('transport')!='local-target':
+            return 'manual listeners require installed source on explicit local-target VM; no remote fallback'
     if case.get('native_driver') == 'build-identity':
         return None  # Host-side read-only package check; no target channel.
     if case.get('native_driver')=='mcp-headless':
@@ -958,11 +1007,13 @@ def production_command(root,case,plan,output_dir,python):
              'policy_inputs':str(Path(output_dir).resolve()/'policy-inputs.json'),
              'headless_inputs':str(Path(output_dir).resolve()/'headless-inputs.json'),
              'mcp_inputs':str(Path(output_dir).resolve()/'mcp-inputs.json'),
-             'case_id':case['id'], 'checks':','.join(checks)}
+             'case_id':case['id'], 'checks':','.join(checks),
+             'manual_inputs':str(Path(output_dir).resolve()/'manual-inputs.json')}
     if driver['production_kind'] in ('process-redirect','payload-three-way'):
         headless_inputs(plan['environment'],driver,checks)
     if driver['production_kind'].startswith('policy-'):
         policy_inputs(plan['environment'],plan.get('candidate',{}).get('offline_fixture') is True,driver['production_kind'].split('-',1)[1])
+    if driver['production_kind'].startswith('manual-'):manual_inputs(plan,case,output_dir)
     argv=fixed_argv(driver,context)
     if driver['production_kind']=='dual-pcap-linux':
         for mode in checks:argv.extend(['--case',mode])
@@ -977,7 +1028,16 @@ def original_evaluation(root,case,plan,output_dir):
     import acceptance_oracles
     driver,checks=validate_case(case,root,plan['environment'])
     directory=Path(output_dir)/'driver'
-    if driver['production_kind']=='upstream-result':
+    if driver['production_kind'].startswith('manual-'):
+        import acceptance_manual_oracles
+        expected=manual_inputs(plan,case,output_dir)
+        if json.loads(_read(Path(output_dir)/'manual-inputs.json'))!=expected:
+            raise ValueError('manual inputs changed since plan')
+        rows,clean,detail=acceptance_manual_oracles.evaluate(root,directory,case['id'],expected,allow_fixture=plan.get('candidate',{}).get('offline_fixture') is True)
+        result=_judge_rows(rows,checks);result['details']=detail
+        return result,clean
+    elif driver['production_kind']=='upstream-result':
+
         rows,clean=acceptance_oracles.upstream(root,directory,checks)
     elif driver['production_kind'].startswith('policy-'):
         import acceptance_policy_oracles
@@ -1018,7 +1078,14 @@ def run_production(root,case,plan,output_dir,python):
         policy_inputs(plan['environment'],plan.get('candidate',{}).get('offline_fixture') is True,selected_driver['production_kind'].split('-',1)[1])
     if selected_driver.get('production_kind') in ('process-redirect','payload-three-way'):
         headless_inputs(plan['environment'],selected_driver,selected_checks)
-    actual=require_target(runtime['identity'])
+    if selected_driver['production_kind'].startswith('manual-') and runtime.get('transport')=='manual-loopback-fixture':
+        reason=manual_fixture_block(plan['environment'],plan.get('candidate',{}))
+        if reason:raise ValueError(reason)
+        from acceptance_runtime import target_identity
+        actual=target_identity()
+    else:
+        actual=require_target(runtime['identity'])
+
     if (plan.get('candidate') or {}).get('deployed_identity')!=actual:
         raise ValueError('candidate.deployed_identity differs from observed native target')
     driver,checks=validate_case(case,root,plan['environment'])
@@ -1030,11 +1097,12 @@ def run_production(root,case,plan,output_dir,python):
         write_json(output_dir/'policy-inputs.json',policy_inputs(plan['environment'],plan.get('candidate',{}).get('offline_fixture') is True,driver['production_kind'].split('-',1)[1]))
     if driver['production_kind'] in ('process-redirect','payload-three-way'):
         write_json(output_dir/'headless-inputs.json',headless_inputs(plan['environment'],driver,checks))
+    if driver['production_kind'].startswith('manual-'):write_json(output_dir/'manual-inputs.json',manual_inputs(plan,case,output_dir))
     write_json(output_dir/'request.json',request)
     write_json(output_dir/'target.json',actual)
     started=datetime.now(timezone.utc)
     timed_out=False; exited=False; code=None; process=None
-    env=os.environ.copy();env['PYTHONPATH']=str(Path(root).resolve())
+    env=os.environ.copy();env['PYTHONPATH']=os.pathsep.join(filter(None,[env.get('PYTHONPATH',''),str(Path(root).resolve())])) if driver['production_kind'].startswith('manual-') else str(Path(root).resolve())
     with (output_dir/'stdout.log').open('xb') as stdout,(output_dir/'stderr.log').open('xb') as stderr:
         options={'start_new_session':True} if os.name!='nt' else {'creationflags':subprocess.CREATE_NEW_PROCESS_GROUP}
         process=subprocess.Popen(argv,cwd=root,env=env,stdout=stdout,stderr=stderr,shell=False,**options)
@@ -1331,7 +1399,7 @@ def native_source_pins(root):
         if path.is_file():paths.add(path)
     for name in ('acceptance.py','acceptance_native.py','acceptance_runtime.py','acceptance_oracles.py',
                  'acceptance_guest.py','acceptance_windows.py','acceptance_linux.py','acceptance_multihost.py',
-                 'acceptance_collection.py','acceptance_package.py','acceptance_orchestration.py','acceptance_scheduler.py','acceptance_policy.py','acceptance_policy_oracles.py','acceptance_headless.py','acceptance_headless_oracles.py','acceptance_mcp.py','acceptance_mcp_oracles.py'):
+                 'acceptance_manual.py','acceptance_manual_oracles.py','acceptance_collection.py','acceptance_package.py','acceptance_orchestration.py','acceptance_scheduler.py','acceptance_policy.py','acceptance_policy_oracles.py','acceptance_headless.py','acceptance_headless_oracles.py','acceptance_mcp.py','acceptance_mcp_oracles.py'):
         path=root/'tools'/name
         if path.is_file():paths.add(path)
     path=root/'docs/acceptance/catalog.json'

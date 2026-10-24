@@ -870,6 +870,8 @@ def expected_block(case, actions, platforms, root=ROOT, environment=None, candid
         driver = drivers[name]
         if not driver.get('implemented'):
             return driver.get('missing') or 'native driver is not implemented'
+        if driver.get('production_kind','').startswith('manual-') and (environment or {}).get('native_runtime',{}).get('transport')=='manual-loopback-fixture':
+            return acceptance_native.manual_fixture_block(environment or {},candidate or {})
         if not case_applicable(case, platforms):
             return 'platform not available in environment'
         if driver.get('production_kind') == 'package-identity':

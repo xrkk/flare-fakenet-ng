@@ -37,3 +37,32 @@ T007/R02 只实现 `GAP-NCSI` 与 `GAP-RAW-DATE`; 其余 9 个手工 case 和 2 
 ## 中央集成
 
 本轮新模块不修改 `tools/acceptance.py`、`acceptance_native.py`、`catalog.json` 或 README。未来主控按 `T007-R01-evidence/central-integration.patch` 接入 driver/check filter/dispatch/source pin；本结果不声明中央 catalog/native/full 已验。
+
+
+## Current NCSI and RAW-DATE execution
+
+The two stable cases use fixed `manual-ncsi` and `manual-raw-date` drivers. The
+producer starts the original product listeners on owned loopback ephemeral
+ports, retains DNS payloads and TCP length frames, HTTP requests/responses,
+configuration and original lifecycle observations, then stops and joins the
+owned resources. The oracle checks four exact DNS name/transport pairs, full
+HTTP bytes and real response dates against each request window.
+
+Use the existing `tools/acceptance.py plan`, `execute` and independent `judge`
+commands. Set `environment.manual` to
+`{"schema":"fakenet.manual-options.v1","responsea":"192.0.2.55"}` and include
+the candidate source commit, package SHA-256 and exact deployed identity.
+Production execution requires the installed source and explicit `local-target`
+VM authority. Remote automatic deployment is not implemented for these cases;
+missing transport/identity is reported as blocked before execution.
+
+For source-local development only, `candidate.offline_fixture=true`,
+`native_runtime.transport=manual-loopback-fixture` and the **actual** local host
+identity enable the same production CLI with real loopback listeners. The
+existing `native` action must be explicit. Catalog platforms remain unchanged.
+This grants fixture/code credit only, never Windows VM or full functional credit.
+All runtime evidence stays in the selected run directory under `Logs/`.
+
+The other manual cases remain unimplemented. A missing default HTTP web file
+currently exposes an existing product TypeError; preserve that failure instead
+of treating it as a prerequisite to repair product behavior during facility work.
