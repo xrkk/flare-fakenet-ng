@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import dpkt
@@ -185,6 +186,13 @@ class ProductionEntryTests(unittest.TestCase):
         self.assertEqual(0,code,err+out)
         return path
 
+    def native_process(self, launch):
+        # Isolate the native launch seam. Source Git checks and original PCAP
+        # validator subprocesses retain the real shared subprocess module.
+        backend = SimpleNamespace(**vars(subprocess))
+        backend.Popen = launch
+        return mock.patch.object(self.native, 'subprocess', backend)
+
     def process_stub(self,argv,**kwargs):
         # Replace only the native launch, leave real PCAP oracles untouched.
         directory=Path(argv[argv.index('--output-directory')+1]); directory.mkdir()
@@ -200,7 +208,7 @@ class ProductionEntryTests(unittest.TestCase):
     def test_actual_plan_execute_and_independent_judge_with_original_pcap(self):
         path=self.plan()
         import acceptance_runtime as rt
-        with mock.patch.object(rt,'require_target',return_value=self.identity),mock.patch.object(self.native.subprocess,'Popen',side_effect=self.process_stub):
+        with mock.patch.object(rt,'require_target',return_value=self.identity),self.native_process(mock.Mock(side_effect=self.process_stub)):
             code,out,err=self.cli('execute','--plan',path)
         self.assertEqual(0,code,out+err)
         result=json.loads((path.parent/'summary.json').read_text())
@@ -222,7 +230,8 @@ class ProductionEntryTests(unittest.TestCase):
     def test_absent_target_is_blocked_and_wrong_target_refuses_before_launch(self):
         self.environment.pop('native_runtime');(self.root/'environment.json').write_text(json.dumps(self.environment))
         path=self.plan();plan=json.loads(path.read_text());self.assertIn('local-target',plan['blocked']['FIX-BLOCKED'])
-        with mock.patch.object(self.native.subprocess,'Popen') as launch:
+        launch = mock.Mock()
+        with self.native_process(launch):
             code,out,err=self.cli('execute','--plan',path)
             self.assertEqual(2,code,out+err);launch.assert_not_called()
 
@@ -272,7 +281,7 @@ class ProductionEntryTests(unittest.TestCase):
             results.append('PASS\tLivePcapPair\toriginal verifier')
             (directory/'results.tsv').write_text('\n'.join(results)+'\n')
             process=mock.Mock(pid=99);process.wait.return_value=0;return process
-        with mock.patch.object(rt,'require_target',return_value=self.identity),mock.patch.object(self.native.subprocess,'Popen',side_effect=launch):
+        with mock.patch.object(rt,'require_target',return_value=self.identity),self.native_process(mock.Mock(side_effect=launch)):
             code,out,err=self.cli('execute','--plan',path)
         self.assertEqual(0,code,out+err)
         receipt=json.loads((path.parent/'results/FIX-BLOCKED/receipt.json').read_text())

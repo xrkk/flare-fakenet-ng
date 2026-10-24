@@ -220,7 +220,11 @@ class CliScheduleCompletionTests(unittest.TestCase):
                                       '--environment', str(root / 'environment.json'),
                                       '--output', str(error_plan))
             self.assertEqual(0, code, err)
-            with mock.patch.object(F.ACC.subprocess, 'Popen', side_effect=OSError('owned fixture launch rejected')):
+            from types import SimpleNamespace
+            backend = SimpleNamespace(**vars(S.subprocess))
+            backend.Popen = mock.Mock(side_effect=OSError('owned fixture launch rejected'))
+            # Fail the scheduler's OS launch only; keep source identity Git real.
+            with mock.patch.object(S, 'subprocess', backend):
                 code, out, err = F.execute(root, error_plan)
             self.assertEqual(3, code, err + out)
             failed = F.read_json(error_plan.parent / 'summary.json')

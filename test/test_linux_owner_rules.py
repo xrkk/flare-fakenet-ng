@@ -35,10 +35,13 @@ def wired(tmp_path, monkeypatch):
     class Process:
         def __init__(self, argv, **kwargs):
             self.flag = argv[argv.index('-f') + 1]
+            assert self.flag.startswith('/tmp/fakenet-ng-stop-')
+            assert len(self.flag.rsplit('-', 1)[1]) == 32
+            stop_files[self.flag] = tmp_path / Path(self.flag).name
             self.returncode = None
             processes.append(self)
         def poll(self):
-            if os.path.exists(self.flag):
+            if os.path.exists(mapped_stop(self.flag)):
                 self.returncode = 0
             return self.returncode
         def terminate(self):
@@ -48,7 +51,24 @@ def wired(tmp_path, monkeypatch):
         def wait(self, timeout=None):
             return self.returncode
 
-    monkeypatch.setattr(lr.subprocess, 'Popen', Process)
+    # The fake process consumes the same logical -f path as LinuxRunner.
+    # Its file backend maps only registered stop flags into this fixture root;
+    # real production /tmp paths are never created or removed by these tests.
+    real_open = open
+    stop_files = {}
+    def mapped_stop(path):
+        return stop_files.get(os.fspath(path), path)
+    backend_os = SimpleNamespace(**vars(os))
+    backend_os.path = SimpleNamespace(**vars(os.path))
+    backend_os.path.exists = lambda path: os.path.exists(mapped_stop(path))
+    backend_os.unlink = lambda path, *a, **kw: os.unlink(mapped_stop(path), *a, **kw)
+    def fixture_open(path, *a, **kw):
+        return real_open(mapped_stop(path), *a, **kw)
+    monkeypatch.setattr(lr, 'os', backend_os)
+    monkeypatch.setattr(lr, 'open', fixture_open, raising=False)
+    backend_process = SimpleNamespace(**vars(lr.subprocess))
+    backend_process.Popen = Process
+    monkeypatch.setattr(lr, 'subprocess', backend_process)
     monkeypatch.setattr(lr, '_ipt_has', lambda *a: rules['present'])
     ctx = AppContext(ServiceConfig('127.0.0.1', 28788, ['127.0.0.1']), runner=runner, store=store)
     functions = {}
