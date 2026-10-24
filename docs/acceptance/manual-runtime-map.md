@@ -23,7 +23,7 @@
 | GAP-STANDALONE-LISTENERS (NOT_IMPLEMENTED) | 原 listener 入口 | 每个 standalone listener 的真实请求/响应与关闭 |
 | GAP-CTRLC-IPC (NOT_IMPLEMENTED) | 原控制入口 | Ctrl-C 与 IPC halt 的实际关闭/退出 |
 | GAP-DIVERTER-SWITCH | 原 Fakenet.parse_config/start/stop | 两值原 core 分支/调用与日志; owned 停止及幂等; 系统网络恢复单独未验 |
-| GAP-SYSLOG-ICMP-LOG | fakenet.fakenet main -s, PacketCtx/check_log_icmp | 原 formatter/syslog sink、ICMP type/code/端点/PID/owner、非 ICMP 与 Windows blacklist 不记录；本机为 OS sink fixture，真实系统日志未验 |
+| GAP-SYSLOG-ICMP-LOG | fakenet.fakenet main -s, PacketCtx/check_log_icmp | 原 main -s/无-s/formatter 与原 PacketCtx ICMP 正反字节; PID/token 从原 LogRecord/主日志/owned stop flag 绑定, 不捏造 syslog 字段; finally 关闭本轮 handler 并恢复原 logger/argv/profile. 本机 OS sink fixture, 真实 syslog/EventLog/live ICMP 未验 |
 | GAP-DUMPPACKETS | DumpPackets/DumpPacketsFilePrefix, DualPcapWriter | 原 INI parser、enabled/disabled、custom prefix、TCP/UDP 固定原字节、真实 raw+converted/observation/seal parser 及 finally close; 独立文件/字节判据. 本机为保留原件的离线重放, 不授真实 wire/native/full, 系统网络恢复未运行 |
 | GAP-LINUX-FLUSH-INTERFACE (NOT_IMPLEMENTED) | LinuxFlushIptables/LinuxFlushDNSCommand/LinuxRestrictInterface | 三个独立字段及实际清理/接口 |
 | GAP-NETWORK-FIX (NOT_IMPLEMENTED) | FixGateway/FixDNS/ModifyLocalDNS/StopDNSService | 逐平台实际语义及前后恢复 |

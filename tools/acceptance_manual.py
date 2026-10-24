@@ -158,35 +158,152 @@ def real_list_mutex(case,out,inputs):
       'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
     _json(out/'manual-result.json',value);return value
 
-def real_syslog_icmp(case,out,inputs):
-    import logging,socket,dpkt,os,struct
+def real_syslog_icmp(case, out, inputs):
+    import logging
+    import os
+    import sys
     from fakenet import fakenet as core
     from fakenet.diverters.diverterbase import DiverterBase
     from fakenet.diverters.fnpacket import PacketCtx
-    out=Path(out);cfgdir=out/'config';cfgdir.mkdir();cfg=cfgdir/'syslog.ini';cfg.write_text('[FakeNet]\nDivertTraffic: No\n')
-    log_on=out/'main-syslog.log';sink=inputs.get('syslog_sink') or str(out/'syslog.sink');rc_on=None
-    import sys as _sys
-    old_argv=_sys.argv
+    out = Path(out)
+    cfgdir = out / 'config'
+    cfgdir.mkdir()
+    cfg = cfgdir / 'syslog.ini'
+    cfg.write_text('[FakeNet]\nDivertTraffic: No\n')
+    started = datetime.now(timezone.utc).isoformat()
+    token = inputs['execution_id']
+    sink = out / 'syslog.sink'
+    if inputs.get('syslog_sink', str(sink)) != str(sink):
+        raise ValueError('syslog sink must be the owned original')
+    loggers = [logging.getLogger(name) for name in ('', 'FakeNet', 'Diverter', 'manual-syslog-icmp')]
+    def snapshot():
+        return [{'name': logger.name, 'handlers': [id(handler) for handler in logger.handlers],
+                 'level': logger.level, 'propagate': logger.propagate, 'disabled': logger.disabled}
+                for logger in loggers]
+    saved = [(logger, list(logger.handlers), logger.level, logger.propagate, logger.disabled) for logger in loggers]
+    before = snapshot()
+    old_argv = sys.argv
+    old_profile = sys.getprofile()
+    calls = []
+    records = []
+    methods = {getattr(core.Fakenet, name).__code__: name for name in ('parse_config', 'start', 'stop')}
+    def observe(frame, event, arg):
+        if event == 'call' and frame.f_code in methods:
+            calls.append({'method': methods[frame.f_code], 'event': 'call'})
+        if event == 'call' and frame.f_code is logging.Logger.callHandlers.__code__:
+            record = frame.f_locals['record']
+            records.append({'logger': record.name, 'process': record.process, 'message': record.getMessage()})
+    created = []
+    exits = {}
+    errors = []
     try:
-        _sys.argv=['fakenet','-c',str(cfg),'-s','-p','-n','-l',str(log_on)];core.main()
-    except SystemExit as exc:rc_on=exc.code
-    finally:_sys.argv=old_argv
-    rc_off=None;log_off=out/'main-no-syslog.log'
-    old_argv=_sys.argv
-    try:
-        _sys.argv=['fakenet','-c',str(cfg),'-p','-n','-l',str(log_off)];core.main()
-    except SystemExit as exc:rc_off=exc.code
-    finally:_sys.argv=old_argv
-    def icmp_packet(kind):
-        payload=dpkt.icmp.ICMP(type=8,code=0,data=struct.pack('!HH',4321,1)) if kind=='icmp' else dpkt.tcp.TCP(sport=40000,dport=8080,flags=dpkt.tcp.TH_SYN)
-        ip=dpkt.ip.IP(src=socket.inet_aton('192.0.2.10'),dst=socket.inet_aton('192.0.2.20'),p=1 if kind=='icmp' else 6,data=payload);ip.len=len(ip);return PacketCtx('syslog-'+kind,bytes(ip))
-    icmp_log=out/'icmp.log';logger=logging.getLogger('manual-syslog-icmp');logger.setLevel(logging.INFO);handler=logging.FileHandler(icmp_log);logger.addHandler(handler)
-    d=DiverterBase.__new__(DiverterBase);d.logger=logger;d.running_on_windows=False;d.blacklist_ids={'ICMP':[]}
-    class Crit:pass
-    pkt_icmp=icmp_packet('icmp');d.check_log_icmp(Crit(),pkt_icmp);d.check_log_icmp(Crit(),icmp_packet('tcp'));d.running_on_windows=True;d.blacklist_ids={'ICMP':[pkt_icmp.icmp_id]};d.check_log_icmp(Crit(),pkt_icmp)
-    handler.flush();handler.close();logger.removeHandler(handler)
-    value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,'syslog_icmp':{'config':str(cfg),'config_sha256':sha256(cfg),'main_rc_on':rc_on,'main_rc_off':rc_off,'main_log_on':str(log_on),'main_log_off':str(log_off),'syslog_sink':sink,'syslog_sink_sha256':sha256(sink) if Path(sink).is_file() else None,'icmp_log':str(icmp_log),'icmp_log_sha256':sha256(icmp_log),'icmp_type':pkt_icmp.icmp_type,'icmp_code':pkt_icmp.icmp_code,'icmp_id':pkt_icmp.icmp_id,'owner_pid':os.getpid(),'execution_token':inputs['execution_id']},'source_hashes':{n:sha256(Path(__file__).resolve().parents[1]/n) for n in ('fakenet/fakenet.py','fakenet/diverters/fnpacket.py','fakenet/diverters/diverterbase.py')},'started_at':datetime.now(timezone.utc).isoformat(),'cleanup':{'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True},'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
-    _json(out/'manual-result.json',value);return value
+        sys.setprofile(observe)
+        for mode, enabled in (('on', True), ('off', False)):
+            flag = out / ('stop-' + token + '-' + mode)
+            flag.write_text('owned stop flag')
+            argv = ['fakenet', '-c', str(cfg), '-p', '-n', '-l', str(out / ('main-' + mode + '.log')), '-f', str(flag)]
+            if enabled:
+                argv.append('-s')
+            sys.argv = argv
+            first = len(calls)
+            try:
+                core.main()
+            except SystemExit as exc:
+                exits[mode] = {'returncode': exc.code, 'calls': calls[first:]}
+            except Exception as exc:
+                errors.append(type(exc).__name__ + ': ' + str(exc))
+            finally:
+                for logger in loggers:
+                    for handler in list(logger.handlers):
+                        if not any(handler in prior for _, prior, *_ in saved):
+                            handler.flush()
+                            handler.close()
+                            created.append({'class': type(handler).__name__,
+                                            'closed': bool(getattr(handler, '_closed', False)),
+                                            'stream_closed': getattr(handler, 'stream', None) is None or handler.stream.closed})
+                            logger.removeHandler(handler)
+        packets = {'icmp': bytes.fromhex('4500001c0001000040010000c000020ac00002140800000010e10001'),
+                   'tcp': bytes.fromhex('450000280001000040060000c000020ac00002149c401f9000000000000000005002200000000000')}
+        for kind, raw in packets.items():
+            (out / ('packet-' + kind + '.bin')).write_bytes(raw)
+        logger = loggers[-1]
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        d = DiverterBase.__new__(DiverterBase)
+        d.logger = logger
+        phases = {}
+        for phase, kind, windows, blocked in (('linux', 'icmp', False, False), ('nonicmp', 'tcp', False, False),
+                                               ('blocked', 'icmp', True, True), ('windows', 'icmp', True, False)):
+            packet = PacketCtx('logging-' + phase, packets[kind])
+            d.running_on_windows = windows
+            d.blacklist_ids = {'ICMP': [4321] if blocked else []}
+            handler = logging.FileHandler(out / ('icmp-' + phase + '.log'), encoding='utf-8')
+            logger.addHandler(handler)
+            try:
+                d.check_log_icmp(None, packet)
+            finally:
+                handler.flush()
+                handler.close()
+                logger.removeHandler(handler)
+            phases[phase] = {'raw': str(out / ('packet-' + kind + '.bin')), 'is_icmp': packet.is_icmp,
+                             'closed': handler.stream is None and handler._closed}
+        (out / 'icmp.log').write_bytes((out / 'icmp-linux.log').read_bytes() + (out / 'icmp-windows.log').read_bytes())
+        # Native collectors read existing system records only; fixture sinks are
+        # produced by the test's OS backend, never by this producer.
+        if not sink.exists() and inputs.get('fixture') is not True:
+            messages = []
+            if core.platform.system() == 'Windows':
+                import win32evtlog
+                handle = win32evtlog.OpenEventLog(None, 'Application')
+                try:
+                    events = win32evtlog.ReadEventLog(handle, win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ, 0)
+                    for event in events:
+                        if event.SourceName == 'FakeNet-NG':
+                            messages.extend(text for text in (event.StringInserts or []) if token in text)
+                finally:
+                    win32evtlog.CloseEventLog(handle)
+            else:
+                for path in (Path('/var/log/syslog'), Path('/var/log/messages')):
+                    if path.is_file():
+                        with path.open(errors='replace') as stream:
+                            messages.extend(line.rstrip('\n') for line in stream if 'FakeNet-NG' in line and token in line)
+            if messages:
+                sink.write_text('\n'.join(messages) + '\n', encoding='utf-8')
+    except Exception as exc:
+        errors.append(type(exc).__name__ + ': ' + str(exc))
+    finally:
+        sys.setprofile(old_profile)
+        sys.argv = old_argv
+        for logger, handlers, level, propagate, disabled in saved:
+            for handler in list(logger.handlers):
+                if handler not in handlers:
+                    handler.close()
+            logger.handlers = handlers
+            logger.setLevel(level)
+            logger.propagate = propagate
+            logger.disabled = disabled
+    lifecycle = {'before': before, 'after': snapshot(), 'created_handlers': created,
+                 'argv_restored': sys.argv is old_argv, 'profile_restored': sys.getprofile() is old_profile,
+                 'pid': os.getpid(), 'token': token, 'calls': calls, 'records': records,
+                 'phases': locals().get('phases', {}), 'errors': errors}
+    _json(out / 'lifecycle.json', lifecycle)
+    source = Path(__file__).resolve().parents[1]
+    value = {'schema': SCHEMA, 'case': case, 'fixture': inputs.get('fixture') is True, 'inputs': inputs,
+             'evidence_kind': 'original-core-and-packet-logging',
+             'syslog_icmp': {'config': str(cfg), 'config_sha256': sha256(cfg), 'main_rc_on': exits.get('on', {}).get('returncode'),
+                            'main_rc_off': exits.get('off', {}).get('returncode'), 'main_log_on': str(out / 'main-on.log'),
+                            'main_log_off': str(out / 'main-off.log'), 'syslog_sink': str(sink),
+                            'syslog_sink_sha256': sha256(sink) if sink.is_file() else None,
+                            'icmp_log': str(out / 'icmp.log'), 'icmp_log_sha256': sha256(out / 'icmp.log') if (out / 'icmp.log').is_file() else None,
+                            'icmp_type': 8, 'icmp_code': 0, 'icmp_id': 4321, 'owner_pid': os.getpid(),
+                            'execution_token': token, 'handler_closed': all(item['closed'] and item['stream_closed'] for item in created), 'exits': exits},
+             'source_hashes': {name: sha256(source / name) for name in ('fakenet/fakenet.py', 'fakenet/diverters/fnpacket.py', 'fakenet/diverters/diverterbase.py')},
+             'started_at': started, 'ended_at': datetime.now(timezone.utc).isoformat(),
+             'cleanup': {'scope': 'owned-handlers-and-logger-state', 'stopped': before == snapshot() and not errors,
+                         'system_network_restored': 'not-exercised'},
+             'checks': [{'id': name} for name in CHECKS[case]], 'identity': {name: inputs[name] for name in IDENTITY}}
+    _json(out / 'manual-result.json', value)
+    return value
 
 def real_dumppackets(case, out, inputs):
     import logging

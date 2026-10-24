@@ -12,28 +12,61 @@ from pathlib import Path
 RAW=b'HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nX-Test: <RAW-DATE>\r\nContent-Length: 35\r\nConnection: close\r\n\r\nbody<RAW-DATE>\x00\xff'
 STATIC=b'static-<RAW-DATE>'
 
-def _evaluate_syslog_icmp(root,original,expected_inputs,allow_fixture=False):
-    base=Path(original).resolve();path=base/'manual-result.json'
-    if path.is_symlink() or not path.is_file():raise ValueError('original missing or linked')
-    v=json.loads(path.read_text())
-    if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!='GAP-SYSLOG-ICMP-LOG':raise ValueError('case/schema mismatch')
-    if v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
-    for k in ('candidate_id','source_commit','package_sha256','execution_id'):
-        if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
-    if type(v.get('fixture')) is not bool or v['fixture']!=(expected_inputs.get('fixture') is True):raise ValueError('fixture identity mismatch')
-    if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
-    if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
-    d=v.get('syslog_icmp') or {};errors=[]
-    if d.get('main_rc_on')!=0 or d.get('main_rc_off')!=0:errors.append('original main -s/off exit mismatch')
-    sink=Path(d.get('syslog_sink',''));sink_bytes=sink.read_bytes() if sink.is_file() else b''
-    if not sink_bytes or b'"levelName"' not in sink_bytes or b'FakeNet-NG' not in sink_bytes:errors.append('syslog sink original bytes missing/not formatter output')
-    log=Path(d.get('icmp_log',''));lines=log.read_text(encoding='utf-8').splitlines() if log.is_file() else []
-    if len(lines)!=1 or 'ICMP type 8 code 0' not in lines[0]:errors.append('ICMP log must contain exactly one positive log line')
-    if d.get('icmp_type')!=8 or d.get('icmp_code')!=0 or d.get('icmp_id')!=4321:errors.append('ICMP parser fields differ')
-    if d.get('execution_token')!=expected_inputs['execution_id'] or not isinstance(d.get('owner_pid'),int) or d['owner_pid']<=0:errors.append('owner/token mismatch')
-    if v.get('source_hashes')!={n:hashlib.sha256((Path(root)/n).read_bytes()).hexdigest() for n in ('fakenet/fakenet.py','fakenet/diverters/fnpacket.py','fakenet/diverters/diverterbase.py')}:errors.append('source binding mismatch')
-    if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True}:errors.append('cleanup mismatch')
-    return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('syslog','icmp','owner')],not errors,{'failures':errors}
+def _evaluate_syslog_icmp(root, original, expected_inputs, allow_fixture=False):
+    base = Path(original).absolute()
+    errors = []
+    def require(ok, reason):
+        if not ok:
+            raise ValueError(reason)
+    def read(name):
+        path = base / name
+        require(path.is_file() and not any(part.is_symlink() for part in (path, *path.parents)), 'missing/linked original: ' + name)
+        return path.read_bytes()
+    try:
+        v = json.loads(read('manual-result.json'))
+        require(str(base) == expected_inputs.get('owned_root') and v.get('inputs') == expected_inputs, 'owned/frozen inputs mismatch')
+        require(v.get('schema') == 'fakenet.manual-result.v1' and v.get('case') == 'GAP-SYSLOG-ICMP-LOG', 'case/schema mismatch')
+        require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
+        require(type(v.get('fixture')) is bool and v['fixture'] == (expected_inputs.get('fixture') is True), 'fixture identity mismatch')
+        require(not v['fixture'] or allow_fixture, 'fixture cannot native credit')
+        require(v.get('checks') == [{'id': key} for key in ('syslog', 'icmp', 'owner')], 'checks mismatch')
+        require(v.get('cleanup') == {'scope': 'owned-handlers-and-logger-state', 'stopped': True, 'system_network_restored': 'not-exercised'}, 'cleanup scope mismatch')
+        d = v['syslog_icmp']
+        for key, name in (('config', 'config/syslog.ini'), ('main_log_on', 'main-on.log'), ('main_log_off', 'main-off.log'), ('icmp_log', 'icmp.log'), ('syslog_sink', 'syslog.sink')):
+            require(d.get(key) == str(base / name), 'owned original path mismatch: ' + key)
+        config = read('config/syslog.ini')
+        require(config == b'[FakeNet]\nDivertTraffic: No\n' and d.get('config_sha256') == hashlib.sha256(config).hexdigest(), 'exact configuration mismatch')
+        require(read('packet-icmp.bin') == bytes.fromhex('4500001c0001000040010000c000020ac00002140800000010e10001'), 'ICMP original bytes mismatch')
+        require(read('packet-tcp.bin') == bytes.fromhex('450000280001000040060000c000020ac00002149c401f9000000000000000005002200000000000'), 'TCP original bytes mismatch')
+        state = json.loads(read('lifecycle.json'))
+        require(not state.get('errors') and state.get('before') == state.get('after') and len(state.get('before', [])) == 4 and state.get('argv_restored') is True and state.get('profile_restored') is True, 'logger/argv/profile restoration mismatch')
+        require(state.get('created_handlers') and all(item.get('closed') is True and item.get('stream_closed') is True for item in state['created_handlers']) and d.get('handler_closed') is True, 'owned handler not closed')
+        token = expected_inputs['execution_id']
+        pid = state['pid']
+        require(type(pid) is int and pid > 0 and d.get('owner_pid') == pid and d.get('execution_token') == token and state.get('token') == token, 'owner/token mismatch')
+        for mode in ('on', 'off'):
+            require(d.get('main_rc_' + mode) == 0, 'main exit mismatch')
+            messages = read('main-' + mode + '.log').decode('utf-8')
+            require('pid=%s ' % pid in messages and 'Loaded configuration file: ' + str(base / 'config/syslog.ini') in messages and 'FakeNet-NG started successfully' in messages and 'FakeNet-NG exiting: rc=0' in messages and 'stop-' + token + '-' + mode in messages, 'main log original trigger/owner missing')
+            calls = d.get('exits', {}).get(mode, {}).get('calls', [])
+            require([item.get('method') for item in calls] == ['parse_config', 'start', 'stop'], 'original main call chain mismatch')
+            require(not (base / ('stop-' + token + '-' + mode)).exists(), 'owned stop flag not consumed')
+        sink = read('syslog.sink')
+        require(d.get('syslog_sink_sha256') == hashlib.sha256(sink).hexdigest(), 'syslog sink hash mismatch')
+        marker = ('"FakeNet-NG": {"loggerName":"FakeNet", "moduleName":"fakenet", "levelName":"INFO", "message":"Will seek stop flag at ' + str(base / ('stop-' + token + '-on')) + '"}').encode()
+        require(marker in sink and ('stop-' + token + '-off').encode() not in sink, 'original syslog formatter/on-off arrival mismatch')
+        expect = b'ICMP type 8 code 0 192.0.2.10->192.0.2.20\n'
+        for phase in ('linux', 'windows', 'nonicmp', 'blocked'):
+            require(read('icmp-' + phase + '.log') == (expect if phase in ('linux', 'windows') else b''), 'ICMP phase bytes mismatch: ' + phase)
+            require(state.get('phases', {}).get(phase, {}).get('closed') is True, 'ICMP handler not closed: ' + phase)
+        icmp = read('icmp.log')
+        require(icmp == expect * 2 and d.get('icmp_log_sha256') == hashlib.sha256(icmp).hexdigest(), 'ICMP aggregate bytes mismatch')
+        require((d.get('icmp_type'), d.get('icmp_code'), d.get('icmp_id')) == (8, 0, 4321), 'ICMP parser fields mismatch')
+        require(state.get('records') and all(row.get('process') == pid for row in state['records']), 'original LogRecord owner mismatch')
+        require(v.get('source_hashes') == {name: hashlib.sha256((Path(root) / name).read_bytes()).hexdigest() for name in ('fakenet/fakenet.py', 'fakenet/diverters/fnpacket.py', 'fakenet/diverters/diverterbase.py')}, 'source binding mismatch')
+    except Exception as exc:
+        errors.append(type(exc).__name__ + ': ' + str(exc))
+    return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in ('syslog', 'icmp', 'owner')], not errors, {'failures': errors}
 
 def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False):
     import configparser
