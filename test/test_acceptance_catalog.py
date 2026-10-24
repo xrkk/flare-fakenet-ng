@@ -203,3 +203,22 @@ class SourceBoundReceiptTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DeferredInterfaceInputTests(unittest.TestCase):
+    def test_current_required_mcp_inputs_keep_shared_product_and_transport_only(self):
+        catalog = acceptance.read_catalog(ROOT)
+        cases = {case['id']: case for case in acceptance.all_cases(catalog)}
+        self.assertEqual(
+            ['test/mcp/test_command_status.py', 'test/mcp/test_capture_health.py'],
+            cases['MCP-UNIT-PRODUCT']['input']['modules'])
+        self.assertEqual(
+            ['test/mcp/test_acceptance_evidence_writer.py', 'test/mcp/test_bounded_mcp.py'],
+            cases['MCP-UNIT-TOOLING']['input']['modules'])
+        for name in ('CORE-WINDOWS-OFFLINE', 'MCP-UNIT-PRODUCT', 'MCP-UNIT-TOOLING'):
+            self.assertFalse(cases[name]['collection_safe'])
+            self.assertTrue(cases[name]['required_for_full'])
+        excluded_sources = {source for item in catalog['exclusions']
+                            for source in item.get('sources', [])}
+        self.assertIn('test/mcp/test_host_stdio.py', excluded_sources)
+        self.assertIn('test/mcp/test_acceptance_runner_discrimination.py', excluded_sources)

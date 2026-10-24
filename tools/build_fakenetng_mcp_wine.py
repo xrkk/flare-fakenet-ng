@@ -308,6 +308,10 @@ NATIVE_GAPS = ('WinDivert and route restoration', 'native symlink refusal',
 # boundary. They are not Windows product tests merely because their catalog
 # case is cross-platform. Keep this map finite and in the scope credential.
 REGRESSION_HOST_REASONS = {
+    'test/mcp/test_command_status.py': 'Controlled Python threads and injected lifecycle cache; Linux offline receipt',
+    'test/mcp/test_capture_health.py': 'Owned unbound sockets and thread health; Linux offline receipt',
+    'test/mcp/test_acceptance_evidence_writer.py': 'Owned immutable evidence-file self-test; Linux offline receipt',
+    'test/mcp/test_bounded_mcp.py': 'Isolated loopback HTTP and disposable Python transport workers; Linux offline receipt',
     'test/test_acceptance_catalog.py': 'Linux-only launch refusal and current Git source inventory',
     'test/test_acceptance_mcp.py': 'Linux Git/source workspace for SDK and original-byte fixtures',
     'test/test_acceptance_native.py': 'Linux Git workspace and controlled fixture Python children',

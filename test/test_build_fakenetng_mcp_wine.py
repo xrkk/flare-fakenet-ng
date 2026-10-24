@@ -366,3 +366,40 @@ class McpHostSelectionTests(unittest.TestCase):
                 for name in gate.MCP_HOST_TESTS:
                     self.assertNotIn(name, windows)
                     self.assertIn(name, host)
+
+
+class RetainedOfflinePlatformTests(unittest.TestCase):
+    def test_qualified_shared_cases_route_to_explicit_platforms_without_new_interface(self):
+        source = json.loads((BUILDER.parents[1] / 'docs/acceptance/catalog.json').read_text())
+        wanted = {'CORE-WINDOWS-OFFLINE', 'MCP-UNIT-PRODUCT', 'MCP-UNIT-TOOLING'}
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary)
+            suites = []
+            for original in source['suites']:
+                cases = [dict(case) for case in original.get('cases', []) if case['id'] in wanted]
+                if not cases:
+                    continue
+                for case in cases:
+                    # Only this closed selector fixture is qualified. Real
+                    # catalog entries remain unqualified in every environment.
+                    case['collection_safe'] = True
+                    for name in case['input']['modules']:
+                        path = stage / name
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text('# inert selection fixture\n')
+                suites.append(dict(original, cases=cases))
+            catalog = stage / 'docs/acceptance/catalog.json'
+            catalog.parent.mkdir(parents=True)
+            catalog.write_text(json.dumps(dict(source, suites=suites)))
+            selected = gate.regression_scope(stage)
+            self.assertEqual(sorted(wanted), selected['required_case_ids'])
+            self.assertEqual(3, len(selected['windows']))
+            self.assertEqual([
+                'test/mcp/test_acceptance_evidence_writer.py',
+                'test/mcp/test_bounded_mcp.py',
+                'test/mcp/test_capture_health.py',
+                'test/mcp/test_command_status.py'], selected['host'])
+            self.assertFalse(selected['full_functional_pass'])
+            self.assertFalse(selected['unverified'])
+            self.assertNotIn('test/mcp/test_host_stdio.py', selected['host'])
+            self.assertNotIn('test/mcp/test_acceptance_runner_discrimination.py', selected['host'])

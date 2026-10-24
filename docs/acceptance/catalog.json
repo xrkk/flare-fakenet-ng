@@ -619,7 +619,6 @@
           ],
           "input": {
             "modules": [
-              "test/mcp/test_host_stdio.py",
               "test/mcp/test_command_status.py",
               "test/mcp/test_capture_health.py"
             ]
@@ -640,10 +639,11 @@
             "offline-python"
           ],
           "readiness": [
-            "interpreter"
+            "interpreter",
+            "isolated source-bound collection qualification; collection_safe remains false until applicable environment is qualified"
           ],
           "timeout": 300,
-          "cleanup": "temp files only",
+          "cleanup": "Own all pytest threads, local sockets and transport children inside the isolated run; preserve raw results and prove owned process exit.",
           "dependencies": [],
           "adapter": "offline-pytest",
           "collection_safe": false,
@@ -667,7 +667,6 @@
           ],
           "input": {
             "modules": [
-              "test/mcp/test_acceptance_runner_discrimination.py",
               "test/mcp/test_acceptance_evidence_writer.py",
               "test/mcp/test_bounded_mcp.py"
             ]
@@ -688,10 +687,11 @@
             "offline-python"
           ],
           "readiness": [
-            "interpreter"
+            "interpreter",
+            "isolated source-bound collection qualification; collection_safe remains false until applicable environment is qualified"
           ],
           "timeout": 300,
-          "cleanup": "temp files only",
+          "cleanup": "Own all pytest threads, local sockets and transport children inside the isolated run; preserve raw results and prove owned process exit.",
           "dependencies": [],
           "adapter": "offline-pytest",
           "collection_safe": false,
@@ -4272,6 +4272,20 @@
     {
       "id": "BUILD:gui-package-tests",
       "basis": "GUI打包与GUI专用测试不执行; 构建组只保留候选制品身份校验."
+    },
+    {
+      "id": "MCP-UNIT-PRODUCT:new-interface-only-unit",
+      "basis": "The deferred one-call egress verification interface and its exclusive fixtures are outside this regression scope; retain shared product/transport assertions.",
+      "sources": [
+        "test/mcp/test_host_stdio.py"
+      ]
+    },
+    {
+      "id": "MCP-UNIT-TOOLING:new-interface-only-unit",
+      "basis": "The deferred one-call egress verification interface and its exclusive fixtures are outside this regression scope; retain shared product/transport assertions.",
+      "sources": [
+        "test/mcp/test_acceptance_runner_discrimination.py"
+      ]
     }
   ],
   "s1_scope": {
