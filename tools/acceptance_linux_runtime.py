@@ -452,6 +452,11 @@ def _deploy_update(out, value, record, boundary=None):
                          'writers_exited': True}
 
 def run(case, out, inputs=None, memory_mode=False, os_boundary=None):
+    if isinstance(inputs, dict) and inputs.get('schema') == 'fakenet.linux-composite-input.v1':
+        if case != 'LINUX-SINGLEHOST' or memory_mode:
+            raise ValueError('composite input requires LINUX-SINGLEHOST without memory mode')
+        import acceptance_linux_composite as composite
+        return composite.run(out, inputs, boundary=os_boundary)
     destination = validate_inputs(case, out, inputs, os_boundary=os_boundary)
     if memory_mode:
         raise ValueError('no synthetic memory driver; tests isolate OS at its boundary')
@@ -475,7 +480,11 @@ def main(argv=None):
     parser.add_argument('--output', required=True); parser.add_argument('--inputs', required=True)
     args = parser.parse_args(argv)
     value = json.loads(Path(args.inputs).read_text())
-    run(args.case, args.output, value)
+    if value.get('schema') == 'fakenet.linux-composite-input.v1':
+        import acceptance_linux_composite as composite
+        composite.run(args.output, value)
+    else:
+        run(args.case, args.output, value)
     import acceptance_linux_runtime_oracles as oracle
     rows, clean, detail = oracle.evaluate(ROOT, args.output, args.case, expected_inputs=value, allow_fixture=value.get('fixture') is True)
     passed = clean and all(row['status'] == 'pass' for row in rows)

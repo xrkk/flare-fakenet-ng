@@ -676,11 +676,23 @@ def linux_inputs(plan, case, output_dir, root=None):
         raise ValueError('explicit fixed Linux runtime options required')
     if case['id'] not in linux.CASES:
         raise ValueError('unknown Linux deployment case')
-    target = plan['environment']['native_runtime']['identity']
+    runtime_value = plan['environment']['native_runtime']
+    if options.get('schema') == 'fakenet.linux-composite-options.v1':
+        target = options.get('singlehost', {}).get('target')
+        if not isinstance(target, dict) or set(target) != {'platform', 'hostname'}:
+            raise ValueError('explicit composite SingleHost target required')
+    else:
+        target = runtime_value.get('identity')
     candidate = plan['candidate']; source_root = Path(root) if root else Path(__file__).resolve().parents[1]
     pins = ['fakenet/mcp/linuxrunner.py', 'fakenet/diverters/linuxnetpolicy.py',
             'deploy/linux/deploy.sh', 'deploy/linux/update-idle.py',
-            'tools/acceptance_linux_runtime.py', 'tools/acceptance_linux_runtime_oracles.py']
+            'tools/acceptance_linux_runtime.py', 'tools/acceptance_linux_runtime_oracles.py',
+            'tools/acceptance_linux_composite.py', 'tools/acceptance_orchestration.py',
+            'tools/acceptance_multihost.py', 'tools/acceptance_linux.py',
+            'tools/acceptance_guest.py', 'tools/acceptance_collection.py',
+            'test/test.py', 'test/template.ini', 'test/custom_responses.ini',
+            'test/CustomProviderExample.py', 'test/sample_raw_response.txt',
+            'test/sample_raw_tcp_response.txt']
     if not candidate.get('package_sha256'):
         raise ValueError('bound Linux candidate package SHA-256 required')
     common = dict(schema=linux.INPUT_SCHEMA, case=case['id'],
@@ -688,6 +700,18 @@ def linux_inputs(plan, case, output_dir, root=None):
                   source_commit=candidate['source_commit'], package_sha256=candidate['package_sha256'],
                   execution_id=plan['execution_id'], target=target,
                   source_hashes={rel: sha256(source_root/rel) for rel in pins})
+    if options.get('schema') == 'fakenet.linux-composite-options.v1':
+        if set(options) != {'schema', 'singlehost', 'multihost'}:
+            raise ValueError('unknown Linux composite options')
+        import acceptance_linux_composite as composite_schema
+        single = dict(options['singlehost']); single['target'] = target
+        value = dict(common, schema=composite_schema.INPUT_SCHEMA,
+                     owned_root=str(Path(output_dir)/'driver'),
+                     deployed_identity=candidate.get('deployed_identity'),
+                     singlehost=single, multihost=options['multihost'])
+        if candidate.get('offline_fixture') is True:
+            value['fixture'] = True
+        return value
     if case['id'] == 'LINUX-DEPLOY-UPDATE':
         if options.get('schema') != 'fakenet.linux-deploy-options.v1':
             raise ValueError('explicit fixed Linux deployment options required')
@@ -715,6 +739,10 @@ def linux_inputs(plan, case, output_dir, root=None):
 def runtime_block(case, environment):
     if case.get('native_driver') == 'linux-runtime':
         options = environment.get('linux') or {}
+        if options.get('schema') == 'fakenet.linux-composite-options.v1':
+            if set(options) != {'schema', 'singlehost', 'multihost'}:
+                return 'explicit exact Linux composite options required'
+            return None
         if case['id'] == 'LINUX-DEPLOY-UPDATE':
             if options.get('schema') != 'fakenet.linux-deploy-options.v1' or set(options) != {
                     'schema', 'accepted_update_root', 'install_package', 'install_manifest_sha256',
@@ -814,6 +842,9 @@ def fixed_argv(driver, context):
 
 def run_driver(root, case, plan, output_dir, python):
     driver, unused=validate_case(case,root,plan['environment'])
+    import acceptance_linux_composite as composite
+    if composite.selected(plan, case):
+        return composite.run_controller(root, case, plan, output_dir)
     if driver.get('production_kind') == 'package-identity':
         return __import__('acceptance_package').run(root,case,plan,output_dir)
     if driver.get('production_kind')=='mcp-controller':return run_mcp_controller(root,case,plan,output_dir,python)
@@ -918,6 +949,9 @@ def run_driver(root, case, plan, output_dir, python):
 
 def judge_driver(case, receipt, plan, root):
     driver,unused=validate_case(case,root,plan['environment'])
+    import acceptance_linux_composite as composite
+    if composite.selected(plan, case):
+        return composite.judge_controller(root, case, receipt, plan)
     if driver.get('production_kind') == 'package-identity':
         return __import__('acceptance_package').judge(root,case,receipt,plan)
     if driver.get('production_kind')=='mcp-controller':return judge_mcp_controller(case,receipt,plan,root)
@@ -1229,7 +1263,11 @@ def run_production(root,case,plan,output_dir,python):
     from acceptance_runtime import require_target,write_json
     output_dir=Path(output_dir)
     reason=runtime_block(case,plan['environment'])
-    if reason:raise ValueError(reason)
+    partial_guest = (case.get('id') == 'LINUX-SINGLEHOST' and
+                     plan['environment'].get('native_runtime',{}).get('transport') == 'local-target' and
+                     'allowed_actions' not in plan['environment'] and
+                     plan['environment'].get('linux',{}).get('schema') == 'fakenet.linux-runtime-options.v2')
+    if reason and not partial_guest:raise ValueError(reason)
     runtime=plan['environment']['native_runtime']
     selected_driver,selected_checks=validate_case(case,root,plan['environment'])
     if selected_driver.get('production_kind','').startswith('policy-'):
@@ -1241,10 +1279,18 @@ def run_production(root,case,plan,output_dir,python):
         if reason:raise ValueError(reason)
         from acceptance_runtime import target_identity
         actual=target_identity()
+    elif __import__('acceptance_linux_composite').selected(plan, case):
+        raise ValueError('composite requires registered host controller dispatch')
     else:
         actual=require_target(runtime['identity'])
 
-    if (plan.get('candidate') or {}).get('deployed_identity')!=actual:
+    candidate_identity=(plan.get('candidate') or {}).get('deployed_identity')
+    if selected_driver['production_kind']=='linux-runtime' and isinstance(plan.get('environment',{}).get('linux'),dict) and plan['environment']['linux'].get('schema')=='fakenet.linux-composite-options.v1':
+        expected_roles={'singlehost':actual['server'],'server':actual['server'],
+                        'client':runtime['client']['identity']}
+        if candidate_identity!=expected_roles:
+            raise ValueError('candidate.deployed_identity differs from observed composite targets')
+    elif candidate_identity!=actual:
         raise ValueError('candidate.deployed_identity differs from observed native target')
     driver,checks=validate_case(case,root,plan['environment'])
     argv=production_command(root,case,plan,output_dir,python)
@@ -1309,9 +1355,14 @@ def judge_production(case,receipt,plan,root):
         return {'status':'fail','cleanup_ok':False,'reason':'production argv mismatch'}
     if receipt.get('required_checks')!=checks:
         return {'status':'fail','cleanup_ok':False,'reason':'production check set mismatch'}
-    expected_target=plan['environment']['native_runtime']['identity']
-    if receipt.get('native_target')!=expected_target or plan['candidate'].get('deployed_identity')!=expected_target:
+    expected_target=plan['environment']['native_runtime'].get('identity')
+    if expected_target is None and isinstance(plan.get('environment',{}).get('linux'),dict) and plan['environment']['linux'].get('schema')=='fakenet.linux-composite-options.v1':
+        runtime=plan['environment']['native_runtime']
+        expected_target={'singlehost':runtime['server']['identity'],'server':runtime['server']['identity'],'client':runtime['client']['identity']}
+    if receipt.get('native_target')!=expected_target:
         return {'status':'fail','cleanup_ok':False,'reason':'production target identity mismatch'}
+    if isinstance(expected_target,dict) and plan.get('candidate',{}).get('deployed_identity')!=expected_target:
+        return {'status':'fail','cleanup_ok':False,'reason':'candidate composite role identity mismatch'}
     artifacts=receipt.get('artifacts') or []
     paths=[]
     for item in artifacts:

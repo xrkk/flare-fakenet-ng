@@ -3527,9 +3527,13 @@
             "tools/acceptance_linux_runtime_oracles.py",
             "tools/acceptance_native.py",
             "tools/acceptance_guest.py",
-            "tools/acceptance_orchestration.py"
+            "tools/acceptance_orchestration.py",
+            "tools/acceptance_linux_composite.py",
+            "tools/acceptance_multihost.py",
+            "tools/acceptance_linux.py",
+            "tools/acceptance_collection.py"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
+          "blocked_reason": "real Linux VM/root/service and an independently observed MultiHost client/server remain required; source fixture alone is not native credit",
           "native_driver": "linux-runtime"
         },
         {

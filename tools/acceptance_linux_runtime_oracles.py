@@ -202,9 +202,16 @@ def unchanged_stat(path, row):
 
 
 def evaluate(root, original, case, checks=None, allow_fixture=False, expected_inputs=None):
+    if case not in CHECKS:
+        raise ValueError('unknown Linux original case')
     identities = CHECKS[case]
     if checks is not None and list(checks) != identities:
         raise ValueError('Linux full case requires exact original check set')
+    if isinstance(expected_inputs, dict) and expected_inputs.get('schema') == 'fakenet.linux-composite-input.v1':
+        if case != 'LINUX-SINGLEHOST' or expected_inputs.get('case') != case:
+            raise ValueError('composite original case differs')
+        import acceptance_linux_composite as composite
+        return composite.evaluate(root, original, expected_inputs, allow_fixture=allow_fixture)
     rows = {name: 'fail' for name in identities}; detail = {}
     folder = Path(original)
     try:

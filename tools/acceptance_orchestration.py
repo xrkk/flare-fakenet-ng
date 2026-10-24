@@ -65,6 +65,14 @@ def run_linux(root,case,plan,output_dir):
     driver,checks=native.validate_case(case,root,plan['environment'])
     try:
         channel.health();channel.identity(request['source_hashes'])
+        if 'linux_config_source' in plan:
+            config = Path(plan['linux_config_source'])
+            if config.is_symlink() or not config.is_file() or digest(config) != request['linux']['config_sha256']:
+                raise ValueError('SingleHost source configuration changed before stage')
+            relative_config = 'published/'+plan['execution_id']+'/'+case['id']+'/source.ini'
+            if request['linux']['config'] != str(PurePosixPath(runtime['workspace_root'])/relative_config):
+                raise ValueError('SingleHost remote configuration path differs')
+            channel.put('singlehost-config', config, relative_config)
         remote_request='published/'+plan['execution_id']+'/'+case['id']+'/request.json'
         channel.put('request',path,remote_request)
         absolute=str(PurePosixPath(runtime['workspace_root'])/remote_request)
