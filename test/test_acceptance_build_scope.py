@@ -414,6 +414,144 @@ class RegressionBuildScopeTests(unittest.TestCase):
         install.assert_called_once()
         self.assertFalse((self.root / 'unused-dist').exists())
 
+    def add_git_host(self):
+        name = 'test/test_acceptance_package.py'
+        (self.root / name).write_text('# fixture source; never imported\n')
+        self.catalog['suites'][0]['cases'].append(self.case('GIT-HOST', [name]))
+        self.write_catalog()
+        return name
+
+    def source_git(self, command):
+        if '--show-toplevel' in command:
+            return str(self.root)
+        if 'status' in command:
+            return ''
+        return self.commit
+
+    def test_actual_catalog_platform_map_keeps_union_and_explicit_reasons(self):
+        scope = gate.regression_scope(ROOT)
+        expected = {
+            'test/test_acceptance_catalog.py', 'test/test_acceptance_mcp.py',
+            'test/test_acceptance_native.py', 'test/test_acceptance_native_channels.py',
+            'test/test_acceptance_native_oracles.py', 'test/test_acceptance_orchestration.py',
+            'test/test_acceptance_package.py', 'test/test_acceptance_regression.py',
+            'test/test_acceptance_scheduler.py', 'test/test_linuxnetpolicy.py',
+            'test/test_linux_owner_rules.py'}
+        self.assertEqual(expected, set(scope['host']))
+        self.assertEqual(12, len(scope['windows']))
+        self.assertEqual(23, len(set(scope['windows']) | set(scope['host'])))
+        self.assertFalse(set(scope['windows']) & set(scope['host']))
+        self.assertEqual(expected, set(scope['host_reasons']))
+        self.assertTrue(all(scope['host_reasons'].values()))
+        self.assertEqual(62, len(scope['required_case_ids']))
+        self.assertEqual(12, len(scope['cases']))
+        self.assertEqual(50, len(scope['unverified']))
+        self.assertEqual(9, len(gate.REGRESSION_HOST_REASONS))
+        self.assertIn('/proc', gate.REGRESSION_HOST_REASONS['test/test_acceptance_scheduler.py'])
+        self.assertIn('Git', gate.REGRESSION_HOST_REASONS['test/test_acceptance_package.py'])
+
+    def test_finite_host_map_does_not_sweep_similarly_named_registered_input(self):
+        name = 'test/test_acceptance_unreviewed.py'
+        (self.root / name).write_text('')
+        self.catalog['suites'][0]['cases'].append(self.case('OTHER', [name]))
+        self.write_catalog()
+        scope = gate.regression_scope(self.root)
+        self.assertIn(name, scope['windows'])
+        self.assertNotIn(name, scope['host'])
+
+    def test_real_host_consumer_uses_committed_worktree_and_records_identity(self):
+        name = self.add_git_host()
+        def archive(command):
+            with zipfile.ZipFile(command[command.index('--output') + 1], 'w') as bundle:
+                for path in self.root.rglob('*'):
+                    if path.is_file() and not path.is_relative_to(self.root / 'Logs'):
+                        bundle.write(path, path.relative_to(self.root).as_posix())
+        def collect(stage, validation, group, selection, env, windows):
+            self.assertEqual(self.root, stage)
+            self.assertIn(name, selection)
+            self.assertFalse(windows)
+            xml = ET.Element('testsuite')
+            ET.SubElement(xml, 'testcase', classname='fixture', name='unexecuted')
+            files = {}
+            for key in ('xml', 'collection', 'log'):
+                path = validation / key
+                path.write_text('fixture raw bytes')
+                files[key + '_path'] = path
+            return dict(files, selection=selection, nodes=[], summary={})
+        with mock.patch.object(gate, 'captured', side_effect=self.source_git) as git, \
+                mock.patch.object(gate, 'run', side_effect=archive), \
+                mock.patch.object(gate, 'verify_source'), \
+                mock.patch.object(gate, 'offline_install_sdk') as install, \
+                mock.patch.object(gate, 'collect_and_run', side_effect=collect) as execute:
+            receipt = gate.build(self.root, self.commit, self.root / 'unused-dist',
+                                 layer='regression', host_only=True, image_id=self.image)
+        execute.assert_called_once()
+        install.assert_not_called()
+        value = json.loads(receipt.read_text())
+        self.assertEqual('committed-live-worktree', value['host_source']['mode'])
+        self.assertEqual(str(self.root), value['host_source']['root'])
+        self.assertEqual(self.commit, value['host_source']['source_commit'])
+        self.assertEqual(value['regression_scope']['scope_sha256'],
+                         value['host_source']['scope_sha256'])
+        self.assertEqual(7, git.call_count)  # initial commit + before/after three reads
+        self.assertFalse((self.root / 'unused-dist').exists())
+
+    def test_wrong_top_head_dirty_or_immutable_source_refuses_host(self):
+        self.add_git_host()
+        for kind in ('top', 'head', 'dirty', 'scope'):
+            def git(command):
+                if '--show-toplevel' in command:
+                    return str(self.root / 'foreign') if kind == 'top' else str(self.root)
+                if 'status' in command:
+                    return ' M test/test_a.py' if kind == 'dirty' else ''
+                return 'c' * 40 if kind == 'head' else self.commit
+            with self.subTest(kind=kind), mock.patch.object(gate, 'captured', side_effect=git):
+                if kind == 'scope':
+                    actual = gate.regression_scope(self.root)
+                    changed = dict(actual, scope_sha256='d' * 64)
+                    with mock.patch.object(gate, 'regression_scope', side_effect=[actual, changed]):
+                        with self.assertRaisesRegex(RuntimeError, 'immutable scope'):
+                            gate.regression_host_source(self.root, self.root, self.commit)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'committed Git worktree'):
+                        gate.regression_host_source(self.root, self.root, self.commit)
+
+    def test_wrong_group_missing_host_and_rehashed_host_identity_refused(self):
+        self.add_git_host()
+        receipts, host = self.originals()
+        value = json.loads(host.read_text())
+        identity = {'mode': 'committed-live-worktree', 'root': str(self.root),
+                    'git_top': str(self.root), 'source_commit': self.commit,
+                    'scope_sha256': gate.regression_scope(self.root)['scope_sha256']}
+        # A host group containing the modules is insufficient without its
+        # committed execution-root evidence. Do not credit archive-root Git.
+        with self.assertRaisesRegex(RuntimeError, 'committed-source identity'):
+            self.qualify(receipts, host)
+        value['host_source'] = identity
+        self.rewrite(host, value)
+        qualification = self.qualify(receipts, host)
+        self.assertEqual('PARTIAL', qualification['verdict'])
+        for field, wrong in (('mode', 'archive-no-git'), ('source_commit', 'c' * 40),
+                             ('scope_sha256', 'd' * 64), ('git_top', str(self.root / 'other'))):
+            changed = copy.deepcopy(value)
+            changed['host_source'][field] = wrong
+            self.rewrite(host, changed)
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, 'committed-source identity'):
+                self.qualify(receipts, host)
+        changed = copy.deepcopy(value)
+        changed['groups']['host']['selection'].remove('test/test_acceptance_package.py')
+        self.rewrite(host, changed)
+        with self.assertRaisesRegex(RuntimeError, 'selection mismatch'):
+            self.qualify(receipts, host)
+        self.rewrite(host, value)
+        with self.assertRaises(RuntimeError):
+            self.qualify(receipts, None)
+        changed = json.loads(receipts[0].read_text())
+        changed['regression_scope']['windows'].append('test/test_acceptance_package.py')
+        self.rewrite(receipts[0], changed)
+        with self.assertRaisesRegex(RuntimeError, 'scope/source/catalog'):
+            self.qualify(receipts, host)
+
     def test_direct_regression_build_cannot_bypass_host_qualification(self):
         with mock.patch.object(gate, 'captured') as git, \
                 mock.patch.object(gate, 'offline_install_sdk') as install:

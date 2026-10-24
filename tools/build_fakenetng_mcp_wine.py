@@ -304,6 +304,41 @@ NATIVE_GAPS = ('WinDivert and route restoration', 'native symlink refusal',
                'Windows service installation, restart and recovery')
 
 
+# These registered facility tests exercise the Linux Git workspace/process
+# boundary. They are not Windows product tests merely because their catalog
+# case is cross-platform. Keep this map finite and in the scope credential.
+REGRESSION_HOST_REASONS = {
+    'test/test_acceptance_catalog.py': 'Linux-only launch refusal and current Git source inventory',
+    'test/test_acceptance_mcp.py': 'Linux Git/source workspace for SDK and original-byte fixtures',
+    'test/test_acceptance_native.py': 'Linux Git workspace and controlled fixture Python children',
+    'test/test_acceptance_native_channels.py': 'Linux source/SDK channel substitutes; no target connection',
+    'test/test_acceptance_native_oracles.py': 'Linux Git fixture workspace and original CLI children',
+    'test/test_acceptance_orchestration.py': 'Linux SDK process/channel substitutes and source workspace',
+    'test/test_acceptance_package.py': 'Real Git top-level required by candidate source identity fixtures',
+    'test/test_acceptance_regression.py': 'Linux Git/source identity and controlled pytest child fixtures',
+    'test/test_acceptance_scheduler.py': 'Linux /proc and POSIX process-group timeout ownership fixtures',
+}
+
+
+def regression_host_source(repo, stage, resolved):
+    """Use the real committed worktree for Git-dependent host fixtures.
+
+    A git-archive stage intentionally has no .git. Never invent a Git response
+    there, or run a live tree with different bytes from the immutable stage.
+    """
+    repo, stage = Path(repo).resolve(), Path(stage).resolve()
+    top = captured(['git', '-C', str(repo), 'rev-parse', '--show-toplevel'])
+    head = captured(['git', '-C', str(repo), 'rev-parse', 'HEAD'])
+    dirty = captured(['git', '-C', str(repo), 'status', '--porcelain', '--untracked-files=no'])
+    if Path(top).resolve() != repo or head != resolved or dirty:
+        raise RuntimeError('Regression host needs the exact committed Git worktree')
+    scope = regression_scope(stage)
+    if regression_scope(repo) != scope:
+        raise RuntimeError('Regression host worktree differs from immutable scope')
+    return {'mode': 'committed-live-worktree', 'root': str(repo), 'git_top': top,
+            'source_commit': resolved, 'scope_sha256': scope['scope_sha256']}
+
+
 def regression_scope(stage):
     """Read registered test inputs only; never import or collect them here.
 
@@ -387,7 +422,8 @@ def regression_scope(stage):
                 if (filename.startswith(('test_gui_', 'test_formal_runtime_', 'test_scenario_')) or
                         name.startswith('test/gui_vm/')):
                     raise RuntimeError('Excluded exclusive regression test: ' + name)
-                group = ('host' if name in HOST_ONLY_TESTS or platforms == ['linux']
+                group = ('host' if name in HOST_ONLY_TESTS or name in REGRESSION_HOST_REASONS
+                         or platforms == ['linux']
                          else 'windows')
                 platform = 'linux' if group == 'host' else 'windows'
                 if 'any' not in platforms and platform not in platforms:
@@ -407,6 +443,8 @@ def regression_scope(stage):
              'cases': sorted(selected, key=lambda row: row['case_id']),
              'windows': sorted(windows), 'host': sorted(host),
              'test_source_hashes': dict(sorted(source_hashes.items())),
+             'host_reasons': {name: REGRESSION_HOST_REASONS.get(name, 'registered Linux-only test')
+                              for name in sorted(host)},
              'unverified': unverified, 'full_functional_pass': False}
     scope['scope_sha256'] = hashlib.sha256(json.dumps(
         scope, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
@@ -538,6 +576,16 @@ def qualify(repo, stage, resolved, image_id, layer, count, receipt_paths, host_r
             if host_receipt is None or Path(path) != Path(host_receipt) or receipt.get('shard') is not None:
                 raise RuntimeError('Unexpected host receipt')
             host_selection = gate_selection(stage, layer, host=True)
+            if scope is not None and any(name in REGRESSION_HOST_REASONS for name in host_selection):
+                identity = receipt.get('host_source')
+                if (not isinstance(identity, dict) or
+                        set(identity) != {'mode', 'root', 'git_top', 'source_commit', 'scope_sha256'} or
+                        identity['mode'] != 'committed-live-worktree' or
+                        identity['source_commit'] != resolved or
+                        identity['scope_sha256'] != scope['scope_sha256'] or
+                        not isinstance(identity['root'], str) or not Path(identity['root']).is_absolute() or
+                        identity['git_top'] != identity['root']):
+                    raise RuntimeError('Regression host committed-source identity missing or mismatched')
             expected = {'host': host_selection} if host_selection else {}
         else:
             shard = receipt.get('shard')
@@ -1012,10 +1060,24 @@ def build(repo, source_commit, output_root, output_directory=None,
             env = os.environ.copy()
             env['PYTHONDONTWRITEBYTECODE'] = '1'
             selection = gate_selection(stage, layer, host=True)
-            groups = ({'host': collect_and_run(stage, validation, 'host', selection, env,
-                                               windows=False)} if selection else {})
+            host_identity = None
+            execution_source = stage
+            if layer == 'regression' and any(name in REGRESSION_HOST_REASONS for name in selection):
+                host_identity = regression_host_source(repo, stage, resolved)
+                execution_source = repo
+            groups = ({'host': collect_and_run(execution_source, validation, 'host', selection,
+                                               env, windows=False)} if selection else {})
+            # Existing cases may change cwd; verify committed source again
+            # before publishing an executable-source receipt.
+            if host_identity is not None:
+                if regression_host_source(repo, stage, resolved) != host_identity:
+                    raise RuntimeError('Regression host source changed during execution')
             receipt = write_receipt(repo, stage, validation, resolved, image_id,
                                     layer, None, groups, host=True)
+            if host_identity is not None:
+                value = json.loads(receipt.read_text(encoding='utf-8'))
+                value['host_source'] = host_identity
+                receipt.write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
             print('Host receipt: %s' % receipt)
             return receipt
         if package_only:

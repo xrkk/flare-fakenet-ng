@@ -467,3 +467,21 @@ SDK 安装、冻结打包、VM 或 native. 旧真实失败/三 skip 和完整62/
 静态复核还修正了regression资格拒绝前创建输出根、直接build绕host资格两个入口;
 先前检查中1 failed/31 passed保留, 不抹失败. 此处通过仅指构建选择/资格判别夹具,
 尚未执行新层选定的21个Windows模块和2个Linux host模块.
+
+
+### 真实构建发现的平台分组纠正
+
+首个实际Wine分片为26 failed/168 passed/1 skipped, 尚未生成候选包.
+这暴露了把catalog any设施测试默认当Windows测试的错误假设, 旧失败原件保留.
+`REGRESSION_HOST_REASONS` 现逐项列出九个Git/source-workspace或POSIX设施模块,
+与原两Linux规则模块组成host11, Windows12; 原23模块/12case及62required登记不减.
+理由和源hash进入同一scope凭据, 不增加skip或改原断言.
+
+Git-dependent host测试必须从真实同提交的Git工作区运行; git archive不含.git,
+不能伪造Git输出冒充源码根. regression host入口核Git top/HEAD/受控源现场及
+与immutable stage相同的catalog/模块scope, 运行前后复核, receipt记录host_source.
+merge/package必须重判同scope/source的host身份; 错组、缺host或坏身份不能授资格.
+该修正只影响显式regression层, 旧full/core与原builder测试及skip ledger保持.
+当前只验证纯夹具/模拟OS边界, actualhost11/新的Wine构建/VM仍未运行.
+
+平台映射/真实host源根的固定纯夹具验证为46 passed/41 subtests passed, 一次0.6786825499730185秒owner; 实际host11及新的候选构建尚未执行, 不授native/full信用.
