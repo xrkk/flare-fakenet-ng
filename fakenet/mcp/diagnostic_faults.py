@@ -443,3 +443,52 @@ def trigger_stack_unavailability(context, path):
         if source.exists() or source.is_symlink():
             raise DiagnosticUnavailable('preexisting stack source; preserve fallback')
     return _trigger_fail_fast(context, path, 'stacks_unavailable')
+
+
+UNKNOWN_SCHEMA = 'fakenet.unknown-self-exit.v1'
+UNKNOWN_EXIT_CODE = 0xE0420001
+UNKNOWN_OPTIONS = {'schema': UNKNOWN_SCHEMA, 'mechanism': 'current-child-ExitProcess',
+                   'exit_code': UNKNOWN_EXIT_CODE, 'cause_domain': 'complete-application-diagnostics.v1'}
+
+
+def unknown_options(value):
+    """Explicit opt-in; legacy unknown arms retain their observational behavior."""
+    return isinstance(value, dict) and value == UNKNOWN_OPTIONS and type(value.get('exit_code')) is int
+
+
+def trigger_unknown_self_exit(context, path):
+    """Disclosed mechanism; it does not itself assert an unknown root cause."""
+    if not context or not unknown_options(context.get('unknown_options')):
+        raise DiagnosticUnavailable('explicit unknown self-exit context required')
+    value = matching_arm(context, path)
+    if value is None or value['fault'] != 'unknown_cause':
+        raise DiagnosticUnavailable('unknown self-exit target arm unconfirmed')
+    if os.name != 'nt':
+        raise DiagnosticUnavailable('unknown self-exit requires Windows')
+    import ctypes as c
+    from ctypes import wintypes as w
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    terminate = kernel.ExitProcess
+    terminate.argtypes = [w.UINT]
+    terminate.restype = None
+    directory = Path(context['run_dir'])
+    # Separate transparent test truth; never written into product exceptions.
+    with (directory / 'diagnostic-self-exit.json').open('x', encoding='utf-8') as stream:
+        json.dump(dict(schema=UNKNOWN_SCHEMA, mechanism='current-child-ExitProcess',
+                       exit_code=UNKNOWN_EXIT_CODE, arm=value, observed_time_ns=time.time_ns()), stream)
+        stream.flush(); os.fsync(stream.fileno())
+    record_trigger(context, value)
+    _write_fault_receipt(context, value)
+    if _read_small(Path(path)) != value:
+        raise DiagnosticUnavailable('unknown arm changed before consumption')
+    Path(path).unlink()
+    terminate(UNKNOWN_EXIT_CODE)
+    raise DiagnosticUnavailable('Windows self-exit unexpectedly returned')
+
+
+
+def read_unknown_options():
+    if not _enabled():
+        return None
+    value = _read_small(_logs_directory() / 'diagnostic-unknown-options.json')
+    return value if unknown_options(value) else None

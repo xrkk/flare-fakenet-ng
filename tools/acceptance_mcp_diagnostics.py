@@ -41,6 +41,9 @@ class DiagnosticProducer:
         root=PureWindowsPath(channel.inputs['programdata_root'])/'logs'
         for key,name in [('plan','diagnostic-plan.json'),('ready','diagnostic-ready.json'),('arm','fault-injection.json')]:
             self.paths[key]=str(root/name).replace("'","''")
+        self.created_options=False
+        if plan['fault']=='unknown_cause' and d.unknown_options(channel.inputs.get('diagnostic')):
+            self.paths['options']=str(root/'diagnostic-unknown-options.json').replace("'","''")
         self.created_plan=False
 
     def read(self,key):
@@ -59,6 +62,8 @@ class DiagnosticProducer:
         if observed!=value:raise d.DiagnosticUnavailable('diagnostic write receipt differs')
 
     def write_plan(self):
+        if 'options' in self.paths:
+            self.write('options',self.channel.inputs['diagnostic']);self.created_options=True
         self.write('plan',self.plan);self.created_plan=True
 
     def run(self):
@@ -78,7 +83,9 @@ class DiagnosticProducer:
     def cleanup(self):
         """Compare exact bytes/nonce before removing only our rendezvous files."""
         outcomes={}
-        for key,expected in [('arm',self.arm),('ready',self.ready),('plan',self.plan if self.created_plan else None)]:
+        owned=[('arm',self.arm),('ready',self.ready),('plan',self.plan if self.created_plan else None)]
+        if 'options' in self.paths:owned.append(('options',self.channel.inputs['diagnostic'] if self.created_options else None))
+        for key,expected in owned:
             current=self.read(key)
             if current is None:outcomes[key]='absent';continue
             if expected is None or current!=expected:
@@ -142,9 +149,13 @@ def read_stack_context(channel, run_id, plan):
     return context
 
 
+def _unknown_enabled(gate):
+    return d.unknown_options(getattr(getattr(gate,'channel',None),'inputs',{}).get('diagnostic'))
+
+
 def run_diagnostic_round(gate,fault,index=1):
-    if fault in UNSUPPORTED:return dict(status='blocked',**{'class':fault,'failure':UNSUPPORTED[fault]})
-    if fault not in ('native_crash','stacks_unavailable'):raise ValueError('diagnostic class is not registered')
+    if fault in UNSUPPORTED and not _unknown_enabled(gate):return dict(status='blocked',**{'class':fault,'failure':UNSUPPORTED[fault]})
+    if fault not in ('native_crash','stacks_unavailable','unknown_cause'):raise ValueError('diagnostic class is not registered')
     import acceptance_mcp as m
     inputs=gate.channel.inputs
     service=m.service_preflight(gate.channel,inputs)
@@ -161,6 +172,8 @@ def run_diagnostic_round(gate,fault,index=1):
             if fault == 'stacks_unavailable':
                 value=gate._fault_round(fault,index,plan['nonce'],
                     diagnostic_context=lambda run:read_stack_context(gate.channel,run,plan))
+            elif fault=='unknown_cause':
+                value=gate._fault_round(fault,index,plan['nonce'],unknown_diagnostic=dict(d.UNKNOWN_OPTIONS))
             else:
                 value=gate._fault_round(fault,index,plan['nonce'])
             return value
@@ -199,7 +212,7 @@ def run_diagnostic_round(gate,fault,index=1):
         return record
     raw_files={}
     record['diagnostic_raw']=raw_files
-    for name in ('diagnostic-window.json','diagnostic-triggered.json'):
+    for name in (('diagnostic-window.json','diagnostic-triggered.json','diagnostic-self-exit.json') if fault=='unknown_cause' else ('diagnostic-window.json','diagnostic-triggered.json')):
         path=str(PureWindowsPath(inputs['programdata_root'])/'artifacts'/'runs'/run_id/name).replace("'","''")
         script=("$ErrorActionPreference='Stop';$p='"+path+"';$f=Get-Item -LiteralPath $p -Force;"
                 "if(($f.Attributes -band [IO.FileAttributes]::ReparsePoint)-or$f.Length-gt8192){throw 'diagnostic raw source refused'};"
@@ -214,7 +227,7 @@ def run_diagnostic_round(gate,fault,index=1):
 
 
 def run_diagnostic_case(gate,fault,index=1):
-    if fault in UNSUPPORTED:return run_diagnostic_round(gate,fault,index)
+    if fault in UNSUPPORTED and not _unknown_enabled(gate):return run_diagnostic_round(gate,fault,index)
     import acceptance_mcp as m
     inputs=gate.channel.inputs
     before=m.service_preflight(gate.channel,inputs)
@@ -248,7 +261,7 @@ def run_diagnostic_case(gate,fault,index=1):
 
 def execute_unit(unit,args,channel,writer,root):
     fault=SELECTED_UNITS[unit]
-    if fault in UNSUPPORTED:
+    if fault in UNSUPPORTED and not d.unknown_options(getattr(channel,'inputs',{}).get('diagnostic')):
         writer.blocker={'reason':UNSUPPORTED[fault],'class':fault}
         return 2
     import acceptance_mcp as m
@@ -261,6 +274,8 @@ def execute_unit(unit,args,channel,writer,root):
     gate.channel=channel
     record=run_diagnostic_case(gate,fault)
     record['diagnostic_source_pins']=m.source_pins(root)
+    if fault=='unknown_cause':
+        record['unknown_original_context']={'inputs':channel.inputs,'source_root':str(root),'transport':list(channel.records)}
     writer.add_evidence('diagnostic-record',record)
     writer.evidence.extend(record.get('capture_evidence',[]))
     for item in record.get('incident_exports',[]):

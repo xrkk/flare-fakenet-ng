@@ -100,9 +100,13 @@ def source_pins(root=ROOT):
 
 def validate_inputs(value,case,selected=None,*,fixture=False):
  if case not in CHECKS: raise ValueError('unknown MCP case')
- if not isinstance(value,dict) or set(value)-{'references'}!={'schema','identity','package','manifest','manifest_sha256','target','config_identity','endpoint','listen_ip','allowed_host','channel','actions','work_root','installation_root','programdata_root','guest_work_root'}:
+ if not isinstance(value,dict) or set(value)-{'references','diagnostic'}!={'schema','identity','package','manifest','manifest_sha256','target','config_identity','endpoint','listen_ip','allowed_host','channel','actions','work_root','installation_root','programdata_root','guest_work_root'}:
   raise ValueError('explicit MCP input fields required; commands/artifacts are not inputs')
  if value['schema']!='fakenet.mcp-input.v2':raise ValueError('MCP input schema')
+ if 'diagnostic' in value:
+  from fakenet.mcp.diagnostic_faults import unknown_options
+  if not unknown_options(value['diagnostic']):raise ValueError('exact unknown diagnostic options required')
+  if selected is None or list(selected)!=['DIAGNOSTIC-UNKNOWN-CAUSE']:raise ValueError('unknown diagnostic requires explicit selected unit')
  identity=value['identity']
  if not isinstance(identity,dict) or set(identity)!=set(IDENTITY_FIELDS) or any(not isinstance(identity[k],str) or not identity[k].strip() for k in IDENTITY_FIELDS):raise ValueError('MCP candidate identity incomplete')
  for key in ('package_sha256','requirements_blob','master_plan_blob'):
@@ -771,7 +775,12 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
   writer.add_evidence('capability-reference-scope',{'native_operation_performed':False,'reused_capability_only':True,'current_deployment_observed':False})
   code=2;error=None
   try:
-   code=__import__('acceptance_mcp_capabilities').evaluate(inputs['references']['ACC-014'],inputs,root,writer,fixture=bool(boundary.fixture) if fixture is None else fixture)
+   fixture_scope=bool(boundary.fixture) if fixture is None else fixture
+   token=mods['run_p04_acc'].CLOSED_FIXTURE_LEGACY_RECORDS.set(fixture_scope is True)
+   try:
+    code=__import__('acceptance_mcp_capabilities').evaluate(inputs['references']['ACC-014'],inputs,root,writer,fixture=fixture_scope)
+   finally:
+    mods['run_p04_acc'].CLOSED_FIXTURE_LEGACY_RECORDS.reset(token)
   except (OSError,ValueError,KeyError,TypeError,AssertionError) as exc:
    error={'type':type(exc).__name__,'message':str(exc)};writer.blocker=error
   status={0:'pass',1:'fail',2:'blocked',3:'unknown'}.get(code,'unknown')

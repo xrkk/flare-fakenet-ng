@@ -386,8 +386,13 @@ class ReleaseGate:
         result['fault_arm'] = armed
         return result
 
-    def _fault_round(self, klass, index, nonce, *, diagnostic_context=None):
+    def _fault_round(self, klass, index, nonce, *, diagnostic_context=None, unknown_diagnostic=None):
         record = {'class': klass, 'round': index, 'nonce': nonce, 'started_at': now_iso()}
+        if unknown_diagnostic is not None:
+            from fakenet.mcp.diagnostic_faults import unknown_options
+            if klass!='unknown_cause' or not unknown_options(unknown_diagnostic):
+                raise ValueError('exact unknown diagnostic contract required')
+            record['unknown_diagnostic']=dict(unknown_diagnostic)
         before = self.capture_sections()
         version = call(self.base, 'get_status')['state_version']
         loaded = call(self.base, 'load_config',
@@ -402,7 +407,15 @@ class ReleaseGate:
         if started.get('error'):
             return dict(record, failure='start rejected')
         record['run_id'] = started['run_id']
-        if started.get('state') == 'healthy':
+        if unknown_diagnostic is not None:
+            # Let the original parent observe this actual terminal event. A
+            # normal stop here would race and invalidate the tested condition.
+            observed_terminal, terminal = wait_state(self.base, lambda s:s.get('last_run_outcome')=='failed' and
+                                     s.get('state') in ('failed','stopped'), timeout=120)
+            if not observed_terminal or not terminal:
+                record['failure']='unknown self-exit terminal observation timed out'
+            record['unknown_terminal_observation']=terminal
+        if started.get('state') == 'healthy' and (unknown_diagnostic is None or record.get('failure')):
             stopped = self.stop_once()
             record['stop_response'] = stopped
         # 'failed' is also an intermediate health publication while the

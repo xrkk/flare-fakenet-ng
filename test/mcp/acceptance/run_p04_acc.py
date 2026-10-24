@@ -5,6 +5,7 @@ the ACC-012/013 fault-point stability proof (one trigger each; the formal
 10x counts belong to P05). Exit codes 0/1/2/3+."""
 
 import argparse
+import contextvars
 import datetime
 import hashlib
 import json
@@ -24,6 +25,11 @@ from helpers import (EXIT_BLOCKED, EXIT_FAIL, EXIT_PASS,  # noqa: E402
 from run_p02_acc import CONTROLLER_A, VALID_INI, call, sha_of, status, envelope  # noqa: E402
 from pathlib import PureWindowsPath  # noqa: E402
 from run_p03_acc import continuous_probe, load_and_start, stop_run, unique_command  # noqa: E402
+
+
+# Only the closed-reference adapter can scope legacy benign fixture records.
+# Real/native and direct producers retain the default independent raw gates.
+CLOSED_FIXTURE_LEGACY_RECORDS = contextvars.ContextVar('closed_fixture_legacy_records', default=False)
 
 
 def run_fault_point_proof(base, channel, writer, args):
@@ -70,6 +76,23 @@ def collect_acc014_incident_integrity(base, channel, writer, args):
         return EXIT_BLOCKED, {}, records
     bundles = {}
     for record in records:
+        if (record.get('class')=='unknown_cause' and not (
+                record.get('unknown_original_context') is None
+                and CLOSED_FIXTURE_LEGACY_RECORDS.get() is True)):
+            from acceptance_mcp_diagnostic_oracles import validate_unknown_original
+            context=record.get('unknown_original_context')
+            if not isinstance(context,dict):
+                writer.blocker={'reason':'independent unknown original context required'}
+                return EXIT_BLOCKED,{},records
+            try:
+                if (Path(context['source_root']).resolve()!=REPO_ROOT.resolve()
+                        or context['inputs'].get('identity')!=identity):
+                    writer.blocker={'reason':'unknown original source root or candidate differs'}
+                    return EXIT_FAIL,{},records
+                validate_unknown_original(record,record.get('incident_exports'),expected=context['inputs'],
+                                          root=REPO_ROOT,transport=context['transport'])
+            except (KeyError,TypeError,ValueError,OSError,RuntimeError):
+                return EXIT_FAIL,{},records
         expected_diagnostic = record.get('expected_diagnostic')
         if expected_diagnostic is None:
             round_issues = validate_round(record, identity)

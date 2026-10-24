@@ -2,7 +2,7 @@
 
 The required terminal scope remains native crash, unavailable stacks, and
 unknown cause. Native crash and the explicitly scoped no-stack path have
-source candidates validated only across controlled OS/SDK fixtures. Unknown cause remains blocked. None has a
+source candidates validated only across controlled OS/SDK fixtures. Legacy unknown requests remain blocked; a separately versioned explicit diagnostic context selects the controlled self-exit source candidate. None has a
 complete native pass; the full 62 required cases / 9 implementation items /
 14 acceptance items remain incomplete.
 
@@ -77,10 +77,55 @@ original MCP file: 2.647126477007987 seconds for the source group and
 exited, guard/cwd were restored, and the candidate/1028 protected files
 remained unchanged. The new validation allocation is also closed.
 
-Unknown cause has no independently established unattributed terminal stimulus;
-a supplied label, boolean or known Python exception cannot establish it.
+Unknown is assessed only within the complete original application-diagnostic domain; the test stimulus is separately disclosed. A label, boolean, exit code, known Python exception or incomplete evidence cannot establish it.
 Atomic protection against hostile concurrent path replacement is unproven.
 Real Windows service parentage, Job lifetime, control transport, monitor/dump,
 restoration, independent localization and the complete native/full regression
 remain unverified. The SDK results validate their declared fixture scope; they are not a
 complete product or native acceptance claim. No budget or deadline is reopened by these files.
+
+## Explicit unknown diagnostic domain
+
+`fakenet.unknown-self-exit.v1` opts in only to the selected unknown diagnostic
+unit. It fixes ExitProcess to the current verified child and code 0xE0420001,
+behind the existing environment and typed run/birth/Job/config/window arm.
+The trigger is transparent test truth, separate from product exception bytes.
+Legacy arms, normal and disabled operation keep their previous behavior.
+
+The original fault consumer waits for terminal failure before protective
+convergence. The independent oracle rereads every complete declared basic
+member and checks its manifest hash/size, full UTF-8/JSON diagnostics, original
+self-exit notification, empty terminal Job, dump target, target birth, original
+transport and owned service/config/environment recovery. Known application
+errors, explicit error/exception/cause fields, emitted exception stacks,
+unavailable or malformed domain members, normal acknowledgments and external
+termination refuse unknown credit. The declared symptoms `managed process
+exited` and `managed IPC EOF` are not application causes. The assessment pins
+every examined member and does not change raw exit classification or manifest
+completeness. Unfamiliar diagnostics conservatively refuse classification.
+
+Controlled OS/SDK fixtures exercise original producer, child hook, fault
+consumer, exporter, byte validators and central execute/judge. They cannot
+establish real Windows monitor/Job/dump behavior or full ACC-014. The original
+five-class matrix and independent package-only localization remain required.
+
+## Controlled unknown chain verification
+
+The final diagnostic module passed 64 tests, including actual original
+producer/child hook, exporter/round validator, closed-byte independent
+judgment, same central CLI positive and rehashed negative cases. The final
+whole original MCP module passed 88 tests and 128 subtests without changing its bytes.
+
+Only the original closed-reference adapter can scope legacy benign fixture
+records: its context is false by default and resets even on exceptions.
+Native, direct and explicitly new-context records retain the strict raw
+judgment. Fixture qualification still refuses native or full credit.
+
+Retained failures include an initial wrong-group fixture, a 240-second MCP
+timeout with 14 blocked default-programdata writes, the newly exposed old
+fixture compatibility regression, and a mismatched boundary fixture flag,
+and a separate cumulative-budget MCP timeout without a final summary.
+The final child-only programdata paths stayed inside owned Logs; no audit
+write/network guard was relaxed. All prior ledgers and failure originals
+remain. Real Windows self-exit/monitor/Job/dump, unfamiliar diagnostic log
+formats, independent package localization and full 62/9/14 remain unverified.

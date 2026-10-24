@@ -660,3 +660,208 @@ def test_original_acc014_keeps_five_class_and_independent_localization_requireme
     code=mods['run_p04_acc'].run_acc014('',OriginalArchiveChannel([(file,record)]),writer,args)
     assert code==mods['helpers'].EXIT_BLOCKED
     assert writer.blocker['reason']=='actual five-class incident coverage missing'
+
+
+class _ModeledSelfExit(OSError):
+    pass
+
+
+def test_unknown_exact_current_child_stimulus_and_one_shot(target,monkeypatch):
+    context,value,path=target
+    value['fault']='unknown_cause';path.write_text(json.dumps(value))
+    context=dict(context,unknown_options=dict(d.UNKNOWN_OPTIONS));calls=[]
+    class Exit:
+        def __call__(self,code):calls.append(code);raise _ModeledSelfExit('modeled current-child exit')
+    edge=Exit()
+    import ctypes
+    monkeypatch.setattr(ctypes,'WinDLL',lambda name,**kw:SimpleNamespace(ExitProcess=edge),raising=False)
+    monkeypatch.setattr(d,'os',SimpleNamespace(name='nt',environ=os.environ,getpid=os.getpid,fsync=os.fsync))
+    injector=f.FaultInjector();injector._diagnostic_context=context
+    with pytest.raises(_ModeledSelfExit):injector.maybe_unknown_cause()
+    assert calls==[d.UNKNOWN_EXIT_CODE] and len(edge.argtypes)==1 and edge.restype is None
+    assert not path.exists()
+    truth=json.loads((Path(context['run_dir'])/'diagnostic-self-exit.json').read_text())
+    assert truth['arm']==value and truth['mechanism']=='current-child-ExitProcess'
+    assert injector.maybe_unknown_cause() is None and calls==[d.UNKNOWN_EXIT_CODE]
+
+
+@pytest.mark.parametrize('mode',['disabled','wrong-run','wrong-birth','wrong-job','wrong-config','expired','wrong-nonce','missing-optin'])
+def test_unknown_wrong_window_cannot_reach_native_edge(target,monkeypatch,mode):
+    context,value,path=target;value['fault']='unknown_cause'
+    context=dict(context,unknown_options=dict(d.UNKNOWN_OPTIONS))
+    if mode=='disabled':monkeypatch.delenv('FAKENETNG_MCP_FAULT_INJECTION')
+    elif mode=='missing-optin':context.pop('unknown_options')
+    else:
+        key,new={'wrong-run':('run_id','44444444-4444-4444-8444-444444444444'),
+            'wrong-birth':('creation_time','99'),'wrong-job':('job_members',[99]),
+            'wrong-config':('config_sha256','0'*64),'expired':('expires_ns',1),
+            'wrong-nonce':('nonce','another')}[mode];value[key]=new
+    path.write_text(json.dumps(value));before=path.read_bytes()
+    injector=f.FaultInjector();injector._diagnostic_context=context
+    with mock.patch.object(d,'trigger_unknown_self_exit',side_effect=AssertionError('no native call')):
+        assert injector.maybe_unknown_cause() is None
+    assert path.read_bytes()==before
+    assert not (Path(context['run_dir'])/'diagnostic-self-exit.json').exists()
+
+
+def _unknown_boundary(inputs,target,monkeypatch):
+    """Model remote OS bytes; run original child hook and central driver."""
+    from test_acceptance_mcp import FaultProcessBoundary
+    import base64,io,re,zipfile
+    from pathlib import PureWindowsPath
+    context,unused,armfile=target;armfile.unlink()
+    config=Path(context['config_path']);config.write_bytes((Path(__file__).resolve().parents[1]/'fakenet/configs/default.ini').read_bytes())
+    from fakenet.mcp import service_stop
+    real_time=time.time;real_mono=time.monotonic
+    monkeypatch.setattr(service_stop,'process_identity',lambda pid=None:{'pid':12,'creation_time':'1234'} if pid==os.getppid() else {'pid':4242,'creation_time':'123456789'})
+    monkeypatch.setattr(d,'os',SimpleNamespace(name='nt',environ=os.environ,getpid=os.getpid,getppid=os.getppid,fsync=os.fsync))
+    class Exit:
+        def __call__(self,code):
+            assert code==d.UNKNOWN_EXIT_CODE
+            raise _ModeledSelfExit('modeled fixed ExitProcess')
+    import ctypes
+    monkeypatch.setattr(ctypes,'WinDLL',lambda name,**kw:SimpleNamespace(ExitProcess=Exit()),raising=False)
+    class Boundary(FaultProcessBoundary):
+        def __init__(self):
+            super().__init__(inputs);self.run_id=RUN;self.child_terminated=False;self.child_calls=0
+        def archive(self):
+            from fakenet.mcp.incident import BASIC_ITEMS
+            members={name:(b'{}' if name.endswith('.json') else b'benign complete original '+name.encode()) for name,unused in BASIC_ITEMS}
+            for name in members:
+                if name.endswith(('.txt','.log')) and 'stack' not in name.lower():members[name]=b''
+            members['config_snapshot.ini']=config.read_bytes();members['exception.txt']=b'managed IPC EOF'
+            members['versions.json']=json.dumps({'config_sha256':inputs['config_identity']['sha256'],
+                'managed_process':{'identity':{'pid':4242,'creation_time':'123456789'},'exit_code':d.UNKNOWN_EXIT_CODE,'job_members':[]}}).encode()
+            members['managed-exit.json']=json.dumps({'schema':'fakenet.exit-result.v1','target':{'run_id':RUN,'pid':4242,'creation_time':'123456789'},
+                'classification':'self_exit','complete':True,'target_handle_closed':True,'error':None,
+                'stop_intent_claim':None,'normal_ack':None,'notification':{'target_pid':4242,'initiator_pid':4242}}).encode()
+            dump=bytearray(56);struct.pack_into('<IIII',dump,0,0x504d444d,0xa793,1,32);struct.pack_into('<III',dump,32,15,12,44);struct.pack_into('<III',dump,44,12,1,4242)
+            members['userdump.dmp']=bytes(dump);self.members=members
+            self.manifest={'run_id':RUN,'complete':True,'entries':[{'item':name,'result':'ok','failure_reason':None,'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest()} for name,raw in members.items()]}
+            self.manifest_bytes=json.dumps(self.manifest).encode();stream=io.BytesIO()
+            with zipfile.ZipFile(stream,'w') as archive:
+                archive.writestr('manifest.json',self.manifest_bytes)
+                for name,raw in members.items():archive.writestr(name,raw)
+            self.zip_bytes=stream.getvalue()
+        def exchange(self,kind,value):
+            if kind=='time':return real_time()
+            if kind=='monotonic':return real_mono()
+            if kind=='http':
+                req=json.loads(value['data']);tool=req['params']['name']
+                if tool=='start':
+                    injector=f.FaultInjector()
+                    assert injector.prepare_diagnostic_start(RUN,context['run_dir'],{'pid':4242,'creation_time':'123456789'},str(config))
+                    self.child_calls+=1
+                    with pytest.raises(_ModeledSelfExit):injector.maybe_unknown_cause()
+                    self.child_terminated=True
+                    self.fault=json.loads((Path(context['run_dir'])/'fault-triggered.json').read_text());self.archive()
+                    response=super().exchange(kind,value);payload=json.loads(json.loads(response['body'])['result']['content'][0]['text']);payload['state']='healthy';return self.response(payload)
+                if tool=='get_status':
+                    response=super().exchange(kind,value)
+                    if self.child_terminated:
+                        payload=json.loads(json.loads(response['body'])['result']['content'][0]['text']);payload['failure_reason']='managed IPC EOF';return self.response(payload)
+                    return response
+            if kind=='powershell':
+                command=value['command'];match=re.search(r"\$p='([^']+)';",command)
+                if match and ('diagnostic-' in match.group(1) or 'fault-injection.json' in match.group(1)):
+                    name=PureWindowsPath(match.group(1)).name
+                    source=(armfile.parent/name) if name in ('diagnostic-plan.json','diagnostic-ready.json','fault-injection.json','diagnostic-unknown-options.json') else Path(context['run_dir'])/name
+                    if '[IO.FileMode]::CreateNew' in command:
+                        raw=base64.b64decode(re.search(r"FromBase64String\('([^']+)'\)",command).group(1));source.write_bytes(raw);output=raw.decode()
+                    elif 'Remove-Item -LiteralPath' in command:source.unlink();output=json.dumps({'removed':True,'absent':True})
+                    elif 'ReadAllBytes' in command:
+                        raw=source.read_bytes();output=json.dumps({'base64':base64.b64encode(raw).decode(),'sha256':hashlib.sha256(raw).hexdigest()})
+                    else:output=source.read_text() if source.exists() else 'null'
+                    return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+            return super().exchange(kind,value)
+    return Boundary()
+
+
+def test_unknown_original_chain_same_central_cli_and_rehashed_bad_domain(target,monkeypatch):
+    import acceptance_mcp as m
+    from test_acceptance_mcp import PublicMcpCliTests
+    client=PublicMcpCliTests();client.setUp();client.inputs['diagnostic']=dict(d.UNKNOWN_OPTIONS)
+    boundary=_unknown_boundary(client.inputs,target,monkeypatch)
+    client.prepare(case='MCP-P04-FULL',checks=['DIAGNOSTIC-UNKNOWN-CAUSE'])
+    with mock.patch.object(m,'NativeBoundary',side_effect=lambda *a,**kw:boundary):
+        execution=client.cli('execute','--plan',client.run/'plan.json')
+    assert execution[0]==0,execution
+    judged=client.cli('judge','--plan',client.run/'plan.json','--results',client.run/'results','--output',client.run/'positive.json')
+    assert judged[0]==0,judged
+    result=m.read(client.run/'positive.json');assert result['fixture_contract_pass'] and not result['full_functional_pass']
+    assert boundary.child_calls==1 and boundary.child_terminated
+    case=client.run/'results/MCP-P04-FULL';unit=case/'driver/units/DIAGNOSTIC-UNKNOWN-CAUSE'
+    result=m.read(unit/'result.json');ref=next(x for x in result['evidence'] if x.get('name')=='diagnostic-record');record=m.read(ref['path'])
+    trace=m.read(unit/'trace.json')
+    import acceptance_mcp_diagnostic_oracles as oracle
+    assert oracle.validate_unknown_original(record,record['incident_exports'],expected=client.inputs,root=m.ROOT,transport=trace['records'])['class']=='unknown_cause'
+    for mode in ('known-cause','plain-cause','hidden-log-cause','raw-terminal','missing','truncated','bad-hash','bad-dump','wrong-birth','external','normal','live','failed-restore','detached'):
+        bad=copy.deepcopy(record);transport=copy.deepcopy(trace['records']);members=copy.deepcopy(boundary.members)
+        if mode=='known-cause':members['exception.txt']=b'ValueError: known application input failure'
+        elif mode=='plain-cause':members['exception.txt']=b'port 80 is already in use'
+        elif mode=='hidden-log-cause':members['stdout_stderr.log']=b'binding port 80 was denied'
+        elif mode=='raw-terminal':bad['unknown_terminal_observation']['unobserved']='forged'
+        elif mode=='missing':members.pop('thread_stacks.txt')
+        elif mode=='truncated':members['versions.json']=b'{'
+        elif mode=='bad-hash':members['config_snapshot.ini']+=b'changed'
+        elif mode=='bad-dump':raw=bytearray(members['userdump.dmp']);struct.pack_into('<I',raw,52,7);members['userdump.dmp']=bytes(raw)
+        elif mode=='wrong-birth':bad['diagnostic_arm']['creation_time']='99'
+        elif mode in ('external','normal'):
+            raw=json.loads(members['managed-exit.json']);raw['classification']='external_termination' if mode=='external' else 'controlled_normal_exit';members['managed-exit.json']=json.dumps(raw).encode()
+        elif mode=='live':bad['unknown_terminal_observation']['state']='healthy'
+        elif mode=='failed-restore':bad['diagnostic_service_restoration']['after']['grace']=99
+        elif mode=='detached':transport=[]
+        import zipfile
+        manifest=copy.deepcopy(boundary.manifest)
+        if mode!='bad-hash':manifest['entries']=[dict(row,size=len(members[row['item']]),sha256=hashlib.sha256(members[row['item']]).hexdigest()) for row in manifest['entries'] if row['item'] in members]
+        package=client.base/('unknown-negative-'+mode+'.zip')
+        with zipfile.ZipFile(package,'w') as archive:
+            archive.writestr('manifest.json',json.dumps(manifest))
+            for name,raw in members.items():archive.writestr(name,raw)
+        exported=bad['incident_exports'][0];exported.update(path=str(package),size=package.stat().st_size,sha256=m.sha256(package),manifest=manifest)
+        with pytest.raises((ValueError,RuntimeError,KeyError,TypeError)):
+            oracle.validate_unknown_original(bad,bad['incident_exports'],expected=client.inputs,root=m.ROOT,transport=transport)
+    record['diagnostic_service_restoration']['after']['grace']=99
+    Path(ref['path']).write_text(json.dumps(record));ref.update(size=Path(ref['path']).stat().st_size,sha256=m.sha256(ref['path']))
+    (unit/'result.json').write_text(json.dumps(result));receipt=m.read(case/'receipt.json')
+    for item in receipt['artifacts']:item['sha256']=m.sha256(item['path'])
+    (case/'receipt.json').write_text(json.dumps(receipt));index=m.read(client.run/'results/results.json')
+    for row in index['receipts']:
+        if row['case_id']=='MCP-P04-FULL':row['sha256']=m.sha256(case/'receipt.json')
+    (client.run/'results/results.json').write_text(json.dumps(index))
+    negative=client.cli('judge','--plan',client.run/'plan.json','--results',client.run/'results','--output',client.run/'negative.json')
+    assert negative[0]!=0,negative
+    assert not m.read(client.run/'negative.json')['fixture_contract_pass']
+
+
+def test_unknown_p04_rejects_record_chosen_source_root_before_consumer(target,monkeypatch):
+    import acceptance_mcp as m
+    import acceptance_mcp_diagnostic_oracles as oracle
+    mods=m.modules();root=Path(target[0]['run_dir']);identity={name:'fixture-'+name for name in m.IDENTITY_FIELDS}
+    unknown={'class':'unknown_cause','unknown_original_context':{'source_root':str(root),'inputs':{'identity':identity},'transport':[]}}
+    records=[unknown]+[{'class':name} for name in mods['run_p05_release'].FAULT_CLASSES]
+    paths=[]
+    for n,row in enumerate(records):
+        path=root/('root-boundary-'+str(n)+'.json');path.write_text(json.dumps(row));paths.append(str(path))
+    writer=mods['helpers'].EvidenceWriter(root/'root-boundary-output','fixture')
+    with mock.patch.object(oracle,'validate_unknown_original',side_effect=AssertionError('foreign root cannot load consumer')):
+        code,bundles,observed=mods['run_p04_acc'].collect_acc014_incident_integrity('',None,writer,SimpleNamespace(**identity,fault_record=paths))
+    assert code==mods['helpers'].EXIT_FAIL and bundles=={}
+    assert writer.blocker['reason']=='unknown original source root or candidate differs'
+
+
+def test_closed_fixture_legacy_scope_resets_and_native_stays_strict(target,monkeypatch):
+    import acceptance_mcp as m
+    import acceptance_mcp_capabilities as cap
+    from test_acceptance_mcp import inputs_at,ReadOnlyBoundary
+    mods=m.modules();scope=mods['run_p04_acc'].CLOSED_FIXTURE_LEGACY_RECORDS
+    root=Path(target[0]['run_dir'])/'fixture-scope';inputs=inputs_at(root);inputs['references']={'ACC-014':{'isolated':'test boundary'}}
+    for fixture in (True,False):
+        seen=[]
+        def evaluate(*args,**kwargs):
+            seen.append(scope.get());raise ValueError('modeled closed capability refusal')
+        boundary=ReadOnlyBoundary(inputs);boundary.fixture=fixture
+        with mock.patch.object(cap,'evaluate',evaluate):
+            value=m.run('MCP-P04-FULL',root/str(fixture),inputs,selected=['ACC-014'],boundary=boundary,fixture=fixture)
+        assert seen==[fixture] and scope.get() is False
+        assert value['checks']['ACC-014']['status']!='pass'

@@ -588,6 +588,7 @@ def child_main(run_id, run_dir):
                     logging.getLogger('managed').warning('managed stack snapshot unavailable: %r', exc)
         if request.get('kind') == 'health' and instance is not None:
             fault.maybe_native_crash()
+            fault.maybe_unknown_cause()
         action, response = fault.ipc_response(request, response)
         record_ipc(directory, 'child', action,
                    response if action == 'send' else request)

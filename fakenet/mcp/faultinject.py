@@ -127,6 +127,10 @@ class FaultInjector:
             no_stack_bound_early=(plan['fault'] == 'stacks_unavailable'))
         self._diagnostic_stacks = False
         self._diagnostic_plan = plan
+        if plan['fault'] == 'unknown_cause':
+            options = diagnostic.read_unknown_options()
+            if options is not None:
+                self._diagnostic_context['unknown_options'] = options
         diagnostic.remove_window_files(plan, ready)
         return True
 
@@ -184,8 +188,12 @@ class FaultInjector:
             trigger_native_crash(self._diagnostic_context, _fault_file())
 
     def maybe_unknown_cause(self):
-        # Unsupported is not a reason to throw a fabricated known exception.
-        # The arm remains unconsumed for an honest, blocked producer result.
+        context = getattr(self, '_diagnostic_context', None)
+        from fakenet.mcp.diagnostic_faults import unknown_options, trigger_unknown_self_exit
+        if not context or not unknown_options(context.get('unknown_options')):
+            return None
+        if self._diagnostic_arm('unknown_cause') is not None:
+            return trigger_unknown_self_exit(context, _fault_file())
         return None
 
     def ipc_response(self, request, response):

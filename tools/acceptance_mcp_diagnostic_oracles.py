@@ -79,7 +79,7 @@ def _require_original_response(rows,path,response):
 
 def validate_original_record(record,fault_evidence,exports,*,expected=None,root=None,transport=None):
     if expected is None or root is None:raise ValueError('frozen original inputs required')
-    if not isinstance(record,dict) or record.get('class') not in ('native_crash','stacks_unavailable'):
+    if not isinstance(record,dict) or record.get('class') not in ('native_crash','stacks_unavailable','unknown_cause'):
         raise ValueError('no verified producer for this diagnostic class')
     import acceptance_mcp as m
     mods=m.modules(root)
@@ -94,13 +94,15 @@ def validate_original_record(record,fault_evidence,exports,*,expected=None,root=
         if total>MAX_ARCHIVE_BYTES:raise ValueError('diagnostic total expansion exceeds bound')
         archives.append(archive)
     fault=record['class']
+    if fault=='unknown_cause' and (not __import__('fakenet.mcp.diagnostic_faults',fromlist=['unknown_options']).unknown_options(expected.get('diagnostic')) or record.get('unknown_diagnostic')!=expected['diagnostic']):
+        raise ValueError('explicit unknown diagnostic context missing')
     context=record.get('expected_diagnostic') if fault=='stacks_unavailable' else None
     if fault_evidence!=record.get('fault_evidence') or exports!=record.get('incident_exports'):
         raise ValueError('detached diagnostic source objects')
     from fakenet.mcp import diagnostic_faults as d
     rows=_transport_rows(transport)
     raw=record.get('diagnostic_raw') or {}
-    for name in ('diagnostic-window.json','diagnostic-triggered.json'):
+    for name in (('diagnostic-window.json','diagnostic-triggered.json','diagnostic-self-exit.json') if fault=='unknown_cause' else ('diagnostic-window.json','diagnostic-triggered.json')):
         _require_original_response(rows,PureWindowsPath(expected['programdata_root'])/
             'artifacts'/'runs'/record['run_id']/name,raw.get(name))
     window=_raw_response(raw.get('diagnostic-window.json'))
@@ -125,7 +127,7 @@ def validate_original_record(record,fault_evidence,exports,*,expected=None,root=
             or record.get('nonce')!=plan['nonce'] or record.get('run_id')!=ready['run_id']):
         raise ValueError('diagnostic frozen configuration/run/nonce differs')
     for key,expected_value in (('plan',plan),('ready',ready),('arm',arm)):
-        name={'plan':'diagnostic-plan.json','ready':'diagnostic-ready.json','arm':'fault-injection.json'}[key]
+        name={'plan':'diagnostic-plan.json','ready':'diagnostic-ready.json','arm':'fault-injection.json','options':'diagnostic-unknown-options.json'}[key]
         literal=str(PureWindowsPath(expected['programdata_root'])/'logs'/name).replace("'","''")
         if not any(literal in cmd and parsed==expected_value for cmd,response,parsed in rows):
             raise ValueError('diagnostic '+key+' not observed in original transport')
@@ -151,11 +153,11 @@ def validate_original_record(record,fault_evidence,exports,*,expected=None,root=
             or original_receipt.get('receipt')!={'fault':fault,'nonce':plan['nonce']}):
         raise ValueError('original fault receipt differs from native trigger')
     cleanup=record.get('diagnostic_cleanup')
-    if (not isinstance(cleanup,dict) or set(cleanup)!={'plan','ready','arm'}
+    if (not isinstance(cleanup,dict) or set(cleanup)!=({'plan','ready','arm','options'} if fault=='unknown_cause' else {'plan','ready','arm'})
             or any(v not in ('absent','owned_removed') for v in cleanup.values())):
         raise ValueError('diagnostic owned cleanup incomplete')
     for key,outcome in cleanup.items():
-        name={'plan':'diagnostic-plan.json','ready':'diagnostic-ready.json','arm':'fault-injection.json'}[key]
+        name={'plan':'diagnostic-plan.json','ready':'diagnostic-ready.json','arm':'fault-injection.json','options':'diagnostic-unknown-options.json'}[key]
         literal=str(PureWindowsPath(expected['programdata_root'])/'logs'/name).replace("'","''")
         observed=any(literal in cmd and
             ((outcome=='absent' and parsed is None) or
@@ -190,7 +192,7 @@ def validate_original_record(record,fault_evidence,exports,*,expected=None,root=
         if versions.get('config_sha256')!=arm['config_sha256']:
             raise ValueError('original incident configuration differs')
         code=observed.get('exit_code')
-        if type(code) is not int or code&0xffffffff not in (0xc0000602,0xc0000409):
+        if type(code) is not int or code&0xffffffff not in ((d.UNKNOWN_EXIT_CODE,) if fault=='unknown_cause' else (0xc0000602,0xc0000409)):
             raise ValueError('original incident has no fail-fast native exit observation')
         exit_record=json.loads(members['managed-exit.json'])
         target=exit_record.get('target') or {}
@@ -205,11 +207,118 @@ def validate_original_record(record,fault_evidence,exports,*,expected=None,root=
             from fakenet.mcp.exit_native import verify_dump
             if verify_dump(dump_path,arm['pid'])!=len(dump):
                 raise ValueError('original native dump size differs')
-        facts.append({'path':str(path),'dump_sha256':_digest(dump),'exit_code':code,'exit_monitor_complete':exit_record.get('complete')})
+        assessment=None
+        if fault=='unknown_cause':
+            truth=_raw_response(raw['diagnostic-self-exit.json'])
+            assessment=assess_unknown_domain(members,record,arm,truth,exit_record,expected['diagnostic'],transport=transport)
+        facts.append({'path':str(path),'dump_sha256':_digest(dump),'exit_code':code,'exit_monitor_complete':exit_record.get('complete'),
+                      **({'diagnostic_assessment':assessment} if assessment is not None else {})})
     return {'run_id':ready['run_id'],'class':fault,'nonce':plan['nonce'],
             'original_packages':facts,'full_acc014_credit':False}
 
 
 def validate_unknown_original(record,exports,known_cause=None,**kwargs):
-    # No caller boolean can establish an independent unknown-cause judgment.
-    raise ValueError('unknown-cause producer and independent original observation unavailable')
+    if known_cause is not None or not kwargs.get('expected'):
+        raise ValueError('unknown-cause producer and independent original observation unavailable')
+    if record.get('class')!='unknown_cause':raise ValueError('unknown diagnostic class differs')
+    return validate_original_record(record,record.get('fault_evidence'),exports,**kwargs)
+
+
+UNKNOWN_DOMAIN_SCHEMA = 'fakenet.unknown-domain-assessment.v1'
+TRANSPORT_SYMPTOMS = frozenset(('managed process exited','managed IPC EOF'))
+
+
+def assess_unknown_domain(members, record, arm, truth, exit_record, options, *, transport=None):
+    """Classify a *complete* product domain, separately from disclosed stimulus.
+
+    This is an explicit conservative diagnostic contract. A line which looks
+    like an application failure but cannot be classified is insufficient;
+    absence of a few strings or a trigger label never establishes the result.
+    Every examined original is pinned and every diagnostic line is accounted.
+    """
+    import re
+    from fakenet.mcp import diagnostic_faults as d
+    from fakenet.mcp.incident import BASIC_ITEMS
+    if not d.unknown_options(options):raise ValueError('unknown diagnostic domain contract missing')
+    if (set(truth)!={'schema','mechanism','exit_code','arm','observed_time_ns'}
+            or truth['schema']!=d.UNKNOWN_SCHEMA or truth['mechanism']!='current-child-ExitProcess'
+            or truth['exit_code']!=d.UNKNOWN_EXIT_CODE or truth['arm']!=arm
+            or type(truth['observed_time_ns']) is not int
+            or not arm['expires_ns']-d.ARM_WINDOW_NS<=truth['observed_time_ns']<arm['expires_ns']
+            or not record['probe_window_start']<=truth['observed_time_ns']/1e9<=record['probe_window_end']):
+        raise ValueError('disclosed self-exit original truth/target/window differs')
+    if (exit_record.get('classification')!='self_exit' or exit_record.get('complete') is not True
+            or exit_record.get('target_handle_closed') is not True or exit_record.get('error')
+            or exit_record.get('stop_intent_claim') or exit_record.get('normal_ack')):
+        raise ValueError('original exit is not an independently completed unacknowledged self-exit')
+    notification=exit_record.get('notification') or {}
+    if notification.get('target_pid')!=arm['pid'] or notification.get('initiator_pid')!=arm['pid']:
+        raise ValueError('original exit notification is not self-initiated')
+    manifest=json.loads(members['manifest.json'])
+    required={name for name,kind in BASIC_ITEMS}
+    entries=manifest.get('entries',[])
+    if not required<=set(members) or set(members)!={row['item'] for row in entries if row.get('result')=='ok'}|{'manifest.json'}:
+        raise ValueError('unknown application domain file set incomplete')
+    for row in entries:
+        if row.get('result')!='ok' or row.get('failure_reason') is not None:
+            raise ValueError('unknown domain unavailable/truncated entry cannot establish cause')
+        raw=members[row['item']]
+        if len(raw)!=row.get('size') or _digest(raw)!=row.get('sha256'):
+            raise ValueError('unknown domain original content changed')
+    terminal=record.get('unknown_terminal_observation') or {}
+    if terminal.get('last_run_outcome')!='failed' or terminal.get('state') not in ('failed','stopped'):
+        raise ValueError('original diagnostic terminal failure was not observed before stop')
+    import acceptance_mcp as m
+    original_terminal=False
+    for row in transport or []:
+        if row.get('kind')!='http' or row.get('error'):continue
+        try:
+            request=json.loads(m.unpack(row['input'])['data'])
+            response=m.unpack(row['output'])
+            body=json.loads(response['body']);payload=json.loads(body['result']['content'][0]['text'])
+            if (request['params']['name']=='get_status' and response['status']==200
+                    and not response.get('http_error') and payload==terminal):original_terminal=True
+        except (ValueError,KeyError,TypeError,IndexError):continue
+    if not original_terminal:raise ValueError('unknown terminal observation absent from original HTTP transport')
+    reason=terminal.get('failure_reason')
+    if reason not in TRANSPORT_SYMPTOMS:
+        raise ValueError('known application cause or unclassified original terminal reason')
+    if members.get('exception.txt',b'').decode('utf-8',errors='strict').strip()!=reason:
+        raise ValueError('original application exception differs from raw terminal symptom')
+    pins={};diagnostics=[];symptom_members=[]
+    # Read the entire declared domain strictly, including all structured
+    # diagnostic fields. Never truncate, replace decode errors, or trust cache.
+    for name,raw in sorted(members.items()):
+        if name in ('manifest.json','userdump.dmp') or name.endswith('.pcap'):continue
+        if len(raw)>4*1024*1024:raise ValueError('unknown diagnostic domain text exceeds bound')
+        text=raw.decode('utf-8',errors='strict');pins[name]=_digest(raw)
+        if name.endswith('.json'):
+            obj=json.loads(text)
+            def visit(value,path=''):
+                if isinstance(value,dict):
+                    for key,item in value.items():
+                        if key in ('error','initialization_error','cleanup_errors','capture_error','failure_reason','exception_text','exception','traceback','cause') and item:
+                            if not isinstance(item,str) or item not in TRANSPORT_SYMPTOMS:
+                                raise ValueError('known or unresolved application diagnostic: '+name+'/'+path+key)
+                        visit(item,path+key+'/')
+                elif isinstance(value,list):
+                    for item in value:visit(item,path)
+            visit(obj)
+        if name.endswith(('.txt','.log')):
+            if text.strip()==reason:symptom_members.append(name)
+            for number,line in enumerate(text.splitlines(),1):
+                # Stack frame source text is an observation, not an emitted
+                # exception. Only log/exception diagnostics claim a cause.
+                if 'stack' in name.lower() and not re.search(r'(?i)(Traceback \(most recent call last\)|\b[A-Za-z_]+(?:Error|Exception):)',line):continue
+                if line.strip():
+                    if line.strip() not in TRANSPORT_SYMPTOMS:
+                        raise ValueError('known or unresolved application log diagnostic: '+name+':'+str(number))
+                    diagnostics.append(dict(member=name,line=number,text=line))
+    if not symptom_members:raise ValueError('original exception symptom not present in complete application domain')
+    versions=json.loads(members['versions.json']);managed=versions.get('managed_process') or {}
+    if managed.get('job_members')!=[] or managed.get('exit_code',-1)&0xffffffff!=d.UNKNOWN_EXIT_CODE:
+        raise ValueError('original managed exit/Job terminal observation differs')
+    return dict(schema=UNKNOWN_DOMAIN_SCHEMA,application_cause='unclassified-in-complete-domain',
+                observed_exit='self_exit',test_mechanism=truth['mechanism'],test_exit_code=truth['exit_code'],
+                complete_domain=pins,transport_symptoms=sorted(symptom_members),diagnostic_lines=diagnostics,
+                native_or_full_credit=False)
