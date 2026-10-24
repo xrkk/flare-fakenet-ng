@@ -27,6 +27,23 @@ def evaluate(root,original,case,checks,expected_inputs=None,*,allow_fixture=Fals
   if (trace.get('schema')!='fakenet.mcp-unit-trace.v1' or trace.get('unit')!=unit or trace.get('identity')!=inputs['identity'] or trace.get('target')!=inputs['target'] or trace.get('config_identity')!=inputs['config_identity']):failures.append('unit trace identity mismatch')
   original_not_passed=trace.get('returncode')!=0 or trace.get('error')
   if original_not_passed:failures.append('original unit did not pass')
+  if unit in ('DIAGNOSTIC-NATIVE-CRASH','DIAGNOSTIC-STACKS-UNAVAILABLE','DIAGNOSTIC-UNKNOWN-CAUSE'):
+   try:
+    matches=[item for item in result.get('evidence',[]) if item.get('name')=='diagnostic-record']
+    if len(matches)!=1:raise ValueError('single original diagnostic record required')
+    record=m.read(matches[0]['path'])
+    expected_class={'DIAGNOSTIC-NATIVE-CRASH':'native_crash',
+                    'DIAGNOSTIC-STACKS-UNAVAILABLE':'stacks_unavailable',
+                    'DIAGNOSTIC-UNKNOWN-CAUSE':'unknown_cause'}[unit]
+    if record.get('class')!=expected_class:raise ValueError('diagnostic selected unit/class differs')
+    __import__('acceptance_mcp_diagnostic_oracles').validate_original_record(
+       record,record.get('fault_evidence'),record.get('incident_exports'),expected=inputs,root=root,transport=trace.get('records'))
+   except (OSError,ValueError,KeyError,TypeError,RuntimeError) as exc:
+    failures.append('original diagnostic rejudge refused: '+str(exc))
+   unit_clean=trace.get('recovery_observed') is True and trace.get('recovery_error') is None
+   rows.append({'id':unit,'status':'fail' if failures else 'pass','reasons':failures})
+   details[unit]=failures;clean=clean and unit_clean
+   continue
   # Re-run the unchanged business assertions. A forged summary or rehashed
   # failed response still reaches the original error/version/content checks.
   unit_clean=False

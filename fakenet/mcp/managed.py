@@ -500,6 +500,8 @@ def child_main(run_id, run_dir):
                     key: identity[key] for key in ('pid', 'creation_time')}}
             elif kind == 'start' and instance is None:
                 payload = request['payload']
+                fault.prepare_diagnostic_start(run_id, directory, identity,
+                                               payload['config_path'])
                 instance = Fakenet()
                 instance.parse_config(payload['config_path'])
                 instance.fakenet_config.update(payload['fakenet_config'])

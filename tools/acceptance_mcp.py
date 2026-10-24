@@ -45,6 +45,7 @@ CHECKS = {
 # Selected-only slice; full ACC-014 already executes these same assertions.
 SELECTABLE_CHECKS = {case: list(checks) for case, checks in CHECKS.items()}
 SELECTABLE_CHECKS['MCP-P04-FULL'].append('INCIDENT-INTEGRITY')
+SELECTABLE_CHECKS['MCP-P04-FULL'].extend(['DIAGNOSTIC-NATIVE-CRASH','DIAGNOSTIC-STACKS-UNAVAILABLE','DIAGNOSTIC-UNKNOWN-CAUSE'])
 SELECTABLE_CHECKS['MCP-P03-FULL'].extend(['HEALTH-NO-LISTENER','HEALTH-ACTIVE-PROBE'])
 CASES = tuple(CHECKS)
 EXCLUSIONS = {
@@ -70,7 +71,9 @@ def source_paths(root=ROOT):
  # Explicit original business closure; no dynamic source selected by results.
  names=('helpers','run_p01_acc','run_p02_acc','run_p03_acc','run_p04_acc','run_p05_release','run_ipc_cases','run_initialization_case','run_control_cases','evidence_integrity','ipc_evidence','artifact_transfer','bounded_mcp','sst_fault_evidence','scenario_fault_evidence','release_matrix')
  paths=['test/mcp/acceptance/'+n+'.py' for n in names]
- paths += ['tools/acceptance_mcp.py','tools/acceptance_mcp_oracles.py','tools/acceptance_mcp_dependencies.py','tools/acceptance_mcp_capabilities.py','tools/build_fakenetng_mcp_wine.py','fakenet/mcp/server.py','fakenet/mcp/tools.py','fakenet/mcp/faultinject.py','fakenet/mcp/managed.py','fakenet/mcp/diagnostic_faults.py']
+ paths += ['tools/acceptance_mcp.py','tools/acceptance_mcp_oracles.py','tools/acceptance_mcp_dependencies.py','tools/acceptance_mcp_capabilities.py','tools/acceptance_mcp_diagnostics.py','tools/acceptance_mcp_diagnostic_oracles.py','tools/build_fakenetng_mcp_wine.py','fakenet/mcp/server.py','fakenet/mcp/tools.py','fakenet/mcp/faultinject.py','fakenet/mcp/managed.py','fakenet/mcp/diagnostic_faults.py']
+ # Explicit read-only closure used to interpret the original no-stack fallback/dump evidence.
+ paths += ['fakenet/mcp/incident.py','fakenet/mcp/incident_task.py','fakenet/mcp/supervisor.py','fakenet/mcp/managed_stacks.py','fakenet/mcp/run_evidence.py','fakenet/mcp/exit_native.py','fakenet/mcp/exit_monitor.py','fakenet/mcp/exit_files.py','fakenet/mcp/service_stop.py']
  import ast
  pending=list(paths);seen=set(paths)
  while pending:
@@ -575,6 +578,8 @@ def invoke_unit(unit,args,channel,writer,mods):
   return 0 if checks and all(value is True for value in checks.values()) else 1
  if unit=='FAULT-POINTS':return p4.run_fault_point_proof(base,channel,writer,args)
  if unit=='INCIDENT-INTEGRITY':return p4.run_incident_integrity(base,channel,writer,args)
+ if unit in ('DIAGNOSTIC-NATIVE-CRASH','DIAGNOSTIC-STACKS-UNAVAILABLE','DIAGNOSTIC-UNKNOWN-CAUSE'):
+  return __import__('acceptance_mcp_diagnostics').execute_unit(unit,args,channel,writer,ROOT)
  if unit=='ACC-014':return p4.run_acc014(base,channel,writer,args)
  if unit=='ACC-015':return p4.run_acc015(base,channel,writer,args.allowed_host,args.programdata_root)
  if unit=='ACC-019':

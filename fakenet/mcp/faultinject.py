@@ -96,6 +96,40 @@ class FaultInjector:
         self._child = None
         self._ipc_fault = None
 
+    def prepare_diagnostic_start(self, run_id, run_dir, identity, config_path):
+        """Publish actual child/Job/config, then wait only for a planned arm.
+
+        This runs in the managed child before ``Fakenet.start`` so the first
+        real stack save can be suppressed.  With no local plan (normal or
+        disabled operation) it returns immediately without OS observation.
+        """
+        if not enabled():
+            return False
+        import hashlib
+        from fakenet.mcp import diagnostic_faults as diagnostic
+        plan = diagnostic.read_plan()
+        if plan is None:
+            return False
+        try:
+            config = Path(config_path)
+            context = dict(identity, run_id=run_id, run_dir=str(run_dir),
+                           nonce=plan['nonce'], config_path=str(config),
+                           config_sha256=hashlib.sha256(config.read_bytes()).hexdigest(),
+                           initialized=True)
+            ready = diagnostic.publish_ready(context, plan)
+            diagnostic.archive_window(context, plan, ready)
+            value = diagnostic.wait_for_arm(context, plan,
+                                            timeout=diagnostic.ARM_TIMEOUT_SECONDS)
+        except (OSError, ValueError, KeyError, TypeError,
+                diagnostic.DiagnosticUnavailable):
+            return False
+        self._diagnostic_context = dict(context, nonce=value['nonce'],
+            no_stack_bound_early=(plan['fault'] == 'stacks_unavailable'))
+        self._diagnostic_stacks = False
+        self._diagnostic_plan = plan
+        diagnostic.remove_window_files(plan, ready)
+        return True
+
     def bind_diagnostic(self, run_id, run_dir, identity, config_path):
         if not enabled() or armed_fault() not in (
                 'stacks_unavailable', 'native_crash', 'unknown_cause'):
@@ -104,6 +138,13 @@ class FaultInjector:
             return
         import hashlib
         arm = json.loads(_fault_file().read_text(encoding='utf-8'))
+        existing = getattr(self, '_diagnostic_context', None)
+        if (isinstance(existing, dict)
+                and existing.get('run_id') == run_id
+                and existing.get('pid') == identity.get('pid')
+                and existing.get('creation_time') == identity.get('creation_time')
+                and existing.get('nonce') == arm.get('nonce')):
+            return
         self._diagnostic_context = dict(run_id=run_id, run_dir=str(run_dir), nonce=arm['nonce'],
             pid=identity['pid'], creation_time=identity['creation_time'],
             config_path=str(config_path),
@@ -132,6 +173,11 @@ class FaultInjector:
         return False
 
     def maybe_native_crash(self):
+        if (getattr(self, '_diagnostic_stacks', False)
+                and self._diagnostic_arm('stacks_unavailable') is not None):
+            from fakenet.mcp.diagnostic_faults import trigger_stack_unavailability
+            trigger_stack_unavailability(self._diagnostic_context, _fault_file())
+            return
         value = self._diagnostic_arm('native_crash')
         if value is not None:
             from fakenet.mcp.diagnostic_faults import trigger_native_crash

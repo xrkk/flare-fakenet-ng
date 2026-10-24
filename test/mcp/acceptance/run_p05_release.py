@@ -239,7 +239,10 @@ class ReleaseGate:
                       probe_window_start=start, probe_window_end=end,
                       probe_timeline=timeline,
                       capture_evidence=self._capture_evidence)
-        issues = validate_round(record, identity)
+        if record.get('expected_diagnostic') is None:
+            issues = validate_round(record, identity)
+        else:
+            issues = validate_round(record, identity, expected_diagnostic=record['expected_diagnostic'])
         if issues:
             record['failure'] = '; '.join(issues) + ': ' + str(record.get('failure', ''))
         return record
@@ -383,7 +386,7 @@ class ReleaseGate:
         result['fault_arm'] = armed
         return result
 
-    def _fault_round(self, klass, index, nonce):
+    def _fault_round(self, klass, index, nonce, *, diagnostic_context=None):
         record = {'class': klass, 'round': index, 'nonce': nonce, 'started_at': now_iso()}
         before = self.capture_sections()
         version = call(self.base, 'get_status')['state_version']
@@ -436,11 +439,32 @@ class ReleaseGate:
             if receipt_run and record.get('last_run_outcome') == 'failed':
                 record['run_id'] = receipt_run
         incidents = record['fault_evidence']['incidents']
+        expected_diagnostic = None
+        if diagnostic_context is not None:
+            if klass != 'stacks_unavailable':
+                raise ValueError('no-stack observer supplied for another class')
+            expected_diagnostic = diagnostic_context(record['run_id'])
+            from evidence_integrity import validate_stack_context
+            validate_stack_context(expected_diagnostic, record['run_id'])
+            record['expected_diagnostic'] = expected_diagnostic
+            record['diagnostic_raw'] = {
+                'diagnostic-window.json': expected_diagnostic['originals']['window'],
+                'diagnostic-triggered.json': expected_diagnostic['originals']['trigger']}
 
         def manifest_acceptable(item):
             # Same producer-fact allowance as the export validators: an
             # incomplete guest verdict whose only failed member is the
             # honest managed-exit record is acceptable in a fault round.
+            if expected_diagnostic is not None:
+                from evidence_integrity import no_stack_manifest_entry
+                entries = item['manifest'].get('entries', [])
+                missing = [entry for entry in entries if entry.get('item') == 'thread_stacks.txt']
+                return (item['manifest'].get('complete') is False and len(missing) == 1
+                        and no_stack_manifest_entry(missing[0])
+                        and all(entry.get('item') == 'thread_stacks.txt'
+                                or entry.get('result') == 'ok'
+                                or incident_entry_omission_allowed(entry, fault_round=True)
+                                for entry in entries))
             if item['manifest'].get('complete'):
                 return True
             return all(entry.get('result') == 'ok' or
@@ -462,12 +486,23 @@ class ReleaseGate:
             if name in names:
                 raise RuntimeError('duplicate incident directory')
             names.add(name)
-            exported = export_incident_bundle(self.channel, run_id,
-                      self.release / (name + '-' + run_id + '.zip'), incident_name=name,
-                      fault_round=True)
+            if expected_diagnostic is None:
+                exported = export_incident_bundle(self.channel, run_id,
+                          self.release / (name + '-' + run_id + '.zip'), incident_name=name,
+                          fault_round=True)
+            else:
+                exported = export_incident_bundle(self.channel, run_id,
+                          self.release / (name + '-' + run_id + '.zip'), incident_name=name,
+                          fault_round=True, expected_diagnostic=expected_diagnostic)
             exports.append(exported)
         record['incident_exports'] = exports
-        if (not exports or any(not item['complete'] for item in exports) or
+        def export_acceptable(item):
+            if expected_diagnostic is None:
+                return item['complete']
+            from evidence_integrity import assess_no_stack_export
+            assess_no_stack_export(item, run_id, expected_diagnostic)
+            return True
+        if (not exports or any(not export_acceptable(item) for item in exports) or
                 (klass in ('policy_pause', 'child_hang') and
                  not any('userdump.dmp' in item['verified_members'] for item in exports))):
             record['failure'] = 'verified incident content/dump incomplete'

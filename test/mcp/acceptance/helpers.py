@@ -204,7 +204,7 @@ def arm_fault_file(channel, fault):
 
 
 def export_incident_bundle(channel, run_id, destination, incident_name='incident',
-                          fault_round=False):
+                          fault_round=False, *, expected_diagnostic=None):
     """Export the exact run's package, then verify its bytes on the host."""
     import base64
     import hashlib
@@ -249,6 +249,24 @@ def export_incident_bundle(channel, run_id, destination, incident_name='incident
             digest.update(block)
     if digest.hexdigest() != metadata['sha256']:
         raise StepError('incident archive transfer hash mismatch')
+    if expected_diagnostic is not None:
+        if not fault_round:
+            raise StepError('explicit no-stack context requires a fault round')
+        from evidence_integrity import assess_no_stack_export
+        exported = {'path': str(destination), 'sha256': digest.hexdigest(),
+            'size': metadata['size'], 'run_id': run_id, 'incident_name': incident_name,
+            'complete': False, 'transfer_metadata': captured}
+        assessment = assess_no_stack_export(exported, run_id, expected_diagnostic)
+        # The strict assessment bounds the ZIP before any default member reads.
+        with zipfile.ZipFile(destination) as archive:
+            manifest_raw = archive.read('manifest.json')
+        if hashlib.sha256(manifest_raw).hexdigest() != metadata['manifest_sha256']:
+            raise StepError('incident manifest transfer hash mismatch')
+        manifest = json.loads(manifest_raw)
+        failures = ['thread_stacks.txt: unavailable', 'missing basic item: thread_stacks.txt']
+        exported.update(manifest=manifest, failures=failures,
+            verified_members=assessment['verified_members'], diagnostic_assessment=assessment)
+        return exported
     with zipfile.ZipFile(destination) as archive:
         if len(set(archive.namelist())) != len(archive.namelist()):
             raise StepError('duplicate incident archive member')

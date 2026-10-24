@@ -1,6 +1,7 @@
 """Reject mixed identities, missing raw evidence and incomplete round windows."""
 import hashlib
 import json
+import zipfile
 from pathlib import Path
 
 
@@ -32,8 +33,21 @@ def validate_result(record, expected, root):
     return failures
 
 
-def validate_round(record, expected):
+def validate_round(record, expected, *, expected_diagnostic=None):
     failures = []
+    if expected_diagnostic is not None:
+        if record.get('class') != 'stacks_unavailable':
+            failures.append('no-stack context supplied for another class')
+        try:
+            arm = validate_stack_context(expected_diagnostic, record.get('run_id'))
+            event = expected_diagnostic['trigger']['observed_time_ns'] / 1e9
+            if (record.get('nonce') != arm['nonce']
+                    or (record.get('fault_evidence') or {}).get('receipt', {}).get('receipt')
+                       != {'fault': 'stacks_unavailable', 'nonce': arm['nonce']}
+                    or not record['probe_window_start'] <= event <= record['probe_window_end']):
+                raise ValueError('no-stack original round receipt/window differs')
+        except (KeyError, TypeError, ValueError, OSError) as exc:
+            failures.append('no-stack context rejected: ' + str(exc))
     for field in IDENTITY_FIELDS:
         if not expected.get(field) or record.get(field) != expected[field]:
             failures.append('identity mismatch: ' + field)
@@ -55,7 +69,11 @@ def validate_round(record, expected):
                     len(set(names)) != len(names) or set(names) != set(expected_names)):
                 raise ValueError('incident export coverage mismatch')
             for exported in exports:
-                failures.extend(validate_incident_export(exported, run_id, fault_round=True))
+                if expected_diagnostic is None:
+                    failures.extend(validate_incident_export(exported, run_id, fault_round=True))
+                else:
+                    failures.extend(validate_incident_export(exported, run_id, fault_round=True,
+                                                             expected_diagnostic=expected_diagnostic))
         except (KeyError, TypeError, OSError, ValueError) as exc:
             failures.append('verified incident export unavailable: ' + str(exc))
     captures = record.get('capture_evidence')
@@ -236,7 +254,7 @@ def incident_entry_omission_allowed(entry, fault_round=False):
              entry.get('failure_reason') == 'exit evidence incomplete'))
 
 
-def validate_incident_export(exported, run_id, fault_round=False):
+def validate_incident_export(exported, run_id, fault_round=False, *, expected_diagnostic=None):
     """Re-read actual members; a cached complete flag is insufficient.
 
     In a fault round the scenario IS the failure: managed-exit.json may
@@ -244,6 +262,14 @@ def validate_incident_export(exported, run_id, fault_round=False):
     CHK-070) while the pack's escalation dump proves the failure. That
     one honest bookkeeping failure is acceptable exactly there; normal
     and release exports keep the strict rule."""
+    if expected_diagnostic is not None:
+        if not fault_round:
+            return ['explicit diagnostic requires a fault round']
+        try:
+            assess_no_stack_export(exported, run_id, expected_diagnostic)
+            return []
+        except (KeyError, TypeError, OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+            return ['no-stack original export invalid: ' + str(exc)]
     import zipfile
     from fakenet.mcp.incident import BASIC_ITEMS
     failures = []
@@ -304,3 +330,167 @@ def custom_config_body(content):
     if body == content.replace('\r\n', '\n'):
         raise ValueError('custom configuration has no semantic delta')
     return body
+
+
+
+def validate_stack_context(context, run_id):
+    """Only exact typed original observations; a caller flag grants nothing."""
+    from fakenet.mcp import diagnostic_faults as d
+    if (not isinstance(context, dict) or set(context) !=
+            {'schema', 'plan', 'ready', 'arm', 'trigger', 'fallback_files', 'originals'}
+            or context['schema'] != 'fakenet.no-stack-context.v1'):
+        raise ValueError('no-stack context is not structured original evidence')
+    plan, ready, arm, trigger = (context[k] for k in ('plan', 'ready', 'arm', 'trigger'))
+    if len(json.dumps(context).encode('utf-8')) > 64 * 1024:
+        raise ValueError('no-stack original context exceeds fixed bound')
+    import base64
+    originals = context['originals']
+    if not isinstance(originals, dict) or set(originals) != {'window', 'trigger', 'fallbacks', 'transport'}:
+        raise ValueError('no-stack original observations absent')
+    decoded = {}
+    for name in ('window', 'trigger'):
+        response = originals[name]
+        if (not isinstance(response, dict) or response.get('exit_code') != 0
+                or response.get('is_error') is not False):
+            raise ValueError('no-stack source transport unresolved')
+        wrapped = json.loads(response['output'])
+        if set(wrapped) != {'base64', 'sha256'} or len(wrapped['base64']) > 12000:
+            raise ValueError('no-stack raw source bound differs')
+        raw = base64.b64decode(wrapped['base64'], validate=True)
+        if len(raw) > 8192 or hashlib.sha256(raw).hexdigest() != wrapped['sha256']:
+            raise ValueError('no-stack raw source hash differs')
+        decoded[name] = json.loads(raw)
+    if decoded['window'] != {'schema': 'fakenet.diagnostic-window.v1', 'plan': plan, 'ready': ready} or decoded['trigger'] != trigger:
+        raise ValueError('no-stack typed context differs from original bytes')
+    transport = originals['transport']
+    if not isinstance(transport, list) or not 3 <= len(transport) <= 8:
+        raise ValueError('no-stack original transport set missing or unbounded')
+    from pathlib import PureWindowsPath
+    directory = PureWindowsPath(ready['run_dir'])
+    required = [('window', [str(directory/'diagnostic-window.json')]),
+                ('trigger', [str(directory/'diagnostic-triggered.json')]),
+                ('fallbacks', [str(directory/name) for name in
+                    ('managed-thread-stacks.json', 'stop-thread-stacks.txt', 'fault-child-stacks.txt')])]
+    for key, paths in required:
+        if not any(row.get('kind') == 'powershell' and not row.get('error')
+                   and row.get('output') == originals[key]
+                   and all(path.replace("'", "''") in row.get('input', {}).get('command', '') for path in paths)
+                   for row in transport):
+            raise ValueError('no-stack original response/path detached from transport')
+    response = originals['fallbacks']
+    if (not isinstance(response, dict) or response.get('exit_code') != 0
+            or response.get('is_error') is not False
+            or json.loads(response['output']) != context['fallback_files']):
+        raise ValueError('no-stack fallback transport observation differs')
+
+    if (not isinstance(plan, dict) or set(plan) != d.PLAN_KEYS
+            or plan['schema'] != d.PLAN_SCHEMA or not d._identity(plan['service_identity'])
+            or not isinstance(ready, dict) or set(ready) != d.READY_KEYS
+            or ready['schema'] != d.READY_SCHEMA or not d.arm_shape(arm)
+            or not isinstance(trigger, dict) or set(trigger) != d.ARM_KEYS | {'observed_time_ns'}):
+        raise ValueError('no-stack typed window/target differs')
+    if (arm['fault'] != 'stacks_unavailable' or arm['run_id'] != run_id
+            or {k: ready[k] for k in d.ARM_KEYS} != arm
+            or {k: trigger[k] for k in d.ARM_KEYS} != arm
+            or any(plan[k] != ready[k] for k in
+                   ('fault', 'nonce', 'expires_ns', 'config_sha256', 'service_identity'))):
+        raise ValueError('no-stack run/target/nonce/config/Job binding differs')
+    event = trigger['observed_time_ns']
+    if type(event) is not int or not arm['expires_ns'] - d.ARM_WINDOW_NS <= event < arm['expires_ns']:
+        raise ValueError('no-stack trigger outside original window')
+    from pathlib import PureWindowsPath
+    directory = PureWindowsPath(ready['run_dir'])
+    if (not directory.is_absolute() or directory.name != run_id
+            or not PureWindowsPath(ready['config_path']).is_absolute()):
+        raise ValueError('no-stack original child paths differ')
+    names = {'managed-thread-stacks.json', 'stop-thread-stacks.txt', 'fault-child-stacks.txt'}
+    if (not isinstance(context['fallback_files'], dict)
+            or set(context['fallback_files']) != names
+            or any(v != {'exists': False} for v in context['fallback_files'].values())):
+        raise ValueError('stack fallback exists or original absence is unobserved')
+    return arm
+
+
+def no_stack_manifest_entry(entry):
+    return (isinstance(entry, dict) and entry.get('item') == 'thread_stacks.txt'
+            and entry.get('result') == 'failed'
+            and entry.get('failure_reason') == 'unavailable'
+            and type(entry.get('size')) is int and entry['size'] == 0
+            and entry.get('sha256') is None)
+
+
+def assess_no_stack_export(exported, run_id, context):
+    """Re-read raw failure bytes; never edit complete, failures, or members."""
+    import zipfile, tempfile
+    from fakenet.mcp.incident import BASIC_ITEMS
+    from fakenet.mcp.exit_native import verify_dump
+    arm = validate_stack_context(context, run_id)
+    path = Path(exported['path'])
+    if (not path.is_absolute() or path.is_symlink() or not path.is_file()
+            or not 0 < path.stat().st_size <= 512 * 1024 * 1024):
+        raise ValueError('no-stack archive source differs')
+    raw = path.read_bytes()
+    if (not 0 < len(raw) <= 512 * 1024 * 1024 or len(raw) != exported['size']
+            or hashlib.sha256(raw).hexdigest() != exported['sha256']
+            or exported.get('run_id') != run_id or exported.get('complete') is not False):
+        raise ValueError('no-stack archive transfer identity differs')
+    with zipfile.ZipFile(path) as archive:
+        infos = archive.infolist(); names = [i.filename for i in infos]
+        if (not 1 <= len(infos) <= 4096 or len(set(names)) != len(names)
+                or sum(i.file_size for i in infos) > 512 * 1024 * 1024
+                or any(i.flag_bits & 1 or (i.external_attr >> 16) & 0o170000 == 0o120000
+                       or '/' in i.filename or '\\' in i.filename
+                       or i.filename in ('', '.', '..') for i in infos)):
+            raise ValueError('no-stack archive expansion/path/member refused')
+        manifest = json.loads(archive.read('manifest.json'))
+        if manifest.get('run_id') != run_id or manifest.get('complete') is not False:
+            raise ValueError('no-stack raw manifest verdict must remain incomplete')
+        if len(json.dumps(context).encode('utf-8')) > 64 * 1024:
+            raise ValueError('no-stack context exceeds fixed bound')
+        entries = manifest.get('entries'); seen = set(); verified = set(); missing_stack = 0
+        if not isinstance(entries, list):
+            raise ValueError('no-stack manifest entries absent')
+        for item in entries:
+            name = item['item']
+            if name in seen or '/' in name or '\\' in name or name in ('', '.', '..'):
+                raise ValueError('no-stack duplicate or unsafe manifest item')
+            seen.add(name)
+            if name == 'thread_stacks.txt':
+                if not no_stack_manifest_entry(item) or name in names:
+                    raise ValueError('no-stack must preserve the exact unavailable item')
+                missing_stack += 1
+                continue
+            if incident_entry_omission_allowed(item, fault_round=True):
+                continue
+            if item.get('result') != 'ok':
+                raise ValueError('another incident member failed: ' + name)
+            data = archive.read(name)
+            if len(data) != item['size'] or hashlib.sha256(data).hexdigest() != item['sha256']:
+                raise ValueError('no-stack incident member bytes differ: ' + name)
+            verified.add(name)
+        required = {name for name, _ in BASIC_ITEMS} - {'thread_stacks.txt'}
+        if missing_stack != 1 or required - verified or 'userdump.dmp' not in verified:
+            raise ValueError('no-stack other basic members or dump missing')
+        if hashlib.sha256(archive.read('config_snapshot.ini')).hexdigest() != arm['config_sha256']:
+            raise ValueError('no-stack original config snapshot differs')
+        versions = json.loads(archive.read('versions.json'))
+        managed = versions.get('managed_process') or {}; identity = managed.get('identity') or {}
+        code = managed.get('exit_code')
+        if (any(identity.get(k) != arm[k] for k in ('pid', 'creation_time'))
+                or versions.get('config_sha256') != arm['config_sha256']
+                or type(code) is not int or code & 0xffffffff not in (0xc0000602, 0xc0000409)):
+            raise ValueError('no-stack original target/config/transparent exit differs')
+        exit_record = json.loads(archive.read('managed-exit.json'))
+        target = exit_record.get('target') or {}
+        if (exit_record.get('schema') != 'fakenet.exit-result.v1' or target.get('run_id') != run_id
+                or any(target.get(k) != arm[k] for k in ('pid', 'creation_time'))):
+            raise ValueError('no-stack original exit monitor target differs')
+        dump = archive.read('userdump.dmp')
+        with tempfile.TemporaryDirectory(prefix='no-stack-dump-', dir=path.parent) as directory:
+            dump_path = Path(directory) / 'userdump.dmp'; dump_path.write_bytes(dump)
+            if verify_dump(dump_path, arm['pid']) != len(dump):
+                raise ValueError('no-stack original dump differs')
+    return {'schema': 'fakenet.diagnostic-assessment.v1', 'class': 'stacks_unavailable',
+            'run_id': run_id, 'expected_unavailable': 'thread_stacks.txt',
+            'raw_manifest_complete': False, 'verified_members': sorted(verified),
+            'archive_sha256': exported['sha256'], 'full_acc014_credit': False}

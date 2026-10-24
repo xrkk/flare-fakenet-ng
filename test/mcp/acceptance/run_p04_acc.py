@@ -70,19 +70,36 @@ def collect_acc014_incident_integrity(base, channel, writer, args):
         return EXIT_BLOCKED, {}, records
     bundles = {}
     for record in records:
-        if validate_round(record, identity):
+        expected_diagnostic = record.get('expected_diagnostic')
+        if expected_diagnostic is None:
+            round_issues = validate_round(record, identity)
+        else:
+            round_issues = validate_round(record, identity, expected_diagnostic=expected_diagnostic)
+        if round_issues:
             writer.add_evidence('rejected-fault-record', record)
             return EXIT_FAIL, {}, records
         run_id = record['fault_evidence']['receipt']['run_id']
         run_bundles = {}
         for exported in record['incident_exports']:
             name = exported['incident_name']
-            bundle = export_incident_bundle(channel, run_id,
-                     writer.out_dir / (name + '-' + run_id + '.zip'), incident_name=name)
+            if expected_diagnostic is None:
+                bundle = export_incident_bundle(channel, run_id,
+                         writer.out_dir / (name + '-' + run_id + '.zip'), incident_name=name)
+            else:
+                bundle = export_incident_bundle(channel, run_id,
+                         writer.out_dir / (name + '-' + run_id + '.zip'), incident_name=name,
+                         fault_round=True, expected_diagnostic=expected_diagnostic)
             writer.add_evidence(name + '-verified-' + run_id, bundle)
             writer.evidence.append({key: bundle[key] for key in ('path', 'sha256', 'size')})
-            if not bundle['complete']:
-                return EXIT_FAIL, {}, records
+            if expected_diagnostic is None:
+                if not bundle['complete']:
+                    return EXIT_FAIL, {}, records
+            else:
+                from evidence_integrity import assess_no_stack_export
+                try:
+                    assess_no_stack_export(bundle, run_id, expected_diagnostic)
+                except (KeyError, TypeError, ValueError, RuntimeError, OSError):
+                    return EXIT_FAIL, {}, records
             run_bundles[name] = bundle
         if record['class'] in ('policy_pause', 'child_hang', 'ipc_permanent_timeout',
                                'stacks_unavailable', 'native_crash', 'unknown_cause') and not any('userdump.dmp' in bundle['verified_members'] for bundle in run_bundles.values()):
