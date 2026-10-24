@@ -158,6 +158,32 @@ def real_list_mutex(case,out,inputs):
       'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
     _json(out/'manual-result.json',value);return value
 
+def real_dumppackets(case,out,inputs):
+    import logging,dpkt,socket
+    from fakenet.diverters.diverterbase import DiverterBase
+    out=Path(out);cfgdir=out/'config';cfgdir.mkdir()
+    raw_packet_file=out/'packet-raw.bin'
+    tcp=dpkt.tcp.TCP(sport=40000,dport=8080,flags=dpkt.tcp.TH_SYN)
+    ip=dpkt.ip.IP(src=socket.inet_aton('192.0.2.10'),dst=socket.inet_aton('192.0.2.20'),p=6,data=tcp);ip.len=len(ip);raw_bytes=bytes(ip);raw_packet_file.write_bytes(raw_bytes)
+    result={}
+    for mode,dump in (('enabled','Yes'),('disabled','No')):
+        folder=out/mode;folder.mkdir();prefix=str(folder/'customcap')
+        cfg=cfgdir/(mode+'.ini');cfg.write_text('[Diverter]\nDumpPackets: '+dump+'\nDumpPacketsFilePrefix: '+prefix+'\n')
+        d=DiverterBase.__new__(DiverterBase);d.logger=logging.getLogger('manual-dumppackets');d._initialize_capture_state();d.dump_packets=(dump=='Yes');d.pcap_prefix=prefix
+        before=len(list(folder.glob('*.pcap')));summary=None;error=None
+        try:
+            d._start_capture()
+            if d.dump_packets:
+                if not d.record_raw_capture(raw_bytes,observation_role='inbound',direction='inbound'):raise ValueError('capture rejected packet')
+            summary=d._close_capture()
+        except BaseException as exc:error={'type':type(exc).__name__,'message':str(exc)}
+        files=sorted(p.name for p in folder.glob('*.pcap'))
+        result[mode]={'config':str(cfg),'config_sha256':sha256(cfg),'folder':str(folder),'prefix':prefix,'dump':d.dump_packets,'before':before,'pcap_files':files,'summary':summary._asdict() if summary is not None else None,'error':error,'writer_closed':d.dual_pcap is None or d.dual_pcap._closed,'raw_packet':str(raw_packet_file),'raw_sha256':sha256(raw_packet_file)}
+    value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,'dumppackets':result,
+      'source_hashes':{n:sha256(Path(__file__).resolve().parents[1]/n) for n in ('fakenet/diverters/diverterbase.py','fakenet/diverters/pcapwriter.py','fakenet/capture_originals.py')},
+      'started_at':datetime.now(timezone.utc).isoformat(),'cleanup':{'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True},'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
+    _json(out/'manual-result.json',value);return value
+
 def real_diverter_switch(case,out,inputs):
     import logging,sys
     from fakenet.fakenet import Fakenet
@@ -328,6 +354,11 @@ def run(case,out,inputs=None,memory_mode=False):
         if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
         out.mkdir(parents=True,exist_ok=False)
         return real_diverter_switch(case,out,inputs)
+    if case=='GAP-DUMPPACKETS':
+        validate_inputs(case,inputs);out=Path(out).absolute()
+        if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
+        out.mkdir(parents=True,exist_ok=False)
+        return real_dumppackets(case,out,inputs)
     if case not in ('GAP-NCSI','GAP-RAW-DATE'):raise NotImplementedError('case is not implemented in this round: '+case)
     validate_inputs(case,inputs);out=Path(out).absolute()
     if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')

@@ -12,6 +12,42 @@ from pathlib import Path
 RAW=b'HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nX-Test: <RAW-DATE>\r\nContent-Length: 35\r\nConnection: close\r\n\r\nbody<RAW-DATE>\x00\xff'
 STATIC=b'static-<RAW-DATE>'
 
+def _evaluate_dumppackets(root,original,expected_inputs,allow_fixture=False):
+    import dpkt,socket
+    base=Path(original).resolve();path=base/'manual-result.json'
+    if path.is_symlink() or not path.is_file():raise ValueError('original missing or linked')
+    v=json.loads(path.read_text())
+    if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!='GAP-DUMPPACKETS':raise ValueError('case/schema mismatch')
+    if v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
+    for k in ('candidate_id','source_commit','package_sha256','execution_id'):
+        if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
+    if type(v.get('fixture')) is not bool or v['fixture']!=(expected_inputs.get('fixture') is True):raise ValueError('fixture identity mismatch')
+    if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
+    if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
+    expected=open(base/'packet-raw.bin','rb').read();errors=[];data=v.get('dumppackets') or {}
+    for mode,dump in (('enabled',True),('disabled',False)):
+        item=data.get(mode) or {};folder=Path(item.get('folder',''))
+        if not folder.is_dir() or item.get('error') is not None or item.get('dump') is not dump:errors.append(mode+' branch metadata/error mismatch')
+        files=item.get('pcap_files')
+        if dump:
+            if not files or len(files)!=2 or not all(name.startswith('customcap_') for name in files):errors.append('enabled custom prefix output missing')
+            else:
+                raw_path=next(folder/name for name in files if not name.endswith('-converted.pcap'));conv_path=next(folder/name for name in files if name.endswith('-converted.pcap'))
+                try:
+                    with raw_path.open('rb') as f:raws=[bytes(pkt) for ts,pkt in dpkt.pcap.Reader(f)]
+                    with conv_path.open('rb') as f:convs=[bytes(pkt) for ts,pkt in dpkt.pcap.Reader(f)]
+                    if raws!=[expected] or len(convs)!=1 or convs[0][14:]!=expected or convs[0][:14]!=b'\x02\x00\x00\x00\x00\x02\x02\x00\x00\x00\x00\x01\x08\x00':errors.append('PCAP bytes/frames differ from frozen packet')
+                except (OSError,dpkt.dpkt.NeedData,ValueError):errors.append('PCAP unreadable')
+            summary=item.get('summary') or {}
+            if summary.get('raw_write_count')!=1 or summary.get('ethernet_write_count')!=1 or summary.get('healthy') is not True or summary.get('discarded') is not False:errors.append('enabled writer/seal summary mismatch')
+            if item.get('writer_closed') is not True:errors.append('enabled writer not closed')
+        else:
+            if files:errors.append('disabled branch produced PCAP')
+            if item.get('summary') is not None or item.get('writer_closed') is not True:errors.append('disabled writer/close mismatch')
+    if v.get('source_hashes')!={n:hashlib.sha256((Path(root)/n).read_bytes()).hexdigest() for n in ('fakenet/diverters/diverterbase.py','fakenet/diverters/pcapwriter.py','fakenet/capture_originals.py')}:errors.append('source binding mismatch')
+    if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True}:errors.append('cleanup mismatch')
+    return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('enabled','disabled','prefix','content')],not errors,{'failures':errors}
+
 def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False):
     base=Path(original).resolve();path=base/'manual-result.json'
     if path.is_symlink() or not path.is_file():raise ValueError('original missing or linked')
@@ -198,6 +234,7 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
     return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('blacklist','whitelist','mutex')],not errors,{'failures':errors}
 
 def evaluate(root,original,case,expected_inputs,allow_fixture=False):
+    if case=='GAP-DUMPPACKETS':return _evaluate_dumppackets(root,original,expected_inputs,allow_fixture)
     if case=='GAP-DIVERTER-SWITCH':return _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture)
     if case=='GAP-EXECUTECMD':return _evaluate_executecmd(root,original,expected_inputs,allow_fixture)
     if case=='GAP-LIST-MUTEX':return _evaluate_list_mutex(root,original,expected_inputs,allow_fixture)
