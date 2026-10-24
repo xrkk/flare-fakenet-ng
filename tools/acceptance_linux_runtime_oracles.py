@@ -16,17 +16,18 @@ def evaluate(root,original,case,checks=None,allow_fixture=False):
   if case=='LINUX-SINGLEHOST':
    t=Path(v['config']).read_text(); compact=''.join(t.split())
    rows['singlehost']='pass' if 'networkmode:singlehost' in compact.lower() and v.get('mode')=='singlehost' else 'fail'
-   rows['multihost']='pass' if 'multihost' in compact.lower() else 'fail'
-   rows['nfqueue']='pass' if bool(v['rules'].get('v4')) else 'fail'
+   rows['multihost']='pass' if v.get('runtime',{}).get('multihost') is True else 'fail'
+   rows['nfqueue']='pass' if v.get('runtime',{}).get('nfqueue') is True and v.get('traffic',{}).get('packets',0)>0 else 'fail'
    rows['ipv6-block']='pass' if any(x and x[0]=='ip6tables' for x in v['rules'].get('v6',[])) else 'fail'
    rows['restore']='pass' if v.get('before')==v.get('after')=={'rules':0} and v.get('cleanup',{}).get('stopped') is True else 'fail'
   else:
    r=json.loads(Path(v['receipt']).read_text()); package=Path(v['inputs']['install_package'])
+   update=json.loads(Path(v['update_receipt']).read_text()) if v.get('update_receipt') else {}
    rows['install']='pass' if r.get('phase')=='completed' else 'fail'
-   rows['idle-update']='pass' if r.get('operation')==v['inputs'].get('operation') else 'fail'
+   rows['idle-update']='pass' if update.get('phase')=='completed' and update.get('operation')==v['inputs'].get('operation') else 'fail'
    rows['transaction']='pass' if r.get('manifest')==sha(package/'manifest.json') else 'fail'
    token=Path(v['inputs']['root'])/'etc/fakenet-ng-linux/token'
-   rows['token']='pass' if token.is_file() and len(token.read_text().strip()) in (64,65) and (token.stat().st_mode & 0o777)==0o600 else 'fail'
+   rows['token']='pass' if token.is_file() and (lambda x: __import__('re').fullmatch(r'[0-9a-fA-F]{64}',x) is not None)(token.read_text().strip()) and (token.stat().st_mode & 0o777)==0o600 else 'fail'
    rows['rollback']='pass' if r.get('originals') else 'fail'
  except Exception as exc:
   rows={x:'fail' for x in CHECKS[case]}; rows['error']='%s: %s' % (type(exc).__name__,exc)

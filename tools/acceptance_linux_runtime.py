@@ -50,8 +50,14 @@ def _validate(case,out,inputs):
     if not isinstance(inputs,dict):raise ValueError('Linux inputs object required')
     for key in ('candidate_id','source_commit','package_sha256','execution_id'):
         if not inputs.get(key):raise ValueError('Linux input missing '+key)
-    if len(str(inputs['source_commit']))!=40 or len(str(inputs['package_sha256']))!=64:raise ValueError('Linux source/package identity invalid')
+    import re
+    if not re.fullmatch(r'[0-9a-f]{40}',str(inputs['source_commit'])) or not re.fullmatch(r'[0-9a-f]{64}',str(inputs['package_sha256'])):raise ValueError('Linux source/package identity invalid')
     if not str(inputs['execution_id']) or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in str(inputs['execution_id'])):raise ValueError('Linux execution id invalid')
+    if case=='LINUX-SINGLEHOST':
+        if not Path(inputs.get('config','')).is_file():raise ValueError('Linux config file required before output')
+        if str(inputs.get('mode','')).lower() not in ('singlehost','multihost'):raise ValueError('Linux mode invalid before output')
+    else:
+        if not Path(inputs.get('install_package','')).is_dir() or not inputs.get('pinned') or not inputs.get('operation') or not Path(inputs.get('root','')).is_absolute():raise ValueError('deploy package/root/operation required before output')
     out=Path(out)
     if out.exists():raise ValueError('Linux output already exists')
     return out
