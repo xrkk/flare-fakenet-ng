@@ -158,6 +158,42 @@ def real_list_mutex(case,out,inputs):
       'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
     _json(out/'manual-result.json',value);return value
 
+def real_executecmd(case,out,inputs):
+    from types import SimpleNamespace
+    from fakenet.diverters.diverterbase import DiverterBase,DivertParms
+    import logging
+    out=Path(out);cfgdir=out/'config';cfgdir.mkdir();cfg=cfgdir/'executecmd.ini'
+    template='cmd.exe /c echo {pid} {procname} {src_addr} {src_port} {dst_addr} {dst_port}'
+    text='[svc]\nProtocol: TCP\nPort: 8080\nExecuteCmd: '+template+'\n'
+    cfg.write_text(text)
+    class Recorder(DiverterBase):
+        def __init__(self):
+            self.logger=logging.getLogger('manual-executecmd');self.listener_ports=None;self.sessions={};self.executed=[];self.running_on_windows=False
+        def execute_detached(self,cmd):
+            pid=super().execute_detached(cmd);self.executed.append({'command':cmd,'pid':pid});return pid
+    diverter=Recorder();diverter.configure({});diverter.listener_ports=__import__('fakenet.diverters.diverterbase',fromlist=['ListenerPorts']).ListenerPorts();diverter.sessions={}
+    diverter.parse_listeners_config({'svc':{'protocol':'TCP','port':'8080','executecmd':template}})
+    pkt=SimpleNamespace(proto='TCP',sport=40000,dport=8080,src_ip='192.0.2.10',dst_ip='192.0.2.20',src_ip0='192.0.2.10',dst_ip0='192.0.2.20',dport0=8080,_dport0=8080,ipver=4)
+    pid=1234;comm='benign.exe'
+    command=diverter.build_cmd(pkt,pid,comm)
+    parms=DivertParms(diverter,pkt,pid,comm);first=parms.first_packet_new_session
+    if first:diverter.maybeExecuteCmd(pkt,pid,comm)
+    diverter.addSession(pkt,pid,comm)
+    duplicate=DivertParms(diverter,pkt,pid,comm).first_packet_new_session
+    if duplicate:diverter.maybeExecuteCmd(pkt,pid,comm)
+    before_missing=len(diverter.executed);diverter.maybeExecuteCmd(pkt,None,comm);missing=len(diverter.executed)-before_missing
+    other=SimpleNamespace(**dict(vars(pkt),dport=9090,dport0=9090));other_cmd=diverter.build_cmd(other,pid,comm)
+    bad=cfgdir/'bad.ini';bad.write_text('[bad]\nProtocol: TCP\nPort: 8081\nExecuteCmd: cmd {missing}\n')
+    bad_error=None
+    try:
+        duplicate_diverter=Recorder();duplicate_diverter.configure({});duplicate_diverter.listener_ports=__import__('fakenet.diverters.diverterbase',fromlist=['ListenerPorts']).ListenerPorts();duplicate_diverter.sessions={};duplicate_diverter.parse_listeners_config({'bad':{'protocol':'TCP','port':'8081','executecmd':'cmd {missing}'}})
+    except SystemExit as exc:bad_error={'type':type(exc).__name__,'code':exc.code}
+    value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,
+      'executecmd':{'configuration':'config/executecmd.ini','configuration_sha256':sha256(cfg),'template':template,'command':command,'first_packet':first,'duplicate_first_packet':duplicate,'executed':diverter.executed,'missing_pid_executions':missing,'nonmatching_command':other_cmd,'bad_format_error':bad_error},
+      'source_hashes':{n:sha256(Path(__file__).resolve().parents[1]/n) for n in ('fakenet/diverters/diverterbase.py','fakenet/diverters/fnpacket.py')},
+      'started_at':datetime.now(timezone.utc).isoformat(),'cleanup':{'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True},'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
+    _json(out/'manual-result.json',value);return value
+
 def real_raw_date(case,out,inputs):
     from fakenet.listeners.HTTPListener import HTTPListener
     config=out/'config';config.mkdir();web=out/'webroot';web.mkdir()
@@ -201,6 +237,11 @@ def run(case,out,inputs=None,memory_mode=False):
         if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
         out.mkdir(parents=True,exist_ok=False)
         return real_list_mutex(case,out,inputs)
+    if case=='GAP-EXECUTECMD':
+        validate_inputs(case,inputs);out=Path(out).absolute()
+        if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
+        out.mkdir(parents=True,exist_ok=False)
+        return real_executecmd(case,out,inputs)
     if case not in ('GAP-NCSI','GAP-RAW-DATE'):raise NotImplementedError('case is not implemented in this round: '+case)
     validate_inputs(case,inputs);out=Path(out).absolute()
     if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')

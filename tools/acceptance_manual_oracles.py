@@ -12,6 +12,44 @@ from pathlib import Path
 RAW=b'HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nX-Test: <RAW-DATE>\r\nContent-Length: 35\r\nConnection: close\r\n\r\nbody<RAW-DATE>\x00\xff'
 STATIC=b'static-<RAW-DATE>'
 
+def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False):
+    from types import SimpleNamespace
+    from fakenet.diverters.diverterbase import DiverterBase,DivertParms
+    import logging
+    base=Path(original).resolve();path=base/'manual-result.json'
+    if path.is_symlink() or not path.is_file():raise ValueError('original missing or linked')
+    v=json.loads(path.read_text())
+    if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!='GAP-EXECUTECMD':raise ValueError('case/schema mismatch')
+    if v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
+    for k in ('candidate_id','source_commit','package_sha256','execution_id'):
+        if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
+    if v.get('fixture') is not True or not allow_fixture:raise ValueError('fixture identity/credit mismatch')
+    if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
+    data=v.get('executecmd') or {};cfg=base/'config/executecmd.ini';errors=[]
+    if not cfg.is_file() or cfg.is_symlink() or data.get('configuration')!='config/executecmd.ini' or data.get('configuration_sha256')!=hashlib.sha256(cfg.read_bytes()).hexdigest():raise ValueError('configuration original missing/changed')
+    template='cmd.exe /c echo {pid} {procname} {src_addr} {src_port} {dst_addr} {dst_port}'
+    if cfg.read_text()!='[svc]\nProtocol: TCP\nPort: 8080\nExecuteCmd: '+template+'\n':errors.append('frozen configuration differs')
+    diverter=DiverterBase.__new__(DiverterBase);diverter.logger=logging.getLogger('oracle-executecmd');diverter.sessions={};diverter.configure({});diverter.listener_ports=__import__('fakenet.diverters.diverterbase',fromlist=['ListenerPorts']).ListenerPorts()
+    diverter.parse_listeners_config({'svc':{'protocol':'TCP','port':'8080','executecmd':template}})
+    pkt=SimpleNamespace(proto='TCP',sport=40000,dport=8080,src_ip='192.0.2.10',dst_ip='192.0.2.20',src_ip0='192.0.2.10',dst_ip0='192.0.2.20',dport0=8080,_dport0=8080,ipver=4)
+    expected='cmd.exe /c echo 1234 benign.exe 192.0.2.10 40000 192.0.2.20 8080'
+    if diverter.build_cmd(pkt,1234,'benign.exe')!=expected:errors.append('production build_cmd differs')
+    parms=DivertParms(diverter,pkt,1234,'benign.exe')
+    if parms.first_packet_new_session is not True:errors.append('first session predicate false')
+    diverter.addSession(pkt,1234,'benign.exe')
+    if DivertParms(diverter,pkt,1234,'benign.exe').first_packet_new_session is not False:errors.append('duplicate session predicate true')
+    if data.get('command')!=expected or data.get('first_packet') is not True or data.get('duplicate_first_packet') is not False:errors.append('command/session originals mismatch')
+    executed=data.get('executed')
+    if not isinstance(executed,list) or len(executed)!=1 or executed[0].get('command')!=expected or not isinstance(executed[0].get('pid'),int):errors.append('first execution original mismatch')
+    if data.get('missing_pid_executions')!=0:errors.append('missing PID executed')
+    if data.get('nonmatching_command') is not None:errors.append('nonmatching port built command')
+    bad=data.get('bad_format_error')
+    if not isinstance(bad,dict) or bad.get('type')!='SystemExit' or bad.get('code')!=1:errors.append('bad format did not exit 1')
+    if v.get('source_hashes')!={n:hashlib.sha256((Path(root)/n).read_bytes()).hexdigest() for n in ('fakenet/diverters/diverterbase.py','fakenet/diverters/fnpacket.py')}:errors.append('source binding mismatch')
+    if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True}:errors.append('cleanup mismatch')
+    out=[{'id':k,'status':'fail' if errors else 'pass'} for k in ('command','first-connection','non-connection')]
+    return out,not errors,{'failures':errors}
+
 def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
     from fakenet.diverters.diverterbase import ListenerMeta,ListenerPorts,ListenerBlackWhiteList,DiverterBase
     import logging
@@ -91,6 +129,7 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
     return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('blacklist','whitelist','mutex')],not errors,{'failures':errors}
 
 def evaluate(root,original,case,expected_inputs,allow_fixture=False):
+    if case=='GAP-EXECUTECMD':return _evaluate_executecmd(root,original,expected_inputs,allow_fixture)
     if case=='GAP-LIST-MUTEX':return _evaluate_list_mutex(root,original,expected_inputs,allow_fixture)
     if case not in ('GAP-NCSI','GAP-RAW-DATE'):raise NotImplementedError('case is not implemented in this round: '+case)
     base=Path(original).resolve()
