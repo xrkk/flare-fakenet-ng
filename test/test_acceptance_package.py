@@ -215,10 +215,65 @@ class ArtifactSourceLayerTests(PackagePublicCliTests):
         for key, original in frozen.items(): self.assertEqual(original, Path(candidate[key]).read_bytes())
         self.assertEqual(input_bytes, self.candidate_path.read_bytes())
 
+    def prepare_old_mcp_package_inputs(self):
+        # Canonical benign schema; only package references/identity change to
+        # this exact old candidate. No HTTP/VM/native operation is performed.
+        from test_acceptance_mcp import inputs_at
+        value = inputs_at(self.base / 'mcp-input')
+        value.update(package=self.candidate['package_path'],
+                     manifest=self.candidate['package_manifest'],
+                     manifest_sha256=package.sha256(self.candidate['package_manifest']))
+        value['identity'].update(source_commit=self.candidate['source_commit'],
+                                 package_sha256=self.candidate['package_sha256'])
+        self.environment.update(targets=['windows'], mcp=value,
+            native_runtime={'transport': 'windows-mcp-velo', 'identity': dict(value['target']),
+                            **value['channel']})
+        self.environment_path.write_text(json.dumps(self.environment))
+        return value
+
+    def test_pure_mcp_old_package_keeps_source_pins_and_partial_qualification(self):
+        self.select_old()
+        inputs = self.prepare_old_mcp_package_inputs()
+        import acceptance_mcp
+        acceptance_mcp.validate_inputs(inputs, 'MCP-P03-FULL', fixture=True)
+        manifest_before = Path(inputs['manifest']).read_bytes()
+        output = self.base / 'pure-mcp' / 'plan.json'
+        result = self.cli('plan', '--mode', 'selected', '--case', 'MCP-P03-FULL',
+                          '--candidate', self.candidate_path, '--environment', self.environment_path,
+                          '--output', output)
+        self.assertEqual(0, result[0], result)
+        plan = json.loads(output.read_text())
+        self.assertEqual('a' * 40, plan['source_commit'])
+        self.assertEqual('a' * 40, plan['candidate']['source_commit'])
+        self.assertEqual(package.sha256(ROOT / 'tools/acceptance_mcp.py'),
+                         plan['native_source_hashes']['tools/acceptance_mcp.py'])
+        manifest = json.loads(manifest_before)
+        self.assertEqual('PARTIAL', manifest['qualification_status'])
+        self.assertEqual(['benign fixture has no native qualification'], manifest['native_gaps'])
+        self.assertEqual(manifest_before, Path(inputs['manifest']).read_bytes())
+        self.assertIn('MCP-P03-FULL', plan['blocked'])
+        self.assertNotIn('native', self.environment['allowed_actions'])
+        self.assertFalse((output.parent / 'results').exists())
+        for kind,reason in [('package','bytes mismatch'), ('target','target differs')]:
+            with self.subTest(kind=kind):
+                changed = json.loads(json.dumps(self.environment))
+                if kind == 'package':changed['mcp']['identity']['package_sha256'] = 'c' * 64
+                else:changed['native_runtime']['identity']['hostname'] = 'foreign-target'
+                self.environment_path.write_text(json.dumps(changed))
+                bad = self.base / ('bad-' + kind) / 'plan.json'
+                rejected = self.cli('plan', '--mode', 'selected', '--case', 'MCP-P03-FULL',
+                                    '--candidate', self.candidate_path, '--environment', self.environment_path,
+                                    '--output', bad)
+                self.assertNotEqual(0, rejected[0], rejected)
+                self.assertIn(reason, rejected[2])
+                self.assertFalse(bad.exists())
+        self.environment_path.write_text(json.dumps(self.environment))
+
     def test_runtime_source_and_mixed_selection_do_not_inherit_artifact_exception(self):
         self.select_old()
-        for cases in (['CORE-REGRESSION-SELFTEST'], ['MCP-P03-FULL'],
-                      [package.CASE, 'CORE-REGRESSION-SELFTEST']):
+        for cases in (['CORE-REGRESSION-SELFTEST'],
+                      [package.CASE, 'CORE-REGRESSION-SELFTEST'],
+                      ['MCP-P03-FULL', 'CORE-REGRESSION-SELFTEST']):
             with self.subTest(cases=cases):
                 output = self.base / ('mixed' if len(cases) > 1 else cases[0]) / 'plan.json'
                 args = ['plan', '--mode', 'selected']
