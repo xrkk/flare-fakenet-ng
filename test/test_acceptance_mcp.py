@@ -1960,6 +1960,7 @@ class PublicProcessRecoveryCliTests(unittest.TestCase):
 
 class SnapshotRecoveryBoundary(SnapshotProcessBoundary):
     """Real snapshot/baseline/RealSupervisor.recover; only native OS edges."""
+    _sdk_wall_time = staticmethod(__import__('time').time)
     def __init__(self, inputs, root, fault=None):
         super().__init__(inputs, root)
         self.fault_mode = fault
@@ -1986,6 +1987,7 @@ class SnapshotRecoveryBoundary(SnapshotProcessBoundary):
         snap = self.coord.snapshot()
         self.state = snap['state']
         self.run_id = snap['run_id']
+        self._snapshot_sdk = None
         self.normalizations += 1
         self.process_pid += 1
         self.birth = str(int((self.t - 200) * 10000000) + 116444736000000000)
@@ -2015,6 +2017,74 @@ class SnapshotRecoveryBoundary(SnapshotProcessBoundary):
         if not self.service_running: service['pid'] = 0
         return {'marker': marker, 'baselines': [self.file_record(p) for p in self.baselines.root.glob('*.json')], 'service': service, 'sampled_at': self.t + 1, 'endpoint_owned': True}
 
+    def snapshot_sdk_exchange(self, tool, args):
+        """Use registered tools/SDK/cache; simulate only the file OS boundary.
+
+        Normal snapshot/recovery setup is still a fixture.  Its observed state
+        is imported once per explicit incarnation, never before each request.
+        This does not stand in for a complete native RealSupervisor.start.
+        """
+        import asyncio
+        from fakenet.mcp.server import build_mcp_server
+        from fakenet.mcp.tools import AppContext
+        from fakenet.mcp.config import ServiceConfig
+        from fakenet.mcp.configstore import ConfigStore
+        from fakenet.mcp.coordination import Coordinator
+        from fakenet.mcp.testdouble import LifecycleDouble
+        from fakenet.mcp.snapshot import SnapshotError
+        from fakenet.mcp.transportguard import controller_header_state
+        if self._snapshot_sdk is None:
+            boundary = self
+            class FileBoundary(LifecycleDouble):
+                def start(self, coord, controller, identity):
+                    marker, corrupt = boundary.snapshot.read()
+                    if corrupt or not marker:
+                        raise AssertionError('clean existing write preimage required')
+                    try:
+                        with mock.patch('fakenet.mcp.snapshot.os.replace',
+                                        side_effect=PermissionError('controlled file-write OS boundary')):
+                            boundary.snapshot.write(**dict(marker, needs_recovery=True,
+                                state_version=coord.snapshot()['state_version'],
+                                command_id=coord.current_command_id))
+                    except SnapshotError as exc:
+                        return {'state': 'failed', 'run_id': None, 'changed': False,
+                                'failure_reason': str(exc)}
+                    raise AssertionError('write-denied boundary unexpectedly succeeded')
+            runner = FileBoundary()
+            coord = Coordinator(runner)
+            # Fixture initial conditions from the observed pre-write state.
+            # Future versions/replays thereafter are decided by Coordinator.
+            coord._state_version = self.version
+            coord._state = self.state
+            coord._run_id = self.run_id
+            coord.set_config_identity(self.inputs['config_identity'])
+            store = ConfigStore(self.root / 'sdk-custom', ROOT / 'fakenet/configs',
+                                self.root / 'sdk-audit.jsonl')
+            config = ServiceConfig(listen_ip='127.0.0.1', listen_port=28788,
+                                   allowed_host_ips=['127.0.0.1'])
+            self._snapshot_sdk_coord = coord
+            self._snapshot_sdk = build_mcp_server(context=AppContext(
+                config, runner=runner, store=store, coordinator=coord))
+        async def invoke():
+            token = controller_header_state.set('11111111-2222-4333-8444-555555555555')
+            try:
+                return (await self._snapshot_sdk.call_tool(tool, args)).model_dump(
+                    mode='json', by_alias=True)
+            finally:
+                controller_header_state.reset(token)
+        # SDK sync tools execute on its own worker.  Their internal wall-clock
+        # reads are transport implementation details, not caller operations to
+        # replay.  Use the real OS clock, as the transport does on its caller
+        # thread, while leaving tools/Coordinator/SDK/serializer unpatched.
+        with mock.patch('time.time', self._sdk_wall_time):
+            raw = asyncio.run(invoke())
+        snapshot = self._snapshot_sdk_coord.snapshot()
+        self.state = snapshot['state']
+        self.version = snapshot['state_version']
+        self.run_id = snapshot['run_id']
+        return {'status': 200, 'headers': {'Content-Type': 'application/json'},
+                'body': json.dumps({'result': raw}).encode(), 'http_error': False}
+
     def exchange(self, kind, value):
         import base64, re, copy
         if kind == 'http':
@@ -2038,47 +2108,12 @@ class SnapshotRecoveryBoundary(SnapshotProcessBoundary):
                 except supervisor.SupervisorStartError as exc:
                     return self.response({'state': 'failed', 'error': {'code': 'internal_error', 'message': str(exc)}})
                 raise AssertionError('real corrupt snapshot start unexpectedly succeeded')
-            if tool == 'start' and self.denied:
-                from fakenet.mcp.snapshot import SnapshotError
-                from fakenet.mcp import errors
-                marker, _ = self.snapshot.read()
-                def execute(coord):
-                    try:
-                        with mock.patch('os.replace', side_effect=PermissionError('controlled file-write OS boundary')):
-                            self.snapshot.write(**dict(marker, needs_recovery=True, command_id=args['command_id']))
-                    except SnapshotError as exc:
-                        coord.update_health_state('failed', str(exc))
-                        self.failure_reason = str(exc)
-                        return {'state': 'failed', 'run_id': None, 'changed': False,
-                                'failure_reason': str(exc)}
-                    raise AssertionError('write-denied boundary unexpectedly succeeded')
-                # The fixture's Coordinator is constructed after the boundary
-                # has advanced its own version; bind that observed state before
-                # submitting at the real tool's current version.
-                self.coord._state_version = self.version
-                self.coord._state = self.state
-                self.coord._run_id = self.run_id
-                try:
-                    receipt = self.coord.submit(command_id=args['command_id'],
-                        expected_version=args['expected_state_version'],
-                        controller='11111111-2222-4333-8444-555555555555',
-                        controller_valid=True, kind='start', describe={}, execute=execute)
-                except errors.McpError as exc:
-                    snapshot = self.coord.snapshot()
-                    return self.response({'state': snapshot['state'],
-                        'state_version': snapshot['state_version'],
-                        'run_id': snapshot['run_id'], 'changed': False,
-                        'command_id': None, 'error': exc.to_dict()})
-                snapshot = self.coord.snapshot()
-                self.state = snapshot['state']; self.version = snapshot['state_version']
-                self.run_id = snapshot['run_id']
-                return self.response(receipt)
+            if self.denied and tool in ('start', 'get_status', 'get_command_status'):
+                return self.snapshot_sdk_exchange(tool, args)
             result = super().exchange(kind, value)
             if tool in ('load_config', 'start', 'stop', 'get_status'):
                 body = json.loads(result['body']); payload = json.loads(body['result']['content'][0]['text'])
                 payload['health'] = {'process_alive': self.state == 'healthy'}
-                if tool == 'get_status' and self.state == 'failed' and getattr(self, 'failure_reason', None):
-                    payload['failure_reason'] = self.failure_reason
                 if tool != 'get_status' and not payload.get('error'):
                     payload['command_id'] = args['command_id']
                     if tool in ('start', 'stop') and not payload.get('error'):
