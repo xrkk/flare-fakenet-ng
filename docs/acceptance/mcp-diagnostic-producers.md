@@ -2,7 +2,7 @@
 
 The required terminal scope remains native crash, unavailable stacks, and
 unknown cause. Native crash and the explicitly scoped no-stack path have
-unexecuted source candidates. Unknown cause remains blocked. None has a
+source candidates validated only across controlled OS/SDK fixtures. Unknown cause remains blocked. None has a
 complete native pass; the full 62 required cases / 9 implementation items /
 14 acceptance items remain incomplete.
 
@@ -51,13 +51,15 @@ bytes. The default full P04 set is unchanged. Full ACC-014 still requires the
 original five fault classes, the terminal matrix, and independent package-only
 localization; a selected diagnostic cannot supply that qualification.
 
-New unrun tests cover honest unavailable ZIPs, unchanged raw incomplete flags,
+The tests cover honest unavailable ZIPs, unchanged raw incomplete flags,
 the original exporter and ReleaseGate consumer, default rejection, original
 P04 matrix blocking, wrong targets/times/nonces, detached transport, existing
 fallback, bad dump, corrupt basic members, and rehashed false summaries.
-They use benign fixed fixture bytes and modeled OS edges. They have not been
-imported, compiled, collected or executed in this source-only unit. Same-CLI
-positive/negative integration with full originals is still unverified.
+They use benign fixed fixture bytes and modeled OS edges. The subsequent fixed source group completed with 99 passed and 3 skipped;
+the separate complete original MCP group completed with 88 passed and
+128 subtests passed. These groups ran once, in order, with the original
+network/process/write guard. Same-CLI positive/negative integration of the
+new diagnostic producer with full native originals is still unverified.
 
 ## Retained limits
 
@@ -67,13 +69,18 @@ refusal-fixture version inconsistency, the second exposed incomplete manual
 mutation receipts, and the third timed out at 180 seconds with no final
 pytest summary. Both receipt repairs were applied only after exact approvals.
 The supplemental ledger records 429.85749151799246 seconds; its unused fourth
-attempt was closed rather than repeating unchanged work. None of these
-checks tested the new no-stack contract implementation.
+attempt was closed rather than repeating unchanged work. Those three
+checks preceded the new no-stack contract implementation. A separately
+approved two-group check then validated the new source and retained the full
+original MCP file: 2.647126477007987 seconds for the source group and
+213.688417775993 seconds for the original MCP group. Both process trees
+exited, guard/cwd were restored, and the candidate/1028 protected files
+remained unchanged. The new validation allocation is also closed.
 
 Unknown cause has no independently established unattributed terminal stimulus;
 a supplied label, boolean or known Python exception cannot establish it.
 Atomic protection against hostile concurrent path replacement is unproven.
 Real Windows service parentage, Job lifetime, control transport, monitor/dump,
 restoration, independent localization and the complete native/full regression
-remain unverified. Source edits and tests are candidates, not a completion
-claim. No budget or deadline is reopened by these files.
+remain unverified. The SDK results validate their declared fixture scope; they are not a
+complete product or native acceptance claim. No budget or deadline is reopened by these files.
