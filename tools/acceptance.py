@@ -696,7 +696,7 @@ def case_sources(case):
 CASE_IDENTITY_FIELDS = (
     'id', 'suite_id', 'title', 'platforms', 'modes', 'input', 'steps',
     'expected', 'oracle', 'resources', 'readiness', 'timeout', 'cleanup',
-    'dependencies', 'adapter', 'native_driver', 'collection_safe',
+    'dependencies', 'adapter', 'native_driver', 'collection_safe', 'collection_profile',
     'required_for_full', 'stress', 'sources', 'blocked_reason',
 )
 
@@ -864,6 +864,144 @@ def source_plan_head_allowed(root, plan, candidate, registered=None):
     return _git_objects_equal(root, str(source), head, paths)
 
 
+
+# These cases are collection-safe only in the measured contained profiles.
+# The ordinary boolean is deliberately false; it is never a caller bypass.
+CONTAINED_COLLECTION_CASES = {
+    'CORE-WINDOWS-OFFLINE': ('wine-contained-v1', (
+        'test/test_windows_process_redirect.py',
+        'test/test_windows_process_owner.py',
+        'test/test_windows_egress_verdict.py')),
+    'MCP-UNIT-PRODUCT': ('linux-contained-v1', (
+        'test/mcp/test_command_status.py', 'test/mcp/test_capture_health.py')),
+    'MCP-UNIT-TOOLING': ('linux-contained-v1', (
+        'test/mcp/test_acceptance_evidence_writer.py', 'test/mcp/test_bounded_mcp.py')),
+}
+CONTAINED_IMAGE = 'sha256:1b33b518a7c71ecd13264f0d1c41faf254e301b8702e2da8ca11376cff700a5e'
+
+
+def _contained_kernel(root, work_root):
+    """Observe the live boundary, independently of supplied environment JSON."""
+    import os
+    if os.name != 'posix' or os.geteuid() == 0 or not Path('/.dockerenv').is_file():
+        raise ValueError('contained collection requires a non-root container')
+    status = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text().splitlines()
+                  if ':' in line)
+    if int(status.get('CapEff', '1').strip(), 16) or status.get('NoNewPrivs', '').strip() != '1':
+        raise ValueError('container capabilities or privilege escalation are enabled')
+    if {path.name for path in Path('/sys/class/net').iterdir()} != {'lo'}:
+        raise ValueError('container has an external network interface')
+    for path in (Path('/'), Path(root), Path('/run-control')):
+        if not os.statvfs(path).f_flag & os.ST_RDONLY:
+            raise ValueError('container root, source and controls must be read-only')
+    work_root = Path(work_root)
+    if (not work_root.is_absolute() or work_root.resolve() != work_root
+            or not work_root.is_relative_to(Path('/out'))
+            or work_root.is_relative_to(Path(root).resolve())
+            or os.statvfs(work_root).f_flag & os.ST_RDONLY):
+        raise ValueError('contained output is not a separate writable /out directory')
+    return os.uname().nodename
+
+
+def _read_containment_witness(profile):
+    path = Path(profile['attestation'])
+    if (not path.is_absolute() or path.resolve() != path
+            or path.parent != Path('/run-control') or not path.is_file()):
+        raise ValueError('attestation must be the read-only controller original')
+    raw = path.read_bytes()
+    if len(raw) > 2**20 or hashlib.sha256(raw).hexdigest() != profile['sha256']:
+        raise ValueError('contained attestation changed')
+    return json.loads(raw)
+
+
+def contained_collection_context(case, root, environment):
+    """Finite, source-bound exception; returns evidence, never global safety."""
+    import os
+    profile = (environment or {}).get('collection_profile')
+    if not isinstance(profile, dict) or set(profile) != {'kind', 'attestation', 'sha256'}:
+        raise ValueError('collection is not authorised for this case')
+    expected = CONTAINED_COLLECTION_CASES.get(case.get('id'))
+    modules = (case.get('input') or {}).get('modules')
+    if (expected is None or case.get('collection_profile') != expected[0]
+            or profile['kind'] != expected[0] or modules != list(expected[1])):
+        raise ValueError('contained profile or exact module selection differs')
+    required_platform = 'windows' if expected[0] == 'wine-contained-v1' else 'linux'
+    if required_platform not in environment_platforms(environment):
+        raise ValueError('contained profile does not match the target platform')
+    root = Path(root).resolve()
+    hostname = _contained_kernel(root, environment.get('work_root', ''))
+    witness = _read_containment_witness(profile)
+    if (witness.get('schema') != 'fakenet.contained-collection.v1'
+            or witness.get('image') != CONTAINED_IMAGE
+            or witness.get('container_id', '')[:12] != hostname
+            or witness.get('source_root') != str(root)
+            or witness.get('work_root') != environment['work_root']):
+        raise ValueError('contained image, instance or source/output binding differs')
+    source_hashes = witness.get('source_hashes')
+    required_sources = set(modules) | {'tools/acceptance.py', 'docs/acceptance/catalog.json'}
+    if acceptance_native is not None:
+        required_sources.update(acceptance_native.native_source_pins(root))
+    if (not isinstance(source_hashes, dict) or not source_hashes
+            or not required_sources.issubset(source_hashes)):
+        raise ValueError('contained source snapshot is incomplete')
+    for name, digest in source_hashes.items():
+        relative = Path(name)
+        actual = root / relative
+        if (relative.is_absolute() or '..' in relative.parts
+                or actual.resolve() != actual or not actual.is_file()
+                or sha256(actual) != digest):
+            raise ValueError('contained source changed: ' + name)
+    interpreter = Path(environment.get('interpreters', {}).get('python', ''))
+    bound = witness.get('interpreters', {}).get(profile['kind'])
+    if (profile['kind'] == 'linux-contained-v1'
+            and interpreter.resolve() != Path(sys.executable).resolve()):
+        raise ValueError('Linux collection must use the active pinned interpreter')
+    if (not isinstance(bound, dict) or str(interpreter) != bound.get('path')
+            or not interpreter.is_file() or sha256(interpreter) != bound.get('sha256')):
+        raise ValueError('contained interpreter changed')
+    dependencies = bound.get('dependencies')
+    if not isinstance(dependencies, dict) or not dependencies:
+        raise ValueError('contained interpreter dependencies are not pinned')
+    for name, digest in dependencies.items():
+        dependency = Path(name)
+        if not dependency.is_absolute() or not dependency.is_file() or sha256(dependency) != digest:
+            raise ValueError('contained dependency changed: ' + name)
+    if profile['kind'] == 'wine-contained-v1':
+        import zipfile
+        wheel = root / 'wheelhouse/pydivert-2.1.0-py2.py3-none-any.whl'
+        if (bound.get('pydivert_version') != '2.1.0'
+                or sha256(wheel) != '382db488e3c37c03ec9ec94e061a0b24334d78dbaeebb7d4e4d32ce4355d9da1'):
+            raise ValueError('contained Wine dependency must be the pinned pydivert 2.1.0')
+        installed = Path(bound.get('pydivert_root', ''))
+        if not installed.is_absolute() or not installed.is_relative_to(Path('/out')):
+            raise ValueError('Wine dependencies must belong to this output prefix')
+        with zipfile.ZipFile(wheel) as archive:
+            for entry in archive.infolist():
+                if entry.filename.startswith('pydivert/') and not entry.is_dir():
+                    actual = installed / entry.filename.removeprefix('pydivert/')
+                    if not actual.is_file() or sha256(actual) != hashlib.sha256(archive.read(entry)).hexdigest():
+                        raise ValueError('installed pydivert differs from the pinned wheel')
+    return {'profile': profile['kind'], 'container_id': witness['container_id'],
+            'image': witness['image'], 'source_commit': witness['source_commit'],
+            'attestation_sha256': profile['sha256'], 'interpreter_sha256': bound['sha256']}
+
+
+def collection_authorized(case, root, environment):
+    if case.get('collection_safe'):
+        return True
+    try:
+        contained_collection_context(case, root, environment)
+        return True
+    except (ValueError, OSError, KeyError, TypeError):
+        return False
+
+
+def collection_context(case, root, environment):
+    if case.get('collection_safe'):
+        return None
+    return contained_collection_context(case, root, environment)
+
+
 def expected_block(case, actions, platforms, root=ROOT, environment=None, candidate=None):
     """Return the only admissible blocked reason, or None if runnable."""
     if case['adapter'] == 'native':
@@ -893,7 +1031,7 @@ def expected_block(case, actions, platforms, root=ROOT, environment=None, candid
         return None
     if case['adapter'] != 'offline-pytest':
         return case.get('blocked_reason') or 'adapter is not implemented'
-    if not case.get('collection_safe'):
+    if not collection_authorized(case, root, environment):
         return 'collection is not authorised for this case'
     if 'collection' not in actions:
         return 'environment does not allow collection'
@@ -1038,6 +1176,11 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
         if case_identity(stored) != case_identity(reference):
             raise InputError('planned case identity differs from catalog: %s' % case_id)
         expected_reason = expected_block(reference, actions, platforms, root, environment, candidate)
+        if reference.get('collection_profile') and expected_reason is None:
+            context = collection_context(reference, root, environment)
+            if (stored.get('collection_context') != context
+                    or context['source_commit'] != plan.get('harness_commit')):
+                raise InputError('collection context differs from frozen plan: ' + case_id)
         actual_reason = blocked.get(case_id)
         if (expected_reason or None) != (actual_reason or None):
             raise InputError('blocked state differs from registry: %s expected=%r actual=%r'
@@ -1112,7 +1255,8 @@ def collection_nodes(text):
     return nodes
 
 
-def collect_nodes(root, case, python, tmp_dir, log_dir):
+def collect_nodes(root, case, python, tmp_dir, log_dir, environment=None):
+    before = collection_context(case, root, environment)
     data = case.get('input') or {}
     modules = data.get('modules') or ([data['module']] if data.get('module') else [])
     if not modules:
@@ -1127,6 +1271,8 @@ def collect_nodes(root, case, python, tmp_dir, log_dir):
                                text=True, timeout=case['timeout'], check=False)
     log_path.write_text('$ %s\n[exit %d]\n%s\n%s' % (
         ' '.join(command), completed.returncode, completed.stdout, completed.stderr), encoding='utf-8')
+    if collection_context(case, root, environment) != before:
+        raise ToolError('collection context changed during collection')
     if completed.returncode != 0:
         raise ToolError('%s collection failed rc=%d log=%s' % (case['id'], completed.returncode, log_path))
     raw_nodes = collection_nodes(completed.stdout)
@@ -1229,7 +1375,7 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
         record['sources'] = sources
         reason = expected_block(case, actions, platforms, root, environment, candidate)
         collectable = (case['adapter'] == 'offline-pytest'
-                       and case.get('collection_safe')
+                       and collection_authorized(case, root, environment)
                        and 'collection' in actions
                        and case_applicable(case, platforms))
         if case['adapter'] == 'native' and acceptance_native is not None:
@@ -1238,8 +1384,9 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
             record['required_checks'] = list(checks)
             record['run_nodes'] = []
         elif collectable:
+            record['collection_context'] = collection_context(case, root, environment)
             canonical, raw_nodes, log_path = collect_nodes(
-                root, case, python, tmp_dir, run_dir / 'collection')
+                root, case, python, tmp_dir, run_dir / 'collection', environment=environment)
             required_checks[case['id']] = canonical
             record['required_checks'] = canonical
             record['run_nodes'] = raw_nodes
@@ -1380,6 +1527,9 @@ def _sha256_json(value):
 
 
 def _run_offline_case(root, plan, case, case_dir, python, tmp_dir):
+    before = collection_context(case, root, plan['environment'])
+    if before != case.get('collection_context'):
+        raise ToolError('collection context changed before execution')
     started = datetime.now(timezone.utc)
     checks = case.get('required_checks') or []
     run_nodes = case.get('run_nodes') or []
@@ -1396,6 +1546,8 @@ def _run_offline_case(root, plan, case, case_dir, python, tmp_dir):
     with stdout_path.open('xb') as stdout, stderr_path.open('xb') as stderr:
         observation = acceptance_scheduler.run_owned_process(
             command, cwd=root, env=env, stdout=stdout, stderr=stderr, timeout=case['timeout'])
+    if collection_context(case, root, plan['environment']) != before:
+        raise ToolError('collection context changed during execution')
     returncode = observation['returncode']
     timed_out = observation['timed_out']
     process_path = case_dir / 'process.json'

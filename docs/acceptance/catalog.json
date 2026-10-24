@@ -533,7 +533,8 @@
             "test/test_windows_process_redirect.py",
             "test/test_windows_process_owner.py",
             "test/test_windows_egress_verdict.py"
-          ]
+          ],
+          "collection_profile": "wine-contained-v1"
         },
         {
           "id": "CORE-LINUX-OFFLINE",
@@ -653,7 +654,8 @@
             "test/mcp/test_host_stdio.py",
             "test/mcp/test_command_status.py",
             "test/mcp/test_capture_health.py"
-          ]
+          ],
+          "collection_profile": "linux-contained-v1"
         },
         {
           "id": "MCP-UNIT-TOOLING",
@@ -701,7 +703,8 @@
             "test/mcp/test_acceptance_runner_discrimination.py",
             "test/mcp/test_acceptance_evidence_writer.py",
             "test/mcp/test_bounded_mcp.py"
-          ]
+          ],
+          "collection_profile": "linux-contained-v1"
         }
       ]
     },

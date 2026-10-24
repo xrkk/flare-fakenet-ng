@@ -344,3 +344,36 @@ current candidate in S2; the test-side defects were fixed on 2026-10-22:
 * The functional status of process blacklisting on Linux is indeterminate: it
   was thought to have been deficient, however it may have been observed
   passing the tests in the automated test suite.
+
+## Contained offline acceptance profiles
+
+`CORE-WINDOWS-OFFLINE`, `MCP-UNIT-PRODUCT`, and `MCP-UNIT-TOOLING` keep
+`collection_safe: false` for ordinary environments. Their finite profiles are
+`wine-contained-v1` and `linux-contained-v1`. The existing `plan`, `execute`,
+and `judge` entry points all recheck the same profile and source bindings.
+An environment boolean cannot grant collection permission.
+
+The operator supplies `collection_profile` with `kind`, `attestation`, and
+`sha256`. The attestation is a read-only controller original directly under
+`/run-control`, bound to the current Docker instance, fixed image, exact source
+snapshot, interpreter, dependencies, and `/out` workspace. The process also
+observes non-root execution, zero capabilities, no-new-privileges, loopback-only
+networking, and read-only root/source/control mounts before permitting code.
+The controller obtains the instance and image from the real Docker inspection;
+copying another run's attestation or changing the selected modules refuses it.
+The Windows profile uses an owned copy of the image's installed Wine prefix
+with the repository's exact offline `pydivert==2.1.0` wheel. It earns offline
+Wine evidence only, never WinDivert/Windows native or full-regression credit.
+
+For each profile, use the existing CLI with a source candidate and the bound
+environment file, then independently judge the original results:
+
+```text
+python tools/acceptance.py plan --mode selected --case MCP-UNIT-PRODUCT --case MCP-UNIT-TOOLING --candidate candidate.json --environment linux-contained.json --output /out/linux/plan.json
+python tools/acceptance.py execute --plan /out/linux/plan.json
+python tools/acceptance.py judge --plan /out/linux/plan.json --results /out/linux/results --output /out/linux/independent-summary.json
+```
+
+Run the Windows case with its Wine interpreter profile in a separate plan in
+that same owned container. Preserve all raw attempts and stop owned resources
+after judging; unqualified environments continue to report these cases blocked.

@@ -222,3 +222,81 @@ class DeferredInterfaceInputTests(unittest.TestCase):
                             for source in item.get('sources', [])}
         self.assertIn('test/mcp/test_host_stdio.py', excluded_sources)
         self.assertIn('test/mcp/test_acceptance_runner_discrimination.py', excluded_sources)
+
+
+class ContainedCollectionTests(unittest.TestCase):
+    def setUp(self):
+        import copy
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.case = copy.deepcopy(next(case for case in acceptance.all_cases(
+            acceptance.read_catalog(ROOT)) if case['id'] == 'MCP-UNIT-PRODUCT'))
+        self.files = list(self.case['input']['modules']) + ['tools/acceptance.py', 'docs/acceptance/catalog.json']
+        for name in self.files:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('# inert source identity fixture\n')
+        self.python = Path(acceptance.sys.executable)
+        dependency = self.root / 'dependency'
+        dependency.write_text('fixed dependency bytes')
+        self.env = {'targets': ['host-linux'], 'work_root': '/out',
+                    'interpreters': {'python': str(self.python)},
+                    'collection_profile': {'kind': 'linux-contained-v1',
+                                           'attestation': '/run-control/attestation.json',
+                                           'sha256': 'a' * 64}}
+        self.witness = {'schema': 'fakenet.contained-collection.v1',
+            'image': acceptance.CONTAINED_IMAGE, 'container_id': '1' * 64,
+            'source_root': str(self.root), 'work_root': '/out',
+            'source_commit': 'b' * 40,
+            'source_hashes': {name: acceptance.sha256(self.root / name) for name in self.files},
+            'interpreters': {'linux-contained-v1': {'path': str(self.python),
+                'sha256': acceptance.sha256(self.python),
+                'dependencies': {str(dependency): acceptance.sha256(dependency)}}}}
+        self.kernel = mock.patch.object(acceptance, '_contained_kernel', return_value='1' * 12)
+        self.reader = mock.patch.object(acceptance, '_read_containment_witness', return_value=self.witness)
+        self.kernel.start(); self.addCleanup(self.kernel.stop)
+        self.reader.start(); self.addCleanup(self.reader.stop)
+
+    def test_finite_profile_binds_source_and_actual_interpreter(self):
+        observed = acceptance.contained_collection_context(self.case, self.root, self.env)
+        self.assertEqual('1' * 64, observed['container_id'])
+        self.assertFalse(self.case['collection_safe'])
+        self.assertTrue(acceptance.collection_authorized(self.case, self.root, self.env))
+
+    def test_supplied_marker_does_not_override_kernel_refusal(self):
+        with mock.patch.object(acceptance, '_contained_kernel', side_effect=ValueError('external network')):
+            self.assertFalse(acceptance.collection_authorized(self.case, self.root, self.env))
+
+    def test_source_and_interpreter_and_dependency_drift_refuse(self):
+        for path in (self.root / self.files[0], self.root / 'dependency'):
+            before = path.read_bytes()
+            path.write_bytes(before + b'changed')
+            self.assertFalse(acceptance.collection_authorized(self.case, self.root, self.env))
+            path.write_bytes(before)
+        self.witness['interpreters']['linux-contained-v1']['sha256'] = '0' * 64
+        self.assertFalse(acceptance.collection_authorized(self.case, self.root, self.env))
+
+    def test_module_profile_platform_and_instance_substitution_refuse(self):
+        import copy
+        for field, value in [('id', 'other-case'), ('input', {'modules': ['test/extra.py']}),
+                             ('collection_profile', 'wine-contained-v1')]:
+            case = copy.deepcopy(self.case); case[field] = value
+            self.assertFalse(acceptance.collection_authorized(case, self.root, self.env))
+        env = copy.deepcopy(self.env); env['targets'] = ['host-windows']
+        self.assertFalse(acceptance.collection_authorized(self.case, self.root, env))
+        self.witness['container_id'] = '2' * 64
+        self.assertFalse(acceptance.collection_authorized(self.case, self.root, self.env))
+
+    def test_default_missing_profile_cannot_start_collection(self):
+        self.env.pop('collection_profile')
+        with mock.patch.object(acceptance.subprocess, 'run') as run:
+            reason = acceptance.expected_block(self.case, ['collection', 'offline-pytest'],
+                                               {'linux'}, self.root, self.env)
+            self.assertIn('not authorised', reason)
+            run.assert_not_called()
+
+    def test_attestation_path_is_not_an_arbitrary_approval_file(self):
+        self.reader.stop()
+        self.env['collection_profile']['attestation'] = str(self.root / 'approval.json')
+        self.assertFalse(acceptance.collection_authorized(self.case, self.root, self.env))
