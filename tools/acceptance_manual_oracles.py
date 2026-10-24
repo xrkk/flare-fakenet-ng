@@ -12,6 +12,35 @@ from pathlib import Path
 RAW=b'HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nX-Test: <RAW-DATE>\r\nContent-Length: 35\r\nConnection: close\r\n\r\nbody<RAW-DATE>\x00\xff'
 STATIC=b'static-<RAW-DATE>'
 
+def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False):
+    import configparser
+    base=Path(original).resolve();path=base/'manual-result.json'
+    if path.is_symlink() or not path.is_file():raise ValueError('original missing or linked')
+    v=json.loads(path.read_text())
+    if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!='GAP-DIVERTER-SWITCH':raise ValueError('case/schema mismatch')
+    if v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
+    for k in ('candidate_id','source_commit','package_sha256','execution_id'):
+        if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
+    if type(v.get('fixture')) is not bool or v['fixture']!=(expected_inputs.get('fixture') is True):raise ValueError('fixture identity mismatch')
+    if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
+    if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
+    errors=[];data=v.get('diverter_switch') or {}
+    for mode,traffic in (('on','yes'),('off','no')):
+        item=data.get(mode) or {};cfg=Path(item.get('config',''))
+        if not cfg.is_file() or cfg.is_symlink() or item.get('config_sha256')!=hashlib.sha256(cfg.read_bytes()).hexdigest():errors.append(mode+' config missing/changed');continue
+        parser=configparser.ConfigParser();parser.read(cfg)
+        if parser.get('FakeNet','DivertTraffic').lower()!=traffic:errors.append(mode+' traffic value differs')
+        if item.get('error') is not None:errors.append(mode+' production error')
+        after=item.get('after') or {}
+        if mode=='on':
+            if after.get('started') is not True or after.get('diverter') is None or after.get('stop1') is not True or after.get('stop2') is not True or after.get('stop_calls')!=1:errors.append('on start/stop/restore mismatch')
+        else:
+            if after.get('started') is not False or after.get('diverter') is not None or after.get('stop1') is not True or after.get('stop2') is not True:errors.append('off branch created/started diverter')
+    if v.get('source_hashes')!={n:hashlib.sha256((Path(root)/n).read_bytes()).hexdigest() for n in ('fakenet/fakenet.py','fakenet/diverters/linux.py')}:errors.append('source binding mismatch')
+    if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True}:errors.append('cleanup mismatch')
+    out=[{'id':k,'status':'fail' if errors else 'pass'} for k in ('on','off','restore')]
+    return out,not errors,{'failures':errors}
+
 def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False):
     from types import SimpleNamespace
     from fakenet.diverters.diverterbase import DiverterBase,DivertParms
@@ -156,6 +185,7 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
     return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('blacklist','whitelist','mutex')],not errors,{'failures':errors}
 
 def evaluate(root,original,case,expected_inputs,allow_fixture=False):
+    if case=='GAP-DIVERTER-SWITCH':return _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture)
     if case=='GAP-EXECUTECMD':return _evaluate_executecmd(root,original,expected_inputs,allow_fixture)
     if case=='GAP-LIST-MUTEX':return _evaluate_list_mutex(root,original,expected_inputs,allow_fixture)
     if case not in ('GAP-NCSI','GAP-RAW-DATE'):raise NotImplementedError('case is not implemented in this round: '+case)

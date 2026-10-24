@@ -158,6 +158,31 @@ def real_list_mutex(case,out,inputs):
       'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
     _json(out/'manual-result.json',value);return value
 
+def real_diverter_switch(case,out,inputs):
+    import logging
+    from fakenet.fakenet import Fakenet
+    out=Path(out);cfgdir=out/'config';cfgdir.mkdir()
+    base='[FakeNet]\nDivertTraffic: {traffic}\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n'
+    values={}
+    for mode,traffic in (('on','Yes'),('off','No')):
+        cfg=cfgdir/(mode+'.ini');cfg.write_text(base.format(traffic=traffic))
+        f=Fakenet(logging.ERROR);f.parse_config(str(cfg));before={'diverttraffic':f.fakenet_config.get('diverttraffic'),'diverter':None,'listeners':len(f.listeners_config)}
+        try:
+            f.start();created=f.diverter is not None
+            started=getattr(f.diverter,'start_calls',None) if created else 0
+            stop1=f.stop();stop2=f.stop();stopped=getattr(f.diverter,'stop_calls',None) if created else 0
+            after={'diverter':type(f.diverter).__name__ if created else None,'started':bool(created),'stop1':stop1,'stop2':stop2,'stop_calls':stopped,'listeners':len(f.listeners_config)}
+            error=None
+        except BaseException as exc:
+            created=False;after={'diverter':None,'started':False,'stop1':None,'stop2':None,'stop_calls':0,'listeners':len(f.listeners_config)};error={'type':type(exc).__name__,'message':str(exc)}
+        values[mode]={'config':str(cfg),'config_sha256':sha256(cfg),'before':before,'after':after,'error':error,'start_calls':started}
+    success=(values['on']['after']['started'] is True and values['on']['after']['stop1'] is True and values['on']['after']['stop2'] is True and values['on']['after']['stop_calls']==1 and values['off']['after']['started'] is False and values['off']['after']['diverter'] is None and values['off']['error'] is None)
+    value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,'diverter_switch':values,
+      'source_hashes':{n:sha256(Path(__file__).resolve().parents[1]/n) for n in ('fakenet/fakenet.py','fakenet/diverters/linux.py')},
+      'started_at':datetime.now(timezone.utc).isoformat(),'cleanup':{'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True},
+      'checks':[{'id':x,'status':'pass' if success else 'fail'} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
+    _json(out/'manual-result.json',value);return value
+
 def real_executecmd(case,out,inputs):
     from fakenet.diverters.diverterbase import DiverterBase,DivertParms,ListenerPorts
     from fakenet.diverters.fnpacket import PacketCtx
@@ -275,6 +300,11 @@ def run(case,out,inputs=None,memory_mode=False):
         if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
         out.mkdir(parents=True,exist_ok=False)
         return real_executecmd(case,out,inputs)
+    if case=='GAP-DIVERTER-SWITCH':
+        validate_inputs(case,inputs);out=Path(out).absolute()
+        if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
+        out.mkdir(parents=True,exist_ok=False)
+        return real_diverter_switch(case,out,inputs)
     if case not in ('GAP-NCSI','GAP-RAW-DATE'):raise NotImplementedError('case is not implemented in this round: '+case)
     validate_inputs(case,inputs);out=Path(out).absolute()
     if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
