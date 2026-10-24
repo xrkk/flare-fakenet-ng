@@ -2045,15 +2045,8 @@ class SnapshotRecoveryBoundary(SnapshotProcessBoundary):
                     with mock.patch('os.replace', side_effect=PermissionError('controlled file-write OS boundary')):
                         self.snapshot.write(**dict(marker, needs_recovery=True, command_id=args['command_id']))
                 except SnapshotError as exc:
-                    # Coordinator.submit consumed the accepted command before
-                    # the storage callback failed.  Report that consumed version
-                    # without turning the failed write into owned success.
-                    self.version += 1
                     self.state = 'failed'
-                    return self.response({'state': 'failed', 'state_version': self.version,
-                                          'run_id': None, 'changed': False,
-                                          'command_id': args['command_id'],
-                                          'failure_reason': str(exc), 'error': None})
+                    return self.response({'state': 'failed', 'run_id': None, 'failure_reason': str(exc), 'error': None})
                 raise AssertionError('write-denied boundary unexpectedly succeeded')
             result = super().exchange(kind, value)
             if tool in ('load_config', 'start', 'stop', 'get_status'):
