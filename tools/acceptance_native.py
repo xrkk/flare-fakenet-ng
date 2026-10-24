@@ -465,10 +465,14 @@ def driver_table(root):
             'checks': [], 'requires': ['native'], 'package_required': True,
         },
         'linux-runtime': {
-            'implemented': False,
-            'missing': 'Linux SingleHost/MultiHost native driver and deploy/update driver not implemented',
-            'platforms': ['linux'], 'modes': ['singlehost', 'multihost'],
-            'checks': [], 'requires': ['native'], 'package_required': True,
+            'implemented': False, 'production_kind': 'linux-runtime',
+            'missing': 'SingleHost originals driver available, but full Linux case still lacks independent MultiHost and accepted-base deployment recovery',
+            'partial': 'SingleHost produces originals; MultiHost/deployment recovery remain blocked or fail the full required case',
+            'platforms': ['linux'], 'modes': ['singlehost', 'multihost', 'native'],
+            'checks': [], 'requires': ['native'], 'package_required': False,
+            'resources': ['linux-vm', 'root'],
+            'argv': ['{python}', '{root}/tools/acceptance_linux_runtime.py',
+                     '--case', '{case_id}', '--inputs', '{linux_inputs}', '--output', '{output}/driver'],
         },
         'manual-headless': {
             'implemented': False,
@@ -506,6 +510,8 @@ def driver_table(root):
 
 
 def select_checks(driver, case, environment=None):
+    if driver.get('production_kind') == 'linux-runtime':
+        return list(__import__('acceptance_linux_runtime').CHECKS[case['id']])
     if driver.get('production_kind','').startswith('dual-pcap-'):
         if case.get('stress'):
             return []
@@ -547,7 +553,10 @@ def validate_case(case, root, environment=None):
     if not name or name not in drivers:
         raise ValueError('%s has an unknown native driver' % case['id'])
     driver=drivers[name]
-    if not driver.get('implemented'):return driver,[]
+    if not driver.get('implemented'):
+        if driver.get('production_kind')=='linux-runtime':
+            return driver,list(__import__('acceptance_linux_runtime').CHECKS[case['id']])
+        return driver,[]
     checks=select_checks(driver,case,environment)
     if not checks and not case.get('stress'):
         raise ValueError('%s driver has no declared checks' % case['id'])
@@ -579,7 +588,41 @@ def manual_inputs(plan,case,output_dir):
     return value
 
 
+def linux_inputs(plan, case, output_dir, root=None):
+    import acceptance_linux_runtime as linux
+    options = plan['environment'].get('linux')
+    if not isinstance(options, dict) or options.get('schema') != 'fakenet.linux-runtime-options.v2':
+        raise ValueError('explicit fixed Linux runtime options required')
+    if case['id'] != 'LINUX-SINGLEHOST':
+        raise NotImplementedError('Linux deployment needs separate fresh-install and pinned accepted-base recovery targets')
+    if set(options) != {'schema', 'config', 'config_sha256', 'mode', 'probe'}:
+        raise ValueError('unknown Linux runtime options')
+    if options['mode'] != 'singlehost':
+        raise NotImplementedError('Linux MultiHost second-target original producer not connected')
+    target = plan['environment']['native_runtime']['identity']
+    candidate = plan['candidate']; source_root = Path(root) if root else Path(__file__).resolve().parents[1]
+    pins = ['fakenet/mcp/linuxrunner.py', 'fakenet/diverters/linuxnetpolicy.py',
+            'deploy/linux/deploy.sh', 'deploy/linux/update-idle.py',
+            'tools/acceptance_linux_runtime.py', 'tools/acceptance_linux_runtime_oracles.py']
+    if not candidate.get('package_sha256'):
+        raise ValueError('bound Linux candidate package SHA-256 required')
+    return dict(schema=linux.INPUT_SCHEMA, case=case['id'],
+                candidate_id=candidate.get('candidate_id') or 'linux-candidate',
+                source_commit=candidate['source_commit'], package_sha256=candidate['package_sha256'],
+                execution_id=plan['execution_id'], target=target, owned_root=str(Path(output_dir)/'driver'),
+                source_hashes={rel: sha256(source_root/rel) for rel in pins},
+                **{k: options[k] for k in ('config', 'config_sha256', 'mode', 'probe')})
+
+
 def runtime_block(case, environment):
+    if case.get('native_driver') == 'linux-runtime':
+        if case['id'] != 'LINUX-SINGLEHOST':
+            return 'Linux fresh-install and accepted-base update recovery are not connected; no service operation authorized by this driver'
+        options = environment.get('linux') or {}
+        if options.get('schema') != 'fakenet.linux-runtime-options.v2' or set(options) != {'schema','config','config_sha256','mode','probe'}:
+            return 'explicit exact Linux runtime options required'
+        if options.get('mode') != 'singlehost':
+            return 'Linux MultiHost requires an independent second target; local probe is insufficient'
     if case.get('native_driver') in ('manual-ncsi','manual-raw-date'):
         runtime=environment.get('native_runtime') or {}
         if runtime.get('transport')=='manual-loopback-fixture':
@@ -1008,7 +1051,8 @@ def production_command(root,case,plan,output_dir,python):
              'headless_inputs':str(Path(output_dir).resolve()/'headless-inputs.json'),
              'mcp_inputs':str(Path(output_dir).resolve()/'mcp-inputs.json'),
              'case_id':case['id'], 'checks':','.join(checks),
-             'manual_inputs':str(Path(output_dir).resolve()/'manual-inputs.json')}
+             'manual_inputs':str(Path(output_dir).resolve()/'manual-inputs.json'),
+             'linux_inputs':str(Path(output_dir).resolve()/'linux-inputs.json')}
     if driver['production_kind'] in ('process-redirect','payload-three-way'):
         headless_inputs(plan['environment'],driver,checks)
     if driver['production_kind'].startswith('policy-'):
@@ -1028,6 +1072,15 @@ def original_evaluation(root,case,plan,output_dir):
     import acceptance_oracles
     driver,checks=validate_case(case,root,plan['environment'])
     directory=Path(output_dir)/'driver'
+    if driver['production_kind'] == 'linux-runtime':
+        import acceptance_linux_runtime_oracles as linux_oracle
+        expected = linux_inputs(plan, case, output_dir, root)
+        if json.loads(_read(Path(output_dir)/'linux-inputs.json')) != expected:
+            raise ValueError('Linux frozen request changed')
+        rows, clean, detail = linux_oracle.evaluate(root, directory, case['id'], checks,
+            allow_fixture=plan.get('candidate',{}).get('offline_fixture') is True, expected_inputs=expected)
+        evaluation = _judge_rows(rows, checks); evaluation['details'] = detail
+        return evaluation, clean
     if driver['production_kind'].startswith('manual-'):
         import acceptance_manual_oracles
         expected=manual_inputs(plan,case,output_dir)
@@ -1098,6 +1151,7 @@ def run_production(root,case,plan,output_dir,python):
     if driver['production_kind'] in ('process-redirect','payload-three-way'):
         write_json(output_dir/'headless-inputs.json',headless_inputs(plan['environment'],driver,checks))
     if driver['production_kind'].startswith('manual-'):write_json(output_dir/'manual-inputs.json',manual_inputs(plan,case,output_dir))
+    if driver['production_kind']=='linux-runtime':write_json(output_dir/'linux-inputs.json',linux_inputs(plan,case,output_dir,root))
     write_json(output_dir/'request.json',request)
     write_json(output_dir/'target.json',actual)
     started=datetime.now(timezone.utc)
@@ -1194,7 +1248,8 @@ def remote_guest_command(driver,runtime,output_root,checks,fixture=False):
              'output':output_root,'modes':','.join(checks),
              'policy_inputs':str(output_root)+'/policy-inputs.json',
              'headless_inputs':str(output_root)+'/headless-inputs.json',
-             'checks':','.join(checks)}
+             'checks':','.join(checks), 'case_id':driver.get('case_id','LINUX-SINGLEHOST'),
+             'linux_inputs':str(output_root)+'/linux-inputs.json'}
     argv=fixed_argv(driver,context)
     if driver.get('production_kind')=='dual-pcap-linux':
         for mode in checks:argv.extend(['--case',mode])
@@ -1301,6 +1356,8 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
         expected_request['headless']=headless_inputs(plan['environment'],driver,checks)
     if driver['production_kind'].startswith('policy-'):
         expected_request['policy']=policy_inputs(plan['environment'],scenario=driver['production_kind'].split('-',1)[1])
+    if driver['production_kind']=='linux-runtime':
+        expected_request['linux']=plan['environment']['linux']
     if request!=expected_request:raise ValueError('remote original request differs from frozen plan')
     expected=remote_guest_command(driver,plan['environment']['native_runtime'],request['output_root'],checks,plan.get('candidate',{}).get('offline_fixture') is True)
     if receipt.get('command')!=expected or receipt.get('native_target')!=request['target'] or receipt.get('required_checks')!=checks:
@@ -1321,7 +1378,14 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
     if not seen or seen!=actual:raise ValueError('guest original artifact set is not exact')
     if not {'stdout.log','stderr.log','request.json','target.json'}.issubset(seen):
         raise ValueError('guest execution originals missing')
-    if driver['production_kind']=='upstream-result':
+    if driver['production_kind']=='linux-runtime':
+        import acceptance_linux_runtime_oracles as linux_oracle
+        expected_inputs=linux_inputs(plan,case,request['output_root'],root)
+        if json.loads(_read(Path(original)/'linux-inputs.json'))!=expected_inputs:
+            raise ValueError('remote Linux original request differs')
+        rows,clean,detail=linux_oracle.evaluate(root,Path(original)/'driver',case['id'],checks,
+            expected_inputs=expected_inputs,allow_fixture=plan['candidate'].get('offline_fixture') is True)
+    elif driver['production_kind']=='upstream-result':
         rows,clean=acceptance_oracles.upstream(root,Path(original)/'driver',checks)
     elif driver['production_kind'].startswith('policy-'):
         import acceptance_policy_oracles
@@ -1399,7 +1463,7 @@ def native_source_pins(root):
         if path.is_file():paths.add(path)
     for name in ('acceptance.py','acceptance_native.py','acceptance_runtime.py','acceptance_oracles.py',
                  'acceptance_guest.py','acceptance_windows.py','acceptance_linux.py','acceptance_multihost.py',
-                 'acceptance_manual.py','acceptance_manual_oracles.py','acceptance_collection.py','acceptance_package.py','acceptance_orchestration.py','acceptance_scheduler.py','acceptance_policy.py','acceptance_policy_oracles.py','acceptance_headless.py','acceptance_headless_oracles.py','acceptance_mcp.py','acceptance_mcp_oracles.py'):
+                 'acceptance_linux_runtime.py','acceptance_linux_runtime_oracles.py','acceptance_manual.py','acceptance_manual_oracles.py','acceptance_collection.py','acceptance_package.py','acceptance_orchestration.py','acceptance_scheduler.py','acceptance_policy.py','acceptance_policy_oracles.py','acceptance_headless.py','acceptance_headless_oracles.py','acceptance_mcp.py','acceptance_mcp_oracles.py'):
         path=root/'tools'/name
         if path.is_file():paths.add(path)
     path=root/'docs/acceptance/catalog.json'

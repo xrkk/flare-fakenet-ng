@@ -3522,7 +3522,12 @@
           "sources": [
             "fakenet/mcp/linuxrunner.py",
             "fakenet/diverters/linuxnetpolicy.py",
-            "deploy/linux/README.md"
+            "deploy/linux/README.md",
+            "tools/acceptance_linux_runtime.py",
+            "tools/acceptance_linux_runtime_oracles.py",
+            "tools/acceptance_native.py",
+            "tools/acceptance_guest.py",
+            "tools/acceptance_orchestration.py"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "linux-runtime"
@@ -3569,7 +3574,12 @@
           "sources": [
             "fakenet/mcp/linuxrunner.py",
             "fakenet/diverters/linuxnetpolicy.py",
-            "deploy/linux/README.md"
+            "deploy/linux/README.md",
+            "tools/acceptance_linux_runtime.py",
+            "tools/acceptance_linux_runtime_oracles.py",
+            "tools/acceptance_native.py",
+            "tools/acceptance_guest.py",
+            "tools/acceptance_orchestration.py"
           ],
           "blocked_reason": "native adapter not implemented in S1",
           "native_driver": "linux-runtime"

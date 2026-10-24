@@ -23,7 +23,7 @@ def execute(request,root):
                frozenset(fields|{'policy','mcp'}),
                frozenset(fields|{'headless','mcp'}),
                frozenset(fields|{'policy','headless','mcp'})}
-    if frozenset(request) not in allowed or request['schema']!='fakenet.native-guest-request.v1':
+    if frozenset(request) not in allowed | {frozenset(fields|{'linux'})} or request['schema']!='fakenet.native-guest-request.v1':
         raise ValueError('invalid guest request schema/fields')
     if request['actions']!=['native']:
         raise ValueError('guest native action not authorized')
@@ -45,6 +45,8 @@ def execute(request,root):
         environment['headless']=request['headless']
     if 'mcp' in request:
         environment['mcp']=request['mcp']
+    if 'linux' in request:
+        environment['linux']=request['linux']
     driver,checks=native.validate_case(matches[0],root,environment)
     if not driver.get('production_kind') or checks!=request['checks']:
         raise ValueError('guest fixed driver/check selection mismatch')
@@ -55,7 +57,7 @@ def execute(request,root):
     output=Path(request['output_root'])
     if not output.is_absolute():raise ValueError('guest output root must be absolute')
     output.mkdir(parents=True,exist_ok=False)
-    plan={'candidate':request['candidate'],'environment':environment}
+    plan={'candidate':request['candidate'],'environment':environment,'execution_id':request['execution_id']}
     receipt=native.run_production(root,matches[0],plan,output,sys.executable)
     result={'schema':'fakenet.native-guest-result.v1','execution_id':request['execution_id'],
             'case_id':request['case_id'],'request':request,'receipt':receipt}

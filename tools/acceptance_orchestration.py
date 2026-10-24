@@ -44,10 +44,12 @@ def guest_request(root,case,plan,output):
     catalog=json.loads((Path(root)/'docs/acceptance/catalog.json').read_text())
     registered=next(c for s in catalog['suites'] for c in s.get('cases',[]) if c['id']==case['id'])
     checks=native.validate_case(case,root,plan['environment'])[1]
-    return {'schema':'fakenet.native-guest-request.v1','case_id':case['id'],'case':registered,'checks':checks,
+    value = {'schema':'fakenet.native-guest-request.v1','case_id':case['id'],'case':registered,'checks':checks,
             'source_hashes':source_hashes(plan,case),'candidate':plan['candidate'],
             'target':plan['environment']['native_runtime']['identity'],'output_root':output,
             'execution_id':plan['execution_id'],'actions':['native']}
+    if case.get('native_driver')=='linux-runtime':value['linux']=plan['environment']['linux']
+    return value
 
 
 def run_linux(root,case,plan,output_dir):
