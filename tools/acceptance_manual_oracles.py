@@ -12,7 +12,42 @@ from pathlib import Path
 RAW=b'HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nX-Test: <RAW-DATE>\r\nContent-Length: 35\r\nConnection: close\r\n\r\nbody<RAW-DATE>\x00\xff'
 STATIC=b'static-<RAW-DATE>'
 
+def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
+    from fakenet.diverters.diverterbase import ListenerMeta,ListenerPorts,ListenerBlackWhiteList
+    base=Path(original).resolve();v=json.loads((base/'manual-result.json').read_text())
+    if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!='GAP-LIST-MUTEX':raise ValueError('case/schema mismatch')
+    if v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
+    for k in ('candidate_id','source_commit','package_sha256','execution_id'):
+        if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
+    if v.get('fixture') and not allow_fixture:raise ValueError('fixture cannot native credit')
+    if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
+    rows=v.get('list_mutex',{}).get('observations',[]);mutex=v.get('list_mutex',{}).get('mutex',[])
+    ports=ListenerPorts()
+    def add(meta):ports.addListener(meta)
+    m=ListenerMeta('TCP',8080);m.setProcessBlacklist('evil.exe, helper.exe');add(m)
+    m=ListenerMeta('TCP',8081);m.setProcessWhitelist('good.exe');add(m)
+    m=ListenerMeta('TCP',8082);m.setHostBlacklist('evil.test, bad.test');add(m)
+    m=ListenerMeta('TCP',8083);m.setHostWhitelist('good.test');add(m)
+    expected=[{'name':'proc-black','hit':ports.isProcessBlackListHit('TCP',8080,'evil.exe'),'allow':ports.isProcessBlackListHit('TCP',8080,'clean.exe')},
+      {'name':'proc-white','miss_allowed':ports.isProcessWhiteListMiss('TCP',8081,'other.exe'),'miss_denied':ports.isProcessWhiteListMiss('TCP',8081,'good.exe')},
+      {'name':'host-black','hit':ports.isHostBlackListHit('TCP',8082,'evil.test'),'allow':ports.isHostBlackListHit('TCP',8082,'good.test')},
+      {'name':'host-white','miss_allowed':ports.isHostWhiteListMiss('TCP',8083,'other.test'),'miss_denied':ports.isHostWhiteListMiss('TCP',8083,'good.test')}]
+    errors=[]
+    if rows!=expected:errors.append('original list predicates disagree')
+    if len(mutex)!=2:errors.append('mutex coverage missing')
+    for kind in ('process','host'):
+        meta=ListenerMeta('TCP',8090 if kind=='process' else 8091)
+        try:
+            if kind=='process':meta.setProcessBlacklist('a.exe');meta.setProcessWhitelist('b.exe')
+            else:meta.setHostBlacklist('a.test');meta.setHostWhitelist('b.test')
+            errors.append(kind+' mutex unexpectedly accepted')
+        except ListenerBlackWhiteList as exc:
+            if not str(exc) or meta.proc_wl is not None or meta.proc_bl is not None or meta.host_wl is not None or meta.host_bl is not None:errors.append(kind+' mutex not cleared')
+    checks=['blacklist','whitelist','mutex'];out=[{'id':k,'status':'fail' if errors else 'pass'} for k in checks]
+    return out,not errors,{'failures':errors}
+
 def evaluate(root,original,case,expected_inputs,allow_fixture=False):
+    if case=='GAP-LIST-MUTEX':return _evaluate_list_mutex(root,original,expected_inputs,allow_fixture)
     if case not in ('GAP-NCSI','GAP-RAW-DATE'):raise NotImplementedError('case is not implemented in this round: '+case)
     base=Path(original).resolve()
     def read(path):

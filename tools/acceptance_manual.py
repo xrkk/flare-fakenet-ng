@@ -94,6 +94,40 @@ def real_ncsi(case,out,inputs):
                 _json(out/('lifecycle-'+transport+'.json'),states[transport])
     return dict(queries=rows,listener={'bind':'127.0.0.1','transports':states})
 
+def real_list_mutex(case,out,inputs):
+    from fakenet.diverters.diverterbase import ListenerMeta,ListenerPorts,ListenerBlackWhiteList
+    out=Path(out); rows=[]; ports=ListenerPorts()
+    def add(proto,port,proc_bl=None,proc_wl=None,host_bl=None,host_wl=None):
+        meta=ListenerMeta(proto,port)
+        if proc_bl is not None:meta.setProcessBlacklist(proc_bl)
+        if proc_wl is not None:meta.setProcessWhitelist(proc_wl)
+        if host_bl is not None:meta.setHostBlacklist(host_bl)
+        if host_wl is not None:meta.setHostWhitelist(host_wl)
+        ports.addListener(meta);return meta
+    add('TCP',8080,proc_bl='evil.exe, helper.exe')
+    add('TCP',8081,proc_wl='good.exe')
+    add('TCP',8082,host_bl='evil.test, bad.test')
+    add('TCP',8083,host_wl='good.test')
+    rows.append({'name':'proc-black','hit':ports.isProcessBlackListHit('TCP',8080,'evil.exe'),'allow':ports.isProcessBlackListHit('TCP',8080,'clean.exe')})
+    rows.append({'name':'proc-white','miss_allowed':ports.isProcessWhiteListMiss('TCP',8081,'other.exe'),'miss_denied':ports.isProcessWhiteListMiss('TCP',8081,'good.exe')})
+    rows.append({'name':'host-black','hit':ports.isHostBlackListHit('TCP',8082,'evil.test'),'allow':ports.isHostBlackListHit('TCP',8082,'good.test')})
+    rows.append({'name':'host-white','miss_allowed':ports.isHostWhiteListMiss('TCP',8083,'other.test'),'miss_denied':ports.isHostWhiteListMiss('TCP',8083,'good.test')})
+    mutex=[]
+    for kind in ('process','host'):
+        meta=ListenerMeta('TCP',8090+(0 if kind=='process' else 1))
+        try:
+            if kind=='process':
+                meta.setProcessBlacklist('a.exe');meta.setProcessWhitelist('b.exe')
+            else:
+                meta.setHostBlacklist('a.test');meta.setHostWhitelist('b.test')
+            error=None
+        except ListenerBlackWhiteList as exc:
+            error={'type':type(exc).__name__,'message':str(exc)}
+        mutex.append({'kind':kind,'error':error,'process_cleared':(meta.proc_wl is None and meta.proc_bl is None),'host_cleared':(meta.host_wl is None and meta.host_bl is None)})
+    good=all([rows[0]['hit'] and not rows[0]['allow'],rows[1]['miss_allowed'] and not rows[1]['miss_denied'],rows[2]['hit'] and not rows[2]['allow'],rows[3]['miss_allowed'] and not rows[3]['miss_denied'],all(x['error'] and x['process_cleared'] and x['host_cleared'] for x in mutex)])
+    value={'schema':SCHEMA,'case':case,'fixture':bool(inputs.get('fixture',False)),'inputs':inputs,'list_mutex':{'ports':[8080,8081,8082,8083],'observations':rows,'mutex':mutex},'started_at':datetime.now(timezone.utc).isoformat(),'cleanup':{'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True},'checks':[{'id':x,'status':'pass' if good else 'fail'} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
+    _json(out/'manual-result.json',value);return value
+
 def real_raw_date(case,out,inputs):
     from fakenet.listeners.HTTPListener import HTTPListener
     config=out/'config';config.mkdir();web=out/'webroot';web.mkdir()
@@ -132,6 +166,11 @@ def real_raw_date(case,out,inputs):
 
 def run(case,out,inputs=None,memory_mode=False):
     if case not in CASES:raise ValueError('unknown case')
+    if case=='GAP-LIST-MUTEX':
+        validate_inputs(case,inputs);out=Path(out).absolute()
+        if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
+        out.mkdir(parents=True,exist_ok=False)
+        return real_list_mutex(case,out,inputs)
     if case not in ('GAP-NCSI','GAP-RAW-DATE'):raise NotImplementedError('case is not implemented in this round: '+case)
     validate_inputs(case,inputs);out=Path(out).absolute()
     if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')

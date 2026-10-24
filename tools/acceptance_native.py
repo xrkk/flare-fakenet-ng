@@ -498,6 +498,15 @@ def driver_table(root):
             'argv': ['{python}','{root}/tools/acceptance_manual.py','--case','{case_id}',
                      '--inputs','{manual_inputs}','--output','{output}/driver'],
         },
+        'manual-list-mutex': {
+            'implemented': True, 'production_kind': 'manual-list-mutex',
+            'platforms': ['windows'], 'modes': ['singlehost'],
+            'checks': ['blacklist','whitelist','mutex'],
+            'resources': ['original-listener-list-validation'],
+            'requires': ['native'], 'package_required': False,
+            'argv': ['{python}','{root}/tools/acceptance_manual.py','--case','{case_id}',
+                     '--inputs','{manual_inputs}','--output','{output}/driver'],
+        },
         'build-identity': {
             'implemented': True, 'production_kind': 'package-identity',
             'platforms': ['windows', 'linux'], 'modes': ['offline'],
@@ -623,7 +632,7 @@ def runtime_block(case, environment):
             return 'explicit exact Linux runtime options required'
         if options.get('mode') != 'singlehost':
             return 'Linux MultiHost requires an independent second target; local probe is insufficient'
-    if case.get('native_driver') in ('manual-ncsi','manual-raw-date'):
+    if case.get('native_driver') in ('manual-ncsi','manual-raw-date','manual-list-mutex'):
         runtime=environment.get('native_runtime') or {}
         if runtime.get('transport')=='manual-loopback-fixture':
             return None  # Full fixture/candidate/observed-host gate in expected_block and run_production.
