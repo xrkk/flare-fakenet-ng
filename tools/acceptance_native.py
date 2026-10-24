@@ -465,9 +465,9 @@ def driver_table(root):
             'checks': [], 'requires': ['native'], 'package_required': True,
         },
         'linux-runtime': {
-            'implemented': False, 'production_kind': 'linux-runtime',
-            'missing': 'SingleHost originals driver available, but full Linux case still lacks independent MultiHost and accepted-base deployment recovery',
-            'partial': 'SingleHost produces originals; MultiHost/deployment recovery remain blocked or fail the full required case',
+            'implemented': True, 'production_kind': 'linux-runtime',
+            'missing': 'SingleHost still requires an independent MultiHost target; accepted-base deployment is connected',
+            'partial': 'SingleHost and deployment update originals are connected; MultiHost remains blocked',
             'platforms': ['linux'], 'modes': ['singlehost', 'multihost', 'native'],
             'checks': [], 'requires': ['native'], 'package_required': True,
             'resources': ['linux-vm', 'root'],
@@ -672,14 +672,10 @@ def manual_inputs(plan,case,output_dir):
 def linux_inputs(plan, case, output_dir, root=None):
     import acceptance_linux_runtime as linux
     options = plan['environment'].get('linux')
-    if not isinstance(options, dict) or options.get('schema') != 'fakenet.linux-runtime-options.v2':
+    if not isinstance(options, dict):
         raise ValueError('explicit fixed Linux runtime options required')
-    if case['id'] != 'LINUX-SINGLEHOST':
-        raise NotImplementedError('Linux deployment needs separate fresh-install and pinned accepted-base recovery targets')
-    if set(options) != {'schema', 'config', 'config_sha256', 'mode', 'probe'}:
-        raise ValueError('unknown Linux runtime options')
-    if options['mode'] != 'singlehost':
-        raise NotImplementedError('Linux MultiHost second-target original producer not connected')
+    if case['id'] not in linux.CASES:
+        raise ValueError('unknown Linux deployment case')
     target = plan['environment']['native_runtime']['identity']
     candidate = plan['candidate']; source_root = Path(root) if root else Path(__file__).resolve().parents[1]
     pins = ['fakenet/mcp/linuxrunner.py', 'fakenet/diverters/linuxnetpolicy.py',
@@ -687,23 +683,51 @@ def linux_inputs(plan, case, output_dir, root=None):
             'tools/acceptance_linux_runtime.py', 'tools/acceptance_linux_runtime_oracles.py']
     if not candidate.get('package_sha256'):
         raise ValueError('bound Linux candidate package SHA-256 required')
-    return dict(schema=linux.INPUT_SCHEMA, case=case['id'],
-                candidate_id=candidate.get('candidate_id') or 'linux-candidate',
-                source_commit=candidate['source_commit'], package_sha256=candidate['package_sha256'],
-                execution_id=plan['execution_id'], target=target, owned_root=str(Path(output_dir)/'driver'),
-                source_hashes={rel: sha256(source_root/rel) for rel in pins},
+    common = dict(schema=linux.INPUT_SCHEMA, case=case['id'],
+                  candidate_id=candidate.get('candidate_id') or 'linux-candidate',
+                  source_commit=candidate['source_commit'], package_sha256=candidate['package_sha256'],
+                  execution_id=plan['execution_id'], target=target,
+                  source_hashes={rel: sha256(source_root/rel) for rel in pins})
+    if case['id'] == 'LINUX-DEPLOY-UPDATE':
+        if options.get('schema') != 'fakenet.linux-deploy-options.v1':
+            raise ValueError('explicit fixed Linux deployment options required')
+        if set(options) != {'schema', 'accepted_update_root', 'install_package',
+                            'install_manifest_sha256', 'update_package',
+                            'update_manifest_sha256', 'operation'}:
+            raise ValueError('unknown Linux deployment options')
+        value = dict(common, fresh_root=str(Path(output_dir)/'driver'),
+                     **{key: options[key] for key in ('accepted_update_root', 'install_package',
+                                                      'install_manifest_sha256', 'update_package',
+                                                      'update_manifest_sha256', 'operation')})
+        if candidate.get('offline_fixture') is True:
+            value['fixture'] = True
+        return value
+    if options.get('schema') != 'fakenet.linux-runtime-options.v2':
+        raise ValueError('explicit fixed Linux runtime options required')
+    if set(options) != {'schema', 'config', 'config_sha256', 'mode', 'probe'}:
+        raise ValueError('unknown Linux runtime options')
+    if options['mode'] != 'singlehost':
+        raise NotImplementedError('Linux MultiHost second-target original producer not connected')
+    return dict(common, owned_root=str(Path(output_dir)/'driver'),
                 **{k: options[k] for k in ('config', 'config_sha256', 'mode', 'probe')})
 
 
 def runtime_block(case, environment):
     if case.get('native_driver') == 'linux-runtime':
-        if case['id'] != 'LINUX-SINGLEHOST':
-            return 'Linux fresh-install and accepted-base update recovery are not connected; no service operation authorized by this driver'
         options = environment.get('linux') or {}
+        if case['id'] == 'LINUX-DEPLOY-UPDATE':
+            if options.get('schema') != 'fakenet.linux-deploy-options.v1' or set(options) != {
+                    'schema', 'accepted_update_root', 'install_package', 'install_manifest_sha256',
+                    'update_package', 'update_manifest_sha256', 'operation'}:
+                return 'explicit exact Linux deployment options required'
+            return None
+        if case['id'] != 'LINUX-SINGLEHOST':
+            return 'unknown Linux runtime case'
         if options.get('schema') != 'fakenet.linux-runtime-options.v2' or set(options) != {'schema','config','config_sha256','mode','probe'}:
             return 'explicit exact Linux runtime options required'
         if options.get('mode') != 'singlehost':
             return 'Linux MultiHost requires an independent second target; local probe is insufficient'
+        return 'SingleHost remains blocked until an independently observed MultiHost target is available'
     if case.get('native_driver') in ('manual-ncsi','manual-raw-date','manual-list-mutex','manual-executecmd','manual-diverter-switch','manual-dumppackets','manual-syslog-icmp','manual-ctrlc-ipc','manual-linux-flush-interface','manual-network-fix','manual-standalone'):
         runtime=environment.get('native_runtime') or {}
         if runtime.get('transport')=='manual-loopback-fixture':
