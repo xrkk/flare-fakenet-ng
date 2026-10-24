@@ -62,6 +62,13 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
         except ListenerBlackWhiteList as exc:error={'type':type(exc).__name__,'message':str(exc)}
         mutex.append({'kind':kind,'error':error,'process_cleared':meta.proc_wl is None and meta.proc_bl is None,'host_cleared':meta.host_wl is None and meta.host_bl is None})
     if data.get('mutex')!=mutex:errors.append('original mutex records missing/duplicate/foreign/error mismatch')
+    for entry in mutex:
+        error=entry.get('error')
+        if (not isinstance(error,dict) or error.get('type')!='ListenerBlackWhiteList' or
+                not isinstance(error.get('message'),str) or not error['message'].strip()):
+            errors.append('mutex exception type/message not independently proven')
+        if entry.get('process_cleared') is not True or entry.get('host_cleared') is not True:
+            errors.append('mutex lists not cleared by original production path')
     conflicts=[]
     for scope in ('listener-process','listener-host','global-process'):
         d=DiverterBase.__new__(DiverterBase);d.logger=obj.logger;d.listener_ports=ListenerPorts();d.configure({})
@@ -75,6 +82,9 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
             error={'type':'SystemExit','code':exc.code}
             if exc.code!=1:errors.append('unexpected conflict exit')
         conflicts.append({'scope':scope,'error':error,'registered_ports':d.listener_ports.getPortList('TCP')})
+        if (not isinstance(error,dict) or error.get('type')!='SystemExit' or error.get('code')!=1 or
+                d.listener_ports.getPortList('TCP')!=[]):
+            errors.append('parser conflict did not exit 1 before registering a port')
     if data.get('parser_conflicts')!=conflicts:errors.append('original parser conflict observations differ')
     if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True}:errors.append('pure-logic lifecycle missing/changed')
     if v.get('checks')!=[{'id':k} for k in ('blacklist','whitelist','mutex')]:errors.append('exact check set differs')

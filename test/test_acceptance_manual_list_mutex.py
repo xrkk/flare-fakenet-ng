@@ -74,4 +74,26 @@ class ControllerMutexTruthTests(unittest.TestCase):
   out=self.base/'config';inputs=self.inputs(out);M.run('GAP-LIST-MUTEX',out,inputs)
   self.assertTrue((out/'config/list-mutex.ini').is_file(),'real parser configuration must be retained')
 
+
+class ListMutexAdditionalTests(ListMutexTests):
+ def test_oracle_rejects_wrong_protocol_missing_query_and_bad_mutex_state(self):
+  import copy
+  out=self.base/'neg';inputs=self.inputs(out);M.run('GAP-LIST-MUTEX',out,inputs)
+  base=json.loads((out/'manual-result.json').read_text())
+  for mutation in ('protocol','missing-negative','mutex'):
+   with self.subTest(mutation=mutation):
+    v=copy.deepcopy(base)
+    if mutation=='protocol':v['list_mutex']['queries'][0]['protocol']='UDP';v['list_mutex']['queries'][0]['result']=True
+    elif mutation=='missing-negative':v['list_mutex']['queries'].pop(1)
+    else:
+     v['list_mutex']['mutex'][0]['error']={'type':'ListenerBlackWhiteList','message':''};v['list_mutex']['mutex'][0]['process_cleared']=False;v['list_mutex']['mutex'][0]['host_cleared']=False
+    (out/'manual-result.json').write_text(json.dumps(v))
+    rows,clean,detail=O.evaluate(ROOT,out,'GAP-LIST-MUTEX',inputs,allow_fixture=True)
+    self.assertFalse(clean,detail)
+  (out/'manual-result.json').write_text(json.dumps(base))
+ def test_parser_conflict_requires_exit_and_empty_ports(self):
+  out=self.base/'parser';inputs=self.inputs(out);M.run('GAP-LIST-MUTEX',out,inputs)
+  v=json.loads((out/'manual-result.json').read_text());v['list_mutex']['parser_conflicts'][0]['registered_ports']=[8099];(out/'manual-result.json').write_text(json.dumps(v))
+  rows,clean,detail=O.evaluate(ROOT,out,'GAP-LIST-MUTEX',inputs,allow_fixture=True);self.assertFalse(clean,detail)
+
 if __name__=='__main__':unittest.main()
