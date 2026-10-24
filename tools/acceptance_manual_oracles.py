@@ -181,7 +181,6 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False):
 def _evaluate_linux_flush_interface(root, original, expected_inputs, allow_fixture=False):
     base = Path(original).resolve()
     errors = []
-    snapshot_truth = b'# fake iptables-save\n*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n'
     scenarios = {
         'flush_on': dict(mode='SingleHost', flush=True, dns='service dns-clean restart', restrict='Off',
                          iface=None, chains=(('INPUT', 'mangle'), ('OUTPUT', 'raw')), dns_rc=0),
@@ -230,13 +229,14 @@ def _evaluate_linux_flush_interface(root, original, expected_inputs, allow_fixtu
         require('-I' in copy, 'missing -I in expected rule')
         copy[copy.index('-I')] = '-D'
         return copy
-    def expected_events(spec, qrows, rrows):
+    def expected_events(spec, qrows, rrows, snapshot_truth):
         events = [('popen', ['iptables-save'], None), ('wait', ['iptables-save'], 0)]
         if spec['flush']:
             for table in ('raw', 'filter', 'mangle', 'nat'):
                 argv = ['iptables', '--flush', '-t', table]
                 events += [('popen', argv, None), ('wait', argv, 0)]
-        for qno, (chain, table) in enumerate(spec['chains']):
+        for qrow, (chain, table) in zip(qrows, spec['chains']):
+            qno=qrow['qno']
             argv = nfq(chain, table, qno, spec['iface'])
             events += [('call', argv, 0), ('bind', qno, None)]
         if spec['mode'] == 'SingleHost':
@@ -246,7 +246,8 @@ def _evaluate_linux_flush_interface(root, original, expected_inputs, allow_fixtu
         events.append(('call', redir(spec['iface']), 0))
         for row in rrows:
             events.append(('call', remove(row['add'].split()), 0))
-        for qno, row in enumerate(qrows):
+        for row in qrows:
+            qno=row['qno']
             events.append(('unbind', qno, None))
             events.append(('call', remove(row['add'].split()), 0))
         if spec['flush']:
@@ -287,6 +288,8 @@ def _evaluate_linux_flush_interface(root, original, expected_inputs, allow_fixtu
         require(d.get('os_calls_sha256') == hashlib.sha256(read('os-calls.jsonl')).hexdigest(), 'OS log hash mismatch')
         require(v.get('source_hashes') == {name: hashlib.sha256((Path(root) / name).read_bytes()).hexdigest() for name in ('fakenet/diverters/linux.py', 'fakenet/diverters/linutil.py', 'fakenet/diverters/diverterbase.py')}, 'source binding mismatch')
         require(set(d.get('branches') or {}) == set(scenarios), 'exact branch set differs')
+        lifecycle=json.loads(read('observer-lifecycle.json'))
+        require(lifecycle == {key:True for key in ('profile_restored','linux_module_restored','linutil_module_restored','logger_handlers_restored','logger_level_restored','handler_closed')}, 'observer/logger state not restored')
         rows = [json.loads(line) for line in read('os-calls.jsonl').decode('utf-8').splitlines() if line.strip()]
         log_text = read('diverter.log').decode('utf-8')
         for branch, spec in scenarios.items():
@@ -297,10 +300,15 @@ def _evaluate_linux_flush_interface(root, original, expected_inputs, allow_fixtu
             require(item.get('network_mode') == spec['mode'] and bool(item.get('single_host_mode')) == (spec['mode'] == 'SingleHost'), 'network mode mismatch: ' + branch)
             require(item.get('flush_iptables') == spec['flush'] and item.get('dns_command') == spec['dns'] and item.get('restrict_interface') == spec['restrict'], 'field parse mismatch: ' + branch)
             require(item.get('start_result') is True and item.get('stop_result') is True and item.get('start_error') is None and item.get('stop_error') is None, 'callback result/error mismatch: ' + branch)
+            snapshot_truth=read('capture-save-'+branch+'.bin')
+            require(bool(snapshot_truth) and b'COMMIT' in snapshot_truth, 'initial command output missing: '+branch)
+            bindings=json.loads(read('bindings-before-'+branch+'.json'))
+            require(isinstance(bindings,list) and all(type(q) is int and 0<=q<=65535 for q in bindings), 'initial queue bindings invalid')
+            queue_numbers=[q for q in range(65536) if q not in bindings][:len(spec['chains'])]
             snapshot_path = base / ('snapshot-' + branch + '.sav')
             require(item.get('snapshot') == str(snapshot_path) and read('snapshot-' + branch + '.sav') == snapshot_truth and item.get('snapshot_sha256') == hashlib.sha256(snapshot_truth).hexdigest() and item.get('snapshot_bytes') == len(snapshot_truth), 'snapshot original mismatch: ' + branch)
             expected_q = []
-            for qno, (chain, table) in enumerate(spec['chains']):
+            for qno, (chain, table) in zip(queue_numbers,spec['chains']):
                 argv = nfq(chain, table, qno, spec['iface'])
                 expected_q.append({'qno': qno, 'chain': chain, 'table': table, 'add': ' '.join(argv), 'remove': ' '.join(remove(argv))})
             actual_q = item.get('queues_after_start') or []
@@ -318,7 +326,7 @@ def _evaluate_linux_flush_interface(root, original, expected_inputs, allow_fixtu
             actual_r = item.get('rules_after_start') or []
             require([row.get('add', '').split() for row in actual_r] == [argv for argv in expected_r] and [row.get('remove', '').split() for row in actual_r] == [remove(argv) for argv in expected_r], 'iptables rule construction mismatch: ' + branch)
             require([row.get('add', '').split() for row in (item.get('rules_after_stop') or [])] == [argv for argv in expected_r], 'iptables rule inventory changed unexpectedly: ' + branch)
-            expected_os = expected_events(spec, expected_q, actual_r)
+            expected_os = expected_events(spec, expected_q, actual_r, snapshot_truth)
             actual_os = actual_events(rows, branch)
             require(actual_os == expected_os, 'OS command/restore sequence mismatch: ' + branch)
             require(('MANUAL-LINUX-BRANCH ' + branch + ' token=' + d['execution_token']) in log_text and ('pid=%s ' % d['owner_pid']) in log_text and 'Stopped Linux Diverter' in log_text and 'NET_POLICY_STOPPED' in log_text, 'original callback log/owner missing: ' + branch)

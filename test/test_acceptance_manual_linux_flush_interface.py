@@ -44,7 +44,7 @@ class _State:
         row = {'branch': branch, 'kind': kind}
         row.update(fields)
         self.events.append(row)
-        path = self.out / 'os-calls.jsonl'
+        path = self.out / 'test-os-calls.jsonl'
         with path.open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(row, sort_keys=True) + '\n')
 
@@ -322,6 +322,26 @@ class LinuxFlushInterfaceTests(unittest.TestCase):
         result = cli('judge', '--plan', failure_run / 'plan.json', '--results', failure_run / 'results',
                      '--output', failure_run / 'judge.json')
         self.assertNotEqual(0, result[0], result)
+
+    def test_producer_records_commands_without_test_recorder(self):
+        out = self.base / 'owned-commands'
+        inputs = self.inputs(out)
+        with _fixture(out), mock.patch.object(_State, 'record', return_value=None):
+            value = M.run('GAP-LINUX-FLUSH-INTERFACE', out, inputs)
+        rows, clean, detail = O.evaluate(ROOT, out, 'GAP-LINUX-FLUSH-INTERFACE', inputs, allow_fixture=True)
+        self.assertTrue(clean, detail)
+
+    def test_arbitrary_initial_snapshot_and_occupied_queue_numbers(self):
+        from fakenet.diverters.linutil import LinUtilMixin
+        out = self.base / 'initial-state'
+        inputs = self.inputs(out)
+        snapshot = b'*filter\n:INPUT DROP [10:100]\n:FORWARD ACCEPT [0:0]\nCOMMIT\n'
+        with _fixture(out), mock.patch(__name__ + '.SNAPSHOT', snapshot), \
+                mock.patch.object(Diverter, 'linux_get_current_nfnlq_bindings', return_value=[0, 7]), \
+                mock.patch.object(Diverter, 'linux_get_next_nfqueue_numbers', new=LinUtilMixin.linux_get_next_nfqueue_numbers):
+            value = M.run('GAP-LINUX-FLUSH-INTERFACE', out, inputs)
+        rows, clean, detail = O.evaluate(ROOT, out, 'GAP-LINUX-FLUSH-INTERFACE', inputs, allow_fixture=True)
+        self.assertTrue(clean, detail)
 
     def test_central_registration(self):
         self.assertEqual('manual-linux-flush-interface',

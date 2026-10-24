@@ -511,6 +511,9 @@ def real_linux_flush_interface(case,out,inputs):
     import configparser
     import logging
     import os
+    import sys
+    import types
+    from fakenet.diverters import linux, linutil
     from fakenet.diverters.linux import Diverter
     out=Path(out);cfgdir=out/'config';cfgdir.mkdir()
     token=inputs['execution_id'];owner=os.getpid();started=datetime.now(timezone.utc).isoformat()
@@ -527,6 +530,55 @@ def real_linux_flush_interface(case,out,inputs):
         ('singlehost_iface','SingleHost','No',None,'eth1'),
     )
     branches={}
+    os_calls=out/'os-calls.jsonl'
+    os_calls.touch(exist_ok=False)
+    originals={'linux':linux.subprocess,'linutil':linutil.subprocess}
+    old_profile=sys.getprofile()
+    current={'branch':None}
+    queues={}
+    def record(kind,**fields):
+        row={'branch':current['branch'],'kind':kind};row.update(fields)
+        with os_calls.open('a',encoding='utf-8') as stream:
+            stream.write(json.dumps(row,sort_keys=True)+'\n')
+    def proxy(module):
+        class Output:
+            def __init__(self,stream):self.stream=stream
+            def read(self,*args):
+                data=self.stream.read(*args)
+                with (out/('capture-save-'+current['branch']+'.bin')).open('ab') as stream:stream.write(data)
+                return data
+            def __getattr__(self,name):return getattr(self.stream,name)
+        class Process:
+            def __init__(self,argv,*args,**kwargs):
+                record('popen',argv=list(argv))
+                self.argv=list(argv);self.child=module.Popen(argv,*args,**kwargs)
+                self.stdout=Output(self.child.stdout) if self.argv==['iptables-save'] and self.child.stdout is not None else getattr(self.child,'stdout',None)
+            def wait(self,*args,**kwargs):
+                rc=self.child.wait(*args,**kwargs);record('wait',argv=self.argv,rc=rc);return rc
+            def communicate(self,input=None,*args,**kwargs):
+                record('communicate',argv=self.argv,input_hex=bytes(input or b'').hex())
+                return self.child.communicate(input,*args,**kwargs)
+            def __getattr__(self,name):return getattr(self.child,name)
+        def call(argv,*args,**kwargs):
+            rc=module.call(argv,*args,**kwargs);record('call',argv=list(argv),rc=rc);return rc
+        class Module:
+            Popen=Process
+            def __getattr__(self,name):return getattr(module,name)
+        value=Module();value.call=call
+        return value
+    def observe(frame,event,arg):
+        if event=='call' and frame.f_code is linutil.LinuxDiverterNfqueue.start.__code__:
+            q=frame.f_locals['self'];queues[id(q._nfqueue)]=q.qno
+        if event=='return':
+            obj=frame.f_locals.get('self');qno=queues.get(id(obj))
+            if qno is not None and frame.f_code.co_name in ('bind','unbind'):
+                record(frame.f_code.co_name,qno=qno)
+        if event=='c_return':
+            qno=queues.get(id(getattr(arg,'__self__',None)))
+            name=getattr(arg,'__name__',None)
+            if qno is not None and name in ('bind','unbind'):record(name,qno=qno)
+    linux.subprocess=proxy(originals['linux']);linutil.subprocess=proxy(originals['linutil'])
+    sys.setprofile(observe)
     def queue_rows(d):
         rows=[]
         for q in getattr(d,'nfqueues',[]) or []:
@@ -554,12 +606,16 @@ def real_linux_flush_interface(case,out,inputs):
             if dns is not None:lines.append('LinuxFlushDNSCommand: '+dns)
             lines.append('LinuxRestrictInterface: '+restrict)
             cfg.write_text('\n'.join(lines)+'\n',encoding='ascii')
+            current['branch']=name
+            queues.clear()
             (out/'active-branch').write_text(name,encoding='utf-8')
             logger.info('MANUAL-LINUX-BRANCH %s token=%s',name,token)
             parser=configparser.ConfigParser();parser.read(cfg)
             d=None;start_result=None;stop_result=None;start_error=None;stop_error=None
             try:
                 d=Diverter(dict(parser.items('Diverter')),{},{4:['192.0.2.10'],6:[]})
+                bindings=list(d.linux_get_current_nfnlq_bindings())
+                _json(out/('bindings-before-'+name+'.json'),bindings)
                 start_result=d.startCallback()
             except BaseException as exc:
                 start_error={'type':type(exc).__name__,'message':str(exc)}
@@ -589,8 +645,10 @@ def real_linux_flush_interface(case,out,inputs):
                               'calls':list(getattr(policy,'calls',[]) or []),
                               'mode':getattr(policy,'mode',None) if policy is not None else None}}
     finally:
+        sys.setprofile(old_profile)
+        linux.subprocess=originals['linux'];linutil.subprocess=originals['linutil']
         logger.removeHandler(log_handler);log_handler.close();logger.setLevel(old_level);logger.handlers=old_handlers
-    os_calls=out/'os-calls.jsonl'
+    _json(out/'observer-lifecycle.json',{'profile_restored':sys.getprofile() is old_profile,'linux_module_restored':linux.subprocess is originals['linux'],'linutil_module_restored':linutil.subprocess is originals['linutil'],'logger_handlers_restored':logger.handlers==old_handlers,'logger_level_restored':logger.level==old_level,'handler_closed':log_handler.stream is None and log_handler._closed})
     cleanup_ok=all(item['stop_result'] is True and item['start_result'] is True and item['start_error'] is None and item['stop_error'] is None
                    and all(not q['thread_alive'] and not q['rule_added'] for q in item['queues_after_stop']) for item in branches.values())
     source=Path(__file__).resolve().parents[1]
