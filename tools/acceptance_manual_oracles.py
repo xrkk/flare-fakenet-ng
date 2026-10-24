@@ -422,6 +422,73 @@ def _evaluate_network_fix(root, original, expected_inputs, allow_fixture=False):
     return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in keys], not errors, {'failures': errors, 'system_network_restoration': 'not-exercised', 'linux_route_restoration': 'original implementation does not remove newly added default route; full acceptance remains incomplete'}
 
 
+def _evaluate_standalone(root, original, expected_inputs, allow_fixture=False):
+    base=Path(original).resolve();errors=[]
+    names=('DNSListener','HTTPListener','FTPListener','IRCListener','POPListener','SMTPListener','RawListener','TFTPListener','ProxyListener')
+    def require(ok,reason):
+        if not ok:raise ValueError(reason)
+    def read(name):
+        path=base/name
+        require(path.is_file() and not path.is_symlink() and not any(p.is_symlink() for p in path.parents),'missing/linked original: '+name)
+        return path.read_bytes()
+    try:
+        v=json.loads(read('manual-result.json'))
+        require(str(base)==expected_inputs.get('owned_root') and v.get('inputs')==expected_inputs,'owned/frozen inputs mismatch')
+        require(v.get('schema')=='fakenet.manual-result.v1' and v.get('case')=='GAP-STANDALONE-LISTENERS','case/schema mismatch')
+        require(v.get('evidence_kind')=='original-standalone-scripts-and-listeners','standalone provenance missing')
+        require(v.get('identity')=={k:expected_inputs[k] for k in ('candidate_id','source_commit','package_sha256','execution_id')},'identity mismatch')
+        require(type(v.get('fixture')) is bool and v['fixture']==(expected_inputs.get('fixture') is True),'fixture identity mismatch')
+        require(not v['fixture'] or allow_fixture,'fixture cannot native credit')
+        require(v.get('checks')==[{'id':x} for x in ('listener-bytes','listener-close')],'checks mismatch')
+        d=v['standalone'];require(set(d.get('scripts') or {})==set(names),'exact nine-script set differs')
+        require(d.get('log')==str(base/'standalone.log') and d.get('log_sha256')==hashlib.sha256(read('standalone.log')).hexdigest(),'standalone log missing/changed')
+        require(type(d.get('owner_pid')) is int and d['owner_pid']>0 and d.get('execution_token')==expected_inputs['execution_id'],'owner/token mismatch')
+        owner=json.loads(read('owner.json'))
+        require(owner.get('schema')=='fakenet.owner.v1' and owner.get('pid')==d['owner_pid'] and owner.get('execution_token')==d['execution_token'] and d.get('owner_sha256')==hashlib.sha256(read('owner.json')).hexdigest(),'owner original mismatch')
+        require(v.get('source_hashes')=={('fakenet/listeners/'+name+'.py'):hashlib.sha256((Path(root)/('fakenet/listeners/'+name+'.py')).read_bytes()).hexdigest() for name in names},'source binding mismatch')
+        log=read('standalone.log').decode('utf-8')
+        for name in names:
+            item=d['scripts'][name];require(item.get('main_called') is True,'original main not called: '+name)
+            require(item.get('listener_started') is True and item.get('endpoint') and item['endpoint'][0]=='127.0.0.1' and type(item['endpoint'][1]) is int and item['endpoint'][1]>=1024,'owned endpoint mismatch: '+name)
+            require(item.get('main_error') is None and item.get('probe_error') is None and item.get('stop_errors')==[],'original start/probe/stop error: '+name)
+            require(item.get('thread_alive') is False and item.get('socket_closed') is True,'owned listener not closed: '+name)
+            require(('MANUAL-STANDALONE '+name+' token='+d['execution_token']) in log,'standalone log marker missing: '+name)
+            require(item.get('hooks_restored') is True,'temporary observer not restored: '+name)
+            calls_bytes=read(name+'/calls.json'); resources_bytes=read(name+'/resources.json')
+            require(item.get('calls_sha256')==hashlib.sha256(calls_bytes).hexdigest() and item.get('resources_sha256')==hashlib.sha256(resources_bytes).hexdigest(),'lifecycle original mismatch: '+name)
+            calls=json.loads(calls_bytes); resources=json.loads(resources_bytes)
+            functions={c['function'] for c in calls if c.get('event')=='call'}
+            required={'main','handle'} if name=='ProxyListener' else {'main','__init__','start','stop'}
+            if name not in ('RawListener','TFTPListener','ProxyListener'): required.add('test')
+            require(required <= functions,'original lifecycle calls missing: '+name)
+            require(resources.get('threads') and all(t.get('alive') is False for t in resources['threads']) and resources.get('sockets') and all(t.get('fileno')==-1 for t in resources['sockets']),'owned resource observations not closed: '+name)
+            cfg=item.get('config') or {}
+            require(cfg.get('ipaddr')=='127.0.0.1' and str(cfg.get('port'))=='0','loopback/port fixture mismatch: '+name)
+            request=read(name+'/request.bin');response=read(name+'/response.bin')
+            require(len(request)>0 and len(response)>0 and item.get('request_sha256')==hashlib.sha256(request).hexdigest() and item.get('response_sha256')==hashlib.sha256(response).hexdigest(),'request/response original mismatch: '+name)
+            if name=='DNSListener':
+                from dnslib import DNSRecord
+                q=DNSRecord.parse(request);r=DNSRecord.parse(response)
+                require(len(q.questions)==1 and len(r.questions)==1 and r.header.qr==1 and r.header.rcode==0 and r.header.id==q.header.id and r.questions[0]==q.questions[0] and any(str(rr.rdata)=='127.0.0.1' and rr.rtype==1 for rr in r.rr),'DNS response mismatch')
+            elif name in ('HTTPListener','ProxyListener'):
+                require(request.startswith(b'GET / HTTP/1.1\r\n') and response.startswith(b'HTTP/1.') and b' 200 ' in response.split(b'\r\n',1)[0],'HTTP request/response mismatch: '+name)
+                require(response.split(b'\r\n\r\n',1)[1]==(Path(root)/'fakenet/defaultFiles/FakeNet.html').read_bytes(),'HTTP body mismatch: '+name)
+            elif name=='FTPListener':
+                require(request==b'USER user\r\nPASS password\r\nQUIT\r\n' and [line[:3] for line in response.splitlines()]==[b'220',b'331',b'230',b'221'],'FTP response mismatch')
+            elif name=='IRCListener':
+                require(b'001' in response or b'376' in response or b'PONG' in response,'IRC response mismatch')
+            elif name=='POPListener':
+                require(response.startswith(b'+OK') and b'+OK User accepted' in response and b'+OK 2 320' in response,'POP response mismatch')
+            elif name=='SMTPListener':
+                require(response.startswith(b'220') and b'250' in response and b'221' in response,'SMTP response mismatch')
+            elif name=='RawListener':
+                require(request==b'HELO\n' and response==request,'raw echo mismatch')
+            elif name=='TFTPListener':
+                require(request==b'\x00\x01test.txt\x00octet\x00' and response==b'\x00\x03\x00\x01'+(Path(root)/'fakenet/defaultFiles/FakeNet.txt').read_bytes()[:512],'TFTP response mismatch')
+        require(v.get('cleanup')=={'scope':'owned-standalone-listeners','stopped':True,'system_network_restored':'not-exercised','system_console_used':False},'cleanup/provenance mismatch')
+    except Exception as exc:errors.append(type(exc).__name__+': '+str(exc))
+    return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('listener-bytes','listener-close')],not errors,{'failures':errors}
+
 def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False):
     import configparser
     import dpkt
@@ -691,6 +758,7 @@ def evaluate(root,original,case,expected_inputs,allow_fixture=False):
     if case=='GAP-CTRLC-IPC':return _evaluate_ctrlc_ipc(root,original,expected_inputs,allow_fixture)
     if case=='GAP-LINUX-FLUSH-INTERFACE':return _evaluate_linux_flush_interface(root,original,expected_inputs,allow_fixture)
     if case=='GAP-NETWORK-FIX':return _evaluate_network_fix(root,original,expected_inputs,allow_fixture)
+    if case=='GAP-STANDALONE-LISTENERS':return _evaluate_standalone(root,original,expected_inputs,allow_fixture)
     if case=='GAP-DUMPPACKETS':return _evaluate_dumppackets(root,original,expected_inputs,allow_fixture)
     if case=='GAP-DIVERTER-SWITCH':return _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture)
     if case=='GAP-EXECUTECMD':return _evaluate_executecmd(root,original,expected_inputs,allow_fixture)

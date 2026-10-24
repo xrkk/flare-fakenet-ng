@@ -570,6 +570,15 @@ def driver_table(root):
             'argv': ['{python}','{root}/tools/acceptance_manual.py','--case','{case_id}',
                      '--inputs','{manual_inputs}','--output','{output}/driver'],
         },
+        'manual-standalone': {
+            'implemented': True, 'production_kind': 'manual-standalone',
+            'platforms': ['windows','linux'], 'modes': ['singlehost'],
+            'checks': ['listener-bytes','listener-close'],
+            'resources': ['original-nine-standalone-listeners'],
+            'requires': ['native'], 'package_required': False,
+            'argv': ['{python}','{root}/tools/acceptance_manual.py','--case','{case_id}',
+                     '--inputs','{manual_inputs}','--output','{output}/driver'],
+        },
         'build-identity': {
             'implemented': True, 'production_kind': 'package-identity',
             'platforms': ['windows', 'linux'], 'modes': ['offline'],
@@ -695,7 +704,7 @@ def runtime_block(case, environment):
             return 'explicit exact Linux runtime options required'
         if options.get('mode') != 'singlehost':
             return 'Linux MultiHost requires an independent second target; local probe is insufficient'
-    if case.get('native_driver') in ('manual-ncsi','manual-raw-date','manual-list-mutex','manual-executecmd','manual-diverter-switch','manual-dumppackets','manual-syslog-icmp','manual-ctrlc-ipc','manual-linux-flush-interface','manual-network-fix'):
+    if case.get('native_driver') in ('manual-ncsi','manual-raw-date','manual-list-mutex','manual-executecmd','manual-diverter-switch','manual-dumppackets','manual-syslog-icmp','manual-ctrlc-ipc','manual-linux-flush-interface','manual-network-fix','manual-standalone'):
         runtime=environment.get('native_runtime') or {}
         if runtime.get('transport')=='manual-loopback-fixture':
             return None  # Full fixture/candidate/observed-host gate in expected_block and run_production.

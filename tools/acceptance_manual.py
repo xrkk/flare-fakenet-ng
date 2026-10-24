@@ -836,6 +836,316 @@ def real_network_fix(case, out, inputs):
     return value
 
 
+def real_standalone_listeners(case, out, inputs):
+    """Run the original standalone mains with bounded, owned loopback resources."""
+    import contextlib
+    import importlib
+    import logging
+    import os
+    import socket
+    import ssl
+    import sys
+    import threading
+    import time
+
+    out = Path(out)
+    source = Path(__file__).resolve().parents[1]
+    started = datetime.now(timezone.utc).isoformat()
+    token, owner = inputs['execution_id'], os.getpid()
+    log = out / 'standalone.log'
+    handler = logging.FileHandler(log, mode='x', encoding='utf-8')
+    root = logging.getLogger()
+    old_handlers, old_level = list(root.handlers), root.level
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
+    results = {}
+
+    class Callbacks:
+        def isProcessBlackListed(self, *a, **k): return False, None, None
+        def egressPolicyEnabled(self, *a, **k): return False
+        def logNbi(self, *a, **k): pass
+        def logEgressEvent(self, *a, **k): pass
+        def replaceDnsLeases(self, allowed_root, records): return [ip for ip, _ in records]
+        def registerDnsAlias(self, *a, **k): pass
+        def mapProxySportToOrigSport(self, *a, **k): pass
+        def getOriginalDestPort(self, *a, **k): return 80
+
+    callbacks = Callbacks()
+    missing = object()
+
+    def patch(stack, obj, name, value):
+        old = vars(obj).get(name, missing)
+        setattr(obj, name, value)
+        def restore():
+            if old is missing: delattr(obj, name)
+            else: setattr(obj, name, old)
+        stack.callback(restore)
+
+    def response(sock, final=b'\r\n', eof=False):
+        data = bytearray()
+        while len(data) < 4096:
+            block = sock.recv(4096 - len(data))
+            if not block: break
+            data.extend(block)
+            if not eof and data.endswith(final): break
+        return bytes(data)
+
+    def probe(name, port, seen):
+        addr = ('127.0.0.1', port)
+        if name == 'DNSListener':
+            from dnslib import DNSRecord
+            request = DNSRecord.question('google.com', 'A').pack()
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(2)
+                sock.sendto(request, addr)
+                reply, _ = sock.recvfrom(4096)
+        elif name == 'TFTPListener':
+            request = b'\x00\x01test.txt\x00octet\x00'
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(2)
+                sock.sendto(request, addr)
+                reply, _ = sock.recvfrom(4096)
+        else:
+            with contextlib.ExitStack() as stack:
+                sock = stack.enter_context(socket.create_connection(addr, timeout=2))
+                if name in ('POPListener', 'SMTPListener'):
+                    ctx = ssl._create_unverified_context()
+                    sock = stack.enter_context(ctx.wrap_socket(sock, server_hostname='localhost'))
+                    sock.settimeout(2)
+                if name in ('HTTPListener', 'ProxyListener'):
+                    request = b'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'
+                    sock.sendall(request)
+                    data = bytearray()
+                    while len(data) < 4096:
+                        data.extend(sock.recv(4096-len(data)))
+                        if b'\r\n\r\n' in data:
+                            head, body = bytes(data).split(b'\r\n\r\n', 1)
+                            length = next((int(line.split(b':', 1)[1]) for line in head.split(b'\r\n') if line.lower().startswith(b'content-length:')), None)
+                            if length is not None and len(body) >= length: break
+                        if not data: break
+                    reply = bytes(data)
+                elif name == 'RawListener':
+                    request = b'HELO\n'
+                    sock.sendall(request)
+                    reply = response(sock, final=b'\n')
+                elif name == 'IRCListener':
+                    request = b'NICK standalone\r\n'
+                    sock.sendall(request)
+                    reply = response(sock)
+                else:
+                    commands = {
+                        'FTPListener': (b'USER user\r\n', b'PASS password\r\n', b'QUIT\r\n'),
+                        'POPListener': (b'USER standalone\r\n', b'PASS test\r\n', b'STAT\r\n', b'QUIT\r\n'),
+                        'SMTPListener': (b'EHLO standalone\r\n', b'QUIT\r\n'),
+                    }[name]
+                    request = b''.join(commands)
+                    parts = [response(sock)]
+                    for command in commands:
+                        sock.sendall(command)
+                        parts.append(response(sock))
+                    reply = b''.join(parts)
+        seen['request'], seen['response'] = request, reply
+
+    names = ('DNSListener', 'HTTPListener', 'FTPListener', 'IRCListener',
+             'POPListener', 'SMTPListener', 'RawListener', 'TFTPListener', 'ProxyListener')
+    real_sleep = time.sleep
+    try:
+        for name in names:
+            folder = out / name
+            folder.mkdir()
+            module = importlib.import_module('fakenet.listeners.' + name)
+            seen = {'main_error': None, 'probe_error': None, 'stop_errors': [], 'port': None}
+            resources, calls, started_threads = [], [], []
+            before_threads = set(threading.enumerate())
+            old_profile, old_thread_profile = sys.getprofile(), threading.getprofile()
+            module_file = str(Path(module.__file__).resolve())
+            def profile(frame, event, arg, _file=module_file, _calls=calls):
+                if event in ('call', 'return') and frame.f_code.co_filename == _file:
+                    _calls.append({'event': event, 'function': frame.f_code.co_name,
+                                   'line': frame.f_code.co_firstlineno,
+                                   'thread': threading.get_ident()})
+            def own(listener):
+                server = listener.server
+                resources.append((listener, server, listener.server_thread, server.socket))
+                listener.acceptDiverterListenerCallbacks(callbacks)
+                return server.server_address[1] if hasattr(server, 'server_address') else server.socket.getsockname()[1]
+            with contextlib.ExitStack() as hooks:
+                original_thread_start = threading.Thread.start
+                def start_thread(thread, *args, **kwargs):
+                    started_threads.append(thread)
+                    return original_thread_start(thread, *args, **kwargs)
+                patch(hooks, threading.Thread, 'start', start_thread)
+                # Only loopback name resolution is parameterized; the original clients run.
+                getaddrinfo = socket.getaddrinfo
+                def loopback_info(host, port, family=0, *args, **kwargs):
+                    if host == 'localhost': host, family = '127.0.0.1', socket.AF_INET
+                    return getaddrinfo(host, port, family, *args, **kwargs)
+                patch(hooks, socket, 'getaddrinfo', loopback_info)
+                sendto = socket.socket.sendto
+                def loopback_sendto(sock, data, *args):
+                    args = list(args)
+                    if args and isinstance(args[-1], tuple) and args[-1][0] == 'localhost':
+                        args[-1] = ('127.0.0.1', args[-1][1])
+                    return sendto(sock, data, *args)
+                patch(hooks, socket.socket, 'sendto', loopback_sendto)
+                default_timeout = socket.getdefaulttimeout()
+                socket.setdefaulttimeout(2)
+                hooks.callback(socket.setdefaulttimeout, default_timeout)
+                if name == 'HTTPListener':
+                    import importlib.util
+                    if importlib.util.find_spec('requests') is None:
+                        # Reuse pip's installed, real Requests client; no installation or substitute client.
+                        from pip._vendor import requests
+                        sys.modules['requests'] = requests
+                        hooks.callback(sys.modules.pop, 'requests', None)
+                if name in ('POPListener', 'SMTPListener'):
+                    def legacy_wrap(sock, keyfile=None, certfile=None, server_side=False, ciphers=None, **kwargs):
+                        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                        if ciphers: ctx.set_ciphers(ciphers)
+                        ctx.load_cert_chain(str(source/'fakenet/listeners/ssl_utils/server.pem'),
+                                            str(source/'fakenet/listeners/ssl_utils/privkey.pem'))
+                        return ctx.wrap_socket(sock, server_side=server_side, **kwargs)
+                    patch(hooks, ssl, 'wrap_socket', legacy_wrap)
+                if name == 'FTPListener':
+                    from pyftpdlib.ioloop import IOLoop
+                    original_server = module.ThreadedFTPServer
+                    class OwnedFTPServer(original_server):
+                        def __init__(self, *args, **kwargs):
+                            self._exit = threading.Event()
+                            self._lock = threading.Lock()
+                            kwargs['ioloop'] = IOLoop()
+                            super().__init__(*args, **kwargs)
+                    patch(hooks, module, 'ThreadedFTPServer', OwnedFTPServer)
+                    # start() configures original handler class attributes.
+                    for attr in ('banner', 'ftproot_path', 'abstracted_fs', 'authorizer', 'passive_ports'):
+                        patch(hooks, module.FakeFTPHandler, attr, getattr(module.FakeFTPHandler, attr, None))
+                    ftp_logger = logging.getLogger('pyftpdlib')
+                    patch(hooks, ftp_logger, 'name', ftp_logger.name)
+                if name != 'ProxyListener':
+                    klass = getattr(module, name)
+                    original_init, original_start = klass.__init__, klass.start
+                    overrides = {'ipaddr': '127.0.0.1', 'port': '0', 'timeout': 2}
+                    if name == 'HTTPListener': overrides.update(usessl='No', webroot=str(source/'fakenet/defaultFiles'))
+                    if name == 'FTPListener': overrides.update(ftproot=str(source/'fakenet/defaultFiles'), pasvports='0')
+                    if name == 'TFTPListener': overrides['tftproot'] = str(source/'fakenet/defaultFiles')
+                    if name == 'DNSListener': overrides['nxdomains'] = 0
+                    def init(listener, config, *args, _original=original_init, **kwargs):
+                        config.update(overrides)
+                        seen['config'] = dict(config)
+                        _original(listener, config, *args, **kwargs)
+                        seen['listener'] = listener
+                    def start(listener, _original=original_start):
+                        listener.acceptDiverterListenerCallbacks(callbacks)
+                        _original(listener)
+                        seen['port'] = own(listener)
+                        listener.config['port'] = seen['port']
+                        listener.port = seen['port']
+                    patch(hooks, klass, '__init__', init)
+                    patch(hooks, klass, 'start', start)
+                else:
+                    from fakenet.listeners.HTTPListener import HTTPListener
+                    backend = HTTPListener({'port': '0', 'ipaddr': '127.0.0.1', 'usessl': 'No',
+                                            'webroot': str(source/'fakenet/defaultFiles')}, name='StandaloneProxyBackend')
+                    backend.start()
+                    backend.port = own(backend)
+                    original_server = module.ThreadedTCPServer
+                    class OwnedProxyServer(original_server):
+                        def __init__(self, address, handler):
+                            super().__init__(address, handler)
+                            self.logger = logging.getLogger('StandaloneProxy')
+                            self.local_ip = '127.0.0.1'
+                            self.config = {'protocol': 'tcp', 'ipaddr': '127.0.0.1', 'port': '0'}
+                            self.listeners, self.diverter, self.diverterListenerCallbacks = [backend], callbacks, callbacks
+                            seen['server'], seen['port'], seen['config'] = self, self.server_address[1], dict(self.config)
+                    patch(hooks, module, 'ThreadedTCPServer', OwnedProxyServer)
+                    patch(hooks, module, 'load_plugins', lambda: [backend])
+                    patch(hooks, module, 'logger', logging.getLogger('StandaloneProxy'))
+                    patch(hooks, module, 'listeners', getattr(module, 'listeners', None))
+                    patch(hooks, sys, 'argv', ['ProxyListener', '127.0.0.1', '0'])
+                triggered = False
+                class OwnedMainExit(Exception): pass
+                def sleep(seconds):
+                    nonlocal triggered
+                    if threading.current_thread() is threading.main_thread() and not triggered:
+                        triggered = True
+                        try: probe(name, seen['port'], seen)
+                        except Exception as exc: seen['probe_error'] = type(exc).__name__ + ': ' + str(exc)
+                        if name == 'ProxyListener': raise OwnedMainExit('owned standalone loop complete')
+                        raise KeyboardInterrupt
+                    return real_sleep(seconds)
+                patch(hooks, time, 'sleep', sleep)
+                logging.getLogger('Standalone').info('MANUAL-STANDALONE %s token=%s', name, token)
+                sys.setprofile(profile)
+                threading.setprofile(profile)
+                try:
+                    try: module.main()
+                    except SystemExit as exc:
+                        if name != 'ProxyListener' or exc.code != 1: raise
+                        seen['exit_code'] = exc.code
+                except BaseException as exc:
+                    seen['main_error'] = type(exc).__name__ + ': ' + str(exc)
+                finally:
+                    # Preserve original stop functions, including Raw/TFTP's own stop.
+                    for listener, server, thread, sock in reversed(resources):
+                        try:
+                            if not (name in ('RawListener', 'TFTPListener') and listener is seen.get('listener') and seen['main_error'] is None):
+                                listener.stop()
+                        except Exception as exc: seen['stop_errors'].append(type(exc).__name__ + ': ' + str(exc))
+                        if name == 'FTPListener': server.ioloop.close()
+                        thread.join(2)
+                    if name == 'ProxyListener' and seen.get('server'):
+                        server = seen['server']
+                        server.server_close()
+                        resources.append((None, server, None, server.socket))
+                    owned_threads = (set(threading.enumerate()) - before_threads) | set(started_threads)
+                    for thread in owned_threads: thread.join(2)
+                    sys.setprofile(old_profile)
+                    threading.setprofile(old_thread_profile)
+            request, reply = seen.pop('request', b''), seen.pop('response', b'')
+            (folder/'request.bin').write_bytes(request)
+            (folder/'response.bin').write_bytes(reply)
+            _json(folder/'calls.json', calls)
+            owned_threads = (set(threading.enumerate()) - before_threads) | set(started_threads) | {r[2] for r in resources if r[2] is not None}
+            thread_rows = [{'name': t.name, 'ident': t.ident, 'alive': t.is_alive()} for t in owned_threads]
+            sockets = [{'fileno': r[3].fileno()} for r in resources]
+            _json(folder/'resources.json', {'threads': thread_rows, 'sockets': sockets})
+            called = lambda fn: any(c['event'] == 'call' and c['function'] == fn for c in calls)
+            results[name] = {
+                'script': module_file, 'source_sha256': sha256(module_file),
+                'main_called': called('main'), 'embedded_test_called': called('test'),
+                'listener_started': seen['port'] is not None,
+                'endpoint': ['127.0.0.1', seen['port']], 'config': seen.get('config'),
+                'request': str(folder/'request.bin'), 'request_sha256': sha256(folder/'request.bin'),
+                'response': str(folder/'response.bin'), 'response_sha256': sha256(folder/'response.bin'),
+                'calls_sha256': sha256(folder/'calls.json'), 'resources_sha256': sha256(folder/'resources.json'),
+                'main_error': seen['main_error'], 'probe_error': seen['probe_error'], 'stop_errors': seen['stop_errors'],
+                'thread_alive': any(t['alive'] for t in thread_rows),
+                'socket_closed': bool(sockets) and all(s['fileno'] == -1 for s in sockets),
+                'hooks_restored': sys.getprofile() is old_profile and threading.getprofile() is old_thread_profile,
+                'compatibility': ('SSLContext with existing certificate' if name in ('POPListener', 'SMTPListener') else 'installed Requests client' if name=='HTTPListener' else None),
+                'log': str(log),
+            }
+    finally:
+        root.removeHandler(handler)
+        handler.close()
+        root.handlers, root.level = old_handlers, old_level
+    value = {
+        'schema': SCHEMA, 'case': case, 'fixture': inputs.get('fixture') is True,
+        'evidence_kind': 'original-standalone-scripts-and-listeners', 'inputs': inputs,
+        'standalone': {'scripts': results, 'log': str(log), 'log_sha256': sha256(log),
+                       'owner_pid': owner, 'execution_token': token},
+        'source_hashes': {'fakenet/listeners/'+n+'.py': sha256(source/('fakenet/listeners/'+n+'.py')) for n in names},
+        'started_at': started, 'ended_at': datetime.now(timezone.utc).isoformat(),
+        'cleanup': {'scope': 'owned-standalone-listeners',
+                    'stopped': all(not r['thread_alive'] and r['socket_closed'] for r in results.values()),
+                    'system_network_restored': 'not-exercised', 'system_console_used': False},
+        'checks': [{'id': x} for x in CHECKS[case]], 'identity': {k: inputs[k] for k in IDENTITY},
+    }
+    _json(out/'owner.json', {'schema': 'fakenet.owner.v1', 'pid': owner, 'execution_token': token, 'started_at': started})
+    value['standalone']['owner_sha256'] = sha256(out/'owner.json')
+    _json(out/'manual-result.json', value)
+    return value
+
 def real_dumppackets(case, out, inputs):
     import logging
     from fakenet.diverters.diverterbase import DiverterBase
@@ -1110,6 +1420,11 @@ def run(case,out,inputs=None,memory_mode=False):
         if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
         out.mkdir(parents=True,exist_ok=False)
         return real_network_fix(case,out,inputs)
+    if case=='GAP-STANDALONE-LISTENERS':
+        validate_inputs(case,inputs);out=Path(out).absolute()
+        if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
+        out.mkdir(parents=True,exist_ok=False)
+        return real_standalone_listeners(case,out,inputs)
     if case not in ('GAP-NCSI','GAP-RAW-DATE'):raise NotImplementedError('case is not implemented in this round: '+case)
     validate_inputs(case,inputs);out=Path(out).absolute()
     if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')

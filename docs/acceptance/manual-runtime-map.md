@@ -14,13 +14,13 @@
 
 ## 手工功能
 
-当前已接入 `GAP-NCSI`, `GAP-RAW-DATE`, `GAP-LIST-MUTEX`, `GAP-EXECUTECMD`, `GAP-DIVERTER-SWITCH`, `GAP-SYSLOG-ICMP-LOG`, `GAP-DUMPPACKETS`, `GAP-CTRLC-IPC`, `GAP-LINUX-FLUSH-INTERFACE` 和 `GAP-NETWORK-FIX`; 其余 1 个手工 case 和 2 个 Linux case 的完整链仍未实现, 不返回 pass. 历史 T007/R02 仅交付前两项.
+当前已接入 `GAP-NCSI`, `GAP-RAW-DATE`, `GAP-LIST-MUTEX`, `GAP-EXECUTECMD`, `GAP-DIVERTER-SWITCH`, `GAP-SYSLOG-ICMP-LOG`, `GAP-DUMPPACKETS`, `GAP-CTRLC-IPC`, `GAP-LINUX-FLUSH-INTERFACE`, `GAP-NETWORK-FIX` 和 `GAP-STANDALONE-LISTENERS`; 其余 2 个 Linux case 的完整链仍未实现, 不返回 pass. 历史 T007/R02 仅交付前两项.
 
 | Case | 原来源 | 关键正反判据 |
 | --- | --- | --- |
 | GAP-EXECUTECMD | 原 parse/build/PacketCtx/maybe_redir_port/execute_detached | 首次一次/重复与负场景零次; 本轮 token/六字段输出原字节; 独立缺失/错内容/重复拒绝 |
 | GAP-NCSI | fakenet/listeners/DNSListener.py DNSHandler.parse | 真实 query/response UDP/TCP；dns.msftncsi.com=131.107.255.225；其它域 responsea |
-| GAP-STANDALONE-LISTENERS (NOT_IMPLEMENTED) | 原 listener 入口 | 每个 standalone listener 的真实请求/响应与关闭 |
+| GAP-STANDALONE-LISTENERS | 9 个 listener 脚本的 main/start/handler/stop, ProxyListener 实际转发 | 本机 127.0.0.1 临时端口与良性原协议字节; DNS/HTTP/FTP/IRC/POP/SMTP/Raw/TFTP/Proxy 的原 main, 构造, 启停及实际请求响应. 保留原 main 调用的内嵌 test (Raw/TFTP 原本注释, Proxy 无 test); sys.profile 采原函数调用, 独立 calls/resources 原件判定, 临时钩子逐轮恢复. FTP 保留 pyftpdlib 原 serve_forever, 每轮独立 IOLoop/Event; POP/SMTP 以既有证书和 SSLContext 兼容旧 wrap_socket; HTTP 优先正常 Requests, 缺失时复用 pip 已安装的真实 Requests. 不生成或安装证书/依赖. 9 协议篡改、缺入口/内嵌test、假关闭/owner/source 拒绝, 同中央 plan/execute/judge 正反通过. 仅受控回环 fixture, 原生 Windows/Linux/系统网络恢复未验 |
 | GAP-CTRLC-IPC | fakenet.fakenet main wait_for_shutdown/stop | 原 main -f 文件 IPC 与进程内 Ctrl-C, 原 parse/start/wait/stop 和 backend start/stop 实际调用/返回观测, 不依赖测试计数器; owned watcher 仅在 wait 进入后触发并 join, 无关 flag 不触发, finally 移除正确 flag/恢复 argv/profile/logger; 系统 console/信号/native 恢复未验 |
 | GAP-DIVERTER-SWITCH | 原 Fakenet.parse_config/start/stop | 两值原 core 分支/调用与日志; owned 停止及幂等; 系统网络恢复单独未验 |
 | GAP-SYSLOG-ICMP-LOG | fakenet.fakenet main -s, PacketCtx/check_log_icmp | 原 main -s/无-s/formatter 与原 PacketCtx ICMP 正反字节; PID/token 从原 LogRecord/主日志/owned stop flag 绑定, 不捏造 syslog 字段; finally 关闭本轮 handler 并恢复原 logger/argv/profile. 本机 OS sink fixture, 真实 syslog/EventLog/live ICMP 未验 |
