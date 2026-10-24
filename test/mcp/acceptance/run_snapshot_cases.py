@@ -188,9 +188,15 @@ def run_snapshot_cases(base, channel, writer):
                 request = {'command_id': unique_command('acc008-write-start'), 'expected_state_version': status(base)['state_version']}
                 rejected = call(base, 'start', request, timeout=90)
                 writer.add_evidence('acc008-write-start-refused', rejected)
+                fresh = status(base)
+                writer.add_evidence('acc008-write-start-fresh-status', fresh)
                 post = observe_files('acc008-write-postimage')
-                if ('snapshot write failed' not in json.dumps(rejected) or rejected.get('state') != 'failed' or
-                        post['marker'] != pre['marker'] or (status(base).get('health') or {}).get('process_alive')):
+                same_version = (rejected.get('state_version') == fresh.get('state_version') and
+                                rejected.get('command_id') == request['command_id'] and
+                                rejected.get('changed') is False and fresh.get('run_id') is None)
+                if ('snapshot write failed' not in json.dumps(fresh.get('failure_reason')) or
+                        rejected.get('state') != 'failed' or not same_version or
+                        post['marker'] != pre['marker'] or (fresh.get('health') or {}).get('process_alive')):
                     raise StepError('write failure did not prove snapshot write-layer refusal/no takeover')
                 checks['write_failure_refuses_start'] = True
             finally:

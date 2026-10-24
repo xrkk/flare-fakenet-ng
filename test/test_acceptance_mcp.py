@@ -2040,18 +2040,45 @@ class SnapshotRecoveryBoundary(SnapshotProcessBoundary):
                 raise AssertionError('real corrupt snapshot start unexpectedly succeeded')
             if tool == 'start' and self.denied:
                 from fakenet.mcp.snapshot import SnapshotError
+                from fakenet.mcp import errors
                 marker, _ = self.snapshot.read()
+                def execute(coord):
+                    try:
+                        with mock.patch('os.replace', side_effect=PermissionError('controlled file-write OS boundary')):
+                            self.snapshot.write(**dict(marker, needs_recovery=True, command_id=args['command_id']))
+                    except SnapshotError as exc:
+                        coord.update_health_state('failed', str(exc))
+                        self.failure_reason = str(exc)
+                        return {'state': 'failed', 'run_id': None, 'changed': False,
+                                'failure_reason': str(exc)}
+                    raise AssertionError('write-denied boundary unexpectedly succeeded')
+                # The fixture's Coordinator is constructed after the boundary
+                # has advanced its own version; bind that observed state before
+                # submitting at the real tool's current version.
+                self.coord._state_version = self.version
+                self.coord._state = self.state
+                self.coord._run_id = self.run_id
                 try:
-                    with mock.patch('os.replace', side_effect=PermissionError('controlled file-write OS boundary')):
-                        self.snapshot.write(**dict(marker, needs_recovery=True, command_id=args['command_id']))
-                except SnapshotError as exc:
-                    self.state = 'failed'
-                    return self.response({'state': 'failed', 'run_id': None, 'failure_reason': str(exc), 'error': None})
-                raise AssertionError('write-denied boundary unexpectedly succeeded')
+                    receipt = self.coord.submit(command_id=args['command_id'],
+                        expected_version=args['expected_state_version'],
+                        controller='11111111-2222-4333-8444-555555555555',
+                        controller_valid=True, kind='start', describe={}, execute=execute)
+                except errors.McpError as exc:
+                    snapshot = self.coord.snapshot()
+                    return self.response({'state': snapshot['state'],
+                        'state_version': snapshot['state_version'],
+                        'run_id': snapshot['run_id'], 'changed': False,
+                        'command_id': None, 'error': exc.to_dict()})
+                snapshot = self.coord.snapshot()
+                self.state = snapshot['state']; self.version = snapshot['state_version']
+                self.run_id = snapshot['run_id']
+                return self.response(receipt)
             result = super().exchange(kind, value)
             if tool in ('load_config', 'start', 'stop', 'get_status'):
                 body = json.loads(result['body']); payload = json.loads(body['result']['content'][0]['text'])
                 payload['health'] = {'process_alive': self.state == 'healthy'}
+                if tool == 'get_status' and self.state == 'failed' and getattr(self, 'failure_reason', None):
+                    payload['failure_reason'] = self.failure_reason
                 if tool != 'get_status' and not payload.get('error'):
                     payload['command_id'] = args['command_id']
                     if tool in ('start', 'stop') and not payload.get('error'):
