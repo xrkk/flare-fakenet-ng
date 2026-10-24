@@ -436,3 +436,7 @@ JSON 键与缺失身份字段. 不解压到调用方路径. 有界读取限制�
 篡改判定仍不能通过. 原 manifest 的 `qualification_status` 和 `native_gaps`
 原样输出, `PARTIAL` 不会升格; 包自洽不证明可复现构建、当前部署或任何 VM 功能.
 良性小包自测只授 fixture 信用, selected 通过不授 full.
+
+## 源码/运行身份复用
+
+显式 `source_reuse` 合同见 [source-runtime-reuse.md](source-runtime-reuse.md)；未声明时保持原 HEAD 精确绑定。

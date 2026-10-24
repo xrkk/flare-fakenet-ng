@@ -841,6 +841,12 @@ def _git_objects_equal(root, source_commit, head, paths):
 def source_plan_head_allowed(root, plan, candidate, registered=None):
     """Allow only unrelated-commit drift for an already frozen source plan."""
     source = plan.get('source_commit')
+    if plan.get('source_reuse') is not None:
+        import acceptance_source_identity as source_identity
+        if not isinstance(registered, dict):
+            return False
+        return source_identity.validate_plan(root, plan, registered,
+                                             plan.get('required_cases') or [])
     try:
         head = git_head(root)
     except InputError:
@@ -952,6 +958,12 @@ def validate_plan_registry(root, plan, plan_path=None, require_execute_action=Fa
         raise InputError('plan candidate/source_commit mismatch')
     package_selection = is_package_layer(
         root, [registered[item] for item in required], catalog, environment, candidate)
+    if not package_selection:
+        deployed = candidate.get('deployed_identity')
+        runtime = environment.get('native_runtime') or {}
+        target = runtime.get('identity') if isinstance(runtime, dict) else None
+        if isinstance(deployed, dict) and isinstance(target, dict) and deployed != target:
+            raise InputError('source plan target differs from candidate deployed identity')
     if (set(required) & PACKAGE_LAYER_CASES
             and not isinstance(plan.get('native_source_hashes'), dict)):
         raise InputError('package execution requires complete native source pins')
@@ -1154,10 +1166,31 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
     selected, environment = acceptance_mcp_dependencies.plan_selection(
         selected, catalog, environment, mode)
     package_selection = is_package_layer(root, selected, catalog, environment, candidate)
-    head = candidate['source_commit'] if package_selection else _resolve_source_commit(root, candidate)
-    if candidate['source_commit'] != head:
-        raise InputError('candidate.source_commit %s does not match current HEAD %s'
-                         % (candidate['source_commit'], head))
+    current_head = _resolve_source_commit(root, candidate)
+    source_reuse = None
+    import acceptance_source_identity as source_identity
+    try:
+        reuse_requested = source_identity.candidate_enabled(candidate)
+    except ValueError as exc:
+        raise InputError(str(exc)) from exc
+    if package_selection:
+        head = candidate['source_commit']
+    elif candidate['source_commit'] != current_head:
+        import acceptance_source_identity as source_identity
+        if not reuse_requested:
+            raise InputError('candidate.source_commit %s does not match current HEAD %s'
+                             % (candidate['source_commit'], current_head))
+        selected_sources = [name for case in selected for name in case_sources(case)]
+        harness_paths = source_identity.current_harness_paths(root)
+        try:
+            source_reuse = source_identity.prove(root, candidate['source_commit'],
+                                                 selected_sources, current_head,
+                                                 harness_paths)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise InputError('source reuse proof failed: %s' % exc) from exc
+        head = candidate['source_commit']
+    else:
+        head = current_head
     if package_selection or any(case.get('native_driver') == 'build-identity' for case in selected):
         try:
             candidate = __import__('acceptance_package').freeze_candidate(candidate)
@@ -1228,6 +1261,8 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
         'environment': environment,
         'catalog_sha256': sha256(root / 'docs/acceptance/catalog.json'),
         'source_commit': head,
+        'harness_commit': current_head,
+        'source_reuse': source_reuse,
         'source_hashes': source_hashes,
         'required_cases': [case['id'] for case in selected],
         'required_checks': required_checks,

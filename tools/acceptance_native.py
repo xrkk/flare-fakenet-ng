@@ -1619,11 +1619,14 @@ def native_source_pins(root):
         if path.is_file():paths.add(path)
     for name in ('acceptance.py','acceptance_native.py','acceptance_runtime.py','acceptance_oracles.py',
                  'acceptance_guest.py','acceptance_windows.py','acceptance_linux.py','acceptance_multihost.py',
-                 'acceptance_linux_runtime.py','acceptance_linux_runtime_oracles.py','acceptance_manual.py','acceptance_manual_oracles.py','acceptance_collection.py','acceptance_package.py','acceptance_orchestration.py','acceptance_scheduler.py','acceptance_policy.py','acceptance_policy_oracles.py','acceptance_headless.py','acceptance_headless_oracles.py','acceptance_mcp.py','acceptance_mcp_oracles.py'):
+                 'acceptance_linux_runtime.py','acceptance_linux_runtime_oracles.py','acceptance_manual.py','acceptance_manual_oracles.py','acceptance_collection.py','acceptance_package.py','acceptance_orchestration.py','acceptance_scheduler.py','acceptance_policy.py','acceptance_policy_oracles.py','acceptance_headless.py','acceptance_headless_oracles.py','acceptance_mcp.py','acceptance_mcp_oracles.py','acceptance_source_identity.py'):
         path=root/'tools'/name
         if path.is_file():paths.add(path)
+    paths.update((root/'tools').glob('acceptance*.py'))
     path=root/'docs/acceptance/catalog.json'
     if path.is_file():paths.add(path)
+    for path in sorted((root/'test').glob('test_acceptance_*.py')):
+        if path.is_file():paths.add(path)
     return {path.relative_to(root).as_posix():sha256(path) for path in sorted(paths)}
 
 
