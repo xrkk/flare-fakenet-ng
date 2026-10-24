@@ -236,6 +236,90 @@ class CtrIcIpcTests(unittest.TestCase):
                      '--output', failure_run / 'judge.json')
         self.assertNotEqual(0, result[0], result)
 
+    def test_plain_backend_without_test_counters(self):
+        class PlainBackend:
+            def __init__(self, *args, **kwargs):
+                pass
+            def start(self):
+                pass
+            def wait_for_capture_failure(self, timeout):
+                time.sleep(min(float(timeout), .02))
+                return False
+            def stop(self):
+                return True
+        out = self.base / 'plain'
+        inputs, value = self.produce(out, PlainBackend)
+        rows, clean, detail = O.evaluate(ROOT, out, 'GAP-CTRLC-IPC', inputs, allow_fixture=True)
+        self.assertTrue(clean, detail)
+
+    def test_independent_restoration_and_empty_checks_rejected(self):
+        import copy
+        out = self.base / 'mutations'
+        inputs, value = self.produce(out)
+        result = out / 'manual-result.json'
+        statefile = out / 'lifecycle.json'
+        original = result.read_bytes()
+        state = statefile.read_bytes()
+        for fault in ('signal', 'logger', 'checks', 'inner-checks', 'stop-order'):
+            with self.subTest(fault=fault):
+                v = json.loads(original)
+                st = json.loads(state)
+                if fault == 'signal': st['signal_ids_after']['SIGINT'] += 1
+                elif fault == 'logger': st['logger_after'][0]['level'] += 10
+                elif fault == 'checks': v['checks'] = []
+                elif fault == 'inner-checks': v['ctrlc_ipc']['checks'] = []
+                else:
+                    events = v['ctrlc_ipc']['branches']['ipc']['calls']
+                    events[:] = [row for row in events if not (row.get('method') == 'stop' and row.get('event') == 'return')]
+                result.write_text(json.dumps(v)); statefile.write_text(json.dumps(st))
+                try:
+                    rows, clean, detail = O.evaluate(ROOT, out, 'GAP-CTRLC-IPC', inputs, allow_fixture=True)
+                    self.assertFalse(clean, detail)
+                finally:
+                    result.write_bytes(original); statefile.write_bytes(state)
+
+    def test_backend_wait_error_classification_is_exact(self):
+        out = self.base / 'backend-errors'
+        inputs, value = self.produce(out)
+        result = out / 'manual-result.json'
+        original = result.read_bytes()
+
+        def observations(value, mode):
+            return value['ctrlc_ipc']['branches'][mode]['runtime']['backend_observations']
+
+        def wait_type_to_runtime(value):
+            row = next(item for item in observations(value, 'ctrlc')
+                       if item.get('method') == 'wait_for_capture_failure' and item.get('event') == 'error')
+            row['type'] = 'RuntimeError'
+
+        def stop_to_interrupt(value):
+            rows = observations(value, 'ctrlc')
+            index = next(index for index, item in enumerate(rows)
+                         if item.get('method') == 'stop' and item.get('event') == 'return')
+            rows[index] = {'method': 'stop', 'event': 'error', 'type': 'KeyboardInterrupt'}
+
+        def ipc_wait_to_interrupt(value):
+            rows = observations(value, 'ipc')
+            index = next(index for index, item in enumerate(rows)
+                         if item.get('method') == 'wait_for_capture_failure' and item.get('event') == 'return')
+            rows[index] = {'method': 'wait_for_capture_failure', 'event': 'error', 'type': 'KeyboardInterrupt'}
+
+        variants = {
+            'ctrlc-wait-runtime-error': wait_type_to_runtime,
+            'ctrlc-stop-interrupt': stop_to_interrupt,
+            'ipc-wait-interrupt': ipc_wait_to_interrupt,
+        }
+        for label, change in variants.items():
+            with self.subTest(fault=label):
+                value_copy = json.loads(original)
+                change(value_copy)
+                result.write_text(json.dumps(value_copy))
+                try:
+                    rows, clean, detail = O.evaluate(ROOT, out, 'GAP-CTRLC-IPC', inputs, allow_fixture=True)
+                    self.assertFalse(clean, detail)
+                finally:
+                    result.write_bytes(original)
+
     def test_central_registration(self):
         self.assertEqual('manual-ctrlc-ipc', N.driver_table(ROOT)['manual-ctrlc-ipc']['production_kind'])
 

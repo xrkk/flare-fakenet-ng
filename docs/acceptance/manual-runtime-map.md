@@ -21,7 +21,7 @@
 | GAP-EXECUTECMD | 原 parse/build/PacketCtx/maybe_redir_port/execute_detached | 首次一次/重复与负场景零次; 本轮 token/六字段输出原字节; 独立缺失/错内容/重复拒绝 |
 | GAP-NCSI | fakenet/listeners/DNSListener.py DNSHandler.parse | 真实 query/response UDP/TCP；dns.msftncsi.com=131.107.255.225；其它域 responsea |
 | GAP-STANDALONE-LISTENERS (NOT_IMPLEMENTED) | 原 listener 入口 | 每个 standalone listener 的真实请求/响应与关闭 |
-| GAP-CTRLC-IPC | fakenet.fakenet main wait_for_shutdown/stop | 原 main -f 文件 IPC 与进程内 Ctrl-C, 原 parse/start/wait/stop 和 backend start/stop; owned watcher 仅在 wait 进入后触发并 join, 无关 flag 不触发, finally 移除正确 flag/恢复 argv/profile/logger; 系统 console/信号/native 恢复未验 |
+| GAP-CTRLC-IPC | fakenet.fakenet main wait_for_shutdown/stop | 原 main -f 文件 IPC 与进程内 Ctrl-C, 原 parse/start/wait/stop 和 backend start/stop 实际调用/返回观测, 不依赖测试计数器; owned watcher 仅在 wait 进入后触发并 join, 无关 flag 不触发, finally 移除正确 flag/恢复 argv/profile/logger; 系统 console/信号/native 恢复未验 |
 | GAP-DIVERTER-SWITCH | 原 Fakenet.parse_config/start/stop | 两值原 core 分支/调用与日志; owned 停止及幂等; 系统网络恢复单独未验 |
 | GAP-SYSLOG-ICMP-LOG | fakenet.fakenet main -s, PacketCtx/check_log_icmp | 原 main -s/无-s/formatter 与原 PacketCtx ICMP 正反字节; PID/token 从原 LogRecord/主日志/owned stop flag 绑定, 不捏造 syslog 字段; finally 关闭本轮 handler 并恢复原 logger/argv/profile. 本机 OS sink fixture, 真实 syslog/EventLog/live ICMP 未验 |
 | GAP-DUMPPACKETS | DumpPackets/DumpPacketsFilePrefix, DualPcapWriter | 原 INI parser、enabled/disabled、custom prefix、TCP/UDP 固定原字节、真实 raw+converted/observation/seal parser 及 finally close; 独立文件/字节判据. 本机为保留原件的离线重放, 不授真实 wire/native/full, 系统网络恢复未运行 |

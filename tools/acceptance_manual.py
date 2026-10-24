@@ -314,6 +314,8 @@ def real_ctrlc_ipc(case,out,inputs):
     import threading
     import time
     from fakenet import fakenet as core
+    if threading.current_thread() is not threading.main_thread():
+        raise ValueError('Ctrl-C control is only allowed in this checker main thread')
     out=Path(out)
     cfgdir=out/'config';cfgdir.mkdir()
     cfg=cfgdir/'shutdown.ini'
@@ -346,8 +348,30 @@ def real_ctrlc_ipc(case,out,inputs):
             log=folder/'main.log'
             wait_entered=threading.Event();done=threading.Event();fired=threading.Event();control_lock=threading.Lock()
             holder={};events=[];watch_errors=[];observations={}
+            backend_events=[];wrapped=[]
+            def observe_backend(obj, name):
+                original=getattr(obj,name)
+                had=name in obj.__dict__;prior=obj.__dict__.get(name)
+                def observed(*args,**kwargs):
+                    backend_events.append({'method':name,'event':'call'})
+                    try:
+                        result=original(*args,**kwargs)
+                    except BaseException as exc:
+                        backend_events.append({'method':name,'event':'error','type':type(exc).__name__})
+                        raise
+                    backend_events.append({'method':name,'event':'return','result':result if name=='stop' else None})
+                    return result
+                setattr(obj,name,observed)
+                wrapped.append((obj,name,had,prior))
             def observe(frame,event,arg):
                 code=frame.f_code
+                if code is core.Fakenet.start.__code__ and event=='call':
+                    holder['fakenet']=frame.f_locals['self']
+                f=holder.get('fakenet');backend=getattr(f,'diverter',None)
+                start=getattr(type(backend),'start',None) if backend is not None else None
+                if start is not None and code is getattr(start,'__code__',None) and frame.f_locals.get('self') is backend:
+                    if event=='call':backend_events.append({'method':'start','event':'call'})
+                    elif event=='return':backend_events.append({'method':'start','event':'return','result':arg})
                 if event=='call':
                     for method in ('parse_config','start','stop'):
                         if code is getattr(core.Fakenet,method).__code__:
@@ -356,6 +380,10 @@ def real_ctrlc_ipc(case,out,inputs):
                         events.append({'method':'wait_for_shutdown','event':'call'})
                         holder['fakenet']=frame.f_locals.get('fakenet')
                         holder['stop_flag']=frame.f_locals.get('stop_flag')
+                        backend=getattr(holder['fakenet'],'diverter',None)
+                        if backend is not None:
+                            observe_backend(backend,'stop')
+                            observe_backend(backend,'wait_for_capture_failure')
                         wait_entered.set()
                 elif event=='return':
                     for method in ('parse_config','start','stop'):
@@ -405,6 +433,9 @@ def real_ctrlc_ipc(case,out,inputs):
                 thread.join(5.0)
                 if thread.is_alive():watch_errors.append('owned watcher thread did not join')
                 sys.setprofile(old_profile)
+                for obj,name,had,prior in reversed(wrapped):
+                    if had:setattr(obj,name,prior)
+                    else:delattr(obj,name)
                 sys.argv=old_argv
             collect_created()
             f=holder.get('fakenet');backend=getattr(f,'diverter',None) if f is not None else None
@@ -413,9 +444,12 @@ def real_ctrlc_ipc(case,out,inputs):
             runtime={'fakenet_class':type(f).__name__ if f is not None else None,
                      'listener_count':len(f.running_listener_providers) if f is not None else None,
                      'diverter_class':type(backend).__name__ if backend is not None else None,
-                     'start_calls':attr(backend,'start_calls'),'stop_calls':attr(backend,'stop_calls'),
-                     'wait_calls':attr(backend,'wait_calls'),'backend_started':attr(backend,'started'),
-                     'backend_stopped':attr(backend,'stopped'),
+                     'backend_observations':backend_events,
+                     'start_calls':sum(row['method']=='start' and row['event']=='call' for row in backend_events),
+                     'stop_calls':sum(row['method']=='stop' and row['event']=='call' for row in backend_events),
+                     'wait_calls':sum(row['method']=='wait_for_capture_failure' and row['event']=='call' for row in backend_events),
+                     'backend_started':any(row['method']=='start' and row['event']=='return' and row.get('result') is not False for row in backend_events),
+                     'backend_stopped':any(row['method']=='stop' and row['event']=='return' and row.get('result') is not False for row in backend_events),
                      'stop_started':attr(f,'_stop_started'),
                      'stop_complete':bool(f._stop_complete.is_set()) if f is not None else None,
                      'stop_result':attr(f,'_stop_result'),
@@ -428,7 +462,8 @@ def real_ctrlc_ipc(case,out,inputs):
                             'rc':rc,'error':error,'calls':events,'wait_entered':wait_entered.is_set(),
                             'watcher_fired':fired.is_set(),'watcher_alive':thread.is_alive(),
                             'watcher_errors':watch_errors,'observations':observations,'runtime':runtime,
-                            'stop_flag_argument':holder.get('stop_flag')}
+                            'stop_flag_argument':holder.get('stop_flag'),
+                            'backend_wrappers_restored':all((name in obj.__dict__)==had and (not had or obj.__dict__.get(name) is prior) for obj,name,had,prior in wrapped)}
         signal_after=signal_ids()
     finally:
         for handler in created:

@@ -88,6 +88,7 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False):
         require(not v['fixture'] or allow_fixture, 'fixture cannot native credit')
         require(v.get('checks') == [{'id': key} for key in ('ctrlc', 'ipc-stop', 'owned-exit')], 'checks mismatch')
         d = v['ctrlc_ipc']
+        require(d.get('checks') == ['ctrlc', 'ipc-stop', 'owned-exit'], 'inner checks mismatch')
         require(set(d.get('branches') or {}) == {'ctrlc', 'ipc'}, 'exact Ctr-C/IPC branch set differs')
         pid = d.get('owner_pid'); token = d.get('execution_token')
         require(type(pid) is int and pid > 0 and d.get('execution_token') == expected_inputs['execution_id'] and token, 'owner/token mismatch')
@@ -98,6 +99,8 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False):
         require(state.get('pid') == pid and state.get('token') == token, 'lifecycle owner/token mismatch')
         require(state.get('scope') == 'owned-main-ctrlc-file-ipc-and-runtime-state', 'lifecycle scope mismatch')
         require(state.get('signals_restored') is True and state.get('logger_restored') is True and state.get('argv_restored') is True and state.get('profile_restored') is True, 'owned state not restored')
+        require(state.get('signal_ids_before') == state.get('signal_ids_after') and set(state.get('signal_ids_before', {})) == {'SIGINT','SIGTERM'}, 'signal snapshots differ')
+        require(state.get('logger_before') == state.get('logger_after') and len(state.get('logger_before', [])) == 2, 'logger snapshots differ')
         require(state.get('owned_threads_absent') is True and not any(name.startswith('owned-') and token in name for name in state.get('thread_names', [])), 'owned watcher thread remains')
         require(state.get('errors') == [], 'producer errors present')
         require(all(item.get('closed') is True for item in state.get('created_handlers', [])) and state.get('created_handlers'), 'owned logging handler not closed')
@@ -125,6 +128,40 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False):
             if mode == 'ipc':
                 require(any(row.get('method') == 'stop' and row.get('event') == 'return' and row.get('result') is True for row in calls), 'original stop return missing/failed: ' + mode)
             runtime = item.get('runtime') or {}
+            observed = runtime.get('backend_observations') or []
+            allowed_methods = ('start', 'stop', 'wait_for_capture_failure')
+            require(len(observed) >= 4 and all(isinstance(row, dict) and row.get('method') in allowed_methods
+                    and row.get('event') in ('call', 'return', 'error') for row in observed), 'backend observation shape mismatch: ' + mode)
+            require(observed[0] == {'method': 'start', 'event': 'call'}
+                    and observed[1].get('method') == 'start' and observed[1].get('event') == 'return'
+                    and observed[1].get('result') is not False, 'backend start call/return mismatch: ' + mode)
+            require(observed[-2] == {'method': 'stop', 'event': 'call'}
+                    and observed[-1].get('method') == 'stop' and observed[-1].get('event') == 'return'
+                    and observed[-1].get('result') is True, 'backend stop call/return failed: ' + mode)
+            middle = observed[2:-2]
+            wait_calls = 0
+            wait_interrupts = 0
+            index = 0
+            while index < len(middle):
+                call = middle[index]
+                require(call.get('method') == 'wait_for_capture_failure' and call.get('event') == 'call',
+                        'backend unexpected wait ordering: ' + mode)
+                require(index + 1 < len(middle), 'backend wait call has no terminal: ' + mode)
+                terminal = middle[index + 1]
+                require(terminal.get('method') == 'wait_for_capture_failure'
+                        and terminal.get('event') in ('return', 'error'), 'backend wait terminal mismatch: ' + mode)
+                wait_calls += 1
+                if terminal.get('event') == 'error':
+                    require(mode == 'ctrlc' and terminal.get('type') == 'KeyboardInterrupt',
+                            'backend unexpected wait error: ' + mode)
+                    wait_interrupts += 1
+                    require(wait_interrupts == 1 and index + 2 == len(middle),
+                            'backend Ctrl-C wait interruption must be unique and final: ' + mode)
+                index += 2
+            require(wait_calls >= 1, 'backend wait missing: ' + mode)
+            require(runtime.get('start_calls') == 1 and runtime.get('stop_calls') == 1
+                    and runtime.get('wait_calls') == wait_calls, 'backend actual call counts mismatch: ' + mode)
+            require(item.get('backend_wrappers_restored') is True, 'backend method observations not restored')
             require(runtime.get('listener_count') == 0 and runtime.get('diverter_class') and runtime.get('start_calls') == 1 and runtime.get('stop_calls') == 1 and runtime.get('wait_calls') >= 1 and runtime.get('backend_started') is True and runtime.get('backend_stopped') is True and runtime.get('stop_started') is True and runtime.get('stop_complete') is True and runtime.get('stop_result') is True and runtime.get('stop_error') is None, 'original runtime start/stop state mismatch: ' + mode)
             text = read(mode + '/main.log').decode('utf-8')
             require(('pid=%s ' % pid) in text and ('Loaded configuration file: ' + str(base / 'config/shutdown.ini')) in text and ('Will seek stop flag at ' + str(flag_path)) in text and text.count('DEFAULT_INTERCEPTION_READY') == 1 and text.count('FakeNet-NG started successfully') == 1 and 'STOP_PHASE_BEGIN phase=complete' in text and 'STOP_PHASE_END phase=complete' in text and 'FakeNet-NG exiting: rc=0' in text, 'original main/log chain missing: ' + mode)
