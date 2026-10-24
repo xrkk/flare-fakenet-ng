@@ -75,7 +75,9 @@ class ControllerMutexTruthTests(unittest.TestCase):
   self.assertTrue((out/'config/list-mutex.ini').is_file(),'real parser configuration must be retained')
 
 
-class ListMutexAdditionalTests(ListMutexTests):
+class ListMutexAdditionalTests(unittest.TestCase):
+ setUp=ListMutexTests.setUp
+ inputs=ListMutexTests.inputs
  def test_oracle_rejects_wrong_protocol_missing_query_and_bad_mutex_state(self):
   import copy
   out=self.base/'neg';inputs=self.inputs(out);M.run('GAP-LIST-MUTEX',out,inputs)
@@ -90,10 +92,37 @@ class ListMutexAdditionalTests(ListMutexTests):
     (out/'manual-result.json').write_text(json.dumps(v))
     rows,clean,detail=O.evaluate(ROOT,out,'GAP-LIST-MUTEX',inputs,allow_fixture=True)
     self.assertFalse(clean,detail)
+    reason='original mutex records missing/duplicate/foreign/error mismatch' if mutation=='mutex' else 'original list observations disagree'
+    self.assertIn(reason,detail['failures'])
+    (out/('rejected-'+mutation+'.json')).write_text(json.dumps(detail))
   (out/'manual-result.json').write_text(json.dumps(base))
  def test_parser_conflict_requires_exit_and_empty_ports(self):
   out=self.base/'parser';inputs=self.inputs(out);M.run('GAP-LIST-MUTEX',out,inputs)
   v=json.loads((out/'manual-result.json').read_text());v['list_mutex']['parser_conflicts'][0]['registered_ports']=[8099];(out/'manual-result.json').write_text(json.dumps(v))
   rows,clean,detail=O.evaluate(ROOT,out,'GAP-LIST-MUTEX',inputs,allow_fixture=True);self.assertFalse(clean,detail)
+  self.assertIn('original parser conflict observations differ',detail['failures'])
+  (out/'rejected-parser.json').write_text(json.dumps(detail))
+
+ def test_same_wrong_production_cleanup_is_independently_rejected(self):
+  from unittest import mock
+  from fakenet.diverters.diverterbase import ListenerMeta,ListenerBlackWhiteList
+  original=ListenerMeta._validateBlackWhite
+  def broken_cleanup(meta):
+   process=bool(meta.proc_wl and meta.proc_bl)
+   try:original(meta)
+   except ListenerBlackWhiteList:
+    if process:meta.proc_wl=['b.exe'];meta.proc_bl=['a.exe']
+    else:meta.host_wl=['b.test'];meta.host_bl=['a.test']
+    raise
+  out=self.base/'same-wrong';inputs=self.inputs(out)
+  with mock.patch.object(ListenerMeta,'_validateBlackWhite',broken_cleanup):
+   M.run('GAP-LIST-MUTEX',out,inputs)
+   rows,clean,detail=O.evaluate(ROOT,out,'GAP-LIST-MUTEX',inputs,allow_fixture=True)
+  self.assertFalse(clean,detail)
+  self.assertIn('mutex lists not cleared by original production path',detail['failures'])
+  self.assertNotIn('original mutex records missing/duplicate/foreign/error mismatch',detail['failures'])
+  self.assertEqual(2,detail['failures'].count('mutex lists not cleared by original production path'))
+  self.assertEqual('fail',N._judge_rows(rows,M.CHECKS['GAP-LIST-MUTEX'])['verdict'])
+  (out/'same-wrong-oracle.json').write_text(json.dumps(detail))
 
 if __name__=='__main__':unittest.main()
