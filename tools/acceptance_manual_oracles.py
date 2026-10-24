@@ -178,6 +178,159 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False):
         errors.append(type(exc).__name__ + ': ' + str(exc))
     return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in ('ctrlc', 'ipc-stop', 'owned-exit')], not errors, {'failures': errors}
 
+def _evaluate_linux_flush_interface(root, original, expected_inputs, allow_fixture=False):
+    base = Path(original).resolve()
+    errors = []
+    snapshot_truth = b'# fake iptables-save\n*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n'
+    scenarios = {
+        'flush_on': dict(mode='SingleHost', flush=True, dns='service dns-clean restart', restrict='Off',
+                         iface=None, chains=(('INPUT', 'mangle'), ('OUTPUT', 'raw')), dns_rc=0),
+        'flush_off': dict(mode='SingleHost', flush=False, dns=None, restrict='Off',
+                          iface=None, chains=(('INPUT', 'mangle'), ('OUTPUT', 'raw')), dns_rc=None),
+        'dns_nonzero': dict(mode='SingleHost', flush=False, dns='false', restrict='Off',
+                            iface=None, chains=(('INPUT', 'mangle'), ('OUTPUT', 'raw')), dns_rc=1),
+        'multihost_iface': dict(mode='MultiHost', flush=False, dns=None, restrict='eth1',
+                                iface='eth1', chains=(('PREROUTING', 'raw'), ('INPUT', 'mangle'), ('OUTPUT', 'raw')), dns_rc=None),
+        'multihost_off': dict(mode='MultiHost', flush=False, dns=None, restrict='Off',
+                              iface=None, chains=(('PREROUTING', 'raw'), ('INPUT', 'mangle'), ('OUTPUT', 'raw')), dns_rc=None),
+        'singlehost_iface': dict(mode='SingleHost', flush=False, dns=None, restrict='eth1',
+                                 iface=None, chains=(('INPUT', 'mangle'), ('OUTPUT', 'raw')), dns_rc=None),
+    }
+    def require(ok, reason):
+        if not ok:
+            raise ValueError(reason)
+    def read(name):
+        path = base / name
+        require(path.is_file() and not path.is_symlink() and not any(part.is_symlink() for part in path.parents), 'missing/linked original: ' + name)
+        return path.read_bytes()
+    def expected_config(spec):
+        lines = ['[FakeNet]', 'DivertTraffic: Yes', '[Diverter]', 'NetworkMode: ' + spec['mode'],
+                 'LinuxFlushIptables: ' + ('Yes' if spec['flush'] else 'No')]
+        if spec['dns'] is not None:
+            lines.append('LinuxFlushDNSCommand: ' + spec['dns'])
+        lines.append('LinuxRestrictInterface: ' + spec['restrict'])
+        return ('\n'.join(lines) + '\n').encode()
+    def nfq(chain, table, qno, iface):
+        argv = ['iptables', '-I', chain]
+        if iface:
+            argv += ['-i' if chain in ('INPUT', 'PREROUTING') else '-o', iface]
+        return argv + ['-t', table, '-j', 'NFQUEUE', '--queue-num', str(qno)]
+    def redir(iface):
+        argv = ['iptables', '-I', 'PREROUTING']
+        if iface:
+            argv += ['-i', iface]
+        return argv + ['-t', 'nat', '-j', 'REDIRECT']
+    def icmp(iface):
+        argv = ['iptables', '-I', 'OUTPUT']
+        if iface:
+            argv += ['-o', iface]
+        return argv + ['-t', 'nat', '-p', 'icmp', '-j', 'REDIRECT']
+    def remove(argv):
+        copy = list(argv)
+        require('-I' in copy, 'missing -I in expected rule')
+        copy[copy.index('-I')] = '-D'
+        return copy
+    def expected_events(spec, qrows, rrows):
+        events = [('popen', ['iptables-save'], None), ('wait', ['iptables-save'], 0)]
+        if spec['flush']:
+            for table in ('raw', 'filter', 'mangle', 'nat'):
+                argv = ['iptables', '--flush', '-t', table]
+                events += [('popen', argv, None), ('wait', argv, 0)]
+        for qno, (chain, table) in enumerate(spec['chains']):
+            argv = nfq(chain, table, qno, spec['iface'])
+            events += [('call', argv, 0), ('bind', qno, None)]
+        if spec['mode'] == 'SingleHost':
+            if spec['dns'] is not None:
+                events.append(('call', spec['dns'].split(), spec['dns_rc']))
+            events.append(('call', icmp(None), 0))
+        events.append(('call', redir(spec['iface']), 0))
+        for row in rrows:
+            events.append(('call', remove(row['add'].split()), 0))
+        for qno, row in enumerate(qrows):
+            events.append(('unbind', qno, None))
+            events.append(('call', remove(row['add'].split()), 0))
+        if spec['flush']:
+            events += [('popen', ['iptables-restore'], None),
+                       ('communicate', ['iptables-restore'], snapshot_truth.hex()),
+                       ('wait', ['iptables-restore'], 0)]
+        return events
+    def actual_events(rows, branch):
+        value = []
+        for row in rows:
+            if row.get('branch') != branch:
+                continue
+            kind = row.get('kind')
+            if kind in ('popen', 'wait', 'call'):
+                if not isinstance(row.get('argv'), list) or not all(isinstance(item, str) for item in row['argv']):
+                    raise ValueError('bad command argv: ' + branch)
+                value.append((kind, row['argv'], row.get('rc')))
+            elif kind in ('bind', 'unbind'):
+                value.append((kind, row.get('qno'), None))
+            elif kind == 'communicate':
+                value.append((kind, row.get('argv'), row.get('input_hex')))
+            else:
+                raise ValueError('unknown OS event: ' + str(kind))
+        return value
+    try:
+        v = json.loads(read('manual-result.json'))
+        require(str(base) == expected_inputs.get('owned_root') and v.get('inputs') == expected_inputs, 'owned/frozen inputs mismatch')
+        require(v.get('schema') == 'fakenet.manual-result.v1' and v.get('case') == 'GAP-LINUX-FLUSH-INTERFACE', 'case/schema mismatch')
+        require(v.get('evidence_kind') == 'original-linux-callback-os-boundary', 'callback provenance missing')
+        require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
+        require(type(v.get('fixture')) is bool and v['fixture'] == (expected_inputs.get('fixture') is True), 'fixture identity mismatch')
+        require(not v['fixture'] or allow_fixture, 'fixture cannot native credit')
+        require(v.get('checks') == [{'id': key} for key in ('flush-iptables', 'flush-dns', 'restrict-interface')], 'checks mismatch')
+        d = v['linux_flush_interface']
+        require(d.get('config_dir') == str(base / 'config') and d.get('log') == str(base / 'diverter.log') and d.get('os_calls') == str(base / 'os-calls.jsonl'), 'owned path mismatch')
+        require(isinstance(d.get('owner_pid'), int) and d.get('owner_pid') > 0 and d.get('execution_token') == expected_inputs['execution_id'], 'owner/token mismatch')
+        require(d.get('log_sha256') == hashlib.sha256(read('diverter.log')).hexdigest(), 'log hash mismatch')
+        require(d.get('os_calls_sha256') == hashlib.sha256(read('os-calls.jsonl')).hexdigest(), 'OS log hash mismatch')
+        require(v.get('source_hashes') == {name: hashlib.sha256((Path(root) / name).read_bytes()).hexdigest() for name in ('fakenet/diverters/linux.py', 'fakenet/diverters/linutil.py', 'fakenet/diverters/diverterbase.py')}, 'source binding mismatch')
+        require(set(d.get('branches') or {}) == set(scenarios), 'exact branch set differs')
+        rows = [json.loads(line) for line in read('os-calls.jsonl').decode('utf-8').splitlines() if line.strip()]
+        log_text = read('diverter.log').decode('utf-8')
+        for branch, spec in scenarios.items():
+            item = d['branches'][branch]
+            require(item.get('config') == str(base / 'config' / (branch + '.ini')), 'branch config path mismatch: ' + branch)
+            config = read('config/' + branch + '.ini')
+            require(config == expected_config(spec) and item.get('config_sha256') == hashlib.sha256(config).hexdigest(), 'branch config bytes mismatch: ' + branch)
+            require(item.get('network_mode') == spec['mode'] and bool(item.get('single_host_mode')) == (spec['mode'] == 'SingleHost'), 'network mode mismatch: ' + branch)
+            require(item.get('flush_iptables') == spec['flush'] and item.get('dns_command') == spec['dns'] and item.get('restrict_interface') == spec['restrict'], 'field parse mismatch: ' + branch)
+            require(item.get('start_result') is True and item.get('stop_result') is True and item.get('start_error') is None and item.get('stop_error') is None, 'callback result/error mismatch: ' + branch)
+            snapshot_path = base / ('snapshot-' + branch + '.sav')
+            require(item.get('snapshot') == str(snapshot_path) and read('snapshot-' + branch + '.sav') == snapshot_truth and item.get('snapshot_sha256') == hashlib.sha256(snapshot_truth).hexdigest() and item.get('snapshot_bytes') == len(snapshot_truth), 'snapshot original mismatch: ' + branch)
+            expected_q = []
+            for qno, (chain, table) in enumerate(spec['chains']):
+                argv = nfq(chain, table, qno, spec['iface'])
+                expected_q.append({'qno': qno, 'chain': chain, 'table': table, 'add': ' '.join(argv), 'remove': ' '.join(remove(argv))})
+            actual_q = item.get('queues_after_start') or []
+            require(len(actual_q) == len(expected_q), 'queue count mismatch: ' + branch)
+            for actual, wanted in zip(actual_q, expected_q):
+                require(actual.get('qno') == wanted['qno'] and actual.get('chain') == wanted['chain'] and actual.get('table') == wanted['table'] and actual.get('add', '').split() == wanted['add'].split() and actual.get('remove', '').split() == wanted['remove'].split() and actual.get('started') is True and actual.get('bound') is True and actual.get('rule_added') is True and actual.get('thread_alive') is True and actual.get('thread_error') is None and actual.get('stop_error') is None, 'queue start rule/state mismatch: ' + branch)
+            stopped_q = item.get('queues_after_stop') or []
+            require(len(stopped_q) == len(expected_q), 'stopped queue count mismatch: ' + branch)
+            for actual, wanted in zip(stopped_q, expected_q):
+                require(actual.get('qno') == wanted['qno'] and actual.get('chain') == wanted['chain'] and actual.get('table') == wanted['table'] and actual.get('add', '').split() == wanted['add'].split() and actual.get('remove', '').split() == wanted['remove'].split() and actual.get('started') is True and actual.get('bound') is False and actual.get('rule_added') is False and actual.get('thread_alive') is False and actual.get('thread_error') is None and actual.get('stop_error') is None, 'queue stop rule/state mismatch: ' + branch)
+            expected_r = []
+            if spec['mode'] == 'SingleHost':
+                expected_r.append(icmp(None))
+            expected_r.append(redir(spec['iface']))
+            actual_r = item.get('rules_after_start') or []
+            require([row.get('add', '').split() for row in actual_r] == [argv for argv in expected_r] and [row.get('remove', '').split() for row in actual_r] == [remove(argv) for argv in expected_r], 'iptables rule construction mismatch: ' + branch)
+            require([row.get('add', '').split() for row in (item.get('rules_after_stop') or [])] == [argv for argv in expected_r], 'iptables rule inventory changed unexpectedly: ' + branch)
+            expected_os = expected_events(spec, expected_q, actual_r)
+            actual_os = actual_events(rows, branch)
+            require(actual_os == expected_os, 'OS command/restore sequence mismatch: ' + branch)
+            require(('MANUAL-LINUX-BRANCH ' + branch + ' token=' + d['execution_token']) in log_text and ('pid=%s ' % d['owner_pid']) in log_text and 'Stopped Linux Diverter' in log_text and 'NET_POLICY_STOPPED' in log_text, 'original callback log/owner missing: ' + branch)
+            if not spec['flush']:
+                require('LinuxFlushIptables is disabled' in log_text, 'flush-disabled log missing: ' + branch)
+            if spec['dns'] == 'false':
+                require('Failed to flush DNS cache. Local machine may use cached DNS results.' in log_text, 'DNS nonzero log missing: ' + branch)
+        require(v.get('cleanup') == {'scope': 'owned-linux-callback-os-boundary', 'stopped': True, 'threads_joined': True, 'rules_cleared': True, 'system_network_restored': 'not-exercised', 'system_iptables_restored': 'not-exercised'}, 'cleanup/provenance mismatch')
+    except Exception as exc:
+        errors.append(type(exc).__name__ + ': ' + str(exc))
+    return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in ('flush-iptables', 'flush-dns', 'restrict-interface')], not errors, {'failures': errors}
+
 def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False):
     import configparser
     import dpkt
@@ -445,6 +598,7 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
 def evaluate(root,original,case,expected_inputs,allow_fixture=False):
     if case=='GAP-SYSLOG-ICMP-LOG':return _evaluate_syslog_icmp(root,original,expected_inputs,allow_fixture)
     if case=='GAP-CTRLC-IPC':return _evaluate_ctrlc_ipc(root,original,expected_inputs,allow_fixture)
+    if case=='GAP-LINUX-FLUSH-INTERFACE':return _evaluate_linux_flush_interface(root,original,expected_inputs,allow_fixture)
     if case=='GAP-DUMPPACKETS':return _evaluate_dumppackets(root,original,expected_inputs,allow_fixture)
     if case=='GAP-DIVERTER-SWITCH':return _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture)
     if case=='GAP-EXECUTECMD':return _evaluate_executecmd(root,original,expected_inputs,allow_fixture)

@@ -15,6 +15,6 @@ class ManualTests(unittest.TestCase):
   out=self.base/'raw-bad'; M.run('GAP-RAW-DATE',out,inputs('GAP-RAW-DATE',out),memory_mode=True); p=out/'raw-response.bin'; p.write_bytes(p.read_bytes()+b'x'); rows,clean,detail=O.evaluate(ROOT,out,'GAP-RAW-DATE',inputs('GAP-RAW-DATE',out),allow_fixture=True); self.assertFalse(clean); self.assertNotEqual('pass',N._judge_rows(rows,M.CHECKS['GAP-RAW-DATE'])['verdict'])
  def test_unimplemented_cases_do_not_return_pass(self):
   for case in M.CASES:
-   if case in ('GAP-NCSI','GAP-RAW-DATE','GAP-LIST-MUTEX','GAP-EXECUTECMD','GAP-DIVERTER-SWITCH','GAP-DUMPPACKETS','GAP-SYSLOG-ICMP-LOG','GAP-CTRLC-IPC'): continue
+   if case in ('GAP-NCSI','GAP-RAW-DATE','GAP-LIST-MUTEX','GAP-EXECUTECMD','GAP-DIVERTER-SWITCH','GAP-DUMPPACKETS','GAP-SYSLOG-ICMP-LOG','GAP-CTRLC-IPC','GAP-LINUX-FLUSH-INTERFACE'): continue
    with self.assertRaises(NotImplementedError): M.run(case,self.base/case,inputs(case,self.base/case),memory_mode=True)
 if __name__=='__main__': unittest.main()

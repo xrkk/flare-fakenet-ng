@@ -507,6 +507,107 @@ def real_ctrlc_ipc(case,out,inputs):
            'checks':[{'id':name} for name in CHECKS[case]],'identity':{name:inputs[name] for name in IDENTITY}}
     _json(out/'manual-result.json',value);return value
 
+def real_linux_flush_interface(case,out,inputs):
+    import configparser
+    import logging
+    import os
+    from fakenet.diverters.linux import Diverter
+    out=Path(out);cfgdir=out/'config';cfgdir.mkdir()
+    token=inputs['execution_id'];owner=os.getpid();started=datetime.now(timezone.utc).isoformat()
+    log=out/'diverter.log';log_handler=logging.FileHandler(log,mode='x',encoding='utf-8')
+    log_handler.setFormatter(logging.Formatter('%(levelname)s %(name)s pid=%(process)d %(message)s'))
+    logger=logging.getLogger('Diverter');old_handlers=list(logger.handlers);old_level=logger.level
+    logger.addHandler(log_handler);logger.setLevel(logging.INFO)
+    scenarios=(
+        ('flush_on','SingleHost','Yes','service dns-clean restart','Off'),
+        ('flush_off','SingleHost','No',None,'Off'),
+        ('dns_nonzero','SingleHost','No','false','Off'),
+        ('multihost_iface','MultiHost','No',None,'eth1'),
+        ('multihost_off','MultiHost','No',None,'Off'),
+        ('singlehost_iface','SingleHost','No',None,'eth1'),
+    )
+    branches={}
+    def queue_rows(d):
+        rows=[]
+        for q in getattr(d,'nfqueues',[]) or []:
+            rule=getattr(q,'_rule',None)
+            error=getattr(q,'thread_error',None)
+            stop_error=getattr(q,'stop_error',None)
+            rows.append({'qno':getattr(q,'qno',None),'chain':getattr(q,'chain',None),
+                         'table':getattr(q,'table',None),'add':getattr(rule,'_addcmd',None),
+                         'remove':getattr(rule,'_remcmd',None),'started':getattr(q,'_started',None),
+                         'bound':getattr(q,'_bound',None),'rule_added':getattr(q,'_rule_added',None),
+                         'thread_alive':bool(getattr(q,'thread_alive',False)),
+                         'thread_error':None if error is None else {'type':type(error).__name__,'message':str(error)},
+                         'stop_error':None if stop_error is None else {'type':type(stop_error).__name__,'message':str(stop_error)}})
+        return rows
+    def rule_rows(d):
+        rows=[]
+        for rule in getattr(d,'rules_added',[]) or []:
+            rows.append({'add':getattr(rule,'_addcmd',None),'remove':getattr(rule,'_remcmd',None)})
+        return rows
+    try:
+        for name,mode,flush,dns,restrict in scenarios:
+            cfg=cfgdir/(name+'.ini')
+            lines=['[FakeNet]','DivertTraffic: Yes','[Diverter]','NetworkMode: '+mode,
+                   'LinuxFlushIptables: '+flush]
+            if dns is not None:lines.append('LinuxFlushDNSCommand: '+dns)
+            lines.append('LinuxRestrictInterface: '+restrict)
+            cfg.write_text('\n'.join(lines)+'\n',encoding='ascii')
+            (out/'active-branch').write_text(name,encoding='utf-8')
+            logger.info('MANUAL-LINUX-BRANCH %s token=%s',name,token)
+            parser=configparser.ConfigParser();parser.read(cfg)
+            d=None;start_result=None;stop_result=None;start_error=None;stop_error=None
+            try:
+                d=Diverter(dict(parser.items('Diverter')),{},{4:['192.0.2.10'],6:[]})
+                start_result=d.startCallback()
+            except BaseException as exc:
+                start_error={'type':type(exc).__name__,'message':str(exc)}
+            before_queues=queue_rows(d) if d is not None else []
+            before_rules=rule_rows(d) if d is not None else []
+            snapshot=bytes(getattr(d,'iptables_captured',b'') or b'') if d is not None else b''
+            snapshot_path=out/('snapshot-'+name+'.sav');snapshot_path.write_bytes(snapshot)
+            if d is not None:
+                try:
+                    stop_result=d.stopCallback()
+                except BaseException as exc:
+                    stop_error={'type':type(exc).__name__,'message':str(exc)}
+            after_queues=queue_rows(d) if d is not None else []
+            after_rules=rule_rows(d) if d is not None else []
+            policy=getattr(d,'net_policy',None) if d is not None else None
+            branches[name]={'config':str(cfg),'config_sha256':sha256(cfg),
+                'network_mode':getattr(d,'network_mode',None) if d is not None else mode,
+                'single_host_mode':getattr(d,'single_host_mode',None) if d is not None else None,
+                'flush_iptables':getattr(d,'is_set',lambda x:False)('linuxflushiptables') if d is not None else None,
+                'dns_command':getattr(d,'getconfigval',lambda x:None)('linuxflushdnscommand') if d is not None else None,
+                'restrict_interface':getattr(d,'getconfigval',lambda x:None)('linuxrestrictinterface') if d is not None else None,
+                'start_result':start_result,'stop_result':stop_result,'start_error':start_error,'stop_error':stop_error,
+                'queues_after_start':before_queues,'queues_after_stop':after_queues,
+                'rules_after_start':before_rules,'rules_after_stop':after_rules,
+                'snapshot':str(snapshot_path),'snapshot_sha256':sha256(snapshot_path),'snapshot_bytes':len(snapshot),
+                'net_policy':{'class':type(policy).__name__ if policy is not None else None,
+                              'calls':list(getattr(policy,'calls',[]) or []),
+                              'mode':getattr(policy,'mode',None) if policy is not None else None}}
+    finally:
+        logger.removeHandler(log_handler);log_handler.close();logger.setLevel(old_level);logger.handlers=old_handlers
+    os_calls=out/'os-calls.jsonl'
+    cleanup_ok=all(item['stop_result'] is True and item['start_result'] is True and item['start_error'] is None and item['stop_error'] is None
+                   and all(not q['thread_alive'] and not q['rule_added'] for q in item['queues_after_stop']) for item in branches.values())
+    source=Path(__file__).resolve().parents[1]
+    value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,
+      'evidence_kind':'original-linux-callback-os-boundary','inputs':inputs,
+      'linux_flush_interface':{'config_dir':str(cfgdir),'branches':branches,'log':str(log),
+          'log_sha256':sha256(log),'os_calls':str(os_calls),
+          'os_calls_sha256':sha256(os_calls) if os_calls.is_file() else None,
+          'owner_pid':owner,'execution_token':token},
+      'source_hashes':{name:sha256(source/name) for name in ('fakenet/diverters/linux.py','fakenet/diverters/linutil.py','fakenet/diverters/diverterbase.py')},
+      'started_at':started,'ended_at':datetime.now(timezone.utc).isoformat(),
+      'cleanup':{'scope':'owned-linux-callback-os-boundary','stopped':cleanup_ok,
+                 'threads_joined':cleanup_ok,'rules_cleared':cleanup_ok,
+                 'system_network_restored':'not-exercised','system_iptables_restored':'not-exercised'},
+      'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
+    _json(out/'manual-result.json',value);return value
+
 def real_dumppackets(case, out, inputs):
     import logging
     from fakenet.diverters.diverterbase import DiverterBase
@@ -771,6 +872,11 @@ def run(case,out,inputs=None,memory_mode=False):
         if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
         out.mkdir(parents=True,exist_ok=False)
         return real_ctrlc_ipc(case,out,inputs)
+    if case=='GAP-LINUX-FLUSH-INTERFACE':
+        validate_inputs(case,inputs);out=Path(out).absolute()
+        if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
+        out.mkdir(parents=True,exist_ok=False)
+        return real_linux_flush_interface(case,out,inputs)
     if case not in ('GAP-NCSI','GAP-RAW-DATE'):raise NotImplementedError('case is not implemented in this round: '+case)
     validate_inputs(case,inputs);out=Path(out).absolute()
     if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
