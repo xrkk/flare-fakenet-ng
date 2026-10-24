@@ -34,6 +34,21 @@ to_container_path() {
     fi
 }
 
+# SHARDS>0 runs the Windows gate as parallel shard containers, merges the
+# verdicts host-side, then packages once after a green gate. SHARDS=0 keeps
+# the classic single serial build.
+SHARDS="${SHARDS:-0}"
+LAYER="${LAYER:-full}"
+case "$LAYER" in
+    full|core|regression) ;;
+    *) echo "LAYER must be full, core or regression" >&2; exit 2 ;;
+esac
+if [[ ! "$SHARDS" =~ ^[0-9]+$ ]]; then
+    echo "SHARDS must be a nonnegative integer" >&2
+    exit 2
+fi
+
+
 if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
     echo "Pinned builder image is unavailable: $IMAGE_NAME" >&2
     echo "Run ./Build-GuiVmDiagnosticPackage.sh --image-only (or --image-mingit), then retry." >&2
@@ -44,15 +59,6 @@ fi
 BUILDER_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$IMAGE_NAME")"
 echo "Builder image: $IMAGE_NAME ($BUILDER_IMAGE_ID)"
 
-# SHARDS>0 runs the Windows gate as parallel shard containers, merges the
-# verdicts host-side, then packages once after a green gate. SHARDS=0 keeps
-# the classic single serial build.
-SHARDS="${SHARDS:-0}"
-LAYER="${LAYER:-full}"
-if [[ ! "$SHARDS" =~ ^[0-9]+$ ]]; then
-    echo "SHARDS must be a nonnegative integer" >&2
-    exit 2
-fi
 
 run_builder() {
     docker run --rm \
@@ -93,9 +99,9 @@ if [[ "$SHARDS" -ge 0 ]]; then
         receipt="$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).read().splitlines()[-1])["gate"]["receipt"]["path"])' "$shard_dir/shard-$i.log")"
         merge_args+=(--receipt "$SCRIPT_DIR/$receipt")
     done
-    if [[ "$LAYER" == core ]]; then
+    if [[ "$LAYER" == core || "$LAYER" == regression ]]; then
         "$SCRIPT_DIR/.venv-mcp-runners/bin/python" "$SCRIPT_DIR/tools/build_fakenetng_mcp_wine.py" \
-            --repo "$SCRIPT_DIR" --source-commit "$SOURCE_COMMIT" --host-only --layer core \
+            --repo "$SCRIPT_DIR" --source-commit "$SOURCE_COMMIT" --host-only --layer "$LAYER" \
             --builder-image-id "$BUILDER_IMAGE_ID" > "$shard_dir/host.log" 2>&1
         host_receipt="$(sed -n 's/^Host receipt: //p' "$shard_dir/host.log")"
         merge_args+=(--host-receipt "$host_receipt")

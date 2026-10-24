@@ -440,3 +440,30 @@ JSON 键与缺失身份字段. 不解压到调用方路径. 有界读取限制�
 ## 源码/运行身份复用
 
 显式 `source_reuse` 合同见 [source-runtime-reuse.md](source-runtime-reuse.md)；未声明时保持原 HEAD 精确绑定。
+
+
+## 非 GUI 回归构建层
+
+`Build-FakeNetNgMcpPackage.sh` 保留原 `full` 默认及 `core` 行为. 本任务范围未来构建应显式选择
+`LAYER=regression`, 不直接运行默认全库 gate. 新层只读取当前 catalog 的
+`required_for_full`、非 excluded/stress、`offline-pytest` 且 `collection_safe=true`
+用例的 `input.module/modules`. 不把 `sources` 的共享 helper 引用变成可执行测试,
+不扫描全 test 树. Linux 专属模块进入必要 host 组, 其它按已声明平台适用性选择;
+unsafe、非离线和不适用项列在 `regression_scope.unverified`, 完整 required 登记不删减.
+
+同一精确 scope 从 wrapper 传给 Windows shards、host、receipt、merge 和 package-only.
+每个消费者重读 catalog/测试源 hash 及原 collection/JUnit/log, 检查完整片集合和既有限定
+skip 原因; 改 scope、少 host、错源/image/layer 或重哈希坏原件均不能授予资格.
+新凭据只表示该有限构建 gate 通过, `verdict=PARTIAL`、`full_functional_pass=false`;
+它不能转用于旧 full/core, 不能证明实际 Windows、诊断定位或全部功能回归通过.
+
+未来命令形状为 `LAYER=regression SHARDS=<不超过实际Windows模块数的正整数>
+./Build-FakeNetNgMcpPackage.sh <冻结提交> <新dist根> <未占用候选目录>`.
+使用前仍须按实际授权核当前镜像内容 ID、immutable source、全部选定测试的运行边界及
+部署/恢复安排. 本次只验证选择/资格的安全文件夹具和模拟 OS 边界, 未运行 Docker/Wine、
+SDK 安装、冻结打包、VM 或 native. 旧真实失败/三 skip 和完整62/9/14欠交保持.
+
+本单元固定安全检查最终两文件整组为41 passed/33 subtests passed (以原JUnit为准), bash -n通过.
+静态复核还修正了regression资格拒绝前创建输出根、直接build绕host资格两个入口;
+先前检查中1 failed/31 passed保留, 不抹失败. 此处通过仅指构建选择/资格判别夹具,
+尚未执行新层选定的21个Windows模块和2个Linux host模块.

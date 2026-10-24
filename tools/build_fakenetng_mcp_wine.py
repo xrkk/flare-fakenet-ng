@@ -304,7 +304,133 @@ NATIVE_GAPS = ('WinDivert and route restoration', 'native symlink refusal',
                'Windows service installation, restart and recovery')
 
 
+def regression_scope(stage):
+    """Read registered test inputs only; never import or collect them here.
+
+    This is a bounded build gate, not the full functional acceptance set.
+    Unsafe cases remain named gaps even when every selected test passes.
+    """
+    stage = Path(stage).resolve()
+    catalog_path = stage / 'docs/acceptance/catalog.json'
+    if catalog_path.resolve() != catalog_path or not catalog_path.is_file():
+        raise RuntimeError('Regression catalog must be a regular in-tree file')
+    catalog = json.loads(catalog_path.read_text(encoding='utf-8'))
+    if catalog.get('schema') != 'fakenet.acceptance-catalog.v2':
+        raise RuntimeError('Unsupported regression catalog schema')
+    suites = catalog.get('suites')
+    if not isinstance(suites, list) or not suites:
+        raise RuntimeError('Missing regression suites')
+    seen_suites, seen_cases, required, selected, unverified = set(), set(), [], [], []
+    windows, host, source_hashes = set(), set(), {}
+    for suite in suites:
+        if not isinstance(suite, dict):
+            raise RuntimeError('Invalid regression suite')
+        suite_id = suite.get('id')
+        if not isinstance(suite_id, str) or not suite_id or suite_id in seen_suites:
+            raise RuntimeError('Invalid/duplicate regression suite')
+        seen_suites.add(suite_id)
+        cases = suite.get('cases', [])
+        if not isinstance(cases, list):
+            raise RuntimeError('Invalid regression cases')
+        for case in cases:
+            if not isinstance(case, dict):
+                raise RuntimeError('Invalid regression case')
+            case_id = case.get('id')
+            if (not isinstance(case_id, str) or not case_id or case_id in seen_cases or
+                    case.get('suite_id') != suite_id):
+                raise RuntimeError('Invalid/duplicate regression case')
+            seen_cases.add(case_id)
+            for flag in ('required_for_full', 'excluded', 'stress'):
+                if flag in case and type(case[flag]) is not bool:
+                    raise RuntimeError('Invalid regression case flag')
+            if (not case.get('required_for_full', True) or case.get('excluded', False) or
+                    case.get('stress', False)):
+                continue
+            required.append(case_id)
+            if case.get('adapter') != 'offline-pytest':
+                unverified.append({'case_id': case_id, 'reason': 'not an offline build-gate case'})
+                continue
+            inputs = case.get('input')
+            if not isinstance(inputs, dict) or set(inputs) not in ({'module'}, {'modules'}):
+                raise RuntimeError('Ambiguous regression test input: ' + case_id)
+            modules = [inputs['module']] if 'module' in inputs else inputs['modules']
+            if (not isinstance(modules, list) or not modules or
+                    any(not isinstance(name, str) for name in modules) or
+                    len(modules) != len(set(modules))):
+                raise RuntimeError('Invalid/duplicate regression test input: ' + case_id)
+            for name in modules:
+                path = Path(name)
+                if (path.is_absolute() or path.as_posix() != name or '..' in path.parts or
+                        len(path.parts) < 2 or path.parts[0] != 'test' or
+                        not path.name.startswith('test_') or path.suffix != '.py' or
+                        '\\' in name or '::' in name):
+                    raise RuntimeError('Invalid regression test path: ' + name)
+                actual = stage / path
+                if actual.resolve() != actual or not actual.is_file():
+                    raise RuntimeError('Missing/linked regression test: ' + name)
+            if type(case.get('collection_safe')) is not bool:
+                raise RuntimeError('Missing regression collection safety: ' + case_id)
+            platforms = case.get('platforms')
+            if (not isinstance(platforms, list) or not platforms or
+                    any(x not in ('any', 'linux', 'windows') for x in platforms) or
+                    len(platforms) != len(set(platforms))):
+                raise RuntimeError('Unknown regression platform: ' + case_id)
+            if not case['collection_safe']:
+                unverified.append({'case_id': case_id, 'reason': 'collection not approved safe',
+                                   'modules': sorted(modules)})
+                continue
+            groups = {'windows': [], 'host': []}
+            for name in modules:
+                filename = Path(name).name
+                # These are exclusive test drivers, not the shared helpers in
+                # case.sources. A source reference never becomes an executable.
+                if (filename.startswith(('test_gui_', 'test_formal_runtime_', 'test_scenario_')) or
+                        name.startswith('test/gui_vm/')):
+                    raise RuntimeError('Excluded exclusive regression test: ' + name)
+                group = ('host' if name in HOST_ONLY_TESTS or platforms == ['linux']
+                         else 'windows')
+                platform = 'linux' if group == 'host' else 'windows'
+                if 'any' not in platforms and platform not in platforms:
+                    unverified.append({'case_id': case_id, 'module': name,
+                                       'reason': 'not applicable to ' + platform + ' gate'})
+                    continue
+                groups[group].append(name)
+                (host if group == 'host' else windows).add(name)
+                source_hashes[name] = sha256(stage / name)
+            if any(groups.values()):
+                selected.append({'case_id': case_id,
+                                 'windows': sorted(groups['windows']), 'host': sorted(groups['host'])})
+    if not windows:
+        raise RuntimeError('Empty regression Windows selection')
+    scope = {'schema': 'fakenet.build-regression-scope.v1',
+             'catalog_sha256': sha256(catalog_path), 'required_case_ids': sorted(required),
+             'cases': sorted(selected, key=lambda row: row['case_id']),
+             'windows': sorted(windows), 'host': sorted(host),
+             'test_source_hashes': dict(sorted(source_hashes.items())),
+             'unverified': unverified, 'full_functional_pass': False}
+    scope['scope_sha256'] = hashlib.sha256(json.dumps(
+        scope, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+    return scope
+
+
+def windows_gate_groups(stage, layer, shard=None):
+    groups = {'main': gate_selection(stage, layer, shard)}
+    if layer == 'regression' and not groups['main']:
+        raise RuntimeError('Empty gate shard; reduce shard count')
+    if layer != 'regression' and (shard is None or shard[0] == 0):
+        groups['http'] = list(HTTP_CONFLICT_TESTS)
+        if layer == 'core':
+            groups['sentinel'] = list(WINDOWS_SENTINELS)
+    return groups
+
+
 def gate_selection(stage, layer, shard=None, host=False):
+    if layer == 'regression':
+        scope = regression_scope(stage)
+        files = scope['host' if host else 'windows']
+        return shard_files(files, *shard) if shard is not None and not host else files
+    if layer not in ('full', 'core'):
+        raise RuntimeError('Unknown build gate layer')
     if host:
         return sorted(path.relative_to(stage).as_posix() for path in
                       (stage / 'test' / 'mcp').glob('test_formal_runtime_*.py')) + [
@@ -373,6 +499,8 @@ def write_receipt(repo, stage, validation, resolved, image_id, layer, shard, gro
                'builder_image_id': image_id, 'layer': layer,
                'shard': list(shard) if shard is not None else None,
                'environment': 'linux-host' if host else 'wine-windows', 'groups': {}}
+    if layer == 'regression':
+        receipt['regression_scope'] = regression_scope(stage)
     for name, result in groups.items():
         entry = {key: value for key, value in result.items() if not key.endswith('_path')}
         for kind in ('xml', 'collection', 'log'):
@@ -390,9 +518,10 @@ def qualify(repo, stage, resolved, image_id, layer, count, receipt_paths, host_r
         raise RuntimeError('Missing or duplicate shard receipts')
     records, seen_shards, seen_nodes = [], set(), set()
     paths = list(receipt_paths)
-    if layer == 'core':
+    scope = regression_scope(stage) if layer == 'regression' else None
+    if layer in ('core', 'regression'):
         if host_receipt is None:
-            raise RuntimeError('Core qualification requires complete Linux host regression')
+            raise RuntimeError('Layer qualification requires complete Linux host regression')
         paths.append(host_receipt)
     for path in paths:
         receipt = json.loads(Path(path).read_text(encoding='utf-8'))
@@ -400,13 +529,16 @@ def qualify(repo, stage, resolved, image_id, layer, count, receipt_paths, host_r
                 receipt.get('source_commit') != resolved or
                 receipt.get('builder_image_id') != image_id or receipt.get('layer') != layer):
             raise RuntimeError('Receipt source/image/layer mismatch')
+        if scope is not None and receipt.get('regression_scope') != scope:
+            raise RuntimeError('Regression scope/source/catalog mismatch')
         host = receipt.get('environment') == 'linux-host'
         if receipt.get('environment') not in ('linux-host', 'wine-windows'):
             raise RuntimeError('Unknown receipt execution environment')
         if host:
             if host_receipt is None or Path(path) != Path(host_receipt) or receipt.get('shard') is not None:
                 raise RuntimeError('Unexpected host receipt')
-            expected = {'host': gate_selection(stage, layer, host=True)}
+            host_selection = gate_selection(stage, layer, host=True)
+            expected = {'host': host_selection} if host_selection else {}
         else:
             shard = receipt.get('shard')
             if shard is None and count == 1:
@@ -419,11 +551,7 @@ def qualify(repo, stage, resolved, image_id, layer, count, receipt_paths, host_r
             if index in seen_shards:
                 raise RuntimeError('Duplicate shard index')
             seen_shards.add(index)
-            expected = {'main': gate_selection(stage, layer, shard_selection)}
-            if index == 0:
-                expected['http'] = list(HTTP_CONFLICT_TESTS)
-                if layer == 'core':
-                    expected['sentinel'] = list(WINDOWS_SENTINELS)
+            expected = windows_gate_groups(stage, layer, shard_selection)
         if set(receipt['groups']) != set(expected):
             raise RuntimeError('Missing or unexpected test groups')
         for group, selection in expected.items():
@@ -436,6 +564,20 @@ def qualify(repo, stage, resolved, image_id, layer, count, receipt_paths, host_r
             collected = sorted(junit_node(line.strip()) for line in
                                collection.read_text(encoding='utf-8').splitlines()
                                if line.startswith('test/') and '::' in line)
+            if scope is not None:
+                # Collection bytes must cover the selected modules, not just
+                # agree with a mutually shortened/foreign XML and nodes list.
+                expected_modules = {name[:-3].replace('/', '.') for name in selection}
+                observed_modules = set()
+                for node in collected:
+                    classname = node.partition('::')[0]
+                    matches = [name for name in expected_modules
+                               if classname == name or classname.startswith(name + '.')]
+                    if len(matches) != 1:
+                        raise RuntimeError('Foreign regression collection node')
+                    observed_modules.add(matches[0])
+                if observed_modules != expected_modules:
+                    raise RuntimeError('Regression collection misses selected module')
             actual = sorted('%s::%s' % (case.get('classname', ''), case.get('name', ''))
                             for case in ElementTree.parse(xml).getroot().iter('testcase'))
             if not actual or len(actual) != len(set(actual)) or actual != collected or actual != entry['nodes']:
@@ -450,11 +592,14 @@ def qualify(repo, stage, resolved, image_id, layer, count, receipt_paths, host_r
         records.append(evidence_record(repo, Path(path)))
     if seen_shards != set(range(count)):
         raise RuntimeError('Incomplete shard indices')
-    return {'schema': 'fakenet.build-qualification.v1', 'source_commit': resolved,
-            'builder_image_id': image_id, 'layer': layer, 'shard_count': count,
-            'receipts': records, 'host_receipt': evidence_record(repo, Path(host_receipt))
-            if layer == 'core' else None, 'verdict': 'PARTIAL',
-            'build_gate': 'PASS', 'native_gaps': list(NATIVE_GAPS)}
+    qualification = {'schema': 'fakenet.build-qualification.v1', 'source_commit': resolved,
+                     'builder_image_id': image_id, 'layer': layer, 'shard_count': count,
+                     'receipts': records, 'host_receipt': evidence_record(repo, Path(host_receipt))
+                     if layer in ('core', 'regression') else None, 'verdict': 'PARTIAL',
+                     'build_gate': 'PASS', 'native_gaps': list(NATIVE_GAPS)}
+    if scope is not None:
+        qualification['regression_scope'] = scope
+    return qualification
 
 
 def validate_qualification(repo, stage, resolved, image_id, layer, path, expected_sha):
@@ -480,6 +625,10 @@ def gate_test_files(stage, layer):
     the fast Linux run and by Windows sentinel shards); ``full`` keeps
     everything. Files are sorted so shard assignment is reproducible.
     """
+    if layer == 'regression':
+        return regression_scope(stage)['windows']
+    if layer not in ('full', 'core'):
+        raise RuntimeError('Unknown build gate layer')
     files = sorted(path.relative_to(stage).as_posix()
                    for path in (stage / 'test').rglob('test_*.py')
                    if path.name != 'test_http_listener_stop.py' and
@@ -542,17 +691,16 @@ def run_windows_test_gate(stage, build_root, shard=None, layer='full',
     # UTF-8 mode keeps the gate aligned with the Unix default.
     env['PYTHONUTF8'] = '1'
 
-    groups = {'main': collect_and_run(stage, validation, 'main',
-                                      gate_selection(stage, layer, shard), env)}
-    if shard is None or shard[0] == 0:
-        groups['http'] = collect_and_run(stage, validation, 'http', list(HTTP_CONFLICT_TESTS), env)
-        if layer == 'core':
-            groups['sentinel'] = collect_and_run(stage, validation, 'sentinel',
-                                                list(WINDOWS_SENTINELS), env)
+    selections = windows_gate_groups(stage, layer, shard)
+    groups = {name: collect_and_run(stage, validation, name, selection, env)
+              for name, selection in selections.items()}
     receipt = write_receipt(repo, stage, validation, resolved, image_id, layer, shard, groups)
-    return {'verdict': 'PASS', 'shard': shard, 'layer': layer,
-            'groups': {name: result['summary'] for name, result in groups.items()},
-            'receipt': evidence_record(repo, receipt)}
+    result = {'verdict': 'PASS', 'shard': shard, 'layer': layer,
+              'groups': {name: result['summary'] for name, result in groups.items()},
+              'receipt': evidence_record(repo, receipt)}
+    if layer == 'regression':
+        result['regression_scope'] = regression_scope(stage)
+    return result
 
 
 def smoke_frozen_exe(onedir, build_root):
@@ -818,12 +966,16 @@ def build_gate_marker_dir(repo, source_commit, shard, layer):
 def build(repo, source_commit, output_root, output_directory=None,
           shard=None, layer='full', gate_only=False, package_only=False,
           image_id='', qualification=None, qualification_sha256=None, host_only=False):
+    if layer == 'regression' and not (gate_only or host_only or package_only):
+        raise RuntimeError('Regression packaging requires merged host/shard qualification; '
+                           'use the wrapper or qualified package-only')
     resolved = captured(['git', '-C', str(repo), 'rev-parse',
                          source_commit + '^{commit}'])
     timings = {}
     output_root = Path(output_root).resolve()
     destination_dir = None if gate_only or host_only else (Path(output_directory).resolve()
-                       if output_directory else next_output_directory(output_root))
+                       if output_directory else next_output_directory(
+                           output_root, create_root=layer != 'regression'))
     if not image_id.startswith('sha256:'):
         raise RuntimeError('Explicit builder image content ID required')
     if package_only and (not qualification or not qualification_sha256):
@@ -847,14 +999,21 @@ def build(repo, source_commit, output_root, output_directory=None,
             archive.extractall(stage)
         shutil.rmtree(stage / 'dist', ignore_errors=True)
         verify_source(stage)
+        if layer == 'regression':
+            # Validate the registry before SDK installation, collection or
+            # packaging; package-only also rejudges its original credential.
+            regression_scope(stage)
+            if not host_only:
+                windows_gate_groups(stage, layer, shard)
 
         if host_only:
             validation = build_root / 'build-validation'
             validation.mkdir()
             env = os.environ.copy()
             env['PYTHONDONTWRITEBYTECODE'] = '1'
-            groups = {'host': collect_and_run(stage, validation, 'host',
-                                              gate_selection(stage, layer, host=True), env, windows=False)}
+            selection = gate_selection(stage, layer, host=True)
+            groups = ({'host': collect_and_run(stage, validation, 'host', selection, env,
+                                               windows=False)} if selection else {})
             receipt = write_receipt(repo, stage, validation, resolved, image_id,
                                     layer, None, groups, host=True)
             print('Host receipt: %s' % receipt)
@@ -970,6 +1129,8 @@ def build(repo, source_commit, output_root, output_directory=None,
             'zip_entry_timestamp_utc': '2000-01-01T00:00:00Z',
             'files': rows,
         }
+        if layer == 'regression':
+            manifest['regression_scope'] = test_gate['regression_scope']
         manifest_payload = json.dumps(
             manifest, ensure_ascii=False, indent=2) + '\n'
         (package / 'mcp-candidate-manifest.json').write_text(
@@ -997,8 +1158,9 @@ def build(repo, source_commit, output_root, output_directory=None,
     return destination
 
 
-def next_output_directory(output_root):
-    output_root.mkdir(parents=True, exist_ok=True)
+def next_output_directory(output_root, create_root=True):
+    if create_root:
+        output_root.mkdir(parents=True, exist_ok=True)
     for number in range(1, 10000):
         candidate = output_root / ('mcp-r%d' % number)
         if not candidate.exists():
@@ -1016,7 +1178,7 @@ def main():
                         help='run only the Windows test gate, no packaging')
     parser.add_argument('--shard-index', type=int, default=None)
     parser.add_argument('--shard-count', type=int, default=None)
-    parser.add_argument('--layer', choices=('full', 'core'), default='full')
+    parser.add_argument('--layer', choices=('full', 'core', 'regression'), default='full')
     parser.add_argument('--package-only', action='store_true',
                         help='skip the gate (used after a green sharded gate)')
     parser.add_argument('--gate-merge', action='store_true',
