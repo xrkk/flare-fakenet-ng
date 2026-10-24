@@ -12,6 +12,29 @@ from pathlib import Path
 RAW=b'HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nX-Test: <RAW-DATE>\r\nContent-Length: 35\r\nConnection: close\r\n\r\nbody<RAW-DATE>\x00\xff'
 STATIC=b'static-<RAW-DATE>'
 
+def _evaluate_syslog_icmp(root,original,expected_inputs,allow_fixture=False):
+    base=Path(original).resolve();path=base/'manual-result.json'
+    if path.is_symlink() or not path.is_file():raise ValueError('original missing or linked')
+    v=json.loads(path.read_text())
+    if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!='GAP-SYSLOG-ICMP-LOG':raise ValueError('case/schema mismatch')
+    if v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
+    for k in ('candidate_id','source_commit','package_sha256','execution_id'):
+        if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
+    if type(v.get('fixture')) is not bool or v['fixture']!=(expected_inputs.get('fixture') is True):raise ValueError('fixture identity mismatch')
+    if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
+    if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
+    d=v.get('syslog_icmp') or {};errors=[]
+    if d.get('main_rc_on')!=0 or d.get('main_rc_off')!=0:errors.append('original main -s/off exit mismatch')
+    sink=Path(d.get('syslog_sink',''));sink_bytes=sink.read_bytes() if sink.is_file() else b''
+    if not sink_bytes or b'"levelName"' not in sink_bytes or b'FakeNet-NG' not in sink_bytes:errors.append('syslog sink original bytes missing/not formatter output')
+    log=Path(d.get('icmp_log',''));lines=log.read_text(encoding='utf-8').splitlines() if log.is_file() else []
+    if len(lines)!=1 or 'ICMP type 8 code 0' not in lines[0]:errors.append('ICMP log must contain exactly one positive log line')
+    if d.get('icmp_type')!=8 or d.get('icmp_code')!=0 or d.get('icmp_id')!=4321:errors.append('ICMP parser fields differ')
+    if d.get('execution_token')!=expected_inputs['execution_id'] or not isinstance(d.get('owner_pid'),int) or d['owner_pid']<=0:errors.append('owner/token mismatch')
+    if v.get('source_hashes')!={n:hashlib.sha256((Path(root)/n).read_bytes()).hexdigest() for n in ('fakenet/fakenet.py','fakenet/diverters/fnpacket.py','fakenet/diverters/diverterbase.py')}:errors.append('source binding mismatch')
+    if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True}:errors.append('cleanup mismatch')
+    return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('syslog','icmp','owner')],not errors,{'failures':errors}
+
 def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False):
     import configparser
     import dpkt
@@ -277,6 +300,7 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
     return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('blacklist','whitelist','mutex')],not errors,{'failures':errors}
 
 def evaluate(root,original,case,expected_inputs,allow_fixture=False):
+    if case=='GAP-SYSLOG-ICMP-LOG':return _evaluate_syslog_icmp(root,original,expected_inputs,allow_fixture)
     if case=='GAP-DUMPPACKETS':return _evaluate_dumppackets(root,original,expected_inputs,allow_fixture)
     if case=='GAP-DIVERTER-SWITCH':return _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture)
     if case=='GAP-EXECUTECMD':return _evaluate_executecmd(root,original,expected_inputs,allow_fixture)

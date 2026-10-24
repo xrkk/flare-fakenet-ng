@@ -3913,8 +3913,8 @@
             "docs/testing.md",
             "fakenet/configs/default.ini"
           ],
-          "blocked_reason": "native adapter not implemented in S1",
-          "native_driver": "manual-headless"
+          "blocked_reason": "native Windows target required; local fixture is not native credit",
+          "native_driver": "manual-syslog-icmp"
         },
         {
           "id": "GAP-DUMPPACKETS",

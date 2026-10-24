@@ -158,6 +158,36 @@ def real_list_mutex(case,out,inputs):
       'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
     _json(out/'manual-result.json',value);return value
 
+def real_syslog_icmp(case,out,inputs):
+    import logging,socket,dpkt,os,struct
+    from fakenet import fakenet as core
+    from fakenet.diverters.diverterbase import DiverterBase
+    from fakenet.diverters.fnpacket import PacketCtx
+    out=Path(out);cfgdir=out/'config';cfgdir.mkdir();cfg=cfgdir/'syslog.ini';cfg.write_text('[FakeNet]\nDivertTraffic: No\n')
+    log_on=out/'main-syslog.log';sink=inputs.get('syslog_sink') or str(out/'syslog.sink');rc_on=None
+    import sys as _sys
+    old_argv=_sys.argv
+    try:
+        _sys.argv=['fakenet','-c',str(cfg),'-s','-p','-n','-l',str(log_on)];core.main()
+    except SystemExit as exc:rc_on=exc.code
+    finally:_sys.argv=old_argv
+    rc_off=None;log_off=out/'main-no-syslog.log'
+    old_argv=_sys.argv
+    try:
+        _sys.argv=['fakenet','-c',str(cfg),'-p','-n','-l',str(log_off)];core.main()
+    except SystemExit as exc:rc_off=exc.code
+    finally:_sys.argv=old_argv
+    def icmp_packet(kind):
+        payload=dpkt.icmp.ICMP(type=8,code=0,data=struct.pack('!HH',4321,1)) if kind=='icmp' else dpkt.tcp.TCP(sport=40000,dport=8080,flags=dpkt.tcp.TH_SYN)
+        ip=dpkt.ip.IP(src=socket.inet_aton('192.0.2.10'),dst=socket.inet_aton('192.0.2.20'),p=1 if kind=='icmp' else 6,data=payload);ip.len=len(ip);return PacketCtx('syslog-'+kind,bytes(ip))
+    icmp_log=out/'icmp.log';logger=logging.getLogger('manual-syslog-icmp');logger.setLevel(logging.INFO);handler=logging.FileHandler(icmp_log);logger.addHandler(handler)
+    d=DiverterBase.__new__(DiverterBase);d.logger=logger;d.running_on_windows=False;d.blacklist_ids={'ICMP':[]}
+    class Crit:pass
+    pkt_icmp=icmp_packet('icmp');d.check_log_icmp(Crit(),pkt_icmp);d.check_log_icmp(Crit(),icmp_packet('tcp'));d.running_on_windows=True;d.blacklist_ids={'ICMP':[pkt_icmp.icmp_id]};d.check_log_icmp(Crit(),pkt_icmp)
+    handler.flush();handler.close();logger.removeHandler(handler)
+    value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,'syslog_icmp':{'config':str(cfg),'config_sha256':sha256(cfg),'main_rc_on':rc_on,'main_rc_off':rc_off,'main_log_on':str(log_on),'main_log_off':str(log_off),'syslog_sink':sink,'syslog_sink_sha256':sha256(sink) if Path(sink).is_file() else None,'icmp_log':str(icmp_log),'icmp_log_sha256':sha256(icmp_log),'icmp_type':pkt_icmp.icmp_type,'icmp_code':pkt_icmp.icmp_code,'icmp_id':pkt_icmp.icmp_id,'owner_pid':os.getpid(),'execution_token':inputs['execution_id']},'source_hashes':{n:sha256(Path(__file__).resolve().parents[1]/n) for n in ('fakenet/fakenet.py','fakenet/diverters/fnpacket.py','fakenet/diverters/diverterbase.py')},'started_at':datetime.now(timezone.utc).isoformat(),'cleanup':{'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True},'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
+    _json(out/'manual-result.json',value);return value
+
 def real_dumppackets(case, out, inputs):
     import logging
     from fakenet.diverters.diverterbase import DiverterBase
@@ -412,6 +442,11 @@ def run(case,out,inputs=None,memory_mode=False):
         if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
         out.mkdir(parents=True,exist_ok=False)
         return real_dumppackets(case,out,inputs)
+    if case=='GAP-SYSLOG-ICMP-LOG':
+        validate_inputs(case,inputs);out=Path(out).absolute()
+        if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
+        out.mkdir(parents=True,exist_ok=False)
+        return real_syslog_icmp(case,out,inputs)
     if case not in ('GAP-NCSI','GAP-RAW-DATE'):raise NotImplementedError('case is not implemented in this round: '+case)
     validate_inputs(case,inputs);out=Path(out).absolute()
     if str(out)!=inputs['owned_root'] or str(out/'config')!=inputs['config']:raise ValueError('manual output differs from frozen owned_root/config')
