@@ -13,7 +13,6 @@ RAW=b'HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nX-Test: <RAW-DATE>\r\nContent-Lengt
 STATIC=b'static-<RAW-DATE>'
 
 def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False):
-    import configparser
     base=Path(original).resolve();path=base/'manual-result.json'
     if path.is_symlink() or not path.is_file():raise ValueError('original missing or linked')
     v=json.loads(path.read_text())
@@ -25,21 +24,35 @@ def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False)
     if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
     if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
     errors=[];data=v.get('diverter_switch') or {}
-    for mode,traffic in (('on','yes'),('off','no')):
-        item=data.get(mode) or {};cfg=Path(item.get('config',''))
-        if not cfg.is_file() or cfg.is_symlink() or item.get('config_sha256')!=hashlib.sha256(cfg.read_bytes()).hexdigest():errors.append(mode+' config missing/changed');continue
-        parser=configparser.ConfigParser();parser.read(cfg)
-        if parser.get('FakeNet','DivertTraffic').lower()!=traffic:errors.append(mode+' traffic value differs')
+    if set(data)!=set(('on','off')):errors.append('exact branch set differs')
+    for mode,traffic in (('on','Yes'),('off','No')):
+        item=data.get(mode) or {};cfg=base/'config'/(mode+'.ini')
+        if item.get('config')!=str(cfg) or not cfg.is_file() or cfg.is_symlink() or item.get('config_sha256')!=hashlib.sha256(cfg.read_bytes()).hexdigest():
+            errors.append(mode+' config missing/changed/foreign');continue
+        text='[FakeNet]\nDivertTraffic: '+traffic+'\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n'
+        if cfg.read_text()!=text:errors.append(mode+' traffic configuration differs')
+        if item.get('before')!={'diverttraffic':traffic,'diverter':None,'listeners':0}:errors.append(mode+' before state differs')
         if item.get('error') is not None:errors.append(mode+' production error')
-        after=item.get('after') or {}
-        if mode=='on':
-            if after.get('started') is not True or after.get('diverter') is None or after.get('stop1') is not True or after.get('stop2') is not True or after.get('stop_calls')!=1:errors.append('on start/stop/restore mismatch')
-        else:
-            if after.get('started') is not False or after.get('diverter') is not None or after.get('stop1') is not True or after.get('stop2') is not True:errors.append('off branch created/started diverter')
-    if v.get('source_hashes')!={n:hashlib.sha256((Path(root)/n).read_bytes()).hexdigest() for n in ('fakenet/fakenet.py','fakenet/diverters/linux.py')}:errors.append('source binding mismatch')
-    if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True}:errors.append('cleanup mismatch')
-    out=[{'id':k,'status':'fail' if errors else 'pass'} for k in ('on','off','restore')]
-    return out,not errors,{'failures':errors}
+        after=item.get('after') or {};on=mode=='on'
+        if item.get('start_calls')!=(1 if on else 0):errors.append(mode+' backend start not observed once')
+        if (after.get('started') is not on or (on and not after.get('diverter')) or (not on and after.get('diverter') is not None)
+                or after.get('stop1') is not True or after.get('stop2') is not True or after.get('stop_calls')!=(1 if on else 0)
+                or after.get('listeners')!=0):errors.append(mode+' start/stop/restore mismatch')
+        obs=base/(mode+'-observation.json');log=base/(mode+'-core.log')
+        if (item.get('observation')!=str(obs) or not obs.is_file() or obs.is_symlink() or item.get('observation_sha256')!=hashlib.sha256(obs.read_bytes()).hexdigest()
+                or item.get('core_log')!=str(log) or not log.is_file() or log.is_symlink() or item.get('core_log_sha256')!=hashlib.sha256(log.read_bytes()).hexdigest()):
+            errors.append(mode+' observation/log original missing/changed');continue
+        expected_calls=[{'method':method,'event':event} for method in ('start','stop') for event in ('call','return')] if on else []
+        expected_obs={'schema':'fakenet.switch-observation.v1','mode':mode,'execution_id':expected_inputs['execution_id'],
+                      'calls':expected_calls,'stop_complete':True,'stop_result':True,'stop_error':None,'start_error':None,'stop_errors':[]}
+        if json.loads(obs.read_text())!=expected_obs:errors.append(mode+' original call/cleanup observations differ')
+        lines=log.read_text().splitlines()
+        if lines.count('DEFAULT_INTERCEPTION_READY')!=(1 if on else 0):errors.append(mode+' original interception-ready marker differs')
+        if not any(line.startswith('STOP_PHASE_END phase=complete') and line.endswith('healthy=True') for line in lines):errors.append(mode+' stop completion log missing')
+    if v.get('source_hashes')!={n:hashlib.sha256((Path(root)/n).read_bytes()).hexdigest() for n in ('fakenet/fakenet.py','fakenet/diverters/linux.py','fakenet/diverters/windows.py')}:errors.append('source binding mismatch')
+    if v.get('cleanup')!={'stopped':True,'scope':'observed-core-start-stop','system_network_restored':'unverified'}:errors.append('cleanup mismatch')
+    if v.get('checks')!=[{'id':k} for k in ('on','off','restore')]:errors.append('exact check set differs')
+    return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('on','off','restore')],not errors,{'failures':errors}
 
 def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False):
     from types import SimpleNamespace

@@ -16,7 +16,7 @@ def _linux_module():
 
 class DiverterSwitchTests(unittest.TestCase):
  def setUp(self):
-  self.t=tempfile.TemporaryDirectory();self.addCleanup(self.t.cleanup);self.base=Path(self.t.name)
+  self.base=Path(os.environ['FN_MANUAL_CHECK_DIR'])/'retained'/self.id().split('.')[-1];self.base.mkdir(parents=True,exist_ok=False)
  def inputs(self,out):
   return {'schema':'fakenet.manual-input.v1','case':'GAP-DIVERTER-SWITCH','candidate_id':'switch-fixture','source_commit':'a'*40,'package_sha256':'b'*64,'execution_id':'switch-fixture-01','config':str(out/'config'),'owned_root':str(out),'fixture':True}
  def test_real_fakenet_on_off_and_idempotent_stop(self):
@@ -60,3 +60,67 @@ class DiverterSwitchTests(unittest.TestCase):
  def test_central_registration(self):
   self.assertEqual('manual-diverter-switch',N.driver_table(ROOT)['manual-diverter-switch']['production_kind'])
 if __name__=='__main__':unittest.main()
+
+class ControllerSwitchTruthTests(unittest.TestCase):
+ inputs=DiverterSwitchTests.inputs
+ def setUp(self):
+  self.base=Path(os.environ['FN_MANUAL_CHECK_DIR'])/'retained'/self.id().split('.')[-1];self.base.mkdir(parents=True,exist_ok=False)
+ def produce(self,out,backend=_Backend):
+  inputs=self.inputs(out)
+  with mock.patch('fakenet.fakenet.platform.system',return_value='Linux'),mock.patch('fakenet.fakenet.IfaceIpInfo',_Iface),mock.patch.dict(sys.modules,{'fakenet.diverters.linux':types.SimpleNamespace(Diverter=backend)}):
+   value=M.run('GAP-DIVERTER-SWITCH',out,inputs)
+  return inputs,value
+ def test_first_start_observation_and_exact_check_set_required(self):
+  import copy
+  out=self.base/'case';inputs,value=self.produce(out);path=out/'manual-result.json'
+  for fault in ('start','checks','before'):
+   with self.subTest(fault=fault):
+    v=copy.deepcopy(value)
+    if fault=='start':v['diverter_switch']['on']['start_calls']=0
+    elif fault=='checks':v['checks']=[]
+    else:v['diverter_switch']['on']['before']['diverttraffic']='no'
+    path.write_text(json.dumps(v));rows,clean,detail=O.evaluate(ROOT,out,'GAP-DIVERTER-SWITCH',inputs,allow_fixture=True)
+    self.assertFalse(clean,(fault,detail))
+ def test_unowned_configuration_must_not_be_accepted(self):
+  import shutil
+  out=self.base/'case';inputs,value=self.produce(out);other=self.base/'foreign.ini';shutil.copyfile(out/'config/on.ini',other)
+  value['diverter_switch']['on']['config']=str(other);(out/'manual-result.json').write_text(json.dumps(value))
+  rows,clean,detail=O.evaluate(ROOT,out,'GAP-DIVERTER-SWITCH',inputs,allow_fixture=True);self.assertFalse(clean,detail)
+ def test_failed_start_still_stops_owned_backend(self):
+  class Failing(_Backend):
+   last=None
+   def __init__(self,*args,**kwargs):super().__init__(*args,**kwargs);Failing.last=self
+   def start(self):super().start();raise RuntimeError('owned start failed')
+  out=self.base/'case';inputs,value=self.produce(out,Failing)
+  self.assertEqual(1,Failing.last.stop_calls)
+  self.assertFalse(value['cleanup']['stopped'])
+  rows,clean,detail=O.evaluate(ROOT,out,'GAP-DIVERTER-SWITCH',inputs,allow_fixture=True);self.assertFalse(clean,detail)
+
+
+class ControllerSwitchBoundaryTests(unittest.TestCase):
+ setUp=ControllerSwitchTruthTests.setUp
+ inputs=DiverterSwitchTests.inputs
+ def test_backend_with_no_test_counter_fields_still_passes(self):
+  class Plain:
+   def __init__(self,*args,**kwargs):pass
+   def start(self):pass
+   def stop(self):return True
+  out=self.base/'case';inputs=self.inputs(out)
+  with mock.patch('fakenet.fakenet.platform.system',return_value='Linux'),mock.patch('fakenet.fakenet.IfaceIpInfo',_Iface),mock.patch.dict(sys.modules,{'fakenet.diverters.linux':types.SimpleNamespace(Diverter=Plain)}):M.run('GAP-DIVERTER-SWITCH',out,inputs)
+  rows,clean,detail=O.evaluate(ROOT,out,'GAP-DIVERTER-SWITCH',inputs,allow_fixture=True);self.assertTrue(clean,detail)
+ def test_independent_fault_and_missing_branch_are_rejected(self):
+  import copy
+  out=self.base/'case';inputs=self.inputs(out)
+  with mock.patch('fakenet.fakenet.platform.system',return_value='Linux'),mock.patch('fakenet.fakenet.IfaceIpInfo',_Iface),mock.patch.dict(sys.modules,{'fakenet.diverters.linux':types.SimpleNamespace(Diverter=_Backend)}):M.run('GAP-DIVERTER-SWITCH',out,inputs)
+  path=out/'manual-result.json';base=json.loads(path.read_text())
+  for fault in ('identity','branch','restore','fixture'):
+   with self.subTest(fault=fault):
+    value=copy.deepcopy(base)
+    if fault=='identity':value['identity']['execution_id']='foreign'
+    elif fault=='branch':value['diverter_switch'].pop('off')
+    elif fault=='restore':value['diverter_switch']['on']['after']['stop1']=False
+    else:value.pop('fixture')
+    path.write_text(json.dumps(value))
+    try:rows,clean,detail=O.evaluate(ROOT,out,'GAP-DIVERTER-SWITCH',inputs,allow_fixture=True)
+    except ValueError as exc:detail={'refusal':str(exc)};clean=False
+    self.assertFalse(clean,(fault,detail));(out/('rejected-'+fault+'.json')).write_text(json.dumps(detail))

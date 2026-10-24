@@ -159,28 +159,51 @@ def real_list_mutex(case,out,inputs):
     _json(out/'manual-result.json',value);return value
 
 def real_diverter_switch(case,out,inputs):
-    import logging
+    import logging,sys
     from fakenet.fakenet import Fakenet
-    out=Path(out);cfgdir=out/'config';cfgdir.mkdir()
+    out=Path(out);cfgdir=out/'config';cfgdir.mkdir();values={}
     base='[FakeNet]\nDivertTraffic: {traffic}\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n'
-    values={}
     for mode,traffic in (('on','Yes'),('off','No')):
         cfg=cfgdir/(mode+'.ini');cfg.write_text(base.format(traffic=traffic))
-        f=Fakenet(logging.ERROR);f.parse_config(str(cfg));before={'diverttraffic':f.fakenet_config.get('diverttraffic'),'diverter':None,'listeners':len(f.listeners_config)}
+        f=Fakenet(logging.INFO);f.parse_config(str(cfg));before={'diverttraffic':f.fakenet_config.get('diverttraffic'),'diverter':None,'listeners':len(f.listeners_config)}
+        log=out/(mode+'-core.log');handler=logging.FileHandler(log,mode='x');handler.setFormatter(logging.Formatter('%(message)s'))
+        f.logger.addHandler(handler);previous=sys.getprofile();calls=[];error=None;stop_errors=[];stops=[];started=False;active=None
+        def observe(frame,event,arg):
+            backend=f.diverter
+            if backend is not None and frame.f_locals.get('self') is backend and event in ('call','return'):
+                for method in ('start','stop'):
+                    target=getattr(getattr(backend,method,None),'__func__',None)
+                    if target is not None and frame.f_code is target.__code__:
+                        calls.append({'method':method,'event':event})
+            if previous is not None:previous(frame,event,arg)
+        sys.setprofile(observe)
         try:
-            f.start();created=f.diverter is not None
-            started=getattr(f.diverter,'start_calls',None) if created else 0
-            stop1=f.stop();stop2=f.stop();stopped=getattr(f.diverter,'stop_calls',None) if created else 0
-            after={'diverter':type(f.diverter).__name__ if created else None,'started':bool(created),'stop1':stop1,'stop2':stop2,'stop_calls':stopped,'listeners':len(f.listeners_config)}
-            error=None
-        except BaseException as exc:
-            created=False;after={'diverter':None,'started':False,'stop1':None,'stop2':None,'stop_calls':0,'listeners':len(f.listeners_config)};error={'type':type(exc).__name__,'message':str(exc)}
-        values[mode]={'config':str(cfg),'config_sha256':sha256(cfg),'before':before,'after':after,'error':error,'start_calls':started}
-    success=(values['on']['after']['started'] is True and values['on']['after']['stop1'] is True and values['on']['after']['stop2'] is True and values['on']['after']['stop_calls']==1 and values['off']['after']['started'] is False and values['off']['after']['diverter'] is None and values['off']['error'] is None)
+            f.start();started=True;active=type(f.diverter).__name__ if f.diverter is not None else None
+        except BaseException as exc:error={'type':type(exc).__name__,'message':str(exc)}
+        finally:
+            try:
+                for index in range(2):
+                    try:stops.append(f.stop())
+                    except BaseException as exc:
+                        stops.append(None);stop_errors.append({'type':type(exc).__name__,'message':str(exc)})
+            finally:
+                sys.setprofile(previous);f.logger.removeHandler(handler);handler.close()
+        created=f.diverter is not None
+        start_calls=sum(x=={'method':'start','event':'call'} for x in calls)
+        stop_calls=sum(x=={'method':'stop','event':'call'} for x in calls)
+        after={'diverter':type(f.diverter).__name__ if created else None,'started':started and created,
+               'stop1':stops[0],'stop2':stops[1],'stop_calls':stop_calls,'listeners':len(f.listeners_config)}
+        observation={'schema':'fakenet.switch-observation.v1','mode':mode,'execution_id':inputs['execution_id'],
+                     'calls':calls,'stop_complete':f._stop_complete.is_set(),'stop_result':f._stop_result,
+                     'stop_error':type(f._stop_error).__name__ if f._stop_error else None,'start_error':error,'stop_errors':stop_errors}
+        raw=out/(mode+'-observation.json');_json(raw,observation)
+        values[mode]={'config':str(cfg),'config_sha256':sha256(cfg),'before':before,'after':after,'error':error,'start_calls':start_calls,
+                     'observation':str(raw),'observation_sha256':sha256(raw),'core_log':str(log),'core_log_sha256':sha256(log)}
+    restored=all(v['error'] is None and v['after']['stop1'] is True and v['after']['stop2'] is True for v in values.values())
     value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,'diverter_switch':values,
-      'source_hashes':{n:sha256(Path(__file__).resolve().parents[1]/n) for n in ('fakenet/fakenet.py','fakenet/diverters/linux.py')},
-      'started_at':datetime.now(timezone.utc).isoformat(),'cleanup':{'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True},
-      'checks':[{'id':x,'status':'pass' if success else 'fail'} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
+      'source_hashes':{n:sha256(Path(__file__).resolve().parents[1]/n) for n in ('fakenet/fakenet.py','fakenet/diverters/linux.py','fakenet/diverters/windows.py')},
+      'cleanup':{'stopped':restored,'scope':'observed-core-start-stop','system_network_restored':'unverified'},
+      'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
     _json(out/'manual-result.json',value);return value
 
 def real_executecmd(case,out,inputs):

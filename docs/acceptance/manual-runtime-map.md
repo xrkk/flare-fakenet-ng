@@ -14,15 +14,15 @@
 
 ## 手工功能
 
-当前已接入 `GAP-NCSI`, `GAP-RAW-DATE` 和 `GAP-LIST-MUTEX`; 其余 8 个手工 case 和 2 个 Linux case 的完整链仍未实现, 不返回 pass. 历史 T007/R02 仅交付前两项.
+当前已接入 `GAP-NCSI`, `GAP-RAW-DATE`, `GAP-LIST-MUTEX`, `GAP-EXECUTECMD` 和 `GAP-DIVERTER-SWITCH`; 其余 6 个手工 case 和 2 个 Linux case 的完整链仍未实现, 不返回 pass. 历史 T007/R02 仅交付前两项.
 
 | Case | 原来源 | 关键正反判据 |
 | --- | --- | --- |
-| GAP-EXECUTECMD (NOT_IMPLEMENTED) | docs/testing.md, ExecuteCmd | 本轮不返回 pass |
+| GAP-EXECUTECMD | 原 parse/build/PacketCtx/maybe_redir_port/execute_detached | 首次一次/重复与负场景零次; 本轮 token/六字段输出原字节; 独立缺失/错内容/重复拒绝 |
 | GAP-NCSI | fakenet/listeners/DNSListener.py DNSHandler.parse | 真实 query/response UDP/TCP；dns.msftncsi.com=131.107.255.225；其它域 responsea |
 | GAP-STANDALONE-LISTENERS (NOT_IMPLEMENTED) | 原 listener 入口 | 每个 standalone listener 的真实请求/响应与关闭 |
 | GAP-CTRLC-IPC (NOT_IMPLEMENTED) | 原控制入口 | Ctrl-C 与 IPC halt 的实际关闭/退出 |
-| GAP-DIVERTER-SWITCH (NOT_IMPLEMENTED) | default.ini, diverter | DivertTraffic 两值及规则恢复 |
+| GAP-DIVERTER-SWITCH | 原 Fakenet.parse_config/start/stop | 两值原 core 分支/调用与日志; owned 停止及幂等; 系统网络恢复单独未验 |
 | GAP-SYSLOG-ICMP-LOG (NOT_IMPLEMENTED) | syslog/ICMP 日志 | 标记、ICMP 实际记录、PID owner |
 | GAP-DUMPPACKETS (NOT_IMPLEMENTED) | DumpPackets | 开/关、前缀、真实包内容 |
 | GAP-LINUX-FLUSH-INTERFACE (NOT_IMPLEMENTED) | LinuxFlushIptables/LinuxFlushDNSCommand/LinuxRestrictInterface | 三个独立字段及实际清理/接口 |
@@ -63,7 +63,7 @@ existing `native` action must be explicit. Catalog platforms remain unchanged.
 This grants fixture/code credit only, never Windows VM or full functional credit.
 All runtime evidence stays in the selected run directory under `Logs/`.
 
-Eight other manual cases remain unimplemented. A missing default HTTP web file
+Six other manual cases remain unimplemented. A missing default HTTP web file
 currently exposes an existing product TypeError; preserve that failure instead
 of treating it as a prerequisite to repair product behavior during facility work.
 
@@ -82,3 +82,21 @@ only its OS process boundary substituted by in-process execution of the original
 manual entry. Actual child transport and Windows native execution remain untested;
 these results do not grant native or full functional credit. Existing NCSI and
 RAW-DATE evidence is inherited without rerunning those cases.
+
+## Current ExecuteCmd and DivertTraffic switch
+
+The `manual-executecmd` producer uses the original configuration parser,
+PacketCtx and first-session caller. It binds the exact fixed command separately
+from its six-field/execution-token output bytes; missing, altered and duplicate
+output fails. The local regression intercepts only the OS process boundary and
+retains simulated output explicitly as fixture evidence. Actual Windows command
+execution and child exit have not been verified.
+
+The `manual-diverter-switch` producer calls original Fakenet parse/start/stop
+for Yes and No, retains original method-call observations and core logs, and
+stops owned components even when startup fails. The oracle requires the exact
+configurations, normal/negative branches and observed idempotent stop. Its local
+regression uses only test-side OS backend/interface fixtures; system network
+restoration remains explicitly unverified. Both drivers use the central
+plan/execute/independent-judge path; code/fixture passes grant no native or full
+functional credit. Existing case evidence remains valid in its recorded scope.
