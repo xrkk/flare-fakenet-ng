@@ -188,13 +188,117 @@ class ClosedReferenceBoundary:
  def __init__(self,fixture):self.fixture=fixture
  def exchange(self,kind,value):raise ValueError('closed capability reference cannot perform native actions')
 
+
+def endpoint_owner_script(address, started):
+ # Read-only provenance supplements the original complete endpoint capture.
+ # Enumerate bounded process identities, including owners whose UDP socket
+ # has not opened yet; an inaccessible identity simply cannot be exempted.
+ quoted="'"+address.replace("'","''")+"'"
+ return ("$ErrorActionPreference='Stop';$limit=4096;$all=@(Get-CimInstance Win32_Process);"
+  "if($all.Count -gt $limit){throw 'owner process budget'};$rows=@();$bytes=0L;"
+  "foreach($p in $all){try{$image=$p.ExecutablePath;if(!$image -or $image -notmatch '^[A-Za-z]:\\\\'){continue};"
+  "$f=Get-Item -LiteralPath $image -Force;if($f.Attributes -band [IO.FileAttributes]::ReparsePoint){continue};"
+  "if($f.Length -gt 32MB){continue};$bytes+=$f.Length;if($bytes -gt 512MB){throw 'owner image budget'};"
+  "$sha=(Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLower();"
+  "$again=Get-CimInstance Win32_Process -Filter ('ProcessId='+$p.ProcessId);"
+  "if(!$again -or $again.CreationDate -ne $p.CreationDate -or $again.ExecutablePath -cne $image){continue};"
+  "$f2=Get-Item -LiteralPath $image;if($f.Length -ne $f2.Length -or $f.LastWriteTimeUtc -ne $f2.LastWriteTimeUtc){continue};"
+  "$rows+=@{pid=[int]$p.ProcessId;birth=$p.CreationDate.ToFileTimeUtc().ToString();image=$f.FullName;sha256=$sha}"
+  "}catch{if($bytes -gt 512MB){throw};continue}};"
+  "$udp=@(Get-NetUDPEndpoint|Where-Object {$_.LocalAddress -ceq "+quoted+" -and $_.LocalPort -ge 49152}|"
+  "ForEach-Object {@{address=$_.LocalAddress;port=[int]$_.LocalPort;pid=[int]$_.OwningProcess}});"
+  "if($udp.Count -gt $limit){throw 'owner endpoint budget'};"
+  "@{schema='fakenet.endpoint-owner-observation.v1';complete=$true;unit_started="+repr(started)+";"
+  "captured_at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()/1000.0;processes=$rows;udp=$udp}|ConvertTo-Json -Depth 5 -Compress")
+
+
+def proven_readonly_endpoint_drift(unit, before, after, initial, final,
+                                   service_before, service_after, session, inputs, differences):
+ """Classify only independently provable, preexisting foreign ephemeral UDP.
+
+ No mutation-capable unit, unknown response or incomplete owner observation
+ can enter this exception. The original full snapshot and diff remain evidence.
+ """
+ from collections import Counter
+ import csv
+ import math
+ import ntpath
+ from pathlib import PureWindowsPath
+ if unit not in ('ACC-005','ACC-002','ACC-016','P01-ENTRY') or set(differences)!={'listen_ports'}:
+  return False
+ if (initial!=final or not isinstance(initial,dict) or initial.get('state')!='stopped'
+     or initial.get('run_id') is not None or initial.get('controller') is not None
+     or not service_before or service_before!=service_after or session.owned_runs
+     or getattr(session,'preserve_scene',False)):
+  return False
+ if any(op.get('accepted') is not False or op.get('response_unknown') is not False
+        for op in session.mutation_operations):return False
+ if before.get('service')!=after.get('service'):return False
+ try:
+  observations=[]
+  for capture in (before,after):
+   proof=capture['endpoint_owners']
+   if proof.get('schema')!='fakenet.endpoint-owner-observation.v1' or proof.get('complete') is not True:return False
+   start=proof['unit_started'];end=proof['captured_at']
+   if any(type(x) not in (float,int) or not math.isfinite(x) for x in (start,end)) or end<=start:return False
+   owners=proof['processes'];udp=proof['udp']
+   if not isinstance(owners,list) or not isinstance(udp,list) or len(owners)>4096 or len(udp)>4096:return False
+   index={}
+   for owner in owners:
+    if set(owner)!={'pid','birth','image','sha256'}:return False
+    pid=owner['pid'];ticks=owner['birth'];image=owner['image'];digest=owner['sha256']
+    if not isinstance(ticks,str) or not re.fullmatch(r'[0-9]{17,20}',ticks):return False
+    birth=(int(ticks)-116444736000000000)/10000000
+    if type(pid) is not int or pid<=0 or pid in index or not math.isfinite(birth) or birth<0 or birth>end:return False
+    if not isinstance(image,str) or not re.fullmatch(r'[A-Za-z]:\\[^\x00-\x1f]+',image) or not PureWindowsPath(image).is_absolute():return False
+    if not isinstance(digest,str) or not re.fullmatch('[0-9a-f]{64}',digest):return False
+    index[pid]=owner
+   blocked=set()
+   processes=json.loads(capture['sections']['windivert_processes'])
+   if not isinstance(processes,dict) or not {'modules','managed','drivers'}<=set(processes):return False
+   for line in processes['modules']:
+    row=next(csv.reader([line]))
+    if len(row)==3 and str(row[1]).isdigit():blocked.add(int(row[1]))
+    elif not (len(row)==1 and ('No tasks' in row[0] or row[0].startswith('INFO:'))):return False
+   for row in processes['managed']:
+    if type(row.get('Id')) is not int:return False
+    blocked.add(row['Id'])
+   observations.append((proof,index,blocked))
+  if observations[0][0]['unit_started']!=observations[1][0]['unit_started']:return False
+  if observations[0][0]['captured_at']>=observations[1][0]['captured_at']:return False
+  def lines(value):return Counter(x for x in value.splitlines() if x.strip())
+  changed=[]
+  b=lines(differences['listen_ports']['before']);a=lines(differences['listen_ports']['after'])
+  for side,delta in ((0,b-a),(1,a-b)):
+   for line,count in delta.items():
+    columns=line.split()
+    if count!=1 or len(columns)!=3 or columns[0]!='UDP' or columns[2]!='*:*':return False
+    address,port=columns[1].rsplit(':',1)
+    if address!=inputs['listen_ip'] or not port.isdigit() or not 49152<=int(port)<=65535:return False
+    proof,owners,blocked=observations[side]
+    rows=[r for r in proof['udp'] if r.get('address')==address and r.get('port')==int(port)]
+    if len(rows)!=1 or type(rows[0].get('pid')) is not int:return False
+    pid=rows[0]['pid'];owner=owners.get(pid);other=observations[1-side][1].get(pid)
+    if not owner or owner!=other or (int(owner['birth'])-116444736000000000)/10000000>=observations[0][0]['unit_started'] or pid in blocked or pid in observations[1-side][2]:return False
+    image=ntpath.normcase(owner['image']);root=ntpath.normcase(inputs['installation_root']).rstrip('\\')
+    if (image==root or image.startswith(root+'\\') or pid==service_before['pid']
+        or owner['sha256']==service_before['sha256']
+        or ntpath.basename(image) in ('fakenet.exe','fakenetng-mcp.exe','fakenetng-mcp-managed.exe','fakenetng-mcp-exit-monitor.exe')):return False
+    # The provenance endpoint must also be present with that exact owner in
+    # the unchanged raw netstat capture, rather than just a classification flag.
+    raw=[x.split() for x in (before,after)[side]['sections']['listen_ports'].splitlines()]
+    if sum(x==['UDP',columns[1],'*:*',str(pid)] for x in raw)!=1:return False
+    changed.append(line)
+  return bool(changed)
+ except (KeyError,ValueError,TypeError,AttributeError,IndexError,OverflowError):return False
+
 class NativeBoundary:
  fixture=False
  def __init__(self,root,inputs,journal):
   from acceptance_windows import ExistingWindowsChannel
   self.root=Path(root);self.inputs=inputs;self.journal=Path(journal)
   self.channel=ExistingWindowsChannel(root,inputs['channel'],journal)
-  self._http_connection=http.client.HTTPConnection;self._urlopen=urllib.request.urlopen;self._run=subprocess.run;self._socket=socket.create_connection;self._time=time.time;self._mono=time.monotonic;self._sleep=time.sleep;self._uuid=uuid.uuid4;self.sockets={}
+  self._http_connection=http.client.HTTPConnection;self._urlopen=urllib.request.urlopen;self._run=subprocess.run;self._socket=socket.create_connection;self._time=time.time;self._mono=time.monotonic;self._sleep=time.sleep;self._uuid=uuid.uuid4;self.sockets={};self.unit_started=time.time()
  def exchange(self,kind,value):
   if kind=='http':
    request=urllib.request.Request(value['url'],data=value['data'],headers=value['headers'],method=value['method'])
@@ -235,7 +339,13 @@ class NativeBoundary:
    mods=modules(self.root);gate=object.__new__(mods['run_p05_release'].ReleaseGate);gate.args=original_args(self.inputs,self.journal);gate.channel=self.channel;gate.release=self.journal
    sections=gate.capture_sections()
    stamp=gate.vm_continuity()
-   return {'sections':sections,'service':stamp,'captures':gate._capture_evidence}
+   try:
+    if getattr(self,'observe_unit',None) not in ('ACC-005','ACC-002','ACC-016','P01-ENTRY'):raise ValueError('not a read-only endpoint unit')
+    raw=self.channel.powershell(endpoint_owner_script(self.inputs['listen_ip'],self.unit_started),timeout=30)
+    proof=json.loads(raw['output'])
+   except Exception:
+    proof={'schema':'fakenet.endpoint-owner-observation.v1','complete':False}
+   return {'sections':sections,'service':stamp,'captures':gate._capture_evidence,'endpoint_owners':proof}
   raise ValueError('unimplemented OS boundary: '+kind)
 
 class ReplayBoundary:
@@ -769,6 +879,7 @@ def _cleanup_owned_configs(mods,base,session,writer):
 
 def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
  mods=modules(root);session=BoundarySession(boundary,inputs);out=Path(out);writer=mods['helpers'].EvidenceWriter(out,'original-unit')
+ if getattr(boundary,'fixture',True) is False:boundary.observe_unit=unit
  args=original_args(inputs,out)
  if unit=='ACC-014' and 'ACC-014' in inputs.get('references',{}):
   writer.add_evidence('capability-request-reference',inputs['references']['ACC-014'])
@@ -858,6 +969,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
        if final['config_identity'] is not None:raise ValueError('restored configuration is not null')
       elif not _same_config(final['config_identity'],initial_config):
        raise ValueError('restored configuration identity not observed')
+      service_after=None
       if service_before is not None:
        restored_mode=mods['helpers'].configure_fault_service(session,service_before['enabled'],service_before['grace'])
        writer.add_evidence('service-settings-restored',restored_mode)
@@ -867,7 +979,9 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
       from fakenet.mcp.baseline import audit_compare
       differences=audit_compare(before['sections'],after['sections'])
       writer.add_evidence('environment-diff',differences)
-      if differences or final.get('state')!='stopped' or final.get('run_id'):raise ValueError('MCP recovery not established; preserve original failed state')
+      exempt=proven_readonly_endpoint_drift(unit,before,after,initial,final,service_before,service_after,session,inputs,differences)
+      if exempt:writer.add_evidence('readonly-foreign-endpoint-observation',{'scope':'strict-zero-mutation-preexisting-foreign-ephemeral-UDP','raw_diff_retained':True})
+      if (differences and not exempt) or final.get('state')!='stopped' or final.get('run_id'):raise ValueError('MCP recovery not established; preserve original failed state')
      except Exception as exc:
       recovery_error={'type':type(exc).__name__,'message':str(exc)};error=error or recovery_error;writer.blocker=error;code=1
  status={0:'pass',1:'fail',2:'blocked',3:'unknown'}.get(code,'unknown')

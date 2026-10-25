@@ -405,3 +405,21 @@ success and cleanup; preparation, test, judge, timeout, or cleanup failure exits
 nonzero and preserves all attempts. Existing output directories are refused.
 The default false collection guards remain active outside these measured profiles.
 The preset does not deploy a package or execute Windows/Linux native tests.
+
+
+## Read-only MCP endpoint observations
+
+The central MCP runner keeps the complete original endpoint snapshots and raw
+recovery diff. For P01-ENTRY, ACC-002, ACC-016 and ACC-005 only, it can attribute
+a changed host-only ephemeral UDP endpoint to a preexisting foreign process.
+This requires unchanged state/version/config/controller and service instance,
+no accepted or unknown mutation, identical process PID/birth/image/hash in both
+bounded observations, and an exact owner match in the original raw netstat row.
+Managed or WinDivert owners, TCP, low ports, wildcard/loopback addresses and
+other environment differences keep the original strict recovery failure.
+
+The independent oracle derives this classification again from recorded raw
+observations; a summary flag cannot grant it. Old traces without owner proof
+remain failed. Mutating units retain the original recovery conditions. Benign
+fixture tests exercise the original consumer and independent replay; they do
+not establish native owner collection or a full Windows/P02 regression pass.

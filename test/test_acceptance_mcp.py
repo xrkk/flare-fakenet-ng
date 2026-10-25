@@ -1,5 +1,6 @@
 """Original MCP assertions run against a pure in-memory HTTP transport."""
 import hashlib
+from functools import lru_cache
 import json
 from pathlib import Path
 import sys
@@ -12,10 +13,15 @@ import acceptance_mcp as m
 import acceptance_mcp_oracles as o
 
 
+@lru_cache(maxsize=1)
+def fixture_source_commit():
+ # One actual HEAD seeds all benign fixtures; production identity gates are unchanged.
+ return __import__('acceptance').git_head(ROOT)
+
 def inputs_at(root):
  root=Path(root);root.mkdir(parents=True,exist_ok=True)
  package=root/'benign-package.zip'
- body=b'benign candidate test bytes';identity={'candidate_id':'memory-mcp','source_commit':__import__('acceptance').git_head(ROOT),'package_sha256':'','requirements_blob':'b'*40,'master_plan_blob':'c'*40}
+ body=b'benign candidate test bytes';identity={'candidate_id':'memory-mcp','source_commit':fixture_source_commit(),'package_sha256':'','requirements_blob':'b'*40,'master_plan_blob':'c'*40}
  manifest_value={'schema':'fakenet.mcp-candidate-manifest.v1','source_commit':identity['source_commit'],'source_snapshot_mode':'commit','exe_sha256':hashlib.sha256(body).hexdigest(),'qualification_status':'PARTIAL','native_gaps':['benign fixture'],'zip_entry_timestamp_utc':'2000-01-01T00:00:00Z','files':[{'path':'fakenetng-mcp.exe','sha256':hashlib.sha256(body).hexdigest(),'size':len(body)}]}
  manifest=root/'manifest.json';manifest.write_text(json.dumps(manifest_value))
  import zipfile
@@ -2577,3 +2583,98 @@ class PublicCompleteHealthCliTests(unittest.TestCase):
             result = self.cli('judge', '--plan', self.run / 'plan.json', '--results', self.run / 'results', '--output', self.run / (mode + '.json'))
             self.assertNotEqual(0, result[0], result)
             self.assertFalse(m.read(self.run / (mode + '.json'))['fixture_contract_pass'])
+
+
+class EndpointProofBoundary(ReadOnlyBoundary):
+ def __init__(self, inputs, mutate=None):
+  super().__init__(inputs); self.observations=0; self.mutate=mutate
+ def exchange(self,kind,value):
+  answer=super().exchange(kind,value)
+  if kind=='observe':
+   self.observations+=1; phase=self.observations
+   owner={'pid':6024,'birth':'116444736010000000','image':r'C:\Browser\browser.exe','sha256':'a'*64}
+   answer['sections']['listen_ports']='TCP 192.168.204.149:28788 0.0.0.0:0 LISTENING 12'+('\nUDP 192.168.204.149:60107 *:* 6024' if phase==2 else '')
+   answer['sections']['windivert_processes']=json.dumps({'modules':[],'managed':[],'drivers':[]})
+   answer['endpoint_owners']={'schema':'fakenet.endpoint-owner-observation.v1','complete':True,'unit_started':2.0,'captured_at':3.0+phase,'processes':[owner],'udp':([{'address':'192.168.204.149','port':60107,'pid':6024}] if phase==2 else [])}
+   if self.mutate:self.mutate(answer,phase)
+  return answer
+
+
+class ReadOnlyEndpointProofTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def run_noise(self,mutate=None):
+  out=self.root/'noise';m.run('MCP-P02-FULL',out,self.inputs,selected=['ACC-005'],boundary=EndpointProofBoundary(self.inputs,mutate),fixture=True)
+  return out,m.read(out/'units/ACC-005/result.json')
+ def test_original_readonly_and_independent_oracle_accept_proven_foreign_udp(self):
+  out,result=self.run_noise();self.assertEqual('pass',result['status'],result.get('blocker'))
+  rows,clean,detail=o.evaluate(ROOT,out,'MCP-P02-FULL',['ACC-005'],self.inputs,allow_fixture=True)
+  self.assertEqual('pass',rows[0]['status'],detail);self.assertTrue(clean)
+  self.assertIn('listen_ports',m.read(out/'units/ACC-005/environment-diff.json'))
+ def test_missing_reused_changed_or_owned_identity_is_not_exempt(self):
+  changes={
+   'missing':lambda x,p:x.pop('endpoint_owners',None),
+   'reused':lambda x,p:x['endpoint_owners']['processes'][0].update(birth=str(116444736010000000+p)),
+   'new':lambda x,p:x['endpoint_owners'].update(processes=[] if p==1 else x['endpoint_owners']['processes']),
+   'hash':lambda x,p:x['endpoint_owners']['processes'][0].update(sha256=str(p)*64),
+   'owned':lambda x,p:x['endpoint_owners']['processes'][0].update(image=self.inputs['installation_root']+r'\managed.exe'),
+   'unknown':lambda x,p:x['endpoint_owners'].update(complete=False),
+   'driver':lambda x,p:x['sections'].update(services='Changed' if p==2 else 'Running'),
+  }
+  for name,change in changes.items():
+   with self.subTest(name=name):
+    self.root=Path(tempfile.mkdtemp(prefix='noise-negative-'));self.inputs=inputs_at(self.root)
+    out,result=self.run_noise(change);self.assertEqual('fail',result['status'])
+    self.assertEqual('fail',o.evaluate(ROOT,out,'MCP-P02-FULL',['ACC-005'],self.inputs,allow_fixture=True)[0][0]['status'])
+ def test_rehashed_provenance_and_summary_cannot_bypass_independent_oracle(self):
+  out,result=self.run_noise();self.assertEqual('pass',result['status'])
+  path=out/'units/ACC-005/trace.json';trace=m.read(path)
+  for r in trace['records']:
+   if r['kind']=='observe':r['output'].pop('endpoint_owners',None)
+  path.write_text(json.dumps(trace))
+  rows,clean,detail=o.evaluate(ROOT,out,'MCP-P02-FULL',['ACC-005'],self.inputs,allow_fixture=True)
+  self.assertEqual('fail',rows[0]['status'],detail);self.assertFalse(clean)
+
+
+class ReadOnlyEndpointGuardTests(ReadOnlyEndpointProofTests):
+ def test_strict_guard_matrix_keeps_all_unproved_changes(self):
+  import copy
+  from types import SimpleNamespace
+  from fakenet.mcp.baseline import audit_compare
+  out,result=self.run_noise();self.assertEqual(result['status'],'pass')
+  trace=m.read(out/'units/ACC-005/trace.json')
+  observations=[r['output'] for r in trace['records'] if r['kind']=='observe']
+  first=m.read(out/'units/ACC-005/installed-service-before.json')
+  last=m.read(out/'units/ACC-005/installed-service-after.json')
+  initial,final=trace['initial_status'],trace['final_status']
+  cases={
+   'accepted':lambda b,a,i,f,s,t,x:x.mutation_operations.append({'accepted':True,'response_unknown':False}),
+   'unknown':lambda b,a,i,f,s,t,x:x.mutation_operations.append({'accepted':False,'response_unknown':True}),
+   'unproved-rejection':lambda b,a,i,f,s,t,x:x.mutation_operations.append({'response_unknown':False}),
+   'owned-run':lambda b,a,i,f,s,t,x:x.owned_runs.add('owned'),
+   'state-version':lambda b,a,i,f,s,t,x:f.update(state_version=99),
+   'service-birth':lambda b,a,i,f,s,t,x:t.update(birth='changed'),
+   'controller':lambda b,a,i,f,s,t,x:f.update(controller='foreign'),
+   'owner-too-new':lambda b,a,i,f,s,t,x:[v['endpoint_owners']['processes'][0].update(birth='116444736025000000') for v in (b,a)],
+   'wildcard':lambda b,a,i,f,s,t,x:a['sections'].update(listen_ports=a['sections']['listen_ports'].replace('UDP 192.168.204.149','UDP 0.0.0.0')),
+   'low-port':lambda b,a,i,f,s,t,x:a['sections'].update(listen_ports=a['sections']['listen_ports'].replace(':60107 ',':53 ')),
+   'tcp':lambda b,a,i,f,s,t,x:a['sections'].update(listen_ports=a['sections']['listen_ports'].replace('UDP 192.168.204.149:60107 *:* 6024','TCP 192.168.204.149:60107 0.0.0.0:0 LISTENING 6024')),
+   'owner-pid':lambda b,a,i,f,s,t,x:a['endpoint_owners']['udp'][0].update(pid=12),
+   'duplicate-owner':lambda b,a,i,f,s,t,x:a['endpoint_owners']['processes'].append(a['endpoint_owners']['processes'][0]),
+   'duplicate-endpoint':lambda b,a,i,f,s,t,x:a['endpoint_owners']['udp'].append(a['endpoint_owners']['udp'][0]),
+   'windivert-owner':lambda b,a,i,f,s,t,x:[v['sections'].update(windivert_processes=json.dumps({'modules':['"foreign.exe","6024","WinDivert64.dll"'],'managed':[],'drivers':[]})) for v in (b,a)],
+   'managed-owner':lambda b,a,i,f,s,t,x:[v['sections'].update(windivert_processes=json.dumps({'modules':[],'managed':[{'Id':6024}],'drivers':[]})) for v in (b,a)],
+   'raw-owner-conflict':lambda b,a,i,f,s,t,x:a['sections'].update(listen_ports=a['sections']['listen_ports'].replace('*:* 6024','*:* 6666')),
+  }
+  for name,change in cases.items():
+   with self.subTest(guard=name):
+    b,a=copy.deepcopy(observations);i,f,s,t=map(copy.deepcopy,(initial,final,first,last));session=SimpleNamespace(mutation_operations=[],owned_runs=set())
+    change(b,a,i,f,s,t,session)
+    differences=audit_compare(b['sections'],a['sections'])
+    self.assertFalse(m.proven_readonly_endpoint_drift('ACC-005',b,a,i,f,s,t,session,self.inputs,differences))
+  session=SimpleNamespace(mutation_operations=[],owned_runs=set());b,a=observations
+  self.assertFalse(m.proven_readonly_endpoint_drift('ACC-010',b,a,initial,final,first,last,session,self.inputs,audit_compare(b['sections'],a['sections'])))
+ def test_legacy_real_failure_without_proof_stays_rejected(self):
+  def old(capture,phase):capture.pop('endpoint_owners',None)
+  out,result=self.run_noise(old);self.assertEqual(result['status'],'fail')
+  rows,clean,details=o.evaluate(ROOT,out,'MCP-P02-FULL',['ACC-005'],self.inputs,allow_fixture=True)
+  self.assertEqual(rows[0]['status'],'fail',details);self.assertFalse(clean)
