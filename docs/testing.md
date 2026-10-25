@@ -550,3 +550,13 @@ length up to 8 MiB and verifies that exact prefix twice on the same handle;
 short reads, truncation and changed prefix bytes refuse the observation. Appended
 bytes beyond the opening length are outside that snapshot. The existing owned
 process, path, reparse and health/log predicates still apply.
+
+
+An ACC007 creation-window start may lose its HTTP response when the test kills
+the exact supervisor. Its raw response stays unknown. Only the recorded consumed
+creation receipt, accepted marker (request/owner/run/config/version), pinned old
+exit/tree/canary and a new candidate incarnation's independent recovery and
+no-replay observations can close that retired request's responsibility. The
+version checker uses that observed acceptance marker, never a fabricated API
+response. All unrelated unknown requests and original helper preserve-scene
+failures still block subsequent mutations and recovery.

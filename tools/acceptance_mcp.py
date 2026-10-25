@@ -408,6 +408,66 @@ def _same_config(a,b):
  return a.get('name')==b.get('name') and a.get('sha256')==b.get('sha256')
 
 
+def _closed_creation_interruption(session, operation):
+ """Return an observed acceptance version, never an invented API response."""
+ key=(operation.get('epoch',0),operation.get('request_command_id'))
+ proof=getattr(session,'creation_interruptions',{}).get(key)
+ if proof is None:return None
+ import process_recovery as process
+ expected=proof['expected'];actual=proof['exit'];marker=actual['marker'];before=proof['original_before'];after=proof['observed']
+ request=proof['request']
+ stage=expected['observation']['stage']
+ try:original_expected=process.creation_expected(proof['consumed'],stage,proof['armed'],operation.get('request_command_id'),before)
+ except Exception as exc:raise ValueError('owned creation interruption receipt rejected') from exc
+ if (original_expected!=expected or proof['start_request']!=operation.get('arguments')
+     or process.creation_failures(proof['post_crash_facts'],proof['consumed'],stage)):
+  raise ValueError('owned creation interruption source request/receipt differs')
+ candidate=proof['candidate_after'];old_candidate=proof['before']
+ if (candidate.get('pid')!=after.get('pid') or str(candidate.get('birth'))!=after.get('creation_time')
+     or candidate.get('image','').casefold()!=after.get('image','').casefold()
+     or old_candidate.get('pid')!=before.get('pid') or old_candidate.get('birth')!=before.get('creation_time')
+     or int(candidate['birth'])<=int(old_candidate['birth'])
+     or any(candidate.get(k)!=old_candidate.get(k) for k in ('image','sha256','service_config','enabled','grace','fault_exists'))
+     or getattr(session,'original_unit',None)!='ACC-007' or operation.get('tool')!='start'
+     or operation.get('response_unknown') is not True or operation.get('response') is not None
+     or any(operation.get(k)!=request.get(k) for k in ('tool','arguments','epoch','request_command_id','request_expected_version','request_controller'))
+     or proof['script']!='crash_creation_window.ps1'
+     or expected['command_id']!=operation['request_command_id']
+     or marker.get('command_id')!=operation['request_command_id']
+     or marker.get('controller_id')!=operation['request_controller']
+     or marker.get('config_sha256')!=proof['load']['response']['config_identity']['sha256']
+     or marker.get('run_id')!=expected['run_id']
+     or type(operation.get('request_expected_version')) is not int
+     or marker.get('state_version')!=operation['request_expected_version']+1
+     or proof['load'].get('epoch',0)!=operation.get('epoch',0)
+     or proof['load'].get('tool')!='load_config' or proof['load'].get('accepted') is not True
+     or proof['load'].get('response_unknown') is not False
+     or proof['load']['response']['state_version']!=operation['request_expected_version']
+     or proof['load'].get('request_controller')!=operation['request_controller']
+     or expected['supervisor']!=process.identity(before)
+     or expected.get('fault')!='create_'+expected.get('observation',{}).get('stage','')
+     or expected['observation']['stage'] not in process.CREATION_STAGES
+     or actual.get('receipt')!={'fault':expected['fault'],'nonce':expected['nonce'],'observation':expected['observation']}
+     or process.crash_failures(actual,expected)
+     or process.recovery_failures(before,after,proof['old_events'],proof['events'],marker)
+     or proof['no_replay_checks']!={'failures':[]}):
+  raise ValueError('owned creation interruption proof differs')
+ samples=proof['no_mutation_samples']
+ if not isinstance(samples,list) or len(samples)<2:
+  raise ValueError('owned creation interruption no-replay window absent')
+ for sample in samples:
+  current=sample['status'];events=sample['events']
+  if (current.get('state')!='stopped' or current.get('run_id') is not None or current.get('controller') is not None
+      or current.get('config_identity') is not None or current.get('error')
+      or current.get('health',{}).get('process_alive')
+      or process.recovery_failures(before,after,proof['old_events'],events,marker)):
+   raise ValueError('owned creation interruption recovery/no-replay differs')
+ return marker['state_version']
+
+def _unresolved_operations(session, operations):
+ return [op for op in operations if op.get('response_unknown') and _closed_creation_interruption(session,op) is None]
+
+
 class BoundarySession:
  def __init__(self,boundary,inputs=None,logical_root=None):
   self.boundary=boundary;self.inputs=inputs;self.logical_root=logical_root;self.records=[];self.mutation_operations=[];self.config_operations=[];self.config_owned_files={};self.lock=threading.RLock();self.thread_names={};self._thread_count=0;self._socket_count=0;self.owned_runs=set();self.owned_configs=set();self._local=threading.local();self._original_http_depth=0;self.operation_epoch=0;self.epoch_initial_versions={0:None};self._original={'time':time.time,'monotonic':time.monotonic,'sleep':time.sleep,'uuid':uuid.uuid4,'socket':socket.create_connection,'http_connection':http.client.HTTPConnection}
@@ -570,7 +630,7 @@ class BoundarySession:
     raise ValueError('owned original incarnation candidate/settings proof differs')
    anchor=_status_snapshot(mods['run_p02_acc'].status(self.inputs['endpoint']))
    if (anchor['state']!=state or (state=='stopped' and anchor['run_id'] is not None)
-       or any(op.get('response_unknown') for op in self.mutation_operations)):
+       or _unresolved_operations(self,self.mutation_operations)):
     raise ValueError('owned original incarnation state/operation anchor unresolved')
    # Pin the state read to the same process, rather than to an SCM banner.
    if service_preflight(self,self.inputs)!=after:
@@ -588,7 +648,7 @@ class BoundarySession:
     raise ValueError('owned crash supervisor differs from candidate instance')
    actual,raw=original_script(channel,name,expected)
    if not process.crash_failures(actual,expected):
-    self._process_exit={'before':before,'exit':actual,'expected':copy.deepcopy(expected)}
+    self._process_exit={'before':before,'exit':actual,'expected':copy.deepcopy(expected),'script':name}
    return actual,raw
   def confirmed(base,channel,writer,prefix,before,old_events,marker):
    failures=original_confirm(base,channel,writer,prefix,before,old_events,marker)
@@ -598,6 +658,28 @@ class BoundarySession:
         or proof['exit']['marker']!=marker or process.crash_failures(proof['exit'],proof['expected'])):
      raise ValueError('owned crash exit/recovery responsibility unproven')
     observed=process.observe_service(base,channel,writer,prefix+'-epoch-anchor')
+    unknown=_unresolved_operations(self,self.mutation_operations)
+    if unknown:
+     if len(unknown)!=1 or proof.get('script')!='crash_creation_window.ps1':
+      raise ValueError('unrelated operation remains unresolved after owned crash')
+     operation=unknown[0]
+     loads=[op for op in self.config_operations if op.get('tool')=='load_config' and op.get('epoch',0)==operation.get('epoch',0) and op.get('accepted') and not op.get('response_unknown') and (op.get('response') or {}).get('state_version')==operation.get('request_expected_version')]
+     if len(loads)!=1:raise ValueError('owned creation interruption load anchor absent')
+     resolution=dict(copy.deepcopy(proof),candidate_after=service_preflight(self,self.inputs),request=copy.deepcopy(operation),load=copy.deepcopy(loads[0]),original_before=copy.deepcopy(before),observed=copy.deepcopy(observed),old_events=copy.deepcopy(old_events),
+      armed=read(writer.out_dir/(prefix+'-armed.json')),
+      consumed=json.loads(read(writer.out_dir/(prefix+'-actual-receipt.json'))['output']),
+      start_request=read(writer.out_dir/(prefix+'-start-request.json')),
+      post_crash_facts=json.loads(read(writer.out_dir/(prefix+'-post-crash-raw.json'))['output']),
+      events=read(writer.out_dir/(prefix+'-recovery-events.json')),
+      no_mutation_samples=read(writer.out_dir/(prefix+'-no-mutation-observation.json')),
+      no_replay_checks=read(writer.out_dir/(prefix+'-no-replay-checks.json')))
+     key=(operation.get('epoch',0),operation.get('request_command_id'))
+     if not hasattr(self,'creation_interruptions'):self.creation_interruptions={}
+     self.creation_interruptions[key]=resolution
+     try:_closed_creation_interruption(self,operation)
+     except BaseException:
+      del self.creation_interruptions[key];raise
+     writer.add_evidence(prefix+'-owned-start-interruption',resolution)
     record_incarnation(proof,observed,'stopped');self._process_exit=None
    return failures
   def startup(before,after,old_events,events,state,reason):
@@ -727,7 +809,7 @@ class BoundarySession:
   except (ValueError,KeyError,TypeError):
    raise ValueError('MCP request is not a complete operation')
   if tool in _TRACKED_MUTATIONS:
-   if getattr(self,'instance_contexts',None) and not any(op.get('response_unknown') for op in self.mutation_operations):
+   if getattr(self,'instance_contexts',None) and not _unresolved_operations(self,self.mutation_operations):
     expected=arguments.get('expected_state_version')
     if type(expected) is int:
      known=max([self.epoch_initial_versions.get(self.operation_epoch) or 0]+[(op.get('response') or {}).get('state_version',0) for op in self.mutation_operations if op.get('epoch',0)==self.operation_epoch and op.get('accepted') and not op.get('replay')])
@@ -766,7 +848,7 @@ class BoundarySession:
    except (ValueError,KeyError,TypeError,IndexError,json.JSONDecodeError):
     if not original_call:raise
     if operation is not None:
-     operation['response_unknown']=True;self.preserve_scene=True
+     operation['response_unknown']=True;self._unknown_transport_observed=True
     return RecordedResponse(value)
    if tool=='get_status':
     version=payload.get('state_version')
@@ -815,7 +897,7 @@ class BoundarySession:
   except BaseException as exc:
    if operation is not None:
     operation['response_unknown']=True
-    self.preserve_scene=True
+    self._unknown_transport_observed=True
    if isinstance(exc, (urllib.error.HTTPError,OSError)):raise
    with self.lock:original_call=self._original_http_depth>0
    if original_call and operation is not None and isinstance(exc,(ValueError,KeyError,TypeError,IndexError)) and 'value' in locals():return RecordedResponse(value)
@@ -997,7 +1079,7 @@ def service_preflight(session,inputs):
 
 def _verified_version_chain(session,initial,final):
  operations=list(session.mutation_operations)
- if any(op.get('response_unknown') for op in operations):
+ if _unresolved_operations(session,operations):
   raise ValueError('configuration operation response is unresolved')
  epochs={}
  for op in operations:
@@ -1017,6 +1099,12 @@ def _verified_version_chain(session,initial,final):
    raise ValueError('configuration state version after restart is unverified')
   seen=set();steps={};observed=[]
   for op in epochs.get(epoch,[]):
+   interrupted=_closed_creation_interruption(session,op) if op.get('response_unknown') else None
+   if interrupted is not None:
+    expected=op['request_expected_version'];command=op['request_command_id']
+    if expected in steps or command in seen:raise ValueError('owned interrupted acceptance conflicts with version chain')
+    steps[expected]=command;seen.add(command);observed.append(interrupted)
+    continue
    response=op.get('response')
    if not isinstance(response,dict):raise ValueError('configuration operation response is unresolved')
    version=response.get('state_version');expected=op.get('request_expected_version')
@@ -1183,7 +1271,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
    finally:
     if before is not None:
      try:
-      if any(op.get('response_unknown') for op in session.mutation_operations):raise ValueError('configuration operation response is unresolved')
+      if _unresolved_operations(session,session.mutation_operations):raise ValueError('configuration operation response is unresolved')
       if getattr(session,'preserve_scene',False):raise ValueError('controlled operation unresolved; preserve scene')
       final_raw=mods['run_p02_acc'].status(args.target_base_url)
       final=_status_snapshot(final_raw)

@@ -3167,3 +3167,142 @@ class NativeLiveHealthLogTests(unittest.TestCase):
   for row in rows:
    self.assertEqual(row['case'] in ('normal','append'),row['accepted'],row)
    if row['accepted']:self.assertEqual('QUJD',row['body'])
+
+
+class InterruptedCreationBoundary(ProcessRecoveryBoundary):
+ """Original creation producer/consumer, with the real lost old-process reply."""
+ def _creation(self):
+  super()._creation()
+  # The original producer returns exact supervisor/run/nonce/stage observations.
+  # Add the accepted marker fields written by the real acceptance transaction.
+  self.marker.update(controller_id='11111111-2222-4333-8444-555555555555',
+                     state_version=self.version,config_sha256=self.inputs['config_identity']['sha256'])
+ def exchange(self,kind,value):
+  if kind=='http':
+   request=json.loads(value['data']);tool=request['params']['name']
+   result=super().exchange(kind,value)
+   if tool=='start' and self.stage:
+    # Wait for the original actual crash consumer, rather than forging success.
+    # Keep transport contents as the observed empty response from a dead host.
+    return dict(result,body=b'')
+   return result
+  return super().exchange(kind,value)
+
+
+class OwnedInterruptedCreationTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def run_interrupted(self,label):
+  boundary=InterruptedCreationBoundary(self.inputs,self.root/(label+'-os'))
+  out=self.root/label
+  value=m.run('MCP-P03-FULL',out,self.inputs,selected=['ACC-007'],boundary=boundary,fixture=True)
+  return value,out,boundary
+ def test_original_six_windows_and_healthy_crash_replay_keep_raw_unknown(self):
+  value,out,boundary=self.run_interrupted('owned')
+  self.assertEqual('pass',value['checks']['ACC-007']['status'],m.read(out/'units/ACC-007/result.json'))
+  self.assertEqual(7,len(boundary.crashes))
+  trace=m.read(out/'units/ACC-007/trace.json')
+  lost=[r for r in trace['records'] if r['kind']=='http' and m.unpack(r['input']).get('data') and json.loads(m.unpack(r['input'])['data']).get('params',{}).get('name')=='start' and m.unpack(r.get('output',{})).get('body')==b'']
+  self.assertEqual(6,len(lost))
+  proofs=list((out/'units/ACC-007').glob('*-owned-start-interruption.json'));self.assertEqual(6,len(proofs))
+  for p in proofs:
+   operation=m.read(p)['request'];self.assertTrue(operation['response_unknown']);self.assertNotIn('response',operation)
+  rows,clean,detail=o.evaluate(ROOT,out,'MCP-P03-FULL',['ACC-007'],self.inputs,allow_fixture=True)
+  self.assertEqual('pass',rows[0]['status'],detail);self.assertTrue(clean,detail)
+
+ def test_raw_unknown_cannot_be_closed_by_a_flag_or_tampered_proof(self):
+  import copy
+  from types import SimpleNamespace
+  value,out,boundary=self.run_interrupted('negative')
+  self.assertEqual('pass',value['checks']['ACC-007']['status'])
+  proof=m.read(out/'units/ACC-007/before_job-owned-start-interruption.json')
+  operation=proof['request'];key=(operation['epoch'],operation['request_command_id'])
+  session=SimpleNamespace(original_unit='ACC-007',creation_interruptions={key:proof})
+  self.assertEqual(operation['request_expected_version']+1,m._closed_creation_interruption(session,operation))
+  for defect in ('request','owner','version','run','config','nonce','stage','oldbirth','newbirth','newimage','newhash','tree','canary','marker','events','replayed','arm-nonce','source-request','creation-prefix','missing'):
+   with self.subTest(defect=defect):
+    bad=copy.deepcopy(proof)
+    if defect=='request':bad['request']['arguments']['command_id']='different'
+    elif defect=='owner':bad['exit']['marker']['controller_id']='foreign'
+    elif defect=='version':bad['exit']['marker']['state_version']+=1
+    elif defect=='run':bad['exit']['marker']['run_id']='foreign'
+    elif defect=='config':bad['exit']['marker']['config_sha256']='f'*64
+    elif defect=='nonce':bad['exit']['receipt']['nonce']='foreign'
+    elif defect=='stage':bad['expected']['observation']['stage']='foreign'
+    elif defect=='oldbirth':bad['expected']['supervisor']['creation_time']='1'
+    elif defect=='newbirth':bad['observed']['creation_time']=bad['original_before']['creation_time']
+    elif defect=='newimage':bad['candidate_after']['image']='E:/foreign.exe'
+    elif defect=='newhash':bad['candidate_after']['sha256']='f'*64
+    elif defect=='tree':bad['exit']['remaining_pids']=[1]
+    elif defect=='canary':bad['exit']['canary_survived']=False
+    elif defect=='marker':bad['observed']['marker']['needs_recovery']=True
+    elif defect=='events':bad['events']['events']=[]
+    elif defect=='replayed':bad['no_mutation_samples'][0]['events']['events'].append({'kind':'command.accepted','command_id':'replay'})
+    elif defect=='arm-nonce':bad['armed']['nonce']='foreign'
+    elif defect=='source-request':bad['start_request']['expected_state_version']+=1
+    elif defect=='creation-prefix':bad['post_crash_facts']['creation']=''
+    elif defect=='missing':bad={}
+    session.creation_interruptions={key:bad}
+    with self.assertRaises((ValueError,KeyError,TypeError)):m._closed_creation_interruption(session,operation)
+  session.creation_interruptions={}
+  self.assertEqual([operation],m._unresolved_operations(session,[operation]))
+
+
+ def test_real_coordinator_acceptance_marker_is_not_a_terminal_response(self):
+  from fakenet.mcp.coordination import Coordinator
+  from types import SimpleNamespace
+  class Runner:
+   def health_detail(self,state):return {}
+  c=Coordinator(Runner())
+  owner='11111111-2222-4333-8444-555555555555'
+  config=dict(self.inputs['config_identity'])
+  loaded=c.submit(command_id='actual-load',expected_version=1,controller=owner,controller_valid=True,
+   kind='load_config',describe={'name':'default.ini'},execute=lambda coord:(coord.set_config_identity(config) or {}))
+  self.assertEqual(2,loaded['state_version'])
+  run=c.new_run_id()
+  def interrupted(coord):
+   snapshot=c.snapshot()
+   self.assertEqual(3,snapshot['state_version'])
+   raise SystemExit('model the old process ending before its HTTP response')
+  with self.assertRaises(SystemExit):
+   c.submit(command_id='actual-start',expected_version=2,controller=owner,controller_valid=True,
+    kind='start',describe={},execute=interrupted)
+  self.assertEqual(3,c.snapshot()['state_version'])
+  self.assertTrue(any(e.get('kind')=='command.accepted' and e.get('command_id')=='actual-start' for e in c.events()))
+
+
+ def test_independent_oracle_rederives_interruption_from_raw_records(self):
+  import copy
+  value,out,boundary=self.run_interrupted('raw-tamper')
+  self.assertEqual('pass',value['checks']['ACC-007']['status'])
+  path=out/'units/ACC-007/trace.json';original=m.read(path)
+  for defect in ('armed-nonce','consumed-stage','crash-canary','marker-owner','recovery-events'):
+   with self.subTest(defect=defect):
+    trace=copy.deepcopy(original);changed=False;seen_crash=False
+    for row in trace['records']:
+     if changed:break
+     inp=m.unpack(row['input']);output=m.unpack(row.get('output'))
+     if row['kind']=='powershell':
+      command=inp['command']
+      if '$creationWindow =' in command:seen_crash=True
+      if defect=='armed-nonce' and '[IO.File]::WriteAllText($path,' in command and 'fault-injection.json' in command:
+       payload=json.loads(output['output']);payload['nonce']='foreign';changed=True
+      elif defect=='consumed-stage' and 'creation-fault-triggered.json' in command and '$m=Get-Content' in command:
+       payload=json.loads(output['output'])
+       if payload:payload['observation']['stage']='foreign';changed=True
+      elif defect in ('crash-canary','marker-owner') and '$creationWindow =' in command:
+       payload=json.loads(output['output'])
+       if defect=='crash-canary':payload['canary_survived']=False
+       else:payload['marker']['controller_id']='foreign'
+       changed=True
+      if changed:output['output']=json.dumps(payload);row['output']=m.pack(output)
+     elif row['kind']=='http' and defect=='recovery-events' and seen_crash:
+      request=json.loads(inp['data'])
+      if request.get('params',{}).get('name')=='get_events':
+       body=json.loads(output['body']);payload=json.loads(body['result']['content'][0]['text'])
+       if payload.get('events') and not any(e.get('kind','').startswith('command.') for e in payload['events']):
+        payload['events'].append(dict(payload['events'][-1],kind='command.accepted',command_id='replay'))
+        body['result']['content'][0]['text']=json.dumps(payload);output['body']=json.dumps(body).encode();row['output']=m.pack(output);changed=True
+    self.assertTrue(changed,defect);path.write_text(json.dumps(trace))
+    rows,clean,detail=o.evaluate(ROOT,out,'MCP-P03-FULL',['ACC-007'],self.inputs,allow_fixture=True)
+    self.assertNotEqual('pass',rows[0]['status'],detail)
+  path.write_text(json.dumps(original))
