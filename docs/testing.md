@@ -567,3 +567,13 @@ accepted command ID and observed process epoch. A collision is checked before
 the load mutation and never overwrites a prior receipt. Recovery after a crash
 and recovery after restoring service settings remain separate transactions;
 both original receipts and both version chains are retained for replay.
+
+
+The creation-window recorder includes each actual Future completion decision,
+bound to its stage and command ID. Replay uses that observation to preserve the
+receipt polling branch; completion remains separate from the original start
+response, which can remain unknown. Old traces without the required observation
+remain rejected. Snapshot fault injection passes an explicitly typed null
+backup path to File.Replace because PowerShell can bind an untyped null as an
+empty path. Preimage, atomic replacement, CreateNew, flush and readback checks
+remain in force.

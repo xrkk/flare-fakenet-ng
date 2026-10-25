@@ -63,7 +63,11 @@ def run_creation_matrix(base, channel, writer):
                         receipt = observed
                         writer.add_evidence(stage + '-actual-receipt', raw)
                         break
-                    if pending.done():
+                    # The completion decision is a local observation, distinct from a
+                    # terminal start response. Preserve it across independent replay.
+                    done = (channel.creation_future_done(pending, stage, command_id)
+                            if hasattr(channel, 'creation_future_done') else pending.done())
+                    if done:
                         writer.add_evidence(stage + '-start-response', pending.result())
                         raise StepError('creation start ended without a matching consumed receipt; no crash issued')
                     time.sleep(0.25)

@@ -761,6 +761,15 @@ class BoundarySession:
     return result
    row={'thread':thread,'kind':kind,'input':pack(value),'output':pack(observe())};self.records.append(row)
    return unpack(row['output'])
+ def creation_future_done(self,pending,stage,command_id):
+  from fakenet.mcp.creation_evidence import CREATION_STAGES
+  if stage not in CREATION_STAGES or not isinstance(command_id,str) or not command_id.startswith('creation-start-'):
+   raise ValueError('creation Future observation identity differs')
+  if str(uuid.UUID(command_id[len('creation-start-'):]))!=command_id[len('creation-start-'):]:
+   raise ValueError('creation Future observation command differs')
+  done=self.local_observation('creation-future-done',{'stage':stage,'command_id':command_id},pending.done)
+  if type(done) is not bool:raise ValueError('creation Future completion is not boolean')
+  return done
  def powershell(self,command,timeout=120):
   if self.inputs:
    # Keep the original scripts, bind their historical constants to this input.

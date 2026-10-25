@@ -3371,3 +3371,95 @@ class DistinctRestoreReceiptTests(unittest.TestCase):
     with mock.patch.object(mods['run_p02_acc'],'unique_command',return_value=command),mock.patch.object(mods['run_p02_acc'],'call',side_effect=call):
      with self.assertRaises((ValueError,KeyError)):m._restore_config(mods,'memory',SimpleNamespace(operation_epoch=-1 if defect=='epoch' else 9),self.inputs,self.inputs['config_identity'],{'state_version':1},writer)
     self.assertEqual([],list(writer.out_dir.glob('owned-restore-config*')))
+
+
+class DelayedCreationCompletionBoundary(InterruptedCreationBoundary):
+ """Real Future stays pending until the original crash consumer completes."""
+ def __init__(self,*args,**kwargs):
+  super().__init__(*args,**kwargs);self.releases={};self.null_polls=set()
+ def exchange(self,kind,value):
+  import threading
+  if kind=='http':
+   tool=json.loads(value['data'])['params']['name']
+   result=super().exchange(kind,value)
+   if tool=='start' and self.stage:
+    release=self.releases.setdefault(self.stage,threading.Event())
+    if not release.wait(5):raise AssertionError('original crash consumer never released Future')
+   return result
+  if kind=='powershell':
+   command=value['command']
+   if 'creation-fault-triggered.json' in command and '$m=Get-Content' in command:
+    if not self.receipt_ready.wait(2):raise AssertionError('original receipt not produced')
+    if self.stage not in self.null_polls:
+     self.null_polls.add(self.stage)
+     return {'output':'null','raw':'null','exit_code':0,'is_error':False}
+   result=super().exchange(kind,value)
+   if '$creationWindow =' in command:
+    for release in self.releases.values():release.set()
+   return result
+  return super().exchange(kind,value)
+
+
+class CreationFutureObservationTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_original_delayed_future_and_null_poll_replay_the_same_decision(self):
+  boundary=DelayedCreationCompletionBoundary(self.inputs,self.root/'delayed-os');out=self.root/'delayed'
+  result=m.run('MCP-P03-FULL',out,self.inputs,selected=['ACC-007'],boundary=boundary,fixture=True)
+  self.assertEqual('pass',result['checks']['ACC-007']['status'],m.read(out/'units/ACC-007/result.json'))
+  self.assertEqual(6,len(boundary.null_polls))
+  trace=m.read(out/'units/ACC-007/trace.json')
+  rows,clean,detail=o.evaluate(ROOT,out,'MCP-P03-FULL',['ACC-007'],self.inputs,allow_fixture=True)
+  self.assertEqual('pass',rows[0]['status'],detail);self.assertTrue(clean,detail)
+  observations=[r for r in trace['records'] if r['kind']=='creation-future-done']
+  self.assertEqual(6,len(observations));self.assertTrue(all(r['output'] is False for r in observations))
+  import copy
+  path=out/'units/ACC-007/trace.json'
+  for defect in ('premature','missing','stage','command','nonboolean'):
+   with self.subTest(defect=defect):
+    bad=copy.deepcopy(trace);row=next(r for r in bad['records'] if r['kind']=='creation-future-done')
+    if defect=='premature':row['output']=True
+    elif defect=='missing':bad['records'].remove(row)
+    elif defect=='stage':row['input']['stage']='foreign'
+    elif defect=='command':row['input']['command_id']='foreign'
+    else:row['output']=0
+    path.write_text(json.dumps(bad))
+    rows,clean,detail=o.evaluate(ROOT,out,'MCP-P03-FULL',['ACC-007'],self.inputs,allow_fixture=True)
+    self.assertNotEqual('pass',rows[0]['status'],detail)
+  path.write_text(json.dumps(trace))
+
+
+ def test_real_coordinator_acceptance_and_future_completion_are_distinct(self):
+  from concurrent.futures import ThreadPoolExecutor,Future
+  from threading import Event
+  from fakenet.mcp.coordination import Coordinator
+  class Runner:
+   def health_detail(self,state):return {}
+  c=Coordinator(Runner());owner='11111111-2222-4333-8444-555555555555'
+  c.submit(command_id='load-before-future',expected_version=1,controller=owner,controller_valid=True,
+   kind='load_config',describe={},execute=lambda coord:(coord.set_config_identity(self.inputs['config_identity']) or {}))
+  accepted=Event();release=Event();command='creation-start-00000000-0000-4000-8000-000000000165'
+  def execute(coord):
+   accepted.set()
+   if not release.wait(3):raise AssertionError('coordinator future not released')
+   return {}
+  session=m.BoundarySession(ReadOnlyBoundary(self.inputs),self.inputs)
+  with ThreadPoolExecutor(max_workers=1) as pool:
+   pending=pool.submit(c.submit,command_id=command,expected_version=2,controller=owner,controller_valid=True,
+    kind='start',describe={},execute=execute)
+   self.assertTrue(accepted.wait(2))
+   try:
+    self.assertEqual(3,c.snapshot()['state_version'])
+    self.assertFalse(session.creation_future_done(pending,'before_job',command))
+   finally:release.set()
+   response=pending.result(timeout=2)
+   self.assertEqual(command,response['command_id'])
+   self.assertTrue(session.creation_future_done(pending,'before_job',command))
+  replay=m.ReplayBoundary(session.records);again=m.BoundarySession(replay,self.inputs)
+  already_done=Future();already_done.set_exception(OSError('old process no response'))
+  self.assertFalse(again.creation_future_done(already_done,'before_job',command))
+  self.assertTrue(again.creation_future_done(already_done,'before_job',command));replay.finish()
+  self.assertEqual([False,True],[r['output'] for r in session.records])
+  self.assertNotIn('response',session.records[0])
+  for stage,identifier in (('foreign',command),('before_job','foreign')):
+   with self.subTest(stage=stage,identifier=identifier),self.assertRaises(ValueError):
+    session.creation_future_done(already_done,stage,identifier)

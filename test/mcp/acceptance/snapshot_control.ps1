@@ -48,7 +48,7 @@ switch ($expected.operation) {
     $temp = Join-Path $stateDir ('.acc008-' + $expected.token)
     $file = [IO.File]::Open($temp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
     try {$file.Write($bytes,0,$bytes.Length);$file.Flush($true)} finally {$file.Dispose()}
-    if ($current) {[IO.File]::Replace($temp,$path,$null)} else {[IO.File]::Move($temp,$path)}
+    if ($current) {[IO.File]::Replace($temp,$path,[System.Management.Automation.Language.NullString]::Value)} else {[IO.File]::Move($temp,$path)}
     $result.before=$current;$result.after=Read-File $path
  }
  'acl-read' {$result.sddl=(Get-Acl -LiteralPath $stateDir).Sddl}
