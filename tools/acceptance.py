@@ -1905,10 +1905,16 @@ def main(argv=None):
     judge.add_argument('--result', type=Path, action='append', default=[])
     judge.add_argument('--results', type=Path)
     judge.add_argument('--output', type=Path)
+    contained = commands.add_parser('contained-offline', help='prepare and run the three finite isolated offline cases')
+    contained.add_argument('--profile', choices=('all', 'linux', 'wine'), default='all')
+    contained.add_argument('--output', type=Path)
     args = parser.parse_args(argv)
     root = Path(args.root)
     try:
-        if args.command in ('check', 'inventory'):
+        if args.command == 'contained-offline':
+            import acceptance_contained
+            return acceptance_contained.launch(root, args.output, args.profile)
+        elif args.command in ('check', 'inventory'):
             value = inventory(root)
             if args.command == 'check':
                 print(json.dumps({'counts': value['counts'], 'unclassified': value['unclassified'],

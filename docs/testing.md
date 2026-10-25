@@ -377,3 +377,31 @@ python tools/acceptance.py judge --plan /out/linux/plan.json --results /out/linu
 Run the Windows case with its Wine interpreter profile in a separate plan in
 that same owned container. Preserve all raw attempts and stop owned resources
 after judging; unqualified environments continue to report these cases blocked.
+
+
+## Repeat the three contained offline cases
+
+From the repository's project Python environment, use the central entry:
+
+```text
+python tools/acceptance.py contained-offline
+python tools/acceptance.py contained-offline --profile linux
+python tools/acceptance.py contained-offline --profile wine --output Logs/acceptance/my-fresh-run
+```
+
+This finite preset needs Linux uid 1000, the existing pinned Docker image, and
+the repository's existing `.venv-mcp-runners` interpreter. It never pulls or
+builds an image. Run from a committed checkout: source bytes must match HEAD.
+Each invocation creates a fresh owned container and a unique `Logs/acceptance`
+run, measures its CID/image/mounts, and generates the source/interpreter-bound
+attestation and environment files. Wine preparation copies the image's installed
+prefix and installs only the exact local pydivert 2.1.0 wheel into that copy.
+No per-run CID, hash, environment JSON, or receipt needs to be filled by hand.
+
+The original plan/execute/independent-judge chain remains authoritative. `run.json`
+links its selected summaries, records exact command output and owned cleanup,
+and always keeps native/full credit false. Exit 0 requires selected offline
+success and cleanup; preparation, test, judge, timeout, or cleanup failure exits
+nonzero and preserves all attempts. Existing output directories are refused.
+The default false collection guards remain active outside these measured profiles.
+The preset does not deploy a package or execute Windows/Linux native tests.
