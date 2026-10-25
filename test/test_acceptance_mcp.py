@@ -601,7 +601,15 @@ class ControlDomainBoundary(DomainBoundary):
    if kind=='socket-close':self.closed.append(value['handle']);return {'fileno':-1}
    if kind=='powershell':
     cmd=value['command'];import re,base64
-    if 'fault_exists=' in cmd:
+    if cmd.startswith('# LOOPBACK_LISTENER_READY_V1'):
+     header=re.search(r"\$header -cne '([^']+)'",cmd).group(1);receipt=re.search(r"\$path='([^']+)'",cmd).group(1)
+     self.loopback_listener={'pid':120,'created':'123456','image':'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe','sha256':'a'*64,'receipt':receipt,'header':header};output=json.dumps(self.loopback_listener)
+    elif cmd.startswith('# LOOPBACK_LISTENER_STOP_V1'):
+     output=json.dumps({'pid':120,'birth':'123456','exited':True})
+    elif cmd.startswith('# LOOPBACK_RECEIPT_V1'):
+     receipt=self.loopback_listener['receipt'];body=(self.loopback_listener['header']+'\nrecv '+base64.b64encode(self.marker.encode()).decode()+'\n').encode()
+     output=json.dumps({'path':receipt,'size':len(body),'sha256':hashlib.sha256(body).hexdigest(),'base64':base64.b64encode(body).decode()})
+    elif 'fault_exists=' in cmd:
      payload=json.loads(ReadOnlyBoundary.exchange(self,kind,value)['output']);payload['service_config']=json.loads(self.service_bytes);output=json.dumps(payload)
     elif '$b=[IO.File]::ReadAllBytes($p)' in cmd:
      output=json.dumps({'sha256':hashlib.sha256(self.service_bytes).hexdigest(),'base64':base64.b64encode(self.service_bytes).decode()})
@@ -617,7 +625,7 @@ class ControlDomainBoundary(DomainBoundary):
     elif 'Get-Content' in cmd and 'ctrl-listener-' in cmd:
      port=re.search(r'ctrl-listener-',cmd);output='\n'.join('recv echo:ctrl-'+str(p)+'-'+str(i) for p in (28790,29094,29095) for i in range(5))
     elif "$c=[Net.Sockets.UdpClient]" in cmd:
-     loop=re.search(r"'(ctrl-loopback-(v[46])-[a-z0-9]+)'",cmd);self.marker=loop.group(1);family=loop.group(2).upper();diverted=self.marker.replace('ctrl-loopback','ctrl-diverted');port=39998 if family=='V4' else 39999;raw=self.pcap_bytes(family,self.marker,diverted,port);self.packet_files={'packets.pcap':raw,'packets-raw.pcap':raw};output=json.dumps({'loopback_sent':len(self.marker),'diverted_sent':len(diverted)})
+     loop=re.search(r"'(ctrl-loopback-(v[46])-[a-z0-9]+)'",cmd);self.marker=loop.group(1);family=loop.group(2).upper();diverted=self.marker.replace('ctrl-loopback','ctrl-diverted');port=39998 if family=='V4' else 39999;raw=self.pcap_bytes(family,self.marker,diverted,port);self.packet_files={'packets.pcap':raw,'packets-converted.pcap':raw};output=json.dumps({'loopback_sent':len(self.marker),'diverted_sent':len(diverted),'source_address':'127.0.0.1' if family=='V4' else '::1','source_port':41000,'diverted_target':self.inputs['allowed_host']})
     elif "Filter '*.pcap'" in cmd and ').Count' in cmd:output='2'
     elif '$rows=@($files' in cmd:
      output=json.dumps({'run_dir':'memory-guest-run','files':[{'name':name,'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest()} for name,raw in self.packet_files.items()]})
@@ -3955,3 +3963,103 @@ class PublicExtraIncarnationTests(unittest.TestCase):
    if item['case_id']=='MCP-SPECIAL-IPC':item['sha256']=m.sha256(case/'receipt.json')
   (self.run/'results/results.json').write_text(json.dumps(index))
   bad=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'bad-exit.json');self.assertNotEqual(0,bad[0],bad)
+
+
+class LoopbackExactBoundary(ControlDomainBoundary):
+ def __init__(self,inputs,root,defect=None):
+  super().__init__(inputs,root);self.defect=defect
+ def pcap_bytes(self,family,loop_marker,diverted_marker,port):
+  if self.defect=='wrong-family':return super().pcap_bytes('V6' if family=='V4' else 'V4',loop_marker,diverted_marker,port)
+  raw=super().pcap_bytes(family,loop_marker,diverted_marker,port)
+  if self.defect in ('wrong-address','wrong-port','wrong-source-port'):
+   import dpkt,io,socket
+   stream=io.BytesIO();writer=dpkt.pcap.Writer(stream,linktype=dpkt.pcap.DLT_RAW)
+   for ts,buf in dpkt.pcap.Reader(io.BytesIO(raw)):
+    layer=dpkt.ip6.IP6(buf) if buf[0]>>4==6 else dpkt.ip.IP(buf)
+    if isinstance(layer.data,dpkt.udp.UDP) and bytes(layer.data.data)==loop_marker.encode():
+     if self.defect=='wrong-address':layer.src=layer.dst=socket.inet_aton('127.0.0.2') if family=='V4' else socket.inet_pton(socket.AF_INET6,'::2')
+     elif self.defect=='wrong-port':layer.data.dport=39997
+     else:layer.data.sport=41001
+    writer.writepkt(bytes(layer),ts=ts)
+   raw=stream.getvalue()
+  return raw
+
+ def exchange(self,kind,value):
+  if kind=='powershell':
+   cmd=value['command']
+   if "$c=[Net.Sockets.UdpClient]" in cmd:
+    assert "'8.8.8.8'" not in cmd and "'"+self.inputs['allowed_host']+"',53" in cmd
+   if cmd.startswith('# LOOPBACK_LISTENER_') or cmd.startswith('# LOOPBACK_RECEIPT_'):
+    assert 'C:\\Windows\\Temp' not in cmd
+  answer=super().exchange(kind,value)
+  if kind=='powershell':
+   cmd=value['command'];import base64
+   if '$rows=@($files' in cmd and self.defect=='missing-pair':
+    payload=json.loads(answer['output']);payload['files']=payload['files'][:1];answer.update(output=json.dumps(payload))
+   if cmd.startswith('# LOOPBACK_RECEIPT_V1'):
+    payload=json.loads(answer['output'])
+    if self.defect=='receipt-hash':payload['sha256']='0'*64
+    elif self.defect=='wrong-receipt-path':payload['path']='E:/foreign.txt'
+    elif self.defect in ('receipt-substring','stale-receipt'):
+     body=base64.b64decode(payload['base64']).decode()
+     if self.defect=='receipt-substring':body=body.replace('recv '+base64.b64encode(self.marker.encode()).decode(),'recv '+base64.b64encode(('prefix-'+self.marker).encode()).decode())
+     else:body=body.replace('started ','stale ',1)
+     raw=body.encode();payload.update(base64=base64.b64encode(raw).decode(),size=len(raw),sha256=hashlib.sha256(raw).hexdigest())
+    answer.update(output=json.dumps(payload))
+   elif cmd.startswith('# LOOPBACK_LISTENER_STOP_V1') and self.defect=='false-exit':
+    self.stop_attempts=getattr(self,'stop_attempts',0)+1
+    payload=json.loads(answer['output']);payload['exited']=False;answer.update(output=json.dumps(payload))
+   elif cmd.startswith('# LOOPBACK_LISTENER_READY_V1') and self.defect=='wrong-ready-header':
+    payload=json.loads(answer['output']);payload['header']='stale';answer.update(output=json.dumps(payload))
+   elif "Filter 'packets" in cmd and self.defect=='pcap-bytes':
+    raw=base64.b64decode(answer['output']);answer.update(output=base64.b64encode(raw+b'bad').decode())
+  return answer
+
+
+class LoopbackExactTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def produce(self,family='V4',defect=None):
+  tag=family+'-'+str(defect);out=self.root/tag;boundary=LoopbackExactBoundary(self.inputs,self.root/('domain-'+tag),defect);unit='LOOPBACK-'+family
+  value=m.run('MCP-SPECIAL-IPC',out,self.inputs,selected=[unit],boundary=boundary,fixture=True)
+  return out,boundary,value,unit
+ def test_other_family_or_other_loopback_tuple_cannot_prove_request(self):
+  for family,defect in [('V4','wrong-family'),('V6','wrong-family'),('V4','wrong-address'),('V4','wrong-port'),('V4','wrong-source-port')]:
+   with self.subTest(family=family,defect=defect):
+    out,boundary,value,unit=self.produce(family,defect);self.assertNotEqual('pass',value['checks'][unit]['status'])
+    judged,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',[unit],self.inputs,allow_fixture=True);self.assertNotEqual('pass',judged[0]['status'],detail)
+
+ def test_exact_two_family_packets_receipt_hostonly_and_replay(self):
+  for family in ('V4','V6'):
+   with self.subTest(family=family):
+    out,boundary,value,unit=self.produce(family);self.assertEqual('pass',value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+    receipt=m.read(out/'units'/unit/'loopback-receipts.json');self.assertTrue(receipt['path'].startswith('E:'))
+    trace=m.read(out/'units'/unit/'trace.json');commands=[r['input']['command'] for r in trace['records'] if r['kind']=='powershell']
+    stimulus=next(c for c in commands if "$c=[Net.Sockets.UdpClient]" in c);self.assertIn("'"+self.inputs['allowed_host']+"',53",stimulus);self.assertNotIn('8.8.8.8',stimulus)
+    ready=next(c for c in commands if c.startswith('# LOOPBACK_LISTENER_START_V1'));self.assertIn('IPv6Any' if family=='V6' else '::Any',ready)
+    judged,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',[unit],self.inputs,allow_fixture=True);self.assertEqual('pass',judged[0]['status'],detail);self.assertTrue(clean,detail)
+ def test_receipt_bytes_exact_marker_and_owned_listener_cannot_be_forged(self):
+  for defect in ('receipt-hash','wrong-receipt-path','receipt-substring','stale-receipt','false-exit','wrong-ready-header','pcap-bytes','missing-pair'):
+   with self.subTest(defect=defect):
+    out,boundary,value,unit=self.produce(defect=defect);self.assertNotEqual('pass',value['checks'][unit]['status'])
+    if defect=='false-exit':self.assertEqual(1,boundary.stop_attempts)
+    judged,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',[unit],self.inputs,allow_fixture=True);self.assertNotEqual('pass',judged[0]['status'],detail)
+
+
+class PublicLoopbackExactTests(unittest.TestCase):
+ setUp=PublicMcpCliTests.setUp
+ cli=PublicMcpCliTests.cli
+ prepare=PublicMcpCliTests.prepare
+ def test_public_pair_and_rehashed_wrong_packet_bytes(self):
+  self.prepare('MCP-SPECIAL-IPC',['LOOPBACK-V4','LOOPBACK-V6'])
+  with mock.patch.object(m,'NativeBoundary',return_value=LoopbackExactBoundary(self.inputs,self.base/'domain')):value=self.cli('execute','--plan',self.run/'plan.json')
+  self.assertEqual(0,value[0],value)
+  judged=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'positive.json');self.assertEqual(0,judged[0],judged);self.assertFalse(m.read(self.run/'positive.json')['full_functional_pass'])
+  case=self.run/'results/MCP-SPECIAL-IPC';path=case/'driver/units/LOOPBACK-V4/trace.json';trace=m.read(path)
+  row=next(r for r in trace['records'] if r['kind']=='powershell' and "Filter 'packets" in r['input']['command']);row['output']['output']='AAAA';path.write_text(json.dumps(trace))
+  receipt=m.read(case/'receipt.json')
+  for artifact in receipt['artifacts']:artifact['sha256']=m.sha256(artifact['path'])
+  (case/'receipt.json').write_text(json.dumps(receipt));index=m.read(self.run/'results/results.json')
+  for item in index['receipts']:
+   if item['case_id']=='MCP-SPECIAL-IPC':item['sha256']=m.sha256(case/'receipt.json')
+  (self.run/'results/results.json').write_text(json.dumps(index))
+  bad=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'bad-packet.json');self.assertNotEqual(0,bad[0],bad)

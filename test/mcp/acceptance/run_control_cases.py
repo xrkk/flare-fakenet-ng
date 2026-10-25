@@ -525,6 +525,7 @@ class ControlCase:
             snap = self.start_run(writer, config='loopback-capture.ini')
             run_id = snap.get('run_id')
             listener = self._start_loopback_listener(port, address, nonce, family)
+            writer.add_evidence('loopback-listener', listener)
             final_filter = (snap.get('health') or {}).get('final_filter') or ''
             if family == 'V4':
                 checks['filter_excludes_loopback'] = (
@@ -544,36 +545,49 @@ class ControlCase:
                 "try{$b=[Text.Encoding]::ASCII.GetBytes('" + marker_loopback + "');"
                 "$n=$c.Send($b,$b.Length,'" + address + "'," + str(port) + ");"
                 "$d=[Net.Sockets.UdpClient]::new();$b2=[Text.Encoding]::ASCII.GetBytes('" + marker_diverted + "');"
-                "$n2=$d.Send($b2,$b2.Length,'8.8.8.8',53);"
-                "@{loopback_sent=$n;diverted_sent=$n2}|ConvertTo-Json -Compress"
+                "$n2=$d.Send($b2,$b2.Length,'" + self.allowed_host + "',53);"
+                "@{loopback_sent=$n;diverted_sent=$n2;source_address=$c.Client.LocalEndPoint.Address.ToString();source_port=$c.Client.LocalEndPoint.Port;diverted_target='" + self.allowed_host + "'}|ConvertTo-Json -Compress"
                 "}finally{$c.Dispose();$d.Dispose()}", timeout=30)
             writer.add_evidence('loopback-stimulus', sent['output'])
+            stimulus = json.loads(sent['output'])
+            if (stimulus.get('loopback_sent') != len(marker_loopback.encode('ascii')) or
+                    stimulus.get('diverted_sent') != len(marker_diverted.encode('ascii')) or
+                    stimulus.get('diverted_target') != self.allowed_host or
+                    type(stimulus.get('source_port')) is not int or not 0 < stimulus['source_port'] < 65536):
+                raise RuntimeError('loopback stimulus identity differs')
             time.sleep(1.5)
+            receipt_path = listener['receipt']
+            receipt_header = listener['header']
             if listener is not None:
-                writer.add_evidence('loopback-listener-stop', kill_owned_process(
-                    self.channel, listener['pid'], listener['created'],
-                    'loopback-listener'))
+                stopping = listener
                 listener = None
+                writer.add_evidence('loopback-listener-stop', self._stop_loopback_listener(stopping))
             ok, final = self.finish_run(writer)
             checks['run_stopped_cleanly'] = ok
             checks.update(self._verify_pcaps(writer, run_id, family,
                                              marker_loopback, marker_diverted,
-                                             port))
+                                             port, stimulus['source_port']))
             receipts = self.channel.powershell(
-                "$p='C:\\Windows\\Temp\\loopback-receipts-" + nonce + ".txt';"
-                "@{content=if(Test-Path $p){Get-Content $p -Raw}else{''};"
-                "base64=if(Test-Path $p){[Convert]::ToBase64String([IO.File]::ReadAllBytes($p))}else{''}}"
-                " | ConvertTo-Json -Compress", timeout=30)
+                "# LOOPBACK_RECEIPT_V1\n$ErrorActionPreference='Stop';$p='" + receipt_path.replace("'", "''") + "';"
+                "$b=[IO.File]::ReadAllBytes($p);@{path=$p;size=$b.Length;"
+                "sha256=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLower();"
+                "base64=[Convert]::ToBase64String($b)}|ConvertTo-Json -Compress", timeout=30)
             receipt = json.loads(receipts['output'])
+            payload = base64.b64decode(receipt['base64'], validate=True)
+            if (receipt.get('path') != receipt_path or len(payload) != receipt.get('size') or
+                    hashlib.sha256(payload).hexdigest() != receipt.get('sha256')):
+                raise RuntimeError('loopback receipt identity differs')
+            lines = payload.decode('utf-8-sig').splitlines()
+            wanted = 'recv ' + base64.b64encode(marker_loopback.encode('ascii')).decode('ascii')
+            checks['marker_arrived_at_local_listener'] = (
+                bool(lines) and lines[0] == receipt_header and wanted in lines[1:])
             writer.add_evidence('loopback-receipts', receipt)
-            checks['marker_arrived_at_local_listener'] = marker_loopback in (
-                receipt.get('content') or '')
             return checks
         finally:
             if listener is not None:
-                writer.add_evidence('loopback-listener-stop', kill_owned_process(
-                    self.channel, listener['pid'], listener['created'],
-                    'loopback-listener'))
+                stopping = listener
+                listener = None
+                writer.add_evidence('loopback-listener-stop', self._stop_loopback_listener(stopping))
 
     def _ensure_capture_config(self, writer):
         name = 'loopback-capture.ini'
@@ -610,26 +624,56 @@ class ControlCase:
             raise RuntimeError('capture config content mismatch')
 
     def _start_loopback_listener(self, port, address, nonce, family):
-        bind = ("[Net.IPAddress]::Parse('" + address + "')")
+        from pathlib import PureWindowsPath
+        expected_address = '127.0.0.1' if family == 'V4' else '::1'
+        if family not in ('V4', 'V6') or address != expected_address:
+            raise ValueError('loopback listener family/address differs')
+        receipt = str(PureWindowsPath(self.guest_work_root) / ('loopback-receipts-' + nonce + '.txt'))
+        escaped = receipt.replace("'", "''")
+        wildcard = 'Any' if family == 'V4' else 'IPv6Any'
+        header_prefix = 'started ' + nonce + ' ' + family + ' ' + address + ' ' + str(port) + ' pid='
         script = (
             "$ErrorActionPreference='Stop';"
-            "$ep=[Net.IPEndPoint]::new(" + bind + "," + str(port) + ");"
-            "$listener=[Net.Sockets.UdpClient]::new($ep);"
-            "$log='C:\\Windows\\Temp\\loopback-receipts-" + nonce + ".txt';"
-            "Set-Content -Path $log -Value ('started pid=' + $PID);"
-            "try{while($true){$remote=[Net.IPEndPoint]::new([Net.IPAddress]::Any,0);"
+            "$ep=[Net.IPEndPoint]::new([Net.IPAddress]::Parse('" + address + "')," + str(port) + ");"
+            "$listener=[Net.Sockets.UdpClient]::new($ep);$log='" + escaped + "';"
+            "[IO.File]::WriteAllText($log,('" + header_prefix + "'+$PID+[Environment]::NewLine),[Text.UTF8Encoding]::new($false));"
+            "try{while($true){$remote=[Net.IPEndPoint]::new([Net.IPAddress]::" + wildcard + ",0);"
             "$b=$listener.Receive([ref]$remote);"
-            "Add-Content -Path $log -Value ([Text.Encoding]::ASCII.GetString($b))}}finally{$listener.Close()}")
+            "[IO.File]::AppendAllText($log,('recv '+[Convert]::ToBase64String($b)+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))}}finally{$listener.Close()}")
         result = self.channel.powershell(
+            "# LOOPBACK_LISTENER_START_V1\n$ErrorActionPreference='Stop';if(Test-Path -LiteralPath '" + escaped + "'){throw 'loopback receipt collision'};"
             "Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','" +
             script.replace("'", "''") + "' -PassThru | ForEach-Object { $_.Id }", timeout=30)
         pid = int(result['output'].strip().splitlines()[-1])
-        born = self.channel.powershell(
-            "(Get-Process -Id " + str(pid) + ").StartTime.ToFileTimeUtc()", timeout=30)
-        return {'pid': pid, 'created': int(born['output'].strip())}
+        header = header_prefix + str(pid)
+        ready = self.channel.powershell(
+            "# LOOPBACK_LISTENER_READY_V1\n$ErrorActionPreference='Stop';$p=Get-Process -Id " + str(pid) + ";[void]$p.Handle;"
+            "$born=$p.StartTime.ToFileTimeUtc().ToString();$deadline=[DateTime]::UtcNow.AddSeconds(10);$path='" + escaped + "';"
+            "while(!(Test-Path -LiteralPath $path) -and !$p.HasExited -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 100};"
+            "if($p.HasExited -or !(Test-Path -LiteralPath $path)){throw 'loopback listener did not become ready'};"
+            "$header=[IO.File]::ReadAllLines($path)[0];if($header -cne '" + header + "'){throw 'loopback listener receipt owner differs'};"
+            "@{pid=$p.Id;created=$born;image=$p.Path;sha256=(Get-FileHash -LiteralPath $p.Path -Algorithm SHA256).Hash.ToLower();"
+            "receipt=$path;header=$header}|ConvertTo-Json -Compress", timeout=30)
+        observed = json.loads(ready['output'])
+        if (observed.get('pid') != pid or not str(observed.get('created', '')).isdigit() or
+                not observed.get('image') or len(observed.get('sha256', '')) != 64 or
+                observed.get('receipt') != receipt or observed.get('header') != header):
+            raise RuntimeError('loopback listener identity/readiness differs')
+        return observed
+
+    def _stop_loopback_listener(self, listener):
+        raw = self.channel.powershell(
+            "# LOOPBACK_LISTENER_STOP_V1\n$ErrorActionPreference='Stop';$p=Get-Process -Id " + str(listener['pid']) + ";[void]$p.Handle;"
+            "if($p.StartTime.ToFileTimeUtc().ToString() -cne '" + str(listener['created']) + "' -or $p.Path -ine '" + listener['image'].replace("'", "''") + "'){throw 'loopback listener owner differs'};"
+            "if((Get-FileHash -LiteralPath $p.Path -Algorithm SHA256).Hash.ToLower() -cne '" + listener['sha256'] + "'){throw 'loopback listener image changed'};"
+            "$p.Kill();if(!$p.WaitForExit(5000)){throw 'loopback listener exit unresolved'};"
+            "@{pid=" + str(listener['pid']) + ";birth='" + str(listener['created']) + "';exited=$true}|ConvertTo-Json -Compress", timeout=30)
+        if json.loads(raw['output']) != {'pid': listener['pid'], 'birth': str(listener['created']), 'exited': True}:
+            raise RuntimeError('loopback listener exit proof differs')
+        return raw
 
     def _verify_pcaps(self, writer, run_id, family, marker_loopback,
-                      marker_diverted, loop_port):
+                      marker_diverted, loop_port, loop_source_port):
         # The capture files are finalized shortly after the state flips to
         # stopped; poll briefly instead of racing the artifact publication.
         for _ in range(10):
@@ -660,8 +704,13 @@ class ControlCase:
                 timeout=120)['output'].strip()
         writer.add_evidence('loopback-pcaps', report)
         files = report['files']
+        names = [item['name'] for item in files]
+        converted = [name for name in names if name.endswith('-converted.pcap')]
+        paired = (len(names) == len(set(names)) == 2 and len(converted) == 1 and
+                  converted[0][:-len('-converted.pcap')] + '.pcap' in names)
         checks = {
             'pcap_evidence_present': bool(files),
+            'dual_pcap_pair_present': paired,
         }
         # The dual PCAP files are two encodings of the SAME capture journal:
         # main-divert records and record-only observations both land in both
@@ -673,6 +722,8 @@ class ControlCase:
         # arrival at the REAL listener is asserted by the caller.
         import dpkt
         import socket
+        requested_family = socket.AF_INET if family == 'V4' else socket.AF_INET6
+        requested_address = '127.0.0.1' if family == 'V4' else '::1'
         marker_loopback_b = marker_loopback.encode('ascii')
         marker_diverted_b = marker_diverted.encode('ascii')
         loop_records, redirected, diverted_seen = [], [], []
@@ -696,13 +747,13 @@ class ControlCase:
                     else:
                         layer = dpkt.ip.IP(buf)
                     if isinstance(layer, dpkt.ip6.IP6):
-                        family = socket.AF_INET6
+                        packet_family = socket.AF_INET6
                     elif isinstance(layer, dpkt.ip.IP):
-                        family = socket.AF_INET6 if layer.v == 6 else socket.AF_INET
+                        packet_family = socket.AF_INET6 if layer.v == 6 else socket.AF_INET
                     else:
                         continue
                     def addr(raw):
-                        return socket.inet_ntop(family, raw)
+                        return socket.inet_ntop(packet_family, raw)
                     src, dst = addr(layer.src), addr(layer.dst)
                     l4 = layer.data
                     row = dict(file=f['name'], src=src, dst=dst,
@@ -716,7 +767,8 @@ class ControlCase:
                         is_loopback_pair = (
                             ipaddress.ip_address(src).is_loopback and
                             ipaddress.ip_address(dst).is_loopback)
-                        if row['dport'] == loop_port and is_loopback_pair:
+                        if (packet_family == requested_family and src == dst == requested_address and
+                                row['sport'] == loop_source_port and row['dport'] == loop_port and is_loopback_pair):
                             loop_records.append(row)
                         else:
                             redirected.append(row)

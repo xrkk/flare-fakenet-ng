@@ -626,3 +626,6 @@ loaded configuration. SCM Running banners alone never establish restoration.
 
 
 The `CONTROL-EXTRA-29094/29095` changing-configuration path observes both real service replacements. Each stop binds the old process birth/image and exact owned service bytes, and each configured/restored startup records fresh NULL/version/cache/event anchors before the existing strict operation/config restoration checks consume that generation. Five live echo probes and listener receipts, filter exclusion, clean stop and OS restoration remain required. Existing configured ports retain their no-restart path. A foreign listener pauses its affected case; it is never displaced. Real-coordinator generation tests and public CLI trace-tamper negatives verify the same consumers; fixture success grants no Windows runtime credit.
+
+
+`LOOPBACK-V4/V6` bind the requested loopback family/address and the actual stimulus source port in their raw PCAP checks. Capture liveness uses the existing host-only allowed peer at UDP53. The unique listener receipt lives under the selected guest work root; exact receipt bytes/hash, nonce header and full listener identity/exit are recorded. A wrong family/tuple, substring or stale receipt, changed PCAP bytes or false process exit cannot pass. The non-loopback IPv4 liveness marker is separate from the requested IPv6 loopback proof.
