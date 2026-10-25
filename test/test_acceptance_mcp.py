@@ -3306,3 +3306,68 @@ class OwnedInterruptedCreationTests(unittest.TestCase):
     rows,clean,detail=o.evaluate(ROOT,out,'MCP-P03-FULL',['ACC-007'],self.inputs,allow_fixture=True)
     self.assertNotEqual('pass',rows[0]['status'],detail)
   path.write_text(json.dumps(original))
+
+
+class DistinctRestoreReceiptTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def exercise_two_epochs(self,boundary,out):
+  mods=m.modules(ROOT);session=m.BoundarySession(boundary,self.inputs)
+  writer=mods['helpers'].EvidenceWriter(out,'restore-test');session.original_writer=writer
+  session.original_unit='ACC-007'
+  with session.activate():
+   with session.original_helpers():
+    initial=m._status_snapshot(mods['run_p02_acc'].status(self.inputs['endpoint']))
+    for enabled,grace in ((True,5),(False,60)):
+     mods['helpers'].configure_fault_service(session,enabled,grace)
+     current=m._status_snapshot(mods['run_p02_acc'].status(self.inputs['endpoint']))
+     self.assertIsNone(current['config_identity'])
+     m._restore_config(mods,self.inputs['endpoint'],session,self.inputs,initial['config_identity'],current,writer)
+    final=m._status_snapshot(mods['run_p02_acc'].status(self.inputs['endpoint']))
+    m._verified_version_chain(session,initial,final)
+  return session,writer
+ def test_real_coordinator_two_helper_resets_keep_both_receipts_and_replay(self):
+  boundary=HelperEpochDomainBoundary(self.inputs,self.root/'two-epochs-os')
+  out=self.root/'two-epochs'
+  session,writer=self.exercise_two_epochs(boundary,out)
+  receipts=list(out.glob('owned-restore-config-*-epoch-*.json'))
+  self.assertEqual(2,len(receipts));self.assertEqual(2,len({p.name for p in receipts}))
+  values=[m.read(p) for p in receipts]
+  self.assertEqual(2,len({v['command_id'] for v in values}))
+  self.assertTrue(all(v['state_version']==2 and v['changed'] is True and v['error'] is None for v in values))
+  self.assertEqual([1,2],[op['epoch'] for op in session.config_operations])
+  self.assertEqual(self.inputs['config_identity']['sha256'],boundary.context.coordinator.snapshot()['config_identity']['sha256'])
+  for p in receipts:self.assertEqual(m.sha256(p),next(e['sha256'] for e in writer.evidence if Path(e['path'])==p))
+  replay=m.ReplayBoundary(session.records)
+  second,again=self.exercise_two_epochs(replay,self.root/'two-epochs-replay')
+  replay.finish()
+  self.assertEqual([m.read(p) for p in sorted(receipts)],[m.read(p) for p in sorted((self.root/'two-epochs-replay').glob('owned-restore-config-*-epoch-*.json'))])
+ def test_existing_receipt_is_refused_before_restore_mutation(self):
+  from types import SimpleNamespace
+  mods=m.modules(ROOT);writer=mods['helpers'].EvidenceWriter(self.root/'collision','test')
+  command='owned-restore-config-00000000-0000-4000-8000-000000000001'
+  path=writer.out_dir/(command+'-epoch-9.json');path.write_bytes(b'original immutable receipt')
+  calls=[]
+  def call(base,tool,*args,**kwargs):
+   calls.append(tool)
+   if tool=='read_config':return dict(self.inputs['config_identity'],error=None)
+   raise AssertionError('must refuse before load_config')
+  with mock.patch.object(mods['run_p02_acc'],'unique_command',return_value=command),mock.patch.object(mods['run_p02_acc'],'call',side_effect=call):
+   with self.assertRaises(FileExistsError):m._restore_config(mods,'memory',SimpleNamespace(operation_epoch=9),self.inputs,self.inputs['config_identity'],{'state_version':1},writer)
+  self.assertEqual(['read_config'],calls);self.assertEqual(b'original immutable receipt',path.read_bytes())
+ def test_unknown_changed_identity_and_bad_versions_never_publish_receipt(self):
+  from types import SimpleNamespace
+  import copy
+  mods=m.modules(ROOT)
+  for defect in ('unknown','config','version','owner-command','epoch','path'):
+   with self.subTest(defect=defect):
+    writer=mods['helpers'].EvidenceWriter(self.root/defect,'test')
+    command='owned-restore-config-00000000-0000-4000-8000-000000000001' if defect!='path' else '../foreign'
+    response=dict(state='stopped',state_version=2,changed=True,error=None,command_id=command,config_identity=self.inputs['config_identity'])
+    if defect=='unknown':response={}
+    elif defect=='config':response['config_identity']=dict(self.inputs['config_identity'],sha256='f'*64)
+    elif defect=='version':response['state_version']=1
+    elif defect=='owner-command':response['command_id']='foreign'
+    def call(base,tool,*args,**kwargs):return dict(self.inputs['config_identity'],error=None) if tool=='read_config' else response
+    with mock.patch.object(mods['run_p02_acc'],'unique_command',return_value=command),mock.patch.object(mods['run_p02_acc'],'call',side_effect=call):
+     with self.assertRaises((ValueError,KeyError)):m._restore_config(mods,'memory',SimpleNamespace(operation_epoch=-1 if defect=='epoch' else 9),self.inputs,self.inputs['config_identity'],{'state_version':1},writer)
+    self.assertEqual([],list(writer.out_dir.glob('owned-restore-config*')))

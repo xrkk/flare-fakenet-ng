@@ -560,3 +560,10 @@ no-replay observations can close that retired request's responsibility. The
 version checker uses that observed acceptance marker, never a fabricated API
 response. All unrelated unknown requests and original helper preserve-scene
 failures still block subsequent mutations and recovery.
+
+
+Each owned configuration recovery stores its own receipt under the exact
+accepted command ID and observed process epoch. A collision is checked before
+the load mutation and never overwrites a prior receipt. Recovery after a crash
+and recovery after restoring service settings remain separate transactions;
+both original receipts and both version chains are retained for replay.

@@ -1179,6 +1179,13 @@ def _restore_config(mods,base,session,inputs,initial,current,writer):
  if frozen.get('error') or frozen.get('name')!=name or frozen.get('sha256')!=digest:
   raise ValueError('original configuration binding changed; do not restore by name alone')
  command=mods['run_p02_acc'].unique_command('owned-restore-config')
+ epoch=session.operation_epoch
+ if type(epoch) is not int or epoch<0 or not isinstance(command,str) or not re.fullmatch(r'owned-restore-config-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',command):
+  raise ValueError('configuration restore evidence identity is invalid')
+ evidence_name=command+'-epoch-'+str(epoch)
+ evidence_path=writer.out_dir/(evidence_name+'.json')
+ if writer.out_dir.is_symlink() or evidence_path.exists() or evidence_path.is_symlink():
+  raise FileExistsError('configuration restore evidence path already exists; no mutation issued')
  restored=mods['run_p02_acc'].call(base,'load_config',{
   'name':name,'command_id':command,'expected_state_version':current['state_version']})
  if (not isinstance(restored,dict) or restored.get('error')
@@ -1188,7 +1195,7 @@ def _restore_config(mods,base,session,inputs,initial,current,writer):
          or restored.get('changed') is not True
          or not _same_config(_config_identity(restored.get('config_identity')),initial)):
   raise ValueError('configuration restore was not accepted with exact original identity')
- writer.add_evidence('owned-restore-config',restored)
+ writer.add_evidence(evidence_name,restored)
  return restored
 
 
