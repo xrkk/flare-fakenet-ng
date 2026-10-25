@@ -439,12 +439,14 @@ class BoundarySession:
   self._observe_service_restart(kind,value,result)
   row['output']=pack(result);return result
  def _observe_service_restart(self,kind,value,result):
-  if kind!='powershell' or not isinstance(value,dict):return
-  if not re.search(r'(?i)\bsc(?:\.exe)?\s+start\s+fakenetng-mcp\b',value.get('command') or ''):return
-  if (not isinstance(result,dict) or result.get('exit_code')!=0
-      or result.get('is_error') is not False
-      or result.get('output','').strip()!='STARTED'):
-   return
+  # SCM banners do not prove that a process exited or a new instance started.
+  # Only powershell() constructs this proof after replayable OS observations.
+  if kind!='verified-service-restart':return
+  before=value['before'];after=value['after'];exited=value['exit']
+  if (exited!={'old_pid':before['pid'],'old_birth':before['birth'],'old_exited':True}
+      or int(after['birth'])<=int(before['birth'])
+      or any(before[k]!=after[k] for k in ('image','sha256','service_config','enabled','grace','fault_exists'))):
+   raise ValueError('service restart instance proof differs')
   with self.lock:
    self.operation_epoch+=1;self.epoch_initial_versions[self.operation_epoch]=None
  def local_observation(self,kind,value,observe):
@@ -466,12 +468,35 @@ class BoundarySession:
    command=command.replace('C:\\Progra~1\\FakeNet-NG-MCP',self.inputs['installation_root'])
    command=command.replace('C:\\Program Files\\FakeNet-NG-MCP',self.inputs['installation_root'])
    command=command.replace('C:\\ProgramData\\FakeNet-NG-MCP',self.inputs['programdata_root'])
+   image=str(__import__('pathlib').PureWindowsPath(self.inputs['installation_root'])/'fakenetng-mcp.exe')
+   literal="'"+image.replace("'","''")+"'"
+   command=command.replace("Join-Path $env:ProgramFiles 'FakeNet-NG-MCP\\fakenetng-mcp.exe'",literal)
    guest_work=self.inputs.get('guest_work_root')
-   if guest_work:
-    command=command.replace('C:\\Windows\\Temp',guest_work)
+   if guest_work:command=command.replace('C:\\Windows\\Temp',guest_work)
+  restart_stop=command=='sc.exe stop fakenetng-mcp 2>&1 | Out-Null; Start-Sleep 3; "STOPPED"'
+  restart_start=command=='sc.exe start fakenetng-mcp | Out-Null; "STARTED"'
+  if restart_stop:self._restart_before=service_preflight(self,self.inputs)
+  if restart_start:
+   before=getattr(self,'_restart_before',None)
+   if not before:raise ValueError('service restart lacks original instance binding')
+   # The original helper performs its guarded kill. Verify its actual effect;
+   # do not retry a kill or trust the preceding STOPPED/GONE strings.
+   probe=("# MCP_RESTART_OLD_EXIT_V1\n$ErrorActionPreference='Stop';"
+    "$old=Get-Process -Id "+str(before['pid'])+" -ErrorAction SilentlyContinue;"
+    "$exited=(!$old -or $old.StartTime.ToFileTimeUtc().ToString() -cne '"+before['birth']+"');"
+    "@{old_pid="+str(before['pid'])+";old_birth='"+before['birth']+"';old_exited=$exited}|ConvertTo-Json -Compress")
+   raw=self.operation('powershell',{'command':probe,'timeout':30})
+   if raw.get('exit_code')!=0 or raw.get('is_error') is not False:raise ValueError('old service exit unobserved')
+   exited=json.loads(raw['output'])
+   if exited!={'old_pid':before['pid'],'old_birth':before['birth'],'old_exited':True}:raise ValueError('old service instance did not exit')
   result=self.operation('powershell',{'command':command,'timeout':timeout})
   if (not isinstance(result,dict) or result.get('is_error') or result.get('exit_code')!=0 or not isinstance(result.get('output'),str)):
    raise ValueError('original PowerShell result unsuccessful or not observed')
+  if restart_start:
+   if result['output'].strip()!='STARTED':raise ValueError('service start response differs')
+   after=service_preflight(self,self.inputs)
+   self._observe_service_restart('verified-service-restart',{'before':before,'after':after,'exit':exited},result)
+   self._restart_before=None
   return result
  def computer_name(self):return self.powershell('$env:COMPUTERNAME',timeout=30)['output'].strip()
  def urlopen(self,request,timeout=30,**kwargs):

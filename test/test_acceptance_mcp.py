@@ -178,9 +178,13 @@ class DomainBoundary(ReadOnlyBoundary):
    if kind=='sleep':self.t+=value['seconds'];return None
    if kind=='powershell':
     command=value['command']
-    if 'fault_exists=' in command or 'grace=$cfg.stop_grace_seconds' in command:return super().exchange(kind,value)
+    if 'fault_exists=' in command:
+     result=super().exchange(kind,value);payload=json.loads(result['output']);payload['birth']=str(1234+getattr(self,'service_generation',0));result['output']=json.dumps(payload);return result
+    if 'grace=$cfg.stop_grace_seconds' in command:return super().exchange(kind,value)
     if 'config-audit.jsonl' in command:output=self.context.store.audit_path.read_text()
-    elif 'sc.exe start' in command:self.assemble();output='STARTED'
+    elif 'MCP_RESTART_OLD_EXIT_V1' in command:
+     output=json.dumps({'old_pid':12,'old_birth':str(1234+getattr(self,'service_generation',0)),'old_exited':True})
+    elif 'sc.exe start' in command:self.service_generation=getattr(self,'service_generation',0)+1;self.assemble();output='STARTED'
     else:output='GONE'
     return {'output':output,'raw':output,'exit_code':0,'is_error':False}
    if kind=='http':
@@ -2678,3 +2682,48 @@ class ReadOnlyEndpointGuardTests(ReadOnlyEndpointProofTests):
   out,result=self.run_noise(old);self.assertEqual(result['status'],'fail')
   rows,clean,details=o.evaluate(ROOT,out,'MCP-P02-FULL',['ACC-005'],self.inputs,allow_fixture=True)
   self.assertEqual(rows[0]['status'],'fail',details);self.assertFalse(clean)
+
+
+class InstalledRestartProofTests(unittest.TestCase):
+ def setUp(self):
+  OriginalMcpTests.setUp(self);m.modules(ROOT)
+ def test_original_kill_helper_binds_frozen_installation_root(self):
+  self.inputs['installation_root']=r"E:\Owned folder\Candidate's root"
+  class Commands(ReadOnlyBoundary):
+   def exchange(self,kind,value):
+    if kind=='powershell':self.command=value['command'];return {'output':'{}','raw':'{}','exit_code':0,'is_error':False}
+    return super().exchange(kind,value)
+  boundary=Commands(self.inputs);session=m.BoundarySession(boundary,self.inputs)
+  m.modules(ROOT)['helpers'].kill_current_service(session,'benign-binding')
+  self.assertNotIn("Join-Path $env:ProgramFiles",boundary.command)
+  self.assertIn("$exe='E:\\Owned folder\\Candidate''s root\\fakenetng-mcp.exe'",boundary.command)
+  for guard in ('service image unexpected','actual service image unexpected','service PID was reused'):
+   self.assertIn(guard,boundary.command)
+ def test_started_banner_without_real_instance_proof_cannot_advance_epoch(self):
+  session=m.BoundarySession(ReadOnlyBoundary(self.inputs),self.inputs)
+  session._observe_service_restart('powershell',{'command':'sc.exe start fakenetng-mcp; "STARTED"'}, {'output':'STARTED','exit_code':0,'is_error':False})
+  self.assertEqual(0,session.operation_epoch)
+ def test_original_acc011_rejects_unexited_or_unproved_restart(self):
+  for defect in ('old-alive','wrong-image','same-birth','missing-proof'):
+   with self.subTest(defect=defect):
+    class InvalidRestart(DomainBoundary):
+     def exchange(self,kind,value):
+      if kind=='powershell' and 'MCP_RESTART_OLD_EXIT_V1' in value['command']:
+       if defect=='old-alive':payload={'old_pid':12,'old_birth':'1234','old_exited':False}
+       elif defect=='missing-proof':payload={}
+       else:payload={'old_pid':12,'old_birth':'1234','old_exited':True}
+       return {'output':json.dumps(payload),'exit_code':0,'is_error':False}
+      result=super().exchange(kind,value)
+      if kind=='powershell' and 'fault_exists=' in value['command'] and getattr(self,'service_generation',0):
+       payload=json.loads(result['output'])
+       if defect=='wrong-image':payload['image']=r'C:\Foreign\fakenetng-mcp.exe'
+       if defect=='same-birth':payload['birth']='1234'
+       result['output']=json.dumps(payload)
+      return result
+    out=self.root/defect;boundary=InvalidRestart(self.inputs,self.root/('domain-'+defect))
+    value=m.run('MCP-P02-FULL',out,self.inputs,selected=['ACC-011'],boundary=boundary,fixture=True)
+    self.assertIn(value['checks']['ACC-011']['status'],('fail','unknown'))
+    rows,clean,details=o.evaluate(ROOT,out,'MCP-P02-FULL',['ACC-011'],self.inputs,allow_fixture=True)
+    self.assertNotEqual('pass',rows[0]['status'],details)
+    trace=m.read(out/'units/ACC-011/trace.json')
+    self.assertFalse(any(row.get('epoch',0)>0 for row in trace['records']))

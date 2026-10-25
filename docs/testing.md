@@ -423,3 +423,16 @@ observations; a summary flag cannot grant it. Old traces without owner proof
 remain failed. Mutating units retain the original recovery conditions. Benign
 fixture tests exercise the original consumer and independent replay; they do
 not establish native owner collection or a full Windows/P02 regression pass.
+
+
+## MCP service restart identity
+
+P02 runs the original controller, race, replay and cache-reset assertions.
+The adapter binds the original helper's ProgramFiles expression to the frozen
+installation root, including PowerShell literal escaping. Its SCM/image and
+PID/birth checks remain active. STOPPED, GONE and STARTED text alone cannot
+establish a restart: the trace must prove the bound old PID/birth has exited
+and a running candidate instance has a different birth with the same image,
+hash and service settings before advancing the operation epoch. Independent
+replay repeats these checks. Missing proof, an unchanged instance or a foreign
+image fails; old failed traces and unresolved mutation flags remain unchanged.
