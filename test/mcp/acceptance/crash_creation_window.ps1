@@ -41,7 +41,7 @@ try {
                 $owned += $pin
                 $owner = @($owned | Where-Object {$_.identity.pid -eq $pin.identity.parent_pid})
                 if ($owner.Count -ne 1 -or $pin.identity.parent_pid -ne $item.ParentProcessId -or
-                    $pin.identity.creation_time -cne $item.CreationDate.ToFileTimeUtc().ToString() -or
+                    $pin.cim_creation_time -cne $item.CreationDate.ToFileTimeUtc().ToString() -or
                     [Int64]$pin.identity.creation_time -lt [Int64]$owner[0].identity.creation_time) { throw 'descendant ownership changed' }
                 $ids += $pin.identity.pid
             }
@@ -55,9 +55,7 @@ try {
     if ($canary.Id -in ($ids + @($parent.identity.pid))) { throw 'canary scope overlaps' }
     # Validate all held objects and the responsibility immediately before kill.
     foreach ($pin in $owned) {
-        $item = Get-CimInstance Win32_Process -Filter "ProcessId=$($pin.identity.pid)"
-        if ($pin.handle.HasExited -or !$item -or $item.CreationDate.ToFileTimeUtc().ToString() -cne $pin.identity.creation_time -or
-            $item.ParentProcessId -ne $pin.identity.parent_pid -or $item.ExecutablePath -ine $pin.identity.image) { throw 'pinned tree changed before crash' }
+        Confirm-PinnedProcess $pin
     }
     $latestTree = @(Get-CimInstance Win32_Process)
     $unseen = @($latestTree | Where-Object {$_.ParentProcessId -in $ids -and $_.ProcessId -notin $ids})
@@ -66,6 +64,7 @@ try {
     Check-Marker (Read-Marker) $expected
     $latest = Get-CimInstance Win32_Service -Filter "Name='fakenetng-mcp'"
     if ($latest.State -ne 'Running' -or $latest.ProcessId -ne $parent.identity.pid -or $parent.handle.HasExited) { throw 'supervisor changed before crash' }
+    Confirm-PinnedProcess $parent
     # Only the pinned supervisor is terminated. Job close owns descendant exit.
     $parent.handle.Kill()
     $parentExited = $parent.handle.WaitForExit(10000)

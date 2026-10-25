@@ -3001,3 +3001,117 @@ class NativePinPrecisionTests(unittest.TestCase):
    with self.subTest(case=row['case']):
     self.assertEqual(row['case'].startswith('tick'),row['accepted'],row)
     if row['accepted']:self.assertEqual(str(134373817088689120+int(row['case'][4:])),row['identity']['creation_time'])
+
+
+def native_consumer_precision_script(source_root=ROOT, selected=None):
+ """Execute fixed scripts against safe API objects; no actual process is killed."""
+ import gzip
+ import base64
+ consumer_dir=Path(source_root)/'test/mcp/acceptance'
+ helper=(consumer_dir/'process_scope.ps1').read_text()
+ programs=[]
+ for name in ('health_origin.ps1','crash_current_service.ps1','crash_creation_window.ps1','snapshot_control.ps1'):
+  if selected is not None and name != selected:continue
+  text=(consumer_dir/name).read_text().replace('__SCOPE_HELPERS__',helper+'\n__MOCK_CANARY__')
+  programs.append(dict(name=name,text=text))
+ data=base64.b64encode(json.dumps(programs).encode()).decode()
+ preamble=r"""
+$ErrorActionPreference='Stop'
+$programs=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PROGRAMS__'))|ConvertFrom-Json
+$drive=@('E:\','D:\')|Where-Object {(Test-Path $_)}|Select-Object -First 1
+if(!$drive){throw 'No selected E/D fixture volume'}
+$work=Join-Path $drive ('FakeNetRegression\source-precision-'+[guid]::NewGuid().ToString('N'))
+[IO.Directory]::CreateDirectory((Join-Path $work 'artifacts\runs\11111111-2222-4333-8444-555555555555'))|Out-Null
+[IO.Directory]::CreateDirectory((Join-Path $work 'baselines'))|Out-Null
+[IO.Directory]::CreateDirectory((Join-Path $work 'state'))|Out-Null
+[IO.File]::WriteAllText((Join-Path $work 'artifacts\runs\11111111-2222-4333-8444-555555555555\run.log'),'benign health')
+[IO.File]::WriteAllText((Join-Path $work 'state\state.json'),'{}')
+$rows=@()
+try {
+foreach($program in $programs){
+ $cases=@('tick0','tick1','tick2','tick3','tick4','tick5','tick6','tick7','tick8','tick9','next-micro','new-full-birth','exited','wrong-image','missing-cim','wrong-pid','changed-parent')
+ if($program.name -ne 'snapshot_control.ps1'){$cases+=@('wrong-run','wrong-child-expected')}
+ if($program.name -like 'crash_*'){$cases+='stale-enumeration'}
+ foreach($case in $cases){
+  $rows+=(& {
+   param($program,$case,$work)
+   $script:case=$case;$script:counts=@{};$script:cims=@{};$script:killed=$false;$script:kills=0
+   $script:tick=if($case -like 'tick*'){[int]$case.Substring(4)}else{1}
+   $script:run='11111111-2222-4333-8444-555555555555'
+   $script:image='C:\Program Files\FakeNet-NG-MCP\fakenetng-mcp.exe'
+   $script:childImage='C:\Program Files\FakeNet-NG-MCP\fakenetng-mcp-managed.exe'
+   function New-FakeHandle([int]$id) {
+    $script:counts[$id]=1+[int]$script:counts[$id]
+    $birth=[long]'134373817088689120'+($id-17)*100+$script:tick
+    if($script:case -eq 'new-full-birth' -and $script:counts[$id] -ge 2){$birth++}
+    $image=if($id -eq 17){$script:image}else{$script:childImage}
+    if($script:case -eq 'wrong-image' -and $script:counts[$id] -ge 2){$image='E:\Foreign.exe'}
+    $o=[pscustomobject]@{Id=$id;Handle=[IntPtr]1;StartTime=[DateTime]::FromFileTimeUtc($birth);Path=$image;Exited=$false}
+    $o|Add-Member ScriptProperty HasExited {return ($this.Exited -or ($this.Id -ne 99 -and $script:killed) -or ($script:case -eq 'exited' -and $this.Id -eq 17))}
+    $o|Add-Member ScriptMethod Dispose {}
+    $o|Add-Member ScriptMethod Kill {if($this.Id -eq 17){$script:killed=$true;$script:kills++};$this.Exited=$true}
+    $o|Add-Member ScriptMethod WaitForExit {param($timeout);return $true}
+    return $o
+   }
+   function Get-Process {param([int]$Id,$ErrorAction);return (New-FakeHandle $Id)}
+   function Cim-Row([int]$id,[bool]$enumeration=$false) {
+    if($script:case -eq 'missing-cim' -and $id -eq 17){return $null}
+    $script:cims[$id]=1+[int]$script:cims[$id]
+    $parent=if($id -eq 17){9}elseif($id -eq 18){17}else{18}
+    if($script:case -eq 'changed-parent' -and $id -eq 17 -and $script:cims[$id] -ge 2){$parent=98}
+    $birth=[long]'134373817088689120'+($id-17)*100
+    if($script:case -eq 'next-micro' -or ($script:case -eq 'stale-enumeration' -and $enumeration -and $id -eq 19)){$birth+=10}
+    $command=if($id -eq 18){'managed-child '+$script:run}else{'benign service'}
+    if($script:case -eq 'wrong-run' -and $id -eq 18){$command='managed-child 99999999-9999-4999-8999-999999999999'}
+    return [pscustomobject]@{ProcessId=$(if($script:case -eq 'wrong-pid' -and $id -eq 17){88}else{$id});CreationDate=[DateTime]::FromFileTimeUtc($birth);ExecutablePath=$(if($id -eq 17){$script:image}else{$script:childImage});ParentProcessId=$parent;CommandLine=$command}
+   }
+   function Get-CimInstance {param($ClassName,$Filter)
+    if($ClassName -eq 'Win32_Service'){return [pscustomobject]@{State='Running';ProcessId=17}}
+    if($Filter -match 'ProcessId=(\d+)'){return (Cim-Row ([int]$matches[1]))}
+    if($script:killed){return @()}
+    return @((Cim-Row 17 $true),(Cim-Row 18 $true),(Cim-Row 19 $true))
+   }
+   function Get-NetTCPConnection {param($State,$LocalPort,$ErrorAction);return [pscustomobject]@{OwningProcess=17}}
+   function Get-Content {param($LiteralPath,[switch]$Raw)
+    if($LiteralPath -like '*creation-fault-triggered.json'){return ($script:receipt|ConvertTo-Json -Depth 20)}
+    if($LiteralPath -like '*state\state.json'){return ($script:marker|ConvertTo-Json -Depth 20)}
+    return (Microsoft.PowerShell.Management\Get-Content -LiteralPath $LiteralPath -Raw)
+   }
+   $expected=@{run_id=$script:run;command_id='owned-command';supervisor=@{pid=17;creation_time=([long]'134373817088689120'+$script:tick).ToString()};child=@{pid=18;creation_time=([long]'134373817088689220'+$script:tick).ToString()};job_members=@(18,19);nonce='owned-nonce';fault='before_job';observation=@{stage='before_job'};operation='read';token='owned-token';port=28788}
+   if($case -eq 'wrong-child-expected'){$expected.child.creation_time=([long]$expected.child.creation_time+1).ToString()}
+   $script:marker=@{run_id=$script:run;command_id='owned-command';needs_recovery=$true}
+   $script:receipt=@{nonce=$expected.nonce;fault=$expected.fault;observation=$expected.observation}
+   $text=$program.text.Replace('__EXPECTED__',[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($expected|ConvertTo-Json -Depth 15 -Compress))))
+   $text=$text.Replace('C:\ProgramData\FakeNet-NG-MCP',$work)
+   $text=$text.Replace('__MOCK_CANARY__','function New-Canary {return (New-FakeHandle 99)}')
+   try{
+    $value=& ([scriptblock]::Create($text))|ConvertFrom-Json
+    @{consumer=$program.name;case=$case;accepted=$true;kills=$script:kills;full_birth=$(if($program.name -eq 'health_origin.ps1'){$value.service.creation_time}elseif($program.name -eq 'snapshot_control.ps1'){$value.service.creation_time}else{$value.supervisor.creation_time})}
+   }catch{@{consumer=$program.name;case=$case;accepted=$false;kills=$script:kills;reason=$_.Exception.Message}}
+  } $program $case $work)
+ }
+}
+}finally{if(Test-Path -LiteralPath $work){Remove-Item -LiteralPath $work -Recurse -Force}}
+@{consumer_cases=$rows}|ConvertTo-Json -Depth 15 -Compress
+"""
+ script=preamble.replace('__PROGRAMS__',data)
+ packed=base64.b64encode(gzip.compress(script.encode(),mtime=0)).decode()
+ return "$ErrorActionPreference='Stop';$b=[Convert]::FromBase64String('"+packed+"');$ms=[IO.MemoryStream]::new($b,$false);$gz=[IO.Compression.GzipStream]::new($ms,[IO.Compression.CompressionMode]::Decompress);$sr=[IO.StreamReader]::new($gz);try{$s=$sr.ReadToEnd()}finally{$sr.Dispose();$gz.Dispose();$ms.Dispose()};& ([scriptblock]::Create($s))"
+
+
+class NativeConsumerPrecisionTests(unittest.TestCase):
+ @unittest.skipUnless(sys.platform=='win32','native safe API-object consumer tests')
+ def test_fixed_consumers_keep_full_identity_and_refuse_before_kill(self):
+  import subprocess
+  rows=[]
+  for name in ('health_origin.ps1','crash_current_service.ps1','crash_creation_window.ps1','snapshot_control.ps1'):
+   run=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',native_consumer_precision_script(selected=name)],capture_output=True,text=True,timeout=90)
+   self.assertEqual(0,run.returncode,run.stderr)
+   rows.extend(json.loads(run.stdout)['consumer_cases'])
+  self.assertEqual(76,len(rows))
+  for row in rows:
+   with self.subTest(consumer=row['consumer'],case=row['case']):
+    self.assertEqual(row['case'].startswith('tick'),row['accepted'],row)
+    if row['accepted']:
+     self.assertEqual(str(134373817088689120+int(row['case'][4:])),row['full_birth'])
+    else:self.assertEqual(0,row['kills'],row)

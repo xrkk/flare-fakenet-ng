@@ -534,3 +534,11 @@ a real target process. Ubuntu marks that test skipped. The source validation
 also executes the same cases in the existing VM channel and separately pins the
 verified current candidate read-only; neither probe grants the five original
 native acceptance cases a pass.
+
+
+The fixed Windows health, crash and snapshot consumers use the same held-process
+pinning checks. CIM microsecond timestamps only cross-check their own
+representation; returned and expected GetProcess FILETIME identities retain all
+100ns digits. Crash tree snapshots compare CIM to CIM and re-pin every full held
+identity immediately before termination. Missing evidence, changed full births,
+image/parent/run changes and exited handles still refuse the operation.

@@ -24,11 +24,26 @@ function Pin-Process([int]$processId) {
                 throw 'process changed during pin'
             }
         } finally { $again.Dispose() }
-        return @{handle=$process; identity=@{pid=$process.Id;creation_time=$birth;image=$item.ExecutablePath;parent_pid=[int]$item.ParentProcessId};command=$item.CommandLine}
+        return @{handle=$process; cim_creation_time=$cimBirth; identity=@{pid=$process.Id;creation_time=$birth;image=$item.ExecutablePath;parent_pid=[int]$item.ParentProcessId};command=$item.CommandLine}
     } catch { $process.Dispose(); throw }
 }
 function Same-Identity($actual, $wanted) {
     return ($actual.pid -eq $wanted.pid -and $actual.creation_time -ceq $wanted.creation_time)
+}
+function Confirm-PinnedProcess($pin) {
+    if (!$pin -or $pin.handle.HasExited -or
+        $pin.handle.Id -ne $pin.identity.pid -or
+        $pin.handle.StartTime.ToFileTimeUtc().ToString() -cne $pin.identity.creation_time -or
+        $pin.handle.Path -ine $pin.identity.image) { throw 'held process changed' }
+    $again = Pin-Process $pin.identity.pid
+    try {
+        if (!(Same-Identity $again.identity $pin.identity) -or
+            $again.identity.image -ine $pin.identity.image -or
+            $again.identity.parent_pid -ne $pin.identity.parent_pid -or
+            $again.command -cne $pin.command -or $pin.handle.HasExited) {
+            throw 'pinned process changed'
+        }
+    } finally { $again.handle.Dispose() }
 }
 function Read-Marker {
     return (Get-Content -LiteralPath 'C:\ProgramData\FakeNet-NG-MCP\state\state.json' -Raw | ConvertFrom-Json)

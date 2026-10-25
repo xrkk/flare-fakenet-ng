@@ -27,6 +27,7 @@ def control(channel, operation, **values):
                     port=inputs.get('endpoint') and urlparse(inputs['endpoint']).port or 28788)
     text = Path(__file__).with_name('snapshot_control.ps1').read_text()
     text = text.replace('__EXPECTED__', base64.b64encode(json.dumps(expected).encode()).decode())
+    text = text.replace('__SCOPE_HELPERS__', Path(__file__).with_name('process_scope.ps1').read_text())
     raw = channel.powershell(text, timeout=90)
     result = json.loads(raw['output'])
     if result.get('operation') != operation or result.get('token') != expected['token']:

@@ -1,5 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $expected = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__EXPECTED__')) | ConvertFrom-Json
+__SCOPE_HELPERS__
 $root = 'C:\ProgramData\FakeNet-NG-MCP'
 $path = Join-Path $root 'state\state.json'
 $stateDir = Split-Path $path
@@ -21,17 +22,15 @@ switch ($expected.operation) {
     $rows = @(Get-ChildItem -LiteralPath (Join-Path $root 'baselines') -Filter '*.json' -ErrorAction Stop | ForEach-Object {Read-File $_.FullName})
     $service = @{state=$svc.State;pid=[int]$svc.ProcessId}
     if ($svc.ProcessId -gt 0) {
-        $process = Get-Process -Id $svc.ProcessId
+        $process = Pin-Process $svc.ProcessId
         try {
-            [void]$process.Handle
-            $info = Get-CimInstance Win32_Process -Filter "ProcessId=$($svc.ProcessId)"
-            if ($process.HasExited -or $info.CreationDate.ToFileTimeUtc() -ne $process.StartTime.ToFileTimeUtc()) {throw 'SCM identity changed'}
-            $service.creation_time=$process.StartTime.ToFileTimeUtc().ToString();$service.image=$info.ExecutablePath
+            $service.creation_time=$process.identity.creation_time;$service.image=$process.identity.image
             $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $expected.port -ErrorAction Stop)
             $again=Get-CimInstance Win32_Service -Filter "Name='fakenetng-mcp'"
-            if($again.ProcessId -ne $svc.ProcessId -or $again.State -ne $svc.State -or $process.HasExited){throw 'SCM changed during observation'}
+            if($again.ProcessId -ne $svc.ProcessId -or $again.State -ne $svc.State -or $process.handle.HasExited){throw 'SCM changed during observation'}
+            Confirm-PinnedProcess $process
             $result.endpoint_owned=($listeners.Count -gt 0 -and @($listeners | Where-Object {$_.OwningProcess -ne $svc.ProcessId}).Count -eq 0)
-        } finally {$process.Dispose()}
+        } finally {$process.handle.Dispose()}
     }
     $result.marker=$marker;$result.baselines=$rows;$result.service=$service
     $result.sampled_at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()/1000.0

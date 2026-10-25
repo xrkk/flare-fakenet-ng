@@ -44,6 +44,7 @@ def healthy_origin(base, channel, writer, label, started, snapshot):
     expected = dict(run_id=run, child=child)
     script = Path(__file__).with_name('health_origin.ps1').read_text().replace(
         '__EXPECTED__', base64.b64encode(json.dumps(expected).encode()).decode())
+    script = script.replace('__SCOPE_HELPERS__', Path(__file__).with_name('process_scope.ps1').read_text())
     raw = channel.powershell(script, timeout=45)
     writer.add_evidence(label + '-owned-healthy', raw)
     facts = json.loads(raw['output'])
