@@ -611,3 +611,15 @@ and unobserved termination are rejected. Original full-window, two-second
 sampling-gap, nonce/run, audit, incident and dump checks remain unchanged.
 Old traces without the decisions or matching source closure remain failures;
 no sampling timeline or source pin is backfilled.
+
+
+CONTROL-INVALID records exact service PID, full creation time, image hash and
+actual controlled exit, including explicit already-stopped/PID-zero cases.
+Each of the six original invalid port values keeps its fresh-log refusal check.
+Service configuration writes and restoration require the last owned byte hash
+and exact readback; concurrent changes remain untouched. The restored SCM
+instance must have a later creation time, original image and service bytes,
+and freshly bound NULL status/version, process cache and event epochs before
+the existing version/configuration recovery guards consume its new epoch.
+The fixture creates a real new coordinator/cache instead of retaining the old
+loaded configuration. SCM Running banners alone never establish restoration.

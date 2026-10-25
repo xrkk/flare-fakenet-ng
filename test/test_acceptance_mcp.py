@@ -718,7 +718,7 @@ class InvalidControlBoundary(ControlDomainBoundary):
 class OriginalInvalidControlTests(unittest.TestCase):
  setUp=OriginalMcpTests.setUp
  def run_invalid(self,stale=False):
-  unit='CONTROL-INVALID';out=self.root/('invalid-stale' if stale else 'invalid');boundary=InvalidControlBoundary(self.inputs,self.root/'domain',stale)
+  unit='CONTROL-INVALID';out=self.root/('invalid-stale' if stale else 'invalid');boundary=InvalidIncarnationBoundary(self.inputs,self.root/'domain','stale-log' if stale else None)
   before=boundary.service_bytes
   value=m.run('MCP-SPECIAL-IPC',out,self.inputs,selected=[unit],boundary=boundary,fixture=True)
   self.assertEqual(before,boundary.service_bytes)
@@ -755,7 +755,7 @@ class PublicSpecialMcpCliTests(unittest.TestCase):
   (self.base/'candidate.json').write_text(json.dumps(candidate));(self.base/'environment.json').write_text(json.dumps(environment))
   digest=m.sha256(ROOT/'docs/acceptance/catalog.json')
   result=self.cli('plan','--mode','selected','--case','MCP-SPECIAL-IPC','--candidate',self.base/'candidate.json','--environment',self.base/'environment.json','--output',self.run/'plan.json');self.assertEqual(0,result[0],result)
-  with mock.patch.object(m,'NativeBoundary',side_effect=lambda *args,**kwargs:InvalidControlBoundary(self.inputs,self.base/'domain')):
+  with mock.patch.object(m,'NativeBoundary',side_effect=lambda *args,**kwargs:InvalidIncarnationBoundary(self.inputs,self.base/'domain')):
    result=self.cli('execute','--plan',self.run/'plan.json')
   self.assertEqual(0,result[0],result)
   result=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'independent.json');self.assertEqual(0,result[0],result)
@@ -3742,3 +3742,116 @@ class PublicRealFaultMonitorTests(unittest.TestCase):
    if item['case_id']=='MCP-P04-FULL':item['sha256']=m.sha256(case/'receipt.json')
   (self.run/'results/results.json').write_text(json.dumps(index))
   bad=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'bad-wait.json');self.assertNotEqual(0,bad[0],bad)
+
+
+class InvalidIncarnationBoundary(InvalidControlBoundary):
+ """Actual config/tools per coordinator incarnation; only SCM/file IO edges."""
+ def assemble(self):
+  super().assemble()
+  from fakenet.mcp.testdouble import LifecycleDouble
+  self.context.runner.health_detail=lambda state:{**LifecycleDouble.health_detail(state),'final_filter':('(ip.DstAddr != '+self.inputs['allowed_host']+' or (tcp.SrcPort != 28788 and tcp.SrcPort != 28787 and tcp.SrcPort != 28790 and tcp.SrcPort != 29094 and tcp.SrcPort != 29095)) and (ip.DstAddr < 127.0.0.0 or ip.DstAddr > 127.255.255.255)')}
+ def __init__(self,inputs,root,defect=None):
+  super().__init__(inputs,root,stale=defect=='stale-log');self.defect=defect;self.stop_proofs=[];self.initial_cache=None
+ def exchange(self,kind,value):
+  import re,base64
+  if kind=='powershell':
+   cmd=value['command']
+   if cmd.startswith('# CONTROL_INVALID_STOP_V1'):
+    expected=re.search(r"-cne '([a-f0-9]{64})'",cmd).group(1)
+    if hashlib.sha256(self.service_bytes).hexdigest()!=expected:raise ValueError('control config owner changed')
+    before=None
+    if self.service_state=='Running':
+     service=json.loads(ControlDomainBoundary.exchange(self,kind,dict(value,command='fault_exists='))['output'])
+     before={k:service[k] for k in ('pid','birth','image','sha256')}
+    self.service_state='Stopped';payload={'before':before,'old_exited':before is not None,'no_process_before':before is None,'scm_stopped':True,'pid_after':0,'config_sha256':expected,'cli_output':['stopped']}
+    if self.defect=='false-exit' and before:payload['old_exited']=False
+    if self.defect=='wrong-old-image' and before:before['image']='C:/foreign.exe'
+    if self.defect=='wrong-old-hash' and before:before['sha256']='0'*64
+    if self.defect=='missing-old' and not self.stop_proofs:payload.update(before=None,old_exited=False,no_process_before=True)
+    self.stop_proofs.append(payload)
+    output=json.dumps(payload);return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+   if cmd.startswith('# CONTROL_INVALID_WRITE_V1'):
+    expected=re.search(r"-cne '([a-f0-9]{64})'",cmd).group(1)
+    if self.defect=='foreign-bytes' and not getattr(self,'foreign_written',False):self.service_bytes=b'{"foreign":true}';self.foreign_written=True
+    if hashlib.sha256(self.service_bytes).hexdigest()!=expected:raise ValueError('control config owner changed')
+    self.service_bytes=base64.b64decode(re.search(r"FromBase64String\('([^']*)'\)",cmd).group(1));payload={'base64':base64.b64encode(self.service_bytes).decode(),'sha256':hashlib.sha256(self.service_bytes).hexdigest()}
+    if self.defect=='wrong-write-readback':payload['sha256']='0'*64
+    output=json.dumps(payload);return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+   if cmd.startswith('# CONTROL_INVALID_RESTORED_BYTES_V1'):
+    payload={'base64':base64.b64encode(self.service_bytes).decode(),'sha256':hashlib.sha256(self.service_bytes).hexdigest()}
+    if self.defect=='changed-restored-bytes':payload['base64']=base64.b64encode(b'foreign').decode()
+    output=json.dumps(payload);return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+  answer=super().exchange(kind,value)
+  if kind=='powershell' and 'sc.exe start fakenetng-mcp' in value['command'] and 'Seconds 5' in value['command']:
+   self.service_generation=getattr(self,'service_generation',0)+1;self.assemble()
+   if self.defect=='unobserved-start':answer.update(output='Stopped')
+  if kind=='powershell' and 'fault_exists=' in value['command'] and getattr(self,'service_generation',0):
+   payload=json.loads(answer['output'])
+   if self.defect=='reused-birth':payload['birth']='1234'
+   elif self.defect=='new-wrong-image':payload['image']='C:/foreign.exe'
+   elif self.defect=='new-wrong-hash':payload['sha256']='0'*64
+   answer.update(output=json.dumps(payload))
+  if kind=='http':
+   request=json.loads(value['data']);tool=request['params']['name'];body=json.loads(answer['body']);payload=json.loads(body['result']['content'][0]['text'])
+   if tool=='get_command_status':
+    if not getattr(self,'service_generation',0):self.initial_cache=payload.get('cache_epoch')
+    elif self.defect=='old-cache':payload['cache_epoch']=self.initial_cache
+   elif tool=='get_status' and getattr(self,'service_generation',0):
+    if self.defect=='active-anchor':payload['run_id']='99999999-9999-4999-8999-999999999999'
+    elif self.defect=='wrong-null-anchor':payload['config_identity']=self.inputs['config_identity']
+   body['result']['content'][0]['text']=json.dumps(payload);answer['body']=json.dumps(body).encode()
+  return answer
+
+
+class InvalidIncarnationTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def produce(self,defect=None):
+  out=self.root/(defect or 'good');boundary=InvalidIncarnationBoundary(self.inputs,self.root/('domain-'+str(defect)),defect);before=boundary.service_bytes
+  value=m.run('MCP-SPECIAL-IPC',out,self.inputs,selected=['CONTROL-INVALID'],boundary=boundary,fixture=True)
+  return out,boundary,before,value
+ def test_actual_new_domain_epoch_original_six_refusals_and_replay(self):
+  out,boundary,before,value=self.produce();self.assertEqual('pass',value['checks']['CONTROL-INVALID']['status'],m.read(out/'units/CONTROL-INVALID/result.json'))
+  self.assertEqual(before,boundary.service_bytes);self.assertEqual(1,boundary.service_generation)
+  unit=out/'units/CONTROL-INVALID';variants=m.read(unit/'control-invalid-variants.json');self.assertEqual(6,len(variants));self.assertTrue(all(x['refused'] for x in variants.values()))
+  proof=m.read(unit/'control-invalid-verified-instance.json');self.assertGreater(int(proof['after']['birth']),int(proof['before']['birth']));self.assertIsNone(proof['initial_status']['config_identity'])
+  self.assertNotEqual(proof['old_cache']['cache_epoch'],proof['new_cache']['cache_epoch']);self.assertNotEqual(proof['old_events']['epoch'],proof['new_events']['epoch'])
+  trace=m.read(unit/'trace.json');loads=[x for x in trace['config_operations'] if x['tool']=='load_config'];self.assertTrue(loads);self.assertEqual(1,loads[-1]['epoch']);self.assertEqual(1,loads[-1]['request_expected_version'])
+  rows,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',['CONTROL-INVALID'],self.inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],detail);self.assertTrue(clean,detail)
+ def test_bad_raw_exit_instance_anchor_or_owned_bytes_cannot_pass(self):
+  for defect in ('false-exit','missing-old','wrong-old-image','wrong-old-hash','reused-birth','new-wrong-image','new-wrong-hash','active-anchor','wrong-null-anchor','old-cache','changed-restored-bytes','wrong-write-readback','unobserved-start','foreign-bytes','stale-log'):
+   with self.subTest(defect=defect):
+    out,boundary,before,value=self.produce(defect);self.assertNotEqual('pass',value['checks']['CONTROL-INVALID']['status'])
+    if defect=='foreign-bytes':self.assertEqual(b'{"foreign":true}',boundary.service_bytes)
+    rows,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',['CONTROL-INVALID'],self.inputs,allow_fixture=True);self.assertNotEqual('pass',rows[0]['status'],detail)
+ def test_missing_or_extra_original_exit_record_is_refused(self):
+  import copy
+  out,boundary,before,value=self.produce();self.assertEqual('pass',value['checks']['CONTROL-INVALID']['status'])
+  path=out/'units/CONTROL-INVALID/trace.json';original=m.read(path)
+  for defect in ('omit','extra','tamper'):
+   trace=copy.deepcopy(original);rows=trace['records'];index=next(i for i,r in enumerate(rows) if r['kind']=='powershell' and r['input']['command'].startswith('# CONTROL_INVALID_STOP_V1'))
+   if defect=='omit':rows.pop(index)
+   elif defect=='extra':rows.append(copy.deepcopy(rows[index]))
+   else:
+    payload=json.loads(rows[index]['output']['output']);payload['before']['birth']='0';rows[index]['output']['output']=json.dumps(payload)
+   path.write_text(json.dumps(trace));judged,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',['CONTROL-INVALID'],self.inputs,allow_fixture=True);self.assertNotEqual('pass',judged[0]['status'],detail)
+
+
+class PublicInvalidIncarnationTests(unittest.TestCase):
+ setUp=PublicMcpCliTests.setUp
+ cli=PublicMcpCliTests.cli
+ prepare=PublicMcpCliTests.prepare
+ def test_public_six_refusals_new_epoch_and_rehashed_wrong_exit(self):
+  self.prepare('MCP-SPECIAL-IPC',['CONTROL-INVALID'])
+  with mock.patch.object(m,'NativeBoundary',return_value=InvalidIncarnationBoundary(self.inputs,self.base/'domain')):value=self.cli('execute','--plan',self.run/'plan.json')
+  self.assertEqual(0,value[0],value)
+  judged=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'positive.json');self.assertEqual(0,judged[0],judged)
+  self.assertFalse(m.read(self.run/'positive.json')['full_functional_pass'])
+  case=self.run/'results/MCP-SPECIAL-IPC';path=case/'driver/units/CONTROL-INVALID/trace.json';trace=m.read(path)
+  row=next(r for r in trace['records'] if r['kind']=='powershell' and r['input']['command'].startswith('# CONTROL_INVALID_STOP_V1'));payload=json.loads(row['output']['output']);payload['old_exited']=False;row['output']['output']=json.dumps(payload);path.write_text(json.dumps(trace))
+  receipt=m.read(case/'receipt.json')
+  for artifact in receipt['artifacts']:artifact['sha256']=m.sha256(artifact['path'])
+  (case/'receipt.json').write_text(json.dumps(receipt));index=m.read(self.run/'results/results.json')
+  for item in index['receipts']:
+   if item['case_id']=='MCP-SPECIAL-IPC':item['sha256']=m.sha256(case/'receipt.json')
+  (self.run/'results/results.json').write_text(json.dumps(index))
+  bad=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'bad-exit.json');self.assertNotEqual(0,bad[0],bad)

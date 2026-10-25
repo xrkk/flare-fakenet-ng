@@ -569,6 +569,76 @@ class BoundarySession:
              'response':copy.deepcopy(response),'accepted':True,'replay':False,'internal_observed':True}
   self.mutation_operations.append(operation)
   self.original_writer.add_evidence('internal-operation-'+str(end),{'before':before,'observed':observed,'events':events,'own_cache':own_cache,'cache':cache})
+ def control_invalid_begin(self,original):
+  if self.original_unit!='CONTROL-INVALID' or hasattr(self,'_control_invalid'):
+   raise ValueError('invalid control observation scope differs')
+  raw=base64.b64decode(original['base64'],validate=True)
+  if hashlib.sha256(raw).hexdigest()!=original['sha256']:raise ValueError('invalid control original bytes differ')
+  before=service_preflight(self,self.inputs)
+  if json.loads(raw)!=before['service_config']:raise ValueError('invalid control config/instance differs')
+  p2=modules()['run_p02_acc'];base=self.inputs['endpoint'];state=p2.status(base)
+  if state.get('error') or state.get('state')!='stopped' or state.get('run_id') is not None:
+   raise ValueError('invalid control initial state unconfirmed')
+  self.reconcile_internal_operation(_status_snapshot(state))
+  command=p2.unique_command('control-invalid-cache')
+  cache=p2.call(base,'get_command_status',{'command_id':command},controller=p2.CONTROLLER_A)
+  events=p2.call(base,'get_events',{'limit':500},controller=None)
+  if (cache.get('command_id')!=command or cache.get('status')!='unknown' or cache.get('cache_scope')!='process'
+      or cache.get('persistent') is not False or not cache.get('cache_epoch') or cache.get('error')
+      or events.get('error') or not events.get('epoch') or service_preflight(self,self.inputs)!=before):
+   raise ValueError('invalid control original process context unconfirmed')
+  self._control_invalid={'before':before,'original':copy.deepcopy(original),'cache':cache,'events':events,'exits':[]}
+  self.original_writer.add_evidence('control-invalid-instance-before',copy.deepcopy(self._control_invalid))
+ def control_invalid_stopped(self,label,proof):
+  scope=getattr(self,'_control_invalid',None)
+  if not scope or label not in ('bool','float','string','map','zero','overflow','restore'):
+   raise ValueError('invalid control stop observation scope differs')
+  before=scope['before'];old=proof.get('before')
+  if proof.get('scm_stopped') is not True or proof.get('pid_after')!=0:
+   raise ValueError('invalid control SCM stop unconfirmed')
+  if old is not None:
+   if (proof.get('old_exited') is not True or proof.get('no_process_before') is not False
+       or set(old)!={'pid','birth','image','sha256'} or type(old['pid']) is not int
+       or not str(old['birth']).isdigit() or int(old['birth'])<int(before['birth'])
+       or old['image'].casefold()!=before['image'].casefold() or old['sha256']!=before['sha256']):
+    raise ValueError('invalid control old instance exit differs')
+  elif proof.get('old_exited') is not False or proof.get('no_process_before') is not True:
+   raise ValueError('invalid control missing-process observation differs')
+  if not scope['exits'] and (old!={k:before[k] for k in ('pid','birth','image','sha256')} or label!='bool'):
+   raise ValueError('invalid control original instance exit missing')
+  if label in [x['label'] for x in scope['exits']]:raise ValueError('invalid control stop observation repeated')
+  scope['exits'].append({'label':label,'proof':copy.deepcopy(proof)})
+ def control_invalid_restored(self,original):
+  scope=getattr(self,'_control_invalid',None)
+  if not scope or original!=scope['original'] or not scope['exits'] or scope['exits'][-1]['label']!='restore':
+   raise ValueError('invalid control restoration observation incomplete')
+  before=scope['before'];after=service_preflight(self,self.inputs)
+  if (int(after['birth'])<=int(before['birth']) or any(after[k]!=before[k] for k in
+      ('image','sha256','service_config','enabled','grace','fault_exists'))):
+   raise ValueError('invalid control restored instance differs')
+  observed=self.powershell("# CONTROL_INVALID_RESTORED_BYTES_V1\n$ErrorActionPreference='Stop';$p='C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json';@{base64=[Convert]::ToBase64String([IO.File]::ReadAllBytes($p));sha256=(Get-FileHash $p -Algorithm SHA256).Hash.ToLower()}|ConvertTo-Json -Compress",timeout=30)
+  if json.loads(observed['output'])!=original:raise ValueError('invalid control restored original bytes differ')
+  p2=modules()['run_p02_acc'];base=self.inputs['endpoint'];state=p2.status(base)
+  command=p2.unique_command('control-invalid-new-cache')
+  cache=p2.call(base,'get_command_status',{'command_id':command},controller=p2.CONTROLLER_A)
+  events=p2.call(base,'get_events',{'limit':500},controller=None)
+  if (state.get('error') or state.get('state')!='stopped' or state.get('run_id') is not None
+      or state.get('controller') is not None or state.get('config_identity') is not None
+      or type(state.get('state_version')) is not int or state['state_version']<1
+      or cache.get('command_id')!=command or cache.get('status')!='unknown' or cache.get('cache_scope')!='process'
+      or cache.get('persistent') is not False or not cache.get('cache_epoch') or cache.get('error')
+      or cache['cache_epoch']==scope['cache']['cache_epoch'] or events.get('error') or not events.get('epoch')
+      or events['epoch']==scope['events']['epoch'] or service_preflight(self,self.inputs)!=after
+      or _status_snapshot(p2.status(base))!=_status_snapshot(state)):
+   raise ValueError('invalid control new process NULL/version/cache/event anchor differs')
+  proof={'before':before,'after':after,'exit':scope['exits'][0]['proof'],'all_stops':scope['exits'],
+         'original_bytes':original,'observed_bytes':observed,'initial_status':_status_snapshot(state),
+         'old_cache':scope['cache'],'new_cache':cache,'old_events':scope['events'],'new_events':events}
+  with self.lock:
+   self.operation_epoch+=1;self.epoch_initial_versions[self.operation_epoch]=state['state_version']
+  self.service_epochs=getattr(self,'service_epochs',[])+[dict(proof,epoch=self.operation_epoch)]
+  self.capture_instance_context(after)
+  self.original_writer.add_evidence('control-invalid-verified-instance',proof)
  @contextlib.contextmanager
  def original_helpers(self):
   """Observe the original helper calls, including their finally restoration."""

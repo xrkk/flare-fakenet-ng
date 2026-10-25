@@ -319,6 +319,72 @@ class ControlCase:
                     self.channel, started_listener['pid'],
                     started_listener['created'], 'control-case-listener'))
 
+    def _invalid_stop(self, writer, label, expected_sha):
+        """Exact original CLI stop, with real instance/exit and owned bytes."""
+        raw = self.channel.powershell(
+            "# CONTROL_INVALID_STOP_V1\n$ErrorActionPreference='Stop';"
+            "$exe='C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe';"
+            "$cfg='C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json';"
+            "if((Get-FileHash $cfg -Algorithm SHA256).Hash.ToLower() -cne '" + expected_sha + "'){throw 'control config owner changed'};"
+            "$svc=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\";"
+            "$old=$null;$before=$null;if($svc.State -eq 'Running' -and $svc.ProcessId){"
+            "$old=Get-Process -Id $svc.ProcessId -ErrorAction Stop;[void]$old.Handle;"
+            "if($old.Path -ine $exe){throw 'control service image differs'};"
+            "$before=@{pid=$old.Id;birth=$old.StartTime.ToFileTimeUtc().ToString();image=$old.Path;"
+            "sha256=(Get-FileHash -LiteralPath $old.Path -Algorithm SHA256).Hash.ToLower()}}"
+            "elseif($svc.State -ne 'Stopped' -or $svc.ProcessId){throw 'control service transition unresolved'};"
+            "$cli=@();if($old){$cli=@(& $exe stop 2>&1|ForEach-Object {\"$_\"});if($LASTEXITCODE -ne 0){throw 'controlled stop failed'}};"
+            "$deadline=[DateTime]::UtcNow.AddSeconds(60);"
+            "while((Get-Service fakenetng-mcp).Status -ne 'Stopped' -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 500};"
+            "$after=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\";"
+            "if($after.State -ne 'Stopped' -or $after.ProcessId){throw 'service did not stop for variant'};"
+            "if($old -and !$old.WaitForExit(30000)){throw 'old control service has not exited'};"
+            "@{before=$before;old_exited=[bool]$old;no_process_before=(!$old);scm_stopped=$true;pid_after=$after.ProcessId;"
+            "config_sha256=(Get-FileHash $cfg -Algorithm SHA256).Hash.ToLower();cli_output=$cli}|ConvertTo-Json -Depth 5 -Compress", timeout=300)
+        proof = json.loads(raw['output'])
+        if (proof.get('scm_stopped') is not True or proof.get('pid_after') != 0 or
+                proof.get('config_sha256') != expected_sha or
+                (proof.get('before') is None and (proof.get('no_process_before') is not True or proof.get('old_exited') is not False)) or
+                (proof.get('before') is not None and (proof.get('old_exited') is not True or proof.get('no_process_before') is not False))):
+            raise RuntimeError('control stop/owned configuration proof differs')
+        if proof.get('before') is not None and not hasattr(self, '_invalid_image_sha'):
+            self._invalid_image_sha = proof['before']['sha256']
+        writer.add_evidence('control-invalid-stop-' + label, {'proof': proof, 'raw': raw})
+        observe = getattr(self.channel, 'control_invalid_stopped', None)
+        if observe is not None:
+            observe(label, proof)
+        return proof
+
+    def _invalid_start(self, expected_sha, seconds, timeout):
+        image_sha = getattr(self, '_invalid_image_sha', None)
+        if not image_sha:
+            raise RuntimeError('original control service image was not observed')
+        return self.channel.powershell(
+            "# CONTROL_INVALID_START_V1\n$ErrorActionPreference='Stop';"
+            "$exe='C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe';"
+            "$cfg='C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json';"
+            "$svc=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\";"
+            "if($svc.PathName -notmatch ('(?i)^\"?'+[regex]::Escape($exe)+'\"?(?:\\s|$)')){throw 'control SCM image path changed'};"
+            "if((Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() -cne '" + image_sha + "'){throw 'control SCM image hash changed'};"
+            "if((Get-FileHash $cfg -Algorithm SHA256).Hash.ToLower() -cne '" + expected_sha + "'){throw 'control config owner changed'};"
+            "sc.exe start fakenetng-mcp | Out-Null; Start-Sleep -Seconds " + str(seconds) + "; "
+            "(Get-Service fakenetng-mcp).Status", timeout=timeout)
+
+    def _invalid_write(self, writer, label, expected_sha, data):
+        encoded = base64.b64encode(data).decode('ascii')
+        wanted = hashlib.sha256(data).hexdigest()
+        raw = self.channel.powershell(
+            "# CONTROL_INVALID_WRITE_V1\n$ErrorActionPreference='Stop';$p='C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json';"
+            "if((Get-FileHash $p -Algorithm SHA256).Hash.ToLower() -cne '" + expected_sha + "'){throw 'control config owner changed'};"
+            "$bytes=[Convert]::FromBase64String('" + encoded + "');[IO.File]::WriteAllBytes($p,$bytes);"
+            "@{base64=[Convert]::ToBase64String([IO.File]::ReadAllBytes($p));"
+            "sha256=(Get-FileHash $p -Algorithm SHA256).Hash.ToLower()}|ConvertTo-Json -Compress", timeout=30)
+        observed = json.loads(raw['output'])
+        if observed != {'base64': encoded, 'sha256': wanted}:
+            raise RuntimeError('control configuration write/restore bytes differ')
+        writer.add_evidence('control-invalid-write-' + label, {'observed': observed, 'raw': raw})
+        return wanted
+
     def case_control_invalid(self, writer):
         checks = {}
         self.normalize()
@@ -327,42 +393,29 @@ class ControlCase:
             "@{sha256=(Get-FileHash 'C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json' -Algorithm SHA256).Hash.ToLower();"
             "base64=[Convert]::ToBase64String($b)} | ConvertTo-Json -Compress", timeout=30)
         original = json.loads(raw_config['output'])
-        body = json.loads(base64.b64decode(original['base64']))
-        if hashlib.sha256(base64.b64decode(original['base64'])).hexdigest() != original['sha256']:
+        original_bytes = base64.b64decode(original['base64'], validate=True)
+        if hashlib.sha256(original_bytes).hexdigest() != original['sha256']:
             raise RuntimeError('service.json backup hash mismatch')
+        writer.add_evidence('control-invalid-original-config', original)
+        begin = getattr(self.channel, 'control_invalid_begin', None)
+        if begin is not None:
+            begin(original)
+        body = json.loads(original_bytes)
+        owned_sha = original['sha256']
         results = {}
         try:
             for variant in INVALID_PORT_VALUES:
                 body['extra_control_ports'] = variant['value']
-                payload = json.dumps(body, ensure_ascii=False)
-                # The running instance keeps its validated configuration,
-                # so each variant stops SCM first, then the refusal is
-                # proven by launching the service entry itself: an illegal
-                # configuration must make the process exit non-zero.
-                # Raw SCM stop is rejected by the two-phase contract; the
-                # sanctioned controlled-stop entry is the CLI.
-                self.channel.powershell(
-                    "& 'C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe' stop; "
-                    "if($LASTEXITCODE -ne 0){throw 'controlled stop failed'}; "
-                    "$deadline=[DateTime]::UtcNow.AddSeconds(60);"
-                    "while((Get-Service fakenetng-mcp).Status -ne 'Stopped' -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 500};"
-                    "if((Get-Service fakenetng-mcp).Status -ne 'Stopped'){throw 'service did not stop for variant'}; 'stopped'",
-                    timeout=300)
-                self.channel.powershell(
-                    "[IO.File]::WriteAllText('C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json'," +
-                    "'" + payload.replace("'", "''") + "',[Text.UTF8Encoding]::new($false)); 'written'", timeout=30)
-                # The service entry validates its configuration under the
-                # real SCM launch; an illegal value must keep the service
-                # from ever reaching Running and name the offending field.
+                payload = json.dumps(body, ensure_ascii=False).encode('utf-8')
+                self._invalid_stop(writer, variant['label'], owned_sha)
+                owned_sha = self._invalid_write(writer, variant['label'], owned_sha, payload)
                 cursor = self.channel.powershell(
                     "$p='C:\\ProgramData\\FakeNet-NG-MCP\\logs\\service.log';"
                     "if(Test-Path $p){(Get-Item $p).Length}else{0}", timeout=30)
                 offset = int(cursor['output'].strip())
                 if offset < 0:
                     raise RuntimeError('negative service log offset')
-                started = self.channel.powershell(
-                    "sc.exe start fakenetng-mcp | Out-Null; Start-Sleep -Seconds 8; "
-                    "(Get-Service fakenetng-mcp).Status", timeout=90)
+                started = self._invalid_start(owned_sha, 8, 90)
                 state = started['output'].strip().splitlines()[-1].strip()
                 log = self.channel.powershell(
                     "$ErrorActionPreference='Stop';$p='C:\\ProgramData\\FakeNet-NG-MCP\\logs\\service.log';"
@@ -379,21 +432,20 @@ class ControlCase:
                                ('config load failed' in combined and
                                 ('extra control' in combined or 'ConfigError' in combined))}
             writer.add_evidence('control-invalid-variants', results)
-            checks['every_illegal_type_refused_start'] = all(
-                row['refused'] for row in results.values())
+            checks['every_illegal_type_refused_start'] = all(row['refused'] for row in results.values())
             return checks
         finally:
-            self.channel.powershell(
-                "& 'C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe' stop; "
-                "Start-Sleep -Seconds 3;"
-                "$bytes=[Convert]::FromBase64String('" + original['base64'] + "');"
-                "[IO.File]::WriteAllBytes('C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json',"
-                "$bytes); $hash=(Get-FileHash 'C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json'"
-                " -Algorithm SHA256).Hash.ToLower(); if($hash -ne '" + original['sha256'] +
-                "'){throw 'restore hash mismatch'}; 'restored'", timeout=60)
-            self.channel.powershell(
-                "sc.exe start fakenetng-mcp | Out-Null; Start-Sleep -Seconds 5; "
-                "(Get-Service fakenetng-mcp).Status", timeout=120)
+            self._invalid_stop(writer, 'restore', owned_sha)
+            owned_sha = self._invalid_write(writer, 'restore', owned_sha, original_bytes)
+            if owned_sha != original['sha256']:
+                raise RuntimeError('restore hash mismatch')
+            restarted = self._invalid_start(owned_sha, 5, 120)
+            writer.add_evidence('control-invalid-restored-start', restarted)
+            if restarted['output'].strip() != 'Running':
+                raise RuntimeError('restored control service is not running')
+            complete = getattr(self.channel, 'control_invalid_restored', None)
+            if complete is not None:
+                complete(original)
 
     def case_loopback(self, writer, family):
         address = '127.0.0.1' if family == 'V4' else '::1'
