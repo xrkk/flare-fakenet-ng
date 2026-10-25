@@ -629,3 +629,6 @@ The `CONTROL-EXTRA-29094/29095` changing-configuration path observes both real s
 
 
 `LOOPBACK-V4/V6` bind the requested loopback family/address and the actual stimulus source port in their raw PCAP checks. Capture liveness uses the existing host-only allowed peer at UDP53. The unique listener receipt lives under the selected guest work root; exact receipt bytes/hash, nonce header and full listener identity/exit are recorded. A wrong family/tuple, substring or stale receipt, changed PCAP bytes or false process exit cannot pass. The non-loopback IPv4 liveness marker is separate from the requested IPv6 loopback proof.
+
+
+An explicit `channel.existing_management` descriptor can bind the existing management service on TCP28790 to the frozen VM, host, image/hash and script path. This branch records the live listener PID/full birth and image/script bytes before and after five original management TCP connections in the takeover window, and after stop. It creates no echo process and never changes that service. Missing or mismatched identity cannot grant management credit. Other extra ports keep their original echo/receipt assertions, and the original configuration/version/strict OS restoration and independent replay still apply. No authentication or application protocol probe is required for this reachability contract.

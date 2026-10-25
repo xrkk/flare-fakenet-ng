@@ -250,12 +250,68 @@ class ControlCase:
                 return self._case_control_extra(writer, port)
         return self._case_control_extra(writer, port)
 
+    def _existing_management(self, port):
+        if port != 28790:
+            return None
+        inputs = getattr(self.channel, 'inputs', None) or {}
+        desc = inputs.get('channel', {}).get('existing_management')
+        if desc is None:
+            return None
+        import re
+        from pathlib import PureWindowsPath
+        required = {'host', 'port', 'vm_uuid', 'image', 'image_sha256', 'script'}
+        if (not isinstance(desc, dict) or set(desc) != required or
+                desc['port'] != 28790 or type(desc['port']) is not int or
+                desc['host'] != self.guest_host or desc['vm_uuid'] != inputs['target']['vm_uuid'] or
+                not isinstance(desc['image_sha256'], str) or not re.fullmatch('[a-f0-9]{64}', desc['image_sha256'])):
+            raise ValueError('existing management descriptor differs')
+        for name in ('image', 'script'):
+            value = desc[name]
+            if (not isinstance(value, str) or not PureWindowsPath(value).is_absolute() or
+                    str(PureWindowsPath(value)) != value or any(c in value for c in "'\";`\n\r")):
+                raise ValueError('existing management path differs')
+        return desc
+
+    def _management_owner(self, writer, phase, desc):
+        inputs = self.channel.inputs
+        raw = self.channel.powershell(
+            '# EXISTING_MANAGEMENT_OWNER_V1 ' + phase + "\n$ErrorActionPreference='Stop';"
+            "$hostIp='" + desc['host'] + "';$port=28790;$script='" + desc['script'] + "';"
+            "$rows=@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction Stop|Where-Object {$_.LocalAddress -in @($hostIp,'0.0.0.0','::')});"
+            "$owners=@($rows|Select-Object -ExpandProperty OwningProcess -Unique);if($owners.Count -ne 1){throw 'existing management owner not unique'};"
+            "$p=Get-Process -Id $owners[0] -ErrorAction Stop;[void]$p.Handle;$birth=$p.StartTime.ToFileTimeUtc().ToString();"
+            "$c=Get-CimInstance Win32_Process -Filter ('ProcessId='+$p.Id);"
+            "$file=Get-Item -LiteralPath $script -ErrorAction Stop;if($file.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'management script is a reparse point'};"
+            "$pattern='(?i)^(?:\"[^\"]+\"|\\S+)\\s+\"?'+[regex]::Escape($script)+'\"?\\s*$';"
+            "$match=[regex]::IsMatch($c.CommandLine,$pattern);"
+            "$again=Get-Process -Id $p.Id -ErrorAction Stop;if($again.StartTime.ToFileTimeUtc().ToString() -cne $birth){throw 'management owner changed while observing'};"
+            "@{host=$hostIp;port=$port;vm_uuid=(Get-CimInstance Win32_ComputerSystemProduct).UUID.ToLower();"
+            "pid=$p.Id;birth=$birth;image=$p.Path;image_sha256=(Get-FileHash -LiteralPath $p.Path -Algorithm SHA256).Hash.ToLower();"
+            "script=$file.FullName;script_sha256=(Get-FileHash -LiteralPath $script -Algorithm SHA256).Hash.ToLower();"
+            "script_in_command=$match;addresses=@($rows.LocalAddress|Sort-Object -Unique)}|ConvertTo-Json -Depth 5 -Compress", timeout=30)
+        proof = json.loads(raw['output'])
+        import re
+        if (set(proof) != set(desc) | {'pid', 'birth', 'script_sha256', 'script_in_command', 'addresses'} or
+                proof.get('host') != desc['host'] or proof.get('port') != 28790 or
+                proof.get('vm_uuid') != inputs['target']['vm_uuid'] or type(proof.get('pid')) is not int or proof['pid'] <= 0 or
+                not isinstance(proof.get('birth'), str) or not re.fullmatch('[0-9]{17,20}', proof['birth']) or
+                proof.get('image', '').casefold() != desc['image'].casefold() or proof.get('image_sha256') != desc['image_sha256'] or
+                proof.get('script', '').casefold() != desc['script'].casefold() or proof.get('script_in_command') is not True or
+                not isinstance(proof.get('script_sha256'), str) or not re.fullmatch('[a-f0-9]{64}', proof['script_sha256']) or
+                not isinstance(proof.get('addresses'), list) or not proof['addresses'] or
+                any(address not in (desc['host'], '0.0.0.0', '::') for address in proof['addresses'])):
+            raise ValueError('existing management actual owner differs')
+        writer.add_evidence('existing-management-' + phase, {'proof': proof, 'raw': raw})
+        return proof
+
     def _case_control_extra(self, writer, port):
         checks = {}
         self.normalize()
+        existing = self._existing_management(port)
+        owner_before = self._management_owner(writer, 'before', existing) if existing is not None else None
         started_listener = None
         try:
-            if port != 28787:
+            if port != 28787 and existing is None:
                 import uuid
                 started_listener = start_guest_tcp_listener(
                     self.channel, port, uuid.uuid4().hex[:8],
@@ -268,7 +324,7 @@ class ControlCase:
                 'tcp.SrcPort != %d' % port) in final_filter
             host = self.guest_host
             timeline = []
-            if port == 28787:
+            if port == 28787 or existing is not None:
                 # The co-resident management service on this VM is the
                 # Win10VM MCP itself; a successful raw TCP connect to its
                 # endpoint during the takeover proves the exclusion keeps
@@ -285,7 +341,7 @@ class ControlCase:
                         ok, raw = False, {'error': repr(exc)}
                     timeline.append(dict(t=began, ok=ok, raw=raw))
                     time.sleep(1.0)
-                checks['management_service_alive_during_takeover'] = all(
+                checks['management_service_alive_during_takeover'] = len(timeline) == 5 and all(
                     x['ok'] for x in timeline)
             else:
                 for index in range(5):
@@ -296,7 +352,13 @@ class ControlCase:
                 checks['excluded_listener_reachable_during_takeover'] = all(
                     x['ok'] for x in timeline)
             writer.add_evidence('control-extra-probe', timeline)
+            if existing is not None:
+                checks['existing_management_stable_during_takeover'] = (
+                    self._management_owner(writer, 'after-probes', existing) == owner_before)
             ok, final = self.finish_run(writer)
+            if existing is not None:
+                checks['existing_management_stable_after_stop'] = (
+                    self._management_owner(writer, 'after-stop', existing) == owner_before)
             checks['run_stopped_cleanly'] = ok
             if started_listener is not None:
                 receipts = self.channel.powershell(

@@ -4063,3 +4063,92 @@ class PublicLoopbackExactTests(unittest.TestCase):
    if item['case_id']=='MCP-SPECIAL-IPC':item['sha256']=m.sha256(case/'receipt.json')
   (self.run/'results/results.json').write_text(json.dumps(index))
   bad=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'bad-packet.json');self.assertNotEqual(0,bad[0],bad)
+
+
+def existing_management_descriptor(inputs):
+ return {'host':inputs['listen_ip'],'port':28790,'vm_uuid':inputs['target']['vm_uuid'],'image':'C:\\Python313\\python.exe','image_sha256':'a'*64,'script':'E:\\VeloTransfer-149\\mcp\\velociraptor_windows_service.py'}
+
+
+class ExistingManagementBoundary(ControlDomainBoundary):
+ def __init__(self,inputs,root,defect=None):
+  super().__init__(inputs,root);self.defect=defect;self.owner_reads=0;self.connects=0;self.started_echo=False
+  cfg=json.loads(self.service_bytes);cfg['extra_control_ports']=[28787,28790];self.service_bytes=json.dumps(cfg).encode()
+ def exchange(self,kind,value):
+  if kind=='powershell':
+   cmd=value['command']
+   if 'Start-Process powershell' in cmd:
+    self.started_echo=True;raise ValueError('existing management listener collision; cannot start echo')
+   if cmd.startswith('# EXISTING_MANAGEMENT_OWNER_V1'):
+    self.owner_reads+=1;desc=existing_management_descriptor(self.inputs)
+    payload={**desc,'pid':3076,'birth':'134371974233011627','script_sha256':'b'*64,'script_in_command':True,'addresses':[self.inputs['listen_ip']]}
+    if self.defect=='missing-owner':payload['pid']=None
+    elif self.defect=='ambiguous-owner':payload['pid']=[3076,3077]
+    elif self.defect=='wrong-image':payload['image']='C:\\foreign.exe'
+    elif self.defect=='wrong-image-hash':payload['image_sha256']='0'*64
+    elif self.defect=='wrong-script':payload['script']='E:\\foreign.py'
+    elif self.defect=='script-not-command':payload['script_in_command']=False
+    elif self.defect=='changed-pid' and self.owner_reads>1:payload['pid']=3077
+    elif self.defect=='changed-birth' and self.owner_reads>1:payload['birth']='134371974233011628'
+    elif self.defect=='changed-script-bytes' and self.owner_reads>1:payload['script_sha256']='c'*64
+    output=json.dumps(payload);return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+  if kind=='socket-open':
+   self.connects+=1
+   if self.defect=='one-failed-TCP' and self.connects==3:raise OSError('known refused TCP sample')
+  return super().exchange(kind,value)
+
+
+class ExistingManagementTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def produce(self,defect=None):
+  import copy
+  inputs=copy.deepcopy(self.inputs);desc=existing_management_descriptor(inputs)
+  if defect=='wrong-host':desc['host']='192.168.204.2'
+  elif defect=='wrong-port':desc['port']=29094
+  if defect!='missing-descriptor':inputs['channel']['existing_management']=desc
+  out=self.root/str(defect);boundary=ExistingManagementBoundary(inputs,self.root/('domain-'+str(defect)),defect)
+  before=boundary.service_bytes;value=m.run('MCP-SPECIAL-IPC',out,inputs,selected=['CONTROL-EXTRA-28790'],boundary=boundary,fixture=True)
+  return out,boundary,before,value,inputs
+ def test_existing_management_five_connections_identity_and_replay(self):
+  out,boundary,before,value,inputs=self.produce();unit='CONTROL-EXTRA-28790'
+  self.assertEqual('pass',value['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+  self.assertFalse(boundary.started_echo);self.assertEqual(5,boundary.connects);self.assertEqual(3,boundary.owner_reads);self.assertEqual(before,boundary.service_bytes)
+  timeline=m.read(out/'units'/unit/'control-extra-probe.json');self.assertEqual(5,len(timeline));self.assertTrue(all(row['ok'] for row in timeline))
+  rows,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',[unit],inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],detail);self.assertTrue(clean,detail)
+ def test_unverified_identity_or_failed_tcp_cannot_pass(self):
+  for defect in ('missing-descriptor','wrong-host','wrong-port','missing-owner','ambiguous-owner','wrong-image','wrong-image-hash','wrong-script','script-not-command','changed-pid','changed-birth','changed-script-bytes','one-failed-TCP'):
+   with self.subTest(defect=defect):
+    out,boundary,before,value,inputs=self.produce(defect);self.assertNotEqual('pass',value['checks']['CONTROL-EXTRA-28790']['status']);self.assertEqual(before,boundary.service_bytes)
+    if defect!='missing-descriptor':self.assertFalse(boundary.started_echo)
+    rows,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',['CONTROL-EXTRA-28790'],inputs,allow_fixture=True);self.assertNotEqual('pass',rows[0]['status'],detail)
+ def test_missing_extra_socket_or_tampered_owner_records_are_refused(self):
+  import copy
+  out,boundary,before,value,inputs=self.produce();self.assertEqual('pass',value['checks']['CONTROL-EXTRA-28790']['status'])
+  path=out/'units/CONTROL-EXTRA-28790/trace.json';original=m.read(path)
+  for defect in ('four-TCP','extra-record','forged-owner'):
+   trace=copy.deepcopy(original);rows=trace['records']
+   if defect=='four-TCP':rows.pop(next(i for i,r in enumerate(rows) if r['kind']=='socket-open'))
+   elif defect=='extra-record':rows.append(copy.deepcopy(next(r for r in rows if r['kind']=='socket-open')))
+   else:
+    row=next(r for r in rows if r['kind']=='powershell' and r['input']['command'].startswith('# EXISTING_MANAGEMENT_OWNER_V1'));payload=json.loads(row['output']['output']);payload['birth']='0';row['output']['output']=json.dumps(payload)
+   path.write_text(json.dumps(trace));judged,clean,detail=o.evaluate(ROOT,out,'MCP-SPECIAL-IPC',['CONTROL-EXTRA-28790'],inputs,allow_fixture=True);self.assertNotEqual('pass',judged[0]['status'],detail)
+
+
+class PublicExistingManagementTests(unittest.TestCase):
+ setUp=PublicMcpCliTests.setUp
+ cli=PublicMcpCliTests.cli
+ prepare=PublicMcpCliTests.prepare
+ def test_public_existing_management_and_rehashed_changed_owner(self):
+  self.inputs['channel']['existing_management']=existing_management_descriptor(self.inputs)
+  self.prepare('MCP-SPECIAL-IPC',['CONTROL-EXTRA-28790'])
+  with mock.patch.object(m,'NativeBoundary',return_value=ExistingManagementBoundary(self.inputs,self.base/'domain')):value=self.cli('execute','--plan',self.run/'plan.json')
+  self.assertEqual(0,value[0],value)
+  judged=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'positive.json');self.assertEqual(0,judged[0],judged);self.assertFalse(m.read(self.run/'positive.json')['full_functional_pass'])
+  case=self.run/'results/MCP-SPECIAL-IPC';path=case/'driver/units/CONTROL-EXTRA-28790/trace.json';trace=m.read(path)
+  row=next(r for r in trace['records'] if r['kind']=='powershell' and r['input']['command'].startswith('# EXISTING_MANAGEMENT_OWNER_V1'));payload=json.loads(row['output']['output']);payload['image_sha256']='0'*64;row['output']['output']=json.dumps(payload);path.write_text(json.dumps(trace))
+  receipt=m.read(case/'receipt.json')
+  for artifact in receipt['artifacts']:artifact['sha256']=m.sha256(artifact['path'])
+  (case/'receipt.json').write_text(json.dumps(receipt));index=m.read(self.run/'results/results.json')
+  for item in index['receipts']:
+   if item['case_id']=='MCP-SPECIAL-IPC':item['sha256']=m.sha256(case/'receipt.json')
+  (self.run/'results/results.json').write_text(json.dumps(index))
+  bad=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'bad-owner.json');self.assertNotEqual(0,bad[0],bad)
