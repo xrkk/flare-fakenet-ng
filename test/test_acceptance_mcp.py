@@ -3463,3 +3463,89 @@ class CreationFutureObservationTests(unittest.TestCase):
   for stage,identifier in (('foreign',command),('before_job','foreign')):
    with self.subTest(stage=stage,identifier=identifier),self.assertRaises(ValueError):
     session.creation_future_done(already_done,stage,identifier)
+
+
+HEALTH_SECTION_UNITS = {
+ 'HEALTH-SECTION-CONTROL':'healthy-control',
+ 'HEALTH-SECTION-LISTENER':'listener',
+ 'HEALTH-SECTION-CAPTURE':'capture',
+ 'HEALTH-SECTION-ACTIVE-PROBE':'active-probe',
+ 'HEALTH-SECTION-NO-LISTENER':'no-listener',
+ 'HEALTH-SECTION-PROCESS':'process',
+}
+
+
+class CompleteSelectedHealthTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_six_original_lifecycle_sections_and_independent_replay(self):
+  m.modules(ROOT)
+  from health_composition import REQUIRED
+  units=list(HEALTH_SECTION_UNITS);out=self.root/'all-six'
+  boundary=CompleteHealthBoundary(self.inputs,self.root/'six-domain')
+  result=m.run('MCP-P03-FULL',out,self.inputs,selected=units,boundary=boundary,fixture=True)
+  self.assertEqual(set(units),set(result['checks']))
+  for unit,name in HEALTH_SECTION_UNITS.items():
+   self.assertEqual('pass',result['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+   selected=m.read(out/'units'/unit/'acc006-selected-health.json')
+   self.assertFalse(selected['full_acc006'])
+   self.assertEqual([name],selected['required'])
+   section=selected['sections'][name]
+   self.assertEqual(set(REQUIRED[name]),set(section['checks']));self.assertTrue(section['passed'])
+   self.assertFalse((out/'units'/unit/'acc006-complete-health.json').exists())
+  self.assertNotIn('ipc_once_timeout',boundary.arms)
+  rows,clean,details=o.evaluate(ROOT,out,'MCP-P03-FULL',units,self.inputs,allow_fixture=True)
+  self.assertTrue(clean,details);self.assertTrue(all(r['status']=='pass' for r in rows),details)
+  self.assertIn('ACC-006',m.CHECKS['MCP-P03-FULL'])
+  self.assertTrue(set(units).isdisjoint(m.CHECKS['MCP-P03-FULL']))
+
+ def test_original_failures_remain_failures_in_selected_lifecycle(self):
+  pairs=[('HEALTH-SECTION-CONTROL','unknown-start'),
+   ('HEALTH-SECTION-CONTROL','bad-log'),('HEALTH-SECTION-CONTROL','wrong-child'),
+   ('HEALTH-SECTION-CONTROL','wrong-config'),('HEALTH-SECTION-CONTROL','unknown-stop'),
+   ('HEALTH-SECTION-CAPTURE','capture-not-triggered'),
+   ('HEALTH-SECTION-NO-LISTENER','missing-no-listener'),
+   ('HEALTH-SECTION-PROCESS','changed-supervisor'),
+   ('HEALTH-SECTION-LISTENER','unknown-start'),
+   ('HEALTH-SECTION-ACTIVE-PROBE','unknown-start')]
+  for i,(unit,mode) in enumerate(pairs):
+   with self.subTest(unit=unit,mode=mode):
+    boundary=CompleteHealthBoundary(self.inputs,self.root/('bad-domain-'+str(i)),mode);out=self.root/('bad-'+str(i))
+    result=m.run('MCP-P03-FULL',out,self.inputs,selected=[unit],boundary=boundary,fixture=True)
+    self.assertNotEqual('pass',result['checks'][unit]['status'])
+    rows,clean,details=o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True)
+    self.assertNotEqual('pass',rows[0]['status'],details)
+
+ def test_ipc_failure_keeps_full_required_collection_incomplete(self):
+  out=self.root/'full-ipc-fail';boundary=CompleteHealthBoundary(self.inputs,self.root/'full-ipc-domain','unknown-stop')
+  result=m.run('MCP-P03-FULL',out,self.inputs,selected=['ACC-006'],boundary=boundary,fixture=True)
+  self.assertNotEqual('pass',result['checks']['ACC-006']['status'])
+  self.assertFalse((out/'units/ACC-006/acc006-section-healthy-control.json').exists())
+
+
+class PublicCompleteSelectedHealthTests(unittest.TestCase):
+ setUp=PublicMcpCliTests.setUp
+ cli=PublicMcpCliTests.cli
+ prepare=PublicMcpCliTests.prepare
+ def test_public_selected_six_and_rehashed_false_probe_refused(self):
+  self.prepare('MCP-P03-FULL',list(HEALTH_SECTION_UNITS))
+  with mock.patch.object(m,'NativeBoundary',return_value=CompleteHealthBoundary(self.inputs,self.base/'six-domain')):
+   executed=self.cli('execute','--plan',self.run/'plan.json')
+  self.assertEqual(0,executed[0],executed)
+  judged=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'positive.json')
+  self.assertEqual(0,judged[0],judged)
+  summary=m.read(self.run/'positive.json');self.assertTrue(summary['fixture_contract_pass']);self.assertFalse(summary['full_functional_pass'])
+  unit='HEALTH-SECTION-ACTIVE-PROBE';case=self.run/'results/MCP-P03-FULL';path=case/'driver/units'/unit/'trace.json';original=path.read_bytes();trace=json.loads(original);changed=False
+  for row in trace['records']:
+   if row['kind']=='powershell' and '@{parent=(Get-Content' in row['input']['command']:
+    facts=json.loads(row['output']['output'])
+    if facts.get('receipt',{}).get('fault')=='diverter_stop':
+     facts['receipt']['nonce']='foreign';row['output']['output']=json.dumps(facts);changed=True;break
+  self.assertTrue(changed);path.write_text(json.dumps(trace))
+  receipt=m.read(case/'receipt.json')
+  for artifact in receipt['artifacts']:artifact['sha256']=m.sha256(artifact['path'])
+  (case/'receipt.json').write_text(json.dumps(receipt));index=m.read(self.run/'results/results.json')
+  for item in index['receipts']:
+   if item['case_id']=='MCP-P03-FULL':item['sha256']=m.sha256(case/'receipt.json')
+  (self.run/'results/results.json').write_text(json.dumps(index))
+  bad=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'bad-nonce.json')
+  self.assertNotEqual(0,bad[0],bad)

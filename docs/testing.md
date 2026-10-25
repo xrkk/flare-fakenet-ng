@@ -577,3 +577,14 @@ remain rejected. Snapshot fault injection passes an explicitly typed null
 backup path to File.Replace because PowerShell can bind an untyped null as an
 empty path. Preimage, atomic replacement, CreateNew, flush and readback checks
 remain in force.
+
+
+The selected-only HEALTH-SECTION-CONTROL, HEALTH-SECTION-LISTENER,
+HEALTH-SECTION-CAPTURE, HEALTH-SECTION-ACTIVE-PROBE,
+HEALTH-SECTION-NO-LISTENER and HEALTH-SECTION-PROCESS routes run the exact
+original ACC006 non-IPC sections with full lifecycle verification. Each requires
+the original complete key set and raw evidence, and is independently replayed.
+They allow remaining health coverage when the IPC section has a known failure.
+They do not replace ACC006 in the full set or turn six selected results into a
+full health pass. The full collector retains its original IPC-first order,
+seven required sections, early failure and preserve-scene behavior.

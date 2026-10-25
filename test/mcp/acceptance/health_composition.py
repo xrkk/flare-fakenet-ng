@@ -122,21 +122,61 @@ def verified_stop(base, channel, writer, label, run_id, config, allow_stopped=Fa
     return result
 
 
-def run_complete_health(base, channel, writer):
+NON_IPC_SECTIONS = tuple(name for name in REQUIRED if name != 'ipc')
+
+
+def _section_result(name, checks):
+    missing = set(REQUIRED[name]) - set(checks or {}) if isinstance(checks, dict) else set(REQUIRED[name])
+    extra = set(checks) - set(REQUIRED[name]) if isinstance(checks, dict) else set()
+    ok = isinstance(checks, dict) and not missing and not extra and all(v is True for v in checks.values())
+    return dict(checks=checks, missing=sorted(missing), extra=sorted(extra), passed=ok)
+
+
+def _section_checks(base, channel, writer, name):
     from run_p03_acc import (exercise_listener_exception, exercise_no_listener_health,
                             acc004_s6_uncontrolled_exit)
-    from run_ipc_cases import run_ipc_matrix
     from run_active_probe import run_active_probe_loss
+    if name == 'healthy-control':
+        started = verified_start(base, channel, writer, 'acc006-control')
+        verified_stop(base, channel, writer, 'acc006-control', started['run_id'], started['config_identity'])
+        return {'current_owned_healthy': True, 'confirmed_stop': True}
+    if name == 'listener':
+        return exercise_listener_exception(base, channel, writer, 'acc006-anomaly', verify_lifecycle=True)
+    if name == 'capture':
+        return exercise_listener_exception(base, channel, writer, 'acc006-capture', 'capture_exception', verify_lifecycle=True)
+    if name == 'active-probe':
+        return run_active_probe_loss(base, channel, writer, verify_lifecycle=True)
+    if name == 'no-listener':
+        return exercise_no_listener_health(base, writer, channel=channel, verify_lifecycle=True)
+    if name == 'process':
+        return acc004_s6_uncontrolled_exit(base, channel, writer, verify_lifecycle=True)
+    raise ValueError('unknown original non-IPC health section')
+
+
+def run_health_section(base, channel, writer, name):
+    if name not in NON_IPC_SECTIONS:
+        raise ValueError('selected health section must be a required non-IPC section')
+    writer.add_evidence('acc006-selected-required', {name: list(REQUIRED[name])})
+    try:
+        result = _section_result(name, _section_checks(base, channel, writer, name))
+        writer.add_evidence('acc006-section-' + name, result)
+        writer.add_evidence('acc006-selected-health', {
+            'full_acc006': False, 'required': [name], 'sections': {name: result}})
+        return EXIT_PASS if result['passed'] else EXIT_FAIL
+    except Exception:
+        channel.preserve_scene = True
+        raise
+
+
+def run_complete_health(base, channel, writer):
+    from run_ipc_cases import run_ipc_matrix
     writer.add_evidence('acc006-required-sections', {key: list(value) for key, value in REQUIRED.items()})
     sections = {}
 
     def record(name, checks):
-        missing = set(REQUIRED[name]) - set(checks or {}) if isinstance(checks, dict) else set(REQUIRED[name])
-        extra = set(checks) - set(REQUIRED[name]) if isinstance(checks, dict) else set()
-        ok = isinstance(checks, dict) and not missing and not extra and all(v is True for v in checks.values())
-        sections[name] = dict(checks=checks, missing=sorted(missing), extra=sorted(extra), passed=ok)
+        sections[name] = _section_result(name, checks)
         writer.add_evidence('acc006-section-' + name, sections[name])
-        return ok
+        return sections[name]['passed']
 
     def finish():
         writer.add_evidence('acc006-complete-health', {'required': list(REQUIRED), 'sections': sections})
@@ -145,18 +185,10 @@ def run_complete_health(base, channel, writer):
     try:
         if not record('ipc', run_ipc_matrix(base, channel, writer, verify_lifecycle=True)):
             return finish()
-        started = verified_start(base, channel, writer, 'acc006-control')
-        verified_stop(base, channel, writer, 'acc006-control', started['run_id'], started['config_identity'])
-        record('healthy-control', {'current_owned_healthy': True, 'confirmed_stop': True})
-        if not record('listener', exercise_listener_exception(base, channel, writer, 'acc006-anomaly', verify_lifecycle=True)):
-            return finish()
-        if not record('capture', exercise_listener_exception(base, channel, writer, 'acc006-capture', 'capture_exception', verify_lifecycle=True)):
-            return finish()
-        if not record('active-probe', run_active_probe_loss(base, channel, writer, verify_lifecycle=True)):
-            return finish()
-        if not record('no-listener', exercise_no_listener_health(base, writer, channel=channel, verify_lifecycle=True)):
-            return finish()
-        record('process', acc004_s6_uncontrolled_exit(base, channel, writer, verify_lifecycle=True))
+        for name in NON_IPC_SECTIONS:
+            ok = record(name, _section_checks(base, channel, writer, name))
+            if not ok and name != 'healthy-control':
+                return finish()
         return finish()
     except Exception:
         channel.preserve_scene = True

@@ -47,6 +47,15 @@ SELECTABLE_CHECKS = {case: list(checks) for case, checks in CHECKS.items()}
 SELECTABLE_CHECKS['MCP-P04-FULL'].append('INCIDENT-INTEGRITY')
 SELECTABLE_CHECKS['MCP-P04-FULL'].extend(['DIAGNOSTIC-NATIVE-CRASH','DIAGNOSTIC-STACKS-UNAVAILABLE','DIAGNOSTIC-UNKNOWN-CAUSE'])
 SELECTABLE_CHECKS['MCP-P03-FULL'].extend(['HEALTH-NO-LISTENER','HEALTH-ACTIVE-PROBE'])
+HEALTH_SECTION_UNITS = {
+ 'HEALTH-SECTION-CONTROL':'healthy-control',
+ 'HEALTH-SECTION-LISTENER':'listener',
+ 'HEALTH-SECTION-CAPTURE':'capture',
+ 'HEALTH-SECTION-ACTIVE-PROBE':'active-probe',
+ 'HEALTH-SECTION-NO-LISTENER':'no-listener',
+ 'HEALTH-SECTION-PROCESS':'process',
+}
+SELECTABLE_CHECKS['MCP-P03-FULL'].extend(HEALTH_SECTION_UNITS)
 CASES = tuple(CHECKS)
 EXCLUSIONS = {
  'ACC-001-GUI': 'GUI launch, window and co-control interactions excluded; headless service/core uniqueness retained.',
@@ -1024,6 +1033,9 @@ def invoke_unit(unit,args,channel,writer,mods):
  if unit=='ACC-001-HEADLESS':return p3.run_acc001_headless(base,channel,writer,args)
  if unit.startswith('ACC-004-S'):return p3.run_acc004_scenario(base,channel,writer,unit[-2:])
  if unit in ('ACC-006','ACC-007','ACC-008','ACC-009'):return getattr(p3,'run_acc'+unit[4:])(base,channel,writer)
+ if unit in HEALTH_SECTION_UNITS:
+  from health_composition import run_health_section
+  return run_health_section(base,channel,writer,HEALTH_SECTION_UNITS[unit])
  if unit=='HEALTH-NO-LISTENER':
   checks=p3.exercise_no_listener_health(base,writer)
   return 0 if checks and all(value is True for value in checks.values()) else 1
