@@ -417,9 +417,12 @@ class BoundarySession:
   from unittest.mock import patch
   mods=modules();helpers=mods['helpers'];p03=mods['run_p03_acc']
   stop=helpers.controlled_service_stop;configure=helpers.configure_fault_service;restart=p03.restart_service
+  process=importlib.import_module('process_recovery');snapshot=importlib.import_module('snapshot_evidence')
+  original_script=process.script;original_confirm=process.confirm_recovery;original_startup=snapshot.startup_failure
   pending={};active=[False]
   def controlled(channel,*args,**kwargs):
-   if channel is not self or not active[0]:return stop(channel,*args,**kwargs)
+   is_snapshot=getattr(self,'original_unit',None)=='ACC-008' and not active[0]
+   if channel is not self or (not active[0] and not is_snapshot):return stop(channel,*args,**kwargs)
    before=service_preflight(self,self.inputs)
    result=stop(channel,*args,**kwargs)
    probe=("# MCP_RESTART_OLD_EXIT_V1\n$ErrorActionPreference='Stop';"
@@ -430,7 +433,8 @@ class BoundarySession:
    raw=self.powershell(probe,timeout=30);exited=json.loads(raw['output'])
    if exited!={'old_pid':before['pid'],'old_birth':before['birth'],'old_exited':True,'scm_stopped':True}:
     raise ValueError('old service instance exit/SCM stop not observed')
-   pending.update(before=before,exit=exited)
+   if is_snapshot:self._snapshot_exit={'before':before,'exit':exited}
+   else:pending.update(before=before,exit=exited)
    return result
   def complete(before,enabled,grace):
    after=service_preflight(self,self.inputs)
@@ -445,7 +449,7 @@ class BoundarySession:
    if anchor['state']!='stopped' or anchor['run_id'] is not None or type(anchor['state_version']) is not int or anchor['state_version']<1:raise ValueError('new helper service not idle/version unobserved')
    with self.lock:
     self.operation_epoch+=1;self.epoch_initial_versions[self.operation_epoch]=anchor['state_version']
-   self.helper_epochs=getattr(self,'helper_epochs',[])+[{'epoch':self.operation_epoch,'before':before,'after':after,'exit':exited,'initial_status':anchor}]
+   self.service_epochs=getattr(self,'service_epochs',[])+[{'epoch':self.operation_epoch,'before':before,'after':after,'exit':exited,'initial_status':anchor}]
   def configured(channel,enabled,grace,*args,**kwargs):
    if channel is not self:return configure(channel,enabled,grace,*args,**kwargs)
    before=service_preflight(self,self.inputs)
@@ -463,7 +467,54 @@ class BoundarySession:
    try:result=restart(channel,*args,**kwargs)
    finally:active[0]=False
    complete(before,before['enabled'],before['grace']);return result
-  replacements=((stop,controlled),(configure,configured),(restart,restarted))
+  def record_incarnation(proof,observed,state):
+   before=proof['before'];after=service_preflight(self,self.inputs)
+   if (observed.get('pid')!=after['pid'] or str(observed.get('creation_time'))!=after['birth']
+       or observed.get('image','').casefold()!=after['image'].casefold()
+       or int(after['birth'])<=int(before['birth'])
+       or any(after[k]!=before[k] for k in ('image','sha256','service_config','enabled','grace','fault_exists'))):
+    raise ValueError('owned original incarnation candidate/settings proof differs')
+   anchor=_status_snapshot(mods['run_p02_acc'].status(self.inputs['endpoint']))
+   if (anchor['state']!=state or (state=='stopped' and anchor['run_id'] is not None)
+       or any(op.get('response_unknown') for op in self.mutation_operations)):
+    raise ValueError('owned original incarnation state/operation anchor unresolved')
+   # Pin the state read to the same process, rather than to an SCM banner.
+   if service_preflight(self,self.inputs)!=after:
+    raise ValueError('owned original incarnation changed inside version observation')
+   with self.lock:
+    self.operation_epoch+=1;self.epoch_initial_versions[self.operation_epoch]=anchor['state_version']
+   self.service_epochs=getattr(self,'service_epochs',[])+[dict(proof,epoch=self.operation_epoch,after=after,initial_status=anchor)]
+  def scripted(channel,name,expected):
+   if channel is not self or name not in ('crash_creation_window.ps1','crash_current_service.ps1'):
+    return original_script(channel,name,expected)
+   before=service_preflight(self,self.inputs)
+   if expected.get('supervisor')!={'pid':before['pid'],'creation_time':before['birth']}:
+    raise ValueError('owned crash supervisor differs from candidate instance')
+   actual,raw=original_script(channel,name,expected)
+   if not process.crash_failures(actual,expected):
+    self._process_exit={'before':before,'exit':actual,'expected':copy.deepcopy(expected)}
+   return actual,raw
+  def confirmed(base,channel,writer,prefix,before,old_events,marker):
+   failures=original_confirm(base,channel,writer,prefix,before,old_events,marker)
+   if channel is self and not failures:
+    proof=getattr(self,'_process_exit',None)
+    if (not proof or proof['expected']['supervisor']!=process.identity(before)
+        or proof['exit']['marker']!=marker or process.crash_failures(proof['exit'],proof['expected'])):
+     raise ValueError('owned crash exit/recovery responsibility unproven')
+    observed=process.observe_service(base,channel,writer,prefix+'-epoch-anchor')
+    record_incarnation(proof,observed,'stopped');self._process_exit=None
+   return failures
+  def startup(before,after,old_events,events,state,reason):
+   result=original_startup(before,after,old_events,events,state,reason)
+   if getattr(self,'original_unit',None)=='ACC-008':
+    proof=getattr(self,'_snapshot_exit',None)
+    if (not proof or snapshot.identity(before['service'])!={'pid':proof['before']['pid'],'creation_time':proof['before']['birth']}
+        or proof['exit']!={'old_pid':proof['before']['pid'],'old_birth':proof['before']['birth'],'old_exited':True,'scm_stopped':True}):
+     raise ValueError('snapshot controlled old exit unproven')
+    record_incarnation(proof,after['service'],state);self._snapshot_exit=None
+   return result
+  replacements=((stop,controlled),(configure,configured),(restart,restarted),
+                (original_script,scripted),(original_confirm,confirmed),(original_startup,startup))
   directory=Path(helpers.__file__).resolve().parent
   def consumers():
    # Include original direct consumers already imported by an earlier unit.
@@ -975,7 +1026,7 @@ def _cleanup_owned_configs(mods,base,session,writer):
 
 
 def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
- mods=modules(root);session=BoundarySession(boundary,inputs);out=Path(out);writer=mods['helpers'].EvidenceWriter(out,'original-unit')
+ mods=modules(root);session=BoundarySession(boundary,inputs);session.original_unit=unit;out=Path(out);writer=mods['helpers'].EvidenceWriter(out,'original-unit')
  if getattr(boundary,'fixture',True) is False:boundary.observe_unit=unit
  args=original_args(inputs,out)
  if unit=='ACC-014' and 'ACC-014' in inputs.get('references',{}):
@@ -1054,7 +1105,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
       elif _same_config(initial_config,final_config):
        _cleanup_owned_configs(mods,args.target_base_url,session,writer)
       elif final_config is None:
-       epochs=getattr(session,'helper_epochs',[])
+       epochs=getattr(session,'service_epochs',[])
        if not epochs or epochs[-1]['epoch']!=session.operation_epoch or epochs[-1]['initial_status']['config_identity'] is not None or any(op.get('epoch',0)==session.operation_epoch and op.get('tool')=='load_config' and op.get('accepted') and op.get('changed') for op in session.config_operations):
         raise ValueError('active configuration disappeared; preserve recovery required')
        _restore_config(mods,args.target_base_url,session,inputs,initial_config,final,writer)
@@ -1075,7 +1126,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
       final_raw=mods['run_p02_acc'].status(args.target_base_url);final=_status_snapshot(final_raw)
       _verified_version_chain(session,initial,final)
       if initial_config is not None and final['config_identity'] is None:
-       epochs=getattr(session,'helper_epochs',[])
+       epochs=getattr(session,'service_epochs',[])
        if not epochs or epochs[-1]['epoch']!=session.operation_epoch or epochs[-1]['initial_status']['config_identity'] is not None or any(op.get('epoch',0)==session.operation_epoch and op.get('tool')=='load_config' and op.get('accepted') and op.get('changed') for op in session.config_operations):
         raise ValueError('active configuration disappeared without owned helper restart')
        _restore_config(mods,args.target_base_url,session,inputs,initial_config,final,writer)

@@ -1738,6 +1738,8 @@ class ProcessRecoveryBoundary(FaultProcessBoundary):
         from fakenet.mcp.coordination import EventLog
         self.process_pid += 1
         self.birth = str(int((self.t - 1) * 10000000) + 116444736000000000)
+        self.version = 1
+        self.active_config = None if self.process_pid>101 else self.inputs['config_identity']
         self.events = EventLog()
         self.event('recovery', state='recovering')
         self.event('recovery', state='stopped')
@@ -1814,6 +1816,7 @@ class ProcessRecoveryBoundary(FaultProcessBoundary):
                         rows = [r for r in rows if r.get('state') != 'stopped']
                     return self.response({'events': rows, 'error': None})
                 if tool in ('load_config', 'start'):
+                    if tool=='load_config': self.active_config=self.inputs['config_identity']
                     self.version += 1
                     self.current_command = args['command_id']
                     self.event('command.accepted', command_id=self.current_command)
@@ -1829,7 +1832,7 @@ class ProcessRecoveryBoundary(FaultProcessBoundary):
                     return super().exchange(kind, value)
                 payload = {'state': 'starting' if self.running and self.stage else 'healthy' if self.running else 'stopped',
                     'state_version': self.version, 'run_id': self.run_id if self.running else None,
-                    'config_identity': self.inputs['config_identity'], 'error': None,
+                    'config_identity': self.active_config, 'error': None,
                     'health': {'process_alive': self.running, 'identity': getattr(self, 'child', None)}}
                 if tool != 'get_status':
                     payload.update(command_id=self.current_command, changed=True,
@@ -1840,6 +1843,8 @@ class ProcessRecoveryBoundary(FaultProcessBoundary):
                 return self.response(payload)
         if kind == 'powershell':
             command = value['command']
+            if 'fault_exists=' in command:
+                result=super().exchange(kind,value);data=json.loads(result['output']);data.update(pid=self.process_pid,birth=self.birth);result['output']=json.dumps(data);return result
             if '[Convert]::FromBase64String(' in command and '$expected =' in command:
                 encoded = re.search(r"FromBase64String\('([^']+)'\)", command).group(1)
                 expected = json.loads(base64.b64decode(encoded))
@@ -2021,6 +2026,9 @@ class SnapshotRecoveryBoundary(SnapshotProcessBoundary):
         self.run_id = snap['run_id']
         self._snapshot_sdk = None
         self.normalizations += 1
+        if self.service_running:
+            self.version=snap['state_version']
+            self.active_config=None if self.normalizations>1 else self.inputs['config_identity']
         self.process_pid += 1
         self.birth = str(int((self.t - 200) * 10000000) + 116444736000000000)
         self.sampled = self.t + 1
@@ -2145,6 +2153,8 @@ class SnapshotRecoveryBoundary(SnapshotProcessBoundary):
             result = super().exchange(kind, value)
             if tool in ('load_config', 'start', 'stop', 'get_status'):
                 body = json.loads(result['body']); payload = json.loads(body['result']['content'][0]['text'])
+                if tool=='load_config': self.active_config=self.inputs['config_identity']
+                payload['config_identity']=self.active_config
                 payload['health'] = {'process_alive': self.state == 'healthy'}
                 if tool != 'get_status' and not payload.get('error'):
                     payload['command_id'] = args['command_id']
@@ -2156,6 +2166,8 @@ class SnapshotRecoveryBoundary(SnapshotProcessBoundary):
             return result
         if kind == 'powershell':
             cmd = value['command']
+            if 'fault_exists=' in cmd:
+                result=super().exchange(kind,value);data=json.loads(result['output']);data.update(pid=self.process_pid,birth=self.birth);result['output']=json.dumps(data);return result
             if '$expected =' in cmd and "switch ($expected.operation)" in cmd:
                 expected = json.loads(base64.b64decode(re.search(r"FromBase64String\('([^']+)'\)", cmd).group(1)))
                 op = expected['operation']; result = {'operation': op, 'token': expected['token']}
@@ -2207,7 +2219,7 @@ class SnapshotRecoveryBoundary(SnapshotProcessBoundary):
                 self.listener = True; output = json.dumps({'pid': 125, 'created': 123456})
             elif "throw 'listener birth changed'" in cmd: output = 'OWNED_READY'
             elif 'controlled pre-stop failed' in cmd:
-                self._recover(); self.service_running = False; output = 'controlled service stop completed'
+                self.service_running = False; output = 'controlled service stop completed'
             elif 'owned file changed' in cmd and 'Remove-Item' in cmd:
                 from pathlib import PureWindowsPath
                 name = PureWindowsPath(re.search(r"\$p='([^']+)'", cmd).group(1)).name
@@ -2838,3 +2850,43 @@ class OriginalHelperEpochTests(unittest.TestCase):
      with session.activate():
       with session.original_helpers():m.modules(ROOT)['helpers'].configure_fault_service(session,True,5)
     self.assertEqual(0,session.operation_epoch)
+
+
+class OriginalIncarnationEpochTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_each_abrupt_incarnation_has_an_anchor_and_forged_raw_proof_is_refused(self):
+  boundary=ProcessRecoveryBoundary(self.inputs,self.root/'epochs-os');out=self.root/'epochs'
+  value=m.run('MCP-P03-FULL',out,self.inputs,selected=['ACC-007'],boundary=boundary,fixture=True)
+  self.assertEqual('pass',value['checks']['ACC-007']['status'])
+  path=out/'units/ACC-007/trace.json';original=m.read(path)
+  self.assertEqual(list(range(8)),sorted(set(op['epoch'] for op in original['config_operations'])))
+  self.assertEqual(2,original['final_status']['state_version'])
+  for defect in ('image','birth','settings','exit','anchor'):
+   with self.subTest(defect=defect):
+    import copy
+    trace=copy.deepcopy(original);changed=False;anchor_window=False
+    for row in trace['records']:
+     value=m.unpack(row['input']);output=m.unpack(row.get('output'))
+     if not changed and row['kind']=='powershell':
+      command=value['command']
+      if defect=='anchor' and 'fault_exists=' in command:
+       anchor_window=json.loads(output['output'])['pid']>101
+      if defect in ('image','birth','settings') and 'fault_exists=' in command:
+       payload=json.loads(output['output'])
+       if payload['pid']>101:
+        if defect=='image':payload['image']=r'C:\Foreign\fakenetng-mcp.exe'
+        elif defect=='birth':payload['birth']='1'
+        else:payload['service_config']['extra_control_ports']=[9999]
+        output['output']=json.dumps(payload);row['output']=m.pack(output);changed=True
+      elif defect=='exit' and '$creationWindow =' in command:
+       payload=json.loads(output['output']);payload['supervisor_exited']=False;output['output']=json.dumps(payload);row['output']=m.pack(output);changed=True
+     elif not changed and defect=='anchor' and row['kind']=='http':
+      request=json.loads(value['data'])
+      if request['params']['name']=='get_status':
+       body=json.loads(output['body']);payload=json.loads(body['result']['content'][0]['text'])
+       if anchor_window and payload['state_version']==1 and payload['config_identity'] is None:
+        payload['state_version']=None;body['result']['content'][0]['text']=json.dumps(payload);output['body']=json.dumps(body).encode();row['output']=m.pack(output);changed=True
+    self.assertTrue(changed,defect);path.write_text(json.dumps(trace))
+    rows,clean,detail=o.evaluate(ROOT,out,'MCP-P03-FULL',['ACC-007'],self.inputs,allow_fixture=True)
+    self.assertNotEqual('pass',rows[0]['status'],detail)
+  path.write_text(json.dumps(original))

@@ -470,3 +470,21 @@ fail. A benign original initialization-failure test exercises both helper
 restarts, real NULL resets, final configuration restoration and independent
 replay. Source/fixture success does not grant native Windows or full-regression
 credit, and does not turn an observed product failure into a pass.
+
+
+Original ACC007 abrupt crash and ACC008 controlled snapshot restarts use their
+own existing recovery consumers. The adapter records the candidate process and
+settings before the fixed owned stop/crash. It advances the ledger only after
+the unchanged original tree, canary, marker and startup audit checks establish
+the old exit/recovery responsibility and the new instance. The actual candidate
+image/hash, later birth and unchanged settings are checked again around the
+new status/version anchor. Snapshot cases keep their original expected failed
+or stopped state; a failed snapshot is never normalized into a pass.
+
+The benign process and snapshot fixtures reset version/config/cache for each
+new process. Independent replay rejects altered raw exit, image, birth,
+settings or anchor evidence. A no-op helper and an unknown mutation cannot
+create a verified epoch. After a final owned restart clears configuration, only
+the original bound identity may be restored, then the final state and complete
+per-instance operation ledger are checked. These fixture checks remain source
+validation; native execution and its cleanup must be observed separately.
