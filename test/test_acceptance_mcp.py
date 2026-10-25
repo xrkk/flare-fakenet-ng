@@ -3003,7 +3003,7 @@ class NativePinPrecisionTests(unittest.TestCase):
     if row['accepted']:self.assertEqual(str(134373817088689120+int(row['case'][4:])),row['identity']['creation_time'])
 
 
-def native_consumer_precision_script(source_root=ROOT, selected=None):
+def native_consumer_precision_script(source_root=ROOT, selected=None, live_writer=False):
  """Execute fixed scripts against safe API objects; no actual process is killed."""
  import gzip
  import base64
@@ -3094,6 +3094,9 @@ foreach($program in $programs){
 }finally{if(Test-Path -LiteralPath $work){Remove-Item -LiteralPath $work -Recurse -Force}}
 @{consumer_cases=$rows}|ConvertTo-Json -Depth 15 -Compress
 """
+ if live_writer:
+  preamble=preamble.replace('$rows=@()\ntry {', "$rows=@();$liveWriter=[IO.File]::Open((Join-Path $work 'artifacts\\runs\\11111111-2222-4333-8444-555555555555\\run.log'),[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite)\ntry {")
+  preamble=preamble.replace('}finally{if(Test-Path -LiteralPath $work)', '}finally{$liveWriter.Dispose();if(Test-Path -LiteralPath $work)')
  script=preamble.replace('__PROGRAMS__',data)
  packed=base64.b64encode(gzip.compress(script.encode(),mtime=0)).decode()
  return "$ErrorActionPreference='Stop';$b=[Convert]::FromBase64String('"+packed+"');$ms=[IO.MemoryStream]::new($b,$false);$gz=[IO.Compression.GzipStream]::new($ms,[IO.Compression.CompressionMode]::Decompress);$sr=[IO.StreamReader]::new($gz);try{$s=$sr.ReadToEnd()}finally{$sr.Dispose();$gz.Dispose();$ms.Dispose()};& ([scriptblock]::Create($s))"
@@ -3115,3 +3118,52 @@ class NativeConsumerPrecisionTests(unittest.TestCase):
     if row['accepted']:
      self.assertEqual(str(134373817088689120+int(row['case'][4:])),row['full_birth'])
     else:self.assertEqual(0,row['kills'],row)
+
+
+def native_log_prefix_script():
+ source=(ROOT/'test/mcp/acceptance/health_origin.ps1').read_text()
+ functions=source[source.index('function Read-HealthLogPrefix'):source.index('# END FIXED HEALTH LOG READERS')]
+ return functions+r"""
+$ErrorActionPreference='Stop'
+$cases=@()
+foreach($defect in @('normal','append','short','truncated','changed','oversize')){
+ $row=& {
+  param($defect)
+  $stream=[pscustomobject]@{Position=0;Length=3;Reads=0;Defect=$defect}
+  $stream|Add-Member ScriptMethod Read {
+   param($buffer,$offset,$count)
+   $this.Reads++;if($this.Defect -eq 'short'){return 0}
+   if($this.Defect -eq 'truncated'){$this.Length=2}
+   if($this.Defect -eq 'append'){$this.Length=6}
+   $n=[Math]::Min($count,3-$this.Position)
+   for($i=0;$i -lt $n;$i++){$buffer[$offset+$i]=[byte](65+$this.Position+$i)}
+   if($this.Defect -eq 'changed' -and $this.Reads -ge 2 -and $n -gt 0){$buffer[$offset]=90}
+   $this.Position+=$n;return $n
+  }
+  $length=if($defect -eq 'oversize'){8388609}else{3}
+  try{$bytes=Read-HealthLogPrefix $stream $length;@{case=$defect;accepted=$true;body=[Convert]::ToBase64String($bytes)}}
+  catch{@{case=$defect;accepted=$false;reason=$_.Exception.Message}}
+ } $defect
+ $cases+=$row
+}
+@{cases=$cases}|ConvertTo-Json -Depth 8 -Compress
+"""
+
+
+class NativeLiveHealthLogTests(unittest.TestCase):
+ @unittest.skipUnless(sys.platform=='win32','native benign live-writer and byte-boundary tests')
+ def test_original_health_consumer_reads_while_writer_is_open(self):
+  import subprocess
+  run=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',native_consumer_precision_script(selected='health_origin.ps1',live_writer=True)],capture_output=True,text=True,timeout=90)
+  self.assertEqual(0,run.returncode,run.stderr)
+  for row in json.loads(run.stdout)['consumer_cases']:
+   self.assertEqual(row['case'].startswith('tick'),row['accepted'],row)
+ @unittest.skipUnless(sys.platform=='win32','native fixed prefix byte-boundary tests')
+ def test_fixed_prefix_refuses_truncation_short_reads_and_changes(self):
+  import subprocess
+  run=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',native_log_prefix_script()],capture_output=True,text=True,timeout=30)
+  self.assertEqual(0,run.returncode,run.stderr)
+  rows=json.loads(run.stdout)['cases'];self.assertEqual(6,len(rows))
+  for row in rows:
+   self.assertEqual(row['case'] in ('normal','append'),row['accepted'],row)
+   if row['accepted']:self.assertEqual('QUJD',row['body'])

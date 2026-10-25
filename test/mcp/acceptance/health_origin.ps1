@@ -1,4 +1,36 @@
 $ErrorActionPreference='Stop'
+function Read-HealthLogPrefix($stream, [long]$length) {
+    if ($length -lt 0 -or $length -gt 8388608) { throw 'health log exceeds bounded evidence read' }
+    $bytes = [byte[]]::new($length)
+    $stream.Position = 0
+    $offset = 0
+    while ($offset -lt $length) {
+        $count = $stream.Read($bytes, $offset, $length - $offset)
+        if ($count -le 0) { throw 'health log short read' }
+        $offset += $count
+    }
+    if ($stream.Length -lt $length) { throw 'health log truncated during read' }
+    $stream.Position = 0
+    $verified = 0
+    $buffer = [byte[]]::new([Math]::Min(65536, [Math]::Max(1, $length)))
+    while ($verified -lt $length) {
+        $count = $stream.Read($buffer, 0, [Math]::Min($buffer.Length, $length - $verified))
+        if ($count -le 0) { throw 'health log short verification read' }
+        for ($i = 0; $i -lt $count; $i++) {
+            if ($buffer[$i] -ne $bytes[$verified + $i]) { throw 'health log prefix changed during read' }
+        }
+        $verified += $count
+    }
+    if ($stream.Length -lt $length) { throw 'health log truncated during verification' }
+    # A growing log is observed at opening length, never as an invented full tail.
+    return ,$bytes
+}
+function Read-HealthLogBytes([string]$path) {
+    $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try { return ,(Read-HealthLogPrefix $stream $stream.Length) }
+    finally { $stream.Dispose() }
+}
+# END FIXED HEALTH LOG READERS
 $expected=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__EXPECTED__'))|ConvertFrom-Json
 __SCOPE_HELPERS__
 $child=$null;$parent=$null
@@ -16,7 +48,7 @@ try {
     $dir=Join-Path $root $expected.run_id;$path=Join-Path $dir 'run.log'
     foreach($item in @($root,$dir,$path)){if((Get-Item -LiteralPath $item -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'health evidence reparse refused'}}
     if((Get-Item -LiteralPath $path).Length -gt 8388608){throw 'health log exceeds bounded evidence read'}
-    $bytes=[IO.File]::ReadAllBytes($path);$sha=[Security.Cryptography.SHA256]::Create()
+    $bytes=Read-HealthLogBytes $path;$sha=[Security.Cryptography.SHA256]::Create()
     try{$hash=[BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','').ToLower()}finally{$sha.Dispose()}
     $again=Get-CimInstance Win32_Service -Filter "Name='fakenetng-mcp'"
     if($again.ProcessId -ne $parent.identity.pid -or $again.State -ne 'Running' -or $child.handle.HasExited -or $parent.handle.HasExited){throw 'health instance changed during read'}

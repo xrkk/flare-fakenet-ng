@@ -542,3 +542,11 @@ representation; returned and expected GetProcess FILETIME identities retain all
 100ns digits. Crash tree snapshots compare CIM to CIM and re-pin every full held
 identity immediately before termination. Missing evidence, changed full births,
 image/parent/run changes and exited handles still refuse the operation.
+
+
+The current-run health log is read through one read-only handle with
+FileShare.ReadWrite (without Delete sharing). Evidence captures the opening
+length up to 8 MiB and verifies that exact prefix twice on the same handle;
+short reads, truncation and changed prefix bytes refuse the observation. Appended
+bytes beyond the opening length are outside that snapshot. The existing owned
+process, path, reparse and health/log predicates still apply.
