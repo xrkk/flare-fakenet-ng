@@ -3549,3 +3549,104 @@ class PublicCompleteSelectedHealthTests(unittest.TestCase):
   (self.run/'results/results.json').write_text(json.dumps(index))
   bad=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'bad-nonce.json')
   self.assertNotEqual(0,bad[0],bad)
+
+
+class OptionalNoListenerIdentityBoundary(CompleteHealthBoundary):
+ """Real config/coordinator lifecycle, native-shaped optional mutation field."""
+ def __init__(self,inputs,root,defect=None):
+  super().__init__(inputs,root);self.defect=defect;self.no_listener_command=None;self.binding_read=False
+ def exchange(self,kind,value):
+  answer=super().exchange(kind,value)
+  if kind!='http':return answer
+  request=json.loads(value['data']);tool=request['params']['name'];args=request['params'].get('arguments') or {}
+  body=json.loads(answer['body']);payload=json.loads(body['result']['content'][0]['text'])
+  if tool=='start' and args['command_id'].startswith('a6-nl-s-'):
+   self.no_listener_command=args['command_id']
+   payload.pop('config_identity',None)
+   payload.pop('health',None)  # Native failed-start receipt does not carry live health.
+   if self.defect=='response-config':payload['config_identity']=dict(self.inputs['config_identity'],name='foreign.ini')
+   if self.defect=='receipt-healthy':payload['state']='healthy'
+  elif tool=='get_command_status' and args['command_id']==self.no_listener_command:
+   if isinstance(payload.get('response'),dict):payload['response'].pop('config_identity',None)
+   self.binding_read=True
+   if self.defect=='cache-unknown':payload.update(status='unknown',response=None)
+   elif self.defect=='cache-command':payload['command_id']='foreign'
+   elif self.defect=='cache-version':payload['response']['state_version']+=1
+   elif self.defect=='cache-replay':payload['response']['replayed']=True
+  elif tool=='get_status' and self.binding_read:
+   if self.defect=='live-config':payload['config_identity']=dict(self.inputs['config_identity'],name='foreign.ini')
+   elif self.defect=='live-version':payload['state_version']+=1
+   elif self.defect=='live-run':payload['run_id']='99999999-9999-4999-8999-999999999999'
+   elif self.defect=='window-healthy':payload['state']='healthy'
+  body['result']['content'][0]['text']=json.dumps(payload);answer['body']=json.dumps(body).encode()
+  return answer
+
+
+class ValidNoListenerTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_real_parser_removes_only_invalid_redirect_prerequisite(self):
+  import configparser,io,logging
+  m.modules(ROOT)
+  from fakenet.fakenet import Fakenet
+  from fakenet.diverters.diverterbase import DiverterBase
+  from run_p03_acc import no_listener_config
+  source=(ROOT/'fakenet/configs/default.ini').read_text();text=no_listener_config(source)
+  parsed=configparser.ConfigParser();parsed.read_string(text)
+  self.assertEqual('yes',parsed['FakeNet']['diverttraffic'].lower())
+  self.assertEqual('no',parsed['Diverter']['redirectalltraffic'].lower())
+  for section in parsed.sections():
+   if section not in ('FakeNet','Diverter'):self.assertEqual('false',parsed[section]['enabled'].lower())
+  path=self.root/'no-listener-valid.ini';path.write_text(text);core=Fakenet();core.parse_config(str(path));self.assertEqual({},core.listeners_config)
+  def parse(cfg):
+   obj=DiverterBase.__new__(DiverterBase);obj.configure(cfg);obj.listeners_config=core.listeners_config;obj.logger=logging.getLogger('benign-parser')
+   obj.parse_diverter_config();return obj
+  old=dict(core.diverter_config,redirectalltraffic='Yes')
+  with self.assertRaises(SystemExit):parse(old)
+  self.assertEqual({'TCP':None,'UDP':None},parse(core.diverter_config).default_listener)
+
+ def test_optional_identity_real_cache_live_window_and_replay(self):
+  unit='HEALTH-SECTION-NO-LISTENER';out=self.root/'optional';boundary=OptionalNoListenerIdentityBoundary(self.inputs,self.root/'domain')
+  result=m.run('MCP-P03-FULL',out,self.inputs,selected=[unit],boundary=boundary,fixture=True)
+  self.assertEqual('pass',result['checks'][unit]['status'],m.read(out/'units'/unit/'result.json'))
+  directory=out/'units'/unit;started=m.read(directory/'acc006-nolistener-start.json');self.assertNotIn('config_identity',started)
+  binding=m.read(directory/'acc006-nolistener-start-binding.json')
+  self.assertEqual(started,binding['cache']['response']);self.assertEqual(started['state_version'],binding['status']['state_version'])
+  self.assertEqual(binding['loaded_identity'],binding['status']['config_identity'])
+  window=m.read(directory/'acc006-nolistener-window.json');self.assertGreater(len(window),1)
+  self.assertTrue(all('config_identity' in item and 'health' in item for item in window))
+  self.assertNotIn(started,window);self.assertTrue(all(item['state']!='healthy' for item in window))
+  rows,clean,detail=o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True);self.assertEqual('pass',rows[0]['status'],detail);self.assertTrue(clean,detail)
+
+ def test_optional_field_is_not_an_escape_from_identity_or_health(self):
+  for i,defect in enumerate(('response-config','receipt-healthy','cache-unknown','cache-command','cache-version','cache-replay','live-config','live-version','live-run','window-healthy')):
+   with self.subTest(defect=defect):
+    unit='HEALTH-SECTION-NO-LISTENER';out=self.root/defect
+    result=m.run('MCP-P03-FULL',out,self.inputs,selected=[unit],boundary=OptionalNoListenerIdentityBoundary(self.inputs,self.root/('domain-'+str(i)),defect),fixture=True)
+    self.assertNotEqual('pass',result['checks'][unit]['status'])
+    rows,clean,detail=o.evaluate(ROOT,out,'MCP-P03-FULL',[unit],self.inputs,allow_fixture=True);self.assertNotEqual('pass',rows[0]['status'],detail)
+
+
+class PublicValidNoListenerTests(unittest.TestCase):
+ setUp=PublicMcpCliTests.setUp
+ cli=PublicMcpCliTests.cli
+ prepare=PublicMcpCliTests.prepare
+ def test_public_optional_identity_and_rehashed_wrong_cache_rejected(self):
+  unit='HEALTH-SECTION-NO-LISTENER';self.prepare('MCP-P03-FULL',[unit])
+  with mock.patch.object(m,'NativeBoundary',return_value=OptionalNoListenerIdentityBoundary(self.inputs,self.base/'domain')):
+   result=self.cli('execute','--plan',self.run/'plan.json')
+  self.assertEqual(0,result[0],result)
+  judged=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'positive.json')
+  self.assertEqual(0,judged[0],judged);self.assertFalse(m.read(self.run/'positive.json')['full_functional_pass'])
+  case=self.run/'results/MCP-P03-FULL';path=case/'driver/units'/unit/'trace.json';trace=m.read(path);hit=False
+  for row in trace['records']:
+   if row['kind']=='http' and row['input']['headers'].get('Mcp-name')=='get_command_status':
+    request=json.loads(m.unpack(row['input'])['data'])
+    if request['params']['arguments']['command_id'].startswith('a6-nl-s-'):
+     raw=m.unpack(row['output']);body=json.loads(raw['body']);payload=json.loads(body['result']['content'][0]['text']);payload['command_id']='foreign';body['result']['content'][0]['text']=json.dumps(payload);raw['body']=json.dumps(body).encode();row['output']=m.pack(raw);hit=True;break
+  self.assertTrue(hit);path.write_text(json.dumps(trace));receipt=m.read(case/'receipt.json')
+  for artifact in receipt['artifacts']:artifact['sha256']=m.sha256(artifact['path'])
+  (case/'receipt.json').write_text(json.dumps(receipt));index=m.read(self.run/'results/results.json')
+  for item in index['receipts']:
+   if item['case_id']=='MCP-P03-FULL':item['sha256']=m.sha256(case/'receipt.json')
+  (self.run/'results/results.json').write_text(json.dumps(index))
+  bad=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'bad-cache.json');self.assertNotEqual(0,bad[0],bad)

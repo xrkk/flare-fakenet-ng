@@ -690,6 +690,8 @@ def no_listener_config(content):
     for section in parser.sections():
         if section not in ('FakeNet', 'Diverter'):
             parser.set(section, 'Enabled', 'False')
+    # Keep the diverter active, but do not reference disabled default listeners.
+    parser.set('Diverter', 'RedirectAllTraffic', 'No')
     output = io.StringIO()
     parser.write(output)
     return output.getvalue()
@@ -734,10 +736,45 @@ def exercise_no_listener_health(base, writer, channel=None, verify_lifecycle=Fal
     writer.add_evidence('acc006-nolistener-start', started)
     if verify_lifecycle:
         require_mutation(started, start_command, loaded['state_version'])
-        if started.get('config_identity') != loaded.get('config_identity'):
+        identity = started.get('config_identity')
+        if identity is not None and identity != loaded.get('config_identity'):
             raise StepError('ACC006 no-listener start config differs')
+        if (started.get('state') == 'healthy' or started.get('replayed') not in (None, False)
+                or started.get('in_progress') not in (None, False)):
+            raise StepError('ACC006 no-listener start was healthy or unresolved/replayed')
+        initial = status(base)
+        if identity is None:
+            cache = call(base, 'get_command_status', {'command_id': start_command})
+            fresh = status(base)
+            writer.add_evidence('acc006-nolistener-start-binding', {
+                'loaded_identity': loaded['config_identity'], 'cache': cache,
+                'status_before_cache': initial, 'status': fresh})
+            if (cache.get('error') or cache.get('command_error')
+                    or cache.get('command_id') != start_command
+                    or cache.get('status') != 'completed'
+                    or cache.get('cache_scope') != 'process'
+                    or not isinstance(cache.get('cache_epoch'), str) or not cache['cache_epoch']
+                    or cache.get('response') != started
+                    or started.get('state') not in ('stopped', 'failed')
+                    or started.get('run_id') is not None
+                    or started.get('state_version') != loaded['state_version'] + 1
+                    or started.get('changed') is not True):
+                raise StepError('ACC006 no-listener optional identity cache binding differs')
+            for sample in (initial, fresh):
+                if (sample.get('error') or sample.get('state') != started['state']
+                        or sample.get('state_version') != started['state_version']
+                        or sample.get('run_id') is not None or sample.get('controller') is not None
+                        or sample.get('config_identity') != loaded['config_identity']):
+                    raise StepError('ACC006 no-listener optional identity live binding differs')
+            initial = fresh
+        if (initial.get('error') or initial.get('state') == 'healthy'
+                or initial.get('config_identity') != loaded['config_identity']
+                or initial.get('state_version') != started['state_version']):
+            raise StepError('ACC006 no-listener initial status binding differs')
     checks['no_listener_start_attempted'] = started.get('error') is None and started.get('changed') is True
-    observations = [started]
+    # Mutation receipts can omit optional status fields. Keep their raw bytes
+    # separately and observe the full negative window through actual status.
+    observations = [initial] if verify_lifecycle else [started]
     deadline = time.monotonic() + 3 * HEALTH_INTERVAL_S + 2.0
     while True:
         observations.append(status(base))
@@ -750,6 +787,15 @@ def exercise_no_listener_health(base, writer, channel=None, verify_lifecycle=Fal
     checks['no_init_evidence_never_healthy'] = all(
         not item.get('error') and item.get('state') != 'healthy' and
         (not verify_lifecycle or (item.get('config_identity') == loaded.get('config_identity') and item.get('run_id') in (None, started.get('run_id')))) for item in observations)
+    if verify_lifecycle:
+        expected_reasons = ('managed initialization/active probe failed',
+                            'managed initialization/handle probe failed')
+        checks['no_init_evidence_never_healthy'] = (
+            checks['no_init_evidence_never_healthy']
+            and all((item.get('health') or {}).get('init_evidence') is False for item in observations)
+            and any(any(reason in str(item.get('failure_reason')) for reason in expected_reasons)
+                    for item in observations)
+            and all('parse_diverter_config' not in str(item.get('failure_reason')) for item in observations))
     checks['fake_healthy_negative'] = ((observed.get('health') or {}).get('init_evidence') is False
                                       or observed.get('state') in ('starting', 'degraded', 'failed'))
     stopped = verified_stop(base, channel, writer, 'acc006-nolistener', started.get('run_id'), loaded['config_identity'], allow_stopped=True) if verify_lifecycle else stop_run(base)

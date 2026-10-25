@@ -588,3 +588,15 @@ They allow remaining health coverage when the IPC section has a known failure.
 They do not replace ACC006 in the full set or turn six selected results into a
 full health pass. The full collector retains its original IPC-first order,
 seven required sections, early failure and preserve-scene behavior.
+
+
+The no-listener fixture keeps DivertTraffic enabled and disables all listeners,
+while setting RedirectAllTraffic=No so disabled default listeners do not cause an
+earlier configuration-parser exit. Its complete health route requires the
+initialization/probe failure predicate and the entire original three-interval
+plus two-second status window. A present start-response configuration must
+match. If the optional field is absent, the exact completed command cache and
+fresh same-version status must both bind the loaded configuration. The raw
+response is retained unchanged; healthy, replayed, unknown or mismatched
+results are rejected. Stop, default restoration and exact owned cleanup remain
+required.
