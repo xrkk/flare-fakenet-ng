@@ -2905,3 +2905,84 @@ class OriginalIncarnationEpochTests(unittest.TestCase):
     rows,clean,detail=o.evaluate(ROOT,out,'MCP-P03-FULL',['ACC-007'],self.inputs,allow_fixture=True)
     self.assertNotEqual('pass',rows[0]['status'],detail)
   path.write_text(json.dumps(original))
+
+
+class InternalProtectiveBoundary(DomainBoundary):
+ """Real tool/Coordinator/cache/EventLog/internal submit; only process OS edges."""
+ def __init__(self,inputs,root):
+  super().__init__(inputs,root);self.marker=None;self.internal_commands=[]
+  from fakenet.mcp.testdouble import LifecycleDouble
+  def health(state):
+   detail=LifecycleDouble.health_detail(state)
+   if state=='healthy':detail['identity']={'pid':121,'creation_time':'123456'}
+   return detail
+  self.context.runner.health_detail=health
+ def exchange(self,kind,value):
+  if kind=='powershell':
+   command=value['command']
+   if "throw 'child scope mismatch'" in command:
+    coord=self.context.coordinator;snap=coord.snapshot();owner=coord.controller
+    command_id='protective-'+str(__import__('uuid').uuid4());self.internal_commands.append(command_id)
+    def stopped(c):
+     result=self.context.runner.stop(c);result['last_run_outcome']='failed';return result
+    result=coord.submit(command_id=command_id,expected_version=snap['state_version'],controller=owner,controller_valid=True,kind='protective_stop',describe={},internal=True,execute=stopped)
+    coord.record_terminal_failure('managed process exited')
+    self.marker={'run_id':snap['run_id'],'controller_id':owner,'command_id':command_id,'state_version':result['state_version'],'config_sha256':snap['config_identity']['sha256'],'needs_recovery':False}
+    output=json.dumps({'child':{'pid':121,'creation_time':'123456','run_id':snap['run_id']},'exit_code':-1,'service_pid_before':12,'service_pid_after':12,'service_state_after':'Running'})
+    return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+   if '$expected =' in command and '$listeners = @(' in command:
+    from pathlib import PureWindowsPath
+    output=json.dumps({'pid':12,'creation_time':'1234','image':str(PureWindowsPath(self.inputs['installation_root'])/'fakenetng-mcp.exe'),'state':'Running','endpoint_owned':True,'marker':self.marker,'sampled_at':self.t})
+    return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+  return super().exchange(kind,value)
+
+class OriginalInternalProtectiveTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def test_real_internal_coordinator_acceptance_and_original_s6_replay(self):
+  boundary=InternalProtectiveBoundary(self.inputs,self.root/'internal-os');out=self.root/'internal'
+  value=m.run('MCP-P03-FULL',out,self.inputs,selected=['ACC-004-S6'],boundary=boundary,fixture=True)
+  self.assertEqual('pass',value['checks']['ACC-004-S6']['status'],m.read(out/'units/ACC-004-S6/result.json'))
+  self.assertEqual(1,len(boundary.internal_commands))
+  rows,clean,details=o.evaluate(ROOT,out,'MCP-P03-FULL',['ACC-004-S6'],self.inputs,allow_fixture=True)
+  self.assertEqual('pass',rows[0]['status'],details);self.assertTrue(clean,details)
+
+ def test_tampered_internal_raw_proof_cannot_fill_a_version_gap(self):
+  boundary=InternalProtectiveBoundary(self.inputs,self.root/'raw-os');out=self.root/'raw'
+  value=m.run('MCP-P03-FULL',out,self.inputs,selected=['ACC-004-S6'],boundary=boundary,fixture=True)
+  self.assertEqual('pass',value['checks']['ACC-004-S6']['status'])
+  unit=out/'units/ACC-004-S6';proof=m.read(unit/'internal-operation-5.json')
+  self.assertNotEqual(proof['events']['epoch'],proof['cache']['cache_epoch'])
+  command=boundary.internal_commands[0];path=unit/'trace.json';original=m.read(path)
+  for defect in ('controller','foreign-run','gap','order','event-epoch','cache-epoch','result-version','unfinished','unknown'):
+   with self.subTest(defect=defect):
+    import copy
+    trace=copy.deepcopy(original);changed=False
+    for row in trace['records']:
+     if changed:break
+     inp=m.unpack(row['input']);output=m.unpack(row.get('output'))
+     if row['kind']=='powershell' and defect=='foreign-run' and '$listeners = @(' in inp['command']:
+      payload=json.loads(output['output']);payload['marker']['run_id']='99999999-9999-4999-8999-999999999999';output['output']=json.dumps(payload);row['output']=m.pack(output);changed=True
+     if row['kind']!='http':continue
+     request=json.loads(inp['data']);tool=request['params']['name'];args=request['params'].get('arguments') or {}
+     body=json.loads(output['body']);payload=json.loads(body['result']['content'][0]['text'])
+     if tool=='get_events' and any(e.get('operation')=='protective_stop' for e in payload.get('events',[])):
+      if defect=='controller':next(e for e in payload['events'] if e.get('operation')=='protective_stop' and e['kind']=='command.accepted')['controller']='foreign'
+      elif defect=='gap':payload['gap']=True
+      elif defect=='order':
+       rows=[e for e in payload['events'] if e.get('operation')=='protective_stop'];rows[1]['seq']=rows[0]['seq']
+      elif defect=='event-epoch':payload['epoch']='foreign-events'
+      else:continue
+      changed=True
+     elif tool=='get_command_status' and args.get('command_id')==command:
+      if defect=='cache-epoch':payload['cache_epoch']='foreign-cache'
+      elif defect=='result-version':payload['response']['state_version']+=1
+      elif defect=='unfinished':payload['status']='in_progress'
+      elif defect=='unknown':payload.update(status='unknown',response=None)
+      else:continue
+      changed=True
+     if changed:
+      body['result']['content'][0]['text']=json.dumps(payload);output['body']=json.dumps(body).encode();row['output']=m.pack(output)
+    self.assertTrue(changed,defect);path.write_text(json.dumps(trace))
+    rows,clean,detail=o.evaluate(ROOT,out,'MCP-P03-FULL',['ACC-004-S6'],self.inputs,allow_fixture=True)
+    self.assertNotEqual('pass',rows[0]['status'],detail)
+  path.write_text(json.dumps(original))

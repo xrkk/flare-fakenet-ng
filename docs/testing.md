@@ -498,3 +498,23 @@ observation. This wait does not repeat the helper restart or change configuratio
 a timeout, failed startup, changed instance or missing version still fails. The
 startup fixture exposes a recovering observation before stopped and checks that
 exactly one helper restart occurred.
+
+
+The service can accept an internal `protective_stop` after a managed-process
+failure. It consumes a real Coordinator version even though no client submitted
+that command. The runner accounts for this step only from recorded read-only
+proof: the same candidate PID/birth/image/settings, the original owned run and
+config, the cleared marker, ordered acceptance/completion events without gaps
+or reset, and completed command-cache receipts under the original controller.
+Event epochs and cache epochs are separate domains; each is checked against its
+own observation, and both are bracketed by the same candidate process. The owned
+start receipt must match its cached original exactly. A command-name prefix or
+an unexplained version difference cannot establish an accepted operation.
+
+The proof is captured before another mutation or process replacement can lose
+the original cache/marker. Independent replay derives the internal ledger step
+again from raw OS/HTTP responses. Missing, foreign, stale, reordered, incomplete
+or conflicting proofs and unknown responses keep the original failure. Tests
+use the real Coordinator internal submission, EventLog and cache, and reject
+nine classes of altered proof. This observer never submits a protective stop,
+replays a mutation or changes the service's recovery behavior.

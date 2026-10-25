@@ -411,6 +411,95 @@ def _same_config(a,b):
 class BoundarySession:
  def __init__(self,boundary,inputs=None,logical_root=None):
   self.boundary=boundary;self.inputs=inputs;self.logical_root=logical_root;self.records=[];self.mutation_operations=[];self.config_operations=[];self.config_owned_files={};self.lock=threading.RLock();self.thread_names={};self._thread_count=0;self._socket_count=0;self.owned_runs=set();self.owned_configs=set();self._local=threading.local();self._original_http_depth=0;self.operation_epoch=0;self.epoch_initial_versions={0:None};self._original={'time':time.time,'monotonic':time.monotonic,'sleep':time.sleep,'uuid':uuid.uuid4,'socket':socket.create_connection,'http_connection':http.client.HTTPConnection}
+ def capture_instance_context(self,service):
+  # Event epochs and cache epochs are different domains; only the actual
+  # candidate process brackets can relate their observations.
+  try:
+   events=modules()['run_p02_acc'].call(self.inputs['endpoint'],'get_events',{'limit':500},controller=None)
+   context={'service':copy.deepcopy(service),'events':events}
+  except Exception:
+   context=None
+  if not hasattr(self,'instance_contexts'):self.instance_contexts={}
+  self.instance_contexts[self.operation_epoch]=context
+ def reconcile_internal_operation(self,current):
+  begin=self.epoch_initial_versions.get(self.operation_epoch)
+  if type(begin) is not int:return
+  operations=[op for op in self.mutation_operations if op.get('epoch',0)==self.operation_epoch]
+  if any(op.get('response_unknown') for op in operations):return
+  known=set()
+  pre_gate={'state_conflict','operation_busy','controller_conflict','controller_identity_missing','invalid_command_id','invalid_version'}
+  for op in operations:
+   if op.get('replay'):continue
+   expected=op.get('request_expected_version');response=op.get('response') or {}
+   consumed=op.get('accepted') or (type(expected) is int and (response.get('error') or {}).get('code') not in pre_gate and response.get('state_version')==expected+1)
+   if consumed:known.add(expected)
+  end=current['state_version']
+  if end<=begin or end-begin>64:return
+  missing=set(range(begin,end))-known
+  if not missing:return
+  if missing!={end-1}:return # Never fill arbitrary gaps or earlier lost runs.
+  context=getattr(self,'instance_contexts',{}).get(self.operation_epoch)
+  if not context:raise ValueError('internal operation instance context unobserved')
+  p2=modules()['run_p02_acc'];base=self.inputs['endpoint']
+  before=service_preflight(self,self.inputs)
+  if before!=context['service']:raise ValueError('internal operation candidate instance differs')
+  import process_recovery
+  observed=process_recovery.observe_service(base,self,self.original_writer,'internal-proof-'+str(end))
+  marker=observed.get('marker') or {}
+  if (observed.get('pid')!=before['pid'] or str(observed.get('creation_time'))!=before['birth']
+      or observed.get('image','').casefold()!=before['image'].casefold() or marker.get('needs_recovery') is not False):
+   raise ValueError('internal operation marker/candidate ownership unproven')
+  starts=[op for op in operations if op.get('tool')=='start' and op.get('accepted') and not op.get('replay')
+          and (op.get('response') or {}).get('run_id')==marker.get('run_id') and marker.get('run_id') in self.owned_runs]
+  if len(starts)!=1:raise ValueError('internal operation lacks exact owned run start')
+  start=starts[0];owner=start.get('request_controller');config=_config_identity(start['response'].get('config_identity'))
+  if (not owner or marker.get('controller_id')!=owner or not config
+      or marker.get('config_sha256')!=config['sha256'] or not _same_config(current['config_identity'],config)):
+   raise ValueError('internal operation owner/run/config differs')
+  events=p2.call(base,'get_events',{'limit':500},controller=None);old=context['events']
+  rows=events.get('events') or [];epoch=events.get('epoch');seq=[row.get('seq') for row in rows]
+  baseline=old.get('latest_seq')
+  if (events.get('error') or old.get('error') or not epoch or old.get('epoch')!=epoch
+      or old.get('gap') is not False or old.get('reset_required') is not False or old.get('has_more') is not False
+      or events.get('gap') is not False
+      or events.get('reset_required') is not False or events.get('has_more') is not False
+      or type(baseline) is not int or not seq or any(type(n) is not int for n in seq)
+      or seq!=sorted(set(seq)) or any(row.get('epoch')!=epoch for row in rows)
+      or [n for n in seq if n>baseline]!=list(range(baseline+1,seq[-1]+1))):
+   raise ValueError('internal operation event epoch/order/gap unproven')
+  command=marker.get('command_id')
+  def one(kind,command_id,operation):
+   found=[row for row in rows if row.get('kind')==kind and row.get('command_id')==command_id and row.get('operation')==operation]
+   if len(found)!=1:raise ValueError('internal operation acceptance/completion not unique')
+   return found[0]
+  started=one('command.accepted',start['request_command_id'],'start');start_done=one('command.completed',start['request_command_id'],'start')
+  accepted=one('command.accepted',command,'protective_stop');completed=one('command.completed',command,'protective_stop')
+  if (not baseline<started['seq']<start_done['seq']<accepted['seq']<completed['seq']
+      or started.get('controller')!=owner or accepted.get('controller')!=owner
+      or start_done.get('state_version')!=start['response']['state_version']
+      or completed.get('state_version')!=end or completed.get('state')!='stopped'
+      or marker.get('state_version')!=end or current['state']!='stopped' or current['run_id'] is not None):
+   raise ValueError('internal operation event/owned marker version differs')
+  own_cache=p2.call(base,'get_command_status',{'command_id':start['request_command_id']},controller=owner)
+  cache=p2.call(base,'get_command_status',{'command_id':command},controller=owner)
+  for record,expected_command in ((own_cache,start['request_command_id']),(cache,command)):
+   if (record.get('error') or record.get('command_error') or record.get('status')!='completed'
+       or record.get('command_id')!=expected_command or record.get('cache_scope')!='process'
+       or record.get('persistent') is not False or not record.get('cache_epoch')):
+    raise ValueError('internal operation terminal cache proof unresolved')
+  if (cache['cache_epoch']!=own_cache['cache_epoch'] or own_cache.get('response')!=start['response']):
+   raise ValueError('internal operation cache epoch/owned start receipt differs')
+  response=cache.get('response') or {}
+  if (response.get('command_id')!=command or response.get('error') or response.get('state_version')!=end
+      or response.get('state')!='stopped' or response.get('run_id') is not None or response.get('changed') is not True):
+   raise ValueError('internal operation completion response differs')
+  if service_preflight(self,self.inputs)!=before or _status_snapshot(p2.status(base))!=current:
+   raise ValueError('internal operation instance changed during read-only proof')
+  operation={'tool':'protective_stop','request_command_id':command,'request_expected_version':end-1,
+             'request_controller':owner,'epoch':self.operation_epoch,'response_unknown':False,
+             'response':copy.deepcopy(response),'accepted':True,'replay':False,'internal_observed':True}
+  self.mutation_operations.append(operation)
+  self.original_writer.add_evidence('internal-operation-'+str(end),{'before':before,'observed':observed,'events':events,'own_cache':own_cache,'cache':cache})
  @contextlib.contextmanager
  def original_helpers(self):
   """Observe the original helper calls, including their finally restoration."""
@@ -424,6 +513,7 @@ class BoundarySession:
    is_snapshot=getattr(self,'original_unit',None)=='ACC-008' and not active[0]
    if channel is not self or (not active[0] and not is_snapshot):return stop(channel,*args,**kwargs)
    before=service_preflight(self,self.inputs)
+   self.reconcile_internal_operation(_status_snapshot(p03.status(self.inputs['endpoint'])))
    result=stop(channel,*args,**kwargs)
    probe=("# MCP_RESTART_OLD_EXIT_V1\n$ErrorActionPreference='Stop';"
     "$old=Get-Process -Id "+str(before['pid'])+" -ErrorAction SilentlyContinue;"
@@ -453,6 +543,7 @@ class BoundarySession:
    with self.lock:
     self.operation_epoch+=1;self.epoch_initial_versions[self.operation_epoch]=anchor['state_version']
    self.service_epochs=getattr(self,'service_epochs',[])+[{'epoch':self.operation_epoch,'before':before,'after':after,'exit':exited,'initial_status':anchor}]
+   self.capture_instance_context(after)
   def configured(channel,enabled,grace,*args,**kwargs):
    if channel is not self:return configure(channel,enabled,grace,*args,**kwargs)
    before=service_preflight(self,self.inputs)
@@ -487,10 +578,12 @@ class BoundarySession:
    with self.lock:
     self.operation_epoch+=1;self.epoch_initial_versions[self.operation_epoch]=anchor['state_version']
    self.service_epochs=getattr(self,'service_epochs',[])+[dict(proof,epoch=self.operation_epoch,after=after,initial_status=anchor)]
+   self.capture_instance_context(after)
   def scripted(channel,name,expected):
    if channel is not self or name not in ('crash_creation_window.ps1','crash_current_service.ps1'):
     return original_script(channel,name,expected)
    before=service_preflight(self,self.inputs)
+   self.reconcile_internal_operation(_status_snapshot(p03.status(self.inputs['endpoint'])))
    if expected.get('supervisor')!={'pid':before['pid'],'creation_time':before['birth']}:
     raise ValueError('owned crash supervisor differs from candidate instance')
    actual,raw=original_script(channel,name,expected)
@@ -634,9 +727,15 @@ class BoundarySession:
   except (ValueError,KeyError,TypeError):
    raise ValueError('MCP request is not a complete operation')
   if tool in _TRACKED_MUTATIONS:
+   if getattr(self,'instance_contexts',None) and not any(op.get('response_unknown') for op in self.mutation_operations):
+    expected=arguments.get('expected_state_version')
+    if type(expected) is int:
+     known=max([self.epoch_initial_versions.get(self.operation_epoch) or 0]+[(op.get('response') or {}).get('state_version',0) for op in self.mutation_operations if op.get('epoch',0)==self.operation_epoch and op.get('accepted') and not op.get('replay')])
+     if expected>known:self.reconcile_internal_operation(_status_snapshot(modules()['run_p02_acc'].status(self.inputs['endpoint'])))
    operation={'tool':tool,'arguments':copy.deepcopy(arguments),
               'request_command_id':arguments.get('command_id'),
               'request_expected_version':arguments.get('expected_state_version'),
+              'request_controller':{k.lower():v for k,v in request.header_items()}.get('x-fakenet-controller-id'),
               'epoch':self.operation_epoch,
               'response_unknown':True}
    with self.lock:
@@ -1029,7 +1128,7 @@ def _cleanup_owned_configs(mods,base,session,writer):
 
 
 def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
- mods=modules(root);session=BoundarySession(boundary,inputs);session.original_unit=unit;out=Path(out);writer=mods['helpers'].EvidenceWriter(out,'original-unit')
+ mods=modules(root);session=BoundarySession(boundary,inputs);session.original_unit=unit;out=Path(out);writer=mods['helpers'].EvidenceWriter(out,'original-unit');session.original_writer=writer
  if getattr(boundary,'fixture',True) is False:boundary.observe_unit=unit
  args=original_args(inputs,out)
  if unit=='ACC-014' and 'ACC-014' in inputs.get('references',{}):
@@ -1076,6 +1175,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
       raise ValueError('input configuration binding differs')
      writer.add_evidence('initial-config-binding',binding)
     service_before=service_preflight(session,inputs);writer.add_evidence('installed-service-before',service_before)
+    session.capture_instance_context(service_before)
     before=session.operation('observe',{})
     writer.add_evidence('environment-before',before)
     with session.original_http_contract():code=invoke_unit(unit,args,session,writer,mods)
@@ -1098,6 +1198,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
        raise ValueError('state version regressed during the unit')
       if any(op.get('response_unknown') for op in session.config_operations):
        raise ValueError('configuration operation response is unresolved')
+      session.reconcile_internal_operation(final)
       _verified_version_chain(session,initial,final)
       initial_config=initial['config_identity'];final_config=final['config_identity']
       if initial_config is None:
