@@ -623,3 +623,6 @@ and freshly bound NULL status/version, process cache and event epochs before
 the existing version/configuration recovery guards consume its new epoch.
 The fixture creates a real new coordinator/cache instead of retaining the old
 loaded configuration. SCM Running banners alone never establish restoration.
+
+
+The `CONTROL-EXTRA-29094/29095` changing-configuration path observes both real service replacements. Each stop binds the old process birth/image and exact owned service bytes, and each configured/restored startup records fresh NULL/version/cache/event anchors before the existing strict operation/config restoration checks consume that generation. Five live echo probes and listener receipts, filter exclusion, clean stop and OS restoration remain required. Existing configured ports retain their no-restart path. A foreign listener pauses its affected case; it is never displaced. Real-coordinator generation tests and public CLI trace-tamper negatives verify the same consumers; fixture success grants no Windows runtime credit.

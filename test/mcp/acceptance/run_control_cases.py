@@ -193,7 +193,6 @@ class ControlCase:
     @contextlib.contextmanager
     def extra_port_config(self, writer, port):
         """Bind one authorized test setting, restore only unchanged owned bytes."""
-        from helpers import controlled_service_stop
         from fakenet.mcp.config import ServiceConfig
         path = 'C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json'
         observed = self.channel.powershell(
@@ -216,41 +215,34 @@ class ControlCase:
         parsed['extra_control_ports'] = ports
         configured = json.dumps(parsed, ensure_ascii=False).encode('utf-8')
         expected = hashlib.sha256(configured).hexdigest()
-        def replace(previous, raw):
-            encoded = base64.b64encode(raw).decode('ascii')
-            wanted = hashlib.sha256(raw).hexdigest()
-            result = self.channel.powershell(
-                "$ErrorActionPreference='Stop';$p='" + path + "';"
-                "if((Get-FileHash $p -Algorithm SHA256).Hash.ToLower() -ne '" + previous +
-                "'){throw 'extra control config changed; preserve scene'};"
-                "$b=[Convert]::FromBase64String('" + encoded + "');"
-                "[IO.File]::WriteAllBytes($p,$b);"
-                "$hash=(Get-FileHash $p -Algorithm SHA256).Hash.ToLower();"
-                "if($hash -ne '" + wanted + "'){throw 'extra control config write hash differs'};"
-                "@{sha256=$hash}|ConvertTo-Json -Compress", timeout=30)
-            if json.loads(result['output']).get('sha256') != wanted:
-                raise RuntimeError('extra control config write not observed')
-            return result
+        begin = getattr(self.channel, 'control_extra_begin', None)
+        if begin is not None:
+            begin(port, original)
+        owned_sha = original['sha256']
         changed = False
         try:
-            controlled_service_stop(self.channel)
-            written = replace(original['sha256'], configured)
+            self._extra_stop(writer, 'configured', owned_sha)
+            owned_sha = self._extra_write(writer, 'configured', owned_sha, configured)
             changed = True
-            writer.add_evidence('extra-control-config-write', written)
-            started = self.channel.powershell(
-                "Start-Service fakenetng-mcp; (Get-Service fakenetng-mcp).Status", timeout=120)
+            started = self._extra_start(owned_sha, 5, 120)
+            writer.add_evidence('extra-control-service-configured', started)
             if started['output'].strip() != 'Running':
                 raise RuntimeError('service not running with extra control setting')
+            observe = getattr(self.channel, 'control_extra_started', None)
+            if observe is not None:
+                observe('configured', {'base64': base64.b64encode(configured).decode('ascii'), 'sha256': owned_sha})
             yield
         finally:
             if changed:
-                controlled_service_stop(self.channel)
-                writer.add_evidence('extra-control-config-restore', replace(expected, body))
-                restored = self.channel.powershell(
-                    "Start-Service fakenetng-mcp; (Get-Service fakenetng-mcp).Status", timeout=120)
+                self._extra_stop(writer, 'restored', owned_sha)
+                owned_sha = self._extra_write(writer, 'restored', owned_sha, body)
+                restored = self._extra_start(owned_sha, 5, 120)
                 writer.add_evidence('extra-control-service-restored', restored)
                 if restored['output'].strip() != 'Running':
                     raise RuntimeError('service not running after config restore')
+                observe = getattr(self.channel, 'control_extra_started', None)
+                if observe is not None:
+                    observe('restored', original)
 
     def case_control_extra(self, writer, port):
         if getattr(self.args, 'manage_extra_ports', False):
@@ -318,6 +310,72 @@ class ControlCase:
                 writer.add_evidence('control-extra-listener-stop', kill_owned_process(
                     self.channel, started_listener['pid'],
                     started_listener['created'], 'control-case-listener'))
+
+    def _extra_stop(self, writer, label, expected_sha):
+        """Exact original CLI stop, with real instance/exit and owned bytes."""
+        raw = self.channel.powershell(
+            "# CONTROL_EXTRA_STOP_V1\n$ErrorActionPreference='Stop';"
+            "$exe='C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe';"
+            "$cfg='C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json';"
+            "if((Get-FileHash $cfg -Algorithm SHA256).Hash.ToLower() -cne '" + expected_sha + "'){throw 'control config owner changed'};"
+            "$svc=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\";"
+            "$old=$null;$before=$null;if($svc.State -eq 'Running' -and $svc.ProcessId){"
+            "$old=Get-Process -Id $svc.ProcessId -ErrorAction Stop;[void]$old.Handle;"
+            "if($old.Path -ine $exe){throw 'control service image differs'};"
+            "$before=@{pid=$old.Id;birth=$old.StartTime.ToFileTimeUtc().ToString();image=$old.Path;"
+            "sha256=(Get-FileHash -LiteralPath $old.Path -Algorithm SHA256).Hash.ToLower()}}"
+            "elseif($svc.State -ne 'Stopped' -or $svc.ProcessId){throw 'control service transition unresolved'};"
+            "$cli=@();if($old){$cli=@(& $exe stop 2>&1|ForEach-Object {\"$_\"});if($LASTEXITCODE -ne 0){throw 'controlled stop failed'}};"
+            "$deadline=[DateTime]::UtcNow.AddSeconds(60);"
+            "while((Get-Service fakenetng-mcp).Status -ne 'Stopped' -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 500};"
+            "$after=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\";"
+            "if($after.State -ne 'Stopped' -or $after.ProcessId){throw 'service did not stop for variant'};"
+            "if($old -and !$old.WaitForExit(30000)){throw 'old control service has not exited'};"
+            "@{before=$before;old_exited=[bool]$old;no_process_before=(!$old);scm_stopped=$true;pid_after=$after.ProcessId;"
+            "config_sha256=(Get-FileHash $cfg -Algorithm SHA256).Hash.ToLower();cli_output=$cli}|ConvertTo-Json -Depth 5 -Compress", timeout=300)
+        proof = json.loads(raw['output'])
+        if (proof.get('scm_stopped') is not True or proof.get('pid_after') != 0 or
+                proof.get('config_sha256') != expected_sha or
+                (proof.get('before') is None and (proof.get('no_process_before') is not True or proof.get('old_exited') is not False)) or
+                (proof.get('before') is not None and (proof.get('old_exited') is not True or proof.get('no_process_before') is not False))):
+            raise RuntimeError('control stop/owned configuration proof differs')
+        if proof.get('before') is not None and not hasattr(self, '_extra_image_sha'):
+            self._extra_image_sha = proof['before']['sha256']
+        writer.add_evidence('control-extra-stop-' + label, {'proof': proof, 'raw': raw})
+        observe = getattr(self.channel, 'control_extra_stopped', None)
+        if observe is not None:
+            observe(label, proof)
+        return proof
+
+    def _extra_start(self, expected_sha, seconds, timeout):
+        image_sha = getattr(self, '_extra_image_sha', None)
+        if not image_sha:
+            raise RuntimeError('original control service image was not observed')
+        return self.channel.powershell(
+            "# CONTROL_EXTRA_START_V1\n$ErrorActionPreference='Stop';"
+            "$exe='C:\\Program Files\\FakeNet-NG-MCP\\fakenetng-mcp.exe';"
+            "$cfg='C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json';"
+            "$svc=Get-CimInstance Win32_Service -Filter \"Name='fakenetng-mcp'\";"
+            "if($svc.PathName -notmatch ('(?i)^\"?'+[regex]::Escape($exe)+'\"?(?:\\s|$)')){throw 'control SCM image path changed'};"
+            "if((Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() -cne '" + image_sha + "'){throw 'control SCM image hash changed'};"
+            "if((Get-FileHash $cfg -Algorithm SHA256).Hash.ToLower() -cne '" + expected_sha + "'){throw 'control config owner changed'};"
+            "sc.exe start fakenetng-mcp | Out-Null; Start-Sleep -Seconds " + str(seconds) + "; "
+            "(Get-Service fakenetng-mcp).Status", timeout=timeout)
+
+    def _extra_write(self, writer, label, expected_sha, data):
+        encoded = base64.b64encode(data).decode('ascii')
+        wanted = hashlib.sha256(data).hexdigest()
+        raw = self.channel.powershell(
+            "# CONTROL_EXTRA_WRITE_V1\n$ErrorActionPreference='Stop';$p='C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json';"
+            "if((Get-FileHash $p -Algorithm SHA256).Hash.ToLower() -cne '" + expected_sha + "'){throw 'control config owner changed'};"
+            "$bytes=[Convert]::FromBase64String('" + encoded + "');[IO.File]::WriteAllBytes($p,$bytes);"
+            "@{base64=[Convert]::ToBase64String([IO.File]::ReadAllBytes($p));"
+            "sha256=(Get-FileHash $p -Algorithm SHA256).Hash.ToLower()}|ConvertTo-Json -Compress", timeout=30)
+        observed = json.loads(raw['output'])
+        if observed != {'base64': encoded, 'sha256': wanted}:
+            raise RuntimeError('control configuration write/restore bytes differ')
+        writer.add_evidence('control-extra-write-' + label, {'observed': observed, 'raw': raw})
+        return wanted
 
     def _invalid_stop(self, writer, label, expected_sha):
         """Exact original CLI stop, with real instance/exit and owned bytes."""
