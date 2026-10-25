@@ -38,9 +38,13 @@ class ReadOnlyBoundary:
   if kind=='target':return self.inputs['target']
   if kind=='observe':return {'sections':{'routes':'IPv4 fixed','dns_servers':[],'listen_ports':'fixed scoped listener','windivert_processes':{'services':[],'processes':[]},'services':'Running'},'service':{'computer':self.inputs['target']['hostname'],'pid':12,'created':'birth','state':'Running'}}
   if kind=='powershell':
-   if 'fault_exists=' in value['command']:
+   if 'MCP_RESTART_OLD_EXIT_V1' in value['command']:
+    import re
+    cmd=value['command'];payload={'old_pid':int(re.search(r'old_pid=(\d+)',cmd).group(1)),'old_birth':re.search(r"old_birth='(\d+)'",cmd).group(1),'old_exited':True}
+    if 'scm_stopped=' in cmd:payload['scm_stopped']=True
+   elif 'fault_exists=' in value['command']:
     from pathlib import PureWindowsPath
-    manifest=m.read(self.inputs['manifest']);payload={'image':str(PureWindowsPath(self.inputs['installation_root'])/'fakenetng-mcp.exe'),'sha256':manifest['files'][0]['sha256'],'pid':12,'birth':'1234','enabled':False,'grace':60,'fault_exists':False,'service_config':{'listen_ip':self.inputs['listen_ip'],'listen_port':28788,'allowed_host_ips':[self.inputs['allowed_host']],'extra_control_ports':[]}}
+    manifest=m.read(self.inputs['manifest']);payload={'image':str(PureWindowsPath(self.inputs['installation_root'])/'fakenetng-mcp.exe'),'sha256':manifest['files'][0]['sha256'],'pid':12,'birth':str(1234+getattr(self,'service_generation',0)),'enabled':False,'grace':60,'fault_exists':False,'service_config':{'listen_ip':self.inputs['listen_ip'],'listen_port':28788,'allowed_host_ips':[self.inputs['allowed_host']],'extra_control_ports':[]}}
    elif 'grace=$cfg.stop_grace_seconds' in value['command']:payload={'enabled':False,'grace':60}
    else:raise AssertionError('unexpected original PowerShell command '+value['command'])
    return {'output':json.dumps(payload),'raw':json.dumps(payload),'exit_code':0,'is_error':False}
@@ -185,7 +189,7 @@ class DomainBoundary(ReadOnlyBoundary):
     if 'grace=$cfg.stop_grace_seconds' in command:return super().exchange(kind,value)
     if 'config-audit.jsonl' in command:output=self.context.store.audit_path.read_text()
     elif 'MCP_RESTART_OLD_EXIT_V1' in command:
-     output=json.dumps({'old_pid':12,'old_birth':str(1234+getattr(self,'service_generation',0)),'old_exited':True})
+     return ReadOnlyBoundary.exchange(self,kind,value)
     elif 'sc.exe start' in command:self.service_generation=getattr(self,'service_generation',0)+1;self.assemble();output='STARTED'
     else:output='GONE'
     return {'output':output,'raw':output,'exit_code':0,'is_error':False}
@@ -298,11 +302,12 @@ class FaultProcessBoundary(ReadOnlyBoundary):
    if kind=='powershell':
     command=value['command']
     if 'fault_exists=' in command:
-     payload=json.loads(super().exchange(kind,value)['output']);payload.update(enabled=self.enabled,grace=self.grace);output=json.dumps(payload)
+     payload=json.loads(super().exchange(kind,value)['output']);payload.update(enabled=self.enabled,grace=self.grace);payload['service_config']['stop_grace_seconds']=self.grace;output=json.dumps(payload)
+    elif 'MCP_RESTART_OLD_EXIT_V1' in command:return ReadOnlyBoundary.exchange(self,kind,value)
     elif 'grace=$cfg.stop_grace_seconds' in command:output=json.dumps({'enabled':self.enabled,'grace':self.grace})
     elif 'Add-Member -NotePropertyName stop_grace_seconds' in command:
      import re
-     self.enabled="$preserved + @('FAKENETNG_MCP_FAULT_INJECTION=1')" in command;self.grace=int(re.search(r'NotePropertyValue (\d+)',command).group(1));output='configured'
+     self.enabled="$preserved + @('FAKENETNG_MCP_FAULT_INJECTION=1')" in command;self.grace=int(re.search(r'NotePropertyValue (\d+)',command).group(1));self.service_generation=getattr(self,'service_generation',0)+1;self.version=1;output='configured'
     elif '[IO.File]::WriteAllText($path,' in command and 'fault-injection.json' in command:
      import re
      self.fault=json.loads(re.search(r"WriteAllText\(\$path,'(\{.*?\})'",command).group(1));self.archive();output=json.dumps(self.fault)
@@ -2752,3 +2757,84 @@ class EpochVersionContinuityTests(unittest.TestCase):
     elif mode=='unexplained-advance':end['state_version']=3
     else:bad.mutation_operations[-1]['response_unknown']=True
     with self.assertRaises(ValueError):m._verified_version_chain(bad,{'state_version':8},end)
+
+
+class HelperEpochDomainBoundary(DomainBoundary):
+ def __init__(self,inputs,root):
+  self.enabled=False;self.grace=60;super().__init__(inputs,root)
+ def exchange(self,kind,value):
+  if kind=='powershell':
+   command=value['command']
+   if 'fault_exists=' in command:
+    result=super().exchange(kind,value);payload=json.loads(result['output']);payload.update(enabled=self.enabled,grace=self.grace);payload['service_config']['stop_grace_seconds']=self.grace;result['output']=json.dumps(payload);return result
+   if 'grace=$cfg.stop_grace_seconds' in command:
+    output=json.dumps({'enabled':self.enabled,'grace':self.grace})
+   elif 'Add-Member -NotePropertyName stop_grace_seconds' in command:
+    import re
+    self.enabled="$preserved + @('FAKENETNG_MCP_FAULT_INJECTION=1')" in command;self.grace=int(re.search(r'NotePropertyValue (\d+)',command).group(1));self.service_generation=getattr(self,'service_generation',0)+1;self.assemble();output='configured'
+   elif 'controlled pre-stop failed' in command:output='controlled service stop completed'
+   else:return super().exchange(kind,value)
+   return {'output':output,'raw':output,'exit_code':0,'is_error':False}
+  return super().exchange(kind,value)
+
+class OriginalHelperEpochTests(unittest.TestCase):
+ def setUp(self):
+  OriginalMcpTests.setUp(self);m.modules(ROOT)
+ def test_original_helper_records_real_exit_new_birth_and_status_anchor(self):
+  boundary=HelperEpochDomainBoundary(self.inputs,self.root/'helper');session=m.BoundarySession(boundary,self.inputs)
+  with session.activate():
+   with session.original_helpers():m.modules(ROOT)['helpers'].configure_fault_service(session,True,5)
+  self.assertEqual(1,session.operation_epoch)
+  self.assertEqual(1,session.epoch_initial_versions[1])
+  self.assertIsNone(boundary.context.coordinator.snapshot()['config_identity'])
+  before=len(session.records)
+  with session.activate():
+   with session.original_helpers():m.modules(ROOT)['helpers'].configure_fault_service(session,True,5)
+  self.assertEqual(1,session.operation_epoch)
+  self.assertGreater(len(session.records),before)
+ def test_original_s2_restores_config_after_real_helper_null_reset_and_replays(self):
+  class NullReset(InitializationProcessBoundary):
+   def __init__(self,inputs):super().__init__(inputs);self.active_config=inputs['config_identity']
+   def exchange(self,kind,value):
+    result=super().exchange(kind,value)
+    if kind=='powershell' and 'Add-Member -NotePropertyName stop_grace_seconds' in value['command']:self.active_config=None
+    if kind=='http':
+     request=json.loads(value['data']);tool=request['params']['name']
+     if tool=='load_config':self.active_config=self.inputs['config_identity']
+     if tool in ('load_config','start','stop','get_status'):
+      body=json.loads(result['body']);payload=json.loads(body['result']['content'][0]['text']);payload['config_identity']=self.active_config;body['result']['content'][0]['text']=json.dumps(payload);result['body']=json.dumps(body).encode()
+    return result
+  out=self.root/'null-reset';boundary=NullReset(self.inputs)
+  value=m.run('MCP-P03-FULL',out,self.inputs,selected=['ACC-004-S2'],boundary=boundary,fixture=True)
+  self.assertEqual('pass',value['checks']['ACC-004-S2']['status'],m.read(out/'units/ACC-004-S2/result.json'))
+  trace=m.read(out/'units/ACC-004-S2/trace.json')
+  self.assertEqual(self.inputs['config_identity'],boundary.active_config)
+  self.assertEqual(2,boundary.service_generation)
+  self.assertTrue(trace['recovery_observed'])
+  self.assertEqual(2,max(op['epoch'] for op in trace['config_operations']))
+  rows,clean,detail=o.evaluate(ROOT,out,'MCP-P03-FULL',['ACC-004-S2'],self.inputs,allow_fixture=True)
+  self.assertEqual('pass',rows[0]['status'],detail);self.assertTrue(clean,detail)
+ def test_bad_helper_instance_or_settings_never_creates_epoch(self):
+  for defect in ('old-alive','wrong-image','same-birth','wrong-grace','missing-proof','missing-anchor'):
+   with self.subTest(defect=defect):
+    class Broken(HelperEpochDomainBoundary):
+     def exchange(self,kind,value):
+      if kind=='powershell' and 'MCP_RESTART_OLD_EXIT_V1' in value['command'] and defect in ('old-alive','missing-proof'):
+       return {'output':json.dumps({'old_pid':12,'old_birth':'1234','old_exited':False} if defect=='old-alive' else {}),'exit_code':0,'is_error':False}
+      result=super().exchange(kind,value)
+      if defect=='missing-anchor' and kind=='http' and getattr(self,'service_generation',0):
+       request=json.loads(value['data'])
+       if request['params']['name']=='get_status':
+        body=json.loads(result['body']);payload=json.loads(body['result']['content'][0]['text']);payload['state_version']=None;body['result']['content'][0]['text']=json.dumps(payload);result['body']=json.dumps(body).encode()
+      if kind=='powershell' and 'fault_exists=' in value['command'] and getattr(self,'service_generation',0):
+       payload=json.loads(result['output'])
+       if defect=='wrong-image':payload['image']=r'C:\Foreign\fakenetng-mcp.exe'
+       if defect=='same-birth':payload['birth']='1234'
+       if defect=='wrong-grace':payload['grace']=6
+       result['output']=json.dumps(payload)
+      return result
+    session=m.BoundarySession(Broken(self.inputs,self.root/defect),self.inputs)
+    with self.assertRaises(ValueError):
+     with session.activate():
+      with session.original_helpers():m.modules(ROOT)['helpers'].configure_fault_service(session,True,5)
+    self.assertEqual(0,session.operation_epoch)

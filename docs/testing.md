@@ -445,3 +445,28 @@ chain and requires the final version to match; same-epoch regression, missing
 steps, duplicate acceptance, unexplained advances and unknown responses still
 fail. The benign restart fixture starts a new Coordinator with NULL config
 and version 1, matching the installed service instead of preloading default.
+
+
+The same observer covers the original `configure_fault_service` and controlled
+restart helper calls. It records the old process exit and stopped SCM state,
+then verifies the new candidate image, hash, later birth and exact requested
+fault-mode/grace changes. Other settings must remain unchanged. A reused helper
+instance keeps its epoch; a missing status/version anchor cannot create one.
+Direct stop operations retain their original behavior.
+
+Helper references imported by original consumers during a unit are restored
+when the unit exits, along with already loaded consumer references. This keeps
+independent replay bound to its own session instead of a previous unit's
+transport. The oracle repeats the original helpers over the recorded OS and
+HTTP responses, including their refusal paths.
+
+Restoring fault settings can itself restart the service and clear its loaded
+configuration. The runner validates the operation chain before that restart,
+then restores an originally bound configuration only after a proved owned
+helper reset to NULL with no intervening accepted load. It checks the final
+configuration, version ledger, service settings and OS audit against the actual
+last process. Unproved configuration disappearance and unknown mutations still
+fail. A benign original initialization-failure test exercises both helper
+restarts, real NULL resets, final configuration restoration and independent
+replay. Source/fixture success does not grant native Windows or full-regression
+credit, and does not turn an observed product failure into a pass.

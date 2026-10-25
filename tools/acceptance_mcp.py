@@ -412,6 +412,78 @@ class BoundarySession:
  def __init__(self,boundary,inputs=None,logical_root=None):
   self.boundary=boundary;self.inputs=inputs;self.logical_root=logical_root;self.records=[];self.mutation_operations=[];self.config_operations=[];self.config_owned_files={};self.lock=threading.RLock();self.thread_names={};self._thread_count=0;self._socket_count=0;self.owned_runs=set();self.owned_configs=set();self._local=threading.local();self._original_http_depth=0;self.operation_epoch=0;self.epoch_initial_versions={0:None};self._original={'time':time.time,'monotonic':time.monotonic,'sleep':time.sleep,'uuid':uuid.uuid4,'socket':socket.create_connection,'http_connection':http.client.HTTPConnection}
  @contextlib.contextmanager
+ def original_helpers(self):
+  """Observe the original helper calls, including their finally restoration."""
+  from unittest.mock import patch
+  mods=modules();helpers=mods['helpers'];p03=mods['run_p03_acc']
+  stop=helpers.controlled_service_stop;configure=helpers.configure_fault_service;restart=p03.restart_service
+  pending={};active=[False]
+  def controlled(channel,*args,**kwargs):
+   if channel is not self or not active[0]:return stop(channel,*args,**kwargs)
+   before=service_preflight(self,self.inputs)
+   result=stop(channel,*args,**kwargs)
+   probe=("# MCP_RESTART_OLD_EXIT_V1\n$ErrorActionPreference='Stop';"
+    "$old=Get-Process -Id "+str(before['pid'])+" -ErrorAction SilentlyContinue;"
+    "$exited=(!$old -or $old.StartTime.ToFileTimeUtc().ToString() -cne '"+before['birth']+"');"
+    "@{old_pid="+str(before['pid'])+";old_birth='"+before['birth']+"';old_exited=$exited;"
+    "scm_stopped=((Get-Service fakenetng-mcp).Status -eq 'Stopped')}|ConvertTo-Json -Compress")
+   raw=self.powershell(probe,timeout=30);exited=json.loads(raw['output'])
+   if exited!={'old_pid':before['pid'],'old_birth':before['birth'],'old_exited':True,'scm_stopped':True}:
+    raise ValueError('old service instance exit/SCM stop not observed')
+   pending.update(before=before,exit=exited)
+   return result
+  def complete(before,enabled,grace):
+   after=service_preflight(self,self.inputs)
+   old=pending.pop('before',None);exited=pending.pop('exit',None)
+   if old!=before or exited is None:raise ValueError('helper restart lacks old instance proof')
+   expected=copy.deepcopy(before);expected.update(enabled=enabled,grace=grace)
+   expected['service_config']['stop_grace_seconds']=grace
+   if (int(after['birth'])<=int(before['birth']) or any(after[k]!=expected[k] for k in ('image','sha256','enabled','grace','fault_exists','service_config'))):
+    raise ValueError('helper service restart instance/settings proof differs')
+   # The independent oracle repeats these comparisons from raw OS responses.
+   anchor=_status_snapshot(mods['run_p02_acc'].status(self.inputs['endpoint']))
+   if anchor['state']!='stopped' or anchor['run_id'] is not None or type(anchor['state_version']) is not int or anchor['state_version']<1:raise ValueError('new helper service not idle/version unobserved')
+   with self.lock:
+    self.operation_epoch+=1;self.epoch_initial_versions[self.operation_epoch]=anchor['state_version']
+   self.helper_epochs=getattr(self,'helper_epochs',[])+[{'epoch':self.operation_epoch,'before':before,'after':after,'exit':exited,'initial_status':anchor}]
+  def configured(channel,enabled,grace,*args,**kwargs):
+   if channel is not self:return configure(channel,enabled,grace,*args,**kwargs)
+   before=service_preflight(self,self.inputs)
+   active[0]=True
+   try:result=configure(channel,enabled,grace,*args,**kwargs)
+   finally:active[0]=False
+   if result.get('reused_service_instance') is True:
+    if before!=service_preflight(self,self.inputs) or before['enabled']!=enabled or before['grace']!=grace:
+     raise ValueError('helper no-op service identity/settings changed')
+   else:complete(before,enabled,grace)
+   return result
+  def restarted(channel,*args,**kwargs):
+   if channel is not self:return restart(channel,*args,**kwargs)
+   before=service_preflight(self,self.inputs);active[0]=True
+   try:result=restart(channel,*args,**kwargs)
+   finally:active[0]=False
+   complete(before,before['enabled'],before['grace']);return result
+  replacements=((stop,controlled),(configure,configured),(restart,restarted))
+  directory=Path(helpers.__file__).resolve().parent
+  def consumers():
+   # Include original direct consumers already imported by an earlier unit.
+   # Do not search unrelated modules or modify their globals.
+   return [module for module in list(sys.modules.values())
+           if getattr(module,'__file__',None) and Path(module.__file__).resolve().parent==directory]
+  with contextlib.ExitStack() as stack:
+   for module in consumers():
+    for name,value in list(vars(module).items()):
+     for original,wrapper in replacements:
+      if value is original:stack.enter_context(patch.object(module,name,wrapper))
+   try:yield
+   finally:
+    # A consumer first imported inside this unit imports the wrapped helper.
+    # Release those references too; otherwise replay calls the old session.
+    for module in consumers():
+     for name,value in list(vars(module).items()):
+      for original,wrapper in replacements:
+       if value is wrapper:setattr(module,name,original)
+ @contextlib.contextmanager
  def original_http_contract(self):
   with self.lock:self._original_http_depth+=1
   try:
@@ -930,6 +1002,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
   with contextlib.ExitStack() as stack:
    for module in mods.values():
     if hasattr(module,'Win10VmChannel'):stack.enter_context(patch.object(module,'Win10VmChannel',lambda *a,**kw:session))
+   stack.enter_context(session.original_helpers())
    try:
     actual=session.operation('target',{})
     if actual!=inputs['target']:raise ValueError('observed VM differs from frozen identity')
@@ -981,7 +1054,11 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
       elif _same_config(initial_config,final_config):
        _cleanup_owned_configs(mods,args.target_base_url,session,writer)
       elif final_config is None:
-       raise ValueError('active configuration disappeared; preserve recovery required')
+       epochs=getattr(session,'helper_epochs',[])
+       if not epochs or epochs[-1]['epoch']!=session.operation_epoch or epochs[-1]['initial_status']['config_identity'] is not None or any(op.get('epoch',0)==session.operation_epoch and op.get('tool')=='load_config' and op.get('accepted') and op.get('changed') for op in session.config_operations):
+        raise ValueError('active configuration disappeared; preserve recovery required')
+       _restore_config(mods,args.target_base_url,session,inputs,initial_config,final,writer)
+       _cleanup_owned_configs(mods,args.target_base_url,session,writer)
       else:
        _accepted_load_operation(session,initial_config,final_config)
        _restore_config(mods,args.target_base_url,session,inputs,initial_config,final,writer)
@@ -989,17 +1066,26 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
       final_raw=mods['run_p02_acc'].status(args.target_base_url)
       final=_status_snapshot(final_raw)
       _verified_version_chain(session,initial,final)
-      writer.add_evidence('final-status',final_raw)
-      if initial_config is None:
-       if final['config_identity'] is not None:raise ValueError('restored configuration is not null')
-      elif not _same_config(final['config_identity'],initial_config):
-       raise ValueError('restored configuration identity not observed')
       service_after=None
       if service_before is not None:
        restored_mode=mods['helpers'].configure_fault_service(session,service_before['enabled'],service_before['grace'])
        writer.add_evidence('service-settings-restored',restored_mode)
        service_after=service_preflight(session,inputs);writer.add_evidence('installed-service-after',service_after)
        if any(service_after[k]!=service_before[k] for k in ('image','sha256','enabled','grace','fault_exists','service_config')):raise ValueError('service settings/image restoration not observed')
+      final_raw=mods['run_p02_acc'].status(args.target_base_url);final=_status_snapshot(final_raw)
+      _verified_version_chain(session,initial,final)
+      if initial_config is not None and final['config_identity'] is None:
+       epochs=getattr(session,'helper_epochs',[])
+       if not epochs or epochs[-1]['epoch']!=session.operation_epoch or epochs[-1]['initial_status']['config_identity'] is not None or any(op.get('epoch',0)==session.operation_epoch and op.get('tool')=='load_config' and op.get('accepted') and op.get('changed') for op in session.config_operations):
+        raise ValueError('active configuration disappeared without owned helper restart')
+       _restore_config(mods,args.target_base_url,session,inputs,initial_config,final,writer)
+       final_raw=mods['run_p02_acc'].status(args.target_base_url);final=_status_snapshot(final_raw)
+       _verified_version_chain(session,initial,final)
+      writer.add_evidence('final-status',final_raw)
+      if initial_config is None:
+       if final['config_identity'] is not None:raise ValueError('restored configuration is not null')
+      elif not _same_config(final['config_identity'],initial_config):
+       raise ValueError('restored configuration identity not observed')
       after=session.operation('observe',{});writer.add_evidence('environment-after',after)
       from fakenet.mcp.baseline import audit_compare
       differences=audit_compare(before['sections'],after['sections'])
