@@ -967,7 +967,7 @@ def run_unit(unit,inputs,out,boundary,*,root=ROOT,fixture=None):
       writer.add_evidence('config-operations-initial',copy.deepcopy(session.config_operations))
       if final['state']!='stopped' or final['run_id'] is not None:
        raise ValueError('final service state is not idle; preserve recovery required')
-      if final['state_version']<initial['state_version']:
+      if session.operation_epoch==0 and final['state_version']<initial['state_version']:
        raise ValueError('state version regressed during the unit')
       if any(op.get('response_unknown') for op in session.config_operations):
        raise ValueError('configuration operation response is unresolved')

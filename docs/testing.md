@@ -436,3 +436,12 @@ and a running candidate instance has a different birth with the same image,
 hash and service settings before advancing the operation epoch. Independent
 replay repeats these checks. Missing proof, an unchanged instance or a foreign
 image fails; old failed traces and unresolved mutation flags remain unchanged.
+
+
+State versions are monotonic within a verified service instance. A proven
+old-process exit and new birth starts a new epoch whose first actual status
+sets its initial version. Recovery checks every epoch's accepted-operation
+chain and requires the final version to match; same-epoch regression, missing
+steps, duplicate acceptance, unexplained advances and unknown responses still
+fail. The benign restart fixture starts a new Coordinator with NULL config
+and version 1, matching the installed service instead of preloading default.

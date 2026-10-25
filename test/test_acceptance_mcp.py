@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest import mock
 ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
 sys.path.insert(0,str(ROOT/'tools'))
 import acceptance_mcp as m
 import acceptance_mcp_oracles as o
@@ -162,7 +163,8 @@ class DomainBoundary(ReadOnlyBoundary):
   registry=Registrar();tools.register_tools(registry,self.context);self.functions=registry.functions
   from fakenet.mcp.transportguard import controller_header_state
   token=controller_header_state.set('11111111-2222-4333-8444-555555555555')
-  try:self.functions['load_config'](name='default.ini',command_id='memory-prepare',expected_state_version=self.context.coordinator.snapshot()['state_version'])
+  try:
+   if not getattr(self,'service_generation',0):self.functions['load_config'](name='default.ini',command_id='memory-prepare',expected_state_version=self.context.coordinator.snapshot()['state_version'])
   finally:controller_header_state.reset(token)
   from fakenet.mcp.artifacts import ArtifactRegistry
   owner=self
@@ -2727,3 +2729,26 @@ class InstalledRestartProofTests(unittest.TestCase):
     self.assertNotEqual('pass',rows[0]['status'],details)
     trace=m.read(out/'units/ACC-011/trace.json')
     self.assertFalse(any(row.get('epoch',0)>0 for row in trace['records']))
+
+
+class EpochVersionContinuityTests(unittest.TestCase):
+ def test_verified_new_process_can_reset_version_but_ledger_stays_strict(self):
+  from types import SimpleNamespace
+  def operation(epoch,expected,version,command):
+   return {'epoch':epoch,'accepted':True,'response_unknown':False,'replay':False,
+           'request_expected_version':expected,'request_command_id':command,
+           'response':{'state_version':version,'error':None}}
+  old=operation(0,8,9,'old');new=operation(1,1,2,'new')
+  session=SimpleNamespace(operation_epoch=1,epoch_initial_versions={0:8,1:1},mutation_operations=[old,new])
+  m._verified_version_chain(session,{'state_version':8},{'state_version':2})
+  import copy
+  for mode in ('same-epoch-regression','missing-start','missing-step','duplicate-acceptance','unexplained-advance','unknown'):
+   with self.subTest(mode=mode):
+    bad=copy.deepcopy(session);end={'state_version':2}
+    if mode=='same-epoch-regression':bad.operation_epoch=0;bad.mutation_operations=[old]
+    elif mode=='missing-start':bad.epoch_initial_versions.pop(1)
+    elif mode=='missing-step':bad.mutation_operations=[]
+    elif mode=='duplicate-acceptance':bad.mutation_operations.append(operation(1,1,2,'another'))
+    elif mode=='unexplained-advance':end['state_version']=3
+    else:bad.mutation_operations[-1]['response_unknown']=True
+    with self.assertRaises(ValueError):m._verified_version_chain(bad,{'state_version':8},end)
