@@ -220,7 +220,10 @@ class ReleaseGate:
         sample()
         start = time.time()
         def monitor():
-            while not stop.wait(0.25):
+            # Record the actual wait decision only on the recorded channel.
+            # A fast replay must consume the native worker's entire timeline.
+            wait = getattr(self.channel, 'fault_monitor_wait', None)
+            while not (wait(stop, 0.25) if wait is not None else stop.wait(0.25)):
                 sample()
         thread = threading.Thread(target=monitor, daemon=True)
         thread.start()

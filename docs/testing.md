@@ -600,3 +600,14 @@ fresh same-version status must both bind the loaded configuration. The raw
 response is retained unchanged; healthy, replayed, unknown or mismatched
 results are rejected. Stop, default restoration and exact owned cleanup remain
 required.
+
+
+The fault-round recorder retains each actual monitor Event.wait(0.25) boolean
+under its exact worker identity. Replay consumes those decisions and all native
+sample times/statuses before the recorded termination, even when the main
+thread finishes much faster. An ordinary channel retains its original Event
+behavior. Missing, extra, wrong-worker, wrong-interval or non-boolean decisions
+and unobserved termination are rejected. Original full-window, two-second
+sampling-gap, nonce/run, audit, incident and dump checks remain unchanged.
+Old traces without the decisions or matching source closure remain failures;
+no sampling timeline or source pin is backfilled.

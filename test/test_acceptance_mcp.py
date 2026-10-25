@@ -3650,3 +3650,95 @@ class PublicValidNoListenerTests(unittest.TestCase):
    if item['case_id']=='MCP-P03-FULL':item['sha256']=m.sha256(case/'receipt.json')
   (self.run/'results/results.json').write_text(json.dumps(index))
   bad=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'bad-cache.json');self.assertNotEqual(0,bad[0],bad)
+
+
+class RealFaultMonitorBoundary(MultiRunFaultBoundary):
+ """Benign fixed process responses with actual clock and worker scheduling."""
+ real_time=staticmethod(__import__('time').time)
+ real_monotonic=staticmethod(__import__('time').monotonic)
+ def __init__(self,inputs):
+  super().__init__(inputs);self.delayed=set()
+ def exchange(self,kind,value):
+  if kind=='time':return self.real_time()
+  if kind=='monotonic':return self.real_monotonic()
+  if kind=='powershell' and '$receipts=@' in value['command'] and self.fault['fault']=='policy_pause' and self.run_id not in self.delayed:
+   self.delayed.add(self.run_id)
+   # Use the real Event condition while the unchanged monitor sends samples.
+   __import__('threading').Event().wait(2.2)
+  return super().exchange(kind,value)
+
+
+class RealFaultMonitorTests(unittest.TestCase):
+ setUp=OriginalMcpTests.setUp
+ def produce(self):
+  out=self.root/'real-monitor';value=m.run('MCP-P04-FULL',out,self.inputs,selected=['FAULT-POINTS'],boundary=RealFaultMonitorBoundary(self.inputs),fixture=True)
+  self.assertEqual('pass',value['checks']['FAULT-POINTS']['status'],m.read(out/'units/FAULT-POINTS/result.json'))
+  return out
+ def test_actual_worker_samples_survive_fast_original_replay(self):
+  out=self.produce();unit=out/'units/FAULT-POINTS';record=m.read(unit/'fault-policy_pause.json')
+  self.assertGreater(len(record['probe_timeline']),3);self.assertGreater(record['probe_window_end']-record['probe_window_start'],2)
+  previous=set((out.parent.parent/'mcp-rejudge').glob('unit-*/unit/fault-policy_pause.json'))
+  rows,clean,detail=o.evaluate(ROOT,out,'MCP-P04-FULL',['FAULT-POINTS'],self.inputs,allow_fixture=True)
+  self.assertEqual('pass',rows[0]['status'],detail);self.assertTrue(clean,detail)
+  trace=m.read(unit/'trace.json');waits=[r for r in trace['records'] if r['kind']=='fault-monitor-wait']
+  self.assertTrue(waits);self.assertTrue(any(r['output'] is False for r in waits));self.assertTrue(any(r['output'] is True for r in waits))
+  self.assertTrue(all(r['input']=={'timeout':0.25} and r['thread'].startswith('mcp-worker-') and type(r['output']) is bool for r in waits))
+  replays=list(set((out.parent.parent/'mcp-rejudge').glob('unit-*/unit/fault-policy_pause.json'))-previous)
+  self.assertEqual(1,len(replays))
+  self.assertEqual(record['probe_timeline'],m.read(replays[-1])['probe_timeline'])
+ def test_missing_wrong_or_extra_monitor_observations_are_refused(self):
+  import copy
+  out=self.produce();path=out/'units/FAULT-POINTS/trace.json';original=m.read(path)
+  for defect in ('missing-wait','invalid-bool','wrong-interval','wrong-thread','omitted-sample','bad-status','long-gap','extra-wait','missing-worker','early-stop','no-terminal-stop'):
+   with self.subTest(defect=defect):
+    trace=copy.deepcopy(original);rows=trace['records'];index=next(i for i,r in enumerate(rows) if r['kind']=='fault-monitor-wait' and r['output'] is False);thread=rows[index]['thread']
+    if defect=='missing-wait':rows.pop(index)
+    elif defect=='invalid-bool':rows[index]['output']=0
+    elif defect=='wrong-interval':rows[index]['input']['timeout']=0.5
+    elif defect=='wrong-thread':rows[index]['thread']='foreign-monitor'
+    elif defect=='early-stop':rows[index]['output']=True
+    elif defect=='no-terminal-stop':next(r for r in reversed(rows) if r['thread']==thread and r['kind']=='fault-monitor-wait')['output']=False
+    elif defect=='extra-wait':rows.append(copy.deepcopy(rows[index]))
+    elif defect=='missing-worker':trace['records']=[r for r in rows if r['thread']!=thread]
+    else:
+     sample=next(r for r in rows[index+1:] if r['thread']==thread and r['kind']=='http')
+     if defect=='omitted-sample':rows.remove(sample)
+     elif defect=='bad-status':
+      response=m.unpack(sample['output']);body=json.loads(response['body']);body['result']['content'][0]['text']=json.dumps({'service':'foreign','error':None});response['body']=json.dumps(body).encode();sample['output']=m.pack(response)
+     else:
+      clock=next(r for r in rows[index+1:] if r['thread']==thread and r['kind']=='time');clock['output']+=3.0
+    path.write_text(json.dumps(trace))
+    with mock.patch('threading.excepthook'):
+     judged,clean,detail=o.evaluate(ROOT,out,'MCP-P04-FULL',['FAULT-POINTS'],self.inputs,allow_fixture=True)
+    self.assertNotEqual('pass',judged[0]['status'],detail)
+  path.write_text(json.dumps(original))
+ def test_plain_channel_keeps_actual_event_wait(self):
+  import threading
+  from run_p05_release import ReleaseGate
+  self.assertFalse(hasattr(ReadOnlyBoundary(self.inputs),'fault_monitor_wait'))
+  # The dedicated seam only permits the recorded monitor interval and worker.
+  session=m.BoundarySession(ReadOnlyBoundary(self.inputs),self.inputs)
+  with self.assertRaises(ValueError):session.fault_monitor_wait(threading.Event(),0.5)
+  with self.assertRaises(ValueError):session.fault_monitor_wait(threading.Event(),0.25)
+
+
+class PublicRealFaultMonitorTests(unittest.TestCase):
+ setUp=PublicMcpCliTests.setUp
+ cli=PublicMcpCliTests.cli
+ prepare=PublicMcpCliTests.prepare
+ def test_public_five_faults_new_wait_trace_and_rehashed_bad_wait(self):
+  self.prepare('MCP-P04-FULL',['FAULT-POINTS'])
+  with mock.patch.object(m,'NativeBoundary',return_value=RealFaultMonitorBoundary(self.inputs)):
+   value=self.cli('execute','--plan',self.run/'plan.json')
+  self.assertEqual(0,value[0],value)
+  judged=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'positive.json');self.assertEqual(0,judged[0],judged)
+  self.assertFalse(m.read(self.run/'positive.json')['full_functional_pass'])
+  case=self.run/'results/MCP-P04-FULL';path=case/'driver/units/FAULT-POINTS/trace.json';trace=m.read(path)
+  row=next(r for r in trace['records'] if r['kind']=='fault-monitor-wait');row['output']='False';path.write_text(json.dumps(trace))
+  receipt=m.read(case/'receipt.json')
+  for artifact in receipt['artifacts']:artifact['sha256']=m.sha256(artifact['path'])
+  (case/'receipt.json').write_text(json.dumps(receipt));index=m.read(self.run/'results/results.json')
+  for item in index['receipts']:
+   if item['case_id']=='MCP-P04-FULL':item['sha256']=m.sha256(case/'receipt.json')
+  (self.run/'results/results.json').write_text(json.dumps(index))
+  bad=self.cli('judge','--plan',self.run/'plan.json','--results',self.run/'results','--output',self.run/'bad-wait.json');self.assertNotEqual(0,bad[0],bad)

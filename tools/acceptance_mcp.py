@@ -770,6 +770,26 @@ class BoundarySession:
     return result
    row={'thread':thread,'kind':kind,'input':pack(value),'output':pack(observe())};self.records.append(row)
    return unpack(row['output'])
+ def fault_monitor_wait(self,stop,timeout):
+  thread=threading.current_thread().name
+  if timeout!=0.25 or type(timeout) is not float or not re.fullmatch(r'mcp-worker-[1-9][0-9]*',thread):
+   raise ValueError('fault monitor wait identity/interval differs')
+  with self.lock:
+   states=getattr(self,'_fault_monitor_states',None)
+   if states is None:self._fault_monitor_states=states={}
+   if states.get(thread) is True:raise ValueError('fault monitor already terminated')
+   states[thread]=False
+  # Native observes Event.wait unchanged. Replay uses that exact boolean;
+  # local stop timing must not discard native samples during fast replay.
+  if isinstance(self.boundary,ReplayBoundary):
+   ended=self.local_observation('fault-monitor-wait',{'timeout':timeout},lambda:None)
+  else:
+   # Event.wait may block; never hold the transport/recording lock over it.
+   actual=stop.wait(timeout)
+   ended=self.local_observation('fault-monitor-wait',{'timeout':timeout},lambda:actual)
+  if type(ended) is not bool:raise ValueError('fault monitor wait decision is not boolean')
+  with self.lock:states[thread]=ended
+  return ended
  def creation_future_done(self,pending,stage,command_id):
   from fakenet.mcp.creation_evidence import CREATION_STAGES
   if stage not in CREATION_STAGES or not isinstance(command_id,str) or not command_id.startswith('creation-start-'):
@@ -996,7 +1016,13 @@ class BoundarySession:
    stack.enter_context(patch.object(artifact_transfer,'receive_artifact',self.receive_artifact))
    # A direct unrecorded socket path must never silently evade the evidence.
    stack.enter_context(patch.object(socket,'create_connection',self.socket_connection))
-   yield
+   try:
+    yield
+   finally:
+    # A swallowed worker error or a forged final False cannot pass merely
+    # because the last recorded operation was already consumed.
+    if not all(getattr(self,'_fault_monitor_states',{}).values()):
+     raise ValueError('fault monitor termination was not observed')
 
 
 def current_tool_surface(root=ROOT):
