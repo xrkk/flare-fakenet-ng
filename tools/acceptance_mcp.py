@@ -445,7 +445,10 @@ class BoundarySession:
    if (int(after['birth'])<=int(before['birth']) or any(after[k]!=expected[k] for k in ('image','sha256','enabled','grace','fault_exists','service_config'))):
     raise ValueError('helper service restart instance/settings proof differs')
    # The independent oracle repeats these comparisons from raw OS responses.
-   anchor=_status_snapshot(mods['run_p02_acc'].status(self.inputs['endpoint']))
+   ready,raw_anchor=p03.wait_state(self.inputs['endpoint'],lambda status:status.get('state')!='recovering',timeout=60)
+   if not ready:raise ValueError('new helper service startup did not settle')
+   anchor=_status_snapshot(raw_anchor)
+   if service_preflight(self,self.inputs)!=after:raise ValueError('new helper candidate changed during startup observation')
    if anchor['state']!='stopped' or anchor['run_id'] is not None or type(anchor['state_version']) is not int or anchor['state_version']<1:raise ValueError('new helper service not idle/version unobserved')
    with self.lock:
     self.operation_epoch+=1;self.epoch_initial_versions[self.operation_epoch]=anchor['state_version']

@@ -2804,6 +2804,21 @@ class OriginalHelperEpochTests(unittest.TestCase):
    with session.original_helpers():m.modules(ROOT)['helpers'].configure_fault_service(session,True,5)
   self.assertEqual(1,session.operation_epoch)
   self.assertGreater(len(session.records),before)
+ def test_original_helper_waits_for_actual_startup_without_replaying_restart(self):
+  class Starting(HelperEpochDomainBoundary):
+   samples=0
+   def exchange(self,kind,value):
+    result=super().exchange(kind,value)
+    if kind=='http' and getattr(self,'service_generation',0) and json.loads(value['data'])['params']['name']=='get_status':
+     self.samples+=1
+     if self.samples==1:
+      body=json.loads(result['body']);payload=json.loads(body['result']['content'][0]['text']);payload['state']='recovering';body['result']['content'][0]['text']=json.dumps(payload);result['body']=json.dumps(body).encode()
+    return result
+  boundary=Starting(self.inputs,self.root/'recovering');session=m.BoundarySession(boundary,self.inputs)
+  with session.activate():
+   with session.original_helpers():m.modules(ROOT)['helpers'].configure_fault_service(session,True,5)
+  self.assertEqual(1,boundary.service_generation);self.assertGreaterEqual(boundary.samples,2)
+  self.assertEqual(1,session.operation_epoch);self.assertEqual(1,session.epoch_initial_versions[1])
  def test_original_s2_restores_config_after_real_helper_null_reset_and_replays(self):
   class NullReset(InitializationProcessBoundary):
    def __init__(self,inputs):super().__init__(inputs);self.active_config=inputs['config_identity']

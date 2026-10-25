@@ -488,3 +488,13 @@ create a verified epoch. After a final owned restart clears configuration, only
 the original bound identity may be restored, then the final state and complete
 per-instance operation ledger are checked. These fixture checks remain source
 validation; native execution and its cleanup must be observed separately.
+
+
+SCM start completion can precede the service's own startup recovery. The original
+helper observer uses the original read-only `wait_state` for at most 60 seconds
+until `recovering` ends, then requires a stopped service with no run and a valid
+version. It verifies the same candidate process and settings again around this
+observation. This wait does not repeat the helper restart or change configuration;
+a timeout, failed startup, changed instance or missing version still fails. The
+startup fixture exposes a recovering observation before stopped and checks that
+exactly one helper restart occurred.
