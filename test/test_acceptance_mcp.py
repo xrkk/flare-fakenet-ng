@@ -2986,3 +2986,18 @@ class OriginalInternalProtectiveTests(unittest.TestCase):
     rows,clean,detail=o.evaluate(ROOT,out,'MCP-P03-FULL',['ACC-004-S6'],self.inputs,allow_fixture=True)
     self.assertNotEqual('pass',rows[0]['status'],detail)
   path.write_text(json.dumps(original))
+
+
+class NativePinPrecisionTests(unittest.TestCase):
+ @unittest.skipUnless(sys.platform=='win32','native PowerShell API-boundary test; live service is not touched')
+ def test_shared_helper_retains_full_identity_and_quantizes_only_cim(self):
+  import subprocess
+  helper=(ROOT/'test/mcp/acceptance/process_scope.ps1').read_text().split('function Same-Identity')[0]
+  body="$rows=@();foreach($case in @('tick0','tick1','tick2','tick3','tick4','tick5','tick6','tick7','tick8','tick9','next-micro','new-full-birth','exited','wrong-image','missing-cim','wrong-pid','missing-image')){\n $rows+=(& {\n  param($case)\n  $script:n=0;$script:case=$case;$script:base=[long]'134373817088689120';$tick=if($case -like 'tick*'){[int]$case.Substring(4)}else{1};$script:birth=$script:base+$tick\n  function Get-Process {param([int]$Id,$ErrorAction)\n   $script:n++;$born=$script:birth;if($script:case -eq 'new-full-birth' -and $script:n -eq 2){$born++}\n   $path=if($script:case -eq 'wrong-image' -and $script:n -eq 2){'E:\\Foreign.exe'}elseif($script:case -eq 'missing-image'){$null}else{'E:\\Benign.exe'}\n   $o=[pscustomobject]@{Id=$Id;Handle=[IntPtr]1;HasExited=($script:case -eq 'exited' -and $script:n -eq 2);StartTime=[DateTime]::FromFileTimeUtc($born);Path=$path}\n   $o|Add-Member ScriptMethod Dispose {};return $o\n  }\n  function Get-CimInstance {param($ClassName,$Filter)\n   if($script:case -eq 'missing-cim'){return $null};$cim=$script:base;if($script:case -eq 'next-micro'){$cim+=10}\n   return [pscustomobject]@{ProcessId=$(if($script:case -eq 'wrong-pid'){18}else{17});CreationDate=[DateTime]::FromFileTimeUtc($cim);ExecutablePath='E:\\Benign.exe';ParentProcessId=9;CommandLine='benign fixture'}\n  }\n  try{$pin=Pin-Process 17;try{@{case=$case;accepted=$true;identity=$pin.identity}}finally{$pin.handle.Dispose()}}\n  catch{@{case=$case;accepted=$false;reason=$_.Exception.Message}}\n } $case)\n};\n@{unit_cases=$rows}|ConvertTo-Json -Depth 12 -Compress\n"
+  run=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',"$ErrorActionPreference='Stop';\n"+helper+body],capture_output=True,text=True,timeout=30)
+  self.assertEqual(0,run.returncode,run.stderr)
+  rows=json.loads(run.stdout)['unit_cases'];self.assertEqual(17,len(rows))
+  for row in rows:
+   with self.subTest(case=row['case']):
+    self.assertEqual(row['case'].startswith('tick'),row['accepted'],row)
+    if row['accepted']:self.assertEqual(str(134373817088689120+int(row['case'][4:])),row['identity']['creation_time'])

@@ -518,3 +518,19 @@ or conflicting proofs and unknown responses keep the original failure. Tests
 use the real Coordinator internal submission, EventLog and cache, and reject
 nine classes of altered proof. This observer never submits a protective stop,
 replays a mutation or changes the service's recovery behavior.
+
+
+The fixed process-scope PowerShell helper keeps the held GetProcess handle and
+its full FILETIME as the authoritative identity. CIM CreationDate has only
+microsecond precision, so its cross-representation check compares the exact
+microsecond quantum while retaining every 100ns digit in the returned identity.
+A second held GetProcess observation must match the complete PID, FILETIME and
+image; either exited handle, missing CIM identity, image mismatch or a different
+microsecond is rejected. This is not a general timestamp tolerance.
+
+`NativePinPrecisionTests` runs the unchanged shared helper against 17 local API
+boundary cases on Windows PowerShell, without opening, creating or terminating
+a real target process. Ubuntu marks that test skipped. The source validation
+also executes the same cases in the existing VM channel and separately pins the
+verified current candidate read-only; neither probe grants the five original
+native acceptance cases a pass.

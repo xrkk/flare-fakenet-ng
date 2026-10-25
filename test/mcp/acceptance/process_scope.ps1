@@ -3,9 +3,27 @@ function Pin-Process([int]$processId) {
     $process = Get-Process -Id $processId -ErrorAction Stop
     try {
         [void]$process.Handle
-        $item = Get-CimInstance Win32_Process -Filter "ProcessId=$processId"
         $birth = $process.StartTime.ToFileTimeUtc().ToString()
-        if ($process.HasExited -or !$item -or $item.CreationDate.ToFileTimeUtc().ToString() -ne $birth) { throw 'process changed during pin' }
+        $image = $process.Path
+        $item = Get-CimInstance Win32_Process -Filter "ProcessId=$processId"
+        if (!$item -or !$item.CreationDate -or !$image) { throw 'process identity missing during pin' }
+        $cimBirth = $item.CreationDate.ToFileTimeUtc().ToString()
+        $again = Get-Process -Id $processId -ErrorAction Stop
+        try {
+            [void]$again.Handle
+            # DMTF/CIM carries microseconds; GetProcess FILETIME retains 100ns.
+            # Quantize only that cross-representation check. The held process
+            # and every returned/expected identity retain the complete value.
+            if ($process.HasExited -or $again.HasExited -or $again.Id -ne $process.Id -or
+                $item.ProcessId -ne $process.Id -or !$again.Path -or
+                $again.StartTime.ToFileTimeUtc().ToString() -cne $birth -or
+                $again.Path -ine $image -or $item.ExecutablePath -ine $image -or
+                $birth.Length -lt 2 -or $cimBirth.Length -ne $birth.Length -or
+                $cimBirth[$cimBirth.Length - 1] -cne '0' -or
+                $cimBirth.Substring(0, $cimBirth.Length - 1) -cne $birth.Substring(0, $birth.Length - 1)) {
+                throw 'process changed during pin'
+            }
+        } finally { $again.Dispose() }
         return @{handle=$process; identity=@{pid=$process.Id;creation_time=$birth;image=$item.ExecutablePath;parent_pid=[int]$item.ParentProcessId};command=$item.CommandLine}
     } catch { $process.Dispose(); throw }
 }
