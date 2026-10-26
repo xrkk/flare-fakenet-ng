@@ -233,6 +233,30 @@ class RemoteProductionTests(unittest.TestCase):
             code,out,err=self.cli('execute','--plan',path)
         self.assertEqual(2,code,out+err);channel.assert_not_called()
 
+    def test_protection_field_survives_remote_independent_judge(self):
+        # Controller red (remote-judge-red.json): the remote original oracle
+        # refused a legal upstream_protected_tcp_ports field as a frozen-plan
+        # difference.  The field must flow through the real producer request
+        # and the real independent judge rebuild unchanged.
+        self.prepare_windows()
+        self.runtime['upstream_protected_tcp_ports']=[28787,28790]
+        (self.root/'environment.json').write_text(json.dumps(self.environment))
+        path=self.plan()
+        with mock.patch.object(win,'ExistingWindowsChannel',side_effect=self.fake_channel):
+            code,out,err=self.cli('execute','--plan',path)
+        self.assertEqual(0,code,out+err)
+        self.assertEqual(0,self.cli('judge','--plan',path,'--results',path.parent/'results')[0])
+
+    def test_remote_protection_field_explicit_null_rejected_before_channel(self):
+        # An explicitly declared null is not the absent default and must be
+        # rejected before any channel side effect.
+        self.prepare_windows()
+        self.runtime['upstream_protected_tcp_ports']=None
+        (self.root/'environment.json').write_text(json.dumps(self.environment))
+        with mock.patch.object(win,'ExistingWindowsChannel') as channel:
+            code,out,err=self.cli('execute','--plan',self.plan())
+        self.assertNotEqual(0,code,out+err);channel.assert_not_called()
+
     def test_guest_wrong_source_is_rejected_before_native_launch(self):
         import acceptance_runtime as rt
         request={'schema':'fakenet.native-guest-request.v1','case_id':'FIX-BLOCKED','case':self.case,'checks':['normal'],

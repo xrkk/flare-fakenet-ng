@@ -599,7 +599,8 @@ class UpstreamProtectedManagementPortsTests(unittest.TestCase):
     def test_validator_and_request_construction_symmetry(self):
         sys.path.insert(0, str(ROOT / 'tools'))
         import acceptance_native as native
-        self.assertEqual([], native.validate_upstream_protected_tcp_ports(None))
+        with self.assertRaises(ValueError):
+            native.validate_upstream_protected_tcp_ports(None)
         self.assertEqual([28790, 28787],
                          native.validate_upstream_protected_tcp_ports([28790, 28787]))
         environment = {'native_runtime': {

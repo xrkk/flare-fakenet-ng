@@ -50,7 +50,7 @@ def validate_upstream_protected_tcp_ports(value):
     integers (never booleans), in range and without duplicates.
     """
     if value is None:
-        return []
+        raise ValueError('upstream_protected_tcp_ports must be an explicit array, not null')
     if not isinstance(value, list):
         raise ValueError('upstream_protected_tcp_ports must be an array')
     ports = []
@@ -1490,6 +1490,9 @@ def run_remote(root,case,plan,output_dir,python):
     from datetime import datetime,timezone
     driver,checks=validate_case(case,root,plan['environment'])
     runtime=plan['environment']['native_runtime'];output_dir=Path(output_dir)
+    # Reject an illegal protection field before mkdir/Popen/channel side effects.
+    if 'upstream_protected_tcp_ports' in runtime:
+        validate_upstream_protected_tcp_ports(runtime['upstream_protected_tcp_ports'])
     remote_base=PureWindowsPath(runtime['work_root'])/plan['execution_id']/case['id']
     remote_output=str(remote_base/'output')
     source_hashes=dict(plan['native_source_hashes'])
@@ -1579,7 +1582,7 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
     hashes=dict(plan['native_source_hashes']);hashes.update(plan['source_hashes'][case['id']])
     catalog=json.loads(_read(Path(root)/'docs/acceptance/catalog.json'))
     registered=next(c for suite in catalog['suites'] for c in suite.get('cases',[]) if c['id']==case['id'])
-    expected_request={'schema':'fakenet.native-guest-request.v1','case_id':case['id'],'case':registered,'checks':checks,'source_hashes':hashes,'candidate':plan['candidate'],'target':runtime['identity'],'output_root':expected_output,'execution_id':plan['execution_id'],'actions':['native']}
+    expected_request=attach_upstream_protection({'schema':'fakenet.native-guest-request.v1','case_id':case['id'],'case':registered,'checks':checks,'source_hashes':hashes,'candidate':plan['candidate'],'target':runtime['identity'],'output_root':expected_output,'execution_id':plan['execution_id'],'actions':['native']},plan['environment'])
     if driver['production_kind'] in ('process-redirect','payload-three-way'):
         expected_request['headless']=headless_inputs(plan['environment'],driver,checks)
     if driver['production_kind'].startswith('policy-'):
