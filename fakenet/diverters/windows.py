@@ -8,6 +8,7 @@ import base64
 from collections import Counter, OrderedDict
 
 from pydivert.windivert import *
+from pydivert import Flag
 
 import socket
 
