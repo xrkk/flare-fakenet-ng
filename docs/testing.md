@@ -632,3 +632,33 @@ The `CONTROL-EXTRA-29094/29095` changing-configuration path observes both real s
 
 
 An explicit `channel.existing_management` descriptor can bind the existing management service on TCP28790 to the frozen VM, host, image/hash and script path. This branch records the live listener PID/full birth and image/script bytes before and after five original management TCP connections in the takeover window, and after stop. It creates no echo process and never changes that service. Missing or mismatched identity cannot grant management credit. Other extra ports keep their original echo/receipt assertions, and the original configuration/version/strict OS restoration and independent replay still apply. No authentication or application protocol probe is required for this reachability contract.
+
+
+The explicit `DIAGNOSTIC-UNKNOWN-CAUSE` consumer reads canonical incident
+publication records as well as the manifest. `published.json` must have the
+producer schema and exactly the other archive members; every size and SHA-256
+is recomputed, including the manifest. Duplicate keys, ambiguous names, extra
+members, unavailable sources and changed bytes remain failures. The early
+unknown-options input check loads only the fixed implementation root, including
+when the public CLI is invoked from another working directory.
+
+`fakenet.unknown-typed-domain.v1` accounts for each complete original separately:
+version and publication metadata, timeline records, artifact inventories,
+configuration, native exit evidence, process/handle JSON, filter observations,
+firewall comparisons, stack frames, Windows events and application log lines.
+Exact original EOF envelopes are transport symptoms in the assessment; their
+original text is retained. Known producer records such as
+`INFO FakeNet DEFAULT_INTERCEPTION_READY` are normal observations, not causes.
+This vocabulary is deliberately narrow: unsupported event formats/messages,
+unknown timeline fields, severe application diagnostics, malformed or truncated
+sources and unresolved records refuse unknown-cause credit. A log level or
+absence of a few error strings never establishes a pass. New normal formats
+require producer evidence and positive and negative tests.
+
+The local tests include an actual `artifacts.write_publication` envelope,
+nonempty typed observations, public execute/judge and rehashed bad originals.
+A separate read-only assessment of an older native archive records the new
+consumer hashes and classification limits. It never rewrites that archive,
+its source pins or its original result, and cannot grant retrospective native
+or complete-regression credit. A genuine known or unresolved application
+cause remains a rejection even after publication compatibility is corrected.

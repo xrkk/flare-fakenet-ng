@@ -30,6 +30,9 @@ import urllib.request
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+# Fixed implementation root, including early diagnostic input validation.
+# Never derive imports from a result record or a caller-selected directory.
+if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
 SCHEMA = 'fakenet.mcp-headless-result.v2'
 IDENTITY_FIELDS = ('candidate_id','source_commit','package_sha256','requirements_blob','master_plan_blob')
 FAULTS = ('policy_pause','listener_stop','diverter_stop','child_hang','cleanup_error')

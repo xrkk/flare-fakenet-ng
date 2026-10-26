@@ -231,6 +231,16 @@ def test_version_chain_rejects_unexplained_advance_and_scoped_replay():
     boundary._observe_service_restart('powershell',command,{'exit_code':0,'is_error':False,'output':'GONE'})
     assert boundary.operation_epoch==0
     boundary._observe_service_restart('powershell',command,{'exit_code':0,'is_error':False,'output':'STARTED'})
+    assert boundary.operation_epoch==0  # Banners cannot prove a real restart.
+    before={'pid':12,'birth':'1234','image':'fixture.exe','sha256':'a'*64,
+            'service_config':{},'enabled':False,'grace':60,'fault_exists':False}
+    after=dict(before,birth='1235')
+    proof={'before':before,'after':after,'exit':{'old_pid':12,'old_birth':'1234','old_exited':False}}
+    with pytest.raises(ValueError,match='instance proof'):
+        boundary._observe_service_restart('verified-service-restart',proof,{})
+    assert boundary.operation_epoch==0
+    proof['exit']['old_exited']=True
+    boundary._observe_service_restart('verified-service-restart',proof,{})
     assert boundary.operation_epoch==1
 
 
@@ -713,7 +723,7 @@ def _unknown_boundary(inputs,target,monkeypatch):
     config=Path(context['config_path']);config.write_bytes((Path(__file__).resolve().parents[1]/'fakenet/configs/default.ini').read_bytes())
     from fakenet.mcp import service_stop
     real_time=time.time;real_mono=time.monotonic
-    monkeypatch.setattr(service_stop,'process_identity',lambda pid=None:{'pid':12,'creation_time':'1234'} if pid==os.getppid() else {'pid':4242,'creation_time':'123456789'})
+    monkeypatch.setattr(service_stop,'process_identity',lambda pid=None:{'pid':12,'creation_time':str(1234+getattr(boundary,'service_generation',0))} if pid==os.getppid() else {'pid':4242,'creation_time':'123456789'})
     monkeypatch.setattr(d,'os',SimpleNamespace(name='nt',environ=os.environ,getpid=os.getpid,getppid=os.getppid,fsync=os.fsync))
     class Exit:
         def __call__(self,code):
@@ -721,14 +731,28 @@ def _unknown_boundary(inputs,target,monkeypatch):
             raise _ModeledSelfExit('modeled fixed ExitProcess')
     import ctypes
     monkeypatch.setattr(ctypes,'WinDLL',lambda name,**kw:SimpleNamespace(ExitProcess=Exit()),raising=False)
+    event_record='Event[0]:\n  Log Name: System\n  Source: Service Control Manager\n  Event ID: 7036\n  Level: Information\n  Description:\nThe FakeNet-NG MCP service entered the running state.\n'
     class Boundary(FaultProcessBoundary):
         def __init__(self):
             super().__init__(inputs);self.run_id=RUN;self.child_terminated=False;self.child_calls=0
         def archive(self):
             from fakenet.mcp.incident import BASIC_ITEMS
-            members={name:(b'{}' if name.endswith('.json') else b'benign complete original '+name.encode()) for name,unused in BASIC_ITEMS}
-            for name in members:
-                if name.endswith(('.txt','.log')) and 'stack' not in name.lower():members[name]=b''
+            members={name:b'{}' for name,unused in BASIC_ITEMS}
+            normal=b'2026-10-26 07:30:00,000 INFO FakeNet DEFAULT_INTERCEPTION_READY\n'
+            members.update({'stdout_stderr.log':normal, 'run_log.txt':normal,
+                'process_tree.txt':json.dumps([{'ProcessId':4242,'ParentProcessId':12,
+                    'Name':'fakenetng-mcp-managed.exe','CommandLine':'managed-child',
+                    'CreationDate':'/Date(0)/'}]).encode(),
+                'handle_summary.txt':json.dumps([{'Id':4242,'ProcessName':'fakenetng-mcp-managed',
+                    'HandleCount':30,'StartTime':'/Date(0)/'}]).encode(),
+                'windivert_filter.txt':json.dumps({'final_filter':'outbound and ip',
+                    'tasklist_m':'INFO: No tasks are running which match the specified criteria.'}).encode(),
+                'firewall_diff.txt':json.dumps({'before':'No rules match the specified criteria.',
+                    'after':'No rules match the specified criteria.','changed':False}).encode(),
+                'thread_stacks.txt':b'SUPERVISOR\nThread 1:\n  C:/app/supervisor.py:30 run\nMANAGED\nThread 2:\n  C:/app/managed.py:50 health\n',
+                'event_log.txt':(event_record+'\n----APPLICATION----\n'+event_record).encode()})
+            members['timeline.json']=b'[]';members['artifact_metadata.json']=b'[]'
+            members['baseline_diff.json']=b'{"before":{},"after":{},"differences":{}}'
             members['config_snapshot.ini']=config.read_bytes();members['exception.txt']=b'managed IPC EOF'
             members['versions.json']=json.dumps({'config_sha256':inputs['config_identity']['sha256'],
                 'managed_process':{'identity':{'pid':4242,'creation_time':'123456789'},'exit_code':d.UNKNOWN_EXIT_CODE,'job_members':[]}}).encode()
@@ -738,7 +762,15 @@ def _unknown_boundary(inputs,target,monkeypatch):
             dump=bytearray(56);struct.pack_into('<IIII',dump,0,0x504d444d,0xa793,1,32);struct.pack_into('<III',dump,32,15,12,44);struct.pack_into('<III',dump,44,12,1,4242)
             members['userdump.dmp']=bytes(dump);self.members=members
             self.manifest={'run_id':RUN,'complete':True,'entries':[{'item':name,'result':'ok','failure_reason':None,'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest()} for name,raw in members.items()]}
-            self.manifest_bytes=json.dumps(self.manifest).encode();stream=io.BytesIO()
+            self.manifest_bytes=json.dumps(self.manifest).encode()
+            from fakenet.mcp.artifacts import write_publication
+            published=Path(context['run_dir'])/'fixture-publication'
+            published.mkdir(exist_ok=True)
+            for name,raw in dict(members,**{'manifest.json':self.manifest_bytes}).items():
+                (published/name).write_bytes(raw)
+            write_publication(published,[published/name for name in list(members)+['manifest.json']])
+            members['published.json']=(published/'published.json').read_bytes()
+            stream=io.BytesIO()
             with zipfile.ZipFile(stream,'w') as archive:
                 archive.writestr('manifest.json',self.manifest_bytes)
                 for name,raw in members.items():archive.writestr(name,raw)
@@ -774,7 +806,8 @@ def _unknown_boundary(inputs,target,monkeypatch):
                     else:output=source.read_text() if source.exists() else 'null'
                     return {'output':output,'raw':output,'exit_code':0,'is_error':False}
             return super().exchange(kind,value)
-    return Boundary()
+    boundary=Boundary()
+    return boundary
 
 
 def test_unknown_original_chain_same_central_cli_and_rehashed_bad_domain(target,monkeypatch):
@@ -814,6 +847,10 @@ def test_unknown_original_chain_same_central_cli_and_rehashed_bad_domain(target,
         import zipfile
         manifest=copy.deepcopy(boundary.manifest)
         if mode!='bad-hash':manifest['entries']=[dict(row,size=len(members[row['item']]),sha256=hashlib.sha256(members[row['item']]).hexdigest()) for row in manifest['entries'] if row['item'] in members]
+        publication=json.loads(members['published.json'])
+        manifest_raw=json.dumps(manifest).encode()
+        publication['files']={name:{'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest()} for name,raw in dict(members,**{'manifest.json':manifest_raw}).items() if name!='published.json'}
+        members['published.json']=json.dumps(publication).encode()
         package=client.base/('unknown-negative-'+mode+'.zip')
         with zipfile.ZipFile(package,'w') as archive:
             archive.writestr('manifest.json',json.dumps(manifest))
@@ -865,3 +902,78 @@ def test_closed_fixture_legacy_scope_resets_and_native_stays_strict(target,monke
             value=m.run('MCP-P04-FULL',root/str(fixture),inputs,selected=['ACC-014'],boundary=boundary,fixture=fixture)
         assert seen==[fixture] and scope.get() is False
         assert value['checks']['ACC-014']['status']!='pass'
+
+
+def test_unknown_cli_input_validation_loads_fixed_root_from_external_cwd(tmp_path):
+    import subprocess,sys
+    root=Path(__file__).resolve().parents[1]
+    # Complete inputs reach unknown_options before other validations.
+    from test_acceptance_mcp import inputs_at
+    inputs=inputs_at(tmp_path/'input');inputs['diagnostic']={}
+    code="import runpy,json; m=runpy.run_path(%r); m['validate_inputs'](json.loads(%r),'MCP-P04-FULL',['DIAGNOSTIC-UNKNOWN-CAUSE'],fixture=True)" % (str(root/'tools/acceptance_mcp.py'),json.dumps(inputs))
+    env=dict(os.environ);env.pop('PYTHONPATH',None);env['PYTHONDONTWRITEBYTECODE']='1'
+    result=subprocess.run([sys.executable,'-B','-I','-c',code],cwd=tmp_path,env=env,capture_output=True,text=True)
+    assert result.returncode!=0
+    assert 'exact unknown diagnostic options required' in result.stderr,result.stderr
+    assert 'ModuleNotFoundError' not in result.stderr
+    inputs['diagnostic']=dict(d.UNKNOWN_OPTIONS)
+    code="import runpy,json; m=runpy.run_path(%r); m['validate_inputs'](json.loads(%r),'MCP-P04-FULL',['DIAGNOSTIC-UNKNOWN-CAUSE'],fixture=True)" % (str(root/'tools/acceptance_mcp.py'),json.dumps(inputs))
+    positive=subprocess.run([sys.executable,'-B','-I','-c',code],cwd=tmp_path,env=env,capture_output=True,text=True)
+    assert positive.returncode==0,positive.stderr
+
+
+
+@pytest.mark.parametrize('mode',['size','hash','missing','extra','path','schema','boolean','duplicate'])
+def test_unknown_canonical_publication_rejects_rehashed_bad_metadata(mode):
+    from fakenet.mcp.artifacts import write_publication
+    import acceptance_mcp_diagnostic_oracles as oracle
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        root=Path(directory);(root/'manifest.json').write_bytes(b'{}');(root/'exception.txt').write_bytes(b'managed IPC EOF')
+        write_publication(root,[root/'manifest.json',root/'exception.txt'])
+        members={p.name:p.read_bytes() for p in root.iterdir()}
+        data=json.loads(members['published.json'])
+        if mode=='size':data['files']['exception.txt']['size']+=1
+        elif mode=='hash':data['files']['exception.txt']['sha256']='0'*64
+        elif mode=='missing':data['files'].pop('exception.txt')
+        elif mode=='extra':members['extra.txt']=b'unknown bytes'
+        elif mode=='path':data['files']['../exception.txt']=data['files'].pop('exception.txt')
+        elif mode=='schema':data['schema']='unknown'
+        elif mode=='boolean':data['files']['exception.txt']['size']=True
+        else:
+            members['published.json']=b'{"schema":"fakenet.artifact-publication.v1","files":{},"files":{}}'
+        if mode!='duplicate':members['published.json']=json.dumps(data).encode()
+        with pytest.raises(ValueError):oracle._validate_publication(members)
+
+
+@pytest.mark.parametrize('member,raw',[
+ ('stdout_stderr.log',b'2026-10-26 07:30:00,000 ERROR FakeNet port 80 is already in use\n'),
+ ('run_log.txt',b'2026-10-26 07:30:00,000 INFO FakeNet ValueError: hidden cause\n'),
+ ('stdout_stderr.log',b'2026-10-26 07:30:00,000 INFO FakeNet an undocumented line\n'),
+ ('versions.json',b'{"managed_process":{"initialization_error":"port 80 is already in use"}}'),
+ ('process_tree.txt',b'not an inventory'),
+ ('process_tree.txt',b'[{"ProcessId":true,"ParentProcessId":1,"Name":"app","CommandLine":"app","CreationDate":"/Date(0)/"}]'),
+ ('windivert_filter.txt',b'{"final_filter":"outbound and ip","tasklist_m":"unresolved collector error"}'),
+ ('firewall_diff.txt',b'{"before":"old","after":"changed","changed":false}'),
+ ('event_log.txt',b'Event[0]:\n  Source: App\n  Event ID: 1\n  Level: Error\n  Description:\nknown error\n'),
+ ('exception.txt',b"managed start failed: EOFError('managed IPC EOF'); ValueError: hidden cause"),
+ ('exception.txt',b"managed start failed: ValueError('managed IPC EOF')"),
+ ('thread_stacks.txt',b'Traceback (most recent call last):\nValueError: known\n'),
+ ('versions.json',b'{"error":null,"error":"hidden"}'),
+ ('timeline.json',b'[{"message":"hidden unexplained diagnostic"}]'),
+ ('artifact_metadata.json',b'[{"path":"x","size":true,"sha256":"bad"}]'),
+ ('windivert_filter.txt',b'{"final_filter":"ValueError.hidden","tasklist_m":"INFO: No tasks are running which match the specified criteria."}'),
+ ('run_log.txt',b'\xff'),
+])
+def test_unknown_typed_domain_never_ignores_unresolved_or_known_diagnostics(member,raw):
+    import acceptance_mcp_diagnostic_oracles as oracle
+    with pytest.raises((ValueError,UnicodeError)):
+        oracle._classify_domain_member(member,raw)
+
+
+def test_unknown_transport_wrapper_is_exact_and_original_text_is_retained():
+    import acceptance_mcp_diagnostic_oracles as oracle
+    raw=b"managed start failed: EOFError('managed IPC EOF')"
+    result=oracle._classify_domain_member('exception.txt',raw)
+    assert result['kind']=='transport-symptom' and result['symptom']=='managed IPC EOF'
+    assert raw==b"managed start failed: EOFError('managed IPC EOF')"

@@ -228,6 +228,247 @@ UNKNOWN_DOMAIN_SCHEMA = 'fakenet.unknown-domain-assessment.v1'
 TRANSPORT_SYMPTOMS = frozenset(('managed process exited','managed IPC EOF'))
 
 
+
+TYPED_DOMAIN_SCHEMA = 'fakenet.unknown-typed-domain.v1'
+
+
+def _json_original(raw):
+    """Strict JSON: duplicate keys and nonfinite numbers are ambiguous evidence."""
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            if key in value:
+                raise ValueError('duplicate original JSON key')
+            value[key] = item
+        return value
+    def constant(value):
+        raise ValueError('nonfinite original JSON number')
+    return json.loads(raw.decode('utf-8', errors='strict'),
+                      object_pairs_hook=pairs, parse_constant=constant)
+
+
+def _validate_publication(members):
+    """Validate the producer's envelope without discarding or editing a member."""
+    import re
+    raw = members.get('published.json')
+    if not isinstance(raw, bytes) or not 0 < len(raw) <= 1024 * 1024:
+        raise ValueError('canonical publication missing or exceeds bound')
+    publication = _json_original(raw)
+    if (not isinstance(publication, dict) or set(publication) != {'schema', 'files'}
+            or publication['schema'] != 'fakenet.artifact-publication.v1'
+            or not isinstance(publication['files'], dict)
+            or set(publication['files']) != set(members) - {'published.json'}
+            or len({name.casefold() for name in publication['files']}) != len(publication['files'])):
+        raise ValueError('canonical publication file set differs')
+    for name, entry in publication['files'].items():
+        if (not isinstance(name, str) or not name or '/' in name or '\\' in name
+                or name in ('.', '..') or ':' in name
+                or not isinstance(entry, dict) or set(entry) != {'size', 'sha256'}
+                or type(entry['size']) is not int or entry['size'] < 0
+                or not isinstance(entry['sha256'], str)
+                or re.fullmatch('[0-9a-f]{64}', entry['sha256']) is None
+                or entry['size'] != len(members[name])
+                or entry['sha256'] != _digest(members[name])):
+            raise ValueError('canonical publication original bytes differ')
+    return publication
+
+
+def _transport_symptom(value):
+    # These exact envelopes are emitted by Supervisor.start/ManagedFakeNet;
+    # do not strip arbitrary prefixes, regex-match substrings or change bytes.
+    if not isinstance(value,str):
+        return None
+    if value in TRANSPORT_SYMPTOMS:
+        return value
+    for symptom in TRANSPORT_SYMPTOMS:
+        if value == 'managed start failed: ' + repr(EOFError(symptom)):
+            return symptom
+    return None
+
+
+def _diagnostic_fields(value, member, path=''):
+    """Inventory strings are data; typed diagnostic fields still claim causes."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in ('error', 'initialization_error', 'cleanup_errors', 'capture_error',
+                       'failure_reason', 'exception_text', 'exception', 'traceback', 'cause') and item:
+                if not isinstance(item, str) or _transport_symptom(item) is None:
+                    raise ValueError('known or unresolved application diagnostic: ' + member + '/' + path + key)
+            _diagnostic_fields(item, member, path + key + '/')
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _diagnostic_fields(item, member, path + str(index) + '/')
+
+
+def _classify_domain_member(name, raw):
+    """Account for one full original. Unsupported formats are unresolved.
+
+    This intentionally recognizes a small explicit producer vocabulary. New
+    messages require evidence-backed rules, never an ignore list or a default
+    assumption that INFO, inventory text, or an unknown logger is harmless.
+    """
+    import configparser
+    import re
+    if len(raw) > 4 * 1024 * 1024:
+        raise ValueError('unknown diagnostic domain text exceeds bound')
+    text = raw.decode('utf-8', errors='strict')
+    count = len(text.splitlines())
+    if name == 'exception.txt':
+        symptom = _transport_symptom(text.strip())
+        if symptom is None:
+            raise ValueError('known application cause or unclassified original terminal reason')
+        return dict(kind='transport-symptom', symptom=symptom, records=1)
+    if name in ('stdout_stderr.log', 'run_log.txt'):
+        rows = []
+        for number, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                rows.append(dict(line=number, kind='blank')); continue
+            symptom = _transport_symptom(line)
+            if symptom is not None:
+                rows.append(dict(line=number, kind='transport-symptom', symptom=symptom)); continue
+            match = re.fullmatch(r'\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} (INFO) (FakeNet) (DEFAULT_INTERCEPTION_READY)', line)
+            if match is None:
+                raise ValueError('known or unresolved application log diagnostic: ' + name + ':' + str(number))
+            rows.append(dict(line=number, kind='normal-runtime', producer='FakeNet.DEFAULT_INTERCEPTION_READY'))
+        return dict(kind='application-log', records=count, lines=rows)
+    if name == 'thread_stacks.txt':
+        headers = {'SUPERVISOR', 'MANAGED', 'LAST OBSERVATION BEFORE STOP; ROOT HAS EXITED',
+                   'MANAGED STOP WATCHDOG; LIVE CHILD CAPTURE', 'MANAGED FAULT CHILD'}
+        frames = 0
+        for line in text.splitlines():
+            if not line or line in headers or re.fullmatch(r'Thread \d+:', line):
+                continue
+            if re.fullmatch(r'  [^\r\n]+:\d+ [A-Za-z_<>][A-Za-z_0-9<>.]*', line) is None:
+                raise ValueError('known or unresolved stack diagnostic')
+            frames += 1
+        if not frames:
+            raise ValueError('original stack frames missing')
+        return dict(kind='stack-observation', records=count, frames=frames)
+    if name == 'config_snapshot.ini':
+        parser = configparser.RawConfigParser(strict=True)
+        try:
+            parser.read_string(text)
+        except configparser.Error as exc:
+            raise ValueError('original configuration syntax unresolved') from exc
+        if not parser.sections():
+            raise ValueError('original configuration sections missing')
+        return dict(kind='configuration', records=count, sections=parser.sections())
+    if name == 'event_log.txt':
+        # The collector concatenates full wevtutil System/Application text.
+        # Only this exact benign Windows event is currently understood; other
+        # events, Warning/Error levels and arbitrary descriptions stay unresolved.
+        sections = text.split('\n----APPLICATION----\n')
+        if len(sections) != 2:
+            raise ValueError('original event log sections unresolved')
+        observed = 0
+        grammar = (r'Event\[\d+\]:\n  Log Name: (?:System|Application)\n'
+                   r'  Source: Service Control Manager\n  Event ID: 7036\n'
+                   r'  Level: Information\n  Description:\n'
+                   r'The FakeNet-NG MCP service entered the (?:running|stopped) state\.\n?')
+        for section in sections:
+            chunks = re.split(r'(?=Event\[\d+\]:)', section)
+            for chunk in chunks:
+                if not chunk: continue
+                if re.fullmatch(grammar, chunk) is None:
+                    raise ValueError('known or unresolved original Windows event')
+                observed += 1
+        if not observed:
+            raise ValueError('original Windows events missing')
+        return dict(kind='windows-events', records=observed)
+    # Several .txt producers return JSON. Parse their complete bytes with
+    # their own schemas rather than treating them as application log lines.
+    value = _json_original(raw)
+    _diagnostic_fields(value, name)
+    if name in ('process_tree.txt', 'handle_summary.txt'):
+        rows = value if isinstance(value, list) else [value]
+        process = name == 'process_tree.txt'
+        keys = ({'ProcessId', 'ParentProcessId', 'Name', 'CommandLine', 'CreationDate'} if process else
+                {'Id', 'ProcessName', 'HandleCount', 'StartTime'})
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != keys:
+                raise ValueError('original OS inventory schema differs')
+            if process:
+                integers = ('ProcessId', 'ParentProcessId'); strings = ('Name', 'CommandLine', 'CreationDate')
+            else:
+                integers = ('Id', 'HandleCount'); strings = ('ProcessName', 'StartTime')
+            if (any(type(row[k]) is not int or row[k] < 0 for k in integers)
+                    or any(row[k] is not None and not isinstance(row[k], str) for k in strings)):
+                raise ValueError('original OS inventory types differ')
+        return dict(kind='process-inventory' if process else 'handle-inventory', records=len(rows))
+    if name == 'windivert_filter.txt':
+        if (not isinstance(value, dict) or set(value) != {'final_filter', 'tasklist_m'}
+                or not isinstance(value['final_filter'], str) or not value['final_filter']
+                or not isinstance(value['tasklist_m'],str)
+                or re.fullmatch(r'[A-Za-z0-9_.()\[\] <>=!&|:+/-]+',value['final_filter']) is None
+                or value['tasklist_m'].strip() != 'INFO: No tasks are running which match the specified criteria.'):
+            raise ValueError('original filter/tasklist observation unresolved')
+        allowed={'true','false','and','or','not','outbound','inbound','loopback','impostor','fragment',
+                 'ip','ipv6','icmp','icmpv6','tcp','udp','ifIdx','subIfIdx',
+                 'ip.SrcAddr','ip.DstAddr','ipv6.SrcAddr','ipv6.DstAddr',
+                 'tcp.SrcPort','tcp.DstPort','udp.SrcPort','udp.DstPort'}
+        if any(token not in allowed for token in re.findall(r'[A-Za-z_][A-Za-z_0-9.]*',value['final_filter'])):
+            raise ValueError('original filter vocabulary unresolved')
+        return dict(kind='filter-observation', records=2)
+    if name == 'firewall_diff.txt':
+        if (not isinstance(value, dict) or set(value) != {'before', 'after', 'changed'}
+                or not isinstance(value['before'], str) or not isinstance(value['after'], str)
+                or type(value['changed']) is not bool or value['changed']
+                or value['before'] != value['after']):
+            raise ValueError('original firewall observation unresolved')
+        return dict(kind='unchanged-firewall', records=2)
+    if name == 'timeline.json':
+        if not isinstance(value,list):
+            raise ValueError('original timeline schema differs')
+        schemas={
+            'health':{'state','failure_reason'},
+            'recovery':{'state','reason'},
+            'command.accepted':{'command_id','controller','operation'},
+            'command.completed':{'command_id','operation','state','state_version'},
+        }
+        for row in value:
+            kind=row.get('kind') if isinstance(row,dict) else None
+            if kind not in schemas or set(row)!={'timestamp','kind','seq','epoch'}|schemas[kind]:
+                raise ValueError('unclassified original timeline record')
+            if (type(row['timestamp']) not in (int,float) or type(row['seq']) is not int
+                    or not isinstance(row['epoch'],str) or not row['epoch']):
+                raise ValueError('original timeline types differ')
+            for key in ('reason','failure_reason'):
+                if row.get(key) and _transport_symptom(row[key]) is None:
+                    raise ValueError('known or unresolved original timeline reason')
+        return dict(kind='timeline',records=len(value))
+    if name == 'artifact_metadata.json':
+        if not isinstance(value,list):
+            raise ValueError('original artifact metadata schema differs')
+        for row in value:
+            if (not isinstance(row,dict) or set(row)!={'path','size','sha256'}
+                    or not isinstance(row['path'],str) or not row['path']
+                    or type(row['size']) is not int or row['size']<0
+                    or not isinstance(row['sha256'],str)
+                    or re.fullmatch('[0-9a-f]{64}',row['sha256']) is None):
+                raise ValueError('original artifact metadata types differ')
+        return dict(kind='artifact-metadata',records=len(value))
+    if name == 'versions.json':
+        keys = {'python', 'os', 'executable', 'config_sha256', 'dependencies', 'managed_process',
+                'candidate_manifest', 'dump_target'}
+        if (not isinstance(value, dict) or set(value) - keys
+                or not {'config_sha256', 'managed_process'} <= set(value)):
+            raise ValueError('original version observation schema differs')
+        return dict(kind='versions', records=len(value))
+    if name == 'baseline_diff.json':
+        if not isinstance(value, dict) or set(value) != {'before', 'after', 'differences'} or value['differences']:
+            raise ValueError('original baseline observation unresolved')
+        return dict(kind='baseline', records=len(value))
+    if name == 'managed-exit.json':
+        if not isinstance(value, dict) or value.get('schema') != 'fakenet.exit-result.v1':
+            raise ValueError('original exit observation schema differs')
+        return dict(kind='exit-observation', records=len(value))
+    if name in ('manifest.json', 'published.json'):
+        if not isinstance(value, dict):
+            raise ValueError('original publication/manifest schema differs')
+        return dict(kind='manifest' if name == 'manifest.json' else 'publication', records=len(value))
+    raise ValueError('unclassified original domain member: ' + name)
+
+
 def assess_unknown_domain(members, record, arm, truth, exit_record, options, *, transport=None):
     """Classify a *complete* product domain, separately from disclosed stimulus.
 
@@ -254,10 +495,12 @@ def assess_unknown_domain(members, record, arm, truth, exit_record, options, *, 
     notification=exit_record.get('notification') or {}
     if notification.get('target_pid')!=arm['pid'] or notification.get('initiator_pid')!=arm['pid']:
         raise ValueError('original exit notification is not self-initiated')
-    manifest=json.loads(members['manifest.json'])
+    manifest=_json_original(members['manifest.json'])
     required={name for name,kind in BASIC_ITEMS}
     entries=manifest.get('entries',[])
-    if not required<=set(members) or set(members)!={row['item'] for row in entries if row.get('result')=='ok'}|{'manifest.json'}:
+    _validate_publication(members)
+    if (not required<=set(members) or len({row['item'] for row in entries})!=len(entries)
+            or set(members)!={row['item'] for row in entries if row.get('result')=='ok'}|{'manifest.json','published.json'}):
         raise ValueError('unknown application domain file set incomplete')
     for row in entries:
         if row.get('result')!='ok' or row.get('failure_reason') is not None:
@@ -281,44 +524,29 @@ def assess_unknown_domain(members, record, arm, truth, exit_record, options, *, 
         except (ValueError,KeyError,TypeError,IndexError):continue
     if not original_terminal:raise ValueError('unknown terminal observation absent from original HTTP transport')
     reason=terminal.get('failure_reason')
-    if reason not in TRANSPORT_SYMPTOMS:
+    if _transport_symptom(reason) is None:
         raise ValueError('known application cause or unclassified original terminal reason')
     if members.get('exception.txt',b'').decode('utf-8',errors='strict').strip()!=reason:
         raise ValueError('original application exception differs from raw terminal symptom')
-    pins={};diagnostics=[];symptom_members=[]
-    # Read the entire declared domain strictly, including all structured
-    # diagnostic fields. Never truncate, replace decode errors, or trust cache.
+    pins={};diagnostics=[];symptom_members=[];coverage={}
+    # The native dump is structurally checked by validate_original_record;
+    # every other original gets one explicit typed, complete-byte assessment.
     for name,raw in sorted(members.items()):
-        if name in ('manifest.json','userdump.dmp') or name.endswith('.pcap'):continue
-        if len(raw)>4*1024*1024:raise ValueError('unknown diagnostic domain text exceeds bound')
-        text=raw.decode('utf-8',errors='strict');pins[name]=_digest(raw)
-        if name.endswith('.json'):
-            obj=json.loads(text)
-            def visit(value,path=''):
-                if isinstance(value,dict):
-                    for key,item in value.items():
-                        if key in ('error','initialization_error','cleanup_errors','capture_error','failure_reason','exception_text','exception','traceback','cause') and item:
-                            if not isinstance(item,str) or item not in TRANSPORT_SYMPTOMS:
-                                raise ValueError('known or unresolved application diagnostic: '+name+'/'+path+key)
-                        visit(item,path+key+'/')
-                elif isinstance(value,list):
-                    for item in value:visit(item,path)
-            visit(obj)
-        if name.endswith(('.txt','.log')):
-            if text.strip()==reason:symptom_members.append(name)
-            for number,line in enumerate(text.splitlines(),1):
-                # Stack frame source text is an observation, not an emitted
-                # exception. Only log/exception diagnostics claim a cause.
-                if 'stack' in name.lower() and not re.search(r'(?i)(Traceback \(most recent call last\)|\b[A-Za-z_]+(?:Error|Exception):)',line):continue
-                if line.strip():
-                    if line.strip() not in TRANSPORT_SYMPTOMS:
-                        raise ValueError('known or unresolved application log diagnostic: '+name+':'+str(number))
-                    diagnostics.append(dict(member=name,line=number,text=line))
+        pins[name]=_digest(raw)
+        if name=='userdump.dmp':
+            coverage[name]=dict(kind='verified-target-dump',records=1)
+            continue
+        classification=_classify_domain_member(name,raw)
+        coverage[name]=classification
+        if classification['kind']=='transport-symptom':
+            symptom_members.append(name)
+            diagnostics.append(dict(member=name,symptom=classification['symptom']))
     if not symptom_members:raise ValueError('original exception symptom not present in complete application domain')
     versions=json.loads(members['versions.json']);managed=versions.get('managed_process') or {}
     if managed.get('job_members')!=[] or managed.get('exit_code',-1)&0xffffffff!=d.UNKNOWN_EXIT_CODE:
         raise ValueError('original managed exit/Job terminal observation differs')
     return dict(schema=UNKNOWN_DOMAIN_SCHEMA,application_cause='unclassified-in-complete-domain',
                 observed_exit='self_exit',test_mechanism=truth['mechanism'],test_exit_code=truth['exit_code'],
-                complete_domain=pins,transport_symptoms=sorted(symptom_members),diagnostic_lines=diagnostics,
+                complete_domain=pins,typed_domain_schema=TYPED_DOMAIN_SCHEMA,typed_coverage=coverage,
+                transport_symptoms=sorted(symptom_members),diagnostic_lines=diagnostics,
                 native_or_full_credit=False)
