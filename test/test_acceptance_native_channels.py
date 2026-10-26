@@ -55,12 +55,64 @@ class WindowsChannelTests(unittest.TestCase):
                     'phase':'COMPLETE','outcome':'complete','published_ever':True,'destination_verified':True,
                     'cleanup':{'host':True,'guest':True},'destination_identity':{'identity':self.vm,'canonical_path':r'E:\stage'},
                     'files':[{'relative_path':'request.json','source':str(source),'destination':r'E:\stage\request.json','size':source.stat().st_size,'sha256':sha(source)}]}
+            result['destination_identity']['endpoint']='guest'
+            result['destination_identity']['identity']={key:self.vm[key] for key in ('vm_uuid','boot_identity')}
+            result['destination_identity']['identity']['policy_id']='fixed-policy'
+            result['request_digest']='a'*64
+            binding=dict(self.vm,protocol_version='velo.transfer.v1',transfer_id=spec['transfer_id'],
+                         direction='push',request_digest=result['request_digest'],policy_id='fixed-policy')
+            evidence=self.root/'guest-cleanup.json';evidence.write_text(json.dumps({'binding':binding}))
+            info=evidence.stat()
+            result['evidence_index']=[{'role':'guest_cleanup','reference':{'name':'guest-cleanup',
+                'size':info.st_size,'sha256':sha(evidence),'device':info.st_dev,'inode':info.st_ino,'mtime_ns':info.st_mtime_ns}}]
             path=self.root/'result.json';path.write_text(json.dumps(result))
             kwargs['stdout'].write(json.dumps({'result_path':str(path)}).encode());return types.SimpleNamespace(returncode=0)
         channel=win.ExistingWindowsChannel(ROOT,self.runtime,self.root/'journal',powershell=mock.Mock(),run=run)
         result=channel.transfer('push','push',[{'absolute_path':str(source),'relative_path':'request.json'}],r'E:\stage',producer_reference='closed request fixture')
         self.assertEqual('COMPLETE',result['phase'])
         self.assertTrue((self.root/'journal/push-terminal.json').is_file())
+
+    def real_push_proof(self):
+        spec={'expected_vm_identity':self.vm,'transfer_id':'fixed-transfer'}
+        binding=dict(self.vm,protocol_version='velo.transfer.v1',transfer_id='fixed-transfer',
+                     direction='push',request_digest='a'*64,policy_id='fixed-policy')
+        evidence=self.root/'closed-guest-cleanup.json'
+        evidence.write_text(json.dumps({'binding':binding}))
+        info=evidence.stat()
+        reference={'name':'closed-guest-cleanup','size':info.st_size,'sha256':sha(evidence),
+                   'device':info.st_dev,'inode':info.st_ino,'mtime_ns':info.st_mtime_ns}
+        peer={key:self.vm[key] for key in ('vm_uuid','boot_identity')};peer['policy_id']='fixed-policy'
+        result={'request_digest':'a'*64,'destination_identity':{'endpoint':'guest','identity':peer},
+                'evidence_index':[{'role':'guest_cleanup','reference':reference}]}
+        return self.root/'result.json',result,spec,binding,evidence
+
+    def test_real_cli_push_shape_binds_requested_epoch(self):
+        path,result,spec,binding,evidence=self.real_push_proof()
+        self.assertEqual(self.vm['vm_epoch'],win.push_vm_binding(path,result,spec)['vm_epoch'])
+
+    def test_wrong_requested_epoch_rejected(self):
+        path,result,spec,binding,evidence=self.real_push_proof()
+        spec['expected_vm_identity']=dict(self.vm,vm_epoch='different')
+        with self.assertRaisesRegex(win.ChannelError,'binding'):
+            win.push_vm_binding(path,result,spec)
+
+    def test_tampered_cleanup_bytes_rejected(self):
+        path,result,spec,binding,evidence=self.real_push_proof()
+        evidence.write_text(json.dumps({'binding':dict(binding,vm_epoch='bad')}))
+        with self.assertRaisesRegex(win.ChannelError,'binding'):
+            win.push_vm_binding(path,result,spec)
+
+    def test_peer_policy_must_equal_bound_policy(self):
+        path,result,spec,binding,evidence=self.real_push_proof()
+        result['destination_identity']['identity']['policy_id']='other'
+        with self.assertRaisesRegex(win.ChannelError,'binding'):
+            win.push_vm_binding(path,result,spec)
+
+    def test_missing_cleanup_binding_cannot_earn_complete(self):
+        path,result,spec,binding,evidence=self.real_push_proof()
+        result['evidence_index']=[]
+        with self.assertRaisesRegex(win.ChannelError,'binding'):
+            win.push_vm_binding(path,result,spec)
 
     def test_transfer_error_does_not_execute_or_fallback(self):
         call=mock.Mock();run=mock.Mock(return_value=types.SimpleNamespace(returncode=3))

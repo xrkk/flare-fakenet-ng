@@ -8,6 +8,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
+import stat
 from pathlib import Path, PureWindowsPath
 import subprocess
 import sys
@@ -33,6 +35,52 @@ def psquote(value):
 
 class ChannelError(RuntimeError):
     pass
+
+
+def push_vm_binding(result_path, result, spec):
+    """Check the CLI's peer descriptor and its immutable guest cleanup binding."""
+    entries = [entry.get('reference') for entry in result.get('evidence_index', [])
+               if entry.get('role') == 'guest_cleanup']
+    if len(entries) != 1 or not isinstance(entries[0], dict):
+        raise ChannelError('Velo guest cleanup binding evidence missing')
+    reference = entries[0]
+    name = reference.get('name')
+    if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', name):
+        raise ChannelError('Velo cleanup binding reference invalid')
+    path = Path(result_path).parent / (name + '.json')
+    try:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise ValueError('not an immutable ordinary file')
+        raw = path.read_bytes()
+        after = path.lstat()
+        fields = {'device': 'st_dev', 'inode': 'st_ino', 'mtime_ns': 'st_mtime_ns', 'size': 'st_size'}
+        if any(getattr(before, field) != getattr(after, field) or
+               reference.get(key) != getattr(after, field) for key, field in fields.items()):
+            raise ValueError('binding evidence identity changed')
+        if hashlib.sha256(raw).hexdigest() != reference.get('sha256'):
+            raise ValueError('binding evidence bytes changed')
+        binding = json.loads(raw)['binding']
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ChannelError('Velo cleanup binding evidence invalid') from None
+    destination = result.get('destination_identity') or {}
+    peer = destination.get('identity') or {}
+    expected = spec['expected_vm_identity']
+    if (destination.get('endpoint') != 'guest' or
+            set(peer) != {'vm_uuid', 'boot_identity', 'policy_id'} or
+            any(peer.get(key) != expected[key] for key in ('vm_uuid', 'boot_identity')) or
+            not isinstance(peer.get('policy_id'), str) or not peer['policy_id'] or
+            not isinstance(binding, dict) or
+            any(binding.get(key) != expected[key] for key in ('vm_uuid', 'boot_identity', 'vm_epoch')) or
+            binding.get('protocol_version') != 'velo.transfer.v1' or
+            binding.get('transfer_id') != spec['transfer_id'] or
+            binding.get('direction') != 'push' or
+            binding.get('request_digest') != result.get('request_digest') or
+            not isinstance(result.get('request_digest'), str) or
+            not re.fullmatch(r'[0-9a-f]{64}', result['request_digest']) or
+            binding.get('policy_id') != peer['policy_id']):
+        raise ChannelError('Velo cleanup binding differs from fixed target or transfer')
+    return binding
 
 
 class ExistingWindowsChannel:
@@ -111,8 +159,9 @@ class ExistingWindowsChannel:
             result.get('outcome')!='complete' or result.get('published_ever') is not True or
             result.get('destination_verified') is not True or result.get('cleanup')!={'host':True,'guest':True}):
             raise ChannelError('Velo complete/publish/verification/cleanup contract missing')
-        identity=result.get('source_vm_identity') if direction=='pull' else (result.get('destination_identity') or {}).get('identity')
-        if identity!=transfer['expected_vm_identity']:
+        if direction == 'push':
+            push_vm_binding(result_path, result, spec)
+        elif result.get('source_vm_identity') != transfer['expected_vm_identity']:
             raise ChannelError('Velo VM identity differs from fixed target')
         destination_identity=result.get('destination_identity') or {}
         if destination_identity.get('canonical_path')!=destination:
