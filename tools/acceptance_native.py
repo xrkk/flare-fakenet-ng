@@ -1340,6 +1340,8 @@ def run_production(root,case,plan,output_dir,python):
                      plan['environment'].get('linux',{}).get('schema') == 'fakenet.linux-runtime-options.v2')
     if reason and not partial_guest:raise ValueError(reason)
     runtime=plan['environment']['native_runtime']
+    if 'upstream_protected_tcp_ports' in runtime:
+        validate_upstream_protected_tcp_ports(runtime['upstream_protected_tcp_ports'])
     selected_driver,selected_checks=validate_case(case,root,plan['environment'])
     if selected_driver.get('production_kind','').startswith('policy-'):
         policy_inputs(plan['environment'],plan.get('candidate',{}).get('offline_fixture') is True,selected_driver['production_kind'].split('-',1)[1])

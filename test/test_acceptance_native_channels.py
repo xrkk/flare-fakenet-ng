@@ -247,6 +247,21 @@ class RemoteProductionTests(unittest.TestCase):
         self.assertEqual(0,code,out+err)
         self.assertEqual(0,self.cli('judge','--plan',path,'--results',path.parent/'results')[0])
 
+    def test_local_protection_null_rejected_before_output_directory(self):
+        import acceptance_runtime as rt
+        self.prepare_windows()
+        self.runtime.update(transport='local-target',
+                            upstream_protected_tcp_ports=None)
+        (self.root/'environment.json').write_text(json.dumps(self.environment))
+        plan=json.loads(self.plan().read_text())
+        output=self.root/'null-local-output'
+        with mock.patch.object(rt,'require_target',return_value=self.identity), \
+             mock.patch.object(native.subprocess,'Popen') as launch:
+            with self.assertRaisesRegex(ValueError,'explicit array, not null'):
+                native.run_production(self.root,self.case,plan,output,sys.executable)
+        launch.assert_not_called()
+        self.assertFalse(output.exists())
+
     def test_remote_protection_field_explicit_null_rejected_before_channel(self):
         # An explicitly declared null is not the absent default and must be
         # rejected before any channel side effect.
