@@ -61,7 +61,11 @@ class WindowsChannelTests(unittest.TestCase):
             result['request_digest']='a'*64
             binding=dict(self.vm,protocol_version='velo.transfer.v1',transfer_id=spec['transfer_id'],
                          direction='push',request_digest=result['request_digest'],policy_id='fixed-policy')
-            evidence=self.root/'guest-cleanup.json';evidence.write_text(json.dumps({'binding':binding}))
+            evidence=self.root/'guest-cleanup.json';evidence.write_text(json.dumps({'schema':'velo.transfer.guest.response.v1','transfer_id':binding['transfer_id'],
+                'request_digest':binding['request_digest'],'local_phase':'DEST_RELEASED',
+                'cleanup':{'temporary_files_removed':True,'workers_stopped':True},
+                'terminal':{'schema':'velo.transfer.guest_terminal.v1','binding':binding,
+                            'local_phase':'DEST_RELEASED','destination':result['destination_identity']}}))
             info=evidence.stat()
             result['evidence_index']=[{'role':'guest_cleanup','reference':{'name':'guest-cleanup',
                 'size':info.st_size,'sha256':sha(evidence),'device':info.st_dev,'inode':info.st_ino,'mtime_ns':info.st_mtime_ns}}]
@@ -76,14 +80,19 @@ class WindowsChannelTests(unittest.TestCase):
         spec={'expected_vm_identity':self.vm,'transfer_id':'fixed-transfer'}
         binding=dict(self.vm,protocol_version='velo.transfer.v1',transfer_id='fixed-transfer',
                      direction='push',request_digest='a'*64,policy_id='fixed-policy')
+        peer={key:self.vm[key] for key in ('vm_uuid','boot_identity')};peer['policy_id']='fixed-policy'
+        result={'request_digest':'a'*64,'destination_identity':{'endpoint':'guest','identity':peer}}
+        response={'schema':'velo.transfer.guest.response.v1','transfer_id':binding['transfer_id'],
+                  'request_digest':binding['request_digest'],'local_phase':'DEST_RELEASED',
+                  'cleanup':{'temporary_files_removed':True,'workers_stopped':True},
+                  'terminal':{'schema':'velo.transfer.guest_terminal.v1','binding':binding,
+                              'local_phase':'DEST_RELEASED','destination':result['destination_identity']}}
         evidence=self.root/'closed-guest-cleanup.json'
-        evidence.write_text(json.dumps({'binding':binding}))
+        evidence.write_text(json.dumps(response))
         info=evidence.stat()
         reference={'name':'closed-guest-cleanup','size':info.st_size,'sha256':sha(evidence),
                    'device':info.st_dev,'inode':info.st_ino,'mtime_ns':info.st_mtime_ns}
-        peer={key:self.vm[key] for key in ('vm_uuid','boot_identity')};peer['policy_id']='fixed-policy'
-        result={'request_digest':'a'*64,'destination_identity':{'endpoint':'guest','identity':peer},
-                'evidence_index':[{'role':'guest_cleanup','reference':reference}]}
+        result['evidence_index']=[{'role':'guest_cleanup','reference':reference}]
         return self.root/'result.json',result,spec,binding,evidence
 
     def test_real_cli_push_shape_binds_requested_epoch(self):
@@ -113,6 +122,27 @@ class WindowsChannelTests(unittest.TestCase):
         result['evidence_index']=[]
         with self.assertRaisesRegex(win.ChannelError,'binding'):
             win.push_vm_binding(path,result,spec)
+
+    def test_top_level_binding_cannot_replace_real_terminal(self):
+        path,result,spec,binding,evidence=self.real_push_proof()
+        evidence.write_text(json.dumps({'binding':binding}))
+        info=evidence.stat()
+        result['evidence_index'][0]['reference'].update(size=info.st_size,sha256=sha(evidence),mtime_ns=info.st_mtime_ns)
+        with self.assertRaisesRegex(win.ChannelError,'binding'):
+            win.push_vm_binding(path,result,spec)
+
+    def test_wrong_terminal_or_cleanup_response_rejected(self):
+        for field in ('schema','cleanup','destination','transfer_id','request_digest'):
+            with self.subTest(field=field):
+                path,result,spec,binding,evidence=self.real_push_proof()
+                value=json.loads(evidence.read_text())
+                if field=='destination':value['terminal']['destination']={'endpoint':'other'}
+                elif field=='cleanup':value['cleanup']['workers_stopped']=False
+                else:value[field]='wrong'
+                evidence.write_text(json.dumps(value));info=evidence.stat()
+                result['evidence_index'][0]['reference'].update(size=info.st_size,sha256=sha(evidence),mtime_ns=info.st_mtime_ns)
+                with self.assertRaisesRegex(win.ChannelError,'binding'):
+                    win.push_vm_binding(path,result,spec)
 
     def test_transfer_error_does_not_execute_or_fallback(self):
         call=mock.Mock();run=mock.Mock(return_value=types.SimpleNamespace(returncode=3))

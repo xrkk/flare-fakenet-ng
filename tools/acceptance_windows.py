@@ -60,7 +60,20 @@ def push_vm_binding(result_path, result, spec):
             raise ValueError('binding evidence identity changed')
         if hashlib.sha256(raw).hexdigest() != reference.get('sha256'):
             raise ValueError('binding evidence bytes changed')
-        binding = json.loads(raw)['binding']
+        response = json.loads(raw)
+        terminal = response['terminal']
+        if not isinstance(terminal, dict):
+            raise ValueError('terminal is not an object')
+        binding = terminal['binding']
+        if (response.get('schema') != 'velo.transfer.guest.response.v1' or
+                response.get('transfer_id') != spec['transfer_id'] or
+                response.get('request_digest') != result.get('request_digest') or
+                response.get('cleanup') != {'temporary_files_removed': True, 'workers_stopped': True} or
+                response.get('local_phase') != 'DEST_RELEASED' or
+                terminal.get('schema') != 'velo.transfer.guest_terminal.v1' or
+                terminal.get('local_phase') != 'DEST_RELEASED' or
+                terminal.get('destination') != result.get('destination_identity')):
+            raise ValueError('cleanup response or terminal differs')
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ChannelError('Velo cleanup binding evidence invalid') from None
     destination = result.get('destination_identity') or {}
