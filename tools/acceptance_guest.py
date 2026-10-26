@@ -23,6 +23,14 @@ def execute(request,root):
                frozenset(fields|{'policy','mcp'}),
                frozenset(fields|{'headless','mcp'}),
                frozenset(fields|{'policy','headless','mcp'})}
+    allowed |= {frozenset(fields|{'upstream_protected_tcp_ports'}),
+                frozenset(fields|{'policy','upstream_protected_tcp_ports'}),
+                frozenset(fields|{'headless','upstream_protected_tcp_ports'}),
+                frozenset(fields|{'mcp','upstream_protected_tcp_ports'}),
+                frozenset(fields|{'policy','headless','upstream_protected_tcp_ports'}),
+                frozenset(fields|{'policy','mcp','upstream_protected_tcp_ports'}),
+                frozenset(fields|{'headless','mcp','upstream_protected_tcp_ports'}),
+                frozenset(fields|{'policy','headless','mcp','upstream_protected_tcp_ports'})}
     if frozenset(request) not in allowed | {frozenset(fields|{'linux'})} or request['schema']!='fakenet.native-guest-request.v1':
         raise ValueError('invalid guest request schema/fields')
     if request['actions']!=['native']:
@@ -47,6 +55,10 @@ def execute(request,root):
         environment['mcp']=request['mcp']
     if 'linux' in request:
         environment['linux']=request['linux']
+    if 'upstream_protected_tcp_ports' in request:
+        environment['native_runtime']['upstream_protected_tcp_ports'] = \
+            native.validate_upstream_protected_tcp_ports(
+                request['upstream_protected_tcp_ports'])
     driver,checks=native.validate_case(matches[0],root,environment)
     if not driver.get('production_kind') or checks!=request['checks']:
         raise ValueError('guest fixed driver/check selection mismatch')

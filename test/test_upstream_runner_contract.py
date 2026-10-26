@@ -466,3 +466,178 @@ class OwnedCoreTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'before ready'): core.start()
                 self.assertTrue(core.console.closed)
                 self.assertFalse(core.state['ready'])
+
+
+class UpstreamProtectedManagementPortsTests(unittest.TestCase):
+    """Fixture protection for the verified guest MCP management TCP ports.
+
+    The management connections (.1:44408/.1:44472 -> guest 28787/28790) were
+    rewritten to the ProxyTCPListener 38926 by the original fixture, merging
+    independent sequence spaces into one flow and failing the report.  The
+    protection field forwards those ports through the existing Diverter TCP
+    port blacklist instead, keeping their original tuples and the full
+    original capture/assertions.
+    """
+
+    def _tester(self):
+        with mock.patch.object(DRIVER, 'get_external_ip', return_value='192.0.2.10'):
+            settings = DRIVER.FakeNetTestSettings(str(ROOT/'test'), non_interactive=True)
+        return DRIVER.FakeNetTester(settings)
+
+    def _run(self, spec):
+        import acceptance_runtime as rt
+        from unittest.mock import MagicMock
+        tester = self._tester()
+        core = MagicMock()
+        core.state = {'ready': True, 'stopped': True, 'forced': False, 'returncode': 0}
+        core.stop.return_value = True
+        with mock.patch.object(rt, 'require_target'), \
+                mock.patch.object(rt, 'network_snapshot', return_value={'dns': 'same'}), \
+                mock.patch.object(rt, 'OwnedCore', return_value=core), \
+                mock.patch.object(tester, '_tryTest', return_value={'passed': True, 'detail': 'ok'}):
+            return tester.runMechanical(spec), Path(spec['work_root'])
+
+    def _spec(self, work, checks, ports=None):
+        spec = {'schema': 'fakenet.upstream-selection.v1', 'checks': list(checks),
+                'target': {}, 'work_root': str(work)}
+        if ports is not None:
+            spec['upstream_protected_tcp_ports'] = ports
+        return spec
+
+    def test_current_fixture_lacks_management_port_protection(self):
+        # Red proof on the unfixed fixture: without the new field the suite
+        # config keeps only the template value and carries no 28787/28790.
+        with tempfile.TemporaryDirectory() as temp:
+            spec = self._spec(Path(temp)/'work', ['General::DNS listener test'])
+            code, work = self._run(spec)
+            self.assertEqual(0, code)
+            config = configparser.RawConfigParser()
+            config.read(work/'suite-00'/'fakenet.ini')
+            value = config.get('Diverter', 'BlackListPortsTCP')
+            self.assertNotIn('28787', value.split(','))
+            self.assertNotIn('28790', value.split(','))
+
+    def test_protected_ports_appended_per_suite_preserving_existing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            spec = self._spec(Path(temp)/'work',
+                              ['General::DNS listener test',
+                               'No Redirect::RedirectAllTraffic disabled external IP @ bound'],
+                              ports=[28787, 28790])
+            code, work = self._run(spec)
+            self.assertEqual(0, code)
+            for suite in ('suite-00', 'suite-01'):
+                config = configparser.RawConfigParser()
+                config.read(work/suite/'fakenet.ini')
+                ports = [p.strip() for p in config.get('Diverter', 'BlackListPortsTCP').split(',')]
+                self.assertIn('139', ports)  # original template value preserved
+                self.assertIn('28787', ports)
+                self.assertIn('28790', ports)
+
+    def test_field_absent_keeps_frozen_legacy_selection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            spec = self._spec(Path(temp)/'work', ['General::DNS listener test'])
+            code, work = self._run(spec)
+            self.assertEqual(0, code)
+            config = configparser.RawConfigParser()
+            config.read(work/'suite-00'/'fakenet.ini')
+            self.assertEqual('139', config.get('Diverter', 'BlackListPortsTCP'))
+
+    def test_illegal_values_rejected_before_work_directory_side_effects(self):
+        import acceptance_runtime as rt
+        illegal = [[True], ['28787'], [0], [70000], [28787, 28787], [53], [139],
+                   {'port': 28787}, 28787]
+        with mock.patch.object(rt, 'require_target') as target:
+            for value in illegal:
+                with tempfile.TemporaryDirectory() as temp:
+                    work = Path(temp)/'work'
+                    spec = self._spec(work, ['General::DNS listener test'], ports=value)
+                    with self.assertRaises(ValueError):
+                        self._run(spec)
+                    self.assertFalse(work.exists())
+            target.assert_not_called()
+
+    def test_real_check_should_ignore_forwards_management_tuples_only(self):
+        # The real production consumer, on a minimal no-OS state object.
+        from fakenet.diverters.diverterbase import DiverterBase
+
+        class Ports:
+            def isProcessBlackListHit(self, *args):
+                return False
+            def isProcessWhiteListMiss(self, *args):
+                return False
+            def isHostWhiteListMiss(self, *args):
+                return False
+            def isHostBlackListHit(self, *args):
+                return False
+            def intersectsWithPorts(self, *args):
+                return False
+
+        state = types.SimpleNamespace(
+            is_set=lambda key: key == 'redirectalltraffic',
+            single_host_mode=False, blacklist_processes=[], whitelist_processes=[],
+            blacklist_ports={'TCP': [139, 28787, 28790], 'UDP': [67, 68]},
+            getconfigval=lambda key: None, listener_ports=Ports(),
+            pid=-1, ip_addrs={4: set(), 6: set()},
+            pdebug=lambda *args, **kwargs: None,
+            logger=types.SimpleNamespace(error=lambda *a, **k: None))
+
+        class Pkt:
+            def __init__(self, proto, sport, dport):
+                self.proto, self.sport0, self.dport0 = proto, sport, dport
+                self.src_ip0 = self.dst_ip0 = '192.168.204.149'
+            def hdrToStr(self):
+                return 'pkt'
+
+        forward = DiverterBase.check_should_ignore
+        for sport, dport in ((28787, 44408), (44408, 28787),
+                             (28790, 44472), (44472, 28790)):
+            self.assertTrue(forward(state, Pkt('TCP', sport, dport), None, ''))
+        for sport, dport in ((53, 1337), (1337, 80), (38926, 44408), (44408, 38926)):
+            self.assertFalse(forward(state, Pkt('TCP', sport, dport), None, ''))
+        self.assertFalse(forward(state, Pkt('UDP', 28787, 44408), None, ''))
+
+    def test_validator_and_request_construction_symmetry(self):
+        sys.path.insert(0, str(ROOT / 'tools'))
+        import acceptance_native as native
+        self.assertEqual([], native.validate_upstream_protected_tcp_ports(None))
+        self.assertEqual([28790, 28787],
+                         native.validate_upstream_protected_tcp_ports([28790, 28787]))
+        environment = {'native_runtime': {
+            'transport': 'windows-mcp-velo',
+            'upstream_protected_tcp_ports': [28787, 28790]}}
+        produced = native.attach_upstream_protection(
+            {'schema': 'fakenet.upstream-selection.v1', 'target': {}, 'checks': [],
+             'work_root': '/w'}, environment)
+        rebuilt = native.attach_upstream_protection(
+            {'schema': 'fakenet.upstream-selection.v1', 'target': {}, 'checks': [],
+             'work_root': '/w'}, environment)
+        self.assertEqual(produced, rebuilt)
+        self.assertEqual([28787, 28790], produced['upstream_protected_tcp_ports'])
+        absent = native.attach_upstream_protection(
+            {'schema': 'fakenet.upstream-selection.v1', 'target': {}, 'checks': [],
+             'work_root': '/w'}, {'native_runtime': {'transport': 'windows-mcp-velo'}})
+        self.assertNotIn('upstream_protected_tcp_ports', absent)
+        # A tampered field value cannot pass the same validation and cannot
+        # equal the plan-derived rebuild the independent judge compares with.
+        with self.assertRaises(ValueError):
+            native.validate_upstream_protected_tcp_ports([80])
+        tampered = dict(produced, upstream_protected_tcp_ports=[80])
+        self.assertNotEqual(produced, tampered)
+
+    def test_guest_request_gate_accepts_only_the_named_protection_field(self):
+        sys.path.insert(0, str(ROOT / 'tools'))
+        import acceptance_guest
+        fields = {'schema', 'case_id', 'case', 'checks', 'source_hashes',
+                  'candidate', 'target', 'output_root', 'execution_id', 'actions'}
+        base = {'schema': 'fakenet.native-guest-request.v1', 'case_id': 'x',
+                'case': {}, 'checks': [], 'source_hashes': {}, 'candidate': {},
+                'target': {}, 'output_root': '/x', 'execution_id': 'e',
+                'actions': ['native']}
+        request = dict(base, upstream_protected_tcp_ports=[28787, 28790])
+        with self.assertRaises(ValueError) as caught:
+            acceptance_guest.execute(dict(request, unlisted=1, **{}), ROOT)
+        self.assertIn('invalid guest request schema/fields', str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            acceptance_guest.execute(request, ROOT)
+        self.assertNotIn('invalid guest request schema/fields', str(caught.exception))
+        self.assertTrue(fields <= set(request))

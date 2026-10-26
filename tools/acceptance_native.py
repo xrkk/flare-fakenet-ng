@@ -37,6 +37,49 @@ def _read(path):
     return Path(path).read_text(encoding='utf-8', errors='replace')
 
 
+UPSTREAM_PROTECTED_TCP_PORTS = (28787, 28790)
+
+
+def validate_upstream_protected_tcp_ports(value):
+    """Fixture-only forwarding whitelist for verified guest management ports.
+
+    The optional field keeps MCP management connections on their original
+    tuples through the existing Diverter TCP port blacklist instead of the
+    ProxyTCPListener rewrite.  An absent value keeps the frozen legacy
+    selection; present values must be exactly the verified management ports,
+    integers (never booleans), in range and without duplicates.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError('upstream_protected_tcp_ports must be an array')
+    ports = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int):
+            raise ValueError('upstream_protected_tcp_ports entries must be integers')
+        if not 0 < item < 65536:
+            raise ValueError('upstream_protected_tcp_ports entry out of range')
+        if item in ports:
+            raise ValueError('upstream_protected_tcp_ports duplicate entry')
+        if item not in UPSTREAM_PROTECTED_TCP_PORTS:
+            raise ValueError(
+                'upstream_protected_tcp_ports entry is not a verified '
+                'management port: %r' % (item,))
+        ports.append(item)
+    return ports
+
+
+def attach_upstream_protection(request, environment):
+    """Attach the optional protection field identically at both request
+    construction and the independent judge's literal rebuild."""
+    runtime = environment['native_runtime']
+    if 'upstream_protected_tcp_ports' in runtime:
+        request['upstream_protected_tcp_ports'] = \
+            validate_upstream_protected_tcp_ports(
+                runtime.get('upstream_protected_tcp_ports'))
+    return request
+
+
 def upstream_checks(root, platform='linux', singlehost=True):
     """Read only registered original callback definitions, respecting guards."""
     tree = ast.parse(_read(Path(root)/'test/test.py'))
@@ -1323,8 +1366,8 @@ def run_production(root,case,plan,output_dir,python):
     driver,checks=validate_case(case,root,plan['environment'])
     argv=production_command(root,case,plan,output_dir,python)
     output_dir.mkdir(parents=True,exist_ok=True)
-    request={'schema':'fakenet.upstream-selection.v1','target':actual,
-             'checks':checks,'work_root':str(output_dir/'driver')}
+    request=attach_upstream_protection({'schema':'fakenet.upstream-selection.v1','target':actual,
+             'checks':checks,'work_root':str(output_dir/'driver')},plan['environment'])
     if driver['production_kind'].startswith('policy-'):
         write_json(output_dir/'policy-inputs.json',policy_inputs(plan['environment'],plan.get('candidate',{}).get('offline_fixture') is True,driver['production_kind'].split('-',1)[1]))
     if driver['production_kind'] in ('process-redirect','payload-three-way'):
@@ -1408,7 +1451,7 @@ def judge_production(case,receipt,plan,root):
         if json.loads(_read(output_dir/'target.json'))!=expected_target:
             raise ValueError('observed target differs')
         request=json.loads(_read(output_dir/'request.json'))
-        expected_request={'schema':'fakenet.upstream-selection.v1','target':expected_target,'checks':checks,'work_root':str(output_dir/'driver')}
+        expected_request=attach_upstream_protection({'schema':'fakenet.upstream-selection.v1','target':expected_target,'checks':checks,'work_root':str(output_dir/'driver')},plan['environment'])
         if request!=expected_request:
             raise ValueError('original native request differs from plan')
         evaluation,clean=original_evaluation(root,case,plan,output_dir)
@@ -1456,6 +1499,7 @@ def run_remote(root,case,plan,output_dir,python):
              'checks':checks,'source_hashes':source_hashes,'candidate':plan['candidate'],
              'target':runtime['identity'],'output_root':remote_output,
              'execution_id':plan['execution_id'],'actions':['native']}
+    attach_upstream_protection(request,plan['environment'])
     if driver['production_kind'] in ('process-redirect','payload-three-way'):
         request['headless']=headless_inputs(plan['environment'],driver,checks)
     if driver['production_kind'].startswith('policy-'):

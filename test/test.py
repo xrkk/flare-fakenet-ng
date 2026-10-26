@@ -408,7 +408,15 @@ class FakeNetTester(object):
         # Import is local so the historical/manual entry keeps its dependencies.
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
         from acceptance_runtime import OwnedCore, network_snapshot, require_target, write_json
-        if set(spec) != {'schema', 'checks', 'target', 'work_root'}:
+        from acceptance_native import validate_upstream_protected_tcp_ports
+        expected_fields = {'schema', 'checks', 'target', 'work_root'}
+        protected_ports = []
+        if 'upstream_protected_tcp_ports' in spec:
+            expected_fields.add('upstream_protected_tcp_ports')
+            # Reject illegal values before any work directory side effect.
+            protected_ports = validate_upstream_protected_tcp_ports(
+                spec['upstream_protected_tcp_ports'])
+        if set(spec) != expected_fields:
             raise ValueError('unexpected or missing mechanical spec fields')
         if spec.get('schema') != 'fakenet.upstream-selection.v1':
             raise ValueError('unknown upstream selection schema')
@@ -431,6 +439,16 @@ class FakeNetTester(object):
                 self.settings.stopflag = str(directory/'stop.flag')
                 self.settings.logpath = str(directory/'core.log')
                 config = suite['config']
+                if protected_ports:
+                    # Fixture-only forwarding whitelist: append the verified
+                    # management ports, preserving 139 and any existing value.
+                    existing = config.rawconfig.get(
+                        'Diverter', 'BlacklistPortsTCP', fallback='')
+                    merged = [item.strip() for item in existing.split(',') if item.strip()]
+                    merged.extend(str(port) for port in protected_ports
+                                  if str(port) not in merged)
+                    config.rawconfig.set(
+                        'Diverter', 'BlacklistPortsTCP', ','.join(merged))
                 config.rawconfig.set('Diverter', 'DumpPacketsFilePrefix', str(directory/'packets'))
                 for section in config.rawconfig.sections():
                     if config.rawconfig.has_option(section, 'Custom'):
