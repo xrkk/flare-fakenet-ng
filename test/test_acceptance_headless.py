@@ -30,6 +30,19 @@ class ContentTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 out=self.produce(mode,name=mode);rows,clean,_=self.judge(out,mode)
                 self.assertTrue(clean);self.assertEqual('pass',N._judge_rows(rows,[r['id'] for r in rows])['verdict'])
+    def test_config_text_keeps_control_ports_and_neighbor_semantics(self):
+        import configparser
+        for mode in ('process','payload'):
+            with self.subTest(mode=mode):
+                text=H.config_text(mode,H.memory_inputs(),self.root/mode)
+                parser=configparser.ConfigParser(interpolation=None);parser.optionxform=str
+                parser.read_string(text)
+                ports=[p.strip() for p in parser['Diverter']['BlackListPortsTCP'].split(',')]
+                for port in ('139',)+H.CONTROL_PROTECTED_TCP_PORTS:self.assertIn(port,ports)
+                udp=[p.strip() for p in parser['Diverter']['BlackListPortsUDP'].split(',')]
+                for port in ('67','68','137','138','443','1900','5355'):self.assertIn(port,udp)
+                self.assertNotIn(str(H.memory_inputs()['port']),udp)
+                if mode=='payload':self.assertEqual(str(H.memory_inputs()['port']),parser['Diverter']['ExternalTakeoverProbeTCPPorts'])
     def test_unknown_selection_and_incomplete_inputs_rejected_before_output(self):
         for values,selection in [({},None),(dict(H.memory_inputs(),commands={}),None),(H.memory_inputs(),['unknown'])]:
             with mock.patch.object(H.subprocess,'Popen',side_effect=AssertionError('unplanned OS launch')):
@@ -155,7 +168,7 @@ class ProductionCliTests(unittest.TestCase):
         import dpkt
         case='PR-REDIRECT-POSITIVE';self.execute([case])
         def mutate(directory):
-            from test_acceptance_native_oracles import make_pair
+            from test.test_acceptance_native_oracles import make_pair
             src='203.0.113.77';dst=H.memory_inputs()['target_ip'];tcp=dpkt.tcp.TCP(sport=12345,dport=H.memory_inputs()['port'],seq=1,data=b'unrelated no nonce');tcp.off=5
             ip=dpkt.ip.IP(src=H.socket.inet_aton(src),dst=H.socket.inet_aton(dst),p=6,data=tcp);ip.len=len(ip)
             with (directory/'wire.pcapng').open('wb') as stream:dpkt.pcapng.Writer(stream,linktype=101).writepkt(bytes(ip),ts=H.time.time())

@@ -26,6 +26,7 @@ SCHEMA = 'fakenet.headless-result.v2'
 PROCESS_CHECKS = ['identity', 'target-positive', 'non-target-negative', 'owner-bounded', 'budget', 'pcap-restore']
 PAYLOAD_CHECKS = ['integrity', 'report', 'reassembly']
 PE_BYTES = {'target': b'MZ\x00benign-memory-target', 'non-target': b'MZ\x00benign-memory-negative'}
+CONTROL_PROTECTED_TCP_PORTS = ('28787', '28790')
 
 
 def sha256(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -89,9 +90,12 @@ def config_text(mode, inputs, output, source_root=None):
     template = 'process_redirect_windows.ini' if mode == 'process' else 'domain_takeover_windows.ini'
     parser.read(ROOT/'fakenet/configs'/template, encoding='utf-8-sig')
     d = parser['Diverter']
+    tcp_blacklist = [p.strip() for p in d.get('BlackListPortsTCP', '').split(',') if p.strip()]
+    for port in ('139',) + CONTROL_PROTECTED_TCP_PORTS:
+        if port not in tcp_blacklist: tcp_blacklist.append(port)
     d.update(DumpPackets='Yes', DumpPacketsFilePrefix=joined(output,'capture'),
              ExternalDnsServer=inputs['upstream_dns'], ExternalAllowedDomains='headless.invalid',
-             BlackListPortsTCP='139', BlackListPortsUDP='67,68,137,138,443,1900,5355')
+             BlackListPortsTCP=','.join(tcp_blacklist), BlackListPortsUDP='67,68,137,138,443,1900,5355')
     if str(inputs['port']) in [p.strip() for p in d['BlackListPortsUDP'].split(',')]: raise ValueError('sink port bypasses policy')
     if mode == 'process':
         d.update(ExternalProcessRedirectEnabled='Yes', ExternalProcessRedirectProtocol='TCP',
