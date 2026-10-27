@@ -118,10 +118,11 @@ def evaluate(root,original,mode,checks,allow_fixture=False,expected_inputs=None,
     clean=_recovery(original,value)
     try:
         _configuration(root,original,value,inputs,producer_directory,source_root)
+        if value.get('error'):
+            return [{'id':c,'status':'fail','reason':value['error']} for c in selection],clean,{'producer_error':value['error']}
         _identities(original,value,inputs)
     except ValueError as exc:
         return [{'id':name,'status':'fail','reason':str(exc)} for name in selection],clean,{'mismatch':str(exc)}
-    if value.get('error'):return [{'id':c,'status':'fail','reason':value['error']} for c in selection],clean,{'producer_error':value['error']}
     if set(selection)=={'identity'}:return [{'id':'identity','status':'pass'}],clean,{}
     controls=value.get('controls') or []
     protocols={'TCP'} if mode=='process' else {'TCP','UDP'}

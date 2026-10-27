@@ -1692,6 +1692,16 @@ def judge_remote(case,receipt,plan,root):
 def native_source_pins(root):
     root=Path(root)
     paths=set((root/'fakenet').rglob('*.py'))
+    # Windows policy code invokes these non-Python files directly, including
+    # the process checker's two dot-sourced libraries. Pin the complete closure.
+    if (root/'fakenet/diverters/windows.py').is_file():
+        for name in ('Test-ProcessRedirectRoutes.ps1','Test-ReviewedIPv4Routes.ps1',
+                     'test/process_redirect_vm/RouteTargetTools.ps1',
+                     'test/process_redirect_vm/RouteResultTools.ps1'):
+            path=root/name
+            if not path.is_file() or path.is_symlink():
+                raise ValueError('required Windows runtime source missing: '+name)
+            paths.add(path)
     import acceptance_mcp
     for relative in acceptance_mcp.source_paths(root):
         path=root/relative

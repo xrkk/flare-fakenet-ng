@@ -112,6 +112,31 @@ def config_text(mode, inputs, output, source_root=None):
     stream=StringIO();parser.write(stream);return stream.getvalue()
 
 
+def validate_native_runtime(mode):
+    """Check required Python interfaces before control traffic or core startup."""
+    import importlib
+    modules={}
+    for name in ('psutil','dpkt','dnslib','netifaces','pyftpdlib',
+                 'cryptography','OpenSSL','jinja2','pydivert'):
+        try:modules[name]=importlib.import_module(name)
+        except ImportError as exc:
+            raise ValueError('native runtime dependency missing: '+name) from exc
+    required=[('psutil','Process'),('psutil','net_if_addrs'),
+              ('netifaces','interfaces'),('netifaces','ifaddresses')]
+    for name,attribute in required:
+        if not callable(getattr(modules[name],attribute,None)):
+            raise ValueError('native runtime API missing: '+name+'.'+attribute)
+    windivert=getattr(modules['pydivert'],'WinDivert',None)
+    methods=('open','close','send','recv','set_param','get_param')
+    if mode=='process':methods+=('check_filter',)
+    for attribute in methods:
+        if not callable(getattr(windivert,attribute,None)):
+            raise ValueError('native runtime API missing: pydivert.WinDivert.'+attribute)
+    return {name:{'origin':getattr(value,'__file__',None),
+                  'version':getattr(value,'__version__',None)}
+            for name,value in modules.items()}
+
+
 class NativeBoundary:
     fixture = False
     def __init__(self, output, inputs, mode):
@@ -119,6 +144,7 @@ class NativeBoundary:
     def identities(self):
         from acceptance_runtime import require_target
         require_target({'platform':'windows','hostname':socket.gethostname()})
+        self.runtime_requirements=validate_native_runtime(self.mode)
         if self.mode=='payload':return {}
         import psutil
         masks=[a.netmask for addresses in psutil.net_if_addrs().values() for a in addresses

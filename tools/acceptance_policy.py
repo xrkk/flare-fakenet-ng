@@ -364,6 +364,9 @@ def _udp_exchange(ip, port, nonce, timeout, capture=None, io=None, trace=None):
     request=FNPR%nonce.encode('ascii');sport=0
     trace.update(started_at=time.time(),request_hex=request.hex(),response_hex='',sent=False,error=None,tls=False)
     try:
+        # UDP connect selects the actual local route without sending data.
+        # An unconnected Windows socket can still report 0.0.0.0 after sendto.
+        sock.connect((ip,port))
         sock.sendto(request,(ip,port));src,sport=sock.getsockname();trace.update(sent=True,tuple={'proto':'UDP','src':src,'sport':sport,'dst':ip,'port':port})
         if capture:capture.add(src,ip,sport,port,'UDP',request)
         response,peer=sock.recvfrom(512)

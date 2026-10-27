@@ -16,6 +16,40 @@ import acceptance_policy_oracles as ORACLE
 import acceptance_native as NATIVE
 
 
+class UdpRouteObservationTests(unittest.TestCase):
+    class RouteSocket:
+        def __init__(self, changed_peer=False):
+            self.peer=None;self.data=b'';self.closed=False;self.changed_peer=changed_peer
+        def settimeout(self,timeout):pass
+        def bind(self,address):self.bound=address
+        def connect(self,peer):self.peer=peer
+        def getsockname(self):return ('192.168.204.149' if self.peer else '0.0.0.0',49573)
+        def sendto(self,data,peer):self.data=data;self.sent_peer=peer;return len(data)
+        def send(self,data):
+            if self.peer is None:raise AssertionError('UDP send needs selected route')
+            return self.sendto(data,self.peer)
+        def recvfrom(self,size):
+            peer=('192.168.204.2',3585) if self.changed_peer else ('192.168.204.1',3585)
+            return b'FNPR/1|route-probe|OK\n',peer
+        def close(self):self.closed=True
+
+    def test_udp_trace_observes_route_selected_before_sending(self):
+        sock=self.RouteSocket();trace={}
+        with mock.patch.object(POLICY.socket,'socket',return_value=sock):
+            response,port=POLICY._udp_exchange('192.168.204.1',3585,'route-probe',3,trace=trace)
+        self.assertEqual('192.168.204.149',trace['tuple']['src'])
+        self.assertEqual(49573,port);self.assertEqual(b'FNPR/1|route-probe|target\n',sock.data)
+        self.assertEqual(b'FNPR/1|route-probe|OK\n',response)
+        self.assertTrue(sock.closed)
+
+    def test_udp_route_fix_still_rejects_changed_response_peer(self):
+        sock=self.RouteSocket(changed_peer=True);trace={}
+        with mock.patch.object(POLICY.socket,'socket',return_value=sock):
+            response,port=POLICY._udp_exchange('192.168.204.1',3585,'route-probe',3,trace=trace)
+        self.assertEqual(b'',response);self.assertIn('UDP response peer changed',trace['error'])
+        self.assertTrue(sock.closed)
+
+
 class PolicyConfigTests(unittest.TestCase):
     def test_config_is_deterministic_and_uses_reviewed_grammar(self):
         first = POLICY.config_text('domain')
@@ -230,7 +264,7 @@ class PolicyProductionCliMemoryTests(unittest.TestCase):
     def test_one_way_tls_is_rejected_by_independent_cli(self):
         import struct
         case = 'POL-DOMAIN-ALLOW'
-        self.execute([case])
+        self.execute(['EGRESS-ALLOW-CHAIN', case])
         directory = self.run / 'results' / case / 'driver'
         path = directory / 'policy-result.json'
         value = json.loads(path.read_text())
@@ -254,7 +288,8 @@ class PolicyProductionCliMemoryTests(unittest.TestCase):
         value['pcap'][0]['sha256'] = POLICY.sha256(capture)
         path.write_text(json.dumps(value))
         summary = self.rehash_and_judge(case)
-        self.assertEqual(['tls_application'], summary['cases'][0]['evaluation']['failed'])
+        target = next(row for row in summary['cases'] if row['case_id'] == case)
+        self.assertEqual(['tls_application'], target['evaluation']['failed'])
 
 
 class PolicySubstituteTests(unittest.TestCase):

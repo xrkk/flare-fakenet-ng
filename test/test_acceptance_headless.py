@@ -95,6 +95,49 @@ class ContentTests(unittest.TestCase):
         self.assertEqual(str(PureWindowsPath(output)/'headless-inputs.json'),
                          command[command.index('--inputs')+1])
 
+    def test_native_dependency_api_check_runs_before_any_socket_or_process(self):
+        from types import SimpleNamespace
+        api=SimpleNamespace(**{key:lambda *a,**k:None for key in
+            ('open','close','send','recv','set_param','get_param')})
+        modules={name:SimpleNamespace(__file__='fixed/'+name) for name in
+            ('psutil','dpkt','dnslib','netifaces','pyftpdlib','cryptography','OpenSSL','jinja2','pydivert')}
+        modules['psutil'].Process=lambda:None;modules['psutil'].net_if_addrs=lambda:{}
+        modules['netifaces'].interfaces=lambda:[];modules['netifaces'].ifaddresses=lambda _:{}
+        modules['pydivert'].WinDivert=api
+        def load(name):return modules[name]
+        with mock.patch('importlib.import_module',side_effect=load), \
+             mock.patch.object(H.socket,'socket',side_effect=AssertionError('unexpected wire')), \
+             mock.patch.object(H.subprocess,'Popen',side_effect=AssertionError('unexpected process')):
+            with self.assertRaisesRegex(ValueError,'pydivert.WinDivert.check_filter'):
+                H.validate_native_runtime('process')
+            self.assertIn('psutil',H.validate_native_runtime('payload'))
+            api.check_filter=lambda _:True
+            self.assertIn('pydivert',H.validate_native_runtime('process'))
+        with mock.patch('importlib.import_module',side_effect=ImportError('missing')):
+            with self.assertRaisesRegex(ValueError,'dependency missing: psutil'):
+                H.validate_native_runtime('payload')
+
+    def test_route_checker_source_closure_is_pinned_and_missing_input_rejected(self):
+        required=('Test-ProcessRedirectRoutes.ps1','Test-ReviewedIPv4Routes.ps1',
+                  'test/process_redirect_vm/RouteTargetTools.ps1',
+                  'test/process_redirect_vm/RouteResultTools.ps1')
+        pins=N.native_source_pins(ROOT)
+        for name in required:self.assertEqual(H.sha256(ROOT/name),pins[name])
+        root=self.root/'partial';(root/'fakenet/diverters').mkdir(parents=True)
+        (root/'fakenet/diverters/windows.py').write_text('# fixed source fixture')
+        with self.assertRaisesRegex(ValueError,'required Windows runtime source missing'):
+            N.native_source_pins(root)
+
+    def test_producer_dependency_error_stays_fail_without_identity_key_error(self):
+        out=self.produce(name='producer-error',selected=['identity'])
+        value=H.read_json(out/'headless-result.json')
+        value['error']="ModuleNotFoundError: No module named 'psutil'"
+        value.pop('identities');H.write_json(out/'headless-result.json',value)
+        rows,clean,detail=self.judge(out,checks=['identity'])
+        self.assertEqual('fail',rows[0]['status'])
+        self.assertIn('psutil',rows[0]['reason'])
+        self.assertEqual(value['error'],detail['producer_error'])
+
     def test_budget_comes_from_actual_core_bucket(self):
         budget=H.owner_budget();self.assertEqual(16,budget['capacity']);self.assertEqual(32,budget['refill_per_second']);self.assertGreater(budget['burst'],budget['capacity'])
     def test_bad_mapping_nonce_negative_process_and_frozen_inputs(self):
