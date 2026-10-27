@@ -1473,12 +1473,14 @@ def judge_production(case,receipt,plan,root):
 
 
 def remote_guest_command(driver,runtime,output_root,checks,fixture=False):
+    from pathlib import PureWindowsPath, PurePosixPath
+    target_path=PureWindowsPath if runtime['identity']['platform']=='windows' else PurePosixPath
     context={'root':runtime['source_root'],'python':runtime['python'],
              'output':output_root,'modes':','.join(checks),
-             'policy_inputs':str(output_root)+'/policy-inputs.json',
-             'headless_inputs':str(output_root)+'/headless-inputs.json',
+             'policy_inputs':str(target_path(output_root)/'policy-inputs.json'),
+             'headless_inputs':str(target_path(output_root)/'headless-inputs.json'),
              'checks':','.join(checks), 'case_id':driver.get('case_id','LINUX-SINGLEHOST'),
-             'linux_inputs':str(output_root)+'/linux-inputs.json'}
+             'linux_inputs':str(target_path(output_root)/'linux-inputs.json')}
     argv=fixed_argv(driver,context)
     if driver.get('production_kind')=='dual-pcap-linux':
         for mode in checks:argv.extend(['--case',mode])

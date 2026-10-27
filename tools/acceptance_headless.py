@@ -38,7 +38,7 @@ def canonical(path): return ntpath.normcase(ntpath.normpath(str(path).removepref
 def owner_budget():
     """Derive the burst size from the actual bounded token bucket."""
     path = ROOT/'fakenet/diverters/processredirect.py'
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding='utf-8'))
     method = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == '_consume_query_budget_locked')
     call = next(n for n in ast.walk(method) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == 'min')
     capacity = int(ast.literal_eval(call.args[0]))

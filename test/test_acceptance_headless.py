@@ -74,6 +74,27 @@ class ContentTests(unittest.TestCase):
         self.assertTrue(all(row['verdict']=='PASS' for row in rows))
         self.assertTrue(any(row.get('gap_conflict') for row in rows))
 
+    def test_owner_budget_reads_utf8_under_windows_legacy_codepage(self):
+        original=Path.read_text
+        def windows_read(path,*args,**kwargs):
+            if path==ROOT/'fakenet/diverters/processredirect.py':
+                return path.read_bytes().decode(kwargs.get('encoding') or 'gbk')
+            return original(path,*args,**kwargs)
+        with mock.patch.object(Path,'read_text',windows_read):
+            budget=H.owner_budget()
+        self.assertEqual(16,budget['capacity'])
+        self.assertEqual(32,budget['refill_per_second'])
+
+    def test_remote_headless_input_path_matches_windows_guest_receipt(self):
+        from pathlib import PureWindowsPath
+        driver=N.driver_table(ROOT)['process-redirect-headless']
+        runtime={'source_root':r'E:\candidate','python':r'E:\python\python.exe',
+                 'identity':{'platform':'windows','hostname':'fixture'}}
+        output=r'E:\owned\execution\PR-REDIRECT-POSITIVE\output'
+        command=N.remote_guest_command(driver,runtime,output,['identity'])
+        self.assertEqual(str(PureWindowsPath(output)/'headless-inputs.json'),
+                         command[command.index('--inputs')+1])
+
     def test_budget_comes_from_actual_core_bucket(self):
         budget=H.owner_budget();self.assertEqual(16,budget['capacity']);self.assertEqual(32,budget['refill_per_second']);self.assertGreater(budget['burst'],budget['capacity'])
     def test_bad_mapping_nonce_negative_process_and_frozen_inputs(self):
