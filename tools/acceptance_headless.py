@@ -167,7 +167,7 @@ class NativeBoundary:
         return (self.output/(name+'.stdout')).read_text(errors='replace')
     def start_capture(self):
         status=self.command('capture-status-before',['pktmon.exe','status'])
-        if not re.search(r'not running|stopped|未运行|已停止',status,re.I):raise ValueError('another/unknown pktmon owner')
+        if not re.search(r'not running|stopped|未运行|已停止|没有运行',status,re.I):raise ValueError('another/unknown pktmon owner')
         self.capture_owned=True
         self.capture_start=time.time()
         self.command('capture-start',['pktmon.exe','start','--capture','--comp','nics','--pkt-size','0','--file-name',str(self.output/'wire.etl')])

@@ -43,6 +43,21 @@ class ContentTests(unittest.TestCase):
                 for port in ('67','68','137','138','443','1900','5355'):self.assertIn(port,udp)
                 self.assertNotIn(str(H.memory_inputs()['port']),udp)
                 if mode=='payload':self.assertEqual(str(H.memory_inputs()['port']),parser['Diverter']['ExternalTakeoverProbeTCPPorts'])
+    def test_pktmon_status_known_idle_and_active_or_unknown(self):
+        idle=['Packet monitor is not running.', 'Stopped', '未运行', '已停止',
+              '\r\n数据包监视器没有运行。\r\n']
+        for status in idle+['Packet monitor is running.', '数据包监视器正在运行。', 'Access denied', '']:
+            with self.subTest(status=status):
+                boundary=H.NativeBoundary(self.root,H.memory_inputs(),'process')
+                with mock.patch.object(boundary,'command',return_value=status) as command:
+                    if status in idle:
+                        value=boundary.start_capture()
+                        self.assertTrue(value['owned']);self.assertTrue(boundary.capture_owned)
+                        self.assertEqual(['capture-status-before','capture-start'],[call.args[0] for call in command.call_args_list])
+                    else:
+                        with self.assertRaisesRegex(ValueError,'another/unknown pktmon owner'):boundary.start_capture()
+                        self.assertFalse(boundary.capture_owned)
+                        self.assertEqual(['capture-status-before'],[call.args[0] for call in command.call_args_list])
     def test_unknown_selection_and_incomplete_inputs_rejected_before_output(self):
         for values,selection in [({},None),(dict(H.memory_inputs(),commands={}),None),(H.memory_inputs(),['unknown'])]:
             with mock.patch.object(H.subprocess,'Popen',side_effect=AssertionError('unplanned OS launch')):
