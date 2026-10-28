@@ -83,6 +83,19 @@ class ContentTests(unittest.TestCase):
         (self.root/'core.log').write_text(line+line+'Generated new HTML report: report.html\n',encoding='utf-8')
         self.assertEqual({'raw':'capture.pcap','converted':'capture-converted.pcap','html':'report.html'},boundary.finalize())
 
+    def test_finalize_indexes_owned_converted_wire_capture(self):
+        boundary=H.NativeBoundary(self.root,H.memory_inputs(),'process')
+        boundary.capture_start=123.0
+        for name in ('capture.pcap','capture-converted.pcap','report.html','wire.pcapng'):
+            (self.root/name).write_bytes(b'owned closed evidence')
+        (self.root/'core.log').write_text(
+            'PCAP_DUAL_SUMMARY raw=capture.pcap ethernet=capture-converted.pcap raw_count=1\n'
+            'Generated new HTML report: report.html\n',encoding='utf-8')
+        self.assertEqual('wire.pcapng',boundary.finalize()['wire'])
+        (self.root/'wire.pcapng').unlink()
+        with self.assertRaisesRegex(ValueError,'wire capture missing'):
+            boundary.finalize()
+
     def test_finalize_rejects_different_owned_artifact_pairs(self):
         boundary=H.NativeBoundary(self.root,H.memory_inputs(),'process')
         (self.root/'core.log').write_text(
@@ -198,6 +211,23 @@ class ContentTests(unittest.TestCase):
                 rows,clean,detail=self.judge(out)
                 self.assertFalse(clean)
                 self.assertTrue(all(row['status']=='fail' for row in rows))
+
+    def test_shared_wire_failure_keeps_resource_closure_and_fails_checks(self):
+        out=self.produce(name='original-A-on-wire')
+        with mock.patch.object(O,'_packets',return_value=[{'src':H.memory_inputs()['original_ip'],'dst':H.memory_inputs()['source_ip']}]):
+            rows,clean,detail=self.judge(out)
+        self.assertTrue(clean)
+        self.assertTrue(all(row['status']=='fail' for row in rows))
+        self.assertIn('original A traffic',rows[0]['reason'])
+
+    def test_missing_wire_index_keeps_recovery_separate_from_failed_evidence(self):
+        out=self.produce(name='missing-wire-index')
+        value=H.read_json(out/'headless-result.json');value['paths'].pop('wire')
+        H.write_json(out/'headless-result.json',value)
+        rows,clean,detail=self.judge(out)
+        self.assertTrue(clean)
+        self.assertTrue(all(row['status']=='fail' for row in rows))
+        self.assertIn('wire',rows[0]['reason'])
 
     def test_bad_mapping_nonce_negative_process_and_frozen_inputs(self):
         for mode in ('mapping','nonce','negative','image','wrong-plan'):

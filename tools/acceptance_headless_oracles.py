@@ -129,67 +129,73 @@ def evaluate(root,original,mode,checks,allow_fixture=False,expected_inputs=None,
     except ValueError as exc:
         return [{'id':name,'status':'fail','reason':str(exc)} for name in selection],clean,{'mismatch':str(exc)}
     if set(selection)=={'identity'}:return [{'id':'identity','status':'pass'}],clean,{}
-    controls=value.get('controls') or []
-    protocols={'TCP'} if mode=='process' else {'TCP','UDP'}
-    for protocol in protocols:
-        matches=[c for c in controls if c.get('tuple',{}).get('proto')==protocol]
-        if len(matches)!=1:raise ValueError('stopped control set differs')
-        c=matches[0];f=c['tuple']
-        if (f['src'],f['dst'],f['port'])!=(inputs['source_ip'],inputs['target_ip'],inputs['port']) or bytes.fromhex(c['response_hex'])!=('FNPR/1|%s|OK\n'%c['nonce']).encode():raise ValueError('sink stopped-state control did not succeed')
-    packets=_packets(original,value);rows=[]
-    if mode=='process':
-        log=_read(_safe(original,value['log'],'core log'));verifier=_load(root,'test/process_redirect_vm/verify_process_redirect.py');verifier.validate_runtime_log(log)
-        budget=driver.owner_budget()
-        if value.get('budget')!=budget:raise ValueError('owner budget not derived from frozen core')
-        # NIC capture belongs only to target clients, after the non-target phase.
-        if any(p['src']==inputs['original_ip'] or p['dst']==inputs['original_ip'] for p in packets):raise ValueError('target capture contains original A traffic')
-        for name in selection:
-            try:
-                if name=='identity':pass
-                elif name=='non-target-negative':
-                    _client(original,value,inputs,'non-target',1,'non-target',1)
-                elif name=='pcap-restore':
-                    if not clean:raise ValueError('independent network/owned cleanup not restored')
-                    _verify_positive(original,value,inputs,packets,'positive',1,verifier,log)
-                    pair=_load(root,'test/dual_pcap_vm/verify_dual_pcap.py')
-                    pair.verify(str(_safe(original,value['paths']['raw'],'raw')),str(_safe(original,value['paths']['converted'],'converted')),expected_versions=(4,))
-                else:
-                    label,count=('positive',1) if name=='target-positive' else ('owner',2) if name=='owner-bounded' else ('burst',budget['burst'])
-                    _verify_positive(original,value,inputs,packets,label,count,verifier,log)
-                    if name=='budget':
-                        result,identity,connections,owner=_client(original,value,inputs,'burst',budget['burst'],'target','budget_pressure')
-                        if owner['ended_at']-owner['started_at']>30:raise ValueError('burst execution is not bounded')
-                        if not any(c['success'] for c in connections) or not re.search(r'owner_query_budget_exhausted=([1-9][0-9]*)',log):raise ValueError('bounded burst did not trigger observed core budget')
-                rows.append({'id':name,'status':'pass'})
-            except Unobservable as exc:rows.append({'id':name,'status':'unknown','reason':str(exc)})
-            except (ValueError,KeyError,TypeError,OSError,AssertionError,PayloadReportError) as exc:rows.append({'id':name,'status':'fail','reason':str(exc)})
-    else:
-        paths={key:_safe(original,value['paths'][key],key) for key in ('raw','converted','index','html','wire')}
-        probes=value.get('probes') or []
-        if len(probes)!=2 or {p['tuple']['proto'] for p in probes}!={'TCP','UDP'}:raise ValueError('payload TCP/UDP probe set differs')
-        identities=set()
-        for probe in probes:
-            f=probe['tuple']
-            if (f['src'],f['dst'],f['port'])!=(inputs['source_ip'],inputs['target_ip'],inputs['port']):raise ValueError('payload flow differs from frozen endpoints')
-            _roundtrip(packets,f,probe['nonce'],probe['started_at'],probe['ended_at'])
-            if not probe.get('pid') or not probe.get('process'):raise ValueError('payload producer identity missing')
-            identities.add((probe['pid'],probe['process']))
-        report=_load(root,'test/gui_vm/verify_payload_report.py');integrity=_load(root,'test/gui_vm/verify_payload_integrity.py');reassembly=_load(root,'test/gui_vm/verify_reassembly.py')
-        model=integrity._html_model(str(paths['html']))
-        flows=[f for f in model['flows'] if f.get('disposition')=='ALLOW_TAKEOVER_SINK']
-        if not flows or {(f.get('pid'),f.get('process')) for f in flows}!=identities:raise ValueError('HTML flow PID/producer binding differs or multiple candidates')
-        if {f['protocol'].upper() for f in flows}!={'TCP','UDP'}:raise ValueError('HTML TCP/UDP directions missing')
-        for flow in flows:
-            if len(flow.get('directions') or {})!=2:raise ValueError('HTML payload missing direction')
-        for name in selection:
-            try:
-                if name=='report':res=report.verify(str(paths['html']))
-                elif name=='integrity':res=integrity.verify(str(paths['raw']),str(paths['wire']),str(paths['html']),str(_safe(original,value['log'],'log')),str(_safe(original,value['config'],'config')),value['capture_started_at'])
-                else:res=reassembly.verify(str(paths['raw']),str(paths['index']),str(paths['converted']))
-                if res.get('verdict')!='PASS':raise ValueError('original '+name+' verifier refused')
-                rows.append({'id':name,'status':'pass'})
-            except (ValueError,KeyError,TypeError,OSError,AssertionError,PayloadReportError) as exc:rows.append({'id':name,'status':'fail','reason':str(exc)})
-    return rows,clean,{}
+    try:
+        controls=value.get('controls') or []
+        protocols={'TCP'} if mode=='process' else {'TCP','UDP'}
+        for protocol in protocols:
+            matches=[c for c in controls if c.get('tuple',{}).get('proto')==protocol]
+            if len(matches)!=1:raise ValueError('stopped control set differs')
+            c=matches[0];f=c['tuple']
+            if (f['src'],f['dst'],f['port'])!=(inputs['source_ip'],inputs['target_ip'],inputs['port']) or bytes.fromhex(c['response_hex'])!=('FNPR/1|%s|OK\n'%c['nonce']).encode():raise ValueError('sink stopped-state control did not succeed')
+        packets=_packets(original,value);rows=[]
+        if mode=='process':
+            log=_read(_safe(original,value['log'],'core log'));verifier=_load(root,'test/process_redirect_vm/verify_process_redirect.py');verifier.validate_runtime_log(log)
+            budget=driver.owner_budget()
+            if value.get('budget')!=budget:raise ValueError('owner budget not derived from frozen core')
+            # NIC capture belongs only to target clients, after the non-target phase.
+            if any(p['src']==inputs['original_ip'] or p['dst']==inputs['original_ip'] for p in packets):raise ValueError('target capture contains original A traffic')
+            for name in selection:
+                try:
+                    if name=='identity':pass
+                    elif name=='non-target-negative':
+                        _client(original,value,inputs,'non-target',1,'non-target',1)
+                    elif name=='pcap-restore':
+                        if not clean:raise ValueError('independent network/owned cleanup not restored')
+                        _verify_positive(original,value,inputs,packets,'positive',1,verifier,log)
+                        pair=_load(root,'test/dual_pcap_vm/verify_dual_pcap.py')
+                        pair.verify(str(_safe(original,value['paths']['raw'],'raw')),str(_safe(original,value['paths']['converted'],'converted')),expected_versions=(4,))
+                    else:
+                        label,count=('positive',1) if name=='target-positive' else ('owner',2) if name=='owner-bounded' else ('burst',budget['burst'])
+                        _verify_positive(original,value,inputs,packets,label,count,verifier,log)
+                        if name=='budget':
+                            result,identity,connections,owner=_client(original,value,inputs,'burst',budget['burst'],'target','budget_pressure')
+                            if owner['ended_at']-owner['started_at']>30:raise ValueError('burst execution is not bounded')
+                            if not any(c['success'] for c in connections) or not re.search(r'owner_query_budget_exhausted=([1-9][0-9]*)',log):raise ValueError('bounded burst did not trigger observed core budget')
+                    rows.append({'id':name,'status':'pass'})
+                except Unobservable as exc:rows.append({'id':name,'status':'unknown','reason':str(exc)})
+                except (ValueError,KeyError,TypeError,OSError,AssertionError,PayloadReportError) as exc:rows.append({'id':name,'status':'fail','reason':str(exc)})
+        else:
+            paths={key:_safe(original,value['paths'][key],key) for key in ('raw','converted','index','html','wire')}
+            probes=value.get('probes') or []
+            if len(probes)!=2 or {p['tuple']['proto'] for p in probes}!={'TCP','UDP'}:raise ValueError('payload TCP/UDP probe set differs')
+            identities=set()
+            for probe in probes:
+                f=probe['tuple']
+                if (f['src'],f['dst'],f['port'])!=(inputs['source_ip'],inputs['target_ip'],inputs['port']):raise ValueError('payload flow differs from frozen endpoints')
+                _roundtrip(packets,f,probe['nonce'],probe['started_at'],probe['ended_at'])
+                if not probe.get('pid') or not probe.get('process'):raise ValueError('payload producer identity missing')
+                identities.add((probe['pid'],probe['process']))
+            report=_load(root,'test/gui_vm/verify_payload_report.py');integrity=_load(root,'test/gui_vm/verify_payload_integrity.py');reassembly=_load(root,'test/gui_vm/verify_reassembly.py')
+            model=integrity._html_model(str(paths['html']))
+            flows=[f for f in model['flows'] if f.get('disposition')=='ALLOW_TAKEOVER_SINK']
+            if not flows or {(f.get('pid'),f.get('process')) for f in flows}!=identities:raise ValueError('HTML flow PID/producer binding differs or multiple candidates')
+            if {f['protocol'].upper() for f in flows}!={'TCP','UDP'}:raise ValueError('HTML TCP/UDP directions missing')
+            for flow in flows:
+                if len(flow.get('directions') or {})!=2:raise ValueError('HTML payload missing direction')
+            for name in selection:
+                try:
+                    if name=='report':res=report.verify(str(paths['html']))
+                    elif name=='integrity':res=integrity.verify(str(paths['raw']),str(paths['wire']),str(paths['html']),str(_safe(original,value['log'],'log')),str(_safe(original,value['config'],'config')),value['capture_started_at'])
+                    else:res=reassembly.verify(str(paths['raw']),str(paths['index']),str(paths['converted']))
+                    if res.get('verdict')!='PASS':raise ValueError('original '+name+' verifier refused')
+                    rows.append({'id':name,'status':'pass'})
+                except (ValueError,KeyError,TypeError,OSError,AssertionError,PayloadReportError) as exc:rows.append({'id':name,'status':'fail','reason':str(exc)})
+        return rows,clean,{}
+    except Unobservable as exc:
+        return [{'id':name,'status':'unknown','reason':str(exc)} for name in selection],clean,{'oracle_error_type':type(exc).__name__}
+    except (ValueError,KeyError,TypeError,OSError,AssertionError,PayloadReportError) as exc:
+        return [{'id':name,'status':'fail','reason':str(exc)} for name in selection],clean,{'oracle_error_type':type(exc).__name__}
+
 
 
 def _verify_positive(original,value,inputs,packets,name,count,verifier,log):

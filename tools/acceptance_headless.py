@@ -140,7 +140,7 @@ def validate_native_runtime(mode):
 class NativeBoundary:
     fixture = False
     def __init__(self, output, inputs, mode):
-        self.output=Path(output);self.inputs=inputs;self.mode=mode;self.core=None;self.capture_owned=False
+        self.output=Path(output);self.inputs=inputs;self.mode=mode;self.core=None;self.capture_owned=False;self.capture_start=None
     def identities(self):
         from acceptance_runtime import require_target
         require_target({'platform':'windows','hostname':socket.gethostname()})
@@ -240,6 +240,11 @@ class NativeBoundary:
             path=(self.output/name).resolve()
             if not path.is_relative_to(self.output.resolve()) or not path.is_file() or path.is_symlink():raise ValueError('core artifact escapes owned directory')
             paths[key]=path.name
+        if self.capture_start is not None:
+            wire=self.output/'wire.pcapng'
+            if not wire.is_file() or wire.is_symlink():
+                raise ValueError('owned converted wire capture missing')
+            paths['wire']=wire.name
         if self.mode=='payload':
             from fakenet.payload_report import load_capture_originals
             loaded=load_capture_originals(str(self.output/paths['raw']),str(self.output/paths['converted']))
