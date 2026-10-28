@@ -852,35 +852,42 @@ def evaluate(root,original,case,expected_inputs,allow_fixture=False,producer_dir
     base=Path(original).resolve()
     if producer_directory is None:
         owner_root,owner_type=str(base),Path
-        def locate(path):
+        def _local(path):
             p=Path(path)
             if not p.is_absolute() or not p.is_file() or p.is_symlink() or not p.resolve().is_relative_to(base):raise ValueError('original path missing/outside owned case')
             return p
+        def read_base(name):
+            return _local(base/name).read_bytes()
+        def read_guest(path):
+            return _local(path).read_bytes()
     else:
-        # Pulled-back guest originals keep their producer-side absolute paths;
-        # each one maps one-to-one onto this retained directory, never a rewrite.
+        # Guest JSON fields map only from the exact frozen producer root; the
+        # oracle's own local metadata reads are a separate path, so a
+        # host-local absolute alias can never satisfy a guest-supplied field.
         producer_directory=str(producer_directory)
         owner_type=PureWindowsPath if PureWindowsPath(producer_directory).drive or producer_directory.startswith('\\\\') else PurePosixPath
         producer=owner_type(producer_directory)
         if not producer.is_absolute():raise ValueError('producer directory must be absolute')
         owner_root=str(producer)
-        def locate(path):
-            kept=Path(path)
-            if kept.is_absolute() and kept.is_file() and not kept.is_symlink() and kept.resolve().is_relative_to(base):
-                return kept  # Retained base-side originals (result/lifecycle/config files).
+        def read_base(name):
+            relative=Path(name)
+            path=base/relative
+            if relative.is_absolute() or '..' in relative.parts or not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(base):
+                raise ValueError('original path missing/outside owned case')
+            return path.read_bytes()
+        def read_guest(path):
             remote=owner_type(str(path))
+            if not remote.is_absolute():raise ValueError('guest original path is not absolute in the producer root')
             try:
                 relative=remote.relative_to(producer)
             except ValueError:
-                raise ValueError('original path missing/outside owned case') from None
+                raise ValueError('guest original escaped the producer root') from None
             local=base.joinpath(*relative.parts)
-            if (not remote.is_absolute() or '..' in relative.parts or not local.is_file() or
-                    local.is_symlink() or '..' in local.parts or not local.resolve().is_relative_to(base)):
-                raise ValueError('original path missing/outside owned case')
-            return local
-    def read(path):
-        return locate(path).read_bytes()
-    v=json.loads(read(base/'manual-result.json'))
+            if ('..' in relative.parts or not local.is_file() or local.is_symlink() or
+                    '..' in local.parts or not local.resolve().is_relative_to(base)):
+                raise ValueError('guest original path missing/outside owned case')
+            return local.read_bytes()
+    v=json.loads(read_base('manual-result.json'))
     if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!=case:raise ValueError('case/schema mismatch')
     if not isinstance(expected_inputs,dict) or v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
     for k in ('candidate_id','source_commit','package_sha256','execution_id'):
@@ -894,7 +901,7 @@ def evaluate(root,original,case,expected_inputs,allow_fixture=False,producer_dir
     need(len(states)==(2 if case=='GAP-NCSI' else 1),'lifecycle missing listeners')
     for index,s in enumerate(states):
         name=('lifecycle-'+list(v['listener']['transports'])[index]+'.json') if case=='GAP-NCSI' else 'lifecycle-http.json'
-        need(json.loads(read(base/name))==s,'lifecycle original observations mismatch')
+        need(json.loads(read_base(name))==s,'lifecycle original observations mismatch')
         need(s.get('started') is True and s.get('stopped') is True and s.get('thread_alive') is False and s.get('socket_closed') is True and s.get('stop_error') is None and isinstance(s.get('thread_id'),int),'lifecycle stop observation failed')
         need(s.get('bind')=='127.0.0.1' and isinstance(s.get('port'),int) and s['port']>0,'lifecycle endpoint missing')
     need(all(v.get('cleanup',{}).get(k) is True for k in ('stopped','threads_joined','sockets_closed')),'lifecycle cleanup failed')
@@ -906,8 +913,8 @@ def evaluate(root,original,case,expected_inputs,allow_fixture=False,producer_dir
         need(set(counts)==expected and all(x==1 for x in counts.values()),'four-combination DNS coverage failed')
         for row in rows:
             try:
-                qb=read(row['query']);rb=read(row['response']);q=DNSRecord.parse(qb);r=DNSRecord.parse(rb)
-                wire_query=read(row['wire_query']);wire_response=read(row['wire_response'])
+                qb=read_guest(row['query']);rb=read_guest(row['response']);q=DNSRecord.parse(qb);r=DNSRecord.parse(rb)
+                wire_query=read_guest(row['wire_query']);wire_response=read_guest(row['wire_response'])
                 if row['transport']=='tcp':
                     if wire_query!=struct.pack('!H',len(qb))+qb or wire_response!=struct.pack('!H',len(rb))+rb:raise ValueError('TCP frame boundary mismatch')
                 elif wire_query!=qb or wire_response!=rb:raise ValueError('UDP datagram mismatch')
@@ -921,9 +928,9 @@ def evaluate(root,original,case,expected_inputs,allow_fixture=False,producer_dir
         checks=['ncsi-ipv4','other-domain','dns-evidence']
     else:
         try:
-            need(read(v['raw_template'])==RAW,'template raw differs from fixed stimulus')
-            need(read(v['static_template'])==STATIC,'template static differs from fixed stimulus')
-            config_bytes=read(base/'config/custom.ini');config=configparser.ConfigParser();config.read_string(config_bytes.decode())
+            need(read_guest(v['raw_template'])==RAW,'template raw differs from fixed stimulus')
+            need(read_guest(v['static_template'])==STATIC,'template static differs from fixed stimulus')
+            config_bytes=read_base('config/custom.ini');config=configparser.ConfigParser();config.read_string(config_bytes.decode())
             wanted={'raw':{'listenertype':'HTTP','httpuris':'/raw','httphosts':'example.test','httprawfile':'raw.bin'},'static':{'listenertype':'HTTP','httpuris':'/static','httphosts':'example.test','httpstaticstring':STATIC.decode(),'contenttype':'text/plain'}}
             need({section:dict(config.items(section)) for section in config.sections()}==wanted,'template configuration mismatch')
             need(hashlib.sha256(config_bytes).hexdigest()==v.get('config_sha256'),'template configuration hash mismatch')
@@ -931,7 +938,7 @@ def evaluate(root,original,case,expected_inputs,allow_fixture=False,producer_dir
             exchanges=v['http']['exchanges'];expected={'raw':('example.test','/raw'),'static':('example.test','/static'),'wrong-host':('other.test','/raw'),'wrong-uri':('example.test','/none')}
             need(Counter(r.get('name') for r in exchanges)==Counter(expected.keys()),'HTTP request coverage failed')
             for row in exchanges:
-                name=row['name'];host,path=expected[name];request=read(row['request']);response=read(row['response'])
+                name=row['name'];host,path=expected[name];request=read_guest(row['request']);response=read_guest(row['response'])
                 need(row['host']==host and row['path']==path and request==('GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n'%(path,host)).encode(),'HTTP request identity mismatch')
                 need(row['peer']==['127.0.0.1',v['listener']['port']] and row['client_closed'] is True,'lifecycle HTTP peer/client failed')
                 try:

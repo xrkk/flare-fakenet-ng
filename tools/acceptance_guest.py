@@ -66,8 +66,12 @@ def execute(request,root):
     driver,checks=native.validate_case(matches[0],root,environment)
     if not driver.get('production_kind') or checks!=request['checks']:
         raise ValueError('guest fixed driver/check selection mismatch')
-    if 'manual' in request and matches[0].get('native_driver') not in native.MANUAL_REMOTE_DRIVERS:
-        raise ValueError('guest manual options do not apply to this case')
+    if 'manual' in request:
+        if matches[0].get('native_driver') not in native.MANUAL_REMOTE_DRIVERS:
+            raise ValueError('guest manual options do not apply to this case')
+        # Illegal options die here, before output.mkdir or any launch; legal
+        # requests keep deriving owned_root from their own output root.
+        native.manual_options({'manual': request['manual']})
     if driver.get('production_kind','').startswith('policy-'):
         native.policy_inputs(environment,request['candidate'].get('offline_fixture') is True,driver['production_kind'].split('-',1)[1])
     if driver['production_kind'] in ('process-redirect','payload-three-way'):

@@ -524,16 +524,23 @@ missing options are refused before any channel side effect.
 
 The pulled-back guest originals keep their Windows absolute paths. The manual
 oracle maps each producer path one-to-one onto the retained directory
-(`producer_directory`), never rewriting the original JSON, receipt or hashes;
-escapes, drive/root mismatches, duplicate or missing artifacts, input tamper
-and fixture impersonating native are refused by the real judge consumer.
+(`producer_directory`), never rewriting the original JSON, receipt or hashes.
+Guest JSON path fields must be absolute children of that exact frozen producer
+root; host-local absolute aliases, wrong drives/roots, relative or `..` paths
+and link escapes are refused, while the oracle's own local metadata reads
+(result/lifecycle/config files) stay a separate channel. The guest entry also
+rejects illegal or missing manual options before creating any output
+directory or launching anything. Escapes, duplicate or missing artifacts,
+input tamper and fixture impersonating native are refused by the real judge
+consumer.
 
 Current verification is the offline contract in
 `test/test_acceptance_manual_remote.py`: only the VM/OS boundary is replaced
-(real guest entry and real loopback producers run on this host). It earns
-explicit fixture credit only. A real Windows VM execution — actual channel
-transfer, `E:\` owned roots, `Path.resolve` on Windows and native credit —
-remains unverified.
+(real guest entry and real loopback producers run on this host, against a
+non-Git product-root fixture whose declared identity follows the documented
+facility fallback). It earns explicit fixture credit only. A real Windows VM
+execution — actual channel transfer, `E:\` owned roots, `Path.resolve` on
+Windows and native credit — remains unverified.
 
 The Linux deploy/update production path is still incomplete. Its fresh output root
 is also used as an installation prefix, while the original installer operates a

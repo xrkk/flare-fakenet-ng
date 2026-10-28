@@ -38,12 +38,25 @@ def catalog_case(case_id):
 
 
 class RemoteManualTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Facility-style non-Git product root: the central CLI records the
+        # declared fixture identity instead of invoking Git in every phase,
+        # exactly like the existing production entry self-tests.
+        shared = Path(os.environ.get('FN_MANUAL_CHECK_DIR',
+                                     str(ROOT / 'Logs' / 'manual-tests' / uuid.uuid4().hex)))
+        shared.mkdir(parents=True, exist_ok=True)
+        cls.shared = shared
+        cls.source = shared / 'product-root'
+        shutil.copytree(ROOT, cls.source,
+                        ignore=shutil.ignore_patterns('.git', 'Logs', 'dist',
+                                                      '__pycache__', '.pytest_cache'))
+
     def setUp(self):
-        self.base = Path(os.environ.get('FN_MANUAL_CHECK_DIR',
-                                        str(ROOT / 'Logs' / 'manual-tests' / uuid.uuid4().hex)))
+        self.base = self.shared / 'retained' / uuid.uuid4().hex[:12]
         self.base.mkdir(parents=True, exist_ok=False)
         self.identity = {'platform': 'windows', 'hostname': 'fixture-vm'}
-        self.candidate = {'schema': A.CANDIDATE_V2, 'source_commit': A.git_head(ROOT),
+        self.candidate = {'schema': A.CANDIDATE_V2, 'source_commit': 'c' * 40,
                           'package_manifest': None, 'package_sha256': 'd' * 64,
                           'deployed_identity': self.identity, 'offline_fixture': True}
         (self.base / 'candidate.json').write_text(json.dumps(self.candidate))
@@ -66,8 +79,13 @@ class RemoteManualTests(unittest.TestCase):
         import contextlib
         import io
         out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = A.main(['--root', str(ROOT), *[str(a) for a in args]])
+        # The product-root fixture has no Git history: short-circuit git_head to
+        # its documented InputError branch (same code path a non-Git root takes)
+        # so the central phases run without spawning Git probes.
+        with mock.patch.object(A, 'git_head',
+                               side_effect=A.InputError('fixture root has no Git history')), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = A.main(['--root', str(self.source), *[str(a) for a in args]])
         return code, out.getvalue(), err.getvalue()
 
     def plan(self, cases=('GAP-NCSI', 'GAP-RAW-DATE'), name='run'):
@@ -122,7 +140,7 @@ class RemoteManualTests(unittest.TestCase):
                                                indent=2) + '\n', encoding='utf-8')
                 real = json.loads((guest_out / 'guest-result.json').read_text())
                 receipt = copy.deepcopy(real['receipt'])
-                driver = N.driver_table(ROOT)[request['case']['native_driver']]
+                driver = N.driver_table(outer.source)[request['case']['native_driver']]
                 fixture = request['candidate'].get('offline_fixture') is True
                 receipt['command'] = N.remote_guest_command(
                     driver, self.runtime, request['output_root'], request['checks'],
@@ -152,7 +170,7 @@ class RemoteManualTests(unittest.TestCase):
                 local = dict(request, output_root=str(outer.guest_dir(request['case_id'])))
                 import acceptance_runtime as rt
                 with mock.patch.object(rt, 'require_target', return_value=outer.identity):
-                    code = guest.execute(local, ROOT)
+                    code = guest.execute(local, outer.source)
                 self.guest_out = Path(local['output_root'])
                 return {'returncode': code, 'process_exited': True, 'recovered': True}
 
@@ -360,6 +378,97 @@ class RemoteManualTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'invalid guest request schema/fields'):
                     guest.execute(request, ROOT)
                 self.assertFalse(Path(request['output_root']).exists())
+
+    def test_guest_illegal_manual_options_rejected_before_side_effects(self):
+        # Controller counterexamples S29-F01: missing/schema/address were only
+        # refused after output.mkdir.  All three must now die before any
+        # directory, subprocess or channel effect, with the same messages.
+        import acceptance_runtime as rt
+        cases = [(None, 'explicit fixed manual options required'),
+                 ({'schema': 'invalid'}, 'explicit fixed manual options required'),
+                 ({'schema': 'fakenet.manual-options.v1', 'responsea': 'invalid'},
+                  'manual responsea address is invalid')]
+        for manual, message in cases:
+            with self.subTest(manual=manual):
+                request = self.guest_request('GAP-NCSI', {'manual': manual})
+                with mock.patch.object(rt, 'require_target', return_value=self.identity), \
+                     mock.patch.object(N.subprocess, 'Popen') as launch:
+                    with self.assertRaisesRegex(ValueError, message):
+                        guest.execute(request, ROOT)
+                launch.assert_not_called()
+                self.assertFalse(Path(request['output_root']).exists())
+        # A legal request through the same entry still derives its own
+        # owned_root and runs; the shared value stays untouched.
+        legal = self.guest_request('GAP-NCSI', {'manual': {'schema': 'fakenet.manual-options.v1',
+                                                           'responsea': '192.0.2.55'}})
+        with mock.patch.object(rt, 'require_target', return_value=self.identity):
+            with mock.patch.object(N, 'run_production') as production:
+                production.return_value = {'status': 'pass', 'returncode': 0,
+                                           'cleanup': {'process_exit': {'exited': True}}}
+                guest.execute(legal, ROOT)
+        self.assertTrue(Path(legal['output_root']).is_dir())
+
+    def test_guest_field_paths_map_only_from_producer_root(self):
+        # Controller counterexample S29-F02: a host-local absolute alias in a
+        # guest JSON field used to earn the same 3 PASS as the baseline.
+        plan = self.real_remote_results('GAP-NCSI')
+        value = json.loads(plan.read_text())
+        remote_output = str(PureWindowsPath(self.runtime['work_root']) / value['execution_id'] / 'GAP-NCSI' / 'output')
+        inputs = N.manual_remote_inputs(value, catalog_case('GAP-NCSI'), remote_output)
+        driver = self.originals(plan, 'GAP-NCSI') / 'driver'
+        producer = str(PureWindowsPath(remote_output) / 'driver')
+        rows, clean, detail = O.evaluate(self.source, driver, 'GAP-NCSI', inputs, allow_fixture=True,
+                                         producer_directory=producer)
+        self.assertTrue(clean, detail)
+        self.assertEqual(['pass'] * 3, [row['status'] for row in rows])
+        real_file = driver / 'query-udp-0.bin'
+        original = (driver / 'manual-result.json').read_bytes()
+        variants = [('host-alias', str(real_file), 'not absolute in the producer root'),
+                    ('wrong-drive', r'D:\native-runs\query-udp-0.bin', 'escaped the producer root'),
+                    ('relative', 'query-udp-0.bin', 'not absolute in the producer root'),
+                    ('dotdot', producer + r'\..\query-udp-0.bin', 'outside owned case')]
+        for label, path, expected in variants:
+            with self.subTest(variant=label):
+                broken = json.loads(original)
+                broken['queries'][0]['query'] = path
+                (driver / 'manual-result.json').write_text(json.dumps(broken, indent=2) + '\n')
+                rows, clean, detail = O.evaluate(self.source, driver, 'GAP-NCSI', inputs,
+                                                 allow_fixture=True, producer_directory=producer)
+                self.assertFalse(clean, detail)
+                self.assertTrue(all(row['status'] == 'fail' for row in rows), rows)
+                self.assertIn(expected, json.dumps(detail))
+        # Link escape mapped through the producer root is refused as well.
+        escape = driver / 'query-escape.bin'
+        escape.symlink_to('/etc/hosts')
+        self.addCleanup(escape.unlink)
+        broken = json.loads(original)
+        broken['queries'][0]['query'] = producer + r'\query-escape.bin'
+        (driver / 'manual-result.json').write_text(json.dumps(broken, indent=2) + '\n')
+        rows, clean, detail = O.evaluate(self.source, driver, 'GAP-NCSI', inputs,
+                                         allow_fixture=True, producer_directory=producer)
+        self.assertFalse(clean, detail)
+        self.assertIn('outside owned case', json.dumps(detail))
+        (driver / 'manual-result.json').write_bytes(original)
+        # The oracle's own local metadata read stays separate: the retained
+        # no-producer_directory entry re-judges the un-remapped guest tree.
+        guest_out = self.guest_dir('GAP-NCSI')
+        local_inputs = json.loads((guest_out / 'manual-inputs.json').read_text())
+        rows, clean, detail = O.evaluate(self.source, guest_out / 'driver', 'GAP-NCSI',
+                                         local_inputs, allow_fixture=True)
+        self.assertTrue(clean, detail)
+
+    def test_central_judge_rejects_rehashed_host_alias_in_guest_field(self):
+        # The same counterexample through the real central independent judge
+        # with both pinned hash layers re-consistent.
+        plan = self.real_remote_results('GAP-NCSI')
+        def alias(target):
+            value = json.loads((target / 'driver' / 'manual-result.json').read_text())
+            value['queries'][0]['query'] = str(target / 'driver' / 'query-udp-0.bin')
+            (target / 'driver' / 'manual-result.json').write_text(json.dumps(value, indent=2) + '\n')
+        code, summary = self.rehashed_judge(plan, 'GAP-NCSI', alias)
+        self.assertNotEqual(0, code)
+        self.assertNotEqual('pass', summary['verdict'])
+        self.assertIn('producer root', json.dumps(summary))
 
 
 if __name__ == '__main__':
