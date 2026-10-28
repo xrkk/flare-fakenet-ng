@@ -564,7 +564,9 @@ class HostServices:
                 try:answer(data,self.client_address,'UDP',lambda response:sock.sendto(response,self.client_address))
                 except (OSError,ValueError,UnicodeError) as exc:owner.append({'error':type(exc).__name__})
         class TcpServer(socketserver.ThreadingTCPServer):
-            allow_reuse_address=False
+            # POSIX TIME_WAIT must not block the next owned serial case.
+            # This does not allow a second live TCP listener on the same endpoint.
+            allow_reuse_address=os.name!='nt'
             daemon_threads=False
         class UdpServer(socketserver.ThreadingUDPServer):
             allow_reuse_address=False

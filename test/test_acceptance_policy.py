@@ -481,6 +481,36 @@ class PolicyOwnedEndpointTests(unittest.TestCase):
         thread.join.assert_called_once()
         self.assertTrue(json.loads((self.base / 'service/lifecycle.json').read_text())['stopped'])
 
+    def local_service(self, directory, port):
+        values=dict(self.inputs,sink_ip='127.0.0.1',local_source='127.0.0.1',sink_port=port)
+        values['host_service']={'bind_ipv4':'127.0.0.1','allowed_peer_ipv4':'127.0.0.1','max_seconds':30}
+        service=POLICY.HostServices(values,['sink_tcp'],['policy-services'],self.base/directory)
+        self.addCleanup(service.stop)
+        return service
+
+    @unittest.skipIf(POLICY.os.name=='nt','POSIX listener reuse after TIME_WAIT')
+    def test_owned_tcp_endpoint_restarts_after_completed_connection(self):
+        with POLICY.socket.socket() as reservation:
+            reservation.bind(('127.0.0.1',0));port=reservation.getsockname()[1]
+        first=self.local_service('first',port);first.start()
+        with POLICY.socket.create_connection(('127.0.0.1',port),timeout=3) as client:
+            client.sendall(b'FNPR/1|restart-test|target\n')
+            self.assertEqual(b'FNPR/1|restart-test|OK\n',client.recv(512))
+            self.assertEqual(b'',client.recv(1))
+        first.stop()
+        self.assertTrue(first.stopped)
+        second=self.local_service('second',port);second.start()
+        self.assertTrue(second.owner['ready'])
+
+    def test_endpoint_reuse_never_takes_over_a_live_listener(self):
+        with POLICY.socket.socket() as reservation:
+            reservation.bind(('127.0.0.1',0));port=reservation.getsockname()[1]
+        first=self.local_service('live',port);first.start()
+        second=self.local_service('conflict',port)
+        with self.assertRaises(OSError):second.start()
+        self.assertTrue(first.owner['ready'])
+        self.assertTrue(all(thread.is_alive() for thread in first.threads))
+
     def test_independent_sink_original_binds_peer_bytes_and_lifetime(self):
         out = self.base / 'driver'
         POLICY.run('takeover', out, substitute=True, selected={'sink_tcp', 'sink_udp'})
