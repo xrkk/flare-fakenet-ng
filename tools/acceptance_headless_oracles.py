@@ -4,6 +4,7 @@ import configparser
 import hashlib
 import importlib.util
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -177,7 +178,17 @@ def evaluate(root,original,mode,checks,allow_fixture=False,expected_inputs=None,
                 identities.add((probe['pid'],probe['process']))
             report=_load(root,'test/gui_vm/verify_payload_report.py');integrity=_load(root,'test/gui_vm/verify_payload_integrity.py');reassembly=_load(root,'test/gui_vm/verify_reassembly.py')
             model=integrity._html_model(str(paths['html']))
-            flows=[f for f in model['flows'] if f.get('disposition')=='ALLOW_TAKEOVER_SINK']
+            capture_start=value.get('capture_started_at')
+            if type(capture_start) not in (int,float) or not math.isfinite(capture_start) or capture_start<0:
+                raise ValueError('invalid sample capture start time')
+            flows=[]
+            for flow in model['flows']:
+                if flow.get('disposition')!='ALLOW_TAKEOVER_SINK':continue
+                started=flow.get('started_at')
+                if type(started) not in (int,float) or not math.isfinite(started):
+                    raise ValueError('invalid allowed flow start time')
+                # Match the original integrity verifier's runner-action window.
+                if started>=capture_start:flows.append(flow)
             if not flows or {(f.get('pid'),f.get('process')) for f in flows}!=identities:raise ValueError('HTML flow PID/producer binding differs or multiple candidates')
             if {f['protocol'].upper() for f in flows}!={'TCP','UDP'}:raise ValueError('HTML TCP/UDP directions missing')
             for flow in flows:

@@ -261,6 +261,36 @@ class ContentTests(unittest.TestCase):
                 try:rows,clean,_=self.judge(out,'payload');verdict=N._judge_rows(rows,H.PAYLOAD_CHECKS)['verdict']
                 except (ValueError,AssertionError):verdict='fail'
                 self.assertNotEqual('pass',verdict)
+    def test_payload_identity_uses_original_sample_capture_window(self):
+        import copy
+        out=self.produce('payload','pre-window-control')
+        value=H.read_json(out/'headless-result.json')
+        path=out/value['paths']['html'];model=O._load(ROOT,'test/gui_vm/verify_payload_integrity.py')._html_model(path)
+        background=copy.deepcopy(model['flows'][0]);background['id']='control-before-capture'
+        background.update(pid=99999,process='management.exe',owner='management.exe',
+                          started_at=value['capture_started_at']-1,ended_at=value['capture_started_at']-.5)
+        background['source']['port']=28787
+        for direction in background['directions'].values():
+            direction['id']='control-'+direction['id']
+            direction['started_at']=background['started_at'];direction['ended_at']=background['ended_at']
+            if direction['direction']=='outbound':direction['source']['port']=28787
+            else:direction['destination']['port']=28787
+        model['flows'].append(background)
+        path.write_text('<script id="payload-data" type="application/json">'+json.dumps(model)+'</script>')
+        rows,clean,_=self.judge(out,'payload')
+        self.assertTrue(clean);self.assertTrue(all(row['status']=='pass' for row in rows))
+
+    def test_payload_window_rejects_invalid_allowed_flow_timestamp(self):
+        for stamp in (None,float('nan')):
+            with self.subTest(stamp=stamp):
+                out=self.produce('payload','invalid-window-'+str(stamp))
+                value=H.read_json(out/'headless-result.json')
+                path=out/value['paths']['html'];model=O._load(ROOT,'test/gui_vm/verify_payload_integrity.py')._html_model(path)
+                model['flows'][0]['started_at']=stamp
+                path.write_text('<script id="payload-data" type="application/json">'+json.dumps(model)+'</script>')
+                rows,clean,_=self.judge(out,'payload')
+                self.assertTrue(all(row['status']=='fail' for row in rows))
+
     def test_cleanup_failure_keeps_evidence_and_no_followup_client(self):
         class Failing(H.MemoryBoundary):
             def start_capture(self):raise OSError('capture not observable')
