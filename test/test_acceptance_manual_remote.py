@@ -380,33 +380,44 @@ class RemoteManualTests(unittest.TestCase):
                 self.assertFalse(Path(request['output_root']).exists())
 
     def test_guest_illegal_manual_options_rejected_before_side_effects(self):
-        # Controller counterexamples S29-F01: missing/schema/address were only
-        # refused after output.mkdir.  All three must now die before any
-        # directory, subprocess or channel effect, with the same messages.
+        # Controller counterexamples S29-F01/S30-F01: missing/schema/address and
+        # the truly absent manual key were only refused after output.mkdir.
+        # Every variant must die before any directory, subprocess or channel
+        # effect, with the same messages, on both fixed remote cases.
         import acceptance_runtime as rt
-        cases = [(None, 'explicit fixed manual options required'),
+        ABSENT = object()
+        cases = [(ABSENT, 'explicit fixed manual options required'),
+                 (None, 'explicit fixed manual options required'),
                  ({'schema': 'invalid'}, 'explicit fixed manual options required'),
                  ({'schema': 'fakenet.manual-options.v1', 'responsea': 'invalid'},
                   'manual responsea address is invalid')]
-        for manual, message in cases:
-            with self.subTest(manual=manual):
-                request = self.guest_request('GAP-NCSI', {'manual': manual})
-                with mock.patch.object(rt, 'require_target', return_value=self.identity), \
-                     mock.patch.object(N.subprocess, 'Popen') as launch:
-                    with self.assertRaisesRegex(ValueError, message):
-                        guest.execute(request, ROOT)
-                launch.assert_not_called()
-                self.assertFalse(Path(request['output_root']).exists())
+        for case_id in ('GAP-NCSI', 'GAP-RAW-DATE'):
+            for manual, message in cases:
+                with self.subTest(case=case_id, manual=manual):
+                    request = self.guest_request(case_id, {} if manual is ABSENT
+                                                 else {'manual': manual})
+                    request['output_root'] = str(self.base / ('guest-entry-%s-%s'
+                                                              % (case_id, uuid.uuid4().hex[:8])))
+                    with mock.patch.object(rt, 'require_target', return_value=self.identity), \
+                         mock.patch.object(N.subprocess, 'Popen') as launch:
+                        with self.assertRaisesRegex(ValueError, message):
+                            guest.execute(request, ROOT)
+                    launch.assert_not_called()
+                    self.assertFalse(Path(request['output_root']).exists())
         # A legal request through the same entry still derives its own
         # owned_root and runs; the shared value stays untouched.
-        legal = self.guest_request('GAP-NCSI', {'manual': {'schema': 'fakenet.manual-options.v1',
-                                                           'responsea': '192.0.2.55'}})
-        with mock.patch.object(rt, 'require_target', return_value=self.identity):
-            with mock.patch.object(N, 'run_production') as production:
-                production.return_value = {'status': 'pass', 'returncode': 0,
-                                           'cleanup': {'process_exit': {'exited': True}}}
-                guest.execute(legal, ROOT)
-        self.assertTrue(Path(legal['output_root']).is_dir())
+        for case_id in ('GAP-NCSI', 'GAP-RAW-DATE'):
+            with self.subTest(case=case_id, legal=True):
+                legal = self.guest_request(case_id, {'manual': {'schema': 'fakenet.manual-options.v1',
+                                                                'responsea': '192.0.2.55'}})
+                legal['output_root'] = str(self.base / ('guest-entry-legal-%s-%s'
+                                                        % (case_id, uuid.uuid4().hex[:8])))
+                with mock.patch.object(rt, 'require_target', return_value=self.identity):
+                    with mock.patch.object(N, 'run_production') as production:
+                        production.return_value = {'status': 'pass', 'returncode': 0,
+                                                   'cleanup': {'process_exit': {'exited': True}}}
+                        guest.execute(legal, ROOT)
+                self.assertTrue(Path(legal['output_root']).is_dir())
 
     def test_guest_field_paths_map_only_from_producer_root(self):
         # Controller counterexample S29-F02: a host-local absolute alias in a
