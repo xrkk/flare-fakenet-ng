@@ -701,6 +701,53 @@ def manual_fixture_block(environment, candidate):
     return None
 
 
+MANUAL_REMOTE_DRIVERS = ('manual-ncsi', 'manual-raw-date')
+MANUAL_REMOTE_CASES = ('GAP-NCSI', 'GAP-RAW-DATE')
+
+
+def manual_options(environment):
+    """Shared frozen manual options; carrying them never grants remote authority."""
+    import socket
+    options=(environment or {}).get('manual')
+    if not isinstance(options,dict) or options.get('schema')!='fakenet.manual-options.v1' or set(options)-{'schema','responsea'}:
+        raise ValueError('explicit fixed manual options required')
+    try:
+        socket.inet_pton(socket.AF_INET,options.get('responsea','192.0.2.55'))
+    except OSError as exc:
+        raise ValueError('manual responsea address is invalid') from exc
+    return options
+
+
+def _manual_input_value(plan,case,options,owned_root,config):
+    candidate=plan['candidate']
+    return dict(schema='fakenet.manual-input.v1',case=case['id'],candidate_id='manual-candidate',
+                source_commit=candidate['source_commit'],package_sha256=candidate['package_sha256'],
+                execution_id=plan['execution_id'],owned_root=owned_root,config=config,
+                responsea=options.get('responsea','192.0.2.55'),
+                fixture=candidate.get('offline_fixture') is True)
+
+
+def manual_remote_inputs(plan,case,output_root):
+    """Derive the guest-side manual inputs with guest path semantics.
+
+    The host Path type cannot normalize a Windows owned root, so the remote
+    request carries only the shared options and the guest derives its own
+    owned_root; this host rebuild uses the same single value builder."""
+    from pathlib import PureWindowsPath, PurePosixPath
+    if case['id'] not in MANUAL_REMOTE_CASES:
+        raise ValueError('remote manual inputs are fixed to GAP-NCSI/GAP-RAW-DATE')
+    runtime=plan['environment']['native_runtime']
+    path_type=PureWindowsPath if runtime['identity']['platform']=='windows' else PurePosixPath
+    options=manual_options(plan['environment'])
+    directory=path_type(output_root)/'driver'
+    value=_manual_input_value(plan,case,options,str(directory),str(directory/'config'))
+    for key in ('owned_root','config'):
+        path=path_type(value[key])
+        if not path.is_absolute() or '..' in path.parts:
+            raise ValueError('remote manual path must be absolute and bounded: '+key)
+    return value
+
+
 def manual_inputs(plan,case,output_dir):
     import acceptance_manual
     options=plan['environment'].get('manual')
@@ -714,10 +761,9 @@ def manual_inputs(plan,case,output_dir):
         value=dict(schema='fakenet.manual-input.v2',case=case['id'],candidate_id=candidate.get('candidate_id') or 'manual-candidate',source_commit=candidate['source_commit'],package_sha256=candidate['package_sha256'],execution_id=plan['execution_id'],owned_root=str(directory),config=str(directory/'config'),fixture=candidate.get('offline_fixture') is True,platform=target.get('platform'),network=dict(options['network']),source_hashes={name:sha256(source/name) for name in pins})
         acceptance_manual.validate_inputs(case['id'],value)
         return value
-    if not isinstance(options,dict) or options.get('schema')!='fakenet.manual-options.v1' or set(options)-{'schema','responsea'}:
-        raise ValueError('explicit fixed manual options required')
-    candidate=plan['candidate'];directory=Path(output_dir).resolve()/'driver'
-    value=dict(schema='fakenet.manual-input.v1',case=case['id'],candidate_id='manual-candidate',source_commit=candidate['source_commit'],package_sha256=candidate['package_sha256'],execution_id=plan['execution_id'],owned_root=str(directory),config=str(directory/'config'),responsea=options.get('responsea','192.0.2.55'),fixture=candidate.get('offline_fixture') is True)
+    options=manual_options(plan['environment'])
+    directory=Path(output_dir).resolve()/'driver'
+    value=_manual_input_value(plan,case,options,str(directory),str(directory/'config'))
     acceptance_manual.validate_inputs(case['id'],value)
     return value
 
@@ -831,7 +877,16 @@ def runtime_block(case, environment):
         runtime=environment.get('native_runtime') or {}
         if runtime.get('transport')=='manual-loopback-fixture':
             return None  # Full fixture/candidate/observed-host gate in expected_block and run_production.
-        if runtime.get('transport')!='local-target':
+        if runtime.get('transport')=='windows-mcp-velo' and case.get('native_driver') in MANUAL_REMOTE_DRIVERS:
+            # Only GAP-NCSI/GAP-RAW-DATE may ride the existing Windows channel;
+            # the frozen options stay mandatory and are checked before effects.
+            try:
+                manual_options(environment)
+            except ValueError as exc:
+                return str(exc)
+            # The shared existing-channel gate below re-checks identity,
+            # authorized actions, absolute remote paths and case platforms.
+        elif runtime.get('transport')!='local-target':
             return 'manual listeners require installed source on explicit local-target VM; no remote fallback'
     if case.get('native_driver') == 'build-identity':
         return None  # Host-side read-only package check; no target channel.
@@ -1472,14 +1527,15 @@ def judge_production(case,receipt,plan,root):
 
 
 
-def remote_guest_command(driver,runtime,output_root,checks,fixture=False):
+def remote_guest_command(driver,runtime,output_root,checks,fixture=False,case_id=None):
     from pathlib import PureWindowsPath, PurePosixPath
     target_path=PureWindowsPath if runtime['identity']['platform']=='windows' else PurePosixPath
     context={'root':runtime['source_root'],'python':runtime['python'],
              'output':output_root,'modes':','.join(checks),
              'policy_inputs':str(target_path(output_root)/'policy-inputs.json'),
              'headless_inputs':str(target_path(output_root)/'headless-inputs.json'),
-             'checks':','.join(checks), 'case_id':driver.get('case_id','LINUX-SINGLEHOST'),
+             'manual_inputs':str(target_path(output_root)/'manual-inputs.json'),
+             'checks':','.join(checks), 'case_id':case_id or driver.get('case_id','LINUX-SINGLEHOST'),
              'linux_inputs':str(target_path(output_root)/'linux-inputs.json')}
     argv=fixed_argv(driver,context)
     if driver.get('production_kind')=='dual-pcap-linux':
@@ -1511,6 +1567,10 @@ def run_remote(root,case,plan,output_dir,python):
         request['headless']=headless_inputs(plan['environment'],driver,checks)
     if driver['production_kind'].startswith('policy-'):
         request['policy']=policy_inputs(plan['environment'],scenario=driver['production_kind'].split('-',1)[1])
+    if driver['production_kind'].startswith('manual-'):
+        if case['id'] not in MANUAL_REMOTE_CASES:
+            raise ValueError('remote manual transport is fixed to GAP-NCSI/GAP-RAW-DATE')
+        request['manual']=manual_options(plan['environment'])
     # Planned records also carry derived 'sources'; compare using the actual
     # registered catalog object instead of sending derived plan-only metadata.
     catalog=json.loads(_read(Path(root)/'docs/acceptance/catalog.json'))
@@ -1565,7 +1625,7 @@ def run_remote(root,case,plan,output_dir,python):
         if path.is_symlink():raise ValueError('remote result symlink')
         if path.is_file():artifacts.append({'path':str(path.resolve()),'sha256':sha256(path),'format':'remote-evidence'})
     return {'status':status,'detail':detail,'returncode':None if terminal is None else terminal.get('returncode'),
-            'command':None if terminal is None else remote_guest_command(driver,runtime,remote_output,checks,plan.get('candidate',{}).get('offline_fixture') is True),
+            'command':None if terminal is None else remote_guest_command(driver,runtime,remote_output,checks,plan.get('candidate',{}).get('offline_fixture') is True,case_id=case['id']),
             'started_at':started.isoformat(),'ended_at':ended.isoformat(),'duration_seconds':(ended-started).total_seconds(),
             'required_checks':checks,'native_target':runtime['identity'],'artifacts':artifacts,
             'cleanup':{'source':'driver','resources':driver['resources'],'recovered':clean,
@@ -1591,10 +1651,12 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
         expected_request['headless']=headless_inputs(plan['environment'],driver,checks)
     if driver['production_kind'].startswith('policy-'):
         expected_request['policy']=policy_inputs(plan['environment'],scenario=driver['production_kind'].split('-',1)[1])
+    if driver['production_kind'].startswith('manual-'):
+        expected_request['manual']=manual_options(plan['environment'])
     if driver['production_kind']=='linux-runtime':
         expected_request['linux']=plan['environment']['linux']
     if request!=expected_request:raise ValueError('remote original request differs from frozen plan')
-    expected=remote_guest_command(driver,plan['environment']['native_runtime'],request['output_root'],checks,plan.get('candidate',{}).get('offline_fixture') is True)
+    expected=remote_guest_command(driver,plan['environment']['native_runtime'],request['output_root'],checks,plan.get('candidate',{}).get('offline_fixture') is True,case_id=case['id'])
     if receipt.get('command')!=expected or receipt.get('native_target')!=request['target'] or receipt.get('required_checks')!=checks:
         raise ValueError('guest command/target/checks mismatch')
     # Verify every original remote artifact using its preserved relative mapping.
@@ -1632,6 +1694,14 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
         mode='process' if driver['production_kind']=='process-redirect' else 'payload'
         rows,clean,detail=acceptance_headless_oracles.evaluate(root,Path(original)/'driver',mode,checks,
             allow_fixture=plan.get('candidate',{}).get('offline_fixture') is True,expected_inputs=plan['environment']['headless'],producer_directory=str(path_type(request['output_root'])/'driver'),source_root=runtime['source_root'])
+    elif driver['production_kind'].startswith('manual-'):
+        import acceptance_manual_oracles
+        expected_inputs=manual_remote_inputs(plan,case,request['output_root'])
+        if json.loads(_read(Path(original)/'manual-inputs.json'))!=expected_inputs:
+            raise ValueError('remote manual inputs differ from frozen options/guest output root')
+        rows,clean,detail=acceptance_manual_oracles.evaluate(root,Path(original)/'driver',case['id'],expected_inputs,
+            allow_fixture=plan.get('candidate',{}).get('offline_fixture') is True,
+            producer_directory=str(path_type(request['output_root'])/'driver'))
     else:
         rows,clean=acceptance_oracles.dual_pcap(root,Path(original)/'driver',checks,runtime['identity']['platform'])
     if driver['production_kind'].startswith('policy-') and {'sink_tcp','sink_udp'}&set(checks):
@@ -1647,6 +1717,7 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
            process.get('returncode')==receipt.get('returncode'))
     result=_judge_rows(rows,checks)
     if driver['production_kind'] in ('process-redirect','payload-three-way'):result['details']=rows
+    if driver['production_kind'].startswith('manual-'):result['details']=detail
     if receipt.get('returncode')!=0 or receipt.get('status')=='fail':result['verdict']='fail'
     return result,clean
 

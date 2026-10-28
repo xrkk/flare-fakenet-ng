@@ -98,7 +98,9 @@ class ManualIntegrationTests(unittest.TestCase):
         bad=json.loads((run/'bad-byte.json').read_text());self.assertFalse(bad['fixture_contract_pass']);self.assertIn('HTTP bytes',json.dumps(bad))
     def test_unknown_manual_case_and_missing_central_authority_have_no_side_effects(self):
         out=self.base/'unknown'
-        with self.assertRaises(NotImplementedError):M.run('GAP-EXECUTECMD',out,self.inputs('GAP-EXECUTECMD',out))
+        # GAP-EXECUTECMD became an implemented producer in 1cd8fb5; the guard
+        # for unknown cases keeps rejecting before any output is created.
+        with self.assertRaisesRegex(ValueError,'unknown case'):M.run('GAP-NOT-A-CASE',out,self.inputs('GAP-NOT-A-CASE',out))
         self.assertFalse(out.exists())
         case=next(c for c in A.all_cases(A.read_catalog(ROOT)) if c['id']=='GAP-NCSI')
         self.assertIsNotNone(A.expected_block(case,[],{'linux'},ROOT,{},{}))

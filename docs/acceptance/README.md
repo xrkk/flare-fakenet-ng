@@ -509,6 +509,32 @@ This is driver cleanup, not a fix to the product's missing default-route removal
 Linux FixDNS and StopDNSService remain unsupported/unknown in this new production
 result; neither fixture success nor cleanup makes the full case pass.
 
+
+### Remote manual GAP-NCSI / GAP-RAW-DATE over the existing Windows channel
+
+`GAP-NCSI` and `GAP-RAW-DATE` may now ride the existing `windows-mcp-velo`
+channel through the same central `plan`/`execute`/independent `judge` chain.
+The request carries only the shared frozen `manual` options
+(`fakenet.manual-options.v1`); the guest derives its own `owned_root`/`config`
+from its output root, and the host rebuilds the identical value with guest path
+semantics (`acceptance_native.manual_remote_inputs`). The remote argv pins the
+real case id and the guest-side `manual-inputs.json`. The other nine manual
+drivers keep the previous `no remote fallback` rejection, and illegal or
+missing options are refused before any channel side effect.
+
+The pulled-back guest originals keep their Windows absolute paths. The manual
+oracle maps each producer path one-to-one onto the retained directory
+(`producer_directory`), never rewriting the original JSON, receipt or hashes;
+escapes, drive/root mismatches, duplicate or missing artifacts, input tamper
+and fixture impersonating native are refused by the real judge consumer.
+
+Current verification is the offline contract in
+`test/test_acceptance_manual_remote.py`: only the VM/OS boundary is replaced
+(real guest entry and real loopback producers run on this host). It earns
+explicit fixture credit only. A real Windows VM execution — actual channel
+transfer, `E:\` owned roots, `Path.resolve` on Windows and native credit —
+remains unverified.
+
 The Linux deploy/update production path is still incomplete. Its fresh output root
 is also used as an installation prefix, while the original installer operates a
 system service. A real root `/` conflicts with the current fresh/accepted-root

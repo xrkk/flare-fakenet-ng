@@ -30,7 +30,9 @@ def execute(request,root):
                 frozenset(fields|{'policy','headless','upstream_protected_tcp_ports'}),
                 frozenset(fields|{'policy','mcp','upstream_protected_tcp_ports'}),
                 frozenset(fields|{'headless','mcp','upstream_protected_tcp_ports'}),
-                frozenset(fields|{'policy','headless','mcp','upstream_protected_tcp_ports'})}
+                frozenset(fields|{'policy','headless','mcp','upstream_protected_tcp_ports'}),
+                frozenset(fields|{'manual'}),
+                frozenset(fields|{'manual','upstream_protected_tcp_ports'})}
     if frozenset(request) not in allowed | {frozenset(fields|{'linux'})} or request['schema']!='fakenet.native-guest-request.v1':
         raise ValueError('invalid guest request schema/fields')
     if request['actions']!=['native']:
@@ -55,6 +57,8 @@ def execute(request,root):
         environment['mcp']=request['mcp']
     if 'linux' in request:
         environment['linux']=request['linux']
+    if 'manual' in request:
+        environment['manual']=request['manual']
     if 'upstream_protected_tcp_ports' in request:
         environment['native_runtime']['upstream_protected_tcp_ports'] = \
             native.validate_upstream_protected_tcp_ports(
@@ -62,6 +66,8 @@ def execute(request,root):
     driver,checks=native.validate_case(matches[0],root,environment)
     if not driver.get('production_kind') or checks!=request['checks']:
         raise ValueError('guest fixed driver/check selection mismatch')
+    if 'manual' in request and matches[0].get('native_driver') not in native.MANUAL_REMOTE_DRIVERS:
+        raise ValueError('guest manual options do not apply to this case')
     if driver.get('production_kind','').startswith('policy-'):
         native.policy_inputs(environment,request['candidate'].get('offline_fixture') is True,driver['production_kind'].split('-',1)[1])
     if driver['production_kind'] in ('process-redirect','payload-three-way'):

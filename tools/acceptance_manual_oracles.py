@@ -8,7 +8,7 @@ import configparser
 import hashlib
 import json
 import struct
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 RAW=b'HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nX-Test: <RAW-DATE>\r\nContent-Length: 35\r\nConnection: close\r\n\r\nbody<RAW-DATE>\x00\xff'
 STATIC=b'static-<RAW-DATE>'
 
@@ -836,7 +836,7 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
     if v.get('checks')!=[{'id':k} for k in ('blacklist','whitelist','mutex')]:errors.append('exact check set differs')
     return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('blacklist','whitelist','mutex')],not errors,{'failures':errors}
 
-def evaluate(root,original,case,expected_inputs,allow_fixture=False):
+def evaluate(root,original,case,expected_inputs,allow_fixture=False,producer_directory=None):
     if case=='GAP-SYSLOG-ICMP-LOG':return _evaluate_syslog_icmp(root,original,expected_inputs,allow_fixture)
     if case=='GAP-CTRLC-IPC':return _evaluate_ctrlc_ipc(root,original,expected_inputs,allow_fixture)
     if case=='GAP-LINUX-FLUSH-INTERFACE':return _evaluate_linux_flush_interface(root,original,expected_inputs,allow_fixture)
@@ -850,17 +850,43 @@ def evaluate(root,original,case,expected_inputs,allow_fixture=False):
     if case=='GAP-LIST-MUTEX':return _evaluate_list_mutex(root,original,expected_inputs,allow_fixture)
     if case not in ('GAP-NCSI','GAP-RAW-DATE'):raise NotImplementedError('case is not implemented in this round: '+case)
     base=Path(original).resolve()
+    if producer_directory is None:
+        owner_root,owner_type=str(base),Path
+        def locate(path):
+            p=Path(path)
+            if not p.is_absolute() or not p.is_file() or p.is_symlink() or not p.resolve().is_relative_to(base):raise ValueError('original path missing/outside owned case')
+            return p
+    else:
+        # Pulled-back guest originals keep their producer-side absolute paths;
+        # each one maps one-to-one onto this retained directory, never a rewrite.
+        producer_directory=str(producer_directory)
+        owner_type=PureWindowsPath if PureWindowsPath(producer_directory).drive or producer_directory.startswith('\\\\') else PurePosixPath
+        producer=owner_type(producer_directory)
+        if not producer.is_absolute():raise ValueError('producer directory must be absolute')
+        owner_root=str(producer)
+        def locate(path):
+            kept=Path(path)
+            if kept.is_absolute() and kept.is_file() and not kept.is_symlink() and kept.resolve().is_relative_to(base):
+                return kept  # Retained base-side originals (result/lifecycle/config files).
+            remote=owner_type(str(path))
+            try:
+                relative=remote.relative_to(producer)
+            except ValueError:
+                raise ValueError('original path missing/outside owned case') from None
+            local=base.joinpath(*relative.parts)
+            if (not remote.is_absolute() or '..' in relative.parts or not local.is_file() or
+                    local.is_symlink() or '..' in local.parts or not local.resolve().is_relative_to(base)):
+                raise ValueError('original path missing/outside owned case')
+            return local
     def read(path):
-        p=Path(path)
-        if not p.is_absolute() or not p.is_file() or p.is_symlink() or not p.resolve().is_relative_to(base):raise ValueError('original path missing/outside owned case')
-        return p.read_bytes()
+        return locate(path).read_bytes()
     v=json.loads(read(base/'manual-result.json'))
     if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!=case:raise ValueError('case/schema mismatch')
     if not isinstance(expected_inputs,dict) or v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
     for k in ('candidate_id','source_commit','package_sha256','execution_id'):
         if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
     if v.get('fixture') and not allow_fixture:raise ValueError('fixture cannot native credit')
-    if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
+    if owner_root!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
     errors=[]
     def need(ok,reason):
         if not ok:errors.append(reason)
@@ -901,7 +927,7 @@ def evaluate(root,original,case,expected_inputs,allow_fixture=False):
             wanted={'raw':{'listenertype':'HTTP','httpuris':'/raw','httphosts':'example.test','httprawfile':'raw.bin'},'static':{'listenertype':'HTTP','httpuris':'/static','httphosts':'example.test','httpstaticstring':STATIC.decode(),'contenttype':'text/plain'}}
             need({section:dict(config.items(section)) for section in config.sections()}==wanted,'template configuration mismatch')
             need(hashlib.sha256(config_bytes).hexdigest()==v.get('config_sha256'),'template configuration hash mismatch')
-            need(Path(v['raw_template'])==base/'config/raw.bin' and Path(v['static_template'])==base/'static.txt','template path mismatch')
+            need(owner_type(v['raw_template'])==owner_type(owner_root)/'config/raw.bin' and owner_type(v['static_template'])==owner_type(owner_root)/'static.txt','template path mismatch')
             exchanges=v['http']['exchanges'];expected={'raw':('example.test','/raw'),'static':('example.test','/static'),'wrong-host':('other.test','/raw'),'wrong-uri':('example.test','/none')}
             need(Counter(r.get('name') for r in exchanges)==Counter(expected.keys()),'HTTP request coverage failed')
             for row in exchanges:
