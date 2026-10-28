@@ -190,7 +190,7 @@ class NativeBoundary:
             result=subprocess.run(argv,cwd=self.output,stdout=stdout,stderr=stderr,timeout=timeout,shell=False)
         write_json(self.output/(name+'.command.json'),{'argv':argv,'returncode':result.returncode,'started_at':started,'ended_at':time.time()})
         if result.returncode:raise RuntimeError(name+' failed rc='+str(result.returncode))
-        return (self.output/(name+'.stdout')).read_text(errors='replace')
+        return (self.output/(name+'.stdout')).read_text(encoding='utf-8',errors='replace')
     def start_capture(self):
         status=self.command('capture-status-before',['pktmon.exe','status'])
         if not re.search(r'not running|stopped|未运行|已停止|没有运行',status,re.I):raise ValueError('another/unknown pktmon owner')
@@ -228,9 +228,12 @@ class NativeBoundary:
         return {'path':name+'.jsonl','owner':name+'.owner.json','returncode':code,'count':count,'role':role,'nonce_prefix':nonce}
     def finalize(self):
         # Only files named by this owned core's closed log are used.
-        text=(self.output/'core.log').read_text(errors='replace')
-        raw_match=re.findall(r'PCAP_DUAL_SUMMARY\s+raw=(.+?)\s+ethernet=(.+?)\s+raw_count=',text)
-        reports=re.findall(r'Generated new HTML report:\s*(.+)$',text,re.M)
+        text=(self.output/'core.log').read_text(encoding='utf-8',errors='replace')
+        raw_match=list(dict.fromkeys(
+            (raw.strip(),converted.strip()) for raw,converted in
+            re.findall(r'PCAP_DUAL_SUMMARY\s+raw=(.+?)\s+ethernet=(.+?)\s+raw_count=',text)))
+        reports=list(dict.fromkeys(name.strip() for name in
+            re.findall(r'Generated new HTML report:\s*(.+)$',text,re.M)))
         if len(raw_match)!=1 or len(reports)!=1:raise ValueError('owned core closed artifact paths missing/ambiguous')
         paths={}
         for key,name in [('raw',raw_match[0][0]),('converted',raw_match[0][1]),('html',reports[0].strip())]:

@@ -58,6 +58,40 @@ class ContentTests(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError,'another/unknown pktmon owner'):boundary.start_capture()
                         self.assertFalse(boundary.capture_owned)
                         self.assertEqual(['capture-status-before'],[call.args[0] for call in command.call_args_list])
+    def test_pktmon_utf8_status_under_windows_legacy_default_encoding(self):
+        from types import SimpleNamespace
+        boundary=H.NativeBoundary(self.root,H.memory_inputs(),'process')
+        original=Path.read_text
+        def windows_read(path,*args,**kwargs):
+            if path.suffix=='.stdout':
+                return path.read_bytes().decode(kwargs.get('encoding') or 'gbk',errors=kwargs.get('errors','strict'))
+            return original(path,*args,**kwargs)
+        def command(argv,**kwargs):
+            message='\r\n数据包监视器没有运行。\r\n' if argv==['pktmon.exe','status'] else 'Started'
+            kwargs['stdout'].write(message.encode('utf-8'))
+            return SimpleNamespace(returncode=0)
+        with mock.patch.object(H.subprocess,'run',side_effect=command),mock.patch.object(Path,'read_text',windows_read):
+            result=boundary.start_capture()
+        self.assertTrue(result['owned'])
+        self.assertTrue(boundary.capture_owned)
+
+    def test_finalize_accepts_repeated_summary_of_same_owned_artifacts(self):
+        boundary=H.NativeBoundary(self.root,H.memory_inputs(),'process')
+        for name in ('capture.pcap','capture-converted.pcap','report.html'):
+            (self.root/name).write_bytes(b'owned closed evidence')
+        line='PCAP_DUAL_SUMMARY raw=capture.pcap ethernet=capture-converted.pcap raw_count=1\n'
+        (self.root/'core.log').write_text(line+line+'Generated new HTML report: report.html\n',encoding='utf-8')
+        self.assertEqual({'raw':'capture.pcap','converted':'capture-converted.pcap','html':'report.html'},boundary.finalize())
+
+    def test_finalize_rejects_different_owned_artifact_pairs(self):
+        boundary=H.NativeBoundary(self.root,H.memory_inputs(),'process')
+        (self.root/'core.log').write_text(
+            'PCAP_DUAL_SUMMARY raw=first.pcap ethernet=first-converted.pcap raw_count=1\n'
+            'PCAP_DUAL_SUMMARY raw=second.pcap ethernet=second-converted.pcap raw_count=1\n'
+            'Generated new HTML report: report.html\n',encoding='utf-8')
+        with self.assertRaisesRegex(ValueError,'paths missing/ambiguous'):
+            boundary.finalize()
+
     def test_unknown_selection_and_incomplete_inputs_rejected_before_output(self):
         for values,selection in [({},None),(dict(H.memory_inputs(),commands={}),None),(H.memory_inputs(),['unknown'])]:
             with mock.patch.object(H.subprocess,'Popen',side_effect=AssertionError('unplanned OS launch')):
