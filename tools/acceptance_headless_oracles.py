@@ -36,7 +36,7 @@ def _recovery(original,value):
     try:
         before=_json(original,value['network_before']);after=_json(original,value['network_after'])
         core=_json(original,value['core']);capture=_json(original,value['capture_lifecycle'])
-        clean=bool(before) and before==after and 'error' not in before and core.get('exited') is True and core.get('returncode')==0 and core.get('forced',False) is False and capture.get('stopped') is True
+        clean=bool(before) and before==after and 'error' not in before and core.get('exited') is True and type(core.get('returncode')) is int and core.get('forced',False) is False and capture.get('stopped') is True
         if not core.get('not_started'):clean=clean and type(core.get('pid')) is int and core['pid']>0 and bool(core.get('birth'))
         if not value['fixture']:clean=clean and not before.get('fixture')
         return bool(clean)
@@ -118,6 +118,11 @@ def evaluate(root,original,mode,checks,allow_fixture=False,expected_inputs=None,
     clean=_recovery(original,value)
     try:
         _configuration(root,original,value,inputs,producer_directory,source_root)
+        core=_json(original,value['core'])
+        if not core.get('not_started') and (type(core.get('returncode')) is not int or core['returncode']!=0):
+            reason='owned core failed with returncode '+str(core.get('returncode'))
+            if value.get('error'):reason+='; '+value['error']
+            return [{'id':c,'status':'fail','reason':reason} for c in selection],clean,{'core_returncode':core.get('returncode'),'producer_error':value.get('error')}
         if value.get('error'):
             return [{'id':c,'status':'fail','reason':value['error']} for c in selection],clean,{'producer_error':value['error']}
         _identities(original,value,inputs)

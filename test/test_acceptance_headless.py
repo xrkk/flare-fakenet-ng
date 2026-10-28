@@ -174,6 +174,31 @@ class ContentTests(unittest.TestCase):
 
     def test_budget_comes_from_actual_core_bucket(self):
         budget=H.owner_budget();self.assertEqual(16,budget['capacity']);self.assertEqual(32,budget['refill_per_second']);self.assertGreater(budget['burst'],budget['capacity'])
+    def test_failed_core_can_be_recovered_without_earning_functional_pass(self):
+        out=self.produce(name='failed-core-recovered')
+        value=H.read_json(out/'headless-result.json')
+        core=H.read_json(out/value['core']);core['returncode']=1
+        H.write_json(out/value['core'],core)
+        rows,clean,detail=self.judge(out)
+        self.assertTrue(clean)
+        self.assertTrue(all(row['status']=='fail' for row in rows))
+        self.assertEqual(1,detail['core_returncode'])
+
+    def test_failed_core_still_rejects_forced_exit_or_unstopped_capture(self):
+        for problem in ('forced','capture'):
+            with self.subTest(problem=problem):
+                out=self.produce(name='unsafe-'+problem)
+                value=H.read_json(out/'headless-result.json')
+                core=H.read_json(out/value['core']);core['returncode']=1
+                if problem=='forced':core['forced']=True
+                H.write_json(out/value['core'],core)
+                if problem=='capture':
+                    capture=H.read_json(out/value['capture_lifecycle']);capture['stopped']=False
+                    H.write_json(out/value['capture_lifecycle'],capture)
+                rows,clean,detail=self.judge(out)
+                self.assertFalse(clean)
+                self.assertTrue(all(row['status']=='fail' for row in rows))
+
     def test_bad_mapping_nonce_negative_process_and_frozen_inputs(self):
         for mode in ('mapping','nonce','negative','image','wrong-plan'):
             with self.subTest(mode=mode):
@@ -213,13 +238,14 @@ class ContentTests(unittest.TestCase):
         value=H.run('process',out,H.memory_inputs(),selected=['target-positive'],boundary=boundary)
         self.assertIn('capture not observable',value['error']);self.assertEqual({},value['clients'])
         self.assertTrue((out/'owned-core.json').exists());self.assertTrue((out/'network-after.json').exists())
-    def test_core_nonzero_and_network_change_do_not_restore(self):
+    def test_core_nonzero_fails_checks_and_network_change_blocks_recovery(self):
         for kind in ('exit','network'):
             out=self.produce(name=kind);v=H.read_json(out/'headless-result.json')
             path=out/(v['core'] if kind=='exit' else v['network_after']);data=H.read_json(path)
             if kind=='exit':data['returncode']=9
             else:data['routes']=['changed']
-            H.write_json(path,data);rows,clean,_=self.judge(out);self.assertFalse(clean)
+            H.write_json(path,data);rows,clean,_=self.judge(out)
+            self.assertEqual(kind=='exit',clean)
             self.assertEqual('fail',next(r for r in rows if r['id']=='pcap-restore')['status'])
 
 
