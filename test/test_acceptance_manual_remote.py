@@ -126,6 +126,9 @@ class RemoteManualTests(unittest.TestCase):
             return {key: self.remap(item, prefix, remote_root) for key, item in value.items()}
         return value
 
+    def channel_class(self):
+        return self.stand_in()
+
     def stand_in(self):
         """Replace only ExistingWindowsChannel; run the real guest entry."""
         outer = self
@@ -193,7 +196,7 @@ class RemoteManualTests(unittest.TestCase):
 
     def test_remote_two_case_roundtrip_and_independent_rejudge(self):
         plan = self.plan()
-        with mock.patch.object(win, 'ExistingWindowsChannel', side_effect=self.stand_in()):
+        with mock.patch.object(win, 'ExistingWindowsChannel', side_effect=self.channel_class()):
             code, out, err = self.cli('execute', '--plan', plan)
         self.assertEqual(0, code, out + err)
         self.assertTrue(self.guest_dir('GAP-NCSI').is_dir())
@@ -258,7 +261,7 @@ class RemoteManualTests(unittest.TestCase):
         # One case per negative plan: a tainted first case must not silently
         # block the other through the shared loopback resource.
         plan = self.plan(cases=(case_id,), name='neg-' + case_id)
-        with mock.patch.object(win, 'ExistingWindowsChannel', side_effect=self.stand_in()):
+        with mock.patch.object(win, 'ExistingWindowsChannel', side_effect=self.channel_class()):
             code, out, err = self.cli('execute', '--plan', plan)
         self.assertEqual(0, code, out + err)
         self.assertEqual(0, self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',

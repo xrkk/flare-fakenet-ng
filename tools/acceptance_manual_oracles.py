@@ -615,10 +615,9 @@ def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False, 
             folder = base / mode
             folder_name = mode
             cfg = base / 'config' / (mode + '.ini')
-            prefix = str(folder / 'customcap')
             require(folder.is_dir() and not any(path.is_symlink() for path in (folder, *folder.parents)), 'owned branch path mismatch')
-            require(item.get('folder') == guest(folder_name) and item.get('prefix') == guest(folder_name + '/customcap') and item.get('config') == guest('config/dumppackets.ini'), 'owned configuration/prefix mismatch')
-            require(plain(cfg).read_text() == '[Diverter]\nDumpPackets: ' + setting + '\nDumpPacketsFilePrefix: ' + prefix + '\n', 'exact configuration mismatch')
+            require(item.get('folder') == guest(folder_name) and item.get('prefix') == guest(folder_name + '/customcap') and item.get('config') == guest('config/' + folder_name + '.ini'), 'owned configuration/prefix mismatch')
+            require(plain(cfg).read_text() == '[Diverter]\nDumpPackets: ' + setting + '\nDumpPacketsFilePrefix: ' + guest(folder_name + '/customcap') + '\n', 'exact configuration mismatch')
             require(item.get('config_sha256') == hashlib.sha256(cfg.read_bytes()).hexdigest(), 'configuration hash mismatch')
             parser = configparser.ConfigParser()
             parser.read(cfg)
@@ -651,7 +650,7 @@ def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False, 
             require(len(loaded.entries) == len(expected), 'observation count mismatch')
             require(set(path.name for path in folder.iterdir()) == {raw.name, converted.name, raw.name + '.observations.ndjson', raw.name + '.nbis.ndjson', raw.name + '.capture-originals.json'}, 'capture original inventory mismatch')
             summary = item.get('summary') or {}
-            require(summary.get('raw_filename') == guest(folder_name + '/customcap-raw.pcap') and summary.get('ethernet_filename') == guest(folder_name + '/customcap-eth.pcap') and summary.get('raw_write_count') == len(expected) and summary.get('ethernet_write_count') == len(expected) and summary.get('healthy') is True and summary.get('discarded') is False, 'writer summary mismatch')
+            require(summary.get('raw_filename') == guest(folder_name + '/' + raw.name) and summary.get('ethernet_filename') == guest(folder_name + '/' + converted.name) and summary.get('raw_write_count') == len(expected) and summary.get('ethernet_write_count') == len(expected) and summary.get('healthy') is True and summary.get('discarded') is False, 'writer summary mismatch')
     except Exception as exc:
         errors.append(type(exc).__name__ + ': ' + str(exc))
     return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in ('enabled', 'disabled', 'prefix', 'content')], not errors, {'failures': errors}

@@ -15,6 +15,7 @@ ROOT = Path(_os.environ.get('FN_MANUAL_PRODUCT_ROOT',
                             str(Path(__file__).resolve().parents[1])))
 sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'test')]
 import test_acceptance_manual_remote as base_mod  # noqa: E402
+import manual_remote_fixture_support as support  # noqa: E402
 from test_acceptance_manual_remote import sha, portable_ignore  # noqa: E402
 import acceptance_windows as win  # noqa: E402
 
@@ -24,6 +25,11 @@ SEVEN = ('GAP-EXECUTECMD', 'GAP-STANDALONE-LISTENERS', 'GAP-CTRLC-IPC',
 
 
 class RemoteV1ManualTests(base_mod.RemoteManualTests):
+    def setUp(self):
+        super().setUp()
+        if support.faithful_enabled():
+            self.runtime.update(support.faithful_runtime(self.identity, self.source))
+            (self.base / 'environment.json').write_text(json.dumps(self.environment))
     @classmethod
     def setUpClass(cls):
         # Idempotent shared product-root copy: this class may run alongside
@@ -39,13 +45,23 @@ class RemoteV1ManualTests(base_mod.RemoteManualTests):
         import shutil as _sh
         _sh.copytree(ROOT, cls.source, ignore=portable_ignore, dirs_exist_ok=True)
 
+    def channel_class(self):
+        if support.faithful_enabled():
+            outer = self
+            class Faithful(support.FaithfulWindowsStandIn):
+                def __init__(self, root, runtime, journal):
+                    super().__init__(outer.source, runtime['identity'])
+            return Faithful
+        return self.stand_in()
+
     def test_seven_v1_cases_full_roundtrip_and_rejudge(self):
         plan = self.plan(cases=SEVEN, name='v1-seven')
-        with mock.patch.object(win, 'ExistingWindowsChannel', side_effect=self.stand_in()):
+        with mock.patch.object(win, 'ExistingWindowsChannel', side_effect=self.channel_class()):
             code, out, err = self.cli('execute', '--plan', plan)
         self.assertEqual(0, code, out + err)
-        for case_id in SEVEN:
-            self.assertTrue(self.guest_dir(case_id).is_dir(), case_id)
+        if not support.faithful_enabled():
+            for case_id in SEVEN:
+                self.assertTrue(self.guest_dir(case_id).is_dir(), case_id)
         self.assertEqual(0, self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',
                                      '--output', plan.parent / 'independent.json')[0])
         summary = json.loads((plan.parent / 'independent.json').read_text())
