@@ -96,7 +96,20 @@ def main(argv=None):
     request=json.loads(path.read_text(encoding='utf-8'))
     output=Path(request['output_root']);was_present=output.exists()
     try:
-        return execute(request,Path(__file__).resolve().parents[1])
+        code=execute(request,Path(__file__).resolve().parents[1])
+        # DC-02: only a Windows GAP-DUMPPACKETS success of this same fixed
+        # entry gets a source closure, printed ONCE on stdout for the direct
+        # MCP response.  Any finalization failure propagates nonzero and
+        # never prints a partial object.
+        if (code==0 and request.get('case_id')=='GAP-DUMPPACKETS' and
+                request.get('target',{}).get('platform')=='windows'):
+            import acceptance_native as native
+            closure=native.finalize_dump_evidence(
+                Path(__file__).resolve().parents[1],request,args.request_sha256,
+                str(output))
+            print(json.dumps(closure,ensure_ascii=False,sort_keys=True,
+                             separators=(',',':')),flush=True)
+        return code
     finally:
         # The entry is the last producer. The Host still observes its job exit
         # before reading this closed index through the existing SDK.

@@ -1383,6 +1383,98 @@ def original_evaluation(root,case,plan,output_dir):
     return _judge_rows(rows,checks),clean
 
 
+def _closure_inventory(output_root):
+    """Canonical closed inventory of every regular file under output_root."""
+    import hashlib
+    output_root=Path(output_root)
+    rows={};seen={};casefold={}
+    for path in sorted(output_root.rglob('*')):
+        if path.is_symlink():raise ValueError('closure inventory contains a symlink: %s'%path)
+        if not path.is_file():continue
+        relative=path.relative_to(output_root).as_posix()
+        parts=relative.split('/')
+        if (not relative or any(part in ('','..','.') for part in parts) or
+                '\\' in relative or relative!=path.relative_to(output_root).as_posix()):
+            raise ValueError('closure inventory path is not canonical: %s'%relative)
+        if relative in seen:raise ValueError('closure inventory duplicate: %s'%relative)
+        fold=relative.casefold()
+        if fold in casefold:raise ValueError('closure inventory case alias: %s'%relative)
+        seen[relative]=True;casefold[fold]=relative
+        rows[relative]={'relative_path':relative,'size':path.stat().st_size,
+                        'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+    return rows
+
+
+def finalize_dump_evidence(root,request,request_sha256,output_root):
+    """DC-02 source finalization: after the Dump producer exited, re-run the
+    strict source oracle in place, freeze a stable closed inventory around it,
+    and return the data-only closure for the fixed entry's stdout.  Never
+    re-runs the producer, never reseals, never fabricates stability."""
+    root=Path(root);output_root=Path(request['output_root'])
+    if request.get('case_id')!='GAP-DUMPPACKETS':
+        raise ValueError('dump source closure is fixed to GAP-DUMPPACKETS')
+    result_path=output_root/'guest-result.json'
+    if not result_path.is_file():
+        raise ValueError('dump source closure requires a closed guest result')
+    result=json.loads(_read(result_path))
+    receipt=result.get('receipt') or {}
+    cleanup=receipt.get('cleanup') or {};process=cleanup.get('process_exit') or {}
+    if (result.get('case_id')!=request['case_id'] or
+            result.get('request')!=request or
+            receipt.get('status')!='pass' or cleanup.get('recovered') is not True or
+            process.get('exited') is not True):
+        raise ValueError('dump source closure requires a passing recovered guest result')
+    environment={'native_runtime':{'transport':'local-target','identity':request['target']}}
+    for key in ('policy','headless','mcp','linux','manual'):
+        if key in request:environment[key]=request[key]
+    if 'upstream_protected_tcp_ports' in request:
+        environment['native_runtime']['upstream_protected_tcp_ports']=validate_upstream_protected_tcp_ports(request['upstream_protected_tcp_ports'])
+    catalog=json.loads(_read(Path(root)/'docs/acceptance/catalog.json'))
+    case=next(item for suite in catalog['suites'] for item in suite.get('cases',[]) if item['id']==request['case_id'])
+    plan={'candidate':request['candidate'],'environment':environment,'execution_id':request['execution_id']}
+    pre=_closure_inventory(output_root)
+    if not pre:raise ValueError('dump source closure inventory is empty')
+    evaluation,clean=original_evaluation(root,case,plan,output_root)
+    if evaluation.get('verdict')!='pass' or clean is not True:
+        raise ValueError('dump source closure requires a clean strict source pass: %s'%evaluation.get('verdict'))
+    # The same enabled-capture selection the oracle uses; the strict loader
+    # re-confirms the seal and capture id on the still-source-resident files.
+    folder=output_root/'driver'/'enabled'
+    files=sorted(path.name for path in folder.glob('*.pcap'))
+    raw=folder/next(name for name in files if not name.endswith('-converted.pcap'))
+    converted=folder/next(name for name in files if name.endswith('-converted.pcap'))
+    from fakenet.payload_report import load_capture_originals
+    loaded=load_capture_originals(raw,converted)
+    capture={'raw':raw.relative_to(output_root).as_posix(),
+             'converted':converted.relative_to(output_root).as_posix(),
+             'seal':Path(str(raw)+'.capture-originals.json').relative_to(output_root).as_posix(),
+             'capture_id':loaded.capture_id}
+    post=_closure_inventory(output_root)
+    if pre!=post:
+        raise ValueError('output set changed during source finalization')
+    for member in (capture['raw'],capture['converted'],capture['seal']):
+        if member not in post:raise ValueError('capture member missing from closure inventory: %s'%member)
+    closure={
+        'schema':'fakenet.dump-source-closure.v1',
+        'request_sha256':request_sha256,
+        'execution_id':request['execution_id'],
+        'case_id':request['case_id'],
+        'candidate':request['candidate'],
+        'source_hashes':request['source_hashes'],
+        'target':request['target'],
+        'output_root':request['output_root'],
+        'source_verdict':'pass',
+        'cleanup_recovered':True,
+        'capture':capture,
+        'files':[post[key] for key in sorted(post)],
+    }
+    closure['inventory_sha256']=hashlib.sha256(json.dumps(
+        closure['files'],ensure_ascii=False,sort_keys=True,
+        separators=(',',':')).encode('utf-8')).hexdigest()
+    return closure
+
+
+
 def run_production(root,case,plan,output_dir,python):
     """Run only on the explicitly bound target, never host fallback.
 
@@ -1597,14 +1689,23 @@ def run_remote(root,case,plan,output_dir,python):
             raise ChannelError('MCP target identity differs from selected VM')
         if services is not None:services.start()
         channel.transfer('push-request','push',[{'absolute_path':str(request_path.resolve()),'relative_path':'request.json'}],str(remote_base/'input'),producer_reference=str(request_path))
-        terminal=channel.execute(str(remote_base/'input/request.json'),digest(request_path),remote_output,source_hashes,case['timeout'])
+        execute_arguments=(str(remote_base/'input/request.json'),digest(request_path),remote_output,source_hashes,case['timeout'])
+        if case['id']=='GAP-DUMPPACKETS':
+            terminal=channel.execute(*execute_arguments,capture_stdout=True)
+        else:
+            terminal=channel.execute(*execute_arguments)
         if terminal.get('process_exited') is not True:
             raise ChannelError('recovery_required: remote producer has not exited; no pull or replay')
         # Only the stopped driver output is requested, not a scan of guest Logs.
         channel.transfer('pull-originals','pull',[{'absolute_path':remote_output,'relative_path':'originals'}],str((output_dir/'incoming').resolve()),producer_reference='guest-result.json process_exited=true; '+str(output_dir/'transport/execute-response.json'))
         original=output_dir/'incoming/originals'
         guest=json.loads(_read(original/'guest-result.json'))
-        rows,clean=_remote_original_evaluation(root,case,plan,request,guest,original)
+        relocation=None
+        if case['id']=='GAP-DUMPPACKETS':
+            try:relocation=dump_relocation_context(root,case,plan,output_dir)
+            except (OSError,ValueError,KeyError,TypeError) as error:
+                detail+='; relocation context refused: %s: %s'%(type(error).__name__,error)
+        rows,clean=_remote_original_evaluation(root,case,plan,request,guest,original,relocation_context=relocation)
         status=rows['verdict']
         if terminal.get('returncode')!=0:status='fail'
         if not clean and status=='pass':status='unknown'
@@ -1637,12 +1738,10 @@ def run_remote(root,case,plan,output_dir,python):
                        'remote_output':remote_output,'temp_roots':[str(output_dir.resolve())]}}
 
 
-def _remote_original_evaluation(root,case,plan,request,guest,original):
-    import acceptance_oracles
-    if (guest.get('schema')!='fakenet.native-guest-result.v1' or guest.get('request')!=request or
-        guest.get('case_id')!=case['id'] or guest.get('execution_id')!=plan['execution_id']):
-        raise ValueError('guest result/request/execution identity mismatch')
-    receipt=guest['receipt'];driver,checks=validate_case(case,root,plan['environment'])
+def _expected_remote_request(root,case,plan):
+    """The single frozen expected-request derivation shared by the remote
+    first pass, the offline rejudge, and the dump relocation context."""
+    driver,checks=validate_case(case,root,plan['environment'])
     runtime=plan['environment']['native_runtime']
     from pathlib import PureWindowsPath, PurePosixPath
     path_type=PureWindowsPath if runtime['identity']['platform']=='windows' else PurePosixPath
@@ -1659,6 +1758,142 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
         expected_request['manual']=manual_options(plan['environment'])
     if driver['production_kind']=='linux-runtime':
         expected_request['linux']=plan['environment']['linux']
+    return driver,checks,expected_request
+
+
+
+def _closure_files_valid(closure):
+    files=closure.get('files')
+    if not isinstance(files,list) or not files:raise ValueError('closure files missing/empty')
+    seen=set();folded=set()
+    for item in files:
+        if not isinstance(item,dict) or set(item)!={'relative_path','size','sha256'}:
+            raise ValueError('closure file entry shape invalid')
+        rel=item['relative_path'];parts=rel.split('/') if isinstance(rel,str) else ['','..']
+        if (not isinstance(rel,str) or not rel or any(part in ('','..','.') for part in parts) or
+                '\\' in rel or rel.startswith('/') or (isinstance(item['size'],bool) or
+                not isinstance(item['size'],int) or item['size']<0) or
+                not isinstance(item['sha256'],str) or len(item['sha256'])!=64 or
+                any(c not in '0123456789abcdef' for c in item['sha256'])):
+            raise ValueError('closure file entry invalid: %r'%rel)
+        if rel in seen or rel.casefold() in folded:raise ValueError('closure duplicate/alias: %s'%rel)
+        seen.add(rel);folded.add(rel.casefold())
+    if [i['relative_path'] for i in files]!=sorted(i['relative_path'] for i in files):
+        raise ValueError('closure files not sorted')
+    if hashlib.sha256(json.dumps(files,ensure_ascii=False,sort_keys=True,
+            separators=(',',':')).encode('utf-8')).hexdigest()!=closure.get('inventory_sha256'):
+        raise ValueError('closure inventory digest differs from its files')
+
+
+def dump_relocation_context(root,case,plan,output_dir):
+    """DC-05: the ONE host-side builder/validator for the dump relocation
+    context.  Both run_remote's first pass and judge_remote's independent
+    rejudge call this same function; it reads only the frozen plan, the
+    executed request, and THIS case's host-side transport journal plus the
+    pulled incoming set - never a file planted inside the copy.  Any failure
+    raises with a specific reason; the caller then keeps the strict entry."""
+    from acceptance_windows import ExistingWindowsChannel,ChannelError
+    from pathlib import PureWindowsPath
+    output_dir=Path(output_dir);transport=output_dir/'transport'
+    runtime=plan['environment']['native_runtime']
+    driver,checks,expected_request=_expected_remote_request(root,case,plan)
+    request=json.loads(_read(output_dir/'guest-request.json'))
+    if request!=expected_request:raise ValueError('relocation: request differs from frozen plan')
+    request_digest=sha256(output_dir/'guest-request.json')
+    intent=json.loads(_read(transport/'execute-intent.json'))
+    response=json.loads(_read(transport/'execute-response.json'))
+    if intent.get('operation')!='execute':raise ValueError('relocation: execute intent missing')
+    if response.get('exit_code')!=0 or response.get('is_error'):raise ValueError('relocation: outer MCP execute failed')
+    command=intent.get('command') or ''
+    from pathlib import PurePosixPath
+    entry_type=PureWindowsPath if runtime['identity']['platform']=='windows' else PurePosixPath
+    entry=str(entry_type(runtime['source_root'])/'tools/acceptance_guest.py')
+    for token in (entry,request_digest):
+        if token not in command:raise ValueError('relocation: execute command lacks pinned entry/digest')
+    if 'tools/acceptance_guest.py' not in request.get('source_hashes',{}):
+        raise ValueError('relocation: guest entry not pinned in request')
+    try:payload=json.loads(response['output'])
+    except ValueError:raise ValueError('relocation: execute response output is not JSON') from None
+    if (payload.get('returncode')!=0 or payload.get('process_exited') is not True or
+            payload.get('recovered') is not True):
+        raise ValueError('relocation: execute response is not a clean inner pass')
+    try:
+        closure=ExistingWindowsChannel.parse_source_closure({'guest_stdout':payload.get('guest_stdout')})
+    except ChannelError as error:
+        raise ValueError('relocation: guest stdout closure invalid: %s'%error) from None
+    if (closure.get('request_sha256')!=request_digest or
+            closure.get('execution_id')!=request['execution_id'] or
+            closure.get('case_id')!=request['case_id'] or
+            closure.get('candidate')!=request['candidate'] or
+            closure.get('source_hashes')!=request['source_hashes'] or
+            closure.get('target')!=request['target'] or
+            closure.get('output_root')!=request['output_root'] or
+            closure.get('source_verdict')!='pass' or
+            closure.get('cleanup_recovered') is not True or
+            closure.get('schema')!='fakenet.dump-source-closure.v1'):
+        raise ValueError('relocation: closure identity differs from the frozen request')
+    _closure_files_valid(closure)
+    capture=closure.get('capture') or {}
+    for member in ('raw','converted','seal'):
+        if capture.get(member) not in {f['relative_path'] for f in closure['files']}:
+            raise ValueError('relocation: capture member missing from closure inventory')
+    if 'guest-result.json' not in {f['relative_path'] for f in closure['files']}:
+        raise ValueError('relocation: guest result missing from closure inventory')
+    ident=json.loads(_read(transport/'identity-response.json'))
+    try:identity=json.loads(ident['output'])
+    except ValueError:raise ValueError('relocation: identity response output is not JSON') from None
+    if ({k:identity.get(k) for k in ('platform','hostname')}!=runtime['identity'] or
+            identity.get('vm_uuid')!=runtime['transfer']['expected_vm_identity']['vm_uuid']):
+        raise ValueError('relocation: MCP identity differs from the frozen target')
+    spec=json.loads(_read(transport/'pull-originals-spec.json'))
+    terminal_record=json.loads(_read(transport/'pull-originals-terminal.json'))
+    expected_source=str(entry_type(runtime['work_root'])/plan['execution_id']/case['id']/'output')
+    if (spec.get('direction')!='pull' or spec.get('expected_vm_identity')!=runtime['transfer']['expected_vm_identity'] or
+            spec.get('sources')!=[{'absolute_path':expected_source,'relative_path':'originals'}] or
+            spec.get('destination_directory')!=str((output_dir/'incoming').resolve())):
+        raise ValueError('relocation: pull spec differs from the frozen batch')
+    result_path=Path(terminal_record['result_path'])
+    if not result_path.is_file() or sha256(result_path)!=terminal_record['sha256']:
+        raise ValueError('relocation: pull terminal result record differs')
+    result=json.loads(_read(result_path))
+    if (result.get('schema')!='velo.transfer.result.v1' or
+            result.get('transfer_id')!=spec.get('transfer_id') or result.get('direction')!='pull' or
+            result.get('phase')!='COMPLETE' or result.get('outcome')!='complete' or
+            result.get('published_ever') is not True or result.get('destination_verified') is not True or
+            result.get('cleanup')!={'host':True,'guest':True} or
+            result.get('source_vm_identity')!=runtime['transfer']['expected_vm_identity']):
+        raise ValueError('relocation: Velo pull result contract missing')
+    pulled={}
+    for item in result.get('files') or []:
+        rel=item.get('relative_path')
+        if not isinstance(rel,str) or not rel.startswith('originals/'):
+            raise ValueError('relocation: pull file outside the originals batch: %r'%rel)
+        pulled[rel[len('originals/'):]]={'relative_path':rel[len('originals/'):],
+                                          'size':item.get('size'),'sha256':item.get('sha256')}
+    closure_files={f['relative_path']:f for f in closure['files']}
+    if pulled!=closure_files:
+        raise ValueError('relocation: pulled set differs from the source closure inventory')
+    incoming=output_dir/'incoming/originals'
+    actual={}
+    for path in sorted(incoming.rglob('*')):
+        if path.is_symlink():raise ValueError('relocation: incoming set contains a symlink')
+        if not path.is_file():continue
+        rel=path.relative_to(incoming).as_posix()
+        actual[rel]={'relative_path':rel,'size':path.stat().st_size,'sha256':sha256(path)}
+    if actual!=closure_files:
+        raise ValueError('relocation: incoming set differs from the source closure inventory')
+    return closure
+
+
+def _remote_original_evaluation(root,case,plan,request,guest,original,relocation_context=None):
+    import acceptance_oracles
+    if (guest.get('schema')!='fakenet.native-guest-result.v1' or guest.get('request')!=request or
+        guest.get('case_id')!=case['id'] or guest.get('execution_id')!=plan['execution_id']):
+        raise ValueError('guest result/request/execution identity mismatch')
+    receipt=guest['receipt'];driver,checks,expected_request=_expected_remote_request(root,case,plan)
+    runtime=plan['environment']['native_runtime']
+    from pathlib import PureWindowsPath, PurePosixPath
+    path_type=PureWindowsPath if runtime['identity']['platform']=='windows' else PurePosixPath
     if request!=expected_request:raise ValueError('remote original request differs from frozen plan')
     expected=remote_guest_command(driver,plan['environment']['native_runtime'],request['output_root'],checks,plan.get('candidate',{}).get('offline_fixture') is True,case_id=case['id'])
     if receipt.get('command')!=expected or receipt.get('native_target')!=request['target'] or receipt.get('required_checks')!=checks:
@@ -1705,7 +1940,8 @@ def _remote_original_evaluation(root,case,plan,request,guest,original):
             raise ValueError('remote manual inputs differ from frozen options/guest output root')
         rows,clean,detail=acceptance_manual_oracles.evaluate(root,Path(original)/'driver',case['id'],expected_inputs,
             allow_fixture=plan.get('candidate',{}).get('offline_fixture') is True,
-            producer_directory=str(path_type(request['output_root'])/'driver'))
+            producer_directory=str(path_type(request['output_root'])/'driver'),
+            relocated_context=(relocation_context if case['id']=='GAP-DUMPPACKETS' else None))
     else:
         rows,clean=acceptance_oracles.dual_pcap(root,Path(original)/'driver',checks,runtime['identity']['platform'])
     if driver['production_kind'].startswith('policy-') and {'sink_tcp','sink_udp'}&set(checks):
@@ -1742,7 +1978,11 @@ def judge_remote(case,receipt,plan,root):
         request=json.loads(_read(output/'guest-request.json'))
         original=output/'incoming/originals'
         guest=json.loads(_read(original/'guest-result.json'))
-        evaluation,clean=_remote_original_evaluation(root,case,plan,request,guest,original)
+        relocation=None
+        if case['id']=='GAP-DUMPPACKETS':
+            try:relocation=dump_relocation_context(root,case,plan,output)
+            except (OSError,ValueError,KeyError,TypeError):relocation=None
+        evaluation,clean=_remote_original_evaluation(root,case,plan,request,guest,original,relocation_context=relocation)
         if driver['production_kind'].startswith('policy-') and {'sink_tcp','sink_udp'}&set(checks):
             from acceptance_policy_oracles import verify_host_services
             verify_host_services(original/'driver',output/'host-services',checks,plan['environment']['policy'])

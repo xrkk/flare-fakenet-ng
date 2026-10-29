@@ -966,7 +966,7 @@ def _int_fact(value, what):
         raise PayloadReportError('%s is not an integer' % what)
 
 
-def _verify_original_facts(facts, path, what):
+def _verify_original_facts(facts, path, what, verify_physical=True):
     if not isinstance(facts, dict):
         raise PayloadReportError('%s facts are missing from the seal' % what)
     if facts.get('name') != os.path.basename(str(path)):
@@ -977,20 +977,26 @@ def _verify_original_facts(facts, path, what):
         raise PayloadReportError('%s byte count differs from the seal' % what)
     if facts.get('sha256') != _sha256_path(path):
         raise PayloadReportError('%s SHA-256 differs from the seal' % what)
-    if (_int_fact(facts.get('device', -1), '%s device' % what)
-            != current.st_dev or
-            _int_fact(facts.get('inode', -1), '%s inode' % what)
-            != current.st_ino):
+    # The device/inode facts must always be well-formed integers; only the
+    # EQUALITY with the live file identity may be waived, and only for an
+    # already-verified relocated copy (callers default to full strictness).
+    device = _int_fact(facts.get('device', -1), '%s device' % what)
+    inode = _int_fact(facts.get('inode', -1), '%s inode' % what)
+    if device < 0 or inode < 0:
+        raise PayloadReportError('%s device/inode facts are invalid' % what)
+    if verify_physical and (device != current.st_dev or inode != current.st_ino):
         raise PayloadReportError(
             '%s file identity differs from the seal (physical replacement)'
             % what)
     return facts
 
 
-def _load_originals_journal(path, seal, journal, capture_id):
+def _load_originals_journal(path, seal, journal, capture_id,
+                            verify_physical=True):
     from fakenet.capture_originals import CAPTURE_ORIGINALS_JOURNAL_SCHEMA
     facts = seal.get(journal)
-    _verify_original_facts(facts, path, journal + ' journal')
+    _verify_original_facts(facts, path, journal + ' journal',
+                           verify_physical=verify_physical)
     with open(path, 'rb') as stream:
         raw = stream.read()
     if raw and not raw.endswith(b'\n'):
@@ -1034,7 +1040,8 @@ def _load_originals_journal(path, seal, journal, capture_id):
     return records
 
 
-def load_capture_originals(raw_pcap_path, converted_pcap_path=None):
+def load_capture_originals(raw_pcap_path, converted_pcap_path=None,
+                           verify_physical=True):
     """Decode and validate one sealed capture's runtime originals.
 
     The seal is the produced inventory: names, byte counts, SHA-256 and the
@@ -1067,7 +1074,8 @@ def load_capture_originals(raw_pcap_path, converted_pcap_path=None):
     if seal.get('pair_basename') != os.path.basename(raw):
         raise PayloadReportError(
             'capture originals seal belongs to a foreign capture')
-    raw_facts = _verify_original_facts(seal.get('raw_pcap'), raw, 'raw PCAP')
+    raw_facts = _verify_original_facts(seal.get('raw_pcap'), raw, 'raw PCAP',
+                                       verify_physical=verify_physical)
     if converted_pcap_path is None:
         if seal.get('converted_pcap') is not None:
             raise PayloadReportError(
@@ -1077,7 +1085,8 @@ def load_capture_originals(raw_pcap_path, converted_pcap_path=None):
     else:
         converted = os.fspath(converted_pcap_path)
         _verify_original_facts(seal.get('converted_pcap'), converted,
-                               'converted PCAP')
+                               'converted PCAP',
+                               verify_physical=verify_physical)
     raw_records = _read_pcap(raw)
     converted_records = _read_pcap(converted) if converted else None
     _validate_pair(raw_records, converted_records)
@@ -1090,9 +1099,11 @@ def load_capture_originals(raw_pcap_path, converted_pcap_path=None):
         raise PayloadReportError(
             'seal journal names are foreign to this capture')
     observation_records = _load_originals_journal(
-        observation_path, seal, 'observations', capture_id)
+        observation_path, seal, 'observations', capture_id,
+        verify_physical=verify_physical)
     nbi_records = _load_originals_journal(
-        nbi_path, seal, 'nbis', capture_id)
+        nbi_path, seal, 'nbis', capture_id,
+        verify_physical=verify_physical)
 
     entries = []
     for record in observation_records:

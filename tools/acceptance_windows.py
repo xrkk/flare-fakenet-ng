@@ -191,19 +191,46 @@ class ExistingWindowsChannel:
         write_new(self.journal/(name+'-terminal.json'),{'result_path':str(result_path),'sha256':digest(result_path),'spec_path':str(spec_path)})
         return result
 
-    def execute(self,request_path,request_sha,output_root,source_hashes,timeout):
+    def execute(self,request_path,request_sha,output_root,source_hashes,timeout,
+                *,capture_stdout=False):
         root=PureWindowsPath(self.runtime['source_root'])
         guest=root/'tools/acceptance_guest.py'
         if 'tools/acceptance_guest.py' not in source_hashes:
             raise ChannelError('guest entry not pinned')
         # Verify the fixed executable entry before invoking Python. The guest
         # then verifies all remaining source hashes before starting a core.
+        guest_run=("& "+psquote(self.runtime['python'])+" -B $entry --request "+psquote(request_path)+" --request-sha256 "+psquote(request_sha))
+        if capture_stdout:
+            # DC-04: capture THIS invocation's guest stdout so a data-only
+            # source closure travels in the same direct MCP response.
+            guest_run="$guest_out = "+guest_run+" | Out-String; $inner=$LASTEXITCODE"
+        else:
+            guest_run=guest_run+"; $inner=$LASTEXITCODE"
         command=("$ErrorActionPreference='Stop'; $entry="+psquote(str(guest))+"; "
                  "if((Get-FileHash -LiteralPath $entry -Algorithm SHA256).Hash.ToLower() -cne "+psquote(source_hashes['tools/acceptance_guest.py'])+"){throw 'guest entry source mismatch'}; "
-                 "& "+psquote(self.runtime['python'])+" -B $entry --request "+psquote(request_path)+" --request-sha256 "+psquote(request_sha)+"; "
-                 "$inner=$LASTEXITCODE; $result=Get-Content -LiteralPath "+psquote(str(PureWindowsPath(output_root)/'guest-result.json'))+" -Raw|ConvertFrom-Json; "
-                 "@{returncode=$inner;process_exited=$result.receipt.cleanup.process_exit.exited;recovered=$result.receipt.cleanup.recovered}|ConvertTo-Json -Compress")
+                 +guest_run+"; "
+                 "$result=Get-Content -LiteralPath "+psquote(str(PureWindowsPath(output_root)/'guest-result.json'))+" -Raw|ConvertFrom-Json; "
+                 "$payload=@{returncode=$inner;process_exited=$result.receipt.cleanup.process_exit.exited;recovered=$result.receipt.cleanup.recovered};"
+                 +("$payload|Add-Member -NotePropertyName guest_stdout -NotePropertyValue $guest_out;" if capture_stdout else "")
+                 +"$payload|ConvertTo-Json -Compress")
         return self.invoke('execute',command,timeout+120)
+
+    @staticmethod
+    def parse_source_closure(terminal):
+        """DC-04: extract the ONE closure JSON object from the captured guest
+        stdout carried by this same execute response.  Damaged stdout, more
+        than one JSON object, or a foreign schema yields no closure."""
+        stdout=(terminal or {}).get('guest_stdout')
+        if not isinstance(stdout,str) or not stdout.strip():
+            raise ChannelError('no source closure in guest stdout')
+        try:
+            closure=json.loads(stdout)
+        except ValueError:
+            raise ChannelError('guest stdout is not one valid JSON object') from None
+        if (not isinstance(closure,dict) or
+                closure.get('schema')!='fakenet.dump-source-closure.v1'):
+            raise ChannelError('guest stdout closure schema invalid')
+        return closure
 
     def observe(self,output_root):
         # Deliberately read-only. A missing marker means unresolved, never retry.

@@ -575,7 +575,7 @@ def _evaluate_standalone(root, original, expected_inputs, allow_fixture=False, p
     except Exception as exc:errors.append(type(exc).__name__+': '+str(exc))
     return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('listener-bytes','listener-close')],not errors,{'failures':errors}
 
-def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False, producer_directory=None):
+def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False, producer_directory=None, relocated_context=None):
     import configparser
     import dpkt
     from fakenet.payload_report import load_capture_originals
@@ -633,7 +633,11 @@ def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False, 
             require(len(files) == 2 and all(name.startswith('customcap_') and Path(name).name == name for name in files), 'enabled custom prefix output missing')
             raw = plain(folder / next(name for name in files if not name.endswith('-converted.pcap')))
             converted = plain(folder / next(name for name in files if name.endswith('-converted.pcap')))
-            loaded = load_capture_originals(raw, converted)
+            # DC-01/DC-05: only an explicitly host-verified relocation
+            # context waives the physical-equality lines; every content
+            # invariant of the SAME strict loader still runs on the copy.
+            loaded = load_capture_originals(raw, converted,
+                                            verify_physical=relocated_context is None)
             with raw.open('rb') as stream:
                 reader = dpkt.pcap.Reader(stream)
                 require(reader.datalink() == dpkt.pcap.DLT_RAW, 'raw linktype mismatch')
@@ -874,7 +878,7 @@ def _guest_renderer(base, producer_directory):
     return render
 
 
-def evaluate(root,original,case,expected_inputs,allow_fixture=False,producer_directory=None):
+def evaluate(root,original,case,expected_inputs,allow_fixture=False,producer_directory=None,relocated_context=None):
     if case=='GAP-SYSLOG-ICMP-LOG':return _evaluate_syslog_icmp(root,original,expected_inputs,allow_fixture, producer_directory)
     if case=='GAP-CTRLC-IPC':return _evaluate_ctrlc_ipc(root,original,expected_inputs,allow_fixture, producer_directory)
     if case=='GAP-LINUX-FLUSH-INTERFACE':return _evaluate_linux_flush_interface(root,original,expected_inputs,allow_fixture)
@@ -882,7 +886,7 @@ def evaluate(root,original,case,expected_inputs,allow_fixture=False,producer_dir
         if expected_inputs.get('schema')=='fakenet.manual-input.v2':return _evaluate_network_fix_platform(root,original,expected_inputs,allow_fixture)
         return _evaluate_network_fix(root,original,expected_inputs,allow_fixture)
     if case=='GAP-STANDALONE-LISTENERS':return _evaluate_standalone(root,original,expected_inputs,allow_fixture, producer_directory)
-    if case=='GAP-DUMPPACKETS':return _evaluate_dumppackets(root,original,expected_inputs,allow_fixture, producer_directory)
+    if case=='GAP-DUMPPACKETS':return _evaluate_dumppackets(root,original,expected_inputs,allow_fixture, producer_directory, relocated_context)
     if case=='GAP-DIVERTER-SWITCH':return _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture, producer_directory)
     if case=='GAP-EXECUTECMD':return _evaluate_executecmd(root,original,expected_inputs,allow_fixture, producer_directory)
     if case=='GAP-LIST-MUTEX':return _evaluate_list_mutex(root,original,expected_inputs,allow_fixture, producer_directory)
