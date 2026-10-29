@@ -130,6 +130,45 @@ class RemoteV1ManualTests(base_mod.RemoteManualTests):
         self.assertNotEqual(0, code)
         self.assertIn('identity mismatch', json.dumps(summary))
 
+    def test_list_mutex_independent_single_case_chain(self):
+        # ListMutex shares no resource with the DumpPackets seal gap: its own
+        # selected single-case plan must run the full real chain without the
+        # shared-plan scheduler recovery blocking it.
+        plan = self.plan(cases=('GAP-LIST-MUTEX',), name='solo-list-mutex')
+        with mock.patch.object(win, 'ExistingWindowsChannel', side_effect=self.channel_class()):
+            code, out, err = self.cli('execute', '--plan', plan)
+        self.assertEqual(0, code, out + err)
+        self.assertEqual(0, self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',
+                                     '--output', plan.parent / 'independent.json')[0])
+        summary = json.loads((plan.parent / 'independent.json').read_text())
+        row = summary['cases'][0]
+        self.assertEqual('pass', row['status'])
+        self.assertTrue(row['cleanup_ok'])
+        self.assertEqual(['blacklist', 'whitelist', 'mutex'],
+                         [check['id'] for check in json.loads(
+                             (plan.parent / 'results' / 'GAP-LIST-MUTEX' / 'incoming' / 'originals' /
+                              'driver' / 'manual-result.json').read_text())['checks']])
+
+    def test_dumppackets_remote_seal_gap_is_precise_and_finite(self):
+        # The controller-proved gap: load_capture_originals pins the sealed
+        # PCAP's st_dev/st_ino identity; a pulled cross-host copy is a PHYSICAL
+        # REPLACEMENT and must be refused. This pins the refusal reason and the
+        # exact artifact path so the gap stays precise, not a mystery failure.
+        plan = self.plan(cases=('GAP-DUMPPACKETS',), name='solo-dump-seal-gap')
+        with mock.patch.object(win, 'ExistingWindowsChannel', side_effect=self.channel_class()):
+            code, out, err = self.cli('execute', '--plan', plan)
+        self.assertEqual(0, code, out + err)
+        self.assertEqual(0, self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',
+                                     '--output', plan.parent / 'independent.json')[0])
+        summary = json.loads((plan.parent / 'independent.json').read_text())
+        row = summary['cases'][0]
+        self.assertEqual('fail', row['status'])
+        self.assertIn('physical replacement', json.dumps(row.get('evaluation') or {}))
+        guest = json.loads((plan.parent / 'results' / 'GAP-DUMPPACKETS' / 'incoming' /
+                            'originals' / 'guest-result.json').read_text())
+        self.assertEqual('pass', guest['receipt']['status'])
+        self.assertTrue(guest['receipt']['cleanup']['recovered'])
+
     def test_out_of_cohort_manual_v2_case_still_refuses_options(self):
         # GAP-NETWORK-FIX is manual but v2/network-configuring: it must NOT
         # gain remote options from this cohort (plan keeps no-remote block).

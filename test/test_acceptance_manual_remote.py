@@ -26,6 +26,7 @@ import acceptance_manual as M
 import acceptance_manual_oracles as O
 import acceptance_native as N
 import acceptance_windows as win
+import manual_remote_fixture_support as support
 
 
 def sha(path):
@@ -476,8 +477,17 @@ class RemoteManualTests(unittest.TestCase):
                 self.assertTrue(all(row['status'] == 'fail' for row in rows), rows)
                 self.assertIn(expected, json.dumps(detail))
         # Link escape mapped through the producer root is refused as well.
+        # Symlink creation is privilege-gated on Windows: without the
+        # privilege the environment cannot produce the link artifact at all,
+        # so record it as environment-limited rather than faking a refusal.
         escape = driver / 'query-escape.bin'
-        escape.symlink_to('/etc/hosts')
+        try:
+            escape.symlink_to('/etc/hosts')
+        except OSError as error:
+            import sys as _sys
+            if _sys.platform == 'win32':
+                self.skipTest('symlink privilege unavailable on this Windows host: %s' % error)
+            raise
         self.addCleanup(escape.unlink)
         broken = json.loads(original)
         broken['queries'][0]['query'] = producer + r'\query-escape.bin'
@@ -489,6 +499,8 @@ class RemoteManualTests(unittest.TestCase):
         (driver / 'manual-result.json').write_bytes(original)
         # The oracle's own local metadata read stays separate: the retained
         # no-producer_directory entry re-judges the un-remapped guest tree.
+        if support.faithful_enabled():
+            return  # faithful mode has no remapped guest_dir tree by design
         guest_out = self.guest_dir('GAP-NCSI')
         local_inputs = json.loads((guest_out / 'manual-inputs.json').read_text())
         rows, clean, detail = O.evaluate(self.source, guest_out / 'driver', 'GAP-NCSI',
