@@ -326,10 +326,14 @@ class RemoteManualTests(unittest.TestCase):
 
     def test_remote_guest_command_pins_case_and_manual_inputs(self):
         driver = N.driver_table(ROOT)['manual-ncsi']
+        # The argv pins derive from the FROZEN runtime python/source_root of
+        # this fixture environment, not from hard-coded E: constants.
         argv = N.remote_guest_command(driver, self.runtime, r'E:\native-runs\e\GAP-NCSI\output',
                                       ['ncsi-ipv4', 'other-domain', 'dns-evidence'],
                                       False, case_id='GAP-NCSI')
-        self.assertEqual([r'E:\python.exe', r'E:\candidate/tools/acceptance_manual.py',
+        entry = str(Path(self.runtime['python']))
+        producer = self.runtime['source_root'].rstrip('\\') + '/tools/acceptance_manual.py'
+        self.assertEqual([entry, producer,
                           '--case', 'GAP-NCSI',
                           '--inputs', r'E:\native-runs\e\GAP-NCSI\output\manual-inputs.json',
                           '--output', r'E:\native-runs\e\GAP-NCSI\output/driver'], argv)
@@ -452,7 +456,12 @@ class RemoteManualTests(unittest.TestCase):
         self.assertEqual(['pass'] * 3, [row['status'] for row in rows])
         real_file = driver / 'query-udp-0.bin'
         original = (driver / 'manual-result.json').read_bytes()
-        variants = [('host-alias', str(real_file), 'not absolute in the producer root'),
+        # The refusal reason is platform-accurate: on a Windows interpreter a
+        # host-local POSIX alias is absolute-shaped but escapes the producer
+        # root; on POSIX it is not absolute at all.
+        import sys as _sys
+        posix_host_alias = 'escaped the producer root' if _sys.platform == 'win32' else 'not absolute in the producer root'
+        variants = [('host-alias', str(real_file), posix_host_alias),
                     ('wrong-drive', r'D:\native-runs\query-udp-0.bin', 'escaped the producer root'),
                     ('relative', 'query-udp-0.bin', 'not absolute in the producer root'),
                     ('dotdot', producer + r'\..\query-udp-0.bin', 'outside owned case')]
