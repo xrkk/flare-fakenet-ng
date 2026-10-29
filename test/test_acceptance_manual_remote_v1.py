@@ -54,13 +54,18 @@ class RemoteV1ManualTests(base_mod.RemoteManualTests):
             return Faithful
         return self.stand_in()
 
-    def test_seven_v1_cases_full_roundtrip_and_rejudge(self):
+    def test_seven_v1_shared_plan_known_seal_gap_diagnosis(self):
         plan = self.plan(cases=SEVEN, name='v1-seven')
         with mock.patch.object(win, 'ExistingWindowsChannel', side_effect=self.channel_class()):
             code, out, err = self.cli('execute', '--plan', plan)
         # The precise end-state carries one real fail verdict (DumpPackets'
         # frozen cross-host seal refusal), so the execute CLI exits nonzero.
         self.assertEqual(1, code, out + err)
+        # Layered diagnosis: the shared plan's known end-state is 5 real
+        # passes + DumpPackets' frozen seal refusal + ListMutex blocked by
+        # recovery behind it (ListMutex passes on its own plan). The 28-test
+        # suite being green is a TEST-set pass carrying this known-fail
+        # diagnosis — never seven functional completions.
         if not support.faithful_enabled():
             for case_id in SEVEN:
                 self.assertTrue(self.guest_dir(case_id).is_dir(), case_id)

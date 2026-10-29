@@ -128,7 +128,18 @@ class RemoteManualTests(unittest.TestCase):
         return value
 
     def channel_class(self):
+        if support.faithful_enabled():
+            outer = self
+
+            class Faithful(support.FaithfulWindowsStandIn):
+                def __init__(self, root, runtime, journal):
+                    super().__init__(outer.source, runtime['identity'])
+
+            return Faithful
         return self.stand_in()
+
+    def mode_label(self):
+        return 'faithful' if support.faithful_enabled() else 'remap'
 
     def stand_in(self):
         """Replace only ExistingWindowsChannel; run the real guest entry."""
@@ -200,10 +211,17 @@ class RemoteManualTests(unittest.TestCase):
         with mock.patch.object(win, 'ExistingWindowsChannel', side_effect=self.channel_class()):
             code, out, err = self.cli('execute', '--plan', plan)
         self.assertEqual(0, code, out + err)
-        if not support.faithful_enabled():
+        if support.faithful_enabled():
+            # Faithful mode: the producers ran in the REAL frozen request
+            # output roots — assert them from the retained plan itself.
+            value = json.loads(plan.read_text())
+            for case_id in ('GAP-NCSI', 'GAP-RAW-DATE'):
+                root = str(PureWindowsPath(self.runtime['work_root']) /
+                           value['execution_id'] / case_id / 'output')
+                self.assertTrue(Path(root).is_dir(), root)
+        else:
             # The remap stand-in mirrors guest outputs into local guest_dir
-            # trees; the faithful stand-in runs producers in their REAL frozen
-            # output roots, so no mirrored tree exists by design.
+            # trees for its own compatibility checks.
             self.assertTrue(self.guest_dir('GAP-NCSI').is_dir())
             self.assertTrue(self.guest_dir('GAP-RAW-DATE').is_dir())
         self.assertEqual(0, self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',
