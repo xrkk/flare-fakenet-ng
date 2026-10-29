@@ -27,10 +27,7 @@ def _evaluate_syslog_icmp(root, original, expected_inputs, allow_fixture=False, 
         v = json.loads(read('manual-result.json'))
         require(_owner_root(base, producer_directory) == expected_inputs.get('owned_root') and v.get('inputs') == expected_inputs, 'owned/frozen inputs mismatch')
         require(v.get('schema') == 'fakenet.manual-result.v1' and v.get('case') == 'GAP-SYSLOG-ICMP-LOG', 'case/schema mismatch')
-        if expected_inputs.get('schema') == 'fakenet.manual-input.v3':
-            require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id', 'source_deployment_identity')}, 'identity mismatch')
-        else:
-            require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
+        require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
         require(type(v.get('fixture')) is bool and v['fixture'] == (expected_inputs.get('fixture') is True), 'fixture identity mismatch')
         require(not v['fixture'] or allow_fixture, 'fixture cannot native credit')
         require(v.get('checks') == [{'id': key} for key in ('syslog', 'icmp', 'owner')], 'checks mismatch')
@@ -88,10 +85,7 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False, pr
         require(_owner_root(base, producer_directory) == expected_inputs.get('owned_root') and v.get('inputs') == expected_inputs, 'owned/frozen inputs mismatch')
         require(v.get('schema') == 'fakenet.manual-result.v1' and v.get('case') == 'GAP-CTRLC-IPC', 'case/schema mismatch')
         require(v.get('evidence_kind') == 'original-main-ctrl-c-and-file-ipc', 'original branch provenance missing')
-        if expected_inputs.get('schema') == 'fakenet.manual-input.v3':
-            require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id', 'source_deployment_identity')}, 'identity mismatch')
-        else:
-            require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
+        require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
         require(type(v.get('fixture')) is bool and v['fixture'] == (expected_inputs.get('fixture') is True), 'fixture identity mismatch')
         require(not v['fixture'] or allow_fixture, 'fixture cannot native credit')
         require(v.get('checks') == [{'id': key} for key in ('ctrlc', 'ipc-stop', 'owned-exit')], 'checks mismatch')
@@ -285,10 +279,7 @@ def _evaluate_linux_flush_interface(root, original, expected_inputs, allow_fixtu
         require(str(base) == expected_inputs.get('owned_root') and v.get('inputs') == expected_inputs, 'owned/frozen inputs mismatch')
         require(v.get('schema') == 'fakenet.manual-result.v1' and v.get('case') == 'GAP-LINUX-FLUSH-INTERFACE', 'case/schema mismatch')
         require(v.get('evidence_kind') == 'original-linux-callback-os-boundary', 'callback provenance missing')
-        if expected_inputs.get('schema') == 'fakenet.manual-input.v3':
-            require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id', 'source_deployment_identity')}, 'identity mismatch')
-        else:
-            require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
+        require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
         require(type(v.get('fixture')) is bool and v['fixture'] == (expected_inputs.get('fixture') is True), 'fixture identity mismatch')
         require(not v['fixture'] or allow_fixture, 'fixture cannot native credit')
         require(v.get('checks') == [{'id': key} for key in ('flush-iptables', 'flush-dns', 'restrict-interface')], 'checks mismatch')
@@ -449,10 +440,7 @@ def _evaluate_network_fix(root, original, expected_inputs, allow_fixture=False):
         require(str(base) == expected_inputs.get('owned_root') and v.get('inputs') == expected_inputs, 'owned/frozen inputs mismatch')
         require(v.get('schema') == 'fakenet.manual-result.v1' and v.get('case') == 'GAP-NETWORK-FIX', 'case/schema mismatch')
         require(v.get('evidence_kind') == 'original-network-fix-config-start-stop', 'original configuration/start-stop provenance missing')
-        if expected_inputs.get('schema') == 'fakenet.manual-input.v3':
-            require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id', 'source_deployment_identity')}, 'identity mismatch')
-        else:
-            require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
+        require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
         require(type(v.get('fixture')) is bool and v['fixture'] == (expected_inputs.get('fixture') is True), 'fixture identity mismatch')
         require(not v['fixture'] or allow_fixture, 'fixture cannot native credit')
         require(v.get('checks') == [{'id': key} for key in keys], 'checks mismatch')

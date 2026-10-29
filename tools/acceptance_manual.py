@@ -44,19 +44,22 @@ def _validate_source_identity(identity,source_commit):
 def validate_inputs(case,inputs):
     if not isinstance(inputs,dict):raise ValueError('manual inputs must be an object')
     if inputs.get('schema') not in ('fakenet.manual-input.v1','fakenet.manual-input.v2','fakenet.manual-input.v3') or inputs.get('case')!=case:raise ValueError('manual input schema/case mismatch')
+    for k in (*IDENTITY,'config','owned_root'):
+        if k=='package_sha256' and inputs.get('schema')=='fakenet.manual-input.v3':
+            if inputs.get(k) is not None:raise ValueError('manual input v3 requires package_sha256 null')
+        elif not inputs.get(k):raise ValueError('manual inputs missing: '+k)
+    if not re.fullmatch('[0-9a-f]{40}',inputs['source_commit']):raise ValueError('manual content identity invalid')
+    if inputs.get('schema')!='fakenet.manual-input.v3' and not re.fullmatch('[0-9a-f]{64}',inputs['package_sha256']):raise ValueError('manual content identity invalid')
     if inputs.get('schema')=='fakenet.manual-input.v3':
-        # SD-06: Dump-only explicit source-deployment branch.
+        # SD-06: Dump-only explicit source-deployment branch (exact field set).
         if case!='GAP-DUMPPACKETS':raise ValueError('manual input v3 is fixed to GAP-DUMPPACKETS')
         if set(inputs)!={'schema','case','candidate_id','source_commit','package_sha256','execution_id','owned_root','config','responsea','fixture','source_deployment_identity'}:raise ValueError('manual input v3 field set differs')
-        if inputs.get('package_sha256') is not None:raise ValueError('manual input v3 requires package_sha256 null')
         _validate_source_identity(inputs.get('source_deployment_identity'),inputs['source_commit'])
-    else:
-        for k in (*IDENTITY,'config','owned_root'):
-            if not inputs.get(k):raise ValueError('manual inputs missing: '+k)
-        if not re.fullmatch('[0-9a-f]{40}',inputs['source_commit']) or not re.fullmatch('[0-9a-f]{64}',inputs['package_sha256']):raise ValueError('manual content identity invalid')
     if not re.fullmatch('[a-zA-Z0-9-]{4,80}',inputs['execution_id']):raise ValueError('execution_id is invalid')
     for k in ('config','owned_root'):
         if not Path(inputs[k]).is_absolute() or Path(inputs[k]).is_symlink():raise ValueError('manual path must be absolute/no symlink: '+k)
+    if 'fixture' in inputs and type(inputs['fixture']) is not bool:
+        raise ValueError('manual input fixture must be an explicit boolean')
     socket.inet_pton(socket.AF_INET,inputs.get('responsea','192.0.2.55'))
     if inputs['schema']=='fakenet.manual-input.v2':
         import ipaddress

@@ -748,7 +748,17 @@ def _manual_input_value(plan,case,options,owned_root,config):
     # keeps the original v1 value.
     if (case['id']=='GAP-DUMPPACKETS' and
             candidate.get('deployment_kind')=='source'):
-        closure=plan.get('source_deployment_closure') or {}
+        closure={}
+        native_pins=plan.get('native_source_hashes') or {}
+        case_entry=(plan.get('source_hashes') or {}).get(case['id']) or {}
+        for source_map in (native_pins, case_entry):
+            for name, digest in source_map.items():
+                if name in closure and closure[name] != digest:
+                    raise ValueError('source closure conflict: %s' % name)
+                closure[name] = digest
+        shadow=plan.get('source_deployment_closure') or {}
+        if shadow and shadow != closure:
+            raise ValueError('plan shadow closure differs from the frozen selection M')
         if not closure:raise ValueError('source branch requires the frozen closure M')
         import hashlib
         payload=json.dumps(dict(closure),ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')
@@ -1489,7 +1499,11 @@ def finalize_dump_evidence(root,request,request_sha256,output_root):
         environment['native_runtime']['upstream_protected_tcp_ports']=validate_upstream_protected_tcp_ports(request['upstream_protected_tcp_ports'])
     catalog=json.loads(_read(Path(root)/'docs/acceptance/catalog.json'))
     case=next(item for suite in catalog['suites'] for item in suite.get('cases',[]) if item['id']==request['case_id'])
-    plan={'candidate':request['candidate'],'environment':environment,'execution_id':request['execution_id']}
+    plan={'candidate':request['candidate'],'environment':environment,'execution_id':request['execution_id'],
+          # SD-05/F1: the finalizer derives the source identity from the
+          # VERIFIED request closure M - the same frozen inputs the guest used.
+          'source_deployment_closure':dict(request['source_hashes']),
+          'native_source_hashes':{},'source_hashes':{'GAP-DUMPPACKETS':dict(request['source_hashes'])}}
     pre,pre_physical=_closure_inventory(output_root)
     if not pre:raise ValueError('dump source closure inventory is empty')
     evaluation,clean=original_evaluation(root,case,plan,output_root)
@@ -1818,6 +1832,15 @@ def _expected_remote_request(root,case,plan):
         expected_request['manual']=manual_options(plan['environment'])
     if driver['production_kind']=='linux-runtime':
         expected_request['linux']=plan['environment']['linux']
+    identity=(expected_request['candidate'] or {}).get('source_deployment_identity')
+    if identity is not None:
+        import hashlib as _hl
+        payload=json.dumps(dict(hashes),ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')
+        if (identity.get('schema')!='fakenet.source-deployment-identity.v1' or
+                identity.get('case_id')!=case['id'] or
+                identity.get('source_commit')!=expected_request['candidate']['source_commit'] or
+                identity.get('source_hashes_sha256')!=_hl.sha256(payload).hexdigest()):
+            raise ValueError('candidate source identity differs from the frozen selection M')
     return driver,checks,expected_request
 
 

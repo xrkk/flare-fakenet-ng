@@ -73,6 +73,14 @@ def execute(request,root):
         # an absent key is missing options and dies before output.mkdir or any
         # launch.  Legal requests keep deriving owned_root from their own root.
         native.manual_options({'manual': request.get('manual')})
+    # F2/SD-05: an explicit source-deployment candidate is fully verified from
+    # the request's own closure M BEFORE output.mkdir or any producer launch.
+    if request['candidate'].get('deployment_kind') == 'source':
+        native._source_deployment_identity_from_request(request)
+    elif request['case_id'] == 'GAP-DUMPPACKETS' and \
+            request['candidate'].get('package_sha256') is None:
+        raise ValueError('manual candidate requires a package identity or the '
+                         'explicit source deployment kind (pre-mkdir)')
     if driver.get('production_kind','').startswith('policy-'):
         native.policy_inputs(environment,request['candidate'].get('offline_fixture') is True,driver['production_kind'].split('-',1)[1])
     if driver['production_kind'] in ('process-redirect','payload-three-way'):
