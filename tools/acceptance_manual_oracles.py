@@ -782,8 +782,11 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False, prod
     if not isinstance(expected_inputs,dict) or v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
     if expected_inputs.get('schema')=='fakenet.manual-input.v4':
         # LM-06/07: the List source branch compares the exact five keys.
-        for k in ('candidate_id','source_commit','package_sha256','execution_id','source_deployment_identity'):
-            if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
+        expected_identity = {key: expected_inputs[key] for key in
+                             ('candidate_id', 'source_commit', 'package_sha256',
+                              'execution_id', 'source_deployment_identity')}
+        if v.get('identity') != expected_identity:
+            raise ValueError('identity mismatch: exact v4 five-key object required')
     else:
         for k in ('candidate_id','source_commit','package_sha256','execution_id'):
             if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)

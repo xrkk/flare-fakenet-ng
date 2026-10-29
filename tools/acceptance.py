@@ -1345,16 +1345,16 @@ def _normalize_source_deployment_candidate(candidate, selected, source_hashes, r
         raise InputError('unknown candidate deployment_kind: %r' % kind)
     if any(value is not None for value in package_values):
         raise InputError('source deployment candidates must not carry package fields')
-    # LM-01: the explicit source branch is per-case eligible - exactly one of
-    # the source-identity cases must be the whole selection (mode-selected
-    # shape is enforced by the caller); mixing cases refuses.
+    # LM-01 adds only the single-List branch. Keep the original Dump
+    # plan selection behavior; its identity grants no other case source credit.
     selected_ids = [c['id'] for c in selected]
-    eligible = {'GAP-DUMPPACKETS', 'GAP-LIST-MUTEX'}
-    eligible_selected = [cid for cid in selected_ids if cid in eligible]
-    if len(eligible_selected) != 1 or len(selected_ids) != 1:
-        raise InputError('source deployment candidate requires exactly one '
-                         'eligible case selected (GAP-DUMPPACKETS or GAP-LIST-MUTEX)')
-    case_id = eligible_selected[0]
+    if selected_ids == ['GAP-LIST-MUTEX']:
+        case_id = 'GAP-LIST-MUTEX'
+    elif 'GAP-DUMPPACKETS' in selected_ids:
+        case_id = 'GAP-DUMPPACKETS'
+    else:
+        raise InputError('source deployment candidate requires the GAP-DUMPPACKETS '
+                         'selection or a single GAP-LIST-MUTEX selection')
     source_commit = candidate.get('source_commit')
     if not isinstance(source_commit, str) or len(source_commit) != 40 or             any(c not in '0123456789abcdef' for c in source_commit):
         raise InputError('source deployment candidate requires a 40-hex source_commit')

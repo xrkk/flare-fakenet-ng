@@ -54,6 +54,12 @@ python tools/acceptance.py judge --plan Logs/acceptance/<run>/plan.json --result
 
 纯源码离线组只要求真实 `source_commit`; 原生组才需要实际包/部署身份. 源码、运行及混合集合仍保留当前产品 HEAD 约束. 包执行身份按实际注册分两层: `BUILD-PACKAGE-IDENTITY` 与六个 `MCP-P01-FULL/P02/P03/P04/SPECIAL-IPC/SPECIAL-FAULT-RECOVERY` 形成唯一包层集合, 仅这些已核用例及其依赖组成的包层选择允许 candidate/plan 的 source_commit 保持旧包 manifest 来源, 当前 harness 仍由 source_hashes/native_source_hashes 及原 ZIP/`mcp-input.v2` 验证器固定. ACC019 依赖先展开为 P03/ACC008 再分类; 源码、运行、混合集合及任何未核包/目标仍保留原 HEAD 或拒绝条件. 不写当前 HEAD 冒充包来源, 不改旧包/旧候选/旧计划, 不证明旧包等于当前产品或满足新的构建资格/运行要求. 已有 source/mixed 计划在 execute/judge 时只在冻结路径集合的 Git 对象逐项相同且工作树 pins 完整通过时接受无关 HEAD 漂移, 缺失或变化拒绝; 不新增调用方豁免开关.
 
+### 源码部署的手工用例
+
+已有源码部署的候选可显式声明 `deployment_kind: "source"`, 并将 `package_path`、`package_manifest`、`package_sha256` 保持为 null. `source_commit` 仍是真实候选提交, 目标身份仍须核验. plan 从完整注册源集合自动派生并冻结 `source_deployment_identity`; 不手填源摘要冒充包 SHA, 也不因此获得安装包或完整回归信用.
+
+`GAP-LIST-MUTEX` 的新源码分支只允许 `--mode selected --case GAP-LIST-MUTEX` 单选, 自动生成 `manual-input.v4` 和精确五键输出身份. `GAP-DUMPPACKETS` 保留原源码计划选择行为与 `manual-input.v3`; 它的身份不授予混选中其它用例源码信用. 其它用例、真实包路径及网络 v2 的要求保持不变. 所有源码输入仍经 host/guest 副作用前的实际源字节核验, 独立 judge 从冻结 plan/request 重建期望值.
+
 ### environment.json
 
 ```json

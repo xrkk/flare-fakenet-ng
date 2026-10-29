@@ -88,10 +88,28 @@ class ListSourcePlanTests(unittest.TestCase):
         out = base / 'mixed-plan.json'
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             code = A.main(['--root', str(ROOT), 'plan', '--mode', 'selected',
-                           '--case', 'GAP-LIST-MUTEX', '--case', 'GAP-DUMPPACKETS',
+                           '--case', 'GAP-LIST-MUTEX', '--case', 'GAP-NCSI',
                            '--candidate', str(base / 'c2.json'),
                            '--environment', str(base / 'env.json'), '--output', str(out)])
         self.assertEqual(2, code)
+
+    def test_original_dump_mixed_plan_selection_is_preserved(self):
+        # Plan compatibility does not give NCSI the Dump source identity.
+        work = Path(tempfile.mkdtemp(prefix='fnreg-lm-dump-mixed-', dir='/tmp'))
+        _source_plan(work)
+        output = work / 'run' / 'dump-mixed' / 'plan.json'
+        output.parent.mkdir()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = A.main(['--root', str(ROOT), 'plan', '--mode', 'selected',
+                           '--case', 'GAP-DUMPPACKETS', '--case', 'GAP-NCSI',
+                           '--candidate', str(work / 'candidate.json'),
+                           '--environment', str(work / 'environment.json'),
+                           '--output', str(output)])
+        self.assertEqual(0, code)
+        plan = json.loads(output.read_text())
+        self.assertEqual(['GAP-NCSI', 'GAP-DUMPPACKETS'], plan['required_cases'])
+        self.assertEqual('GAP-DUMPPACKETS',
+                         plan['candidate']['source_deployment_identity']['case_id'])
 
     def test_dump_only_m_selection_refused_for_list_identity(self):
         """The v3-for-List direction: a v4 schema on the Dump case (and vice
@@ -201,6 +219,19 @@ class ListProducerOracleChainTests(unittest.TestCase):
                                          inputs, allow_fixture=False)
         self.assertTrue(clean, detail)
         self.assertEqual(['blacklist', 'whitelist', 'mutex'], [r['id'] for r in rows])
+
+    def test_v4_identity_extra_key_is_refused(self):
+        work = Path(tempfile.mkdtemp(prefix='fnreg-lm-extra-key-', dir='/tmp'))
+        plan = _source_plan(work)
+        inputs = native.manual_inputs(plan, CASE, str(work))
+        M.run('GAP-LIST-MUTEX', work / 'driver', inputs)
+        path = work / 'driver' / 'manual-result.json'
+        value = json.loads(path.read_text())
+        value['identity']['unapproved_extra_field'] = 'must-refuse'
+        path.write_text(json.dumps(value) + '\n')
+        with self.assertRaisesRegex(ValueError, 'identity mismatch'):
+            O.evaluate(ROOT, work / 'driver', 'GAP-LIST-MUTEX', inputs,
+                       allow_fixture=False)
 
     def test_tampered_identity_refused(self):
         work = Path(tempfile.mkdtemp(prefix='fnreg-lm-tamper-', dir='/tmp'))
