@@ -36,7 +36,7 @@ def _evaluate_syslog_icmp(root, original, expected_inputs, allow_fixture=False, 
         for key, name in (('config', 'config/syslog.ini'), ('main_log_on', 'main-on.log'), ('main_log_off', 'main-off.log'), ('icmp_log', 'icmp.log'), ('syslog_sink', 'syslog.sink')):
             require(d.get(key) == guest(name), 'owned original path mismatch: ' + key)
         config = read('config/syslog.ini')
-        require(config == b'[FakeNet]\nDivertTraffic: No\n' and d.get('config_sha256') == hashlib.sha256(config).hexdigest(), 'exact configuration mismatch')
+        require(config == _text_bytes('[FakeNet]\nDivertTraffic: No\n', producer_directory, expected_inputs) and d.get('config_sha256') == hashlib.sha256(config).hexdigest(), 'exact configuration mismatch')
         require(read('packet-icmp.bin') == bytes.fromhex('4500001c0001000040010000c000020ac00002140800000010e10001'), 'ICMP original bytes mismatch')
         require(read('packet-tcp.bin') == bytes.fromhex('450000280001000040060000c000020ac00002149c401f9000000000000000005002200000000000'), 'TCP original bytes mismatch')
         state = json.loads(read('lifecycle.json'))
@@ -56,12 +56,12 @@ def _evaluate_syslog_icmp(root, original, expected_inputs, allow_fixture=False, 
         require(d.get('syslog_sink_sha256') == hashlib.sha256(sink).hexdigest(), 'syslog sink hash mismatch')
         marker = ('"FakeNet-NG": {"loggerName":"FakeNet", "moduleName":"fakenet", "levelName":"INFO", "message":"Will seek stop flag at ' + guest('stop-' + token + '-on') + '"}').encode()
         require(marker in sink and ('stop-' + token + '-off').encode() not in sink, 'original syslog formatter/on-off arrival mismatch')
-        expect = b'ICMP type 8 code 0 192.0.2.10->192.0.2.20\n'
         for phase in ('linux', 'windows', 'nonicmp', 'blocked'):
-            require(read('icmp-' + phase + '.log') == (expect if phase in ('linux', 'windows') else b''), 'ICMP phase bytes mismatch: ' + phase)
+            require(read('icmp-' + phase + '.log') == (_text_bytes('ICMP type 8 code 0 192.0.2.10->192.0.2.20\n', producer_directory, expected_inputs) if phase in ('linux', 'windows') else b''), 'ICMP phase bytes mismatch: ' + phase)
             require(state.get('phases', {}).get(phase, {}).get('closed') is True, 'ICMP handler not closed: ' + phase)
         icmp = read('icmp.log')
-        require(icmp == expect * 2 and d.get('icmp_log_sha256') == hashlib.sha256(icmp).hexdigest(), 'ICMP aggregate bytes mismatch')
+        icmp_line = _text_bytes('ICMP type 8 code 0 192.0.2.10->192.0.2.20\n', producer_directory, expected_inputs)
+        require(icmp == icmp_line * 2 and d.get('icmp_log_sha256') == hashlib.sha256(icmp).hexdigest(), 'ICMP aggregate bytes mismatch')
         require((d.get('icmp_type'), d.get('icmp_code'), d.get('icmp_id')) == (8, 0, 4321), 'ICMP parser fields mismatch')
         require(state.get('records') and all(row.get('process') == pid for row in state['records']), 'original LogRecord owner mismatch')
         require(v.get('source_hashes') == {name: hashlib.sha256((Path(root) / name).read_bytes()).hexdigest() for name in ('fakenet/fakenet.py', 'fakenet/diverters/fnpacket.py', 'fakenet/diverters/diverterbase.py')}, 'source binding mismatch')
@@ -95,7 +95,7 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False, pr
         pid = d.get('owner_pid'); token = d.get('execution_token')
         require(type(pid) is int and pid > 0 and d.get('execution_token') == expected_inputs['execution_id'] and token, 'owner/token mismatch')
         config = read('config/shutdown.ini')
-        require(config == b'[FakeNet]\nDivertTraffic: Yes\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n', 'exact configuration mismatch')
+        require(config == _text_bytes('[FakeNet]\nDivertTraffic: Yes\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n', producer_directory, expected_inputs), 'exact configuration mismatch')
         require(d.get('config') == guest('config/shutdown.ini') and d.get('config_sha256') == hashlib.sha256(config).hexdigest(), 'configuration path/hash mismatch')
         state = json.loads(read('lifecycle.json'))
         require(state.get('pid') == pid and state.get('token') == token, 'lifecycle owner/token mismatch')
@@ -168,7 +168,7 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False, pr
             text = read(mode + '/main.log').decode('utf-8')
             require(('pid=%s ' % pid) in text and ('Loaded configuration file: ' + guest('config/shutdown.ini')) in text and ('Will seek stop flag at ' + guest(mode + '/stop-' + token + '-' + mode + '.flag')) in text and text.count('DEFAULT_INTERCEPTION_READY') == 1 and text.count('FakeNet-NG started successfully') == 1 and 'STOP_PHASE_BEGIN phase=complete' in text and 'STOP_PHASE_END phase=complete' in text and 'FakeNet-NG exiting: rc=0' in text, 'original main/log chain missing: ' + mode)
             unrelated = unrelated_path.read_bytes()
-            require(item.get('unrelated_exists_after') is True and unrelated == ('unrelated-' + token + '-' + mode + '\n').encode(), 'unrelated flag damaged/changed: ' + mode)
+            require(item.get('unrelated_exists_after') is True and unrelated == _text_bytes('unrelated-' + token + '-' + mode + '\n', producer_directory, expected_inputs), 'unrelated flag damaged/changed: ' + mode)
             observations = item.get('observations') or {}
             if mode == 'ipc':
                 require('Stop flag found at ' + guest(mode + '/stop-' + token + '-' + mode + '.flag') in text and 'KeyboardInterrupt' not in text, 'IPC stop flag branch/log mismatch')
@@ -850,6 +850,16 @@ def _owner_root(base, producer_directory):
     resolved path otherwise.  A host alias can never satisfy the frozen
     guest owned_root."""
     return str(producer_directory) if producer_directory is not None else str(base)
+
+
+def _text_bytes(literal, producer_directory, expected_inputs):
+    """Exact bytes a producer write_text produced: Windows targets translate
+    \n to CRLF; the frozen platform is derived from the owned_root path type
+    (Windows drive letter) exactly as the request carried it."""
+    root = producer_directory if producer_directory is not None else expected_inputs.get('owned_root', '')
+    windows = bool(root) and (root[1:2] == ':' or root.startswith('\\\\'))
+    data = literal.encode('utf-8')
+    return data.replace(b'\n', b'\r\n') if windows else data
 
 
 def _guest_renderer(base, producer_directory):

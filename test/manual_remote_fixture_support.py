@@ -7,6 +7,8 @@ only when FN_MANUAL_FAITHFUL_ROOT points at an owned real Windows directory
 remap stand-ins."""
 import copy
 import json
+import logging
+import os
 import shutil
 import sys
 from pathlib import Path, PureWindowsPath
@@ -28,6 +30,103 @@ def faithful_runtime(base_identity, root, python=None):
             'mcp_config_ref': 'existing', 'mcp_server': 'VMMalBox',
             'python': python or sys.executable, 'source_root': str(root),
             'work_root': work, 'transfer': {}}
+
+
+class OwnedSink(logging.Handler):
+    """OS-fixture replacement for the Windows event-log handler: the REAL core
+    still formats and emits every LogRecord; only the external OS sink target
+    becomes the frozen owned syslog.sink file."""
+
+    def __init__(self, target):
+        super().__init__()
+        self.target = Path(target)
+        self._closed = False
+
+    def emit(self, record):
+        if self._closed:
+            raise ValueError('owned sink closed')
+        with self.target.open('a', encoding='utf-8') as stream:
+            stream.write(self.format(record) + '\n')
+
+    def close(self):
+        self._closed = True
+        super().close()
+
+
+def os_fixture_patches(case_id, request, root=None):
+    """Explicit, case-scoped OS-boundary seams for the faithful fixture child:
+    GAP-CTRLC-IPC -> controlled _Backend/_Iface diverter (real core start/wait/
+    stop, watchdog, IPC and CtrlC paths unchanged); GAP-SYSLOG-ICMP-LOG ->
+    NTEventLogHandler constructor replaced by the owned sink handler.  Only OS
+    interfaces are replaced; producers, core business methods, oracles, bytes
+    and judging stay real.  Activated only for fixture runs (fixture=True)."""
+    import types
+    import unittest.mock as mock
+    patches = []
+    if case_id == 'GAP-CTRLC-IPC':
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location('test_ctrlc_backend', Path(__file__).with_name('test_ctrlc_backend.py'))
+        test_ctrlc_backend = _ilu.module_from_spec(_spec); _spec.loader.exec_module(test_ctrlc_backend)
+        patches.append(mock.patch('fakenet.fakenet.IfaceIpInfo', test_ctrlc_backend.IfaceIpInfo))
+        patches.append(mock.patch.dict(sys.modules,
+                                       {'fakenet.diverters.windows': types.SimpleNamespace(Diverter=test_ctrlc_backend.Backend)}))
+        # The core imports Diverter INSIDE start() from
+        # fakenet.diverters.windows, so replacing the module in sys.modules
+        # intercepts the from-import; drop the impossible module-global patch.
+        # Import the diverter module through the SAME product root the guest
+        # entry uses, so the patch targets the module instance actually
+        # executing the core (the central fixture copy and the capsule root
+        # are two distinct package instances).
+        if root is not None and str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        import fakenet.diverters.windows as _win
+        patches.append(mock.patch.object(_win, 'Diverter', test_ctrlc_backend.Backend))
+    elif case_id == 'GAP-SYSLOG-ICMP-LOG':
+        sink = str(PureWindowsPath(request['output_root']) / 'driver' / 'syslog.sink')
+        def factory(*args, **kwargs):
+            return OwnedSink(sink)
+        patches.append(mock.patch('logging.handlers.NTEventLogHandler', side_effect=factory))
+    return patches
+
+
+def write_child_bootstrap(directory):
+    """Owned sitecustomize for the PRODUCER child: the guest entry spawns the
+    producer as a subprocess, so the OS-boundary seams must load in the CHILD
+    interpreter, not the parent.  The bootstrap patches only OS interfaces
+    (Windows diverter class; NT event-log handler) before any producer import;
+    every patch point is recorded for evidence."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / 'sitecustomize.py').write_text(
+        "import os\n"
+        "import sys\n"
+        "import types\n"
+        "import logging.handlers\n"
+        "import importlib.util as ilu\n"
+        "from pathlib import Path\n"
+        "here = Path(__file__).resolve().parent\n"
+        "spec = ilu.spec_from_file_location('fnreg_os_fixture_backend', here / 'os_fixture_backend.py')\n"
+        "backend = ilu.module_from_spec(spec); spec.loader.exec_module(backend)\n"
+        "import fakenet.diverters.windows as _win\n"
+        "_win.Diverter = backend.Backend\n"
+        "import fakenet.fakenet as _core\n"
+        "_core.IfaceIpInfo = backend.IfaceIpInfo\n"
+        "target = os.environ.get('FNREG_OWNED_SINK_TARGET')\n"
+        "if target:\n"
+        "    class _OwnedSink(logging.Handler):\n"
+        "        def __init__(self):\n"
+        "            super().__init__(); self.target = Path(target); self._closed = False\n"
+        "        def emit(self, record):\n"
+        "            if self._closed: raise ValueError('owned sink closed')\n"
+        "            with self.target.open('a', encoding='utf-8') as s: s.write(self.format(record) + '\\n')\n"
+        "        def close(self):\n"
+        "            self._closed = True; super().close()\n"
+        "    logging.handlers.NTEventLogHandler = lambda *a, **k: _OwnedSink()\n"
+        "print('FNREG_OS_FIXTURE_BOOTSTRAP loaded diverter=%r sink=%r' % (backend.Backend.__name__, bool(target)), file=sys.stderr)\n",
+        encoding='utf-8')
+    spec_src = Path(__file__).with_name('test_ctrlc_backend.py').read_text(encoding='utf-8')
+    (directory / 'os_fixture_backend.py').write_text(spec_src, encoding='utf-8')
+    return directory
 
 
 class FaithfulWindowsStandIn:
@@ -61,6 +160,27 @@ class FaithfulWindowsStandIn:
 
     def execute(self, request_path, request_sha, output_root, source_hashes, timeout):
         request = self.pushed['push-request']
+        env = {}
+        if request.get('candidate', {}).get('offline_fixture') is True and request['case_id'] in ('GAP-CTRLC-IPC', 'GAP-SYSLOG-ICMP-LOG'):
+            # The guest entry spawns the producer as a SUBPROCESS: install the
+            # OS-boundary seams via an owned sitecustomize on PYTHONPATH so the
+            # CHILD interpreter loads them before any producer import.
+            bootstrap = write_child_bootstrap(Path(__import__('os').environ['FN_MANUAL_FAITHFUL_ROOT']) / 'child-bootstrap')
+            env['PYTHONPATH'] = str(bootstrap)
+            if request['case_id'] == 'GAP-SYSLOG-ICMP-LOG':
+                env['FNREG_OWNED_SINK_TARGET'] = str(PureWindowsPath(request['output_root']) / 'driver' / 'syslog.sink')
+        saved = {k: os.environ.get(k) for k in env}
+        try:
+            os.environ.update(env)
+            return self._run_guest(request)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def _run_guest(self, request):
         import acceptance_guest as guest
         import acceptance_runtime as rt
         from unittest import mock
