@@ -80,7 +80,9 @@ def execute(request,root):
     output=Path(request['output_root'])
     if not output.is_absolute():raise ValueError('guest output root must be absolute')
     output.mkdir(parents=True,exist_ok=False)
-    plan={'candidate':request['candidate'],'environment':environment,'execution_id':request['execution_id']}
+    plan={'candidate':request['candidate'],'environment':environment,'execution_id':request['execution_id'],
+          # SD-05: keep the VERIFIED request closure M for pure input derivation
+          'source_deployment_closure':dict(request['source_hashes'])}
     receipt=native.run_production(root,matches[0],plan,output,sys.executable)
     result={'schema':'fakenet.native-guest-result.v1','execution_id':request['execution_id'],
             'case_id':request['case_id'],'request':request,'receipt':receipt}
