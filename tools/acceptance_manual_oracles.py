@@ -14,6 +14,7 @@ STATIC=b'static-<RAW-DATE>'
 
 def _evaluate_syslog_icmp(root, original, expected_inputs, allow_fixture=False, producer_directory=None):
     base = Path(original).absolute()
+    guest=_guest_renderer(base, producer_directory)
     errors = []
     def require(ok, reason):
         if not ok:
@@ -33,7 +34,7 @@ def _evaluate_syslog_icmp(root, original, expected_inputs, allow_fixture=False, 
         require(v.get('cleanup') == {'scope': 'owned-handlers-and-logger-state', 'stopped': True, 'system_network_restored': 'not-exercised'}, 'cleanup scope mismatch')
         d = v['syslog_icmp']
         for key, name in (('config', 'config/syslog.ini'), ('main_log_on', 'main-on.log'), ('main_log_off', 'main-off.log'), ('icmp_log', 'icmp.log'), ('syslog_sink', 'syslog.sink')):
-            require(d.get(key) == str(base / name), 'owned original path mismatch: ' + key)
+            require(d.get(key) == guest(name), 'owned original path mismatch: ' + key)
         config = read('config/syslog.ini')
         require(config == b'[FakeNet]\nDivertTraffic: No\n' and d.get('config_sha256') == hashlib.sha256(config).hexdigest(), 'exact configuration mismatch')
         require(read('packet-icmp.bin') == bytes.fromhex('4500001c0001000040010000c000020ac00002140800000010e10001'), 'ICMP original bytes mismatch')
@@ -47,13 +48,13 @@ def _evaluate_syslog_icmp(root, original, expected_inputs, allow_fixture=False, 
         for mode in ('on', 'off'):
             require(d.get('main_rc_' + mode) == 0, 'main exit mismatch')
             messages = read('main-' + mode + '.log').decode('utf-8')
-            require('pid=%s ' % pid in messages and 'Loaded configuration file: ' + str(base / 'config/syslog.ini') in messages and 'FakeNet-NG started successfully' in messages and 'FakeNet-NG exiting: rc=0' in messages and 'stop-' + token + '-' + mode in messages, 'main log original trigger/owner missing')
+            require('pid=%s ' % pid in messages and 'Loaded configuration file: ' + guest('config/syslog.ini') in messages and 'FakeNet-NG started successfully' in messages and 'FakeNet-NG exiting: rc=0' in messages and 'stop-' + token + '-' + mode in messages, 'main log original trigger/owner missing')
             calls = d.get('exits', {}).get(mode, {}).get('calls', [])
             require([item.get('method') for item in calls] == ['parse_config', 'start', 'stop'], 'original main call chain mismatch')
             require(not (base / ('stop-' + token + '-' + mode)).exists(), 'owned stop flag not consumed')
         sink = read('syslog.sink')
         require(d.get('syslog_sink_sha256') == hashlib.sha256(sink).hexdigest(), 'syslog sink hash mismatch')
-        marker = ('"FakeNet-NG": {"loggerName":"FakeNet", "moduleName":"fakenet", "levelName":"INFO", "message":"Will seek stop flag at ' + str(base / ('stop-' + token + '-on')) + '"}').encode()
+        marker = ('"FakeNet-NG": {"loggerName":"FakeNet", "moduleName":"fakenet", "levelName":"INFO", "message":"Will seek stop flag at ' + guest('stop-' + token + '-on') + '"}').encode()
         require(marker in sink and ('stop-' + token + '-off').encode() not in sink, 'original syslog formatter/on-off arrival mismatch')
         expect = b'ICMP type 8 code 0 192.0.2.10->192.0.2.20\n'
         for phase in ('linux', 'windows', 'nonicmp', 'blocked'):
@@ -70,6 +71,7 @@ def _evaluate_syslog_icmp(root, original, expected_inputs, allow_fixture=False, 
 
 def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False, producer_directory=None):
     base = Path(original).resolve()
+    guest=_guest_renderer(base, producer_directory)
     errors = []
     def require(ok, reason):
         if not ok:
@@ -94,7 +96,7 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False, pr
         require(type(pid) is int and pid > 0 and d.get('execution_token') == expected_inputs['execution_id'] and token, 'owner/token mismatch')
         config = read('config/shutdown.ini')
         require(config == b'[FakeNet]\nDivertTraffic: Yes\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n', 'exact configuration mismatch')
-        require(d.get('config') == str(base / 'config/shutdown.ini') and d.get('config_sha256') == hashlib.sha256(config).hexdigest(), 'configuration path/hash mismatch')
+        require(d.get('config') == guest('config/shutdown.ini') and d.get('config_sha256') == hashlib.sha256(config).hexdigest(), 'configuration path/hash mismatch')
         state = json.loads(read('lifecycle.json'))
         require(state.get('pid') == pid and state.get('token') == token, 'lifecycle owner/token mismatch')
         require(state.get('scope') == 'owned-main-ctrlc-file-ipc-and-runtime-state', 'lifecycle scope mismatch')
@@ -110,10 +112,10 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False, pr
             log_path = base / mode / 'main.log'
             flag_path = base / mode / ('stop-' + token + '-' + mode + '.flag')
             unrelated_path = base / mode / 'unrelated.flag'
-            require(item.get('config') == str(base / 'config/shutdown.ini') and item.get('log') == str(log_path) and item.get('flag') == str(flag_path) and item.get('unrelated_flag') == str(unrelated_path), 'branch-owned parameter path mismatch: ' + mode)
+            require(item.get('config') == guest('config/shutdown.ini') and item.get('log') == guest(mode + '/main.log') and item.get('flag') == guest(mode + '/stop-' + token + '-' + mode + '.flag') and item.get('unrelated_flag') == guest(mode + '/unrelated.flag'), 'branch-owned parameter path mismatch: ' + mode)
             require(item.get('config_sha256') == hashlib.sha256(config).hexdigest(), 'branch configuration hash mismatch: ' + mode)
             require(item.get('log_sha256') == hashlib.sha256(read(mode + '/main.log')).hexdigest(), 'branch log hash mismatch: ' + mode)
-            require(item.get('stop_flag_argument') == str(flag_path), 'original -f argument mismatch: ' + mode)
+            require(item.get('stop_flag_argument') == guest(mode + '/stop-' + token + '-' + mode + '.flag'), 'original -f argument mismatch: ' + mode)
             require(item.get('flag_exists_after') is False and not flag_path.exists(), 'owned stop flag remains: ' + mode)
             require(item.get('rc') == 0 and item.get('error') is None, 'original main did not exit cleanly: ' + mode)
             require(item.get('wait_entered') is True and item.get('watcher_fired') is True and item.get('watcher_alive') is False and item.get('watcher_errors') == [], 'wait trigger/thread mismatch: ' + mode)
@@ -164,12 +166,12 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False, pr
             require(item.get('backend_wrappers_restored') is True, 'backend method observations not restored')
             require(runtime.get('listener_count') == 0 and runtime.get('diverter_class') and runtime.get('start_calls') == 1 and runtime.get('stop_calls') == 1 and runtime.get('wait_calls') >= 1 and runtime.get('backend_started') is True and runtime.get('backend_stopped') is True and runtime.get('stop_started') is True and runtime.get('stop_complete') is True and runtime.get('stop_result') is True and runtime.get('stop_error') is None, 'original runtime start/stop state mismatch: ' + mode)
             text = read(mode + '/main.log').decode('utf-8')
-            require(('pid=%s ' % pid) in text and ('Loaded configuration file: ' + str(base / 'config/shutdown.ini')) in text and ('Will seek stop flag at ' + str(flag_path)) in text and text.count('DEFAULT_INTERCEPTION_READY') == 1 and text.count('FakeNet-NG started successfully') == 1 and 'STOP_PHASE_BEGIN phase=complete' in text and 'STOP_PHASE_END phase=complete' in text and 'FakeNet-NG exiting: rc=0' in text, 'original main/log chain missing: ' + mode)
+            require(('pid=%s ' % pid) in text and ('Loaded configuration file: ' + guest('config/shutdown.ini')) in text and ('Will seek stop flag at ' + guest(mode + '/stop-' + token + '-' + mode + '.flag')) in text and text.count('DEFAULT_INTERCEPTION_READY') == 1 and text.count('FakeNet-NG started successfully') == 1 and 'STOP_PHASE_BEGIN phase=complete' in text and 'STOP_PHASE_END phase=complete' in text and 'FakeNet-NG exiting: rc=0' in text, 'original main/log chain missing: ' + mode)
             unrelated = unrelated_path.read_bytes()
             require(item.get('unrelated_exists_after') is True and unrelated == ('unrelated-' + token + '-' + mode + '\n').encode(), 'unrelated flag damaged/changed: ' + mode)
             observations = item.get('observations') or {}
             if mode == 'ipc':
-                require('Stop flag found at ' + str(flag_path) in text and 'KeyboardInterrupt' not in text, 'IPC stop flag branch/log mismatch')
+                require('Stop flag found at ' + guest(mode + '/stop-' + token + '-' + mode + '.flag') in text and 'KeyboardInterrupt' not in text, 'IPC stop flag branch/log mismatch')
                 require(observations.get('expected_existed_before_trigger') is False and observations.get('unrelated_existed_before_trigger') is True and observations.get('stop_calls_before_correct') == 0 and observations.get('stop_started_before_correct') is False and observations.get('unrelated_window_epoch') < observations.get('correct_flag_written_epoch'), 'IPC unrelated/trigger ordering mismatch')
             else:
                 require('KeyboardInterrupt' in text and 'Stop flag found' not in text and observations.get('interrupt_main_epoch'), 'Ctrl-C branch/log mismatch')
@@ -507,6 +509,7 @@ def _evaluate_network_fix(root, original, expected_inputs, allow_fixture=False):
 
 def _evaluate_standalone(root, original, expected_inputs, allow_fixture=False, producer_directory=None):
     base=Path(original).resolve();errors=[]
+    guest=_guest_renderer(base, producer_directory)
     names=('DNSListener','HTTPListener','FTPListener','IRCListener','POPListener','SMTPListener','RawListener','TFTPListener','ProxyListener')
     def require(ok,reason):
         if not ok:raise ValueError(reason)
@@ -524,7 +527,7 @@ def _evaluate_standalone(root, original, expected_inputs, allow_fixture=False, p
         require(not v['fixture'] or allow_fixture,'fixture cannot native credit')
         require(v.get('checks')==[{'id':x} for x in ('listener-bytes','listener-close')],'checks mismatch')
         d=v['standalone'];require(set(d.get('scripts') or {})==set(names),'exact nine-script set differs')
-        require(d.get('log')==str(base/'standalone.log') and d.get('log_sha256')==hashlib.sha256(read('standalone.log')).hexdigest(),'standalone log missing/changed')
+        require(d.get('log')==guest('standalone.log') and d.get('log_sha256')==hashlib.sha256(read('standalone.log')).hexdigest(),'standalone log missing/changed')
         require(type(d.get('owner_pid')) is int and d['owner_pid']>0 and d.get('execution_token')==expected_inputs['execution_id'],'owner/token mismatch')
         owner=json.loads(read('owner.json'))
         require(owner.get('schema')=='fakenet.owner.v1' and owner.get('pid')==d['owner_pid'] and owner.get('execution_token')==d['execution_token'] and d.get('owner_sha256')==hashlib.sha256(read('owner.json')).hexdigest(),'owner original mismatch')
@@ -577,6 +580,7 @@ def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False, 
     import dpkt
     from fakenet.payload_report import load_capture_originals
     base = Path(original).absolute()
+    guest=_guest_renderer(base, producer_directory)
     errors = []
     def require(condition, reason):
         if not condition:
@@ -609,10 +613,11 @@ def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False, 
         for mode, setting in (('enabled', 'Yes'), ('disabled', 'No')):
             item = v['dumppackets'][mode]
             folder = base / mode
+            folder_name = mode
             cfg = base / 'config' / (mode + '.ini')
             prefix = str(folder / 'customcap')
             require(folder.is_dir() and not any(path.is_symlink() for path in (folder, *folder.parents)), 'owned branch path mismatch')
-            require(item.get('folder') == str(folder) and item.get('prefix') == prefix and item.get('config') == str(cfg), 'owned configuration/prefix mismatch')
+            require(item.get('folder') == guest(folder_name) and item.get('prefix') == guest(folder_name + '/customcap') and item.get('config') == guest('config/dumppackets.ini'), 'owned configuration/prefix mismatch')
             require(plain(cfg).read_text() == '[Diverter]\nDumpPackets: ' + setting + '\nDumpPacketsFilePrefix: ' + prefix + '\n', 'exact configuration mismatch')
             require(item.get('config_sha256') == hashlib.sha256(cfg.read_bytes()).hexdigest(), 'configuration hash mismatch')
             parser = configparser.ConfigParser()
@@ -646,13 +651,14 @@ def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False, 
             require(len(loaded.entries) == len(expected), 'observation count mismatch')
             require(set(path.name for path in folder.iterdir()) == {raw.name, converted.name, raw.name + '.observations.ndjson', raw.name + '.nbis.ndjson', raw.name + '.capture-originals.json'}, 'capture original inventory mismatch')
             summary = item.get('summary') or {}
-            require(summary.get('raw_filename') == str(raw) and summary.get('ethernet_filename') == str(converted) and summary.get('raw_write_count') == len(expected) and summary.get('ethernet_write_count') == len(expected) and summary.get('healthy') is True and summary.get('discarded') is False, 'writer summary mismatch')
+            require(summary.get('raw_filename') == guest(folder_name + '/customcap-raw.pcap') and summary.get('ethernet_filename') == guest(folder_name + '/customcap-eth.pcap') and summary.get('raw_write_count') == len(expected) and summary.get('ethernet_write_count') == len(expected) and summary.get('healthy') is True and summary.get('discarded') is False, 'writer summary mismatch')
     except Exception as exc:
         errors.append(type(exc).__name__ + ': ' + str(exc))
     return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in ('enabled', 'disabled', 'prefix', 'content')], not errors, {'failures': errors}
 
 def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False, producer_directory=None):
     base=Path(original).resolve();path=base/'manual-result.json'
+    guest=_guest_renderer(base, producer_directory)
     if path.is_symlink() or not path.is_file():raise ValueError('original missing or linked')
     v=json.loads(path.read_text())
     if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!='GAP-DIVERTER-SWITCH':raise ValueError('case/schema mismatch')
@@ -698,6 +704,7 @@ def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False, prod
     from fakenet.diverters.diverterbase import DiverterBase,DivertParms
     import logging
     base=Path(original).resolve();path=base/'manual-result.json'
+    guest=_guest_renderer(base, producer_directory)
     if path.is_symlink() or not path.is_file():raise ValueError('original missing or linked')
     v=json.loads(path.read_text())
     if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!='GAP-EXECUTECMD':raise ValueError('case/schema mismatch')
@@ -711,20 +718,20 @@ def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False, prod
     data=v.get('executecmd') or {};cfg=base/'config/executecmd.ini';errors=[]
     if not cfg.is_file() or cfg.is_symlink() or data.get('configuration')!='config/executecmd.ini' or data.get('configuration_sha256')!=hashlib.sha256(cfg.read_bytes()).hexdigest():raise ValueError('configuration original missing/changed')
     token=str(expected_inputs['execution_id']);output=base/'command-output.txt'
-    template='cmd.exe /c echo {pid} {procname} {src_addr} {src_port} {dst_addr} {dst_port} '+token+'>>"'+str(output)+'"'
+    template='cmd.exe /c echo {pid} {procname} {src_addr} {src_port} {dst_addr} {dst_port} '+token+'>>"'+guest('command-output.txt')+'"'
     if cfg.read_text()!='[svc]\nProtocol: TCP\nPort: 8080\nExecuteCmd: '+template+'\n[plain]\nProtocol: TCP\nPort: 8090\n':errors.append('frozen configuration differs')
     diverter=DiverterBase.__new__(DiverterBase);diverter.logger=logging.getLogger('oracle-executecmd');diverter.sessions={};diverter.configure({});diverter.listener_ports=__import__('fakenet.diverters.diverterbase',fromlist=['ListenerPorts']).ListenerPorts()
     diverter.parse_listeners_config({'svc':{'protocol':'TCP','port':'8080','executecmd':template}})
     pkt=SimpleNamespace(proto='TCP',sport=40000,dport=8080,src_ip='192.0.2.10',dst_ip='192.0.2.20',src_ip0='192.0.2.10',dst_ip0='192.0.2.20',dport0=8080,_dport0=8080,ipver=4)
     payload='1234 benign.exe 192.0.2.10 40000 192.0.2.20 8080 '+token
-    expected='cmd.exe /c echo '+payload+'>>"'+str(output)+'"'
+    expected='cmd.exe /c echo '+payload+'>>"'+guest('command-output.txt')+'"'
     if diverter.build_cmd(pkt,1234,'benign.exe')!=expected:errors.append('production build_cmd differs')
     parms=DivertParms(diverter,pkt,1234,'benign.exe')
     if parms.first_packet_new_session is not True:errors.append('first session predicate false')
     diverter.addSession(pkt,1234,'benign.exe')
     if DivertParms(diverter,pkt,1234,'benign.exe').first_packet_new_session is not False:errors.append('duplicate session predicate true')
     raw=None
-    if data.get('command_output')!=str(output) or not output.is_file() or output.is_symlink():
+    if data.get('command_output')!=guest('command-output.txt') or not output.is_file() or output.is_symlink():
         errors.append('command output original missing/changed')
     elif output.stat().st_size>4096:errors.append('command output exceeds fixed probe bound')
     else:
@@ -762,6 +769,7 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False, prod
     from fakenet.diverters.diverterbase import ListenerMeta,ListenerPorts,ListenerBlackWhiteList,DiverterBase
     import logging
     base=Path(original).resolve();path=base/'manual-result.json'
+    guest=_guest_renderer(base, producer_directory)
     if path.is_symlink() or not path.is_file():raise ValueError('original missing or linked')
     v=json.loads(path.read_text())
     if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!='GAP-LIST-MUTEX':raise ValueError('case/schema mismatch')
@@ -843,6 +851,18 @@ def _owner_root(base, producer_directory):
     resolved path otherwise.  A host alias can never satisfy the frozen
     guest owned_root."""
     return str(producer_directory) if producer_directory is not None else str(base)
+
+
+def _guest_renderer(base, producer_directory):
+    """Render a case-relative path the way the PRODUCER recorded it: under the
+    frozen GUEST producer root for remote results (Windows join), under the
+    local resolved root otherwise.  Local bounded reads never use this."""
+    if producer_directory is None:
+        return lambda relative: str(base / relative)
+    root = str(producer_directory)
+    def render(relative):
+        return root + '\\' + relative.replace('/', '\\')
+    return render
 
 
 def evaluate(root,original,case,expected_inputs,allow_fixture=False,producer_directory=None):

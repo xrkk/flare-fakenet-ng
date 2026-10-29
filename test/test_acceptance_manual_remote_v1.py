@@ -10,7 +10,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[1]
+import os as _os
+ROOT = Path(_os.environ.get('FN_MANUAL_PRODUCT_ROOT',
+                            str(Path(__file__).resolve().parents[1])))
 sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'test')]
 import test_acceptance_manual_remote as base_mod  # noqa: E402
 from test_acceptance_manual_remote import sha, portable_ignore  # noqa: E402
@@ -63,22 +65,23 @@ class RemoteV1ManualTests(base_mod.RemoteManualTests):
                 self.assertEqual(case_id, value['required_cases'][0])
                 self.assertNotIn(case_id, value['blocked'])
 
-    def test_v1_guest_owned_root_cannot_be_satisfied_by_host_alias(self):
-        # A mutated owned_root that names the HOST copy path instead of the
-        # frozen GUEST producer root must fail the oracle's identity gate even
-        # when every byte/hash layer is re-pinned consistently.
-        plan = self.real_remote_results('GAP-LIST-MUTEX')
+    def test_v1_guest_config_field_cannot_be_satisfied_by_host_alias(self):
+        # Keep the FROZEN inputs untouched and alias only the guest config PATH
+        # FIELD to the host copy: the two-root oracle must refuse the host
+        # alias at the owned-path identity gate (this is the exact defect the
+        # controller's syslog counterexample demonstrated).
+        plan = self.real_remote_results('GAP-SYSLOG-ICMP-LOG')
 
         def alias(target):
             path = target / 'driver' / 'manual-result.json'
             value = json.loads(path.read_text())
-            value['inputs']['owned_root'] = str(target / 'driver')
+            value['syslog_icmp']['config'] = str(target / 'driver' / 'config' / 'syslog.ini')
             path.write_text(json.dumps(value, indent=2) + '\n')
 
-        code, summary = self.rehashed_judge(plan, 'GAP-LIST-MUTEX', alias)
+        code, summary = self.rehashed_judge(plan, 'GAP-SYSLOG-ICMP-LOG', alias)
         self.assertNotEqual(0, code)
         self.assertNotEqual('pass', summary['verdict'])
-        self.assertIn('owned root mismatch', json.dumps(summary))
+        self.assertIn('owned original path mismatch: config', json.dumps(summary))
 
     def test_v1_producer_bytes_negative_rejected(self):
         plan = self.real_remote_results('GAP-EXECUTECMD')
@@ -86,12 +89,17 @@ class RemoteV1ManualTests(base_mod.RemoteManualTests):
         def tamper(target):
             path = target / 'driver' / 'manual-result.json'
             value = json.loads(path.read_text())
-            value['observations'][0]['exit_code'] = 0
+            # Forge the recorded hex of the command output: the oracle hashes
+            # the retained original file itself, so the forged content must be
+            # refused by the real byte-identity predicate.
+            recorded = value['executecmd']['command_output_bytes']
+            value['executecmd']['command_output_bytes'] = ('00' * (len(recorded) // 2 + 1))
             path.write_text(json.dumps(value, indent=2) + '\n')
 
         code, summary = self.rehashed_judge(plan, 'GAP-EXECUTECMD', tamper)
         self.assertNotEqual(0, code)
         self.assertNotEqual('pass', summary['verdict'])
+        self.assertIn('command output', json.dumps(summary))
 
     def test_v1_foreign_execution_identity_rejected(self):
         plan = self.real_remote_results('GAP-STANDALONE-LISTENERS')

@@ -16,7 +16,9 @@ import uuid
 from pathlib import Path, PureWindowsPath
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[1]
+import os as _os
+ROOT = Path(_os.environ.get('FN_MANUAL_PRODUCT_ROOT',
+                            str(Path(__file__).resolve().parents[1])))
 sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'test')]
 import acceptance as A
 import acceptance_guest as guest
