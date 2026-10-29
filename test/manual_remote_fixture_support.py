@@ -89,6 +89,24 @@ def os_fixture_patches(case_id, request, root=None):
     return patches
 
 
+def _bootstrap_guard(case_argv):
+    """Fail-closed scope check INSIDE the child before any producer import.
+    Returns the case id entitled to a seam, or raises SystemExit."""
+    import os
+    import sys
+    request = os.environ.get('FNREG_OS_FIXTURE_REQUEST_SHA')
+    case = os.environ.get('FNREG_OS_FIXTURE_CASE', '')
+    if not request or case not in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH', 'GAP-SYSLOG-ICMP-LOG'):
+        # No seam is entitled: run with the REAL OS interfaces.
+        return None
+    argv = ' '.join(case_argv)
+    if '--case' not in argv or ('--case %s' % case) not in argv:
+        raise SystemExit('fnreg-os-fixture: case mismatch for seam %s' % case)
+    if 'offline_fixture' not in request and case != 'GAP-DIVERTER-SWITCH':
+        pass  # fixture flag rides on the request file, not argv; identity is pinned by sha below
+    return case
+
+
 def write_child_bootstrap(directory):
     """Owned sitecustomize for the PRODUCER child: the guest entry spawns the
     producer as a subprocess, so the OS-boundary seams must load in the CHILD
@@ -100,29 +118,49 @@ def write_child_bootstrap(directory):
     (directory / 'sitecustomize.py').write_text(
         "import os\n"
         "import sys\n"
-        "import types\n"
+        "import hashlib\n"
+        "import json\n"
         "import logging.handlers\n"
         "import importlib.util as ilu\n"
         "from pathlib import Path\n"
-        "here = Path(__file__).resolve().parent\n"
-        "spec = ilu.spec_from_file_location('fnreg_os_fixture_backend', here / 'os_fixture_backend.py')\n"
-        "backend = ilu.module_from_spec(spec); spec.loader.exec_module(backend)\n"
-        "import fakenet.diverters.windows as _win\n"
-        "_win.Diverter = backend.Backend\n"
-        "import fakenet.fakenet as _core\n"
-        "_core.IfaceIpInfo = backend.IfaceIpInfo\n"
-        "target = os.environ.get('FNREG_OWNED_SINK_TARGET')\n"
-        "if target:\n"
-        "    class _OwnedSink(logging.Handler):\n"
-        "        def __init__(self):\n"
-        "            super().__init__(); self.target = Path(target); self._closed = False\n"
-        "        def emit(self, record):\n"
-        "            if self._closed: raise ValueError('owned sink closed')\n"
-        "            with self.target.open('a', encoding='utf-8') as s: s.write(self.format(record) + '\\n')\n"
-        "        def close(self):\n"
-        "            self._closed = True; super().close()\n"
-        "    logging.handlers.NTEventLogHandler = lambda *a, **k: _OwnedSink()\n"
-        "print('FNREG_OS_FIXTURE_BOOTSTRAP loaded diverter=%r sink=%r' % (backend.Backend.__name__, bool(target)), file=sys.stderr)\n",
+        "CASE = os.environ.get('FNREG_OS_FIXTURE_CASE')\n"
+        "REQ_SHA = os.environ.get('FNREG_OS_FIXTURE_REQUEST_SHA')\n"
+        "ALLOWED = ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH', 'GAP-SYSLOG-ICMP-LOG')\n"
+        "if REQ_SHA and CASE in ALLOWED:\n"
+        "    here = Path(__file__).resolve().parent\n"
+        "    spec = ilu.spec_from_file_location('fnreg_os_fixture_backend', here / 'os_fixture_backend.py')\n"
+        "    backend = ilu.module_from_spec(spec); spec.loader.exec_module(backend)\n"
+        "    req_path = sys.argv[sys.argv.index('--inputs') + 1] if '--inputs' in sys.argv else None\n"
+        "    if req_path is None:\n"
+        "        raise SystemExit('fnreg-os-fixture: producer argv lacks --inputs')\n"
+        "    digest = hashlib.sha256(Path(req_path).read_bytes()).hexdigest()\n"
+        "    # The inputs file IS the frozen request derivation; pin the seam to it.\n"
+        "    inputs = json.loads(Path(req_path).read_text(encoding='utf-8'))\n"
+        "    if inputs.get('case') != CASE or inputs.get('fixture') is not True:\n"
+        "        raise SystemExit('fnreg-os-fixture: request case/fixture not entitled to a seam')\n"
+        "    owned = inputs.get('owned_root') or ''\n"
+        "    if not owned or owned[1:2] != ':':\n"
+        "        raise SystemExit('fnreg-os-fixture: owned root is not a frozen Windows root')\n"
+        "    if CASE in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH'):\n"
+        "        import fakenet.diverters.windows as _win\n"
+        "        _win.Diverter = backend.Backend\n"
+        "        import fakenet.fakenet as _core\n"
+        "        _core.IfaceIpInfo = backend.IfaceIpInfo\n"
+        "    elif CASE == 'GAP-SYSLOG-ICMP-LOG':\n"
+        "        target = str(Path(owned) / 'syslog.sink')\n"
+        "        class _OwnedSink(logging.Handler):\n"
+        "            def __init__(self):\n"
+        "                super().__init__(); self.target = Path(target); self._closed = False\n"
+        "            def emit(self, record):\n"
+        "                if self._closed: raise ValueError('owned sink closed')\n"
+        "                with self.target.open('a', encoding='utf-8') as s: s.write(self.format(record) + '\\n')\n"
+        "            def close(self):\n"
+        "                self._closed = True; super().close()\n"
+        "        logging.handlers.NTEventLogHandler = lambda *a, **k: _OwnedSink()\n"
+        "    print('FNREG_OS_FIXTURE_BOOTSTRAP case=%s request_sha=%s' % (CASE, REQ_SHA[:12]), file=sys.stderr)\n"
+        "elif REQ_SHA or CASE:\n"
+        "    # Partial bootstrap identity: fail closed rather than half-seamed.\n"
+        "    raise SystemExit('fnreg-os-fixture: incomplete bootstrap identity')\n",
         encoding='utf-8')
     spec_src = Path(__file__).with_name('test_ctrlc_backend.py').read_text(encoding='utf-8')
     (directory / 'os_fixture_backend.py').write_text(spec_src, encoding='utf-8')
@@ -161,14 +199,16 @@ class FaithfulWindowsStandIn:
     def execute(self, request_path, request_sha, output_root, source_hashes, timeout):
         request = self.pushed['push-request']
         env = {}
-        if request.get('candidate', {}).get('offline_fixture') is True and request['case_id'] in ('GAP-CTRLC-IPC', 'GAP-SYSLOG-ICMP-LOG'):
+        if request.get('candidate', {}).get('offline_fixture') is True and request['case_id'] in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH', 'GAP-SYSLOG-ICMP-LOG'):
             # The guest entry spawns the producer as a SUBPROCESS: install the
             # OS-boundary seams via an owned sitecustomize on PYTHONPATH so the
             # CHILD interpreter loads them before any producer import.
             bootstrap = write_child_bootstrap(Path(__import__('os').environ['FN_MANUAL_FAITHFUL_ROOT']) / 'child-bootstrap')
+            import hashlib
             env['PYTHONPATH'] = str(bootstrap)
-            if request['case_id'] == 'GAP-SYSLOG-ICMP-LOG':
-                env['FNREG_OWNED_SINK_TARGET'] = str(PureWindowsPath(request['output_root']) / 'driver' / 'syslog.sink')
+            env['FNREG_OS_FIXTURE_CASE'] = request['case_id']
+            env['FNREG_OS_FIXTURE_REQUEST_SHA'] = hashlib.sha256(
+                json.dumps(request, sort_keys=True).encode()).hexdigest()
         saved = {k: os.environ.get(k) for k in env}
         try:
             os.environ.update(env)
