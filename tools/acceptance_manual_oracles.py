@@ -780,8 +780,13 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False, prod
     v=json.loads(path.read_text())
     if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!='GAP-LIST-MUTEX':raise ValueError('case/schema mismatch')
     if not isinstance(expected_inputs,dict) or v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
-    for k in ('candidate_id','source_commit','package_sha256','execution_id'):
-        if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
+    if expected_inputs.get('schema')=='fakenet.manual-input.v4':
+        # LM-06/07: the List source branch compares the exact five keys.
+        for k in ('candidate_id','source_commit','package_sha256','execution_id','source_deployment_identity'):
+            if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
+    else:
+        for k in ('candidate_id','source_commit','package_sha256','execution_id'):
+            if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
     if type(v.get('fixture')) is not bool or v['fixture']!=(expected_inputs.get('fixture') is True):raise ValueError('fixture identity missing/changed')
     if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
     if _owner_root(base, producer_directory)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')

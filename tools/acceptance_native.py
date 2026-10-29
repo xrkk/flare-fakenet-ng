@@ -738,8 +738,8 @@ def _source_deployment_identity_from_request(request, root=None, case=None):
     for field in ('package_path','package_manifest','package_sha256'):
         if candidate.get(field) is not None:
             raise ValueError('source candidate carries package field %s'%field)
-    if request['case_id']!='GAP-DUMPPACKETS':
-        raise ValueError('source deployment is fixed to GAP-DUMPPACKETS')
+    if request['case_id'] not in ('GAP-DUMPPACKETS','GAP-LIST-MUTEX'):
+        raise ValueError('source deployment is fixed to GAP-DUMPPACKETS/GAP-LIST-MUTEX')
     commit=candidate.get('source_commit')
     if not isinstance(commit,str) or not _re.fullmatch('[0-9a-f]{40}',commit):
         raise ValueError('source candidate source_commit must be 40 lowercase hex')
@@ -796,7 +796,7 @@ def _manual_input_value(plan,case,options,owned_root,config):
     # SD-06: the Dump-only explicit source branch derives manual-input.v3 with
     # package_sha256 null and the frozen source identity; every other case
     # keeps the original v1 value.
-    if (case['id']=='GAP-DUMPPACKETS' and
+    if (case['id'] in ('GAP-DUMPPACKETS','GAP-LIST-MUTEX') and
             candidate.get('deployment_kind')=='source'):
         closure={}
         native_pins=plan.get('native_source_hashes') or {}
@@ -814,18 +814,19 @@ def _manual_input_value(plan,case,options,owned_root,config):
         payload=json.dumps(dict(closure),ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')
         identity={'schema':'fakenet.source-deployment-identity.v1',
                   'source_commit':candidate['source_commit'],
-                  'case_id':'GAP-DUMPPACKETS',
+                  'case_id':case['id'],
                   'source_hashes_sha256':hashlib.sha256(payload).hexdigest()}
         frozen=candidate.get('source_deployment_identity')
         if frozen is not None and frozen!=identity:
             raise ValueError('plan source deployment identity differs from the closure')
-        return dict(schema='fakenet.manual-input.v3',case=case['id'],candidate_id='manual-candidate',
+        schema='fakenet.manual-input.v3' if case['id']=='GAP-DUMPPACKETS' else 'fakenet.manual-input.v4'
+        return dict(schema=schema,case=case['id'],candidate_id='manual-candidate',
                     source_commit=candidate['source_commit'],package_sha256=None,
                     execution_id=plan['execution_id'],owned_root=owned_root,config=config,
                     responsea=options.get('responsea','192.0.2.55'),
                     fixture=candidate.get('offline_fixture') is True,
                     source_deployment_identity=identity)
-    if case['id']=='GAP-DUMPPACKETS' and candidate.get('package_sha256') is None and \
+    if case['id'] in ('GAP-DUMPPACKETS','GAP-LIST-MUTEX') and candidate.get('package_sha256') is None and \
             candidate.get('deployment_kind')!='source':
         # SD-01: undeclared null-package manual candidate refused before VM work
         raise ValueError('manual candidate requires a package identity or the explicit source deployment kind')

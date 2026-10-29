@@ -1345,16 +1345,23 @@ def _normalize_source_deployment_candidate(candidate, selected, source_hashes, r
         raise InputError('unknown candidate deployment_kind: %r' % kind)
     if any(value is not None for value in package_values):
         raise InputError('source deployment candidates must not carry package fields')
-    dump_cases = [c['id'] for c in selected if c['id'] == 'GAP-DUMPPACKETS']
-    if not dump_cases:
-        raise InputError('source deployment candidate requires the GAP-DUMPPACKETS selection')
+    # LM-01: the explicit source branch is per-case eligible - exactly one of
+    # the source-identity cases must be the whole selection (mode-selected
+    # shape is enforced by the caller); mixing cases refuses.
+    selected_ids = [c['id'] for c in selected]
+    eligible = {'GAP-DUMPPACKETS', 'GAP-LIST-MUTEX'}
+    eligible_selected = [cid for cid in selected_ids if cid in eligible]
+    if len(eligible_selected) != 1 or len(selected_ids) != 1:
+        raise InputError('source deployment candidate requires exactly one '
+                         'eligible case selected (GAP-DUMPPACKETS or GAP-LIST-MUTEX)')
+    case_id = eligible_selected[0]
     source_commit = candidate.get('source_commit')
     if not isinstance(source_commit, str) or len(source_commit) != 40 or             any(c not in '0123456789abcdef' for c in source_commit):
         raise InputError('source deployment candidate requires a 40-hex source_commit')
     native_pins = (acceptance_native.native_source_pins(root)
                    if acceptance_native is not None else {})
-    expected = _source_deployment_identity('GAP-DUMPPACKETS',
-                                           source_hashes['GAP-DUMPPACKETS'], native_pins)
+    expected = _source_deployment_identity(case_id,
+                                           source_hashes[case_id], native_pins)
     expected['source_commit'] = source_commit
     supplied = candidate.get('source_deployment_identity')
     if supplied is not None and supplied != expected:
@@ -1471,8 +1478,10 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
     if candidate.get('deployment_kind') == 'source':
         _native_pins = (acceptance_native.native_source_pins(root)
                         if acceptance_native is not None else {})
+        _case_id = next(cid for cid in [c['id'] for c in selected]
+                        if cid in ('GAP-DUMPPACKETS', 'GAP-LIST-MUTEX'))
         source_deployment_closure = dict(_native_pins)
-        source_deployment_closure.update(source_hashes['GAP-DUMPPACKETS'])
+        source_deployment_closure.update(source_hashes[_case_id])
     else:
         source_deployment_closure = {}
 

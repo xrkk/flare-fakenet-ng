@@ -23,17 +23,17 @@ def _json(p,v):Path(p).write_text(json.dumps(v,indent=2)+'\n',encoding='utf-8')
 
 
 def _result_identity(inputs):
-    """SD-07: identity keys are schema-precise - the Dump v3 source branch
-    carries the five-key form; v1/v2 keep the original four keys."""
-    if inputs.get('schema')=='fakenet.manual-input.v3':
+    """SD-07/LM-06: identity keys are schema-precise - the source branches
+    (Dump v3 / List v4) carry the five-key form; v1/v2 keep four keys."""
+    if inputs.get('schema') in ('fakenet.manual-input.v3','fakenet.manual-input.v4'):
         return {k:inputs[k] for k in (*IDENTITY,'source_deployment_identity')}
     return {k:inputs[k] for k in IDENTITY}
 
-def _validate_source_identity(identity,source_commit):
-    """SD-02: exact shape/typing of the source-deployment identity object."""
+def _validate_source_identity(identity,source_commit,case_id='GAP-DUMPPACKETS'):
+    """SD-02/LM-02: exact shape/typing of the source-deployment identity."""
     if not isinstance(identity,dict) or set(identity)!={'schema','source_commit','case_id','source_hashes_sha256'}:
         raise ValueError('source deployment identity shape invalid')
-    if identity['schema']!='fakenet.source-deployment-identity.v1' or identity['case_id']!='GAP-DUMPPACKETS':
+    if identity['schema']!='fakenet.source-deployment-identity.v1' or identity['case_id']!=case_id:
         raise ValueError('source deployment identity schema/case invalid')
     if identity['source_commit']!=source_commit:
         raise ValueError('source deployment identity commit differs')
@@ -43,18 +43,20 @@ def _validate_source_identity(identity,source_commit):
 
 def validate_inputs(case,inputs):
     if not isinstance(inputs,dict):raise ValueError('manual inputs must be an object')
-    if inputs.get('schema') not in ('fakenet.manual-input.v1','fakenet.manual-input.v2','fakenet.manual-input.v3') or inputs.get('case')!=case:raise ValueError('manual input schema/case mismatch')
+    if inputs.get('schema') not in ('fakenet.manual-input.v1','fakenet.manual-input.v2','fakenet.manual-input.v3','fakenet.manual-input.v4') or inputs.get('case')!=case:raise ValueError('manual input schema/case mismatch')
     for k in (*IDENTITY,'config','owned_root'):
-        if k=='package_sha256' and inputs.get('schema')=='fakenet.manual-input.v3':
+        if k=='package_sha256' and inputs.get('schema') in ('fakenet.manual-input.v3','fakenet.manual-input.v4'):
             if inputs.get(k) is not None:raise ValueError('manual input v3 requires package_sha256 null')
         elif not inputs.get(k):raise ValueError('manual inputs missing: '+k)
     if not re.fullmatch('[0-9a-f]{40}',inputs['source_commit']):raise ValueError('manual content identity invalid')
-    if inputs.get('schema')!='fakenet.manual-input.v3' and not re.fullmatch('[0-9a-f]{64}',inputs['package_sha256']):raise ValueError('manual content identity invalid')
-    if inputs.get('schema')=='fakenet.manual-input.v3':
-        # SD-06: Dump-only explicit source-deployment branch (exact field set).
-        if case!='GAP-DUMPPACKETS':raise ValueError('manual input v3 is fixed to GAP-DUMPPACKETS')
-        if set(inputs)!={'schema','case','candidate_id','source_commit','package_sha256','execution_id','owned_root','config','responsea','fixture','source_deployment_identity'}:raise ValueError('manual input v3 field set differs')
-        _validate_source_identity(inputs.get('source_deployment_identity'),inputs['source_commit'])
+    if inputs.get('schema') not in ('fakenet.manual-input.v3','fakenet.manual-input.v4') and not re.fullmatch('[0-9a-f]{64}',inputs['package_sha256']):raise ValueError('manual content identity invalid')
+    if inputs.get('schema') in ('fakenet.manual-input.v3','fakenet.manual-input.v4'):
+        # SD-06/LM-05: explicit source-deployment branches (exact field set).
+        fixed={'fakenet.manual-input.v3':'GAP-DUMPPACKETS','fakenet.manual-input.v4':'GAP-LIST-MUTEX'}
+        expected_case=fixed[inputs['schema']]
+        if case!=expected_case:raise ValueError('manual input %s is fixed to %s'%(inputs['schema'].rsplit('.',1)[-1],expected_case))
+        if set(inputs)!={'schema','case','candidate_id','source_commit','package_sha256','execution_id','owned_root','config','responsea','fixture','source_deployment_identity'}:raise ValueError('manual input field set differs')
+        _validate_source_identity(inputs.get('source_deployment_identity'),inputs['source_commit'],expected_case)
     if not re.fullmatch('[a-zA-Z0-9-]{4,80}',inputs['execution_id']):raise ValueError('execution_id is invalid')
     for k in ('config','owned_root'):
         if not Path(inputs[k]).is_absolute() or Path(inputs[k]).is_symlink():raise ValueError('manual path must be absolute/no symlink: '+k)
