@@ -53,6 +53,14 @@ class ParentFrozenDigestTests(unittest.TestCase):
                                                                    'platform': 'windows'})
         stand.pushed['push-request'] = json.loads(self.request_file.read_text())
         stand.pushed['push-request-file'] = str(self.request_file)
+        # A benign guest replacement records whether it ever ran.
+        stand._guest_calls = []
+        stand._real_run_guest = stand._run_guest
+
+        def benign_guest(request):
+            stand._guest_calls.append(request)
+            return {'returncode': 0, 'process_exited': True, 'recovered': True}
+        stand._run_guest = benign_guest
         return stand
 
     def test_mutated_after_freeze_refused_before_guest(self):
@@ -67,9 +75,11 @@ class ParentFrozenDigestTests(unittest.TestCase):
         os.environ['FN_MANUAL_FAITHFUL_ROOT'] = self.base_root = str(self.base)
         try:
             with self.assertRaisesRegex(ValueError, 'digest mismatch'):
-                stand._build_child_env()
+                stand.execute(str(self.request_file), self.frozen_sha,
+                             self.output_root, {}, 60)
         finally:
             os.environ.pop('FN_MANUAL_FAITHFUL_ROOT', None)
+        self.assertEqual([], stand._guest_calls)
 
     def test_cached_dict_divergence_refused(self):
         stand = self._stand_in()
@@ -80,10 +90,134 @@ class ParentFrozenDigestTests(unittest.TestCase):
         os.environ['FN_MANUAL_FAITHFUL_ROOT'] = str(self.base)
         try:
             with self.assertRaisesRegex(ValueError, 'cached request differs'):
-                stand._build_child_env()
+                stand.execute(str(self.request_file), None, self.output_root, {}, 60)
         finally:
             os.environ.pop('FN_MANUAL_FAITHFUL_ROOT', None)
+        self.assertEqual([], stand._guest_calls)
 
+
+
+
+class ExecuteEnvRecoveryTests(unittest.TestCase):
+    """The REAL execute() entry: verified request reaches the guest, the
+    child env applies only for the call, and a guest exception still
+    restores every key to its prior value or absence."""
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix='fnreg-r09-exec-', dir='/tmp'))
+        self.bootstrap = support.write_child_bootstrap(self.base / 'boot')
+        self.owned = r'E:\fnreg-r09\runs\exec-1\GAP-SYSLOG-ICMP-LOG\output\driver'
+        self.output_root = r'E:\fnreg-r09\runs\exec-1\GAP-SYSLOG-ICMP-LOG\output'
+        self.request_file = self.base / 'guest-request.json'
+        self.request_value = {
+            'schema': 'fakenet.native-guest-request.v1',
+            'case_id': 'GAP-SYSLOG-ICMP-LOG',
+            'candidate': {'source_commit': 'a' * 40, 'package_sha256': 'b' * 64,
+                          'offline_fixture': True},
+            'execution_id': 'exec-1', 'output_root': self.output_root,
+            'manual': {'schema': 'fakenet.manual-options.v1', 'responsea': '192.0.2.55'}}
+        self.request_file.write_text(json.dumps(self.request_value, indent=2) + '\n')
+        import hashlib
+        self.request_sha = hashlib.sha256(self.request_file.read_bytes()).hexdigest()
+
+    def _stand_in(self):
+        stand = support.FaithfulWindowsStandIn(self.base / 'src', {'hostname': 'fixture-vm',
+                                                                   'platform': 'windows'})
+        stand.pushed['push-request'] = json.loads(self.request_file.read_text())
+        stand.pushed['push-request-file'] = str(self.request_file)
+        stand.guest_seen = []
+        return stand
+
+    def test_execute_positive_applies_and_restores_env(self):
+        import os
+        import subprocess
+        import sys as _sys
+        stand = self._stand_in()
+
+        def guest(request):
+            stand.guest_seen.append(request)
+            # The child REALLY starts under the applied env: the sitecustomize
+            # guard runs in a real interpreter with the pins from execute().
+            child = self.base / 'child_probe.py'
+            child.write_text("print('CHILD_MARKER')\n")
+            env = {k: os.environ[k] for k in ('PYTHONPATH', 'FNREG_OS_FIXTURE_PINS') if k in os.environ}
+            result = subprocess.run([_sys.executable, '-B', str(child)],
+                                    capture_output=True, text=True, env=env, timeout=60)
+            return {'returncode': result.returncode, 'process_exited': True,
+                    'recovered': True, 'child_stdout': result.stdout,
+                    'child_stderr': result.stderr}
+        stand._run_guest = guest
+        os.environ['FN_MANUAL_FAITHFUL_ROOT'] = str(self.base)
+        os.environ.pop('PYTHONPATH', None)
+        os.environ.pop('FNREG_OS_FIXTURE_PINS', None)
+        try:
+            outcome = stand.execute(str(self.request_file), self.request_sha,
+                                    self.output_root, {}, 60)
+        finally:
+            os.environ.pop('FN_MANUAL_FAITHFUL_ROOT', None)
+        # The guest received the VERIFIED request.
+        self.assertEqual(1, len(stand.guest_seen))
+        self.assertEqual(self.request_value, stand.guest_seen[0])
+        # The real child refused (its inputs file does not exist in the test
+        # layout) — fail-closed with the specific refusal, never a business run.
+        self.assertNotIn('CHILD_MARKER', outcome['child_stdout'])
+        self.assertIn('FNREG_OS_FIXTURE_REFUSED', outcome['child_stderr'])
+        # Env restored immediately after the call.
+        self.assertNotIn('PYTHONPATH', os.environ)
+        self.assertNotIn('FNREG_OS_FIXTURE_PINS', os.environ)
+
+    def test_execute_guest_exception_still_restores_env(self):
+        import os
+        stand = self._stand_in()
+
+        def broken_guest(request):
+            raise RuntimeError('controlled guest failure')
+        stand._run_guest = broken_guest
+        os.environ['FN_MANUAL_FAITHFUL_ROOT'] = str(self.base)
+        os.environ['PYTHONPATH'] = 'pre-existing-value'
+        prior_pins = 'prior-pins'
+        os.environ['FNREG_OS_FIXTURE_PINS'] = prior_pins
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'controlled guest failure'):
+                stand.execute(str(self.request_file), self.request_sha,
+                              self.output_root, {}, 60)
+            # Both keys restored to their PRE-EXISTING values (not absent).
+            self.assertEqual('pre-existing-value', os.environ.get('PYTHONPATH'))
+            self.assertEqual(prior_pins, os.environ.get('FNREG_OS_FIXTURE_PINS'))
+        finally:
+            os.environ.pop('FN_MANUAL_FAITHFUL_ROOT', None)
+            os.environ.pop('PYTHONPATH', None)
+            os.environ.pop('FNREG_OS_FIXTURE_PINS', None)
+
+    def test_inputs_json_list_refused_without_marker(self):
+        # The controller's inputs-JSON-[] counterexample through the real
+        # child: derived inputs parse as a LIST, previously AttributeError
+        # warned and the marker ran; now the whole-init boundary refuses.
+        import hashlib
+        import os
+        import subprocess
+        import sys as _sys
+        request = self.base / 'req-list.json'
+        request.write_text(json.dumps(self.request_value, indent=2) + '\n')
+        inputs = self.base / 'inputs.json'
+        inputs.write_text('[]')
+        child = self.base / 'probe.py'
+        child.write_text("print('BUSINESS_MARKER list')\n")
+        env = dict(os.environ)
+        env['PYTHONPATH'] = str(self.bootstrap)
+        env['FNREG_OS_FIXTURE_PINS'] = json.dumps({
+            'case': 'GAP-SYSLOG-ICMP-LOG', 'fixture': True,
+            'request_file_sha256': hashlib.sha256(request.read_bytes()).hexdigest(),
+            'request_file': str(request),
+            'expected_inputs': {'case': 'GAP-SYSLOG-ICMP-LOG'},
+            'output_root': self.output_root, 'owned_root': self.owned,
+            'faithful_root': 'E:/fnreg-r09', 'helper_sha256': hashlib.sha256(
+                (self.bootstrap / 'os_fixture_backend.py').read_bytes()).hexdigest()})
+        result = subprocess.run([_sys.executable, '-B', str(child), '--inputs', str(inputs)],
+                                capture_output=True, text=True, env=env, timeout=60)
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn('BUSINESS_MARKER', result.stdout)
+        self.assertIn('derived inputs must be a JSON object', result.stderr)
 
 class ParsePhaseFatalTests(unittest.TestCase):
     """The three controller parse-phase counterexamples must be FATAL."""

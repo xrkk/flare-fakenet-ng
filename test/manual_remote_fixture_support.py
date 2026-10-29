@@ -105,105 +105,86 @@ def write_child_bootstrap(directory):
         "import traceback\n"
         "from pathlib import Path, PureWindowsPath\n"
         "ALLOWED = ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH', 'GAP-SYSLOG-ICMP-LOG')\n"
-        "# This sitecustomize runs only for parent-authorized fixture children.\n"
-        "# Any missing/invalid identity is a FATAL startup error: SystemExit in\n"
-        "# sitecustomize terminates the interpreter (unlike Exception, which\n"
-        "# Python only warns about and continues), so the producer NEVER runs\n"
-        "# and no real OS interface is reached.\n"
+        "\n"
         "def _die(reason):\n"
         "    sys.stderr.write('FNREG_OS_FIXTURE_REFUSED: %s\\n' % reason)\n"
         "    raise SystemExit(78)\n"
-        "pins_raw = os.environ.get('FNREG_OS_FIXTURE_PINS')\n"
-        "if not pins_raw:\n"
-        "    _die('no pinned spec: this sitecustomize is only for authorized fixture children')\n"
-        "try:\n"
-        "    pins = json.loads(pins_raw)\n"
-        "except Exception:\n"
-        "    _die('pinned spec is not valid JSON')\n"
-        "if not isinstance(pins, dict):\n"
-        "    _die('pinned spec must be a JSON object, got %s' % type(pins).__name__)\n"
-        "required = ('case', 'fixture', 'request_file_sha256', 'request_file', 'expected_inputs',\n"
-        "            'output_root', 'owned_root', 'faithful_root', 'helper_sha256')\n"
-        "if any(key not in pins or not pins[key] for key in required):\n"
-        "    _die('pinned spec missing fields: %s' % ','.join(k for k in required if not pins.get(k)))\n"
-        "if not isinstance(pins.get('expected_inputs'), dict):\n"
-        "    _die('expected_inputs must be an object, got %s' % type(pins.get('expected_inputs')).__name__)\n"
-        "# SAME-OBJECT outer-request binding: hash the actual frozen request\n"
-        "# FILE bytes the parent pushed; identical algorithm on both ends.\n"
-        "try:\n"
-        "    request_bytes = Path(pins['request_file']).read_bytes()\n"
-        "except OSError:\n"
-        "    _die('frozen outer request file unreadable: %s' % pins['request_file'])\n"
-        "if hashlib.sha256(request_bytes).hexdigest() != pins['request_file_sha256']:\n"
-        "    _die('outer request bytes differ from the pinned request digest')\n"
-        "if pins['case'] not in ALLOWED:\n"
-        "    _die('case not seam-entitled: %s' % pins['case'])\n"
-        "if pins['fixture'] is not True:\n"
-        "    _die('pinned spec does not carry fixture=true')\n"
-        "# The producer child's argv names its derived inputs file.\n"
-        "if '--inputs' not in sys.argv or sys.argv.index('--inputs') + 1 >= len(sys.argv):\n"
-        "    _die('producer argv lacks a readable --inputs value')\n"
-        "inputs_path = Path(sys.argv[sys.argv.index('--inputs') + 1])\n"
-        "try:\n"
-        "    inputs_bytes = inputs_path.read_bytes()\n"
-        "except OSError:\n"
-        "    _die('derived inputs file unreadable: %s' % inputs_path)\n"
-        "try:\n"
-        "    inputs = json.loads(inputs_bytes.decode('utf-8'))\n"
-        "except Exception:\n"
-        "    _die('derived inputs are not valid JSON')\n"
-        "if inputs.get('case') != pins['case']:\n"
-        "    _die('inputs case %r does not match pinned case %r' % (inputs.get('case'), pins['case']))\n"
-        "if inputs.get('fixture') is not True:\n"
-        "    _die('inputs do not carry fixture=true')\n"
-        "owned = inputs.get('owned_root') or ''\n"
-        "if owned != pins['owned_root']:\n"
-        "    _die('inputs owned_root %r does not match the pinned request root %r' % (owned, pins['owned_root']))\n"
-        "root = PureWindowsPath(owned)\n"
-        "if not root.is_absolute() or root.drive.upper() not in ('E:', 'D:'):\n"
-        "    _die('owned root is not a frozen E:/D: producer root: %s' % owned)\n"
-        "# Path relations: owned == output_root/driver; output_root under the\n"
-        "# faithful parent root; the inputs file lives inside the owned root.\n"
-        "if owned != pins['owned_root']:\n"
-        "    _die('owned root differs from the pinned request derivation')\n"
-        "out_root = PureWindowsPath(pins['output_root'])\n"
-        "root_parts = PureWindowsPath(pins['faithful_root']).parts\n"
-        "if list(out_root.parts)[:len(root_parts)] != list(root_parts):\n"
-        "    _die('output root is not under the frozen faithful parent root: %s' % pins['output_root'])\n"
-        "# Path RELATION among pinned values (the physical file location is\n"
-        "# platform-dependent in tests; the real chain's identity binding is\n"
-        "# the owned_root/output_root equality already verified above).\n"
-        "if pins['owned_root'] != pins['output_root'].rstrip('\\\\') + '\\\\driver':\n"
-        "    _die('pinned owned root is not the output root driver derivation')\n"
-        "# Derived-inputs FULL identity: the parent's expectation is derived\n"
-        "# from the frozen request (never from the file under test); every\n"
-        "# identity field must match exactly.\n"
-        "expected = pins['expected_inputs']\n"
-        "for field in ('schema', 'case', 'fixture', 'owned_root', 'config', 'candidate_id',\n"
-        "              'source_commit', 'package_sha256', 'execution_id', 'responsea'):\n"
-        "    if inputs.get(field) != expected.get(field):\n"
-        "        _die('derived inputs field %s differs from the frozen request derivation: %r != %r'\n"
-        "             % (field, inputs.get(field), expected.get(field)))\n"
-        "# The helper bytes are pinned by the parent from what it wrote; the\n"
-        "# child re-reads the SAME file and compares against the pin (never\n"
-        "# re-deriving the expectation from the file under test).\n"
-        "helper_path = Path(__file__).resolve().parent / 'os_fixture_backend.py'\n"
-        "try:\n"
-        "    helper_bytes = helper_path.read_bytes()\n"
-        "except OSError:\n"
-        "    _die('os_fixture_backend helper missing: %s' % helper_path)\n"
-        "if hashlib.sha256(helper_bytes).hexdigest() != pins['helper_sha256']:\n"
-        "    _die('helper bytes differ from the pinned spec')\n"
-        "# Whole-initialization fail-closed: every remaining stage (helper\n"
-        "# exec, case-module imports, patch install, success marker) runs under\n"
-        "# one top-level try; ANY failure is fatal — sitecustomize's warn-and-\n"
-        "# continue behavior can never leak the child into the producer.\n"
-        "def _install():\n"
+        "\n"
+        "def _initialize():\n"
+        "    pins_raw = os.environ.get('FNREG_OS_FIXTURE_PINS')\n"
+        "    if not pins_raw:\n"
+        "        _die('no pinned spec: this sitecustomize is only for authorized fixture children')\n"
+        "    try:\n"
+        "        pins = json.loads(pins_raw)\n"
+        "    except Exception:\n"
+        "        _die('pinned spec is not valid JSON')\n"
+        "    if not isinstance(pins, dict):\n"
+        "        _die('pinned spec must be a JSON object, got %s' % type(pins).__name__)\n"
+        "    required = ('case', 'fixture', 'request_file_sha256', 'request_file',\n"
+        "                'expected_inputs', 'output_root', 'owned_root',\n"
+        "                'faithful_root', 'helper_sha256')\n"
+        "    if any(key not in pins or pins[key] in (None, '') for key in required):\n"
+        "        _die('pinned spec missing fields: %s' % ','.join(k for k in required if not pins.get(k)))\n"
+        "    if not isinstance(pins['expected_inputs'], dict):\n"
+        "        _die('expected_inputs must be an object, got %s' % type(pins['expected_inputs']).__name__)\n"
+        "    if pins['case'] not in ALLOWED:\n"
+        "        _die('case not seam-entitled: %s' % pins['case'])\n"
+        "    if pins['fixture'] is not True:\n"
+        "        _die('pinned spec does not carry fixture=true')\n"
+        "    try:\n"
+        "        request_bytes = Path(pins['request_file']).read_bytes()\n"
+        "    except OSError:\n"
+        "        _die('frozen outer request file unreadable: %s' % pins['request_file'])\n"
+        "    if hashlib.sha256(request_bytes).hexdigest() != pins['request_file_sha256']:\n"
+        "        _die('outer request bytes differ from the pinned request digest')\n"
+        "    if '--inputs' not in sys.argv or sys.argv.index('--inputs') + 1 >= len(sys.argv):\n"
+        "        _die('producer argv lacks a readable --inputs value')\n"
+        "    inputs_path = Path(sys.argv[sys.argv.index('--inputs') + 1])\n"
+        "    try:\n"
+        "        inputs_bytes = inputs_path.read_bytes()\n"
+        "    except OSError:\n"
+        "        _die('derived inputs file unreadable: %s' % inputs_path)\n"
+        "    try:\n"
+        "        inputs = json.loads(inputs_bytes.decode('utf-8'))\n"
+        "    except Exception:\n"
+        "        _die('derived inputs are not valid JSON')\n"
+        "    if not isinstance(inputs, dict):\n"
+        "        _die('derived inputs must be a JSON object, got %s' % type(inputs).__name__)\n"
+        "    if inputs.get('case') != pins['case']:\n"
+        "        _die('inputs case %r does not match pinned case %r' % (inputs.get('case'), pins['case']))\n"
+        "    if inputs.get('fixture') is not True:\n"
+        "        _die('inputs do not carry fixture=true')\n"
+        "    owned = inputs.get('owned_root') or ''\n"
+        "    if owned != pins['owned_root']:\n"
+        "        _die('inputs owned_root %r does not match the pinned request root %r' % (owned, pins['owned_root']))\n"
+        "    root = PureWindowsPath(owned)\n"
+        "    if not root.is_absolute() or root.drive.upper() not in ('E:', 'D:'):\n"
+        "        _die('owned root is not a frozen E:/D: producer root: %s' % owned)\n"
+        "    if pins['owned_root'] != pins['output_root'].rstrip('\\\\') + '\\\\driver':\n"
+        "        _die('pinned owned root is not the output root driver derivation')\n"
+        "    out_root = PureWindowsPath(pins['output_root'])\n"
+        "    root_parts = PureWindowsPath(pins['faithful_root']).parts\n"
+        "    if list(out_root.parts)[:len(root_parts)] != list(root_parts):\n"
+        "        _die('output root is not under the frozen faithful parent root: %s' % pins['output_root'])\n"
+        "    expected = pins['expected_inputs']\n"
+        "    for field in ('schema', 'case', 'fixture', 'owned_root', 'config',\n"
+        "                  'candidate_id', 'source_commit', 'package_sha256',\n"
+        "                  'execution_id', 'responsea'):\n"
+        "        if inputs.get(field) != expected.get(field):\n"
+        "            _die('derived inputs field %s differs from the frozen request derivation: %r != %r'\n"
+        "                 % (field, inputs.get(field), expected.get(field)))\n"
+        "    helper_path = Path(__file__).resolve().parent / 'os_fixture_backend.py'\n"
+        "    try:\n"
+        "        helper_bytes = helper_path.read_bytes()\n"
+        "    except OSError:\n"
+        "        _die('os_fixture_backend helper missing: %s' % helper_path)\n"
+        "    if hashlib.sha256(helper_bytes).hexdigest() != pins['helper_sha256']:\n"
+        "        _die('helper bytes differ from the pinned spec')\n"
         "    import importlib.util as ilu\n"
+        "    import logging.handlers\n"
         "    spec = ilu.spec_from_file_location('fnreg_os_fixture_backend', helper_path)\n"
         "    backend = ilu.module_from_spec(spec)\n"
         "    spec.loader.exec_module(backend)\n"
-        "    import logging.handlers\n"
         "    if pins['case'] in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH'):\n"
         "        import fakenet.diverters.windows as _win\n"
         "        _win.Diverter = backend.Backend\n"
@@ -220,8 +201,10 @@ def write_child_bootstrap(directory):
         "            def close(self):\n"
         "                self._closed = True; super().close()\n"
         "        logging.handlers.NTEventLogHandler = lambda *a, **k: _OwnedSink()\n"
+        "    return owned, pins\n"
+        "\n"
         "try:\n"
-        "    _install()\n"
+        "    owned, pins = _initialize()\n"
         "except SystemExit:\n"
         "    raise\n"
         "except BaseException as error:\n"
@@ -269,10 +252,21 @@ class FaithfulWindowsStandIn:
     def execute(self, request_path, request_sha, output_root, source_hashes, timeout):
         # The caller's frozen digest pins the request this channel may run;
         # _build_child_env verifies the on-disk bytes against it (and the
-        # cached dict against the verified bytes) BEFORE any guest call.
+        # cached dict against the verified bytes) BEFORE any guest call. The
+        # child env applies ONLY for the duration of the guest call and is
+        # restored immediately on return AND on any exception.
         self.frozen_request_sha = request_sha
-        self._build_child_env()
-        return self._run_guest()
+        env = self._build_child_env()
+        saved = {key: os.environ.get(key) for key in env}
+        try:
+            os.environ.update(env)
+            return self._run_guest(self.pushed['push-request'])
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def _build_child_env(self):
         """Verify the frozen request and build/apply the child env; raises
@@ -292,19 +286,15 @@ class FaithfulWindowsStandIn:
             bootstrap_dir = Path(os.environ['FN_MANUAL_FAITHFUL_ROOT']) / 'child-bootstrap'
             bootstrap = write_child_bootstrap(bootstrap_dir)
             env['PYTHONPATH'] = str(bootstrap)
-            expected_inputs = dict(request.get('manual') or {})
-            expected_inputs.update({
-                'schema': 'fakenet.manual-input.v1',
-                'case': request['case_id'],
-                'fixture': True,
-                'owned_root': request['output_root'].rstrip('\\') + '\\driver',
-                'config': request['output_root'].rstrip('\\') + '\\driver\\config',
-                'candidate_id': 'manual-candidate',
-                'source_commit': request['candidate']['source_commit'],
-                'package_sha256': request['candidate']['package_sha256'],
-                'execution_id': request['execution_id'],
-            })
-            expected_inputs.setdefault('responsea', '192.0.2.55')
+            # Derive through the REAL single-value builder the product uses
+            # (native._manual_input_value) — never a hand-copied field list.
+            import acceptance_native as native
+            directory = PureWindowsPath(request['output_root']) / 'driver'
+            expected_inputs = native._manual_input_value(
+                {'candidate': request['candidate'], 'execution_id': request['execution_id']},
+                {'id': request['case_id']},
+                dict(request.get('manual') or {}),
+                str(directory), str(directory / 'config'))
             env['FNREG_OS_FIXTURE_PINS'] = json.dumps({
                 'case': request['case_id'],
                 'fixture': True,
@@ -316,12 +306,7 @@ class FaithfulWindowsStandIn:
                 'faithful_root': Path(os.environ['FN_MANUAL_FAITHFUL_ROOT']).resolve().as_posix().rstrip('/'),
                 'helper_sha256': hashlib.sha256((bootstrap_dir / 'os_fixture_backend.py').read_bytes()).hexdigest(),
             })
-        saved = {k: os.environ.get(k) for k in env}
-        os.environ.update(env)
-        import atexit
-        atexit.register(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
-                                 for k, v in saved.items()])
-        return env
+        return env  # applied and restored by execute() around the guest call
 
     def _run_guest(self, request):
         import acceptance_guest as guest
