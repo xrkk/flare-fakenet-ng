@@ -128,7 +128,11 @@ class ExecuteEnvRecoveryTests(unittest.TestCase):
         stand.guest_seen = []
         return stand
 
-    def test_execute_positive_applies_and_restores_env(self):
+    def test_execute_child_without_inputs_argv_refused_and_env_restored(self):
+        # A NEGATIVE, accurately named: the real chain runs, but the launched
+        # child has no --inputs argv, so the bootstrap refuses it.  The absent
+        # marker is a REFUSAL, never a positive; real bootstrap success is
+        # covered by test_execute_real_chain_bootstrap_success_and_env_restored.
         import os
         import subprocess
         import sys as _sys
@@ -158,13 +162,130 @@ class ExecuteEnvRecoveryTests(unittest.TestCase):
         # The guest received the VERIFIED request.
         self.assertEqual(1, len(stand.guest_seen))
         self.assertEqual(self.request_value, stand.guest_seen[0])
-        # The real child refused (its inputs file does not exist in the test
-        # layout) — fail-closed with the specific refusal, never a business run.
+        # The real child refused (its argv carries no --inputs value) —
+        # fail-closed with the specific refusal, never a business run.
         self.assertNotIn('CHILD_MARKER', outcome['child_stdout'])
         self.assertIn('FNREG_OS_FIXTURE_REFUSED', outcome['child_stderr'])
+        self.assertIn('readable --inputs value', outcome['child_stderr'])
         # Env restored immediately after the call.
         self.assertNotIn('PYTHONPATH', os.environ)
         self.assertNotIn('FNREG_OS_FIXTURE_PINS', os.environ)
+
+    def test_execute_real_chain_bootstrap_success_and_env_restored(self):
+        """The controller's seq56 windows-positive-probe, persisted as the
+        real regression: REAL transfer() -> execute() -> _run_guest(); ONLY
+        the acceptance_guest.execute business boundary is a benign function
+        that receives the VERIFIED request/source, derives legal inputs via
+        the original builder, and launches a REAL interpreter child whose
+        bootstrap must load (BOOTSTRAP line), whose business marker must run,
+        and which sees only the owned sink seam.  The child env applies for
+        the call only and is restored immediately on return and on a guest
+        exception (prior-absent and prior-value)."""
+        faithful = os.environ.get('FN_MANUAL_FAITHFUL_ROOT')
+        if sys.platform != 'win32' or not faithful:
+            self.skipTest('real bootstrap success needs the Windows interpreter '
+                          'and a real frozen E:/D: faithful root '
+                          '(FN_MANUAL_FAITHFUL_ROOT); a POSIX host child '
+                          'legitimately refuses the synthetic faithful root')
+        import hashlib
+        import subprocess
+        from pathlib import PureWindowsPath
+        from unittest import mock
+        import acceptance_guest as guest
+        import acceptance_native as native
+        output = Path(faithful) / 'runs' / 'glm-pos-exec' / 'GAP-SYSLOG-ICMP-LOG' / 'output'
+        output.mkdir(parents=True, exist_ok=True)
+        request_value = {
+            'schema': 'fakenet.native-guest-request.v1',
+            'case_id': 'GAP-SYSLOG-ICMP-LOG', 'case': {'id': 'GAP-SYSLOG-ICMP-LOG'},
+            'candidate': {'source_commit': 'a' * 40, 'package_sha256': 'b' * 64,
+                          'offline_fixture': True},
+            'execution_id': 'glm-pos-exec',
+            'checks': ['syslog', 'icmp', 'owner'], 'actions': ['native'],
+            'output_root': str(output),
+            'manual': {'schema': 'fakenet.manual-options.v1', 'responsea': '192.0.2.55'}}
+        request_file = output.parent / 'guest-request.json'
+        request_file.write_text(json.dumps(request_value, indent=2) + '\n',
+                                encoding='utf-8')
+        request_sha = hashlib.sha256(request_file.read_bytes()).hexdigest()
+        stand = support.FaithfulWindowsStandIn(ROOT, {'hostname': 'fixture-vm',
+                                                      'platform': 'windows'})
+        # REAL transport: transfer() reads the pushed bytes and records the file.
+        stand.transfer('push-request', 'push',
+                       [{'absolute_path': str(request_file)}], str(faithful),
+                       producer_reference={})
+        children = []
+
+        def benign_guest(actual_request, actual_source):
+            # The guest received the VERIFIED request and the REAL source root.
+            assert actual_request == request_value, 'guest request differs from frozen'
+            assert actual_source == Path(ROOT), 'guest source root differs'
+            directory = PureWindowsPath(actual_request['output_root']) / 'driver'
+            Path(str(directory)).mkdir(parents=True, exist_ok=True)
+            inputs = native._manual_input_value(
+                {'candidate': actual_request['candidate'],
+                 'execution_id': actual_request['execution_id']},
+                {'id': actual_request['case_id']},
+                dict(actual_request.get('manual') or {}),
+                str(directory), str(directory / 'config'))
+            inputs_file = output / 'manual-inputs.json'
+            inputs_file.write_text(json.dumps(inputs, indent=2) + '\n',
+                                   encoding='utf-8')
+            child = output / 'marker.py'
+            child.write_text(
+                "import logging.handlers\n"
+                "handler = logging.handlers.NTEventLogHandler('benign-positive-probe')\n"
+                "assert type(handler).__name__ == '_OwnedSink', type(handler).__name__\n"
+                "print('BUSINESS_MARKER owned_sink_only')\n", encoding='utf-8')
+            # The child INHERITS the env execute() applied (pins are on
+            # os.environ for the duration of the guest call).
+            result = subprocess.run([sys.executable, '-B', str(child),
+                                     '--case', actual_request['case_id'],
+                                     '--inputs', str(inputs_file)],
+                                    capture_output=True, text=True, timeout=40)
+            children.append(dict(returncode=result.returncode, stdout=result.stdout,
+                                 stderr=result.stderr))
+            assert result.returncode == 0, result.stderr
+            assert 'BUSINESS_MARKER owned_sink_only' in result.stdout
+            assert ('FNREG_OS_FIXTURE_BOOTSTRAP case=%s'
+                    % actual_request['case_id']) in result.stderr
+            return 0
+
+        keys = ('PYTHONPATH', 'FNREG_OS_FIXTURE_PINS')
+        initial = {key: os.environ.get(key) for key in keys}
+        try:
+            for key in keys:
+                os.environ.pop(key, None)
+            with mock.patch.object(guest, 'execute', side_effect=benign_guest):
+                outcome = stand.execute(str(request_file), request_sha,
+                                        str(output), {}, 60)
+            self.assertEqual({'returncode': 0, 'process_exited': True,
+                              'recovered': True}, outcome)
+            # Env restored immediately on the success return.
+            self.assertTrue(all(key not in os.environ for key in keys))
+            for prior in (None, 'pre-existing-controlled-value'):
+                for key in keys:
+                    if prior is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = prior
+                before = {key: os.environ.get(key) for key in keys}
+                with mock.patch.object(guest, 'execute',
+                                       side_effect=RuntimeError(
+                                           'controlled-guest-failure')):
+                    with self.assertRaisesRegex(RuntimeError,
+                                                'controlled-guest-failure'):
+                        stand.execute(str(request_file), request_sha,
+                                      str(output), {}, 60)
+                # Restored to the PRE-EXISTING value or absence, immediately.
+                self.assertEqual(before, {key: os.environ.get(key) for key in keys})
+        finally:
+            for key, value in initial.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        self.assertEqual(1, len(children))
 
     def test_execute_guest_exception_still_restores_env(self):
         import os
