@@ -106,9 +106,20 @@ def main(argv=None):
         if (code==0 and request.get('case_id')=='GAP-DUMPPACKETS' and
                 request.get('target',{}).get('platform')=='windows'):
             import acceptance_native as native
-            closure=native.finalize_dump_evidence(
-                Path(__file__).resolve().parents[1],request,args.request_sha256,
-                str(output))
+            import traceback
+            try:
+                closure=native.finalize_dump_evidence(
+                    Path(__file__).resolve().parents[1],request,args.request_sha256,
+                    str(output))
+            except BaseException as finalize_error:
+                # Preserve the source-finalization failure verbatim for the
+                # host (the PowerShell stderr path truncates tracebacks);
+                # re-raise so the nonzero exit stands - never a fake closure.
+                (output/'finalize-error.json').write_text(
+                    json.dumps({'error_type': type(finalize_error).__name__,
+                                'traceback': traceback.format_exc()},
+                               ensure_ascii=False), encoding='utf-8')
+                raise
             print(json.dumps(closure,ensure_ascii=False,sort_keys=True,
                              separators=(',',':')),flush=True)
         return code
