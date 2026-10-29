@@ -119,11 +119,12 @@ class BootstrapBindingGuardTests(unittest.TestCase):
         self.assert_refused(result, 'changed-execution-only')
         self.assertIn('field execution_id differs', result.stderr)
 
-    def test_install_stage_exception_is_fatal(self):
-        # The controller's ctrlc-install-exception counterexample: a failure
-        # during the case-module import/patch stage (winreg absent on POSIX)
-        # previously WARNED and the marker still ran. The whole-init guard
-        # now makes any install failure fatal BEFORE the business marker.
+    def test_install_exception_posix_fatal_windows_completes(self):
+        # The controller's ctrlc-install-exception counterexample: on POSIX a
+        # winreg import failure during the install stage previously WARNED
+        # and the marker still ran — the whole-init guard now makes it FATAL.
+        # On Windows winreg imports fine, so the same child proves the
+        # install completes with the marker (no false refusal).
         ctrl = self.base / 'ctrl.json'
         ctrl.write_text(json.dumps({**self.inputs_value, 'case': 'GAP-CTRLC-IPC'}))
         request_ctrl = self.base / 'guest-ctrl.json'
@@ -135,11 +136,17 @@ class BootstrapBindingGuardTests(unittest.TestCase):
                     request_file=str(request_ctrl),
                     request_file_sha256=hashlib.sha256(request_ctrl.read_bytes()).hexdigest(),
                     expected_inputs={**self.inputs_value, 'case': 'GAP-CTRLC-IPC'})
+        import sys as _sys
         result = self.run_child(pins=pins, inputs_path=ctrl, probe_arg='CTRLC')
-        self.assertNotEqual(0, result.returncode)
-        self.assertNotIn('BUSINESS_MARKER', result.stdout)
-        self.assertTrue('FNREG_OS_FIXTURE_INIT_FAILED' in result.stderr
-                        or 'FNREG_OS_FIXTURE_REFUSED' in result.stderr, result.stderr)
+        if _sys.platform != 'win32':
+            self.assertNotEqual(0, result.returncode)
+            self.assertNotIn('BUSINESS_MARKER', result.stdout)
+            self.assertTrue('FNREG_OS_FIXTURE_INIT_FAILED' in result.stderr
+                            or 'FNREG_OS_FIXTURE_REFUSED' in result.stderr, result.stderr)
+        else:
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn('BUSINESS_MARKER', result.stdout)
+            self.assertIn('FNREG_OS_FIXTURE_BOOTSTRAP case=GAP-CTRLC-IPC', result.stderr)
 
     def test_matrix_wrong_case(self):
         pins = dict(self.good_pins, case='GAP-LIST-MUTEX')
