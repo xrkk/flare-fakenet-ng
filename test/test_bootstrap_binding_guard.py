@@ -26,6 +26,122 @@ print('BUSINESS_MARKER %s' % marker)
 """
 
 
+
+class ParentFrozenDigestTests(unittest.TestCase):
+    """Parent-side gate: the frozen digest handed by the caller must match the
+    pushed file bytes; a request mutated after freeze never runs the guest."""
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix='fnreg-r08-parent-', dir='/tmp'))
+        self.bootstrap = support.write_child_bootstrap(self.base / 'boot')
+        self.owned = r'E:\fnreg-r08\runs\exec-1\GAP-SYSLOG-ICMP-LOG\output\driver'
+        self.output_root = r'E:\fnreg-r08\runs\exec-1\GAP-SYSLOG-ICMP-LOG\output'
+        self.request_file = self.base / 'guest-request.json'
+        self.request_value = {
+            'schema': 'fakenet.native-guest-request.v1',
+            'case_id': 'GAP-SYSLOG-ICMP-LOG',
+            'candidate': {'source_commit': 'a' * 40, 'package_sha256': 'b' * 64,
+                          'offline_fixture': True},
+            'execution_id': 'exec-1', 'output_root': self.output_root,
+            'manual': {'schema': 'fakenet.manual-options.v1', 'responsea': '192.0.2.55'}}
+        self.request_file.write_text(json.dumps(self.request_value, indent=2) + '\n')
+        import hashlib
+        self.frozen_sha = hashlib.sha256(self.request_file.read_bytes()).hexdigest()
+
+    def _stand_in(self):
+        stand = support.FaithfulWindowsStandIn(self.base / 'src', {'hostname': 'fixture-vm',
+                                                                   'platform': 'windows'})
+        stand.pushed['push-request'] = json.loads(self.request_file.read_text())
+        stand.pushed['push-request-file'] = str(self.request_file)
+        return stand
+
+    def test_mutated_after_freeze_refused_before_guest(self):
+        stand = self._stand_in()
+        stand.frozen_request_sha = self.frozen_sha
+        # Mutate execution_id AFTER the freeze while keeping the old digest.
+        value = dict(self.request_value,
+                     candidate=dict(self.request_value['candidate'], source_commit='f' * 40))
+        self.request_file.write_text(json.dumps(value, indent=2) + '\n')
+        stand.pushed['push-request'] = value
+        import os
+        os.environ['FN_MANUAL_FAITHFUL_ROOT'] = self.base_root = str(self.base)
+        try:
+            with self.assertRaisesRegex(ValueError, 'digest mismatch'):
+                stand._build_child_env()
+        finally:
+            os.environ.pop('FN_MANUAL_FAITHFUL_ROOT', None)
+
+    def test_cached_dict_divergence_refused(self):
+        stand = self._stand_in()
+        stand.frozen_request_sha = None
+        # File matches a fresh hash but the cached dict was tampered.
+        stand.pushed['push-request'] = dict(self.request_value, execution_id='foreign')
+        import os
+        os.environ['FN_MANUAL_FAITHFUL_ROOT'] = str(self.base)
+        try:
+            with self.assertRaisesRegex(ValueError, 'cached request differs'):
+                stand._build_child_env()
+        finally:
+            os.environ.pop('FN_MANUAL_FAITHFUL_ROOT', None)
+
+
+class ParsePhaseFatalTests(unittest.TestCase):
+    """The three controller parse-phase counterexamples must be FATAL."""
+
+    def setUp(self):
+        import hashlib
+        self.base = Path(tempfile.mkdtemp(prefix='fnreg-r08-parse-', dir='/tmp'))
+        self.bootstrap = support.write_child_bootstrap(self.base / 'boot')
+        self.probe = self.base / 'probe.py'
+        self.probe.write_text("print('BUSINESS_MARKER parse')\n")
+        self.helper_sha = hashlib.sha256(
+            (self.bootstrap / 'os_fixture_backend.py').read_bytes()).hexdigest()
+
+    def _run(self, pins_raw, argv_extra=None):
+        env = dict(os.environ)
+        env['PYTHONPATH'] = str(self.bootstrap)
+        if pins_raw is not None:
+            env['FNREG_OS_FIXTURE_PINS'] = pins_raw
+        else:
+            env.pop('FNREG_OS_FIXTURE_PINS', None)
+        argv = [sys.executable, '-B', str(self.probe)] + (argv_extra or [])
+        return subprocess.run(argv, capture_output=True, text=True, env=env, timeout=60)
+
+    def test_pins_wrong_json_type_fatal(self):
+        result = self._run('[]')
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn('BUSINESS_MARKER', result.stdout)
+        self.assertIn('FNREG_OS_FIXTURE_REFUSED', result.stderr)
+
+    def test_inputs_argv_no_value_fatal(self):
+        # A COMPLETE valid pins spec with --inputs as the LAST argv element:
+        # the refusal must come from the missing argv value itself.
+        request = self.base / 'guest-request.json'
+        request.write_text(json.dumps({'case_id': 'GAP-SYSLOG-ICMP-LOG'}))
+        import hashlib
+        pins = {'case': 'GAP-SYSLOG-ICMP-LOG', 'fixture': True,
+                'request_file_sha256': hashlib.sha256(request.read_bytes()).hexdigest(),
+                'request_file': str(request),
+                'expected_inputs': {'case': 'GAP-SYSLOG-ICMP-LOG', 'fixture': True},
+                'output_root': r'E:\x\\output', 'owned_root': r'E:\x\\output\\driver',
+                'faithful_root': 'E:/x', 'helper_sha256': self.helper_sha}
+        result = self._run(json.dumps(pins), ['--inputs'])
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn('BUSINESS_MARKER', result.stdout)
+        self.assertIn('readable --inputs value', result.stderr)
+
+    def test_expected_inputs_wrong_type_fatal(self):
+        pins = {'case': 'GAP-SYSLOG-ICMP-LOG', 'fixture': True,
+                'request_file_sha256': 'c' * 64, 'request_file': '/nonexistent',
+                'expected_inputs': ['not', 'a', 'dict'],
+                'output_root': r'E:\x\\output', 'owned_root': r'E:\x\\output\\driver',
+                'faithful_root': 'E:/x', 'helper_sha256': self.helper_sha}
+        result = self._run(json.dumps(pins))
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn('BUSINESS_MARKER', result.stdout)
+        self.assertIn('expected_inputs must be an object', result.stderr)
+
+
 class BootstrapBindingGuardTests(unittest.TestCase):
     def setUp(self):
         import hashlib
@@ -64,7 +180,7 @@ class BootstrapBindingGuardTests(unittest.TestCase):
             'request_file': str(self.request_file),
             'expected_inputs': dict(self.inputs_value),
             'output_root': self.output_root, 'owned_root': self.owned,
-            'faithful_root': 'E:\\',
+            'faithful_root': 'E:/fnreg-r07',
             'helper_sha256': self.helper_sha}
 
     def run_child(self, pins=None, inputs_path=None, probe_arg='SYSLOG', extra_env=None):
@@ -98,8 +214,8 @@ class BootstrapBindingGuardTests(unittest.TestCase):
     def test_single_field_wrong_output_root_only(self):
         # ONLY the pinned output root changes (foreign parent); everything
         # else, including the inputs file, stays correct.
-        pins = dict(self.good_pins, output_root=r'Z:\elsewhere\\output',
-                    owned_root=r'Z:\elsewhere\\output\\driver')
+        pins = dict(self.good_pins, output_root=r'Z:\elsewhere\output',
+                    owned_root=r'Z:\elsewhere\output\driver')
         result = self.run_child(pins=pins, inputs_path=self.inputs)
         self.assert_refused(result, 'wrong-output-root-only')
         self.assertIn('does not match the pinned request root', result.stderr)

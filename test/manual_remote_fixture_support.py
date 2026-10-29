@@ -120,10 +120,14 @@ def write_child_bootstrap(directory):
         "    pins = json.loads(pins_raw)\n"
         "except Exception:\n"
         "    _die('pinned spec is not valid JSON')\n"
+        "if not isinstance(pins, dict):\n"
+        "    _die('pinned spec must be a JSON object, got %s' % type(pins).__name__)\n"
         "required = ('case', 'fixture', 'request_file_sha256', 'request_file', 'expected_inputs',\n"
         "            'output_root', 'owned_root', 'faithful_root', 'helper_sha256')\n"
         "if any(key not in pins or not pins[key] for key in required):\n"
         "    _die('pinned spec missing fields: %s' % ','.join(k for k in required if not pins.get(k)))\n"
+        "if not isinstance(pins.get('expected_inputs'), dict):\n"
+        "    _die('expected_inputs must be an object, got %s' % type(pins.get('expected_inputs')).__name__)\n"
         "# SAME-OBJECT outer-request binding: hash the actual frozen request\n"
         "# FILE bytes the parent pushed; identical algorithm on both ends.\n"
         "try:\n"
@@ -137,8 +141,8 @@ def write_child_bootstrap(directory):
         "if pins['fixture'] is not True:\n"
         "    _die('pinned spec does not carry fixture=true')\n"
         "# The producer child's argv names its derived inputs file.\n"
-        "if '--inputs' not in sys.argv:\n"
-        "    _die('producer argv lacks --inputs')\n"
+        "if '--inputs' not in sys.argv or sys.argv.index('--inputs') + 1 >= len(sys.argv):\n"
+        "    _die('producer argv lacks a readable --inputs value')\n"
         "inputs_path = Path(sys.argv[sys.argv.index('--inputs') + 1])\n"
         "try:\n"
         "    inputs_bytes = inputs_path.read_bytes()\n"
@@ -163,7 +167,8 @@ def write_child_bootstrap(directory):
         "if owned != pins['owned_root']:\n"
         "    _die('owned root differs from the pinned request derivation')\n"
         "out_root = PureWindowsPath(pins['output_root'])\n"
-        "if not pins['output_root'].endswith('\\\\output') or not str(out_root.parent).startswith(pins['faithful_root']):\n"
+        "root_parts = PureWindowsPath(pins['faithful_root']).parts\n"
+        "if list(out_root.parts)[:len(root_parts)] != list(root_parts):\n"
         "    _die('output root is not under the frozen faithful parent root: %s' % pins['output_root'])\n"
         "# Path RELATION among pinned values (the physical file location is\n"
         "# platform-dependent in tests; the real chain's identity binding is\n"
@@ -174,8 +179,8 @@ def write_child_bootstrap(directory):
         "# from the frozen request (never from the file under test); every\n"
         "# identity field must match exactly.\n"
         "expected = pins['expected_inputs']\n"
-        "for field in ('case', 'fixture', 'owned_root', 'config', 'candidate_id',\n"
-        "              'source_commit', 'package_sha256', 'execution_id'):\n"
+        "for field in ('schema', 'case', 'fixture', 'owned_root', 'config', 'candidate_id',\n"
+        "              'source_commit', 'package_sha256', 'execution_id', 'responsea'):\n"
         "    if inputs.get(field) != expected.get(field):\n"
         "        _die('derived inputs field %s differs from the frozen request derivation: %r != %r'\n"
         "             % (field, inputs.get(field), expected.get(field)))\n"
@@ -262,55 +267,61 @@ class FaithfulWindowsStandIn:
         return {}
 
     def execute(self, request_path, request_sha, output_root, source_hashes, timeout):
+        # The caller's frozen digest pins the request this channel may run;
+        # _build_child_env verifies the on-disk bytes against it (and the
+        # cached dict against the verified bytes) BEFORE any guest call.
+        self.frozen_request_sha = request_sha
+        self._build_child_env()
+        return self._run_guest()
+
+    def _build_child_env(self):
+        """Verify the frozen request and build/apply the child env; raises
+        on any digest or cached-dict divergence before the guest can run."""
+        import hashlib
         request = self.pushed['push-request']
+        actual_bytes = Path(self.pushed['push-request-file']).read_bytes()
+        actual_digest = hashlib.sha256(actual_bytes).hexdigest()
+        if getattr(self, 'frozen_request_sha', None) is not None:
+            if actual_digest != self.frozen_request_sha:
+                raise ValueError('frozen request digest mismatch: file changed after freeze')
+        if json.loads(actual_bytes.decode('utf-8')) != request:
+            raise ValueError('cached request differs from the verified on-disk bytes')
         env = {}
-        if request.get('candidate', {}).get('offline_fixture') is True and request['case_id'] in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH', 'GAP-SYSLOG-ICMP-LOG'):
-            # The guest entry spawns the producer as a SUBPROCESS: install the
-            # OS-boundary seams via an owned sitecustomize on PYTHONPATH so the
-            # CHILD interpreter loads them before any producer import.
-            bootstrap_dir = Path(__import__('os').environ['FN_MANUAL_FAITHFUL_ROOT']) / 'child-bootstrap'
+        if request.get('candidate', {}).get('offline_fixture') is True and \
+                request['case_id'] in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH', 'GAP-SYSLOG-ICMP-LOG'):
+            bootstrap_dir = Path(os.environ['FN_MANUAL_FAITHFUL_ROOT']) / 'child-bootstrap'
             bootstrap = write_child_bootstrap(bootstrap_dir)
-            import hashlib
             env['PYTHONPATH'] = str(bootstrap)
-            # PARENT-derived pinned spec: every value comes from the frozen
-            # guest request or the parent-verified helper bytes — the child
-            # matches ALL of it against its own argv/inputs/file reads.
-            # The child verifies the ACTUAL frozen outer-request FILE bytes
-            # (same object, same algorithm on both ends) — not a re-serialization.
-            request_file = next(iter(self.pushed.values()))
-            request_bytes = Path(self.pushed['push-request-file']).read_bytes()
-            expected_inputs = dict(request_file.get('manual') or {})
+            expected_inputs = dict(request.get('manual') or {})
             expected_inputs.update({
-                'case': request_file['case_id'],
-                'fixture': request_file.get('candidate', {}).get('offline_fixture') is True,
+                'schema': 'fakenet.manual-input.v1',
+                'case': request['case_id'],
+                'fixture': True,
                 'owned_root': request['output_root'].rstrip('\\') + '\\driver',
                 'config': request['output_root'].rstrip('\\') + '\\driver\\config',
                 'candidate_id': 'manual-candidate',
-                'source_commit': request_file['candidate']['source_commit'],
-                'package_sha256': request_file['candidate']['package_sha256'],
-                'execution_id': request_file['execution_id'],
+                'source_commit': request['candidate']['source_commit'],
+                'package_sha256': request['candidate']['package_sha256'],
+                'execution_id': request['execution_id'],
             })
+            expected_inputs.setdefault('responsea', '192.0.2.55')
             env['FNREG_OS_FIXTURE_PINS'] = json.dumps({
                 'case': request['case_id'],
                 'fixture': True,
-                'request_file_sha256': hashlib.sha256(request_bytes).hexdigest(),
-                'request_file': str(self.pushed['push-request-file']),
+                'request_file_sha256': actual_digest,
+                'request_file': self.pushed['push-request-file'],
                 'expected_inputs': expected_inputs,
                 'output_root': request['output_root'],
                 'owned_root': request['output_root'].rstrip('\\') + '\\driver',
-                'faithful_root': Path(__import__('os').environ['FN_MANUAL_FAITHFUL_ROOT']).anchor,
+                'faithful_root': Path(os.environ['FN_MANUAL_FAITHFUL_ROOT']).resolve().as_posix().rstrip('/'),
                 'helper_sha256': hashlib.sha256((bootstrap_dir / 'os_fixture_backend.py').read_bytes()).hexdigest(),
             })
         saved = {k: os.environ.get(k) for k in env}
-        try:
-            os.environ.update(env)
-            return self._run_guest(request)
-        finally:
-            for k, v in saved.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
+        os.environ.update(env)
+        import atexit
+        atexit.register(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+                                 for k, v in saved.items()])
+        return env
 
     def _run_guest(self, request):
         import acceptance_guest as guest
