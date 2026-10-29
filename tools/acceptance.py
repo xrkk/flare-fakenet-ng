@@ -19,7 +19,7 @@ import ast
 import hashlib
 import json
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
@@ -1297,6 +1297,73 @@ def _python_env(root, tmp_dir):
     return env
 
 
+
+def _source_deployment_identity(case_id, case_entry, native_pins):
+    """SD-02/03: the canonical source-deployment identity object derived from
+    the frozen M (native_source_pins UNION the case's source_hashes), never
+    user-supplied."""
+    import hashlib as _hashlib
+    import json as _json
+    source_hashes_entry = dict(native_pins or {})
+    for name, digest in (case_entry or {}).items():
+        if name in source_hashes_entry and source_hashes_entry[name] != digest:
+            raise InputError('source deployment closure conflict: %s' % name)
+        source_hashes_entry[name] = digest
+    if not source_hashes_entry:
+        raise InputError('source deployment identity requires a nonempty source closure')
+    for name, digest in source_hashes_entry.items():
+        parts = PurePosixPath(name).parts
+        if (not isinstance(name, str) or not name or name.startswith('/') or
+                any(part in ('', '.', '..') for part in parts) or '\\' in name or
+                not isinstance(digest, str) or len(digest) != 64 or
+                any(c not in '0123456789abcdef' for c in digest)):
+            raise InputError('source deployment closure member invalid: %r' % name)
+    payload = _json.dumps(source_hashes_entry, ensure_ascii=False, sort_keys=True,
+                          separators=(',', ':')).encode('utf-8')
+    return {'schema': 'fakenet.source-deployment-identity.v1',
+            'case_id': case_id,
+            'source_hashes_sha256': _hashlib.sha256(payload).hexdigest()}
+
+
+def _normalize_source_deployment_candidate(candidate, selected, source_hashes, root, acceptance_native):
+    """SD-01/04: validate the declared deployment kind; when the explicit
+    source branch is chosen for the Dump case, derive and freeze the identity
+    from M (rejecting any pre-supplied object that differs)."""
+    kind = candidate.get('deployment_kind')
+    package_fields = ('package_path', 'package_manifest', 'package_sha256')
+    package_values = [candidate.get(key) for key in package_fields]
+    if kind is None:
+        # Legacy null-package candidates stay legal for non-manual chains, but
+        # SD-01: an undeclared null-package MANUAL candidate must be refused
+        # before any VM side effect; the manual-native gate enforces that at
+        # request build time, so here we only reject mixed declarations.
+        if any(value is not None for value in package_values):
+            if not all(isinstance(v, str) and v for v in package_values if v is not None):
+                raise InputError('candidate package fields must be null or valid')
+        return candidate
+    if kind != 'source':
+        raise InputError('unknown candidate deployment_kind: %r' % kind)
+    if any(value is not None for value in package_values):
+        raise InputError('source deployment candidates must not carry package fields')
+    dump_cases = [c['id'] for c in selected if c['id'] == 'GAP-DUMPPACKETS']
+    if not dump_cases:
+        raise InputError('source deployment candidate requires the GAP-DUMPPACKETS selection')
+    source_commit = candidate.get('source_commit')
+    if not isinstance(source_commit, str) or len(source_commit) != 40 or             any(c not in '0123456789abcdef' for c in source_commit):
+        raise InputError('source deployment candidate requires a 40-hex source_commit')
+    native_pins = (acceptance_native.native_source_pins(root)
+                   if acceptance_native is not None else {})
+    expected = _source_deployment_identity('GAP-DUMPPACKETS',
+                                           source_hashes['GAP-DUMPPACKETS'], native_pins)
+    expected['source_commit'] = source_commit
+    supplied = candidate.get('source_deployment_identity')
+    if supplied is not None and supplied != expected:
+        raise InputError('candidate source_deployment_identity differs from the derived value')
+    value = dict(candidate)
+    value['source_deployment_identity'] = expected
+    return value
+
+
 def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_ids, output):
     root = Path(root)
     catalog = read_catalog(root)
@@ -1399,6 +1466,16 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
         if reason:
             blocked[case['id']] = reason
         case_records[case['id']] = record
+    # SD-01..04: explicit source-deployment candidate identity, Dump-only.
+    candidate = _normalize_source_deployment_candidate(candidate, selected, source_hashes, root, acceptance_native)
+    if candidate.get('deployment_kind') == 'source':
+        _native_pins = (acceptance_native.native_source_pins(root)
+                        if acceptance_native is not None else {})
+        source_deployment_closure = dict(_native_pins)
+        source_deployment_closure.update(source_hashes['GAP-DUMPPACKETS'])
+    else:
+        source_deployment_closure = {}
+
     plan = {
         'native_source_hashes': acceptance_native.native_source_pins(root) if acceptance_native is not None else {},
         'schema': PLAN_V2,
@@ -1408,6 +1485,7 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
         'environment': environment,
         'catalog_sha256': sha256(root / 'docs/acceptance/catalog.json'),
         'source_commit': head,
+        'source_deployment_closure': source_deployment_closure,
         'harness_commit': current_head,
         'source_reuse': source_reuse,
         'source_hashes': source_hashes,

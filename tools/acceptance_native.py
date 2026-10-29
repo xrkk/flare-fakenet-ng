@@ -722,8 +722,53 @@ def manual_options(environment):
     return options
 
 
+def _source_deployment_identity_from_request(request):
+    """SD-05: rebuild the canonical identity from the frozen request's own
+    closure M (request.source_hashes) exactly as the plan derived it."""
+    import hashlib
+    closure=dict(request['source_hashes'])
+    if not closure:raise ValueError('source deployment identity requires a nonempty closure')
+    payload=json.dumps(closure,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')
+    candidate=request['candidate']
+    identity=candidate.get('source_deployment_identity')
+    if not isinstance(identity,dict) or set(identity)!={'schema','source_commit','case_id','source_hashes_sha256'}:
+        raise ValueError('candidate source deployment identity missing/invalid')
+    if (identity['schema']!='fakenet.source-deployment-identity.v1' or
+            identity['case_id']!=request['case_id'] or
+            identity['source_commit']!=candidate['source_commit'] or
+            identity['source_hashes_sha256']!=hashlib.sha256(payload).hexdigest()):
+        raise ValueError('candidate source deployment identity differs from the request closure')
+    return identity
+
+
 def _manual_input_value(plan,case,options,owned_root,config):
     candidate=plan['candidate']
+    # SD-06: the Dump-only explicit source branch derives manual-input.v3 with
+    # package_sha256 null and the frozen source identity; every other case
+    # keeps the original v1 value.
+    if (case['id']=='GAP-DUMPPACKETS' and
+            candidate.get('deployment_kind')=='source'):
+        closure=plan.get('source_deployment_closure') or {}
+        if not closure:raise ValueError('source branch requires the frozen closure M')
+        import hashlib
+        payload=json.dumps(dict(closure),ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')
+        identity={'schema':'fakenet.source-deployment-identity.v1',
+                  'source_commit':candidate['source_commit'],
+                  'case_id':'GAP-DUMPPACKETS',
+                  'source_hashes_sha256':hashlib.sha256(payload).hexdigest()}
+        frozen=candidate.get('source_deployment_identity')
+        if frozen is not None and frozen!=identity:
+            raise ValueError('plan source deployment identity differs from the closure')
+        return dict(schema='fakenet.manual-input.v3',case=case['id'],candidate_id='manual-candidate',
+                    source_commit=candidate['source_commit'],package_sha256=None,
+                    execution_id=plan['execution_id'],owned_root=owned_root,config=config,
+                    responsea=options.get('responsea','192.0.2.55'),
+                    fixture=candidate.get('offline_fixture') is True,
+                    source_deployment_identity=identity)
+    if case['id']=='GAP-DUMPPACKETS' and candidate.get('package_sha256') is None and \
+            candidate.get('deployment_kind')!='source':
+        # SD-01: undeclared null-package manual candidate refused before VM work
+        raise ValueError('manual candidate requires a package identity or the explicit source deployment kind')
     return dict(schema='fakenet.manual-input.v1',case=case['id'],candidate_id='manual-candidate',
                 source_commit=candidate['source_commit'],package_sha256=candidate['package_sha256'],
                 execution_id=plan['execution_id'],owned_root=owned_root,config=config,

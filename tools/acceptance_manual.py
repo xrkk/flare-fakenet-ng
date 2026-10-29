@@ -20,12 +20,40 @@ STATIC='static-<RAW-DATE>'
 IDENTITY=('candidate_id','source_commit','package_sha256','execution_id')
 def sha256(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def _json(p,v):Path(p).write_text(json.dumps(v,indent=2)+'\n',encoding='utf-8')
+
+
+def _result_identity(inputs):
+    """SD-07: identity keys are schema-precise - the Dump v3 source branch
+    carries the five-key form; v1/v2 keep the original four keys."""
+    if inputs.get('schema')=='fakenet.manual-input.v3':
+        return {k:inputs[k] for k in (*IDENTITY,'source_deployment_identity')}
+    return {k:inputs[k] for k in IDENTITY}
+
+def _validate_source_identity(identity,source_commit):
+    """SD-02: exact shape/typing of the source-deployment identity object."""
+    if not isinstance(identity,dict) or set(identity)!={'schema','source_commit','case_id','source_hashes_sha256'}:
+        raise ValueError('source deployment identity shape invalid')
+    if identity['schema']!='fakenet.source-deployment-identity.v1' or identity['case_id']!='GAP-DUMPPACKETS':
+        raise ValueError('source deployment identity schema/case invalid')
+    if identity['source_commit']!=source_commit:
+        raise ValueError('source deployment identity commit differs')
+    import hashlib as _h
+    if not isinstance(identity['source_hashes_sha256'],str) or len(identity['source_hashes_sha256'])!=64 or any(c not in '0123456789abcdef' for c in identity['source_hashes_sha256']):
+        raise ValueError('source deployment identity digest invalid')
+
 def validate_inputs(case,inputs):
     if not isinstance(inputs,dict):raise ValueError('manual inputs must be an object')
-    if inputs.get('schema') not in ('fakenet.manual-input.v1','fakenet.manual-input.v2') or inputs.get('case')!=case:raise ValueError('manual input schema/case mismatch')
-    for k in (*IDENTITY,'config','owned_root'):
-        if not inputs.get(k):raise ValueError('manual inputs missing: '+k)
-    if not re.fullmatch('[0-9a-f]{40}',inputs['source_commit']) or not re.fullmatch('[0-9a-f]{64}',inputs['package_sha256']):raise ValueError('manual content identity invalid')
+    if inputs.get('schema') not in ('fakenet.manual-input.v1','fakenet.manual-input.v2','fakenet.manual-input.v3') or inputs.get('case')!=case:raise ValueError('manual input schema/case mismatch')
+    if inputs.get('schema')=='fakenet.manual-input.v3':
+        # SD-06: Dump-only explicit source-deployment branch.
+        if case!='GAP-DUMPPACKETS':raise ValueError('manual input v3 is fixed to GAP-DUMPPACKETS')
+        if set(inputs)!={'schema','case','candidate_id','source_commit','package_sha256','execution_id','owned_root','config','responsea','fixture','source_deployment_identity'}:raise ValueError('manual input v3 field set differs')
+        if inputs.get('package_sha256') is not None:raise ValueError('manual input v3 requires package_sha256 null')
+        _validate_source_identity(inputs.get('source_deployment_identity'),inputs['source_commit'])
+    else:
+        for k in (*IDENTITY,'config','owned_root'):
+            if not inputs.get(k):raise ValueError('manual inputs missing: '+k)
+        if not re.fullmatch('[0-9a-f]{40}',inputs['source_commit']) or not re.fullmatch('[0-9a-f]{64}',inputs['package_sha256']):raise ValueError('manual content identity invalid')
     if not re.fullmatch('[a-zA-Z0-9-]{4,80}',inputs['execution_id']):raise ValueError('execution_id is invalid')
     for k in ('config','owned_root'):
         if not Path(inputs[k]).is_absolute() or Path(inputs[k]).is_symlink():raise ValueError('manual path must be absolute/no symlink: '+k)
@@ -181,7 +209,7 @@ def real_list_mutex(case,out,inputs):
       'configuration':{'path':'config/list-mutex.ini','sha256':sha256(path)},'source_hashes':pins,
       'started_at':datetime.now(timezone.utc).isoformat(),
       'cleanup':{'stopped':not ports.protos,'threads_joined':True,'sockets_closed':True,'network_restored':True},
-      'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
+      'checks':[{'id':x} for x in CHECKS[case]],'identity':_result_identity(inputs)}
     _json(out/'manual-result.json',value);return value
 
 def real_syslog_icmp(case, out, inputs):
@@ -327,7 +355,7 @@ def real_syslog_icmp(case, out, inputs):
              'started_at': started, 'ended_at': datetime.now(timezone.utc).isoformat(),
              'cleanup': {'scope': 'owned-handlers-and-logger-state', 'stopped': before == snapshot() and not errors,
                          'system_network_restored': 'not-exercised'},
-             'checks': [{'id': name} for name in CHECKS[case]], 'identity': {name: inputs[name] for name in IDENTITY}}
+             'checks': [{'id': name} for name in CHECKS[case]], 'identity': _result_identity(inputs)}
     _json(out / 'manual-result.json', value)
     return value
 
@@ -530,7 +558,7 @@ def real_ctrlc_ipc(case,out,inputs):
                       'logger_restored':before==after,'argv_restored':sys.argv is old_argv,
                       'profile_restored':sys.getprofile() is old_profile,'signals_restored':signal_before==signal_after,
                       'system_network_restored':'not-exercised','system_console_used':False},
-           'checks':[{'id':name} for name in CHECKS[case]],'identity':{name:inputs[name] for name in IDENTITY}}
+           'checks':[{'id':name} for name in CHECKS[case]],'identity':_result_identity(inputs)}
     _json(out/'manual-result.json',value);return value
 
 def real_linux_flush_interface(case,out,inputs):
@@ -689,7 +717,7 @@ def real_linux_flush_interface(case,out,inputs):
       'cleanup':{'scope':'owned-linux-callback-os-boundary','stopped':cleanup_ok,
                  'threads_joined':cleanup_ok,'rules_cleared':cleanup_ok,
                  'system_network_restored':'not-exercised','system_iptables_restored':'not-exercised'},
-      'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
+      'checks':[{'id':x} for x in CHECKS[case]],'identity':_result_identity(inputs)}
     _json(out/'manual-result.json',value);return value
 
 def real_network_fix(case, out, inputs):
@@ -1347,7 +1375,7 @@ def real_diverter_switch(case,out,inputs):
     value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,'diverter_switch':values,
       'source_hashes':{n:sha256(Path(__file__).resolve().parents[1]/n) for n in ('fakenet/fakenet.py','fakenet/diverters/linux.py','fakenet/diverters/windows.py')},
       'cleanup':{'stopped':restored,'scope':'observed-core-start-stop','system_network_restored':'unverified'},
-      'checks':[{'id':x} for x in CHECKS[case]],'identity':{k:inputs[k] for k in IDENTITY}}
+      'checks':[{'id':x} for x in CHECKS[case]],'identity':_result_identity(inputs)}
     _json(out/'manual-result.json',value);return value
 
 def real_executecmd(case,out,inputs):
