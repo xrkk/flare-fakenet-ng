@@ -1919,9 +1919,25 @@ def dump_relocation_context(root,case,plan,output_dir):
     if (not isinstance(terminal_record.get('spec_path'),str) or
             Path(terminal_record['spec_path']).resolve()!=spec_path.resolve()):
         raise ValueError('relocation: pull terminal spec path differs')
+    # S61-R01: the SDK writes per-transfer results into its OWN evidence
+    # layout spec.parent/.velo-transfer/tasks/<transfer_id>/evidence/<name>.json
+    # (host_journal._evidence_path + storage._task_dir + coordinator
+    # write_evidence('result-<digest32>')).  Bind the terminal result to that
+    # exact owned directory with symlink-free ancestors; foreign roots and
+    # parent-dir symlinks refuse.
     result_path=Path(terminal_record['result_path'])
-    if (not result_path.is_file() or result_path.is_symlink() or
-            sha256(result_path)!=terminal_record.get('sha256')):
+    evidence_dir=transport/'.velo-transfer'/'tasks'/str(spec['transfer_id'])/'evidence'
+    if result_path.parent!=evidence_dir:
+        raise ValueError('relocation: pull result outside the SDK owned evidence directory')
+    probe=result_path
+    while True:
+        if probe.is_symlink():
+            raise ValueError('relocation: pull result ancestor is a symlink: %s'%probe)
+        if probe==transport:break
+        probe=probe.parent
+        if probe==probe.parent:
+            raise ValueError('relocation: pull result escapes the journal root')
+    if (not result_path.is_file() or sha256(result_path)!=terminal_record.get('sha256')):
         raise ValueError('relocation: pull terminal result record differs')
     # The real channel anchors the SDK result through the transfer stdout
     # summary; the journaled summary must point at the same result file.

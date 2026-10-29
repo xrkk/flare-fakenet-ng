@@ -142,7 +142,10 @@ class Base(unittest.TestCase):
                 'destination_identity': {'endpoint': 'host',
                                          'canonical_path': str((run / 'incoming').resolve())},
                 'files': files}
-        result_path = transport / 'pull-originals-velo-result.json'
+        # The real SDK-owned evidence layout for this transfer.
+        evidence_dir = transport / '.velo-transfer' / 'tasks' / spec['transfer_id'] / 'evidence'
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        result_path = evidence_dir / ('result-' + spec['transfer_id'][:32] + '.json')
         result_path.write_text(json.dumps(velo, indent=2) + '\n', encoding='utf-8')
         (transport / 'pull-originals-intent.json').write_text(json.dumps(
             {'argv': [r'C:\Velo\python.exe', '-I', '-B', '-m', 'velo_transfer',
@@ -392,7 +395,7 @@ class RelocationContext(Base):
     def test_dc_a5_pull_record_divergences(self):
         request, sha, closure = self.produce_dump()
         run = self.build_run_dir(request, sha, closure)
-        result_path = run / 'transport/pull-originals-velo-result.json'
+        result_path = next((run / 'transport/.velo-transfer/tasks').glob('*/evidence/result-*.json'))
         terminal = run / 'transport/pull-originals-terminal.json'
         # duplicate Velo member (silently dict-merged before the fix)
         velo = json.loads(result_path.read_text())
@@ -405,7 +408,7 @@ class RelocationContext(Base):
             self.context_for(run)
         # wrong destination identity in the result
         run = self.build_run_dir(request, sha, closure)
-        result_path = run / 'transport/pull-originals-velo-result.json'
+        result_path = next((run / 'transport/.velo-transfer/tasks').glob('*/evidence/result-*.json'))
         velo = json.loads(result_path.read_text())
         velo['destination_identity'] = {'endpoint': 'host',
                                         'canonical_path': str(run / 'elsewhere')}
@@ -457,7 +460,7 @@ class RelocationContext(Base):
             self.context_for(run)
         # destination mapping escape: one member lands outside the incoming batch
         run = self.build_run_dir(request, sha, closure)
-        result_path = run / 'transport/pull-originals-velo-result.json'
+        result_path = next((run / 'transport/.velo-transfer/tasks').glob('*/evidence/result-*.json'))
         velo = json.loads(result_path.read_text())
         velo['files'][0]['destination'] = str(self.base / 'escape' /
                                               Path(velo['files'][0]['relative_path']).name)
@@ -467,6 +470,54 @@ class RelocationContext(Base):
         record['sha256'] = _sha(result_path)
         terminal.write_text(json.dumps(record))
         with self.assertRaisesRegex(ValueError, 'destination path differs|escape'):
+            self.context_for(run)
+
+    def test_s61_r01_owned_evidence_directory(self):
+        request, sha, closure = self.produce_dump()
+        spec_id = 't' * 32
+        # Foreign root: result placed in an unrelated directory refuses even
+        # though summary/digest stay consistent.
+        run = self.build_run_dir(request, sha, closure)
+        result_path = next((run / 'transport/.velo-transfer/tasks').glob('*/evidence/result-*.json'))
+        velo = json.loads(result_path.read_text())
+        foreign = run / 'foreign-results'
+        foreign.mkdir()
+        new_path = foreign / result_path.name
+        new_path.write_text(json.dumps(velo))
+        terminal = run / 'transport/pull-originals-terminal.json'
+        record = json.loads(terminal.read_text())
+        record['result_path'] = str(new_path)
+        record['sha256'] = _sha(new_path)
+        terminal.write_text(json.dumps(record))
+        (run / 'transport/pull-originals-stdout.log').write_text(
+            json.dumps({'result_path': str(new_path)}))
+        with self.assertRaisesRegex(ValueError, 'owned evidence directory'):
+            self.context_for(run)
+        # Parent-directory symlink: a legal-looking path under transport whose
+        # evidence component is a symlink refuses.
+        run = self.build_run_dir(request, sha, closure)
+        result_path = next((run / 'transport/.velo-transfer/tasks').glob('*/evidence/result-*.json'))
+        hidden = run / 'hidden-evidence'
+        hidden.mkdir()
+        shutil.move(str(result_path), str(hidden / result_path.name))
+        result_path.parent.rmdir()
+        result_path.parent.parent.rmdir()
+        tasks_dir = run / 'transport/.velo-transfer/tasks'
+        tasks_dir.rmdir()
+        # The evidence slot for THIS transfer id becomes a symlink to the
+        # hidden copy: the path string matches the owned layout, only the
+        # ancestor check can catch it.
+        evidence_slot = run / 'transport/.velo-transfer/tasks' / spec_id
+        (run / 'transport/.velo-transfer/tasks').mkdir(parents=True)
+        evidence_slot.symlink_to(hidden, target_is_directory=True)
+        terminal = run / 'transport/pull-originals-terminal.json'
+        record = json.loads(terminal.read_text())
+        record['result_path'] = str(evidence_slot / 'evidence' / result_path.name)
+        record['sha256'] = _sha(hidden / result_path.name)
+        terminal.write_text(json.dumps(record))
+        (run / 'transport/pull-originals-stdout.log').write_text(
+            json.dumps({'result_path': str(evidence_slot / 'evidence' / result_path.name)}))
+        with self.assertRaisesRegex(ValueError, 'ancestor is a symlink'):
             self.context_for(run)
 
     def test_capture_identity_divergences(self):
@@ -548,7 +599,7 @@ class RelocationContext(Base):
             self.context_for(run)
         # Velo result transfer id differs from the spec
         run = self.build_run_dir(request, sha, closure)
-        path = run / 'transport/pull-originals-velo-result.json'
+        path = next((run / 'transport/.velo-transfer/tasks').glob('*/evidence/result-*.json'))
         velo = json.loads(path.read_text())
         velo['transfer_id'] = 'd' * 32
         path.write_text(json.dumps(velo))
