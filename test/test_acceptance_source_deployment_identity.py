@@ -243,5 +243,83 @@ class V3ValidationTests(unittest.TestCase):
         M.validate_inputs('GAP-DUMPPACKETS', value)  # must not raise
 
 
+
+class G1G2PreEffectGateTests(unittest.TestCase):
+    """G1/G2: the paired host+guest pre-effect gates as durable red/green."""
+
+    def _request(self, work):
+        plan = _source_plan(work)
+        driver, checks, request = native._expected_remote_request(ROOT, CASE, plan)
+        return request
+
+    def _guest_boundary(self, request, work):
+        from unittest import mock
+        import acceptance_runtime as rt
+        output = Path(tempfile.mkdtemp(prefix='fnreg-g-guest-', dir='/tmp')) / 'out'
+        request = dict(request)
+        request['output_root'] = str(output)
+        with mock.patch.object(rt, 'require_target', return_value=request['target']):
+            with mock.patch.object(native, 'run_production',
+                                   side_effect=RuntimeError('PRODUCER_BOUNDARY')):
+                try:
+                    guest.execute(request, ROOT)
+                except RuntimeError:
+                    return 'producer-boundary', output.exists()
+                except ValueError as error:
+                    return 'refused:%s' % error, output.exists()
+        return 'completed', output.exists()
+
+    def test_g1_source_plus_package_refused_pre_mkdir(self):
+        work = Path(tempfile.mkdtemp(prefix='fnreg-g1a-', dir='/tmp'))
+        request = self._request(work)
+        request['candidate']['package_sha256'] = 'a' * 64  # mode mixing
+        outcome, created = self._guest_boundary(request, work)
+        self.assertTrue(outcome.startswith('refused'), outcome)
+        self.assertFalse(created)
+
+    def test_g1_bad_commit_form_refused_pre_mkdir(self):
+        work = Path(tempfile.mkdtemp(prefix='fnreg-g1b-', dir='/tmp'))
+        request = self._request(work)
+        request['candidate']['source_commit'] = 'bad'
+        request['candidate']['source_deployment_identity']['source_commit'] = 'bad'
+        outcome, created = self._guest_boundary(request, work)
+        self.assertTrue(outcome.startswith('refused'), outcome)
+        self.assertFalse(created)
+
+    def test_g2_subset_closure_refused_pre_mkdir(self):
+        work = Path(tempfile.mkdtemp(prefix='fnreg-g2a-', dir='/tmp'))
+        request = self._request(work)
+        member = sorted(request['source_hashes'])[0]
+        subset = {k: v for k, v in request['source_hashes'].items() if k != member}
+        payload = json.dumps(subset, ensure_ascii=False, sort_keys=True,
+                             separators=(',', ':')).encode('utf-8')
+        request['source_hashes'] = subset
+        request['candidate']['source_deployment_identity']['source_hashes_sha256'] = \
+            hashlib.sha256(payload).hexdigest()
+        outcome, created = self._guest_boundary(request, work)
+        self.assertIn('not the registered selection M', outcome)
+        self.assertFalse(created)
+
+    def test_g2_host_remote_gate_refuses_subset(self):
+        # The host run_remote gate must refuse BEFORE any channel side effect;
+        # verify via the gate function directly with the tampered request.
+        work = Path(tempfile.mkdtemp(prefix='fnreg-g2b-', dir='/tmp'))
+        request = self._request(work)
+        member = sorted(request['source_hashes'])[0]
+        subset = {k: v for k, v in request['source_hashes'].items() if k != member}
+        payload = json.dumps(subset, ensure_ascii=False, sort_keys=True,
+                             separators=(',', ':')).encode('utf-8')
+        request['source_hashes'] = subset
+        request['candidate']['source_deployment_identity']['source_hashes_sha256'] = \
+            hashlib.sha256(payload).hexdigest()
+        with self.assertRaisesRegex(ValueError, 'not the registered selection M'):
+            native._source_deployment_identity_from_request(request, ROOT, CASE)
+
+    def test_valid_control_passes_full_gate(self):
+        work = Path(tempfile.mkdtemp(prefix='fnreg-g-ok-', dir='/tmp'))
+        request = self._request(work)
+        identity = native._source_deployment_identity_from_request(request, ROOT, CASE)
+        self.assertEqual(HEAD, identity['source_commit'])
+
 if __name__ == '__main__':
     unittest.main()

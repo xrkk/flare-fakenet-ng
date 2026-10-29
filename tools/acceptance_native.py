@@ -20,7 +20,7 @@ import os
 import re
 import signal
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 NATIVE_SCHEMA = 'fakenet.native-driver.v1'
 
@@ -722,23 +722,73 @@ def manual_options(environment):
     return options
 
 
-def _source_deployment_identity_from_request(request):
-    """SD-05: rebuild the canonical identity from the frozen request's own
-    closure M (request.source_hashes) exactly as the plan derived it."""
+def _source_deployment_identity_from_request(request, root=None, case=None):
+    """SD-01/02/05/08 + G1/G2: the COMPLETE pre-effect source gate.  Mode,
+    package fields, commit form, identity shape and the FULL registered
+    closure M are all verified here - callers invoke it before any VM write,
+    output.mkdir or producer launch.  When root+case are supplied the closure
+    is re-derived from the registered selection (native pins UNION case
+    sources with live byte hashes), never from the received subset."""
     import hashlib
-    closure=dict(request['source_hashes'])
-    if not closure:raise ValueError('source deployment identity requires a nonempty closure')
-    payload=json.dumps(closure,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')
+    import re as _re
     candidate=request['candidate']
+    # G1: exact mode + package-field nullity + Dump case binding.
+    if candidate.get('deployment_kind')!='source':
+        raise ValueError('source gate requires deployment_kind=source')
+    for field in ('package_path','package_manifest','package_sha256'):
+        if candidate.get(field) is not None:
+            raise ValueError('source candidate carries package field %s'%field)
+    if request['case_id']!='GAP-DUMPPACKETS':
+        raise ValueError('source deployment is fixed to GAP-DUMPPACKETS')
+    commit=candidate.get('source_commit')
+    if not isinstance(commit,str) or not _re.fullmatch('[0-9a-f]{40}',commit):
+        raise ValueError('source candidate source_commit must be 40 lowercase hex')
     identity=candidate.get('source_deployment_identity')
     if not isinstance(identity,dict) or set(identity)!={'schema','source_commit','case_id','source_hashes_sha256'}:
         raise ValueError('candidate source deployment identity missing/invalid')
     if (identity['schema']!='fakenet.source-deployment-identity.v1' or
             identity['case_id']!=request['case_id'] or
-            identity['source_commit']!=candidate['source_commit'] or
-            identity['source_hashes_sha256']!=hashlib.sha256(payload).hexdigest()):
+            identity['source_commit']!=commit or
+            not isinstance(identity['source_hashes_sha256'],str) or
+            not _re.fullmatch('[0-9a-f]{64}',identity['source_hashes_sha256'])):
+        raise ValueError('candidate source deployment identity shape/values invalid')
+    # G2: the closure must equal the FULL registered M when root+case given;
+    # otherwise it is checked for internal form only (subset refusal below).
+    closure=dict(request['source_hashes'])
+    if not closure:raise ValueError('source deployment identity requires a nonempty closure')
+    for name,digest in closure.items():
+        parts=PurePosixPath(name).parts if isinstance(name,str) else ()
+        if (not isinstance(name,str) or not name or name.startswith('/') or
+                any(part in ('','.','..') for part in parts) or '\\' in name or
+                not isinstance(digest,str) or not _re.fullmatch('[0-9a-f]{64}',digest)):
+            raise ValueError('source closure member invalid: %r'%name)
+    if root is not None and case is not None:
+        expected=_registered_source_closure(root,case)
+        if closure!=expected:
+            missing=sorted(set(expected)-set(closure))
+            extra=sorted(set(closure)-set(expected))
+            if missing or extra:
+                raise ValueError('source closure is not the registered selection M '
+                                 '(missing=%d extra=%d)'%(len(missing),len(extra)))
+            raise ValueError('source closure digests differ from the live registered bytes')
+    payload=json.dumps(closure,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode('utf-8')
+    if identity['source_hashes_sha256']!=hashlib.sha256(payload).hexdigest():
         raise ValueError('candidate source deployment identity differs from the request closure')
     return identity
+
+
+def _registered_source_closure(root,case):
+    """G2/SD-03: the complete M re-derived from the registered selection -
+    native pins UNION the case's registered sources, hashed from LIVE bytes."""
+    root=Path(root)
+    closure=native_source_pins(root)
+    import acceptance as _acceptance
+    for name in _acceptance.case_sources(case):
+        path=root/name
+        if not path.is_file():
+            raise ValueError('registered source missing: %s'%name)
+        closure[name]=sha256(path)
+    return closure
 
 
 def _manual_input_value(plan,case,options,owned_root,config):
@@ -1481,6 +1531,14 @@ def finalize_dump_evidence(root,request,request_sha256,output_root):
     root=Path(root);output_root=Path(request['output_root'])
     if request.get('case_id')!='GAP-DUMPPACKETS':
         raise ValueError('dump source closure is fixed to GAP-DUMPPACKETS')
+    # G1/G2: the finalizer re-runs the complete source gate (full registered
+    # M) before any inventory work.
+    root_argument = root
+    if request['candidate'].get('deployment_kind') == 'source':
+        _catalog = json.loads(_read(Path(root)/'docs/acceptance/catalog.json'))
+        _case = next(c for suite in _catalog['suites'] for c in suite.get('cases', [])
+                     if c['id'] == 'GAP-DUMPPACKETS')
+        _source_deployment_identity_from_request(request, root_argument, _case)
     result_path=output_root/'guest-result.json'
     if not result_path.is_file():
         raise ValueError('dump source closure requires a closed guest result')
@@ -1745,6 +1803,10 @@ def run_remote(root,case,plan,output_dir,python):
     # registered catalog object instead of sending derived plan-only metadata.
     catalog=json.loads(_read(Path(root)/'docs/acceptance/catalog.json'))
     request['case']=next(item for suite in catalog['suites'] for item in suite.get('cases',[]) if item['id']==case['id'])
+    # G1: the complete pre-effect source gate runs BEFORE any channel side
+    # effect (push/execute/transfer) for source-deployment candidates.
+    if request['candidate'].get('deployment_kind')=='source':
+        _source_deployment_identity_from_request(request, root, case)
     request_path=output_dir/'guest-request.json';write_new(request_path,request)
     services=None
     if driver['production_kind'].startswith('policy-') and {'sink_tcp','sink_udp'}&set(checks):
