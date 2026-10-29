@@ -1319,14 +1319,13 @@ def real_dumppackets(case, out, inputs):
                'fakenet/diverters/pcapwriter.py', 'fakenet/capture_originals.py', 'fakenet/payload_report.py')
     value = {'schema': SCHEMA, 'case': case, 'fixture': inputs.get('fixture') is True,
              'evidence_kind': 'offline-packet-replay', 'wire_capture': False,
-             'inputs': inputs, 'dumppackets': result,
+             'inputs': inputs, 'dumppackets': result, 'identity': _result_identity(inputs),
              'source_hashes': {name: sha256(source / name) for name in sources},
              'started_at': started, 'ended_at': datetime.now(timezone.utc).isoformat(),
              'cleanup': {'scope': 'owned-capture-files',
                          'stopped': all(item['writer_closed'] for item in result.values()),
                          'system_network_restored': 'not-exercised'},
-             'checks': [{'id': name} for name in CHECKS[case]],
-             'identity': {name: inputs[name] for name in IDENTITY}}
+             'checks': [{'id': name} for name in CHECKS[case]]}
     _json(out / 'manual-result.json', value)
     return value
 
