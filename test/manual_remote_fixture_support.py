@@ -102,6 +102,7 @@ def write_child_bootstrap(directory):
         "import json\n"
         "import os\n"
         "import sys\n"
+        "import traceback\n"
         "from pathlib import Path, PureWindowsPath\n"
         "ALLOWED = ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH', 'GAP-SYSLOG-ICMP-LOG')\n"
         "# This sitecustomize runs only for parent-authorized fixture children.\n"
@@ -119,9 +120,18 @@ def write_child_bootstrap(directory):
         "    pins = json.loads(pins_raw)\n"
         "except Exception:\n"
         "    _die('pinned spec is not valid JSON')\n"
-        "required = ('case', 'fixture', 'request_sha256', 'output_root', 'owned_root', 'helper_sha256')\n"
+        "required = ('case', 'fixture', 'request_file_sha256', 'request_file', 'expected_inputs',\n"
+        "            'output_root', 'owned_root', 'faithful_root', 'helper_sha256')\n"
         "if any(key not in pins or not pins[key] for key in required):\n"
         "    _die('pinned spec missing fields: %s' % ','.join(k for k in required if not pins.get(k)))\n"
+        "# SAME-OBJECT outer-request binding: hash the actual frozen request\n"
+        "# FILE bytes the parent pushed; identical algorithm on both ends.\n"
+        "try:\n"
+        "    request_bytes = Path(pins['request_file']).read_bytes()\n"
+        "except OSError:\n"
+        "    _die('frozen outer request file unreadable: %s' % pins['request_file'])\n"
+        "if hashlib.sha256(request_bytes).hexdigest() != pins['request_file_sha256']:\n"
+        "    _die('outer request bytes differ from the pinned request digest')\n"
         "if pins['case'] not in ALLOWED:\n"
         "    _die('case not seam-entitled: %s' % pins['case'])\n"
         "if pins['fixture'] is not True:\n"
@@ -148,6 +158,27 @@ def write_child_bootstrap(directory):
         "root = PureWindowsPath(owned)\n"
         "if not root.is_absolute() or root.drive.upper() not in ('E:', 'D:'):\n"
         "    _die('owned root is not a frozen E:/D: producer root: %s' % owned)\n"
+        "# Path relations: owned == output_root/driver; output_root under the\n"
+        "# faithful parent root; the inputs file lives inside the owned root.\n"
+        "if owned != pins['owned_root']:\n"
+        "    _die('owned root differs from the pinned request derivation')\n"
+        "out_root = PureWindowsPath(pins['output_root'])\n"
+        "if not pins['output_root'].endswith('\\\\output') or not str(out_root.parent).startswith(pins['faithful_root']):\n"
+        "    _die('output root is not under the frozen faithful parent root: %s' % pins['output_root'])\n"
+        "# Path RELATION among pinned values (the physical file location is\n"
+        "# platform-dependent in tests; the real chain's identity binding is\n"
+        "# the owned_root/output_root equality already verified above).\n"
+        "if pins['owned_root'] != pins['output_root'].rstrip('\\\\') + '\\\\driver':\n"
+        "    _die('pinned owned root is not the output root driver derivation')\n"
+        "# Derived-inputs FULL identity: the parent's expectation is derived\n"
+        "# from the frozen request (never from the file under test); every\n"
+        "# identity field must match exactly.\n"
+        "expected = pins['expected_inputs']\n"
+        "for field in ('case', 'fixture', 'owned_root', 'config', 'candidate_id',\n"
+        "              'source_commit', 'package_sha256', 'execution_id'):\n"
+        "    if inputs.get(field) != expected.get(field):\n"
+        "        _die('derived inputs field %s differs from the frozen request derivation: %r != %r'\n"
+        "             % (field, inputs.get(field), expected.get(field)))\n"
         "# The helper bytes are pinned by the parent from what it wrote; the\n"
         "# child re-reads the SAME file and compares against the pin (never\n"
         "# re-deriving the expectation from the file under test).\n"
@@ -158,33 +189,42 @@ def write_child_bootstrap(directory):
         "    _die('os_fixture_backend helper missing: %s' % helper_path)\n"
         "if hashlib.sha256(helper_bytes).hexdigest() != pins['helper_sha256']:\n"
         "    _die('helper bytes differ from the pinned spec')\n"
-        "# All bindings verified — install ONLY the case-entitled seam.\n"
-        "import importlib.util as ilu\n"
-        "import logging.handlers\n"
-        "spec = ilu.spec_from_file_location('fnreg_os_fixture_backend', helper_path)\n"
-        "backend = ilu.module_from_spec(spec)\n"
-        "try:\n"
+        "# Whole-initialization fail-closed: every remaining stage (helper\n"
+        "# exec, case-module imports, patch install, success marker) runs under\n"
+        "# one top-level try; ANY failure is fatal — sitecustomize's warn-and-\n"
+        "# continue behavior can never leak the child into the producer.\n"
+        "def _install():\n"
+        "    import importlib.util as ilu\n"
+        "    spec = ilu.spec_from_file_location('fnreg_os_fixture_backend', helper_path)\n"
+        "    backend = ilu.module_from_spec(spec)\n"
         "    spec.loader.exec_module(backend)\n"
+        "    import logging.handlers\n"
+        "    if pins['case'] in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH'):\n"
+        "        import fakenet.diverters.windows as _win\n"
+        "        _win.Diverter = backend.Backend\n"
+        "        import fakenet.fakenet as _core\n"
+        "        _core.IfaceIpInfo = backend.IfaceIpInfo\n"
+        "    elif pins['case'] == 'GAP-SYSLOG-ICMP-LOG':\n"
+        "        target = str(PureWindowsPath(owned) / 'syslog.sink')\n"
+        "        class _OwnedSink(logging.Handler):\n"
+        "            def __init__(self):\n"
+        "                super().__init__(); self.target = Path(target); self._closed = False\n"
+        "            def emit(self, record):\n"
+        "                if self._closed: raise ValueError('owned sink closed')\n"
+        "                with self.target.open('a', encoding='utf-8') as s: s.write(self.format(record) + '\\n')\n"
+        "            def close(self):\n"
+        "                self._closed = True; super().close()\n"
+        "        logging.handlers.NTEventLogHandler = lambda *a, **k: _OwnedSink()\n"
+        "try:\n"
+        "    _install()\n"
+        "except SystemExit:\n"
+        "    raise\n"
         "except BaseException as error:\n"
-        "    _die('backend helper failed to initialize: %r' % (error,))\n"
-        "if pins['case'] in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH'):\n"
-        "    import fakenet.diverters.windows as _win\n"
-        "    _win.Diverter = backend.Backend\n"
-        "    import fakenet.fakenet as _core\n"
-        "    _core.IfaceIpInfo = backend.IfaceIpInfo\n"
-        "elif pins['case'] == 'GAP-SYSLOG-ICMP-LOG':\n"
-        "    target = str(PureWindowsPath(owned) / 'syslog.sink')\n"
-        "    class _OwnedSink(logging.Handler):\n"
-        "        def __init__(self):\n"
-        "            super().__init__(); self.target = Path(target); self._closed = False\n"
-        "        def emit(self, record):\n"
-        "            if self._closed: raise ValueError('owned sink closed')\n"
-        "            with self.target.open('a', encoding='utf-8') as s: s.write(self.format(record) + '\\n')\n"
-        "        def close(self):\n"
-        "            self._closed = True; super().close()\n"
-        "    logging.handlers.NTEventLogHandler = lambda *a, **k: _OwnedSink()\n"
-        "sys.stderr.write('FNREG_OS_FIXTURE_BOOTSTRAP case=%s request_sha=%s helper=%s owned=%s\\n'\n"
-        "                 % (pins['case'], pins['request_sha256'][:12], pins['helper_sha256'][:12], owned))\n",
+        "    sys.stderr.write('FNREG_OS_FIXTURE_INIT_FAILED: %s: %s\\n' % (type(error).__name__, error))\n"
+        "    traceback.print_exc()\n"
+        "    raise SystemExit(78)\n"
+        "sys.stderr.write('FNREG_OS_FIXTURE_BOOTSTRAP case=%s request_file=%s helper=%s owned=%s\\n'\n"
+        "                 % (pins['case'], pins['request_file_sha256'][:12], pins['helper_sha256'][:12], owned))\n",
         encoding='utf-8')
     spec_src = Path(__file__).with_name('test_ctrlc_backend.py').read_text(encoding='utf-8')
     (directory / 'os_fixture_backend.py').write_text(spec_src, encoding='utf-8')
@@ -206,6 +246,7 @@ class FaithfulWindowsStandIn:
     def transfer(self, name, direction, sources, destination, *, producer_reference):
         if direction == 'push':
             self.pushed[name] = json.loads(Path(sources[0]['absolute_path']).read_text())
+            self.pushed['push-request-file'] = sources[0]['absolute_path']
             return {}
         request = self.pushed['push-request']
         output_root = Path(request['output_root'])
@@ -234,12 +275,30 @@ class FaithfulWindowsStandIn:
             # PARENT-derived pinned spec: every value comes from the frozen
             # guest request or the parent-verified helper bytes — the child
             # matches ALL of it against its own argv/inputs/file reads.
+            # The child verifies the ACTUAL frozen outer-request FILE bytes
+            # (same object, same algorithm on both ends) — not a re-serialization.
+            request_file = next(iter(self.pushed.values()))
+            request_bytes = Path(self.pushed['push-request-file']).read_bytes()
+            expected_inputs = dict(request_file.get('manual') or {})
+            expected_inputs.update({
+                'case': request_file['case_id'],
+                'fixture': request_file.get('candidate', {}).get('offline_fixture') is True,
+                'owned_root': request['output_root'].rstrip('\\') + '\\driver',
+                'config': request['output_root'].rstrip('\\') + '\\driver\\config',
+                'candidate_id': 'manual-candidate',
+                'source_commit': request_file['candidate']['source_commit'],
+                'package_sha256': request_file['candidate']['package_sha256'],
+                'execution_id': request_file['execution_id'],
+            })
             env['FNREG_OS_FIXTURE_PINS'] = json.dumps({
                 'case': request['case_id'],
                 'fixture': True,
-                'request_sha256': hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest(),
+                'request_file_sha256': hashlib.sha256(request_bytes).hexdigest(),
+                'request_file': str(self.pushed['push-request-file']),
+                'expected_inputs': expected_inputs,
                 'output_root': request['output_root'],
                 'owned_root': request['output_root'].rstrip('\\') + '\\driver',
+                'faithful_root': Path(__import__('os').environ['FN_MANUAL_FAITHFUL_ROOT']).anchor,
                 'helper_sha256': hashlib.sha256((bootstrap_dir / 'os_fixture_backend.py').read_bytes()).hexdigest(),
             })
         saved = {k: os.environ.get(k) for k in env}

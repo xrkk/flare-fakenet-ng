@@ -28,27 +28,44 @@ print('BUSINESS_MARKER %s' % marker)
 
 class BootstrapBindingGuardTests(unittest.TestCase):
     def setUp(self):
-        self.base = Path(tempfile.mkdtemp(prefix='fnreg-r06-guard-', dir='/tmp'))
+        import hashlib
+        self.base = Path(tempfile.mkdtemp(prefix='fnreg-r07-guard-', dir='/tmp'))
         self.bootstrap = support.write_child_bootstrap(self.base / 'boot')
-        # A derived-inputs file shaped exactly like the real guest derivation.
-        self.owned = r'E:\fnreg-r06\runs\exec-1\GAP-SYSLOG-ICMP-LOG\output\driver'
+        # A real frozen outer-request FILE shaped like the guest chain's push.
+        self.owned = r'E:\fnreg-r07\runs\exec-1\GAP-SYSLOG-ICMP-LOG\output\driver'
+        self.output_root = r'E:\fnreg-r07\runs\exec-1\GAP-SYSLOG-ICMP-LOG\output'
+        self.request_file = self.base / 'guest-request.json'
+        self.request_value = {
+            'schema': 'fakenet.native-guest-request.v1',
+            'case_id': 'GAP-SYSLOG-ICMP-LOG', 'case': {'id': 'GAP-SYSLOG-ICMP-LOG'},
+            'candidate': {'source_commit': 'a' * 40, 'package_sha256': 'b' * 64,
+                          'offline_fixture': True},
+            'execution_id': 'exec-1', 'checks': ['syslog', 'icmp', 'owner'],
+            'output_root': self.output_root, 'actions': ['native'],
+            'manual': {'schema': 'fakenet.manual-options.v1', 'responsea': '192.0.2.55'}}
+        self.request_file.write_text(json.dumps(self.request_value, indent=2) + '\n')
+        self.request_bytes = self.request_file.read_bytes()
         self.inputs = self.base / 'manual-inputs.json'
-        self.inputs.write_text(json.dumps({
+        self.inputs_value = {
             'schema': 'fakenet.manual-input.v1', 'case': 'GAP-SYSLOG-ICMP-LOG',
             'fixture': True, 'owned_root': self.owned,
-            'config': self.owned + '\\config', 'candidate_id': 'x',
+            'config': self.owned + '\\config', 'candidate_id': 'manual-candidate',
             'source_commit': 'a' * 40, 'package_sha256': 'b' * 64,
-            'execution_id': 'exec-1'}))
+            'execution_id': 'exec-1',
+            'responsea': '192.0.2.55'}
+        self.inputs.write_text(json.dumps(self.inputs_value, indent=2) + '\n')
         self.probe = self.base / 'probe.py'
         self.probe.write_text(PROBE)
-        import hashlib
         self.helper_sha = hashlib.sha256(
             (self.bootstrap / 'os_fixture_backend.py').read_bytes()).hexdigest()
         self.good_pins = {
             'case': 'GAP-SYSLOG-ICMP-LOG', 'fixture': True,
-            'request_sha256': 'c' * 64,
-            'output_root': r'E:\fnreg-r06\runs\exec-1\GAP-SYSLOG-ICMP-LOG\output',
-            'owned_root': self.owned, 'helper_sha256': self.helper_sha}
+            'request_file_sha256': hashlib.sha256(self.request_bytes).hexdigest(),
+            'request_file': str(self.request_file),
+            'expected_inputs': dict(self.inputs_value),
+            'output_root': self.output_root, 'owned_root': self.owned,
+            'faithful_root': 'E:\\',
+            'helper_sha256': self.helper_sha}
 
     def run_child(self, pins=None, inputs_path=None, probe_arg='SYSLOG', extra_env=None):
         env = dict(os.environ)
@@ -70,30 +87,59 @@ class BootstrapBindingGuardTests(unittest.TestCase):
         self.assertNotIn('BUSINESS_MARKER', result.stdout, '%s: producer marker ran' % why)
         self.assertIn('FNREG_OS_FIXTURE_REFUSED', result.stderr, why)
 
-    def test_controller_wrong_sha_foreign_root_counterexample(self):
-        # Exact controller entry point: wrong sha (0*64) AND a foreign Z: root
-        # — previously installed the sink and ran the marker; must now refuse.
-        result = self.run_child(pins={'case': 'GAP-SYSLOG-ICMP-LOG', 'fixture': True,
-                                      'request_sha256': '0' * 64,
-                                      'output_root': r'Z:\elsewhere', 'owned_root': r'Z:\elsewhere\driver',
-                                      'helper_sha256': self.helper_sha},
-                                inputs_path=self.inputs)
-        self.assert_refused(result, 'wrong-sha-foreign-root')
+    def test_single_field_wrong_request_sha_only(self):
+        # ONLY the pinned request digest changes; roots/helper/identity stay
+        # correct — the child must refuse on the outer-request digest itself.
+        pins = dict(self.good_pins, request_file_sha256='0' * 64)
+        result = self.run_child(pins=pins, inputs_path=self.inputs)
+        self.assert_refused(result, 'wrong-request-sha-only')
+        self.assertIn('outer request bytes differ', result.stderr)
 
-    def test_controller_missing_backend_helper_counterexample(self):
-        # Exact controller entry point: backend helper deleted from the
-        # bootstrap; sitecustomize import errors previously WARNED and the
-        # marker still ran. Now the helper absence is a fatal refusal.
-        (self.bootstrap / 'os_fixture_backend.py').unlink()
-        result = self.run_child(pins=self.good_pins, inputs_path=self.inputs)
-        self.assert_refused(result, 'missing-backend-helper')
+    def test_single_field_wrong_output_root_only(self):
+        # ONLY the pinned output root changes (foreign parent); everything
+        # else, including the inputs file, stays correct.
+        pins = dict(self.good_pins, output_root=r'Z:\elsewhere\\output',
+                    owned_root=r'Z:\elsewhere\\output\\driver')
+        result = self.run_child(pins=pins, inputs_path=self.inputs)
+        self.assert_refused(result, 'wrong-output-root-only')
+        self.assertIn('does not match the pinned request root', result.stderr)
 
-    def test_controller_missing_both_identities_counterexample(self):
-        # Exact controller entry point: no CASE/SHA env at all previously ran
-        # the marker silently on real interfaces. With the sitecustomize on
-        # PYTHONPATH and no pins, the child must die before any business.
-        result = self.run_child(pins=None, inputs_path=self.inputs)
-        self.assert_refused(result, 'missing-both-identities')
+    def test_single_field_changed_candidate_identity_only(self):
+        # ONLY the inputs' candidate_id differs from the frozen derivation.
+        broken = dict(self.inputs_value, candidate_id='attacker')
+        alt = self.base / 'cand.json'; alt.write_text(json.dumps(broken))
+        result = self.run_child(pins=self.good_pins, inputs_path=alt)
+        self.assert_refused(result, 'changed-candidate-only')
+        self.assertIn('field candidate_id differs', result.stderr)
+
+    def test_single_field_changed_execution_id_only(self):
+        broken = dict(self.inputs_value, execution_id='foreign-exec')
+        alt = self.base / 'exec.json'; alt.write_text(json.dumps(broken))
+        result = self.run_child(pins=self.good_pins, inputs_path=alt)
+        self.assert_refused(result, 'changed-execution-only')
+        self.assertIn('field execution_id differs', result.stderr)
+
+    def test_install_stage_exception_is_fatal(self):
+        # The controller's ctrlc-install-exception counterexample: a failure
+        # during the case-module import/patch stage (winreg absent on POSIX)
+        # previously WARNED and the marker still ran. The whole-init guard
+        # now makes any install failure fatal BEFORE the business marker.
+        ctrl = self.base / 'ctrl.json'
+        ctrl.write_text(json.dumps({**self.inputs_value, 'case': 'GAP-CTRLC-IPC'}))
+        request_ctrl = self.base / 'guest-ctrl.json'
+        value = dict(self.request_value, case_id='GAP-CTRLC-IPC',
+                     case={'id': 'GAP-CTRLC-IPC'}, output_root=self.output_root)
+        request_ctrl.write_text(json.dumps(value, indent=2) + '\n')
+        import hashlib
+        pins = dict(self.good_pins, case='GAP-CTRLC-IPC',
+                    request_file=str(request_ctrl),
+                    request_file_sha256=hashlib.sha256(request_ctrl.read_bytes()).hexdigest(),
+                    expected_inputs={**self.inputs_value, 'case': 'GAP-CTRLC-IPC'})
+        result = self.run_child(pins=pins, inputs_path=ctrl, probe_arg='CTRLC')
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn('BUSINESS_MARKER', result.stdout)
+        self.assertTrue('FNREG_OS_FIXTURE_INIT_FAILED' in result.stderr
+                        or 'FNREG_OS_FIXTURE_REFUSED' in result.stderr, result.stderr)
 
     def test_matrix_wrong_case(self):
         pins = dict(self.good_pins, case='GAP-LIST-MUTEX')
@@ -123,16 +169,6 @@ class BootstrapBindingGuardTests(unittest.TestCase):
         self.assert_refused(self.run_child(pins=self.good_pins,
                                            inputs_path=self.base / 'absent.json'), 'unreadable-inputs')
 
-    def test_matrix_init_exception_is_fatal(self):
-        # A backend helper that raises at import must terminate the child.
-        (self.bootstrap / 'os_fixture_backend.py').write_text('raise RuntimeError("boom")\n')
-        import hashlib
-        pins = dict(self.good_pins,
-                    helper_sha256=hashlib.sha256(b'raise RuntimeError("boom")\n').hexdigest())
-        result = self.run_child(pins=pins, inputs_path=self.inputs)
-        self.assertNotEqual(0, result.returncode)
-        self.assertNotIn('BUSINESS_MARKER', result.stdout)
-
     def test_positive_syslog_loads_only_owned_sink(self):
         # Correct pins + matching inputs: the child starts, installs ONLY the
         # owned sink seam (no backend patch), prints the load line, and the
@@ -143,31 +179,28 @@ class BootstrapBindingGuardTests(unittest.TestCase):
         self.assertIn('FNREG_OS_FIXTURE_BOOTSTRAP case=GAP-SYSLOG-ICMP-LOG', result.stderr)
 
     def test_positive_ctrlc_loads_only_backend(self):
-        # The backend seam install imports fakenet.diverters.windows, which
-        # pulls winreg — a Windows-only module. On a POSIX host the CTRLC
-        # positive is verified up to that platform boundary: all bindings
-        # pass and the interpreter reaches the seam-install import; the full
-        # positive runs under the real Windows fixture (S52/R05 evidence).
+        # POSIX: the winreg import failure during install is now a FATAL
+        # init failure (previously warned and ran the marker) — assert that.
         import sys as _sys
-        if _sys.platform != 'win32':
-            ctrl = self.base / 'ctrl.json'
-            ctrl.write_text(json.dumps({**json.loads(self.inputs.read_text()),
-                                        'case': 'GAP-CTRLC-IPC'}))
-            result = self.run_child(pins=dict(self.good_pins, case='GAP-CTRLC-IPC'),
-                                    inputs_path=ctrl, probe_arg='CTRLC')
-            # Sitecustomize Exception only WARNS and the interpreter
-            # continues — so on POSIX the probe marker legitimately appears
-            # AFTER the failed winreg import; the platform-boundary evidence
-            # is the absence of any GUARD refusal (all bindings passed).
-            self.assertNotIn('FNREG_OS_FIXTURE_REFUSED', result.stderr)
-            self.assertIn("No module named 'winreg'", result.stderr)
-            return
-        pins = dict(self.good_pins, case='GAP-CTRLC-IPC')
         ctrl = self.base / 'ctrl.json'
-        ctrl.write_text(json.dumps({**json.loads(self.inputs.read_text()),
-                                    'case': 'GAP-CTRLC-IPC'}))
+        ctrl.write_text(json.dumps({**self.inputs_value, 'case': 'GAP-CTRLC-IPC'}))
+        request_ctrl = self.base / 'guest-ctrl.json'
+        value = dict(self.request_value, case_id='GAP-CTRLC-IPC',
+                     case={'id': 'GAP-CTRLC-IPC'}, output_root=self.output_root)
+        request_ctrl.write_text(json.dumps(value, indent=2) + '\n')
+        import hashlib
+        pins = dict(self.good_pins, case='GAP-CTRLC-IPC',
+                    request_file=str(request_ctrl),
+                    request_file_sha256=hashlib.sha256(request_ctrl.read_bytes()).hexdigest(),
+                    expected_inputs={**self.inputs_value, 'case': 'GAP-CTRLC-IPC'})
         result = self.run_child(pins=pins, inputs_path=ctrl, probe_arg='CTRLC')
+        if _sys.platform != 'win32':
+            self.assertNotEqual(0, result.returncode)
+            self.assertNotIn('BUSINESS_MARKER', result.stdout)
+            self.assertIn('FNREG_OS_FIXTURE_INIT_FAILED', result.stderr)
+            return
         self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn('BUSINESS_MARKER', result.stdout)
         self.assertIn('FNREG_OS_FIXTURE_BOOTSTRAP case=GAP-CTRLC-IPC', result.stderr)
 
 
