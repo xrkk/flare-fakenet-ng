@@ -91,7 +91,7 @@ def source_paths(root=ROOT):
  while pending:
   relative=pending.pop();path=Path(root)/relative
   if not path.is_file() or path.suffix!='.py':continue
-  tree=ast.parse(path.read_text())
+  tree=ast.parse(path.read_text(encoding='utf-8'))
   for node in ast.walk(tree):
    candidates=[]
    if isinstance(node,ast.Import):candidates=[item.name for item in node.names]
@@ -1166,7 +1166,7 @@ def current_tool_surface(root=ROOT):
  import ast
  names=[]
  for relative in ('fakenet/mcp/server.py','fakenet/mcp/tools.py'):
-  tree=ast.parse((Path(root)/relative).read_text())
+  tree=ast.parse((Path(root)/relative).read_text(encoding='utf-8'))
   for node in ast.walk(tree):
    if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and any(isinstance(d,ast.Call) and isinstance(d.func,ast.Attribute) and d.func.attr=='tool' for d in node.decorator_list):names.append(node.name)
  if len(names)!=len(set(names)):raise ValueError('ambiguous candidate tool surface')
