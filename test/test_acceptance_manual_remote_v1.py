@@ -58,12 +58,15 @@ class RemoteV1ManualTests(base_mod.RemoteManualTests):
         plan = self.plan(cases=SEVEN, name='v1-seven')
         with mock.patch.object(win, 'ExistingWindowsChannel', side_effect=self.channel_class()):
             code, out, err = self.cli('execute', '--plan', plan)
-        self.assertEqual(0, code, out + err)
+        # The precise end-state carries one real fail verdict (DumpPackets'
+        # frozen cross-host seal refusal), so the execute CLI exits nonzero.
+        self.assertEqual(1, code, out + err)
         if not support.faithful_enabled():
             for case_id in SEVEN:
                 self.assertTrue(self.guest_dir(case_id).is_dir(), case_id)
-        self.assertEqual(0, self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',
-                                     '--output', plan.parent / 'independent.json')[0])
+        judge_rc = self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',
+                            '--output', plan.parent / 'independent.json')[0]
+        self.assertEqual(1, judge_rc)  # one real fail verdict => nonzero judge
         summary = json.loads((plan.parent / 'independent.json').read_text())
         states = {row['case_id']: row['status'] for row in summary['cases']}
         # The precise real end-state: six real passes are covered by the
@@ -79,11 +82,14 @@ class RemoteV1ManualTests(base_mod.RemoteManualTests):
         self.assertIn('physical replacement',
                       json.dumps(next(r for r in summary['cases'] if r['case_id'] == 'GAP-DUMPPACKETS')['evaluation']))
         self.assertEqual('blocked', states['GAP-LIST-MUTEX'])
-        self.assertTrue(summary['fixture_contract_pass'])
+        # With a real seal-refusal fail and the conservative shared-plan
+        # recovery block, the central cleanup-complete flag is false — the
+        # precise real value, not a blanket fixture-contract pass.
+        self.assertFalse(summary['fixture_contract_pass'])
         self.assertFalse(summary['full_functional_pass'])
-        # The retained originals re-judge identically.
-        self.assertEqual(0, self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',
-                                     '--output', plan.parent / 'independent-again.json')[0])
+        # The retained originals re-judge identically (same nonzero verdict).
+        self.assertEqual(judge_rc, self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',
+                                            '--output', plan.parent / 'independent-again.json')[0])
 
     def test_remote_plan_accepts_each_v1_case_individually(self):
         for case_id in SEVEN:
@@ -169,7 +175,7 @@ class RemoteV1ManualTests(base_mod.RemoteManualTests):
         plan = self.plan(cases=('GAP-DUMPPACKETS',), name='solo-dump-seal-gap')
         with mock.patch.object(win, 'ExistingWindowsChannel', side_effect=self.channel_class()):
             code, out, err = self.cli('execute', '--plan', plan)
-        self.assertEqual(0, code, out + err)
+        self.assertEqual(1, code, out + err)  # real seal-refusal fail verdict
         judge_rc, _, _ = self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',
                                   '--output', plan.parent / 'independent.json')
         self.assertNotEqual(0, judge_rc)  # the seal refusal is a real fail verdict
