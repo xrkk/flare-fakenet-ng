@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import uuid
 import unittest.mock
 from pathlib import Path
 
@@ -93,10 +94,16 @@ class Base(unittest.TestCase):
         transport.mkdir(parents=True)
         (run / 'guest-request.json').write_text(json.dumps(request, indent=2) + '\n',
                                                 encoding='utf-8')
-        entry = str(Path(self.runtime['source_root']) / 'tools/acceptance_guest.py')
-        command = ('fixed entry=%s request-sha=%s' % (entry, request_sha))
+        from pathlib import PurePosixPath
+        entry_type = PurePosixPath
+        remote_request = str(entry_type(self.runtime['work_root']) / self.plan['execution_id'] /
+                             'GAP-DUMPPACKETS' / 'input' / 'request.json')
+        command = W.ExistingWindowsChannel.build_execute_command(
+            self.runtime, remote_request, request_sha, request['output_root'],
+            request['source_hashes'], self.catalog_case.get('timeout', 30), capture_stdout=True)
         (transport / 'execute-intent.json').write_text(
-            json.dumps({'operation': 'execute', 'command': command}) + '\n', encoding='utf-8')
+            json.dumps({'operation': 'execute', 'command': command,
+                        'timeout': self.catalog_case.get('timeout', 30) + 120}) + '\n', encoding='utf-8')
         payload = {'returncode': 0, 'process_exited': True, 'recovered': True,
                    'guest_stdout': json.dumps(closure, ensure_ascii=False, sort_keys=True,
                                               separators=(',', ':'))}
@@ -107,27 +114,43 @@ class Base(unittest.TestCase):
             {'exit_code': 0, 'is_error': False,
              'output': json.dumps(dict(self.identity, vm_uuid=self.vm['vm_uuid']))})
             + '\n', encoding='utf-8')
-        spec = {'direction': 'pull',
+        spec = {'schema': 'velo.transfer.request.v1', 'direction': 'pull',
                 'expected_vm_identity': dict(self.vm),
                 'sources': [{'absolute_path': str(self.output_root),
                              'relative_path': 'originals'}],
                 'destination_directory': str((run / 'incoming').resolve()),
                 'transfer_id': 't' * 32}
-        (transport / 'pull-originals-spec.json').write_text(
-            json.dumps(spec) + '\n', encoding='utf-8')
-        files = [{'relative_path': 'originals/' + f['relative_path'],
-                  'size': f['size'], 'sha256': f['sha256']} for f in closure['files']]
+        spec_path = transport / 'pull-originals-spec.json'
+        spec_bytes = (json.dumps(spec) + '\n').encode('utf-8')
+        spec_path.write_bytes(spec_bytes)
         origin = source_root if source_root is not None else self.output_root
+        source_root_path = entry_type(str(self.output_root))
+        destination_root = entry_type(str((run / 'incoming').resolve())) / 'originals'
+        files = []
+        for f in closure['files']:
+            inner = f['relative_path']
+            files.append({'relative_path': 'originals/' + inner,
+                          'size': f['size'], 'sha256': f['sha256'],
+                          'source': str(source_root_path.joinpath(*Path(inner).parts)),
+                          'destination': str(destination_root.joinpath(*Path(inner).parts))})
         velo = {'schema': 'velo.transfer.result.v1', 'transfer_id': spec['transfer_id'],
                 'direction': 'pull', 'phase': 'COMPLETE', 'outcome': 'complete',
                 'published_ever': True, 'destination_verified': True,
                 'cleanup': {'host': True, 'guest': True},
-                'source_vm_identity': dict(self.vm), 'files': files}
-        result_path = run / 'velo-result.json'
+                'source_vm_identity': dict(self.vm),
+                'destination_identity': {'endpoint': 'host',
+                                         'canonical_path': str((run / 'incoming').resolve())},
+                'files': files}
+        result_path = transport / 'pull-originals-velo-result.json'
         result_path.write_text(json.dumps(velo, indent=2) + '\n', encoding='utf-8')
+        (transport / 'pull-originals-intent.json').write_text(json.dumps(
+            {'argv': ['velo_transfer', '--spec', str(spec_path.resolve())],
+             'spec_sha256': hashlib.sha256(spec_bytes).hexdigest()}) + '\n', encoding='utf-8')
+        (transport / 'pull-originals-exit.json').write_text(json.dumps(
+            {'returncode': 0}) + '\n', encoding='utf-8')
         (transport / 'pull-originals-terminal.json').write_text(json.dumps(
             {'result_path': str(result_path), 'sha256': _sha(result_path),
-             'spec_path': str(transport / 'pull-originals-spec.json')}) + '\n',
+             'spec_path': str(spec_path)}) + '\n',
             encoding='utf-8')
         incoming = run / 'incoming/originals'
         incoming.mkdir(parents=True)
@@ -242,16 +265,47 @@ class SourceClosure(Base):
             N.finalize_dump_evidence(ROOT, request, sha, str(self.output_root))
         result['receipt']['status'] = 'pass'
         result_path.write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
-        # An output that changes during finalization: the second inventory
-        # differs because a foreign file appears between the two snapshots.
+        # A foreign file appearing between the two snapshots refuses.
+        rows, physical = N._closure_inventory(self.output_root)
         with unittest.mock.patch.object(
                 N, '_closure_inventory',
-                side_effect=[N._closure_inventory(self.output_root),
-                             dict(N._closure_inventory(self.output_root),
-                                  foreign={'relative_path': 'foreign',
-                                           'size': 1, 'sha256': '0' * 64})]):
+                side_effect=[(rows, physical),
+                             (dict(rows, foreign={'relative_path': 'foreign',
+                                                  'size': 1, 'sha256': '0' * 64}),
+                              dict(physical))]):
             with self.assertRaisesRegex(ValueError, 'changed during'):
                 N.finalize_dump_evidence(ROOT, request, sha, str(self.output_root))
+        # S59-R01 physical probe, real: after the strict oracle passes and
+        # before the post scan, REALLY os.replace the sealed raw PCAP with
+        # byte-identical content (new inode).  The closure must refuse; the
+        # default loader independently still refuses the same replacement.
+        enabled = self.output_root / 'driver/enabled'
+        raw = enabled / next(n for n in sorted(q.name for q in enabled.glob('*.pcap'))
+                             if not n.endswith('-converted.pcap'))
+        real_evaluation = N.original_evaluation
+
+        def replace_after_strict(root2, case2, plan2, output_dir):
+            evaluation = real_evaluation(root2, case2, plan2, output_dir)
+            data = raw.read_bytes()
+            temporary = raw.with_suffix('.swap-probe')
+            temporary.write_bytes(data)
+            os.replace(temporary, raw)
+            return evaluation
+        with unittest.mock.patch.object(N, 'original_evaluation',
+                                        side_effect=replace_after_strict):
+            # The finalizer refuses at its own entry: the in-finalizer strict
+            # loader re-check (physical replacement) fires before the post
+            # scan comparison would; both are this entry refusing.
+            with self.assertRaisesRegex(Exception,
+                                        'physical identity changed|physical replacement'):
+                N.finalize_dump_evidence(ROOT, request, sha, str(self.output_root))
+        from fakenet.payload_report import load_capture_originals as _l, PayloadReportError as _pe
+        with self.assertRaisesRegex(_pe, 'physical replacement'):
+            _l(raw, None)
+        # Restore byte-identical content at the original address family so the
+        # remaining tests see a finalizable source again.
+        shutil.rmtree(self.output_root)
+        request, sha, closure = self.produce_dump()
         # Restoring the passing result keeps the source finalizable.
         again = N.finalize_dump_evidence(ROOT, request, sha, str(self.output_root))
         self.assertEqual(closure['inventory_sha256'], again['inventory_sha256'])
@@ -302,45 +356,99 @@ class RelocationContext(Base):
         self.assertEqual(closure['inventory_sha256'], context['inventory_sha256'])
 
     def test_dc_a3_self_consistent_batch_swap_refused(self):
-        # Keep A's closure and A's execute response, but replace EVERY pulled
-        # guest-side file with a fresh self-consistent B production and make
-        # the Velo record truthfully describe B.  Only the closure-to-batch
-        # exact-set comparison can refuse this.
+        # S59-R05 correction: B is produced under the SAME output_root/owned
+        # root/inputs/request semantics (A is re-produced at the very same
+        # path after its closure and journals are safely recorded), so B's
+        # inputs and guest identity all still satisfy the frozen request.
+        # Keep A's closure and A's execute response; swap the pulled batch to
+        # B and make the Velo record truthfully describe B.  Only the
+        # closure-to-batch binding can refuse this.
+        request, sha, closure_a = self.produce_dump()
+        run_a = self.build_run_dir(request, sha, closure_a)
+        self.context_for(run_a)  # A's own context is valid first (A preserved)
+        # Same-request B: re-run the REAL production at the SAME output_root.
+        shutil.rmtree(self.output_root)
+        request_b, sha_b, closure_b = self.produce_dump()
+        self.assertEqual(sha, sha_b)  # identical request bytes/digest
+        run = self.build_run_dir(request_b, sha_b, closure_b,
+                                 source_root=self.output_root)
+        # But keep A's direct execute response (A's closure on stdout).
+        response = run / 'transport/execute-response.json'
+        payload = json.loads(json.loads(response.read_text())['output'])
+        payload['guest_stdout'] = json.dumps(closure_a, ensure_ascii=False,
+                                             sort_keys=True, separators=(',', ':'))
+        response_data = json.loads(response.read_text())
+        response_data['output'] = json.dumps(payload)
+        response.write_text(json.dumps(response_data))
+        with self.assertRaisesRegex(
+                ValueError,
+                'differs from the source closure|capture selection differs|capture id differs'):
+            self.context_for(run)
+
+    def test_dc_a5_pull_record_divergences(self):
         request, sha, closure = self.produce_dump()
         run = self.build_run_dir(request, sha, closure)
-        b_root = self.base / 'work-b' / self.plan['execution_id'] / 'GAP-DUMPPACKETS' / 'output'
-        b_root.mkdir(parents=True)
-        inputs = N.manual_inputs(self.plan, self.catalog_case, str(b_root))
-        M.run('GAP-DUMPPACKETS', b_root / 'driver', inputs)
-        (b_root / 'manual-inputs.json').write_text(json.dumps(inputs) + '\n')
-        result_b = {'schema': 'fakenet.native-guest-result.v1',
-                    'execution_id': self.plan['execution_id'],
-                    'case_id': 'GAP-DUMPPACKETS', 'request': request,
-                    'receipt': {'status': 'pass', 'cleanup': {
-                        'recovered': True,
-                        'process_exit': {'exited': True, 'returncode': 0}}}}
-        (b_root / 'guest-result.json').write_text(json.dumps(result_b) + '\n')
-        # Velo truthfully describes the B batch.
-        incoming = run / 'incoming/originals'
-        shutil.rmtree(incoming)
-        incoming.mkdir(parents=True)
-        files = []
-        for path in sorted(b_root.rglob('*')):
-            if path.is_file():
-                target = incoming.joinpath(*path.relative_to(b_root).parts)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(path, target)
-                files.append({'relative_path': 'originals/' + path.relative_to(b_root).as_posix(),
-                              'size': path.stat().st_size, 'sha256': _sha(path)})
-        velo_path = run / 'velo-result.json'
-        velo = json.loads(velo_path.read_text())
-        velo['files'] = files
-        velo_path.write_text(json.dumps(velo))
+        result_path = run / 'transport/pull-originals-velo-result.json'
+        terminal = run / 'transport/pull-originals-terminal.json'
+        # duplicate Velo member (silently dict-merged before the fix)
+        velo = json.loads(result_path.read_text())
+        velo['files'].append(dict(velo['files'][0]))
+        result_path.write_text(json.dumps(velo))
+        record = json.loads(terminal.read_text())
+        record['sha256'] = _sha(result_path)
+        terminal.write_text(json.dumps(record))
+        with self.assertRaisesRegex(ValueError, 'duplicated'):
+            self.context_for(run)
+        # wrong destination identity in the result
+        run = self.build_run_dir(request, sha, closure)
+        result_path = run / 'transport/pull-originals-velo-result.json'
+        velo = json.loads(result_path.read_text())
+        velo['destination_identity'] = {'endpoint': 'host',
+                                        'canonical_path': str(run / 'elsewhere')}
+        result_path.write_text(json.dumps(velo))
         terminal = run / 'transport/pull-originals-terminal.json'
         record = json.loads(terminal.read_text())
-        record['sha256'] = _sha(velo_path)
+        record['sha256'] = _sha(result_path)
         terminal.write_text(json.dumps(record))
-        with self.assertRaisesRegex(ValueError, 'pulled set differs'):
+        with self.assertRaisesRegex(ValueError, 'result contract missing'):
+            self.context_for(run)
+        # actual pull operation exited nonzero
+        run = self.build_run_dir(request, sha, closure)
+        (run / 'transport/pull-originals-exit.json').write_text(
+            json.dumps({'returncode': 7}))
+        with self.assertRaisesRegex(ValueError, 'exited nonzero'):
+            self.context_for(run)
+
+    def test_capture_identity_divergences(self):
+        request, sha, closure = self.produce_dump()
+        run = self.build_run_dir(request, sha, closure)
+        response_path = run / 'transport/execute-response.json'
+        def forged(mutate):
+            response = json.loads(response_path.read_text())
+            payload = json.loads(response['output'])
+            forged_closure = json.loads(payload['guest_stdout'])
+            mutate(forged_closure)
+            payload['guest_stdout'] = json.dumps(forged_closure, ensure_ascii=False,
+                                                 sort_keys=True, separators=(',', ':'))
+            response['output'] = json.dumps(payload)
+            response_path.write_text(json.dumps(response))
+        # capture id is not a uuid and does not match the seal
+        forged(lambda c: c['capture'].update(capture_id='wrong-capture'))
+        with self.assertRaisesRegex(ValueError, 'valid uuid'):
+            self.context_for(run)
+        # all three capture paths alias guest-result.json
+        run = self.build_run_dir(request, sha, closure)
+        response_path = run / 'transport/execute-response.json'
+        forged(lambda c: c['capture'].update(raw='guest-result.json',
+                                             converted='guest-result.json',
+                                             seal='guest-result.json'))
+        with self.assertRaisesRegex(ValueError, 'not distinct|inventory'):
+            self.context_for(run)
+        # a valid uuid capture id that belongs to a DIFFERENT capture
+        run = self.build_run_dir(request, sha, closure)
+        response_path = run / 'transport/execute-response.json'
+        forged(lambda c: c['capture'].update(capture_id=str(uuid.uuid4())))
+        with self.assertRaisesRegex(ValueError, 'capture id differs'):
             self.context_for(run)
 
     def test_dc_a4_response_divergences(self):
@@ -367,11 +475,16 @@ class RelocationContext(Base):
 
     def test_dc_a5_identity_and_batch_divergences(self):
         request, sha, closure = self.produce_dump()
-        # request digest missing from the pinned execute command
+        # S59 probe: an unrelated command that merely CONTAINS the expected
+        # entry/digest inside a comment must be refused by exact equality.
         run = self.build_run_dir(request, sha, closure)
         path = run / 'transport/execute-intent.json'
-        path.write_text(json.dumps({'operation': 'execute', 'command': 'no tokens'}))
-        with self.assertRaisesRegex(ValueError, 'pinned entry/digest'):
+        intent = json.loads(path.read_text())
+        path.write_text(json.dumps({'operation': 'execute',
+                                    'command': '# expected %s %s' % (
+                                        intent['command'][:80], sha),
+                                    'timeout': intent['timeout']}))
+        with self.assertRaisesRegex(ValueError, 'command differs'):
             self.context_for(run)
         # wrong VM uuid in the MCP identity journal
         run = self.build_run_dir(request, sha, closure)
@@ -385,7 +498,7 @@ class RelocationContext(Base):
             self.context_for(run)
         # Velo result transfer id differs from the spec
         run = self.build_run_dir(request, sha, closure)
-        path = run / 'velo-result.json'
+        path = run / 'transport/pull-originals-velo-result.json'
         velo = json.loads(path.read_text())
         velo['transfer_id'] = 'd' * 32
         path.write_text(json.dumps(velo))

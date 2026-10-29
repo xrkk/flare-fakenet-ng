@@ -1384,10 +1384,16 @@ def original_evaluation(root,case,plan,output_dir):
 
 
 def _closure_inventory(output_root):
-    """Canonical closed inventory of every regular file under output_root."""
+    """Canonical closed inventory of every regular file under output_root,
+    together with a SOURCE-ONLY physical snapshot (st_dev/st_ino/st_mtime_ns/
+    st_size).  The content rows never mix physical facts into their equality
+    semantics; the physical snapshot is compared separately so a same-bytes
+    physical replacement between the strict pass and the post scan refuses
+    the closure.  Each file is lstat'ed around its read: read-time identity
+    drift is refused on the spot."""
     import hashlib
     output_root=Path(output_root)
-    rows={};seen={};casefold={}
+    rows={};physical={};seen={};casefold={}
     for path in sorted(output_root.rglob('*')):
         if path.is_symlink():raise ValueError('closure inventory contains a symlink: %s'%path)
         if not path.is_file():continue
@@ -1400,9 +1406,16 @@ def _closure_inventory(output_root):
         fold=relative.casefold()
         if fold in casefold:raise ValueError('closure inventory case alias: %s'%relative)
         seen[relative]=True;casefold[fold]=relative
-        rows[relative]={'relative_path':relative,'size':path.stat().st_size,
-                        'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
-    return rows
+        before=os.lstat(path)
+        data=path.read_bytes()
+        after=os.lstat(path)
+        identity=('st_dev','st_ino','st_mtime_ns','st_size')
+        if any(getattr(before,name)!=getattr(after,name) for name in identity):
+            raise ValueError('closure member changed while being read: %s'%relative)
+        rows[relative]={'relative_path':relative,'size':after.st_size,
+                        'sha256':hashlib.sha256(data).hexdigest()}
+        physical[relative]=[getattr(after,name) for name in identity]
+    return rows,physical
 
 
 def finalize_dump_evidence(root,request,request_sha256,output_root):
@@ -1432,7 +1445,7 @@ def finalize_dump_evidence(root,request,request_sha256,output_root):
     catalog=json.loads(_read(Path(root)/'docs/acceptance/catalog.json'))
     case=next(item for suite in catalog['suites'] for item in suite.get('cases',[]) if item['id']==request['case_id'])
     plan={'candidate':request['candidate'],'environment':environment,'execution_id':request['execution_id']}
-    pre=_closure_inventory(output_root)
+    pre,pre_physical=_closure_inventory(output_root)
     if not pre:raise ValueError('dump source closure inventory is empty')
     evaluation,clean=original_evaluation(root,case,plan,output_root)
     if evaluation.get('verdict')!='pass' or clean is not True:
@@ -1449,9 +1462,11 @@ def finalize_dump_evidence(root,request,request_sha256,output_root):
              'converted':converted.relative_to(output_root).as_posix(),
              'seal':Path(str(raw)+'.capture-originals.json').relative_to(output_root).as_posix(),
              'capture_id':loaded.capture_id}
-    post=_closure_inventory(output_root)
+    post,post_physical=_closure_inventory(output_root)
     if pre!=post:
         raise ValueError('output set changed during source finalization')
+    if pre_physical!=post_physical:
+        raise ValueError('output physical identity changed during source finalization')
     for member in (capture['raw'],capture['converted'],capture['seal']):
         if member not in post:raise ValueError('capture member missing from closure inventory: %s'%member)
     closure={
@@ -1804,14 +1819,18 @@ def dump_relocation_context(root,case,plan,output_dir):
     response=json.loads(_read(transport/'execute-response.json'))
     if intent.get('operation')!='execute':raise ValueError('relocation: execute intent missing')
     if response.get('exit_code')!=0 or response.get('is_error'):raise ValueError('relocation: outer MCP execute failed')
-    command=intent.get('command') or ''
     from pathlib import PurePosixPath
     entry_type=PureWindowsPath if runtime['identity']['platform']=='windows' else PurePosixPath
-    entry=str(entry_type(runtime['source_root'])/'tools/acceptance_guest.py')
-    for token in (entry,request_digest):
-        if token not in command:raise ValueError('relocation: execute command lacks pinned entry/digest')
     if 'tools/acceptance_guest.py' not in request.get('source_hashes',{}):
         raise ValueError('relocation: guest entry not pinned in request')
+    remote_request=str(entry_type(runtime['work_root'])/plan['execution_id']/case['id']/'input'/'request.json')
+    expected_command=ExistingWindowsChannel.build_execute_command(
+        runtime,remote_request,request_digest,request['output_root'],
+        request['source_hashes'],case.get('timeout',30),capture_stdout=True)
+    if intent.get('command')!=expected_command:
+        raise ValueError('relocation: execute command differs from the pinned construction')
+    if intent.get('timeout')!=case.get('timeout',30)+120:
+        raise ValueError('relocation: execute intent timeout differs')
     try:payload=json.loads(response['output'])
     except ValueError:raise ValueError('relocation: execute response output is not JSON') from None
     if (payload.get('returncode')!=0 or payload.get('process_exited') is not True or
@@ -1833,43 +1852,106 @@ def dump_relocation_context(root,case,plan,output_dir):
             closure.get('schema')!='fakenet.dump-source-closure.v1'):
         raise ValueError('relocation: closure identity differs from the frozen request')
     _closure_files_valid(closure)
-    capture=closure.get('capture') or {}
-    for member in ('raw','converted','seal'):
-        if capture.get(member) not in {f['relative_path'] for f in closure['files']}:
+    capture=closure.get('capture')
+    if (not isinstance(capture,dict) or set(capture)!={'raw','converted','seal','capture_id'} or
+            not isinstance(capture.get('capture_id'),str)):
+        raise ValueError('relocation: capture block shape invalid')
+    import uuid as _uuid
+    try:_uuid.UUID(capture['capture_id'])
+    except (ValueError,AttributeError,TypeError):raise ValueError(
+        'relocation: capture id is not a valid uuid') from None
+    members=[capture['raw'],capture['converted'],capture['seal']]
+    if len(set(members))!=3:raise ValueError('relocation: capture members are not distinct')
+    for member in members:
+        if member not in {f['relative_path'] for f in closure['files']}:
             raise ValueError('relocation: capture member missing from closure inventory')
     if 'guest-result.json' not in {f['relative_path'] for f in closure['files']}:
         raise ValueError('relocation: guest result missing from closure inventory')
+    # The capture must be exactly the pair the oracle selects from the pulled
+    # copy's enabled directory, with the seal's own capture id confirmed by
+    # the same strict loader in non-physical mode on this copy.
+    incoming=output_dir/'incoming/originals'
+    enabled=incoming/'driver/enabled'
+    pcaps=sorted(path.name for path in enabled.glob('*.pcap')) if enabled.is_dir() else []
+    raw_name=next((name for name in pcaps if not name.endswith('-converted.pcap')),None)
+    converted_name=next((name for name in pcaps if name.endswith('-converted.pcap')),None)
+    if raw_name is None or converted_name is None:
+        raise ValueError('relocation: pulled enabled capture pair missing')
+    expected_capture={'raw':'driver/enabled/'+raw_name,
+                      'converted':'driver/enabled/'+converted_name,
+                      'seal':'driver/enabled/'+raw_name+'.capture-originals.json'}
+    if {k:capture[k] for k in expected_capture}!=expected_capture:
+        raise ValueError('relocation: capture selection differs from the pulled enabled pair')
+    from fakenet.payload_report import load_capture_originals
+    loaded_copy=load_capture_originals(enabled/raw_name,enabled/converted_name,
+                                       verify_physical=False)
+    if loaded_copy.capture_id!=capture['capture_id']:
+        raise ValueError('relocation: capture id differs from the pulled seal')
     ident=json.loads(_read(transport/'identity-response.json'))
     try:identity=json.loads(ident['output'])
     except ValueError:raise ValueError('relocation: identity response output is not JSON') from None
     if ({k:identity.get(k) for k in ('platform','hostname')}!=runtime['identity'] or
             identity.get('vm_uuid')!=runtime['transfer']['expected_vm_identity']['vm_uuid']):
         raise ValueError('relocation: MCP identity differs from the frozen target')
-    spec=json.loads(_read(transport/'pull-originals-spec.json'))
+    spec_path=transport/'pull-originals-spec.json'
+    spec_bytes=spec_path.read_bytes()
+    spec=json.loads(spec_bytes.decode('utf-8'))
+    pull_intent=json.loads(_read(transport/'pull-originals-intent.json'))
+    pull_exit=json.loads(_read(transport/'pull-originals-exit.json'))
     terminal_record=json.loads(_read(transport/'pull-originals-terminal.json'))
     expected_source=str(entry_type(runtime['work_root'])/plan['execution_id']/case['id']/'output')
-    if (spec.get('direction')!='pull' or spec.get('expected_vm_identity')!=runtime['transfer']['expected_vm_identity'] or
+    expected_destination=str((output_dir/'incoming').resolve())
+    if (spec.get('schema')!='velo.transfer.request.v1' or spec.get('direction')!='pull' or
+            spec.get('expected_vm_identity')!=runtime['transfer']['expected_vm_identity'] or
             spec.get('sources')!=[{'absolute_path':expected_source,'relative_path':'originals'}] or
-            spec.get('destination_directory')!=str((output_dir/'incoming').resolve())):
+            spec.get('destination_directory')!=expected_destination):
         raise ValueError('relocation: pull spec differs from the frozen batch')
+    if (not isinstance(pull_intent.get('argv'),list) or not pull_intent['argv'] or
+            pull_intent.get('spec_sha256')!=hashlib.sha256(spec_bytes).hexdigest()):
+        raise ValueError('relocation: pull intent differs from the journaled spec')
+    if pull_exit.get('returncode')!=0:
+        raise ValueError('relocation: pull operation exited nonzero')
+    if (not isinstance(terminal_record.get('spec_path'),str) or
+            Path(terminal_record['spec_path']).resolve()!=spec_path.resolve()):
+        raise ValueError('relocation: pull terminal spec path differs')
     result_path=Path(terminal_record['result_path'])
-    if not result_path.is_file() or sha256(result_path)!=terminal_record['sha256']:
+    if (not result_path.is_file() or sha256(result_path)!=terminal_record.get('sha256') or
+            result_path.resolve().parent!=transport.resolve()):
         raise ValueError('relocation: pull terminal result record differs')
     result=json.loads(_read(result_path))
+    destination_identity=result.get('destination_identity') or {}
     if (result.get('schema')!='velo.transfer.result.v1' or
             result.get('transfer_id')!=spec.get('transfer_id') or result.get('direction')!='pull' or
             result.get('phase')!='COMPLETE' or result.get('outcome')!='complete' or
             result.get('published_ever') is not True or result.get('destination_verified') is not True or
             result.get('cleanup')!={'host':True,'guest':True} or
-            result.get('source_vm_identity')!=runtime['transfer']['expected_vm_identity']):
+            result.get('source_vm_identity')!=runtime['transfer']['expected_vm_identity'] or
+            destination_identity.get('endpoint')!='host' or
+            destination_identity.get('canonical_path')!=expected_destination):
         raise ValueError('relocation: Velo pull result contract missing')
     pulled={}
+    seen_pull=set();seen_pull_fold=set()
+    source_root=entry_type(expected_source);destination_root=entry_type(expected_destination)/'originals'
     for item in result.get('files') or []:
+        if not isinstance(item,dict) or set(item)!={'relative_path','size','sha256','source','destination'}:
+            raise ValueError('relocation: pull file entry shape invalid')
         rel=item.get('relative_path')
-        if not isinstance(rel,str) or not rel.startswith('originals/'):
-            raise ValueError('relocation: pull file outside the originals batch: %r'%rel)
-        pulled[rel[len('originals/'):]]={'relative_path':rel[len('originals/'):],
-                                          'size':item.get('size'),'sha256':item.get('sha256')}
+        if (not isinstance(rel,str) or not rel.startswith('originals/') or len(rel)<=len('originals/') or
+                '\\' in rel or '..' in rel.split('/') or (isinstance(item['size'],bool) or
+                not isinstance(item['size'],int) or item['size']<0) or
+                not isinstance(item['sha256'],str) or len(item['sha256'])!=64 or
+                any(c not in '0123456789abcdef' for c in item['sha256'])):
+            raise ValueError('relocation: pull file entry invalid: %r'%rel)
+        inner=rel[len('originals/'):]
+        if rel in seen_pull:raise ValueError('relocation: pull member duplicated: %s'%rel)
+        fold=rel.casefold()
+        if fold in seen_pull_fold:raise ValueError('relocation: pull member case alias: %s'%rel)
+        seen_pull.add(rel);seen_pull_fold.add(fold)
+        if item['source']!=str(source_root.joinpath(*Path(inner).parts)):
+            raise ValueError('relocation: pull member source path differs: %s'%rel)
+        if item['destination']!=str(destination_root.joinpath(*Path(inner).parts)):
+            raise ValueError('relocation: pull member destination path differs: %s'%rel)
+        pulled[inner]={'relative_path':inner,'size':item['size'],'sha256':item['sha256']}
     closure_files={f['relative_path']:f for f in closure['files']}
     if pulled!=closure_files:
         raise ValueError('relocation: pulled set differs from the source closure inventory')
