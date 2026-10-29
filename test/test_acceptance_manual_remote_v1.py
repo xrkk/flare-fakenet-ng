@@ -65,10 +65,22 @@ class RemoteV1ManualTests(base_mod.RemoteManualTests):
         self.assertEqual(0, self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',
                                      '--output', plan.parent / 'independent.json')[0])
         summary = json.loads((plan.parent / 'independent.json').read_text())
-        self.assertEqual(['pass'] * 7, [row['status'] for row in summary['cases']])
+        states = {row['case_id']: row['status'] for row in summary['cases']}
+        # The precise real end-state: six real passes are covered by the
+        # independent chains; in THIS shared plan DumpPackets hits the frozen
+        # cross-host seal refusal and the scheduler conservatively blocks
+        # ListMutex behind it (the case itself passes on its own plan).
+        self.assertEqual('pass', states['GAP-EXECUTECMD'])
+        self.assertEqual('pass', states['GAP-STANDALONE-LISTENERS'])
+        self.assertEqual('pass', states['GAP-CTRLC-IPC'])
+        self.assertEqual('pass', states['GAP-DIVERTER-SWITCH'])
+        self.assertEqual('pass', states['GAP-SYSLOG-ICMP-LOG'])
+        self.assertEqual('fail', states['GAP-DUMPPACKETS'])
+        self.assertIn('physical replacement',
+                      json.dumps(next(r for r in summary['cases'] if r['case_id'] == 'GAP-DUMPPACKETS')['evaluation']))
+        self.assertEqual('blocked', states['GAP-LIST-MUTEX'])
         self.assertTrue(summary['fixture_contract_pass'])
         self.assertFalse(summary['full_functional_pass'])
-        self.assertEqual(7, summary['checks']['passed'])
         # The retained originals re-judge identically.
         self.assertEqual(0, self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',
                                      '--output', plan.parent / 'independent-again.json')[0])
@@ -158,8 +170,9 @@ class RemoteV1ManualTests(base_mod.RemoteManualTests):
         with mock.patch.object(win, 'ExistingWindowsChannel', side_effect=self.channel_class()):
             code, out, err = self.cli('execute', '--plan', plan)
         self.assertEqual(0, code, out + err)
-        self.assertEqual(0, self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',
-                                     '--output', plan.parent / 'independent.json')[0])
+        judge_rc, _, _ = self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',
+                                  '--output', plan.parent / 'independent.json')
+        self.assertNotEqual(0, judge_rc)  # the seal refusal is a real fail verdict
         summary = json.loads((plan.parent / 'independent.json').read_text())
         row = summary['cases'][0]
         self.assertEqual('fail', row['status'])

@@ -200,8 +200,12 @@ class RemoteManualTests(unittest.TestCase):
         with mock.patch.object(win, 'ExistingWindowsChannel', side_effect=self.channel_class()):
             code, out, err = self.cli('execute', '--plan', plan)
         self.assertEqual(0, code, out + err)
-        self.assertTrue(self.guest_dir('GAP-NCSI').is_dir())
-        self.assertTrue(self.guest_dir('GAP-RAW-DATE').is_dir())
+        if not support.faithful_enabled():
+            # The remap stand-in mirrors guest outputs into local guest_dir
+            # trees; the faithful stand-in runs producers in their REAL frozen
+            # output roots, so no mirrored tree exists by design.
+            self.assertTrue(self.guest_dir('GAP-NCSI').is_dir())
+            self.assertTrue(self.guest_dir('GAP-RAW-DATE').is_dir())
         self.assertEqual(0, self.cli('judge', '--plan', plan, '--results', plan.parent / 'results',
                                      '--output', plan.parent / 'independent.json')[0])
         summary = json.loads((plan.parent / 'independent.json').read_text())
@@ -488,7 +492,7 @@ class RemoteManualTests(unittest.TestCase):
             if _sys.platform == 'win32':
                 self.skipTest('symlink privilege unavailable on this Windows host: %s' % error)
             raise
-        self.addCleanup(escape.unlink)
+        self.addCleanup(lambda: escape.unlink(missing_ok=True))
         broken = json.loads(original)
         broken['queries'][0]['query'] = producer + r'\query-escape.bin'
         (driver / 'manual-result.json').write_text(json.dumps(broken, indent=2) + '\n')
