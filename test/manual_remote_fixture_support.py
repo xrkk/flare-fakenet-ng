@@ -89,24 +89,6 @@ def os_fixture_patches(case_id, request, root=None):
     return patches
 
 
-def _bootstrap_guard(case_argv):
-    """Fail-closed scope check INSIDE the child before any producer import.
-    Returns the case id entitled to a seam, or raises SystemExit."""
-    import os
-    import sys
-    request = os.environ.get('FNREG_OS_FIXTURE_REQUEST_SHA')
-    case = os.environ.get('FNREG_OS_FIXTURE_CASE', '')
-    if not request or case not in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH', 'GAP-SYSLOG-ICMP-LOG'):
-        # No seam is entitled: run with the REAL OS interfaces.
-        return None
-    argv = ' '.join(case_argv)
-    if '--case' not in argv or ('--case %s' % case) not in argv:
-        raise SystemExit('fnreg-os-fixture: case mismatch for seam %s' % case)
-    if 'offline_fixture' not in request and case != 'GAP-DIVERTER-SWITCH':
-        pass  # fixture flag rides on the request file, not argv; identity is pinned by sha below
-    return case
-
-
 def write_child_bootstrap(directory):
     """Owned sitecustomize for the PRODUCER child: the guest entry spawns the
     producer as a subprocess, so the OS-boundary seams must load in the CHILD
@@ -116,51 +98,93 @@ def write_child_bootstrap(directory):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     (directory / 'sitecustomize.py').write_text(
-        "import os\n"
-        "import sys\n"
         "import hashlib\n"
         "import json\n"
-        "import logging.handlers\n"
-        "import importlib.util as ilu\n"
-        "from pathlib import Path\n"
-        "CASE = os.environ.get('FNREG_OS_FIXTURE_CASE')\n"
-        "REQ_SHA = os.environ.get('FNREG_OS_FIXTURE_REQUEST_SHA')\n"
+        "import os\n"
+        "import sys\n"
+        "from pathlib import Path, PureWindowsPath\n"
         "ALLOWED = ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH', 'GAP-SYSLOG-ICMP-LOG')\n"
-        "if REQ_SHA and CASE in ALLOWED:\n"
-        "    here = Path(__file__).resolve().parent\n"
-        "    spec = ilu.spec_from_file_location('fnreg_os_fixture_backend', here / 'os_fixture_backend.py')\n"
-        "    backend = ilu.module_from_spec(spec); spec.loader.exec_module(backend)\n"
-        "    req_path = sys.argv[sys.argv.index('--inputs') + 1] if '--inputs' in sys.argv else None\n"
-        "    if req_path is None:\n"
-        "        raise SystemExit('fnreg-os-fixture: producer argv lacks --inputs')\n"
-        "    digest = hashlib.sha256(Path(req_path).read_bytes()).hexdigest()\n"
-        "    # The inputs file IS the frozen request derivation; pin the seam to it.\n"
-        "    inputs = json.loads(Path(req_path).read_text(encoding='utf-8'))\n"
-        "    if inputs.get('case') != CASE or inputs.get('fixture') is not True:\n"
-        "        raise SystemExit('fnreg-os-fixture: request case/fixture not entitled to a seam')\n"
-        "    owned = inputs.get('owned_root') or ''\n"
-        "    if not owned or owned[1:2] != ':':\n"
-        "        raise SystemExit('fnreg-os-fixture: owned root is not a frozen Windows root')\n"
-        "    if CASE in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH'):\n"
-        "        import fakenet.diverters.windows as _win\n"
-        "        _win.Diverter = backend.Backend\n"
-        "        import fakenet.fakenet as _core\n"
-        "        _core.IfaceIpInfo = backend.IfaceIpInfo\n"
-        "    elif CASE == 'GAP-SYSLOG-ICMP-LOG':\n"
-        "        target = str(Path(owned) / 'syslog.sink')\n"
-        "        class _OwnedSink(logging.Handler):\n"
-        "            def __init__(self):\n"
-        "                super().__init__(); self.target = Path(target); self._closed = False\n"
-        "            def emit(self, record):\n"
-        "                if self._closed: raise ValueError('owned sink closed')\n"
-        "                with self.target.open('a', encoding='utf-8') as s: s.write(self.format(record) + '\\n')\n"
-        "            def close(self):\n"
-        "                self._closed = True; super().close()\n"
-        "        logging.handlers.NTEventLogHandler = lambda *a, **k: _OwnedSink()\n"
-        "    print('FNREG_OS_FIXTURE_BOOTSTRAP case=%s request_sha=%s' % (CASE, REQ_SHA[:12]), file=sys.stderr)\n"
-        "elif REQ_SHA or CASE:\n"
-        "    # Partial bootstrap identity: fail closed rather than half-seamed.\n"
-        "    raise SystemExit('fnreg-os-fixture: incomplete bootstrap identity')\n",
+        "# This sitecustomize runs only for parent-authorized fixture children.\n"
+        "# Any missing/invalid identity is a FATAL startup error: SystemExit in\n"
+        "# sitecustomize terminates the interpreter (unlike Exception, which\n"
+        "# Python only warns about and continues), so the producer NEVER runs\n"
+        "# and no real OS interface is reached.\n"
+        "def _die(reason):\n"
+        "    sys.stderr.write('FNREG_OS_FIXTURE_REFUSED: %s\\n' % reason)\n"
+        "    raise SystemExit(78)\n"
+        "pins_raw = os.environ.get('FNREG_OS_FIXTURE_PINS')\n"
+        "if not pins_raw:\n"
+        "    _die('no pinned spec: this sitecustomize is only for authorized fixture children')\n"
+        "try:\n"
+        "    pins = json.loads(pins_raw)\n"
+        "except Exception:\n"
+        "    _die('pinned spec is not valid JSON')\n"
+        "required = ('case', 'fixture', 'request_sha256', 'output_root', 'owned_root', 'helper_sha256')\n"
+        "if any(key not in pins or not pins[key] for key in required):\n"
+        "    _die('pinned spec missing fields: %s' % ','.join(k for k in required if not pins.get(k)))\n"
+        "if pins['case'] not in ALLOWED:\n"
+        "    _die('case not seam-entitled: %s' % pins['case'])\n"
+        "if pins['fixture'] is not True:\n"
+        "    _die('pinned spec does not carry fixture=true')\n"
+        "# The producer child's argv names its derived inputs file.\n"
+        "if '--inputs' not in sys.argv:\n"
+        "    _die('producer argv lacks --inputs')\n"
+        "inputs_path = Path(sys.argv[sys.argv.index('--inputs') + 1])\n"
+        "try:\n"
+        "    inputs_bytes = inputs_path.read_bytes()\n"
+        "except OSError:\n"
+        "    _die('derived inputs file unreadable: %s' % inputs_path)\n"
+        "try:\n"
+        "    inputs = json.loads(inputs_bytes.decode('utf-8'))\n"
+        "except Exception:\n"
+        "    _die('derived inputs are not valid JSON')\n"
+        "if inputs.get('case') != pins['case']:\n"
+        "    _die('inputs case %r does not match pinned case %r' % (inputs.get('case'), pins['case']))\n"
+        "if inputs.get('fixture') is not True:\n"
+        "    _die('inputs do not carry fixture=true')\n"
+        "owned = inputs.get('owned_root') or ''\n"
+        "if owned != pins['owned_root']:\n"
+        "    _die('inputs owned_root %r does not match the pinned request root %r' % (owned, pins['owned_root']))\n"
+        "root = PureWindowsPath(owned)\n"
+        "if not root.is_absolute() or root.drive.upper() not in ('E:', 'D:'):\n"
+        "    _die('owned root is not a frozen E:/D: producer root: %s' % owned)\n"
+        "# The helper bytes are pinned by the parent from what it wrote; the\n"
+        "# child re-reads the SAME file and compares against the pin (never\n"
+        "# re-deriving the expectation from the file under test).\n"
+        "helper_path = Path(__file__).resolve().parent / 'os_fixture_backend.py'\n"
+        "try:\n"
+        "    helper_bytes = helper_path.read_bytes()\n"
+        "except OSError:\n"
+        "    _die('os_fixture_backend helper missing: %s' % helper_path)\n"
+        "if hashlib.sha256(helper_bytes).hexdigest() != pins['helper_sha256']:\n"
+        "    _die('helper bytes differ from the pinned spec')\n"
+        "# All bindings verified — install ONLY the case-entitled seam.\n"
+        "import importlib.util as ilu\n"
+        "import logging.handlers\n"
+        "spec = ilu.spec_from_file_location('fnreg_os_fixture_backend', helper_path)\n"
+        "backend = ilu.module_from_spec(spec)\n"
+        "try:\n"
+        "    spec.loader.exec_module(backend)\n"
+        "except BaseException as error:\n"
+        "    _die('backend helper failed to initialize: %r' % (error,))\n"
+        "if pins['case'] in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH'):\n"
+        "    import fakenet.diverters.windows as _win\n"
+        "    _win.Diverter = backend.Backend\n"
+        "    import fakenet.fakenet as _core\n"
+        "    _core.IfaceIpInfo = backend.IfaceIpInfo\n"
+        "elif pins['case'] == 'GAP-SYSLOG-ICMP-LOG':\n"
+        "    target = str(PureWindowsPath(owned) / 'syslog.sink')\n"
+        "    class _OwnedSink(logging.Handler):\n"
+        "        def __init__(self):\n"
+        "            super().__init__(); self.target = Path(target); self._closed = False\n"
+        "        def emit(self, record):\n"
+        "            if self._closed: raise ValueError('owned sink closed')\n"
+        "            with self.target.open('a', encoding='utf-8') as s: s.write(self.format(record) + '\\n')\n"
+        "        def close(self):\n"
+        "            self._closed = True; super().close()\n"
+        "    logging.handlers.NTEventLogHandler = lambda *a, **k: _OwnedSink()\n"
+        "sys.stderr.write('FNREG_OS_FIXTURE_BOOTSTRAP case=%s request_sha=%s helper=%s owned=%s\\n'\n"
+        "                 % (pins['case'], pins['request_sha256'][:12], pins['helper_sha256'][:12], owned))\n",
         encoding='utf-8')
     spec_src = Path(__file__).with_name('test_ctrlc_backend.py').read_text(encoding='utf-8')
     (directory / 'os_fixture_backend.py').write_text(spec_src, encoding='utf-8')
@@ -203,12 +227,21 @@ class FaithfulWindowsStandIn:
             # The guest entry spawns the producer as a SUBPROCESS: install the
             # OS-boundary seams via an owned sitecustomize on PYTHONPATH so the
             # CHILD interpreter loads them before any producer import.
-            bootstrap = write_child_bootstrap(Path(__import__('os').environ['FN_MANUAL_FAITHFUL_ROOT']) / 'child-bootstrap')
+            bootstrap_dir = Path(__import__('os').environ['FN_MANUAL_FAITHFUL_ROOT']) / 'child-bootstrap'
+            bootstrap = write_child_bootstrap(bootstrap_dir)
             import hashlib
             env['PYTHONPATH'] = str(bootstrap)
-            env['FNREG_OS_FIXTURE_CASE'] = request['case_id']
-            env['FNREG_OS_FIXTURE_REQUEST_SHA'] = hashlib.sha256(
-                json.dumps(request, sort_keys=True).encode()).hexdigest()
+            # PARENT-derived pinned spec: every value comes from the frozen
+            # guest request or the parent-verified helper bytes — the child
+            # matches ALL of it against its own argv/inputs/file reads.
+            env['FNREG_OS_FIXTURE_PINS'] = json.dumps({
+                'case': request['case_id'],
+                'fixture': True,
+                'request_sha256': hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest(),
+                'output_root': request['output_root'],
+                'owned_root': request['output_root'].rstrip('\\') + '\\driver',
+                'helper_sha256': hashlib.sha256((bootstrap_dir / 'os_fixture_backend.py').read_bytes()).hexdigest(),
+            })
         saved = {k: os.environ.get(k) for k in env}
         try:
             os.environ.update(env)

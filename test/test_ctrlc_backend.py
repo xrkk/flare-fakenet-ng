@@ -4,9 +4,6 @@ Mirrors test/test_acceptance_manual_ctrlc_ipc.py's _Backend/_Iface: a real
 start/stop lifecycle backend with no OS network operations.  The REAL core,
 watchdog threads, IPC/CtrlC paths, observations and judging are untouched;
 this replaces only the WinDivert OS interface under the fixture boundary."""
-import fakenet.diverters.diverterbase as _base
-
-
 class IfaceIpInfo:
     """No-arg interface probe mirroring the controlled local fixture: a
     fixed owned interface table with no OS network calls."""
