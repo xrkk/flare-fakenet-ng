@@ -1906,7 +1906,12 @@ def dump_relocation_context(root,case,plan,output_dir):
             spec.get('sources')!=[{'absolute_path':expected_source,'relative_path':'originals'}] or
             spec.get('destination_directory')!=expected_destination):
         raise ValueError('relocation: pull spec differs from the frozen batch')
-    if (not isinstance(pull_intent.get('argv'),list) or not pull_intent['argv'] or
+    pinned_transfer_python=runtime.get('transfer',{}).get('python')
+    if not isinstance(pinned_transfer_python,str) or not pinned_transfer_python:
+        raise ValueError('relocation: pinned transfer interpreter missing from the frozen runtime')
+    expected_argv=[pinned_transfer_python,'-I','-B','-m','velo_transfer',
+                   '--spec',str(spec_path.resolve())]
+    if (pull_intent.get('argv')!=expected_argv or
             pull_intent.get('spec_sha256')!=hashlib.sha256(spec_bytes).hexdigest()):
         raise ValueError('relocation: pull intent differs from the journaled spec')
     if pull_exit.get('returncode')!=0:
@@ -1915,9 +1920,19 @@ def dump_relocation_context(root,case,plan,output_dir):
             Path(terminal_record['spec_path']).resolve()!=spec_path.resolve()):
         raise ValueError('relocation: pull terminal spec path differs')
     result_path=Path(terminal_record['result_path'])
-    if (not result_path.is_file() or sha256(result_path)!=terminal_record.get('sha256') or
-            result_path.resolve().parent!=transport.resolve()):
+    if (not result_path.is_file() or result_path.is_symlink() or
+            sha256(result_path)!=terminal_record.get('sha256')):
         raise ValueError('relocation: pull terminal result record differs')
+    # The real channel anchors the SDK result through the transfer stdout
+    # summary; the journaled summary must point at the same result file.
+    summary_path=transport/'pull-originals-stdout.log'
+    try:
+        summary=json.loads(summary_path.read_text(encoding='utf-8'))
+    except (OSError,ValueError):
+        raise ValueError('relocation: pull stdout summary missing/invalid') from None
+    if (not isinstance(summary,dict) or
+            summary.get('result_path')!=terminal_record.get('result_path')):
+        raise ValueError('relocation: pull stdout summary anchor differs')
     result=json.loads(_read(result_path))
     destination_identity=result.get('destination_identity') or {}
     if (result.get('schema')!='velo.transfer.result.v1' or
@@ -1931,7 +1946,12 @@ def dump_relocation_context(root,case,plan,output_dir):
         raise ValueError('relocation: Velo pull result contract missing')
     pulled={}
     seen_pull=set();seen_pull_fold=set()
-    source_root=entry_type(expected_source);destination_root=entry_type(expected_destination)/'originals'
+    # Guest source paths keep the frozen guest semantics (PureWindowsPath for
+    # a Windows guest); the RECEIVING destination is a real host path and is
+    # derived with the host pathlib (POSIX on Ubuntu, Windows on a Windows
+    # host) - exactly how the SDK records it.
+    source_root=entry_type(expected_source)
+    destination_root=Path(expected_destination)/'originals'
     for item in result.get('files') or []:
         if not isinstance(item,dict) or set(item)!={'relative_path','size','sha256','source','destination'}:
             raise ValueError('relocation: pull file entry shape invalid')

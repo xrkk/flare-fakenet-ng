@@ -42,7 +42,8 @@ class Base(unittest.TestCase):
         self.runtime = {'transport': 'windows-mcp-velo', 'identity': self.identity,
                         'source_root': str(ROOT), 'python': sys.executable,
                         'work_root': str(self.base / 'work'),
-                        'transfer': {'expected_vm_identity': dict(self.vm)}}
+                        'transfer': {'expected_vm_identity': dict(self.vm),
+                                     'python': r'C:\Velo\python.exe'}}
         self.plan = {
             'candidate': {'candidate_id': 'dump-reloc-test', 'source_commit': 'a' * 40,
                           'package_sha256': 'b' * 64, 'offline_fixture': True},
@@ -125,7 +126,7 @@ class Base(unittest.TestCase):
         spec_path.write_bytes(spec_bytes)
         origin = source_root if source_root is not None else self.output_root
         source_root_path = entry_type(str(self.output_root))
-        destination_root = entry_type(str((run / 'incoming').resolve())) / 'originals'
+        destination_root = Path(str((run / 'incoming').resolve())) / 'originals'
         files = []
         for f in closure['files']:
             inner = f['relative_path']
@@ -144,10 +145,13 @@ class Base(unittest.TestCase):
         result_path = transport / 'pull-originals-velo-result.json'
         result_path.write_text(json.dumps(velo, indent=2) + '\n', encoding='utf-8')
         (transport / 'pull-originals-intent.json').write_text(json.dumps(
-            {'argv': ['velo_transfer', '--spec', str(spec_path.resolve())],
+            {'argv': [r'C:\Velo\python.exe', '-I', '-B', '-m', 'velo_transfer',
+                      '--spec', str(spec_path.resolve())],
              'spec_sha256': hashlib.sha256(spec_bytes).hexdigest()}) + '\n', encoding='utf-8')
         (transport / 'pull-originals-exit.json').write_text(json.dumps(
             {'returncode': 0}) + '\n', encoding='utf-8')
+        (transport / 'pull-originals-stdout.log').write_text(json.dumps(
+            {'result_path': str(result_path)}) + '\n', encoding='utf-8')
         (transport / 'pull-originals-terminal.json').write_text(json.dumps(
             {'result_path': str(result_path), 'sha256': _sha(result_path),
              'spec_path': str(spec_path)}) + '\n',
@@ -417,6 +421,52 @@ class RelocationContext(Base):
         (run / 'transport/pull-originals-exit.json').write_text(
             json.dumps({'returncode': 7}))
         with self.assertRaisesRegex(ValueError, 'exited nonzero'):
+            self.context_for(run)
+
+    def test_s60_r02_r03_pull_wiring_divergences(self):
+        request, sha, closure = self.produce_dump()
+        # same spec digest, WRONG executable in the real argv shape
+        for name, argv in (
+                ('wrong-executable', [r'C:\Other\python.exe', '-I', '-B', '-m',
+                                      'velo_transfer', '--spec',
+                                      str((self.base / 'never').resolve())]),
+                ('wrong-module', [r'C:\Velo\python.exe', '-I', '-B', '-m',
+                                  'other_module', '--spec',
+                                  str((self.base / 'never').resolve())]),
+                ('wrong-arguments', [r'C:\Velo\python.exe', '--help'])):
+            with self.subTest(name=name):
+                run = self.build_run_dir(request, sha, closure)
+                spec_path = run / 'transport/pull-originals-spec.json'
+                intent = run / 'transport/pull-originals-intent.json'
+                value = json.loads(intent.read_text())
+                value['argv'] = [argv[0]] + argv[1:-1] + [str(spec_path.resolve())] \
+                    if name != 'wrong-arguments' else argv
+                value['spec_sha256'] = hashlib.sha256(spec_path.read_bytes()).hexdigest()
+                intent.write_text(json.dumps(value))
+                with self.assertRaisesRegex(ValueError, 'pull intent differs'):
+                    self.context_for(run)
+        # stdout summary anchor missing / pointing elsewhere
+        run = self.build_run_dir(request, sha, closure)
+        (run / 'transport/pull-originals-stdout.log').write_text('not json')
+        with self.assertRaisesRegex(ValueError, 'stdout summary'):
+            self.context_for(run)
+        run = self.build_run_dir(request, sha, closure)
+        summary = run / 'transport/pull-originals-stdout.log'
+        summary.write_text(json.dumps({'result_path': str(self.base / 'elsewhere.json')}))
+        with self.assertRaisesRegex(ValueError, 'summary anchor differs'):
+            self.context_for(run)
+        # destination mapping escape: one member lands outside the incoming batch
+        run = self.build_run_dir(request, sha, closure)
+        result_path = run / 'transport/pull-originals-velo-result.json'
+        velo = json.loads(result_path.read_text())
+        velo['files'][0]['destination'] = str(self.base / 'escape' /
+                                              Path(velo['files'][0]['relative_path']).name)
+        result_path.write_text(json.dumps(velo))
+        terminal = run / 'transport/pull-originals-terminal.json'
+        record = json.loads(terminal.read_text())
+        record['sha256'] = _sha(result_path)
+        terminal.write_text(json.dumps(record))
+        with self.assertRaisesRegex(ValueError, 'destination path differs|escape'):
             self.context_for(run)
 
     def test_capture_identity_divergences(self):
