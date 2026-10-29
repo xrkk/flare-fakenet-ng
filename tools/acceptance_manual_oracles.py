@@ -671,10 +671,10 @@ def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False,
     if set(data)!=set(('on','off')):errors.append('exact branch set differs')
     for mode,traffic in (('on','Yes'),('off','No')):
         item=data.get(mode) or {};cfg=base/'config'/(mode+'.ini')
-        if item.get('config')!=str(cfg) or not cfg.is_file() or cfg.is_symlink() or item.get('config_sha256')!=hashlib.sha256(cfg.read_bytes()).hexdigest():
+        if item.get('config')!=guest('config/'+mode+'.ini') or not cfg.is_file() or cfg.is_symlink() or item.get('config_sha256')!=hashlib.sha256(cfg.read_bytes()).hexdigest():
             errors.append(mode+' config missing/changed/foreign');continue
         text='[FakeNet]\nDivertTraffic: '+traffic+'\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n'
-        if cfg.read_text()!=text:errors.append(mode+' traffic configuration differs')
+        if cfg.read_bytes()!=_text_bytes(text, producer_directory, expected_inputs):errors.append(mode+' traffic configuration differs')
         if item.get('before')!={'diverttraffic':traffic,'diverter':None,'listeners':0}:errors.append(mode+' before state differs')
         if item.get('error') is not None:errors.append(mode+' production error')
         after=item.get('after') or {};on=mode=='on'
@@ -683,8 +683,8 @@ def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False,
                 or after.get('stop1') is not True or after.get('stop2') is not True or after.get('stop_calls')!=(1 if on else 0)
                 or after.get('listeners')!=0):errors.append(mode+' start/stop/restore mismatch')
         obs=base/(mode+'-observation.json');log=base/(mode+'-core.log')
-        if (item.get('observation')!=str(obs) or not obs.is_file() or obs.is_symlink() or item.get('observation_sha256')!=hashlib.sha256(obs.read_bytes()).hexdigest()
-                or item.get('core_log')!=str(log) or not log.is_file() or log.is_symlink() or item.get('core_log_sha256')!=hashlib.sha256(log.read_bytes()).hexdigest()):
+        if (item.get('observation')!=guest(mode+'-observation.json') or not obs.is_file() or obs.is_symlink() or item.get('observation_sha256')!=hashlib.sha256(obs.read_bytes()).hexdigest()
+                or item.get('core_log')!=guest(mode+'-core.log') or not log.is_file() or log.is_symlink() or item.get('core_log_sha256')!=hashlib.sha256(log.read_bytes()).hexdigest()):
             errors.append(mode+' observation/log original missing/changed');continue
         expected_calls=[{'method':method,'event':event} for method in ('start','stop') for event in ('call','return')] if on else []
         expected_obs={'schema':'fakenet.switch-observation.v1','mode':mode,'execution_id':expected_inputs['execution_id'],
