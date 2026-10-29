@@ -26,10 +26,7 @@ SEVEN = ('GAP-EXECUTECMD', 'GAP-STANDALONE-LISTENERS', 'GAP-CTRLC-IPC',
 
 class RemoteV1ManualTests(base_mod.RemoteManualTests):
     def setUp(self):
-        super().setUp()
-        if support.faithful_enabled():
-            self.runtime.update(support.faithful_runtime(self.identity, self.source))
-            (self.base / 'environment.json').write_text(json.dumps(self.environment))
+        super().setUp()  # base applies the faithful runtime when enabled
     @classmethod
     def setUpClass(cls):
         # Idempotent shared product-root copy: this class may run alongside

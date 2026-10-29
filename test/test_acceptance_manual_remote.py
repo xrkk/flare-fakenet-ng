@@ -88,6 +88,11 @@ class RemoteManualTests(unittest.TestCase):
                             'native_runtime': self.runtime,
                             'manual': {'schema': 'fakenet.manual-options.v1',
                                        'responsea': '192.0.2.55'}}
+        if support.faithful_enabled():
+            # Faithful mode rewrites the runtime to the REAL interpreter and
+            # the capsule source root with a real E: work root, so the guest
+            # command and receipt record the actual executed identity.
+            self.runtime.update(support.faithful_runtime(self.identity, self.source))
         (self.base / 'environment.json').write_text(json.dumps(self.environment))
         self.guest_runs = {}
 
