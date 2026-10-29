@@ -37,6 +37,21 @@ def catalog_case(case_id):
                 if case['id'] == case_id)
 
 
+
+NON_PRODUCT_DIRS = {'.git', 'Logs', 'dist', '.tmp', 'PLAN', '.github',
+                    '.local', '.omo', '.codex', '.pytest_cache', '__pycache__'}
+
+
+def portable_ignore(directory, names):
+    """Skip non-product/history dirs and names Windows cannot represent, so
+    the product-root copy stays creatable under real Windows Python."""
+    import re
+    skipped = set(n for n in names if n in NON_PRODUCT_DIRS)
+    bad = re.compile(r'[\x00-\x1f<>:"|?*]')
+    reserved = {'con', 'prn', 'aux', 'nul', 'com1', 'lpt1'}
+    skipped |= {n for n in names if bad.search(n) or n.rstrip('.').lower() in reserved}
+    return skipped
+
 class RemoteManualTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -48,9 +63,7 @@ class RemoteManualTests(unittest.TestCase):
         shared.mkdir(parents=True, exist_ok=True)
         cls.shared = shared
         cls.source = shared / 'product-root'
-        shutil.copytree(ROOT, cls.source,
-                        ignore=shutil.ignore_patterns('.git', 'Logs', 'dist',
-                                                      '__pycache__', '.pytest_cache'))
+        shutil.copytree(ROOT, cls.source, ignore=portable_ignore, dirs_exist_ok=True)
 
     def setUp(self):
         self.base = self.shared / 'retained' / uuid.uuid4().hex[:12]
@@ -287,7 +300,7 @@ class RemoteManualTests(unittest.TestCase):
         code, summary = self.rehashed_judge(raw, 'GAP-RAW-DATE', edit('GAP-RAW-DATE', wrong_date))
         rows.append(('wrong-date', code, summary))
         expected = {'bad-dns': 'DNS bytes', 'missing-combination': 'four-combination',
-                    'wrong-candidate': 'identity mismatch', 'path-escape': 'outside owned case',
+                    'wrong-candidate': 'identity mismatch', 'path-escape': 'escaped the producer root',
                     'fake-cleanup': 'lifecycle', 'input-tamper': 'manual inputs differ',
                     'bad-http': 'HTTP bytes', 'wrong-date': 'HTTP date'}
         for name, code, summary in rows:
@@ -318,9 +331,9 @@ class RemoteManualTests(unittest.TestCase):
         self.assertEqual('GAP-NCSI', argv[argv.index('--case') + 1])
 
     def test_other_manual_cases_still_reject_remote_channel(self):
-        plan = self.plan(cases=('GAP-LIST-MUTEX',), name='blocked')
+        plan = self.plan(cases=('GAP-NETWORK-FIX',), name='blocked')
         value = json.loads(plan.read_text())
-        self.assertIn('no remote fallback', value['blocked']['GAP-LIST-MUTEX'])
+        self.assertIn('no remote fallback', value['blocked']['GAP-NETWORK-FIX'])
         with mock.patch.object(win, 'ExistingWindowsChannel') as channel:
             code, out, err = self.cli('execute', '--plan', plan)
         self.assertEqual(2, code, out + err)
@@ -362,7 +375,7 @@ class RemoteManualTests(unittest.TestCase):
         import acceptance_runtime as rt
         # Options on a case outside the two fixed remote cases are refused
         # before any output directory is created.
-        request = self.guest_request('GAP-LIST-MUTEX', {'manual': {'schema': 'fakenet.manual-options.v1'}})
+        request = self.guest_request('GAP-NETWORK-FIX', {'manual': {'schema': 'fakenet.manual-options.v1'}})
         with mock.patch.object(rt, 'require_target', return_value=self.identity):
             with self.assertRaisesRegex(ValueError, 'manual options do not apply'):
                 guest.execute(request, ROOT)

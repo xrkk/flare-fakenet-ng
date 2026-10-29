@@ -701,8 +701,12 @@ def manual_fixture_block(environment, candidate):
     return None
 
 
-MANUAL_REMOTE_DRIVERS = ('manual-ncsi', 'manual-raw-date')
-MANUAL_REMOTE_CASES = ('GAP-NCSI', 'GAP-RAW-DATE')
+MANUAL_REMOTE_DRIVERS = ('manual-ncsi', 'manual-raw-date', 'manual-executecmd', 'manual-standalone',
+                          'manual-ctrlc-ipc', 'manual-diverter-switch', 'manual-syslog-icmp',
+                          'manual-dumppackets', 'manual-list-mutex')
+MANUAL_REMOTE_CASES = ('GAP-NCSI', 'GAP-RAW-DATE', 'GAP-EXECUTECMD', 'GAP-STANDALONE-LISTENERS',
+                       'GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH', 'GAP-SYSLOG-ICMP-LOG',
+                       'GAP-DUMPPACKETS', 'GAP-LIST-MUTEX')
 
 
 def manual_options(environment):
@@ -1569,7 +1573,7 @@ def run_remote(root,case,plan,output_dir,python):
         request['policy']=policy_inputs(plan['environment'],scenario=driver['production_kind'].split('-',1)[1])
     if driver['production_kind'].startswith('manual-'):
         if case['id'] not in MANUAL_REMOTE_CASES:
-            raise ValueError('remote manual transport is fixed to GAP-NCSI/GAP-RAW-DATE')
+            raise ValueError('remote manual transport is fixed to the nine Windows manual-v1 cases')
         request['manual']=manual_options(plan['environment'])
     # Planned records also carry derived 'sources'; compare using the actual
     # registered catalog object instead of sending derived plan-only metadata.

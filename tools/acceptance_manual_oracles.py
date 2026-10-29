@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 RAW=b'HTTP/1.1 200 OK\r\nDate: <RAW-DATE>\r\nX-Test: <RAW-DATE>\r\nContent-Length: 35\r\nConnection: close\r\n\r\nbody<RAW-DATE>\x00\xff'
 STATIC=b'static-<RAW-DATE>'
 
-def _evaluate_syslog_icmp(root, original, expected_inputs, allow_fixture=False):
+def _evaluate_syslog_icmp(root, original, expected_inputs, allow_fixture=False, producer_directory=None):
     base = Path(original).absolute()
     errors = []
     def require(ok, reason):
@@ -24,7 +24,7 @@ def _evaluate_syslog_icmp(root, original, expected_inputs, allow_fixture=False):
         return path.read_bytes()
     try:
         v = json.loads(read('manual-result.json'))
-        require(str(base) == expected_inputs.get('owned_root') and v.get('inputs') == expected_inputs, 'owned/frozen inputs mismatch')
+        require(_owner_root(base, producer_directory) == expected_inputs.get('owned_root') and v.get('inputs') == expected_inputs, 'owned/frozen inputs mismatch')
         require(v.get('schema') == 'fakenet.manual-result.v1' and v.get('case') == 'GAP-SYSLOG-ICMP-LOG', 'case/schema mismatch')
         require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
         require(type(v.get('fixture')) is bool and v['fixture'] == (expected_inputs.get('fixture') is True), 'fixture identity mismatch')
@@ -68,7 +68,7 @@ def _evaluate_syslog_icmp(root, original, expected_inputs, allow_fixture=False):
         errors.append(type(exc).__name__ + ': ' + str(exc))
     return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in ('syslog', 'icmp', 'owner')], not errors, {'failures': errors}
 
-def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False):
+def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False, producer_directory=None):
     base = Path(original).resolve()
     errors = []
     def require(ok, reason):
@@ -80,7 +80,7 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False):
         return path.read_bytes()
     try:
         v = json.loads(read('manual-result.json'))
-        require(str(base) == expected_inputs.get('owned_root') and v.get('inputs') == expected_inputs, 'owned/frozen inputs mismatch')
+        require(_owner_root(base, producer_directory) == expected_inputs.get('owned_root') and v.get('inputs') == expected_inputs, 'owned/frozen inputs mismatch')
         require(v.get('schema') == 'fakenet.manual-result.v1' and v.get('case') == 'GAP-CTRLC-IPC', 'case/schema mismatch')
         require(v.get('evidence_kind') == 'original-main-ctrl-c-and-file-ipc', 'original branch provenance missing')
         require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
@@ -505,7 +505,7 @@ def _evaluate_network_fix(root, original, expected_inputs, allow_fixture=False):
     return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in keys], not errors, {'failures': errors, 'system_network_restoration': 'not-exercised', 'linux_route_restoration': 'original implementation does not remove newly added default route; full acceptance remains incomplete'}
 
 
-def _evaluate_standalone(root, original, expected_inputs, allow_fixture=False):
+def _evaluate_standalone(root, original, expected_inputs, allow_fixture=False, producer_directory=None):
     base=Path(original).resolve();errors=[]
     names=('DNSListener','HTTPListener','FTPListener','IRCListener','POPListener','SMTPListener','RawListener','TFTPListener','ProxyListener')
     def require(ok,reason):
@@ -516,7 +516,7 @@ def _evaluate_standalone(root, original, expected_inputs, allow_fixture=False):
         return path.read_bytes()
     try:
         v=json.loads(read('manual-result.json'))
-        require(str(base)==expected_inputs.get('owned_root') and v.get('inputs')==expected_inputs,'owned/frozen inputs mismatch')
+        require(_owner_root(base, producer_directory)==expected_inputs.get('owned_root') and v.get('inputs')==expected_inputs,'owned/frozen inputs mismatch')
         require(v.get('schema')=='fakenet.manual-result.v1' and v.get('case')=='GAP-STANDALONE-LISTENERS','case/schema mismatch')
         require(v.get('evidence_kind')=='original-standalone-scripts-and-listeners','standalone provenance missing')
         require(v.get('identity')=={k:expected_inputs[k] for k in ('candidate_id','source_commit','package_sha256','execution_id')},'identity mismatch')
@@ -572,7 +572,7 @@ def _evaluate_standalone(root, original, expected_inputs, allow_fixture=False):
     except Exception as exc:errors.append(type(exc).__name__+': '+str(exc))
     return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('listener-bytes','listener-close')],not errors,{'failures':errors}
 
-def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False):
+def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False, producer_directory=None):
     import configparser
     import dpkt
     from fakenet.payload_report import load_capture_originals
@@ -587,7 +587,7 @@ def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False):
         require(not any(item.is_symlink() for item in (path, *path.parents)), 'linked original')
         return path
     try:
-        require(str(base) == expected_inputs.get('owned_root'), 'frozen owned root mismatch')
+        require(_owner_root(base, producer_directory) == expected_inputs.get('owned_root'), 'frozen owned root mismatch')
         v = json.loads(plain(base / 'manual-result.json').read_text())
         require(v.get('schema') == 'fakenet.manual-result.v1' and v.get('case') == 'GAP-DUMPPACKETS', 'case/schema mismatch')
         require(v.get('inputs') == expected_inputs, 'frozen inputs mismatch')
@@ -651,7 +651,7 @@ def _evaluate_dumppackets(root, original, expected_inputs, allow_fixture=False):
         errors.append(type(exc).__name__ + ': ' + str(exc))
     return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in ('enabled', 'disabled', 'prefix', 'content')], not errors, {'failures': errors}
 
-def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False):
+def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False, producer_directory=None):
     base=Path(original).resolve();path=base/'manual-result.json'
     if path.is_symlink() or not path.is_file():raise ValueError('original missing or linked')
     v=json.loads(path.read_text())
@@ -661,7 +661,7 @@ def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False)
         if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
     if type(v.get('fixture')) is not bool or v['fixture']!=(expected_inputs.get('fixture') is True):raise ValueError('fixture identity mismatch')
     if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
-    if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
+    if _owner_root(base, producer_directory)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
     errors=[];data=v.get('diverter_switch') or {}
     if set(data)!=set(('on','off')):errors.append('exact branch set differs')
     for mode,traffic in (('on','Yes'),('off','No')):
@@ -693,7 +693,7 @@ def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False)
     if v.get('checks')!=[{'id':k} for k in ('on','off','restore')]:errors.append('exact check set differs')
     return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('on','off','restore')],not errors,{'failures':errors}
 
-def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False):
+def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False, producer_directory=None):
     from types import SimpleNamespace
     from fakenet.diverters.diverterbase import DiverterBase,DivertParms
     import logging
@@ -707,7 +707,7 @@ def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False):
     if type(v.get('fixture')) is not bool or v['fixture']!=(expected_inputs.get('fixture') is True):raise ValueError('fixture identity/credit mismatch')
     if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
     if not v['fixture'] and (v.get('executecmd',{}).get('os_platform')!='windows'):raise ValueError('native command evidence requires Windows platform')
-    if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
+    if _owner_root(base, producer_directory)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
     data=v.get('executecmd') or {};cfg=base/'config/executecmd.ini';errors=[]
     if not cfg.is_file() or cfg.is_symlink() or data.get('configuration')!='config/executecmd.ini' or data.get('configuration_sha256')!=hashlib.sha256(cfg.read_bytes()).hexdigest():raise ValueError('configuration original missing/changed')
     token=str(expected_inputs['execution_id']);output=base/'command-output.txt'
@@ -758,7 +758,7 @@ def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False):
     out=[{'id':k,'status':'fail' if errors else 'pass'} for k in ('command','first-connection','non-connection')]
     return out,not errors,{'failures':errors}
 
-def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
+def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False, producer_directory=None):
     from fakenet.diverters.diverterbase import ListenerMeta,ListenerPorts,ListenerBlackWhiteList,DiverterBase
     import logging
     base=Path(original).resolve();path=base/'manual-result.json'
@@ -770,7 +770,7 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
         if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
     if type(v.get('fixture')) is not bool or v['fixture']!=(expected_inputs.get('fixture') is True):raise ValueError('fixture identity missing/changed')
     if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
-    if str(base)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
+    if _owner_root(base, producer_directory)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
     wanted={'proc-black':{'protocol':'TCP','port':'8080','processblacklist':'evil.exe, helper.exe'},
             'proc-white':{'protocol':'TCP','port':'8081','processwhitelist':'good.exe'},
             'host-black':{'protocol':'TCP','port':'8082','hostblacklist':'evil.test, bad.test'},
@@ -836,18 +836,27 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False):
     if v.get('checks')!=[{'id':k} for k in ('blacklist','whitelist','mutex')]:errors.append('exact check set differs')
     return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('blacklist','whitelist','mutex')],not errors,{'failures':errors}
 
+
+def _owner_root(base, producer_directory):
+    """Producer-root identity: the GUEST absolute path for remote results
+    (the pulled copy under `base` mirrors that root layout), the local
+    resolved path otherwise.  A host alias can never satisfy the frozen
+    guest owned_root."""
+    return str(producer_directory) if producer_directory is not None else str(base)
+
+
 def evaluate(root,original,case,expected_inputs,allow_fixture=False,producer_directory=None):
-    if case=='GAP-SYSLOG-ICMP-LOG':return _evaluate_syslog_icmp(root,original,expected_inputs,allow_fixture)
-    if case=='GAP-CTRLC-IPC':return _evaluate_ctrlc_ipc(root,original,expected_inputs,allow_fixture)
+    if case=='GAP-SYSLOG-ICMP-LOG':return _evaluate_syslog_icmp(root,original,expected_inputs,allow_fixture, producer_directory)
+    if case=='GAP-CTRLC-IPC':return _evaluate_ctrlc_ipc(root,original,expected_inputs,allow_fixture, producer_directory)
     if case=='GAP-LINUX-FLUSH-INTERFACE':return _evaluate_linux_flush_interface(root,original,expected_inputs,allow_fixture)
     if case=='GAP-NETWORK-FIX':
         if expected_inputs.get('schema')=='fakenet.manual-input.v2':return _evaluate_network_fix_platform(root,original,expected_inputs,allow_fixture)
         return _evaluate_network_fix(root,original,expected_inputs,allow_fixture)
-    if case=='GAP-STANDALONE-LISTENERS':return _evaluate_standalone(root,original,expected_inputs,allow_fixture)
-    if case=='GAP-DUMPPACKETS':return _evaluate_dumppackets(root,original,expected_inputs,allow_fixture)
-    if case=='GAP-DIVERTER-SWITCH':return _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture)
-    if case=='GAP-EXECUTECMD':return _evaluate_executecmd(root,original,expected_inputs,allow_fixture)
-    if case=='GAP-LIST-MUTEX':return _evaluate_list_mutex(root,original,expected_inputs,allow_fixture)
+    if case=='GAP-STANDALONE-LISTENERS':return _evaluate_standalone(root,original,expected_inputs,allow_fixture, producer_directory)
+    if case=='GAP-DUMPPACKETS':return _evaluate_dumppackets(root,original,expected_inputs,allow_fixture, producer_directory)
+    if case=='GAP-DIVERTER-SWITCH':return _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture, producer_directory)
+    if case=='GAP-EXECUTECMD':return _evaluate_executecmd(root,original,expected_inputs,allow_fixture, producer_directory)
+    if case=='GAP-LIST-MUTEX':return _evaluate_list_mutex(root,original,expected_inputs,allow_fixture, producer_directory)
     if case not in ('GAP-NCSI','GAP-RAW-DATE'):raise NotImplementedError('case is not implemented in this round: '+case)
     base=Path(original).resolve()
     if producer_directory is None:
