@@ -60,6 +60,8 @@ python tools/acceptance.py judge --plan Logs/acceptance/<run>/plan.json --result
 
 `GAP-LIST-MUTEX` 的新源码分支只允许 `--mode selected --case GAP-LIST-MUTEX` 单选, 自动生成 `manual-input.v4` 和精确五键输出身份. `GAP-DUMPPACKETS` 保留原源码计划选择行为与 `manual-input.v3`; 它的身份不授予混选中其它用例源码信用. 其它用例、真实包路径及网络 v2 的要求保持不变. 所有源码输入仍经 host/guest 副作用前的实际源字节核验, 独立 judge 从冻结 plan/request 重建期望值.
 
+剩余五个 Windows 手工用例 (`GAP-EXECUTECMD`、`GAP-STANDALONE-LISTENERS`、`GAP-CTRLC-IPC`、`GAP-DIVERTER-SWITCH`、`GAP-SYSLOG-ICMP-LOG`) 共用同一单选源码分支: 每个 case 只能 `--mode selected --case <该用例>` 单选并显式 `deployment_kind: "source"` (三个包字段缺省或为 null), plan 自动派生该 case 的 `source_deployment_identity` 并冻结完整 M; 运行输入为 `manual-input.v5` (字段与 v3/v4 相同, `package_sha256` 为 null), 五个 producer 输出精确五键身份, 五个 oracle 与独立 judge 严格比较完整五键对象并拒绝任何多余/缺失键. v3/v4 对这五个用例拒绝, v5 对 Dump/List 及其它用例拒绝; 未声明 source 的空包候选在 host 输入派生和 guest `output.mkdir` 之前即被拒绝. 源码身份只证明受选内容, 不证明已部署或运行; 这五个用例的 native 副作用/恢复要求 (真实子进程退出、owned 监听关闭、日志/注册表状态、真实 driver 与受保护网络) 保持原边界.
+
 ### environment.json
 
 ```json

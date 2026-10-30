@@ -707,6 +707,11 @@ MANUAL_REMOTE_DRIVERS = ('manual-ncsi', 'manual-raw-date', 'manual-executecmd', 
 MANUAL_REMOTE_CASES = ('GAP-NCSI', 'GAP-RAW-DATE', 'GAP-EXECUTECMD', 'GAP-STANDALONE-LISTENERS',
                        'GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH', 'GAP-SYSLOG-ICMP-LOG',
                        'GAP-DUMPPACKETS', 'GAP-LIST-MUTEX')
+# SD/LM/FMS: every case that may take the explicit source-deployment branch.
+_SOURCE_DEPLOYMENT_CASES = ('GAP-DUMPPACKETS', 'GAP-LIST-MUTEX',
+                            'GAP-EXECUTECMD', 'GAP-STANDALONE-LISTENERS',
+                            'GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH',
+                            'GAP-SYSLOG-ICMP-LOG')
 
 
 def manual_options(environment):
@@ -738,8 +743,9 @@ def _source_deployment_identity_from_request(request, root=None, case=None):
     for field in ('package_path','package_manifest','package_sha256'):
         if candidate.get(field) is not None:
             raise ValueError('source candidate carries package field %s'%field)
-    if request['case_id'] not in ('GAP-DUMPPACKETS','GAP-LIST-MUTEX'):
-        raise ValueError('source deployment is fixed to GAP-DUMPPACKETS/GAP-LIST-MUTEX')
+    if request['case_id'] not in _SOURCE_DEPLOYMENT_CASES:
+        raise ValueError('source deployment is fixed to GAP-DUMPPACKETS/GAP-LIST-MUTEX '
+                         'and the five single manual cases')
     commit=candidate.get('source_commit')
     if not isinstance(commit,str) or not _re.fullmatch('[0-9a-f]{40}',commit):
         raise ValueError('source candidate source_commit must be 40 lowercase hex')
@@ -793,10 +799,10 @@ def _registered_source_closure(root,case):
 
 def _manual_input_value(plan,case,options,owned_root,config):
     candidate=plan['candidate']
-    # SD-06: the Dump-only explicit source branch derives manual-input.v3 with
-    # package_sha256 null and the frozen source identity; every other case
-    # keeps the original v1 value.
-    if (case['id'] in ('GAP-DUMPPACKETS','GAP-LIST-MUTEX') and
+    # SD-06/LM-03/FMS-04: the explicit source branch derives the schema-precise
+    # input (v3 Dump / v4 List / v5 five manual cases) with package_sha256 null
+    # and the frozen source identity; every packaged case keeps the v1 value.
+    if (case['id'] in _SOURCE_DEPLOYMENT_CASES and
             candidate.get('deployment_kind')=='source'):
         closure={}
         native_pins=plan.get('native_source_hashes') or {}
@@ -819,16 +825,19 @@ def _manual_input_value(plan,case,options,owned_root,config):
         frozen=candidate.get('source_deployment_identity')
         if frozen is not None and frozen!=identity:
             raise ValueError('plan source deployment identity differs from the closure')
-        schema='fakenet.manual-input.v3' if case['id']=='GAP-DUMPPACKETS' else 'fakenet.manual-input.v4'
+        schema=('fakenet.manual-input.v3' if case['id']=='GAP-DUMPPACKETS' else
+                'fakenet.manual-input.v4' if case['id']=='GAP-LIST-MUTEX' else
+                'fakenet.manual-input.v5')
         return dict(schema=schema,case=case['id'],candidate_id='manual-candidate',
                     source_commit=candidate['source_commit'],package_sha256=None,
                     execution_id=plan['execution_id'],owned_root=owned_root,config=config,
                     responsea=options.get('responsea','192.0.2.55'),
                     fixture=candidate.get('offline_fixture') is True,
                     source_deployment_identity=identity)
-    if case['id'] in ('GAP-DUMPPACKETS','GAP-LIST-MUTEX') and candidate.get('package_sha256') is None and \
+    if case['id'] in _SOURCE_DEPLOYMENT_CASES and candidate.get('package_sha256') is None and \
             candidate.get('deployment_kind')!='source':
-        # SD-01: undeclared null-package manual candidate refused before VM work
+        # SD-01/FMS-03: an undeclared null-package manual candidate is refused
+        # before VM work (host input derivation and guest pre-mkdir alike)
         raise ValueError('manual candidate requires a package identity or the explicit source deployment kind')
     return dict(schema='fakenet.manual-input.v1',case=case['id'],candidate_id='manual-candidate',
                 source_commit=candidate['source_commit'],package_sha256=candidate['package_sha256'],
@@ -845,7 +854,7 @@ def manual_remote_inputs(plan,case,output_root):
     owned_root; this host rebuild uses the same single value builder."""
     from pathlib import PureWindowsPath, PurePosixPath
     if case['id'] not in MANUAL_REMOTE_CASES:
-        raise ValueError('remote manual inputs are fixed to GAP-NCSI/GAP-RAW-DATE')
+        raise ValueError('remote manual inputs are fixed to the nine MANUAL_REMOTE_CASES')
     runtime=plan['environment']['native_runtime']
     path_type=PureWindowsPath if runtime['identity']['platform']=='windows' else PurePosixPath
     options=manual_options(plan['environment'])

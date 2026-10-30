@@ -77,7 +77,7 @@ def execute(request,root):
     # the request's own closure M BEFORE output.mkdir or any producer launch.
     if request['candidate'].get('deployment_kind') == 'source':
         native._source_deployment_identity_from_request(request, root, matches[0])
-    elif request['case_id'] in ('GAP-DUMPPACKETS', 'GAP-LIST-MUTEX') and \
+    elif request['case_id'] in native._SOURCE_DEPLOYMENT_CASES and \
             request['candidate'].get('package_sha256') is None:
         raise ValueError('manual candidate requires a package identity or the '
                          'explicit source deployment kind (pre-mkdir)')

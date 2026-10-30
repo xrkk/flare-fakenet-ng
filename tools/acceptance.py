@@ -1325,6 +1325,13 @@ def _source_deployment_identity(case_id, case_entry, native_pins):
             'source_hashes_sha256': _hashlib.sha256(payload).hexdigest()}
 
 
+# FMS-01: the five remaining manual cases that may take the explicit
+# single-selection source branch (nothing else gains source eligibility).
+FIVE_SOURCE_MANUAL_CASES = ('GAP-EXECUTECMD', 'GAP-STANDALONE-LISTENERS',
+                            'GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH',
+                            'GAP-SYSLOG-ICMP-LOG')
+
+
 def _normalize_source_deployment_candidate(candidate, selected, source_hashes, root, acceptance_native):
     """SD-01/04: validate the declared deployment kind; when the explicit
     source branch is chosen for the Dump case, derive and freeze the identity
@@ -1345,16 +1352,24 @@ def _normalize_source_deployment_candidate(candidate, selected, source_hashes, r
         raise InputError('unknown candidate deployment_kind: %r' % kind)
     if any(value is not None for value in package_values):
         raise InputError('source deployment candidates must not carry package fields')
-    # LM-01 adds only the single-List branch. Keep the original Dump
-    # plan selection behavior; its identity grants no other case source credit.
+    # LM-01 adds the single-List branch; FMS-01 adds the five remaining manual
+    # single-case branches.  Keep the original Dump mixed-selection behavior;
+    # its identity grants no other case source credit.
     selected_ids = [c['id'] for c in selected]
     if selected_ids == ['GAP-LIST-MUTEX']:
         case_id = 'GAP-LIST-MUTEX'
     elif 'GAP-DUMPPACKETS' in selected_ids:
         case_id = 'GAP-DUMPPACKETS'
+    elif len(selected_ids) == 1 and selected_ids[0] in FIVE_SOURCE_MANUAL_CASES:
+        case_id = selected_ids[0]
+        # FMS-01: absent and null package fields normalize to null here; any
+        # non-null value was already refused above.
+        candidate = dict(candidate, package_path=None, package_manifest=None,
+                         package_sha256=None)
     else:
         raise InputError('source deployment candidate requires the GAP-DUMPPACKETS '
-                         'selection or a single GAP-LIST-MUTEX selection')
+                         'selection, a single GAP-LIST-MUTEX selection, or a single '
+                         'five-manual-case selection')
     source_commit = candidate.get('source_commit')
     if not isinstance(source_commit, str) or len(source_commit) != 40 or             any(c not in '0123456789abcdef' for c in source_commit):
         raise InputError('source deployment candidate requires a 40-hex source_commit')
@@ -1473,13 +1488,14 @@ def make_plan_v2(root, mode, candidate_path, environment_path, suite_ids, case_i
         if reason:
             blocked[case['id']] = reason
         case_records[case['id']] = record
-    # SD-01..04: explicit source-deployment candidate identity, Dump-only.
+    # SD-01..04/FMS-01..03: explicit source-deployment candidate identity.
     candidate = _normalize_source_deployment_candidate(candidate, selected, source_hashes, root, acceptance_native)
     if candidate.get('deployment_kind') == 'source':
         _native_pins = (acceptance_native.native_source_pins(root)
                         if acceptance_native is not None else {})
         _case_id = next(cid for cid in [c['id'] for c in selected]
-                        if cid in ('GAP-DUMPPACKETS', 'GAP-LIST-MUTEX'))
+                        if cid in ('GAP-DUMPPACKETS', 'GAP-LIST-MUTEX')
+                        or cid in FIVE_SOURCE_MANUAL_CASES)
         source_deployment_closure = dict(_native_pins)
         source_deployment_closure.update(source_hashes[_case_id])
     else:

@@ -27,7 +27,7 @@ def _evaluate_syslog_icmp(root, original, expected_inputs, allow_fixture=False, 
         v = json.loads(read('manual-result.json'))
         require(_owner_root(base, producer_directory) == expected_inputs.get('owned_root') and v.get('inputs') == expected_inputs, 'owned/frozen inputs mismatch')
         require(v.get('schema') == 'fakenet.manual-result.v1' and v.get('case') == 'GAP-SYSLOG-ICMP-LOG', 'case/schema mismatch')
-        require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
+        _identity_matches(v, expected_inputs)
         require(type(v.get('fixture')) is bool and v['fixture'] == (expected_inputs.get('fixture') is True), 'fixture identity mismatch')
         require(not v['fixture'] or allow_fixture, 'fixture cannot native credit')
         require(v.get('checks') == [{'id': key} for key in ('syslog', 'icmp', 'owner')], 'checks mismatch')
@@ -85,7 +85,7 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False, pr
         require(_owner_root(base, producer_directory) == expected_inputs.get('owned_root') and v.get('inputs') == expected_inputs, 'owned/frozen inputs mismatch')
         require(v.get('schema') == 'fakenet.manual-result.v1' and v.get('case') == 'GAP-CTRLC-IPC', 'case/schema mismatch')
         require(v.get('evidence_kind') == 'original-main-ctrl-c-and-file-ipc', 'original branch provenance missing')
-        require(v.get('identity') == {key: expected_inputs[key] for key in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id')}, 'identity mismatch')
+        _identity_matches(v, expected_inputs)
         require(type(v.get('fixture')) is bool and v['fixture'] == (expected_inputs.get('fixture') is True), 'fixture identity mismatch')
         require(not v['fixture'] or allow_fixture, 'fixture cannot native credit')
         require(v.get('checks') == [{'id': key} for key in ('ctrlc', 'ipc-stop', 'owned-exit')], 'checks mismatch')
@@ -522,7 +522,7 @@ def _evaluate_standalone(root, original, expected_inputs, allow_fixture=False, p
         require(_owner_root(base, producer_directory)==expected_inputs.get('owned_root') and v.get('inputs')==expected_inputs,'owned/frozen inputs mismatch')
         require(v.get('schema')=='fakenet.manual-result.v1' and v.get('case')=='GAP-STANDALONE-LISTENERS','case/schema mismatch')
         require(v.get('evidence_kind')=='original-standalone-scripts-and-listeners','standalone provenance missing')
-        require(v.get('identity')=={k:expected_inputs[k] for k in ('candidate_id','source_commit','package_sha256','execution_id')},'identity mismatch')
+        _identity_matches(v, expected_inputs)
         require(type(v.get('fixture')) is bool and v['fixture']==(expected_inputs.get('fixture') is True),'fixture identity mismatch')
         require(not v['fixture'] or allow_fixture,'fixture cannot native credit')
         require(v.get('checks')==[{'id':x} for x in ('listener-bytes','listener-close')],'checks mismatch')
@@ -669,8 +669,7 @@ def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False,
     v=json.loads(path.read_text())
     if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!='GAP-DIVERTER-SWITCH':raise ValueError('case/schema mismatch')
     if v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
-    for k in ('candidate_id','source_commit','package_sha256','execution_id'):
-        if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
+    _identity_matches(v, expected_inputs)
     if type(v.get('fixture')) is not bool or v['fixture']!=(expected_inputs.get('fixture') is True):raise ValueError('fixture identity mismatch')
     if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
     if _owner_root(base, producer_directory)!=expected_inputs.get('owned_root'):raise ValueError('frozen owned root mismatch')
@@ -715,8 +714,7 @@ def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False, prod
     v=json.loads(path.read_text())
     if v.get('schema')!='fakenet.manual-result.v1' or v.get('case')!='GAP-EXECUTECMD':raise ValueError('case/schema mismatch')
     if v.get('inputs')!=expected_inputs:raise ValueError('frozen inputs mismatch')
-    for k in ('candidate_id','source_commit','package_sha256','execution_id'):
-        if v.get('identity',{}).get(k)!=expected_inputs.get(k):raise ValueError('identity mismatch: '+k)
+    _identity_matches(v, expected_inputs)
     if type(v.get('fixture')) is not bool or v['fixture']!=(expected_inputs.get('fixture') is True):raise ValueError('fixture identity/credit mismatch')
     if v['fixture'] and not allow_fixture:raise ValueError('fixture cannot native credit')
     if not v['fixture'] and (v.get('executecmd',{}).get('os_platform')!='windows'):raise ValueError('native command evidence requires Windows platform')
@@ -857,6 +855,24 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False, prod
     if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True}:errors.append('pure-logic lifecycle missing/changed')
     if v.get('checks')!=[{'id':k} for k in ('blacklist','whitelist','mutex')]:errors.append('exact check set differs')
     return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('blacklist','whitelist','mutex')],not errors,{'failures':errors}
+
+
+def _identity_matches(v, expected_inputs):
+    """FMS-06: schema-precise identity comparison shared by the manual
+    oracles - the source branches (v3/v4/v5) require the exact five-key
+    object (any extra/missing/altered key refuses); v1/v2 keep four keys."""
+    if expected_inputs.get('schema') in ('fakenet.manual-input.v3',
+                                         'fakenet.manual-input.v4',
+                                         'fakenet.manual-input.v5'):
+        expected_identity = {key: expected_inputs[key] for key in
+                             ('candidate_id', 'source_commit', 'package_sha256',
+                              'execution_id', 'source_deployment_identity')}
+        if v.get('identity') != expected_identity:
+            raise ValueError('identity mismatch: exact source five-key object required')
+    else:
+        for k in ('candidate_id', 'source_commit', 'package_sha256', 'execution_id'):
+            if v.get('identity', {}).get(k) != expected_inputs.get(k):
+                raise ValueError('identity mismatch: ' + k)
 
 
 def _owner_root(base, producer_directory):
