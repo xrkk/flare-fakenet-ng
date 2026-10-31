@@ -95,7 +95,12 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False, pr
         pid = d.get('owner_pid'); token = d.get('execution_token')
         require(type(pid) is int and pid > 0 and d.get('execution_token') == expected_inputs['execution_id'] and token, 'owner/token mismatch')
         config = read('config/shutdown.ini')
-        require(config == _text_bytes('[FakeNet]\nDivertTraffic: Yes\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n', producer_directory, expected_inputs), 'exact configuration mismatch')
+        ctrlc_expected='[FakeNet]\nDivertTraffic: Yes\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n'
+        if expected_inputs.get('schema')=='fakenet.manual-input.v6':
+            ctrlc_expected+='ControlLinkExcludeIp: 192.168.204.1\nControlLinkExcludePort: 28788,28790\n'
+        require(config == _text_bytes(ctrlc_expected, producer_directory, expected_inputs), 'exact configuration mismatch')
+        if expected_inputs.get('schema')=='fakenet.manual-input.v6':
+            _require_driver_control(v, expected_inputs, ('ctrlc','ipc'))
         require(d.get('config') == guest('config/shutdown.ini') and d.get('config_sha256') == hashlib.sha256(config).hexdigest(), 'configuration path/hash mismatch')
         state = json.loads(read('lifecycle.json'))
         require(state.get('pid') == pid and state.get('token') == token, 'lifecycle owner/token mismatch')
@@ -175,7 +180,9 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False, pr
                 require(observations.get('expected_existed_before_trigger') is False and observations.get('unrelated_existed_before_trigger') is True and observations.get('stop_calls_before_correct') == 0 and observations.get('stop_started_before_correct') is False and observations.get('unrelated_window_epoch') < observations.get('correct_flag_written_epoch'), 'IPC unrelated/trigger ordering mismatch')
             else:
                 require('KeyboardInterrupt' in text and 'Stop flag found' not in text and observations.get('interrupt_main_epoch'), 'Ctrl-C branch/log mismatch')
-        require(v.get('cleanup') == {'scope': 'owned-main-ctrlc-file-ipc-and-runtime-state', 'stopped': True, 'threads_joined': True, 'flags_removed': True, 'logger_restored': True, 'argv_restored': True, 'profile_restored': True, 'signals_restored': True, 'system_network_restored': 'not-exercised', 'system_console_used': False}, 'cleanup/provenance mismatch')
+        expected_cleanup = {'scope': 'owned-main-ctrlc-file-ipc-and-runtime-state', 'stopped': True, 'threads_joined': True, 'flags_removed': True, 'logger_restored': True, 'argv_restored': True, 'profile_restored': True, 'signals_restored': True, 'system_console_used': False,
+                           'system_network_restored': ('outer-native-guard' if expected_inputs.get('schema')=='fakenet.manual-input.v6' else 'not-exercised')}
+        require(v.get('cleanup') == expected_cleanup, 'cleanup/provenance mismatch')
     except Exception as exc:
         errors.append(type(exc).__name__ + ': ' + str(exc))
     return [{'id': key, 'status': 'fail' if errors else 'pass'} for key in ('ctrlc', 'ipc-stop', 'owned-exit')], not errors, {'failures': errors}
@@ -680,6 +687,8 @@ def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False,
         if item.get('config')!=guest('config/'+mode+'.ini') or not cfg.is_file() or cfg.is_symlink() or item.get('config_sha256')!=hashlib.sha256(cfg.read_bytes()).hexdigest():
             errors.append(mode+' config missing/changed/foreign');continue
         text='[FakeNet]\nDivertTraffic: '+traffic+'\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n'
+        if expected_inputs.get('schema')=='fakenet.manual-input.v6':
+            text+='ControlLinkExcludeIp: 192.168.204.1\nControlLinkExcludePort: 28788,28790\n'
         if cfg.read_bytes()!=_text_bytes(text, producer_directory, expected_inputs):errors.append(mode+' traffic configuration differs')
         if item.get('before')!={'diverttraffic':traffic,'diverter':None,'listeners':0}:errors.append(mode+' before state differs')
         if item.get('error') is not None:errors.append(mode+' production error')
@@ -700,7 +709,10 @@ def _evaluate_diverter_switch(root,original,expected_inputs,allow_fixture=False,
         if lines.count('DEFAULT_INTERCEPTION_READY')!=(1 if on else 0):errors.append(mode+' original interception-ready marker differs')
         if not any(line.startswith('STOP_PHASE_END phase=complete') and line.endswith('healthy=True') for line in lines):errors.append(mode+' stop completion log missing')
     if v.get('source_hashes')!={n:hashlib.sha256((Path(root)/n).read_bytes()).hexdigest() for n in ('fakenet/fakenet.py','fakenet/diverters/linux.py','fakenet/diverters/windows.py')}:errors.append('source binding mismatch')
-    if v.get('cleanup')!={'stopped':True,'scope':'observed-core-start-stop','system_network_restored':'unverified'}:errors.append('cleanup mismatch')
+    if expected_inputs.get('schema')=='fakenet.manual-input.v6':
+        _require_driver_control(v, expected_inputs, ('on','off'))
+        if v.get('cleanup')!={'stopped':True,'scope':'observed-core-start-stop','system_network_restored':'outer-native-guard'}:errors.append('cleanup mismatch')
+    elif v.get('cleanup')!={'stopped':True,'scope':'observed-core-start-stop','system_network_restored':'unverified'}:errors.append('cleanup mismatch')
     if v.get('checks')!=[{'id':k} for k in ('on','off','restore')]:errors.append('exact check set differs')
     return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('on','off','restore')],not errors,{'failures':errors}
 
@@ -913,6 +925,42 @@ def _evaluate_list_mutex(root,original,expected_inputs,allow_fixture=False, prod
     return [{'id':k,'status':'fail' if errors else 'pass'} for k in ('blacklist','whitelist','mutex')],not errors,{'failures':errors}
 
 
+def _require_driver_control(v, expected_inputs, branches):
+    """DV03: the protected v6 result must carry the real driver-control
+    observation - exact control, exact branch set, and for every OPEN branch
+    a real opened/filter_validated record whose final filter equals the
+    original pure exclusion functions over the fixed control link."""
+    observation=v.get('driver_control')
+    if not isinstance(observation,dict) or observation.get('schema')!='fakenet.driver-control-observation.v1':
+        raise ValueError('driver-control observation missing')
+    if observation.get('control')!=expected_inputs.get('control'):
+        raise ValueError('driver-control observation control differs')
+    rows=observation.get('branches')
+    if not isinstance(rows,dict) or set(rows)!=set(branches):
+        raise ValueError('driver-control observation branch set differs')
+    from fakenet.mcp.controlfilter import apply_control_link_exclusion, apply_loopback_exclusion
+    expected_filter=apply_loopback_exclusion(apply_control_link_exclusion(
+        'outbound and ip','192.168.204.1','28788,28790'))
+    import re as _re
+    for branch in branches:
+        row=rows[branch]
+        if branch=='off':
+            if row is not None:
+                raise ValueError('off branch must not open or invent a driver')
+            continue
+        if not isinstance(row,dict) or row.get('opened') is not True or row.get('filter_validated') is not True:
+            raise ValueError('driver-control open evidence incomplete: '+branch)
+        if row.get('filter')!=expected_filter:
+            raise ValueError('driver-control final filter differs from the pure exclusion functions')
+        if row.get('owner_execution')!=expected_inputs['execution_id']:
+            raise ValueError('driver-control owner differs')
+        for field in ('pydivert_module','dll','sys'):
+            dep=row.get(field)
+            if (not isinstance(dep,dict) or not isinstance(dep.get('path'),str)
+                    or not dep['path'] or not _re.fullmatch('[0-9a-f]{64}',dep.get('sha256') or '')):
+                raise ValueError('driver-control dependency identity missing: '+field)
+
+
 def _identity_matches(v, expected_inputs, exact_v1=False):
     """FMS-06/R02: schema-precise identity comparison shared by the manual
     oracles - the source branches (v3/v4/v5) require the exact five-key
@@ -923,7 +971,8 @@ def _identity_matches(v, expected_inputs, exact_v1=False):
     or loosening of either original behavior."""
     if expected_inputs.get('schema') in ('fakenet.manual-input.v3',
                                          'fakenet.manual-input.v4',
-                                         'fakenet.manual-input.v5'):
+                                         'fakenet.manual-input.v5',
+                                         'fakenet.manual-input.v6'):
         expected_identity = {key: expected_inputs[key] for key in
                              ('candidate_id', 'source_commit', 'package_sha256',
                               'execution_id', 'source_deployment_identity')}
