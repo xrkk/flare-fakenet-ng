@@ -20,6 +20,32 @@ HEAD = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'],
                                text=True).strip()
 
 
+import unittest as _unittest
+
+def _hit(name):
+    def boom(*a, **k):
+        raise AssertionError('REAL_EFFECT_HIT: ' + name)
+    return boom
+
+
+class _NoRealEffects(_unittest.TestCase):
+    """EC05 guard: no real OS creation/network in this suite; controlled fake
+    handles only. Git identity lookups stay live."""
+
+    def setUp(self):
+        real_popen = subprocess.Popen
+
+        def guarded(argv, *a, **k):
+            if isinstance(argv, (list, tuple)) and argv and str(argv[0]).endswith('git'):
+                return real_popen(argv, *a, **k)
+            raise AssertionError('REAL_EFFECT_HIT: subprocess.Popen')
+        patches = [mock.patch('subprocess.Popen', side_effect=guarded)]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        super().setUp()
+
+
 class _FakeProc:
     def __init__(self, pid=43210, wait_result=0, wait_error=None):
         self.pid = pid
@@ -76,7 +102,7 @@ def _lifecycle(out):
     return json.loads((out / 'child-lifecycle.json').read_text())
 
 
-class ChildLifecycleTests(unittest.TestCase):
+class ChildLifecycleTests(_NoRealEffects):
     def test_natural_exit_recorded_and_v5_passes(self):
         fake = _FakeProc()
         out, inputs = _run_producer(fake)
@@ -138,6 +164,86 @@ class ChildLifecycleTests(unittest.TestCase):
         self.assertFalse(clean, detail)
         self.assertTrue(any('naturally observed' in f for f in detail['failures']),
                         detail)
+
+
+def _refresh_chain(out):
+    """Re-close lifecycle+result hashes after a mutation (chain stays legal so
+    only the TARGET oracle check can refuse)."""
+    import hashlib
+    life_path = out / 'child-lifecycle.json'
+    value = json.loads((out / 'manual-result.json').read_text())
+    value['executecmd']['child_lifecycle_sha256'] = hashlib.sha256(
+        life_path.read_bytes()).hexdigest()
+    (out / 'manual-result.json').write_text(json.dumps(value, indent=1) + '\n')
+
+
+class ControllerCounterexampleTests(_NoRealEffects):
+    """EC03/04: the five controller-found non-refusing mutations must now be
+    refused by the target oracle checks after re-closing the hash chain."""
+
+    def _mutate_and_evaluate(self, mutate):
+        out, inputs = _run_producer(_FakeProc())
+        life = _lifecycle(out)
+        mutate(life, json.loads((out / 'manual-result.json').read_text()))
+        (out / 'child-lifecycle.json').write_text(json.dumps(life, indent=1) + '\n')
+        _refresh_chain(out)
+        rows, clean, detail = O.evaluate(ROOT, out, 'GAP-EXECUTECMD', inputs,
+                                         allow_fixture=True)
+        self.assertFalse(clean, detail)
+        return detail['failures']
+
+    def test_wait_poll_missing_refused(self):
+        def mutate(life, value):
+            for key in ('wait_result', 'poll'):
+                life['children'][0].pop(key, None)
+        failures = self._mutate_and_evaluate(mutate)
+        self.assertTrue(any('strict natural zeros' in f for f in failures), failures)
+
+    def test_wait_poll_nonzero_refused(self):
+        def mutate(life, value):
+            life['children'][0]['wait_result'] = 3
+            life['children'][0]['poll'] = 3
+            life['children'][0]['returncode'] = 3
+        failures = self._mutate_and_evaluate(mutate)
+        self.assertTrue(any('strict natural zeros' in f or
+                            'naturally observed' in f for f in failures), failures)
+
+    def test_top_observer_false_refused(self):
+        def mutate(life, value):
+            life['observer_restored'] = False
+        failures = self._mutate_and_evaluate(mutate)
+        self.assertTrue(any('lifecycle incomplete' in f for f in failures), failures)
+
+    def test_row_owner_wrong_refused(self):
+        def mutate(life, value):
+            life['children'][0]['owner_execution'] = 'foreign-owner'
+        failures = self._mutate_and_evaluate(mutate)
+        self.assertTrue(any('naturally observed' in f for f in failures), failures)
+
+    def test_v1_native_missing_lifecycle_refused(self):
+        out, inputs = _run_producer(_FakeProc())
+        v1 = dict(inputs, schema='fakenet.manual-input.v1',
+                  package_sha256='ab' * 32, fixture=False)
+        v1.pop('source_deployment_identity', None)
+        value = json.loads((out / 'manual-result.json').read_text())
+        value['inputs'] = v1
+        value['fixture'] = False  # native v1 evidence claim
+        value['executecmd']['os_platform'] = 'windows'
+        value['executecmd'].pop('child_lifecycle', None)  # the actual gap: no lifecycle claim
+        value['executecmd'].pop('child_lifecycle_sha256', None)
+        value['identity'] = {k: v1[k] for k in
+                             ('candidate_id', 'source_commit', 'package_sha256',
+                              'execution_id')}
+        # keep the v1 historical cleanup shape (still the produced bytes) -
+        # the strict non-fixture branch must refuse on lifecycle/cleanup, not
+        # on the fixture gate
+        (out / 'manual-result.json').write_text(json.dumps(value, indent=1) + '\n')
+        rows, clean, detail = O.evaluate(ROOT, out, 'GAP-EXECUTECMD', v1,
+                                         allow_fixture=False)
+        self.assertFalse(clean, detail)
+        self.assertTrue(any('child lifecycle' in f or 'cleanup mismatch' in f
+                            for f in detail['failures']), detail)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -205,7 +205,8 @@ def _build_executecmd(out, inputs):
                      'children': [{'command': expected, 'pid': 43210,
                                    'wait_result': 0, 'poll': 0, 'returncode': 0,
                                    'forced': False, 'timeout': False,
-                                   'observer_restored': True, 'reaped': True}],
+                                   'observer_restored': True, 'reaped': True,
+                                   'owner_execution': inputs['execution_id']}],
                      'error': None, 'spawn_count': 1, 'observer_restored': True}
         (out / 'child-lifecycle.json').write_text(json.dumps(lifecycle, indent=1) + '\n')
         payload_sha = hashlib.sha256((out / 'child-lifecycle.json').read_bytes()).hexdigest()
