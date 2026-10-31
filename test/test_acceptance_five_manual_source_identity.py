@@ -904,25 +904,29 @@ class LegacyIdentityRegressionTests(_NoRealEffects):
                 self.assertTrue(clean, detail)
 
 
-@unittest.skip('R02 incomplete: the real central judge CLI still rejects the '
-               'controlled static results chain (judge exit != 0 with the '
-               'results.json index in place); the root cause was not fully '
-               'diagnosed within the R02 budget. The oracle-level identity '
-               'positive/negative chain for SYSLOG/CTRLC is covered green in '
-               'LegacyIdentityRegressionTests; failed-run originals are kept '
-               'under Logs/fnreg-T061-R02-five-source-local-corrections/.')
 class CentralIndependentJudgeTests(_NoRealEffects):
-    """R02/C2: the REAL central judge CLI consumes controlled static results
-    for SYSLOG/CTRLC (plan via the real CLI; receipt/driver originals are
-    static fixtures built before any effect; no execute/producer runs)."""
+    """R03: the REAL central judge CLI consumes controlled static results.
 
-    def _build_judge_case(self, work, case_id):
+    The hash chain driver originals -> receipt.artifacts -> receipt.json ->
+    results.json is closed at every layer and matches the frozen plan
+    (full base_receipt fields incl. case_id/candidate/environment/
+    config_sha256/evidence_level).  Identity negatives FIRST re-close the
+    chain so the refusal comes from the target oracle; one artifact-tamper
+    negative deliberately keeps a stale hash to prove the other refusal class.
+    """
+
+    def _plan_for(self, work, case_id, source_branch):
         import socket as _socket
         identity = {'platform': 'linux', 'hostname': _socket.gethostname()}
         run = work / 'run'
-        candidate = {'schema': A.CANDIDATE_V2, 'source_commit': HEAD,
-                     'deployed_identity': identity, 'package_sha256': 'cd' * 32,
-                     'offline_fixture': True}
+        if source_branch:
+            candidate = {'schema': A.CANDIDATE_V2, 'source_commit': HEAD,
+                         'deployed_identity': identity, 'deployment_kind': 'source',
+                         'offline_fixture': True}
+        else:
+            candidate = {'schema': A.CANDIDATE_V2, 'source_commit': HEAD,
+                         'deployed_identity': identity, 'package_sha256': 'cd' * 32,
+                         'offline_fixture': True}
         (work / 'candidate.json').write_text(json.dumps(candidate))
         environment = {'schema': A.ENVIRONMENT_V2, 'targets': ['host-linux'],
                        'interpreters': {'python': sys.executable}, 'work_root': str(run),
@@ -937,12 +941,19 @@ class CentralIndependentJudgeTests(_NoRealEffects):
                            '--environment', str(work / 'environment.json'),
                            '--output', str(run / 'plan.json')])
         assert code == 0
-        plan = json.loads((run / 'plan.json').read_text())
+        return json.loads((run / 'plan.json').read_text()), identity
+
+    def _build_judge_case(self, work, case_id, source_branch=False):
+        plan, identity = self._plan_for(work, case_id, source_branch)
+        case = CASES[case_id]
         output_dir = Path(plan['run_dir']) / 'results' / case_id
-        driver, checks = native.validate_case(CASES[case_id], ROOT, plan['environment'])
-        expected_command = native.production_command(ROOT, CASES[case_id], plan,
-                                                     output_dir, sys.executable)
-        inputs = native.manual_inputs(plan, CASES[case_id], str(output_dir))
+        driver, checks = native.validate_case(case, ROOT, plan['environment'])
+        expected_command = native.production_command(ROOT, case, plan, output_dir,
+                                                     sys.executable)
+        inputs = native.manual_inputs(plan, case, str(output_dir))
+        if source_branch:
+            self.assertEqual('fakenet.manual-input.v5', inputs['schema'])
+            self.assertIsNone(inputs['package_sha256'])
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / 'manual-inputs.json').write_text(json.dumps(inputs, indent=1) + '\n')
         out = Path(inputs['owned_root'])
@@ -956,24 +967,29 @@ class CentralIndependentJudgeTests(_NoRealEffects):
             plan['environment'])
         (output_dir / 'request.json').write_text(json.dumps(request, indent=1) + '\n')
         (output_dir / 'target.json').write_text(json.dumps(identity, indent=1) + '\n')
-        artifacts = []
-        for path in sorted(output_dir.rglob('*')):
-            if path.is_file() and path.name != 'receipt.json':
-                artifacts.append({'path': str(path.resolve()), 'sha256': _sha(path),
-                                  'format': 'native-evidence'})
-        receipt = {'status': 'pass', 'detail': '', 'returncode': 0,
-                   'command': expected_command,
-                   'started_at': '2026-10-31T00:00:00+00:00',
-                   'ended_at': '2026-10-31T00:00:01+00:00',
-                   'duration_seconds': 1.0, 'required_checks': checks,
-                   'native_target': identity, 'artifacts': artifacts,
-                   'cleanup': {'source': 'driver', 'resources': driver['resources'],
-                               'recovered': True,
-                               'process_exit': {'exited': True, 'returncode': 0,
-                                                'timed_out': False},
-                               'owner_pid': 43210, 'temp_roots': [str(output_dir)]}}
+        artifacts = [{'path': str(path.resolve()), 'sha256': _sha(path),
+                      'format': 'native-evidence'}
+                     for path in sorted(output_dir.rglob('*'))
+                     if path.is_file() and path.name != 'receipt.json']
+        receipt = {
+            'schema': A.RECEIPT_V2, 'execution_id': plan['execution_id'],
+            'suite_id': case['suite_id'], 'case_id': case_id, 'attempt': 1,
+            'adapter': case['adapter'], 'oracle_kind': case['oracle']['kind'],
+            'candidate': plan['candidate'], 'environment': plan['environment'],
+            'config_sha256': A._sha256_json(plan['cases'][case_id]),
+            'evidence_level': 'fixture', 'native_driver': case['native_driver'],
+            'status': 'pass', 'detail': '', 'returncode': 0,
+            'command': expected_command,
+            'started_at': '2026-10-31T00:00:00+00:00',
+            'ended_at': '2026-10-31T00:00:01+00:00',
+            'duration_seconds': 1.0, 'required_checks': checks,
+            'native_target': identity, 'artifacts': artifacts,
+            'cleanup': {'source': 'driver', 'resources': driver['resources'],
+                        'recovered': True,
+                        'process_exit': {'exited': True, 'returncode': 0,
+                                         'timed_out': False},
+                        'owner_pid': 43210, 'temp_roots': [str(output_dir)]}}
         (output_dir / 'receipt.json').write_text(json.dumps(receipt, indent=1) + '\n')
-        # Controlled static results index (normally written by execute).
         plan_path = work / 'run' / 'plan.json'
         results_root = Path(plan['run_dir']) / 'results'
         (results_root / 'results.json').write_text(json.dumps({
@@ -982,40 +998,139 @@ class CentralIndependentJudgeTests(_NoRealEffects):
             'receipts': [{'case_id': case_id, 'path': str(output_dir / 'receipt.json'),
                           'sha256': _sha(output_dir / 'receipt.json'),
                           'status': 'pass'}]}, indent=1) + '\n')
-        return plan, output_dir
+        return plan, output_dir, identity
+
+    def _refresh_chain(self, output_dir):
+        """Re-close artifact/receipt/index hashes after mutating originals."""
+        case_id = output_dir.name
+        plan = json.loads((output_dir.parents[2] / 'run' / 'plan.json').read_text())
+        artifacts = [{'path': str(path.resolve()), 'sha256': _sha(path),
+                      'format': 'native-evidence'}
+                     for path in sorted(output_dir.rglob('*'))
+                     if path.is_file() and path.name != 'receipt.json']
+        receipt = json.loads((output_dir / 'receipt.json').read_text())
+        receipt['artifacts'] = artifacts
+        (output_dir / 'receipt.json').write_text(json.dumps(receipt, indent=1) + '\n')
+        index_path = Path(plan['run_dir']) / 'results' / 'results.json'
+        index = json.loads(index_path.read_text())
+        for entry in index['receipts']:
+            if entry['case_id'] == case_id:
+                entry['sha256'] = _sha(output_dir / 'receipt.json')
+        index_path.write_text(json.dumps(index, indent=1) + '\n')
 
     def _judge(self, work, output):
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            code = A.main(['--root', str(ROOT), 'judge', '--plan', str(work / 'run' / 'plan.json'),
+        out_io, err_io = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out_io), contextlib.redirect_stderr(err_io):
+            code = A.main(['--root', str(ROOT), 'judge',
+                           '--plan', str(work / 'run' / 'plan.json'),
                            '--results', str(work / 'run' / 'results'),
                            '--output', str(output)])
-        return code, (output.read_text() if output.exists() else '')
+        return code, out_io.getvalue(), err_io.getvalue(), \
+            (output.read_text() if output.exists() else '')
 
-    def test_syslog_and_ctrlc_static_originals_pass_independent_judge(self):
+    def _summary(self, text):
+        return json.loads(text)
+
+    def test_v1_syslog_ctrlc_static_positives(self):
         for case_id in ('GAP-SYSLOG-ICMP-LOG', 'GAP-CTRLC-IPC'):
             with self.subTest(case=case_id):
-                work = Path(tempfile.mkdtemp(prefix='fnreg-r02-judge-', dir='/tmp'))
-                plan, output_dir = self._build_judge_case(work, case_id)
-                code, text = self._judge(work, work / 'independent.json')
-                self.assertEqual(0, code, text)
-                summary = json.loads(text)
-                self.assertFalse(summary.get('full_functional_pass'))
-                checks = summary.get('checks', {})
-                self.assertEqual(checks.get('required'), len(M.CHECKS[case_id]))
+                work = Path(tempfile.mkdtemp(prefix='fnreg-r03-pos-', dir='/tmp'))
+                plan, output_dir, identity = self._build_judge_case(work, case_id)
+                code, stdout, stderr, text = self._judge(work, work / 'ind.json')
+                self.assertEqual(0, code, (stdout, stderr, text))
+                summary = self._summary(text)
+                self.assertTrue(summary['fixture_contract_pass'], text)
+                self.assertFalse(summary['full_functional_pass'], text)
+                self.assertEqual('pass', summary['verdict'], text)
+                self.assertEqual(1, summary['checks']['required'], text)
+                self.assertEqual('pass', summary['cases'][0]['status'], text)
                 self.assertFalse(EFFECT_MARKER.exists())
 
-    def test_syslog_and_ctrlc_extra_identity_refused_by_independent_judge(self):
+    def _identity_negative(self, case_id, mutate, source_branch=False):
+        work = Path(tempfile.mkdtemp(prefix='fnreg-r03-neg-', dir='/tmp'))
+        plan, output_dir, identity = self._build_judge_case(work, case_id,
+                                                           source_branch=source_branch)
+        path = output_dir / 'driver' / 'manual-result.json'
+        value = json.loads(path.read_text())
+        mutate(value)
+        path.write_text(json.dumps(value) + '\n')
+        self._refresh_chain(output_dir)
+        code, stdout, stderr, text = self._judge(work, work / 'rejected.json')
+        self.assertNotEqual(0, code, (stdout, stderr, text))
+        summary = self._summary(text)
+        outcome = summary['cases'][0]
+        self.assertIn('identity mismatch', json.dumps(outcome), text)
+        self.assertFalse(summary['fixture_contract_pass'], text)
+
+    def test_v1_identity_extra_negative_chain_refreshed(self):
         for case_id in ('GAP-SYSLOG-ICMP-LOG', 'GAP-CTRLC-IPC'):
             with self.subTest(case=case_id):
-                work = Path(tempfile.mkdtemp(prefix='fnreg-r02-neg-', dir='/tmp'))
-                plan, output_dir = self._build_judge_case(work, case_id)
+                self._identity_negative(
+                    case_id,
+                    lambda value: value['identity'].__setitem__('unapproved_extra', 'x'))
+
+    def test_v1_identity_missing_negative_chain_refreshed(self):
+        for case_id in ('GAP-SYSLOG-ICMP-LOG', 'GAP-CTRLC-IPC'):
+            with self.subTest(case=case_id):
+                self._identity_negative(
+                    case_id, lambda value: value['identity'].pop('source_commit'))
+
+    def test_v1_artifact_tamper_stale_hash_refused(self):
+        for case_id in ('GAP-SYSLOG-ICMP-LOG', 'GAP-CTRLC-IPC'):
+            with self.subTest(case=case_id):
+                work = Path(tempfile.mkdtemp(prefix='fnreg-r03-tamper-', dir='/tmp'))
+                plan, output_dir, identity = self._build_judge_case(work, case_id)
                 path = output_dir / 'driver' / 'manual-result.json'
-                value = json.loads(path.read_text())
-                value['identity']['unapproved_extra'] = 'must-refuse'
-                path.write_text(json.dumps(value) + '\n')
-                code, text = self._judge(work, work / 'rejected.json')
-                self.assertNotEqual(0, code, text)
-                self.assertIn('identity mismatch', text)
+                path.write_text(path.read_text() + '\n')  # stale receipt hash
+                code, stdout, stderr, text = self._judge(work, work / 'stale.json')
+                self.assertNotEqual(0, code, (stdout, stderr, text))
+                outcome = self._summary(text)['cases'][0]
+                self.assertIn('artifact', outcome.get('reason', ''), text)
+                self.assertEqual('unknown', outcome['status'], text)
+
+    def test_v5_static_judge_for_dependency_ready_cases(self):
+        ready = [case_id for case_id in FIVE
+                 if case_id != 'GAP-STANDALONE-LISTENERS' or _dnslib_available()]
+        for case_id in ready:
+            with self.subTest(case=case_id):
+                work = Path(tempfile.mkdtemp(prefix='fnreg-r03-v5-', dir='/tmp'))
+                plan, output_dir, identity = self._build_judge_case(
+                    work, case_id, source_branch=True)
+                self.assertEqual(HEAD, plan['candidate']['source_commit'])
+                identity_obj = plan['candidate']['source_deployment_identity']
+                self.assertEqual(case_id, identity_obj['case_id'])
+                code, stdout, stderr, text = self._judge(work, work / 'ind.json')
+                if case_id == 'GAP-STANDALONE-LISTENERS':
+                    self.assertNotEqual(0, code, text)  # dnslib present but byte-level
+                    continue
+                self.assertEqual(0, code, (stdout, stderr, text))
+                summary = self._summary(text)
+                self.assertTrue(summary['fixture_contract_pass'], text)
+                self.assertFalse(summary['full_functional_pass'], text)
+                self.assertEqual(1, summary['checks']['required'], text)
+        self.assertFalse(EFFECT_MARKER.exists())
+
+    def test_v5_standalone_positive_not_run_without_dnslib(self):
+        if _dnslib_available():
+            self.skipTest('dnslib present; covered by the dependency-ready test')
+        work = Path(tempfile.mkdtemp(prefix='fnreg-r03-standalone-', dir='/tmp'))
+        # Build-only: record the single missing dependency (the standalone
+        # oracle itself imports dnslib for the DNS wire check) without
+        # judging; schema/source/identity negatives stay enforced elsewhere.
+        plan, output_dir, identity = self._build_judge_case(
+            work, 'GAP-STANDALONE-LISTENERS', source_branch=True)
+        self.assertEqual('fakenet.manual-input.v5',
+                         json.loads((output_dir / 'manual-inputs.json').read_text())['schema'])
+        (work / 'dependency-gap.json').write_text(json.dumps({
+            'case_id': 'GAP-STANDALONE-LISTENERS', 'positive_judged': False,
+            'single_missing_dependency': 'dnslib (oracle DNS wire check import)',
+            'built_chain': True}, indent=1))
+
+    def test_v5_identity_extra_negative_diverter(self):
+        self._identity_negative(
+            'GAP-DIVERTER-SWITCH',
+            lambda value: value['identity'].__setitem__('unapproved_extra', 'x'),
+            source_branch=True)
 
 
 if __name__ == '__main__':
