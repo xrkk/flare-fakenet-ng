@@ -16,7 +16,7 @@ def _linux_module():
 
 class DiverterSwitchTests(unittest.TestCase):
  def setUp(self):
-  self.base=Path(os.environ['FN_MANUAL_CHECK_DIR'])/'retained'/self.id().split('.')[-1];self.base.mkdir(parents=True,exist_ok=False)
+  self.base=Path(os.environ['FN_MANUAL_CHECK_DIR'])/'retained'/self.id().replace('.','_');self.base.mkdir(parents=True,exist_ok=False)
  def inputs(self,out):
   return {'schema':'fakenet.manual-input.v1','case':'GAP-DIVERTER-SWITCH','candidate_id':'switch-fixture','source_commit':'a'*40,'package_sha256':'b'*64,'execution_id':'switch-fixture-01','config':str(out/'config'),'owned_root':str(out),'fixture':True}
  def test_real_fakenet_on_off_and_idempotent_stop(self):
@@ -64,7 +64,7 @@ if __name__=='__main__':unittest.main()
 class ControllerSwitchTruthTests(unittest.TestCase):
  inputs=DiverterSwitchTests.inputs
  def setUp(self):
-  self.base=Path(os.environ['FN_MANUAL_CHECK_DIR'])/'retained'/self.id().split('.')[-1];self.base.mkdir(parents=True,exist_ok=False)
+  self.base=Path(os.environ['FN_MANUAL_CHECK_DIR'])/'retained'/self.id().replace('.','_');self.base.mkdir(parents=True,exist_ok=False)
  def produce(self,out,backend=_Backend):
   inputs=self.inputs(out)
   with mock.patch('fakenet.fakenet.platform.system',return_value='Linux'),mock.patch('fakenet.fakenet.IfaceIpInfo',_Iface),mock.patch.dict(sys.modules,{'fakenet.diverters.linux':types.SimpleNamespace(Diverter=backend)}):

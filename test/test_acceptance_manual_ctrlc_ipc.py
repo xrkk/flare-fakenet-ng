@@ -68,7 +68,7 @@ def fixture(backend=_Backend):
 
 class CtrIcIpcTests(unittest.TestCase):
     def setUp(self):
-        self.base = Path(os.environ['FN_MANUAL_CHECK_DIR']) / 'retained' / self.id().split('.')[-1]
+        self.base = Path(os.environ['FN_MANUAL_CHECK_DIR']) / 'retained' / self.id().replace('.','_')
         self.base.mkdir(parents=True, exist_ok=False)
 
     def inputs(self, out):
