@@ -712,13 +712,41 @@ _SOURCE_DEPLOYMENT_CASES = ('GAP-DUMPPACKETS', 'GAP-LIST-MUTEX',
                             'GAP-EXECUTECMD', 'GAP-STANDALONE-LISTENERS',
                             'GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH',
                             'GAP-SYSLOG-ICMP-LOG')
+# DV01/02 (FN-REGRESSION-DRIVER-TWO-CONTROL-01): the two driver cases take
+# the protected v6 source branch with a fixed explicit control object.
+_DRIVER_PROTECTED_CASES = ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH')
+_DRIVER_PROTECTED_CONTROL = {'host_ipv4': '192.168.204.1',
+                             'tcp_source_ports': [28788, 28790]}
+
+
+def _validate_driver_control(control):
+    """DV01: exact fixed control object - canonical integer list, exact host,
+    no bools/strings/duplicates/extra keys."""
+    if not isinstance(control,dict) or set(control)!={'host_ipv4','tcp_source_ports'}:
+        raise ValueError('driver control object requires exactly host_ipv4 and tcp_source_ports')
+    if control['host_ipv4']!=_DRIVER_PROTECTED_CONTROL['host_ipv4']:
+        raise ValueError('driver control host_ipv4 differs from the fixed control link')
+    ports=control['tcp_source_ports']
+    if (not isinstance(ports,list) or len(ports)!=2
+            or any(type(p) is not int for p in ports)
+            or ports!=sorted(set(ports)) or ports!=_DRIVER_PROTECTED_CONTROL['tcp_source_ports']):
+        raise ValueError('driver control tcp_source_ports must be the fixed sorted integer list')
+    return control
 
 
 def manual_options(environment):
     """Shared frozen manual options; carrying them never grants remote authority."""
     import socket
     options=(environment or {}).get('manual')
-    if not isinstance(options,dict) or options.get('schema')!='fakenet.manual-options.v1' or set(options)-{'schema','responsea'}:
+    if not isinstance(options,dict):
+        raise ValueError('explicit fixed manual options required')
+    if options.get('schema')=='fakenet.manual-options.v3':
+        if set(options)-{'schema','responsea','control'}:
+            raise ValueError('manual v3 options require exactly schema/responsea/control')
+        _validate_driver_control(options.get('control'))
+    elif options.get('schema')=='fakenet.manual-options.v1' and not set(options)-{'schema','responsea'}:
+        pass
+    else:
         raise ValueError('explicit fixed manual options required')
     try:
         socket.inet_pton(socket.AF_INET,options.get('responsea','192.0.2.55'))
@@ -804,6 +832,9 @@ def _manual_input_value(plan,case,options,owned_root,config):
     # and the frozen source identity; every packaged case keeps the v1 value.
     if (case['id'] in _SOURCE_DEPLOYMENT_CASES and
             candidate.get('deployment_kind')=='source'):
+        if case['id'] in _DRIVER_PROTECTED_CASES:
+            if options.get('schema')!='fakenet.manual-options.v3':
+                raise ValueError('protected driver cases require explicit manual-options.v3 control')
         closure={}
         native_pins=plan.get('native_source_hashes') or {}
         case_entry=(plan.get('source_hashes') or {}).get(case['id']) or {}
@@ -827,13 +858,18 @@ def _manual_input_value(plan,case,options,owned_root,config):
             raise ValueError('plan source deployment identity differs from the closure')
         schema=('fakenet.manual-input.v3' if case['id']=='GAP-DUMPPACKETS' else
                 'fakenet.manual-input.v4' if case['id']=='GAP-LIST-MUTEX' else
+                'fakenet.manual-input.v6' if case['id'] in _DRIVER_PROTECTED_CASES else
                 'fakenet.manual-input.v5')
-        return dict(schema=schema,case=case['id'],candidate_id='manual-candidate',
+        value=dict(schema=schema,case=case['id'],candidate_id='manual-candidate',
                     source_commit=candidate['source_commit'],package_sha256=None,
                     execution_id=plan['execution_id'],owned_root=owned_root,config=config,
                     responsea=options.get('responsea','192.0.2.55'),
                     fixture=candidate.get('offline_fixture') is True,
                     source_deployment_identity=identity)
+        if case['id'] in _DRIVER_PROTECTED_CASES:
+            value['control']={'host_ipv4':_DRIVER_PROTECTED_CONTROL['host_ipv4'],
+                              'tcp_source_ports':list(_DRIVER_PROTECTED_CONTROL['tcp_source_ports'])}
+        return value
     if case['id'] in _SOURCE_DEPLOYMENT_CASES and candidate.get('package_sha256') is None and \
             candidate.get('deployment_kind')!='source':
         # SD-01/FMS-03: an undeclared null-package manual candidate is refused
