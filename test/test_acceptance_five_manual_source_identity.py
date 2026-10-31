@@ -116,7 +116,10 @@ def _source_plan(work, case_id):
                                       'work_root': 'E:\\w',
                                       'transfer': {'expected_vm_identity': {
                                           'vm_uuid': 'u' * 36, 'boot_identity': 'b', 'vm_epoch': 'e'}}},
-                   'manual': {'schema': 'fakenet.manual-options.v1', 'responsea': '192.0.2.55'}}
+                   'manual': ({'schema': 'fakenet.manual-options.v3', 'responsea': '192.0.2.55',
+                               'control': {'host_ipv4': '192.168.204.1', 'tcp_source_ports': [28788, 28790]}}
+                              if case_id in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH') else
+                              {'schema': 'fakenet.manual-options.v1', 'responsea': '192.0.2.55'})}
     (work / 'environment.json').write_text(json.dumps(environment))
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         code = A.main(['--root', str(ROOT), 'plan', '--mode', 'selected',
@@ -144,7 +147,7 @@ def _replan(work, candidate, environment, case_ids, output):
 
 def _identity_of(inputs):
     if inputs['schema'] in ('fakenet.manual-input.v3', 'fakenet.manual-input.v4',
-                            'fakenet.manual-input.v5'):
+                            'fakenet.manual-input.v5', 'fakenet.manual-input.v6'):
         return {k: inputs[k] for k in ('candidate_id', 'source_commit', 'package_sha256',
                                        'execution_id', 'source_deployment_identity')}
     return {k: inputs[k] for k in ('candidate_id', 'source_commit', 'package_sha256',
@@ -239,6 +242,25 @@ def _build_executecmd(out, inputs):
         'checks': [{'id': x} for x in M.CHECKS['GAP-EXECUTECMD']]})
 
 
+def _driver_control_stub(token, branches):
+    from fakenet.mcp.controlfilter import apply_control_link_exclusion, apply_loopback_exclusion
+    expected_filter = apply_loopback_exclusion(apply_control_link_exclusion(
+        'outbound and ip', '192.168.204.1', '28788,28790'))
+    def row():
+        return {'opened': True, 'filter_validated': True, 'filter': expected_filter,
+                'owner_execution': token,
+                'pydivert_module': {'path': 'E:\\src\\pydivert\\windivert.py', 'sha256': 'a' * 64},
+                'dll': {'path': 'E:\\src\\pydivert\\windivert_dll\\WinDivert64.dll', 'sha256': 'b' * 64},
+                'sys': {'path': 'E:\\src\\pydivert\\windivert_dll\\WinDivert64.sys', 'sha256': 'c' * 64}}
+    built = {}
+    for name, kind in (branches.items() if isinstance(branches, dict)
+                       else [(b, 'row') for b in branches]):
+        built[name] = row() if kind == 'row' else None
+    return {'schema': 'fakenet.driver-control-observation.v1',
+            'control': {'host_ipv4': '192.168.204.1', 'tcp_source_ports': [28788, 28790]},
+            'branches': built}
+
+
 def _build_diverter_switch(out, inputs):
     cfgdir = out / 'config'
     cfgdir.mkdir(parents=True)
@@ -247,7 +269,9 @@ def _build_diverter_switch(out, inputs):
     for mode, traffic in (('on', 'Yes'), ('off', 'No')):
         cfg = cfgdir / (mode + '.ini')
         cfg.write_text('[FakeNet]\nDivertTraffic: ' + traffic
-                       + '\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n')
+                       + '\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n'
+                       + ('ControlLinkExcludeIp: 192.168.204.1\nControlLinkExcludePort: 28788,28790\n'
+                          if inputs.get('schema') == 'fakenet.manual-input.v6' else ''))
         calls = ([{'method': m, 'event': e} for m in ('start', 'stop')
                   for e in ('call', 'return')] if mode == 'on' else [])
         obs = out / (mode + '-observation.json')
@@ -275,7 +299,11 @@ def _build_diverter_switch(out, inputs):
                           ('fakenet/fakenet.py', 'fakenet/diverters/linux.py',
                            'fakenet/diverters/windows.py')},
         'cleanup': {'stopped': True, 'scope': 'observed-core-start-stop',
-                    'system_network_restored': 'unverified'},
+                    'system_network_restored': ('outer-native-guard'
+                        if inputs.get('schema') == 'fakenet.manual-input.v6'
+                        else 'unverified')},
+        **({'driver_control': _driver_control_stub(token, {'on': 'row', 'off': None})}
+           if inputs.get('schema') == 'fakenet.manual-input.v6' else {}),
         'checks': [{'id': x} for x in M.CHECKS['GAP-DIVERTER-SWITCH']]})
 
 
@@ -347,7 +375,10 @@ def _build_ctrlc(out, inputs):
     cfgdir.mkdir(parents=True)
     cfg = cfgdir / 'shutdown.ini'
     cfg.write_text('[FakeNet]\nDivertTraffic: Yes\n[Diverter]\nNetworkMode: SingleHost\n'
-                   'LinuxRestrictInterface: Off\n', encoding='ascii')
+                   'LinuxRestrictInterface: Off\n'
+                   + ('ControlLinkExcludeIp: 192.168.204.1\nControlLinkExcludePort: 28788,28790\n'
+                      if inputs.get('schema') == 'fakenet.manual-input.v6' else ''),
+                   encoding='ascii')
     branches = {}
     for mode in ('ctrlc', 'ipc'):
         folder = out / mode
@@ -432,7 +463,12 @@ def _build_ctrlc(out, inputs):
                     'stopped': True, 'threads_joined': True, 'flags_removed': True,
                     'logger_restored': True, 'argv_restored': True,
                     'profile_restored': True, 'signals_restored': True,
-                    'system_network_restored': 'not-exercised', 'system_console_used': False},
+                    'system_network_restored': ('outer-native-guard'
+                        if inputs.get('schema') == 'fakenet.manual-input.v6'
+                        else 'not-exercised'),
+                    'system_console_used': False},
+        **({'driver_control': _driver_control_stub(token, {'ctrlc': 'row', 'ipc': 'row'})}
+           if inputs.get('schema') == 'fakenet.manual-input.v6' else {}),
         'checks': [{'id': x} for x in M.CHECKS['GAP-CTRLC-IPC']]})
 
 
@@ -682,12 +718,25 @@ class FiveInputSchemaTests(_NoRealEffects):
                 work = Path(tempfile.mkdtemp(prefix='fnreg-fms-v5-', dir='/tmp'))
                 plan = _source_plan(work, case_id)
                 value = _v5_inputs(work, case_id, plan)
-                self.assertEqual('fakenet.manual-input.v5', value['schema'])
-                self.assertIsNone(value['package_sha256'])
-                self.assertEqual(sorted(value), sorted(
-                    ['schema', 'case', 'candidate_id', 'source_commit', 'package_sha256',
-                     'execution_id', 'owned_root', 'config', 'responsea', 'fixture',
-                     'source_deployment_identity']))
+                if case_id in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH'):
+                    # DV01/02: the driver cases now derive the protected v6
+                    # branch with the fixed control object.
+                    self.assertEqual('fakenet.manual-input.v6', value['schema'])
+                    self.assertEqual({'host_ipv4': '192.168.204.1',
+                                      'tcp_source_ports': [28788, 28790]},
+                                     value['control'])
+                    self.assertIsNone(value['package_sha256'])
+                    self.assertEqual(sorted(value), sorted(
+                        ['schema', 'case', 'candidate_id', 'source_commit', 'package_sha256',
+                         'execution_id', 'owned_root', 'config', 'responsea', 'fixture',
+                         'source_deployment_identity', 'control']))
+                else:
+                    self.assertEqual('fakenet.manual-input.v5', value['schema'])
+                    self.assertIsNone(value['package_sha256'])
+                    self.assertEqual(sorted(value), sorted(
+                        ['schema', 'case', 'candidate_id', 'source_commit', 'package_sha256',
+                         'execution_id', 'owned_root', 'config', 'responsea', 'fixture',
+                         'source_deployment_identity']))
                 self.assertEqual(case_id,
                                  value['source_deployment_identity']['case_id'])
 
@@ -952,7 +1001,12 @@ class CentralIndependentJudgeTests(_NoRealEffects):
                        'allowed_actions': ['native'], 'endpoints': [], 'auth_refs': [],
                        'native_runtime': {'transport': 'manual-loopback-fixture',
                                           'identity': identity},
-                       'manual': {'schema': 'fakenet.manual-options.v1'}}
+                       'manual': ({'schema': 'fakenet.manual-options.v3',
+                                   'responsea': '192.0.2.55',
+                                   'control': {'host_ipv4': '192.168.204.1',
+                                               'tcp_source_ports': [28788, 28790]}}
+                                  if case_id in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH') and source_branch else
+                                  {'schema': 'fakenet.manual-options.v1'})}
         (work / 'environment.json').write_text(json.dumps(environment))
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             code = A.main(['--root', str(ROOT), 'plan', '--mode', 'selected',
@@ -971,7 +1025,13 @@ class CentralIndependentJudgeTests(_NoRealEffects):
                                                      sys.executable)
         inputs = native.manual_inputs(plan, case, str(output_dir))
         if source_branch:
-            self.assertEqual('fakenet.manual-input.v5', inputs['schema'])
+            if case_id in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH'):
+                self.assertEqual('fakenet.manual-input.v6', inputs['schema'])
+                self.assertEqual({'host_ipv4': '192.168.204.1',
+                                  'tcp_source_ports': [28788, 28790]},
+                                 inputs['control'])
+            else:
+                self.assertEqual('fakenet.manual-input.v5', inputs['schema'])
             self.assertIsNone(inputs['package_sha256'])
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / 'manual-inputs.json').write_text(json.dumps(inputs, indent=1) + '\n')
