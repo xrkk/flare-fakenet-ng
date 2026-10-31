@@ -1411,13 +1411,18 @@ def real_executecmd(case,out,inputs):
         def execute_detached(self,cmd):
             # EC01: the observer lives ONLY around this single synchronous
             # super() call.  The expected command is fixed beforehand from the
-            # immutable inputs; a different command, another thread, or a
-            # second spawn is refused BEFORE any real spawn boundary.  The
-            # original spawn path (flags/kwargs/first-connection) is unchanged.
+            # immutable inputs; a different command, another thread, a second
+            # spawn, or NON-PLATFORM kwargs is refused BEFORE any real spawn
+            # boundary.  The original spawn path (flags/kwargs/first-connection)
+            # is unchanged: exactly the platform-established kwargs pass through.
             if cmd != self._expected:
                 self._errors.append({'scope':'execute_detached','reason':'command differs from the immutable expected command','command':cmd})
                 raise ValueError('owned spawn command differs from the immutable expected command')
             real_popen=subprocess.Popen;main_thread=threading.get_ident();seen=[]
+            expected_kwargs={'creationflags':(0x00000008 if self.running_on_windows else 0),
+                             'shell':(False if self.running_on_windows else True),
+                             'close_fds':(False if self.running_on_windows else True),
+                             'preexec_fn':(None if self.running_on_windows else 'ign_sigint')}
             def observed(argv,*args,**kwargs):
                 if threading.get_ident()!=main_thread:
                     raise ValueError('owned spawn attempted from an unexpected thread')
@@ -1425,6 +1430,21 @@ def real_executecmd(case,out,inputs):
                     raise ValueError('owned spawn command differs at the spawn boundary')
                 if seen:
                     raise ValueError('unexpected second spawn inside the owned window')
+                if args or set(kwargs)!=set(expected_kwargs):
+                    self._errors.append({'scope':'spawn_boundary','reason':'spawn kwargs/args differ from the platform-established policy','args':len(args),'kwargs':sorted(kwargs)})
+                    raise ValueError('owned spawn kwargs differ from the platform-established policy')
+                for key,want in expected_kwargs.items():
+                    got=kwargs.get(key)
+                    if key=='preexec_fn':
+                        # POSIX passes the original signal-ignoring preexec; the
+                        # exact callable identity is the base module's own.
+                        if self.running_on_windows:
+                            if got is not None:
+                                raise ValueError('owned spawn preexec_fn must be None on Windows')
+                        elif not callable(got):
+                            raise ValueError('owned spawn preexec_fn must be the original signal guard')
+                    elif got!=want:
+                        raise ValueError('owned spawn kwarg differs from the platform policy: '+key)
                 proc=real_popen(argv,*args,**kwargs)
                 seen.append(proc);self._handles.append(proc)
                 return proc
@@ -1495,18 +1515,18 @@ def real_executecmd(case,out,inputs):
             except Exception as exc:
                 row['timeout']=type(exc).__name__=='TimeoutExpired'
                 row['wait_error']={'type':type(exc).__name__,'message':str(exc)}
-                # EC02: record the recovery attempt BEFORE acting on the exact
-                # captured handle, then escalate terminate -> kill only on it.
+                # EC02/R328: forced/attempt are set BEFORE any recovery action;
+                # a failed recovery keeps forced=True and stays unreaped.
+                row['forced']=True
                 row['terminate_attempt']=True
                 try:
                     proc.terminate()
                     row['wait_result']=proc.wait(timeout=2.0)
-                    row['forced']=True
                 except Exception as term_exc:
                     row['terminate_error']={'type':type(term_exc).__name__,'message':str(term_exc)}
                     row['kill_attempt']=True
                     try:
-                        proc.kill();row['wait_result']=proc.wait(timeout=2.0);row['forced']=True
+                        proc.kill();row['wait_result']=proc.wait(timeout=2.0)
                     except Exception as kill_exc:
                         row['kill_error']={'type':type(kill_exc).__name__,'message':str(kill_exc)}
             try:row['poll']=proc.poll()
@@ -1515,6 +1535,7 @@ def real_executecmd(case,out,inputs):
             row['returncode']=proc.returncode
             row['reaped']=proc.returncode is not None
             child_rows.append(row)
+        all_reaped=all(r['reaped'] for r in child_rows) if child_rows else False
         diverter.sessions.clear();diverter.port_fwd_table.clear()
         lifecycle_path=out/'child-lifecycle.json'
         _json(lifecycle_path,{'owner_execution':token,'children':child_rows,'error':child_error,
@@ -1525,6 +1546,8 @@ def real_executecmd(case,out,inputs):
                   and child_rows[0]['forced'] is False and child_rows[0]['timeout'] is False
                   and child_rows[0]['observer_restored'] is True and all(r['reaped'] for r in child_rows)
                   and not observer_errors)
+    strict_lifecycle_schema=(inputs.get('schema')=='fakenet.manual-input.v5'
+                             or inputs.get('fixture') is not True)
     value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,
       'executecmd':{'configuration':'config/executecmd.ini','configuration_sha256':sha256(cfg),'template':template,'command':None,'command_output':str(output),'command_output_sha256':sha256(output) if output.is_file() else None,'command_output_bytes':output_bytes.hex() if output_bytes is not None else None,'command_output_encoding':'hex','token':token,
                    'first_packet':first['first_packet'],'duplicate_first_packet':duplicate['first_packet'],'executed':diverter.executed,
@@ -1534,11 +1557,11 @@ def real_executecmd(case,out,inputs):
                    'child_lifecycle':'child-lifecycle.json','child_lifecycle_sha256':sha256(lifecycle_path)},
       'source_hashes':{n:sha256(Path(__file__).resolve().parents[1]/n) for n in ('fakenet/diverters/diverterbase.py','fakenet/diverters/fnpacket.py')},
       'started_epoch':started,'ended_epoch':time.time(),
-      'cleanup':({'stopped':not diverter.sessions and not diverter.port_fwd_table,
+      'cleanup':({'stopped':natural_exit,
           'threads_joined':True,'sockets_closed':True,'network_restored':True,'scope':'in-memory-case-state',
           'child_exit':'observed' if natural_exit else 'not-observed',
-          'child_termination_performed':bool(child_rows) and bool(child_rows[0]['forced'])}
-          if inputs.get('schema')=='fakenet.manual-input.v5' else
+          'child_termination_performed':bool(child_rows) and bool(child_rows[0].get('forced'))}
+          if strict_lifecycle_schema else
           {'stopped':not diverter.sessions and not diverter.port_fwd_table,
            'threads_joined':True,'sockets_closed':True,'network_restored':True,'scope':'in-memory-case-state',
            'child_exit':'not-observed','child_termination_performed':False}),
