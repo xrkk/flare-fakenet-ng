@@ -1516,7 +1516,8 @@ def real_executecmd(case,out,inputs):
             row['reaped']=proc.returncode is not None
             child_rows.append(row)
         diverter.sessions.clear();diverter.port_fwd_table.clear()
-        _json(out/'child-lifecycle.json',{'owner_execution':token,'children':child_rows,'error':child_error,
+        lifecycle_path=out/'child-lifecycle.json'
+        _json(lifecycle_path,{'owner_execution':token,'children':child_rows,'error':child_error,
               'spawn_count':len(child_rows),'observer_errors':observer_errors,
               'observer_restored':not observer_errors and
                   all(r for r in diverter._restored) and len(diverter._restored)==len(owned_handles)})
