@@ -5,6 +5,11 @@ ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'tools'))
 import acceptance_manual as M,acceptance_manual_oracles as O,acceptance_native as N
 class _Proc:
  pid=43210
+ returncode=0
+ def wait(self,timeout=None):return 0
+ def poll(self):return 0
+ def terminate(self):pass
+ def kill(self):pass
 
 def _popen(argv,**kwargs):
  import re

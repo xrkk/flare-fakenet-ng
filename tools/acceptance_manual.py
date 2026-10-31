@@ -1389,7 +1389,7 @@ def real_diverter_switch(case,out,inputs):
 def real_executecmd(case,out,inputs):
     from fakenet.diverters.diverterbase import DiverterBase,DivertParms,ListenerPorts
     from fakenet.diverters.fnpacket import PacketCtx
-    import dpkt,logging,sys,threading
+    import dpkt,logging,subprocess,sys,threading,time as _time
     started=time.time();out=Path(out);token=str(inputs['execution_id']);output=out/'command-output.txt'
     if not re.fullmatch('[a-zA-Z0-9-]{4,80}',token):raise ValueError('unsafe command execution token')
     if any(ord(ch)<32 or ord(ch)==127 or ch in chr(34)+chr(39)+'&|<>^%!{};$`()' for ch in str(output)):
@@ -1408,6 +1408,19 @@ def real_executecmd(case,out,inputs):
             self.ip_addrs={4:['192.0.2.10']}
         def execute_detached(self,cmd):
             pid=super().execute_detached(cmd);self.executed.append({'command':cmd,'pid':pid});return pid
+    # RF owned-child closure: a scope-limited observer calls the REAL Popen,
+    # keeps the handle for natural reaping, and is restored in finally.  The
+    # original spawn path (command, flags, first-connection-only) is unchanged.
+    real_popen=subprocess.Popen
+    owned_spawns=[]
+    def observed_popen(argv,*args,**kwargs):
+        if owned_spawns:
+            raise ValueError('unexpected additional spawn inside executecmd checker')
+        if not isinstance(argv,str) or not argv.startswith('cmd.exe /c echo '):
+            raise ValueError('unexpected spawn command inside executecmd checker: %r'%(argv[:80],))
+        proc=real_popen(argv,*args,**kwargs)
+        owned_spawns.append({'argv':argv,'process':proc})
+        return proc
     diverter=Recorder();diverter.configure({})
     parser=configparser.ConfigParser();parser.read(cfg)
     diverter.parse_listeners_config({section:dict(parser.items(section)) for section in parser.sections()})
@@ -1416,43 +1429,92 @@ def real_executecmd(case,out,inputs):
         ip=dpkt.ip.IP(src=socket.inet_aton('192.0.2.10'),dst=socket.inet_aton('192.0.2.20'),p=17 if udp else 6,data=transport)
         ip.len=len(ip)
         return PacketCtx('executecmd-benign',bytes(ip))
-    pkt=packet();pid=1234;comm='benign.exe';command=diverter.build_cmd(pkt,pid,comm);actions=[]
+    pkt=packet();pid=1234;comm='benign.exe';actions=[]
     def trigger(name,packet,owner):
         parms=DivertParms(diverter,packet,owner,comm);first=parms.first_packet_new_session;before=len(diverter.executed)
         diverter.maybe_redir_port(parms,packet,owner,comm)
         row={'name':name,'protocol':packet.proto,'source_port':packet.sport,'destination_port':packet.dport,'pid':owner,
              'first_packet':first,'executions':len(diverter.executed)-before,'session_count':len(diverter.sessions)}
         actions.append(row);return row
-    first=trigger('first',pkt,pid);duplicate=trigger('duplicate',packet(),pid)
-    missing=trigger('missing-pid',packet(sport=40001),None)
-    nonmatching=trigger('no-command-listener',packet(sport=40002,dport=8090),pid)
-    no_default=trigger('no-default-protocol',packet(sport=40003,udp=True),pid)
-    other_cmd=diverter.build_cmd(packet(dport=9090),pid,comm)
-    deadline=time.time()+2.0;output_bytes=None
-    while time.time()<deadline:
-        if output.is_symlink():raise ValueError('command output became linked')
-        if output.is_file():
-            if output.stat().st_size>4096:raise ValueError('command output exceeds fixed probe bound')
-            output_bytes=output.read_bytes()
-            if output_bytes:break
-        time.sleep(0.02)
-    bad=cfgdir/'bad.ini';bad.write_text('[bad]\nProtocol: TCP\nPort: 8081\nExecuteCmd: cmd {missing}\n')
-    bad_error=None;bad_parser=configparser.ConfigParser();bad_parser.read(bad)
+    child_rows=[]
+    child_error=None
+    subprocess.Popen=observed_popen
     try:
-        bad_diverter=Recorder();bad_diverter.configure({})
-        bad_diverter.parse_listeners_config({section:dict(bad_parser.items(section)) for section in bad_parser.sections()})
-    except SystemExit as exc:bad_error={'type':type(exc).__name__,'code':exc.code}
+        first=trigger('first',pkt,pid);duplicate=trigger('duplicate',packet(),pid)
+        missing=trigger('missing-pid',packet(sport=40001),None)
+        nonmatching=trigger('no-command-listener',packet(sport=40002,dport=8090),pid)
+        no_default=trigger('no-default-protocol',packet(sport=40003,udp=True),pid)
+        other_cmd=diverter.build_cmd(packet(dport=9090),pid,comm)
+        deadline=_time.time()+2.0;output_bytes=None
+        while _time.time()<deadline:
+            if output.is_symlink():raise ValueError('command output became linked')
+            if output.is_file():
+                if output.stat().st_size>4096:raise ValueError('command output exceeds fixed probe bound')
+                output_bytes=output.read_bytes()
+                if output_bytes:break
+            _time.sleep(0.02)
+        bad=cfgdir/'bad.ini';bad.write_text('[bad]\nProtocol: TCP\nPort: 8081\nExecuteCmd: cmd {missing}\n')
+        bad_error=None;bad_parser=configparser.ConfigParser();bad_parser.read(bad)
+        try:
+            bad_diverter=Recorder();bad_diverter.configure({})
+            bad_diverter.parse_listeners_config({section:dict(bad_parser.items(section)) for section in bad_parser.sections()})
+        except SystemExit as exc:bad_error={'type':SystemExit.__name__,'code':exc.code}
+    except BaseException as exc:
+        child_error={'type':type(exc).__name__,'message':str(exc)}
+        raise
+    finally:
+        subprocess.Popen=real_popen
+        # Natural, bounded reaping of exactly the observed owned handles; any
+        # forced/timeout/nonzero outcome fails the case rather than passing.
+        for entry in owned_spawns:
+            proc=entry['process'];row={'command':entry['argv'],'pid':proc.pid,
+                'wait_result':None,'poll':None,'returncode':None,'forced':False,
+                'timeout':False,'observer_restored':subprocess.Popen is real_popen,
+                'owner_execution':token}
+            try:
+                row['wait_result']=proc.wait(timeout=2.0)
+            except Exception as exc:
+                row['timeout']=type(exc).__name__=='TimeoutExpired'
+                try:
+                    proc.terminate()
+                    row['wait_result']=proc.wait(timeout=2.0)
+                    row['forced']=True
+                except Exception:
+                    try:
+                        proc.kill();row['wait_result']=proc.wait(timeout=2.0);row['forced']=True
+                    except Exception as kill_exc:
+                        row['kill_error']={'type':type(kill_exc).__name__,'message':str(kill_exc)}
+            try:row['poll']=proc.poll()
+            except Exception:pass
+            row['returncode']=proc.returncode
+            row['reaped']=proc.poll() is not None
+            child_rows.append(row)
     diverter.sessions.clear();diverter.port_fwd_table.clear()
+    lifecycle_path=out/'child-lifecycle.json'
+    _json(lifecycle_path,{'owner_execution':token,'children':child_rows,'error':child_error,
+                          'spawn_count':len(owned_spawns),'observer_restored':subprocess.Popen is real_popen})
+    natural_exit=(not child_error and len(child_rows)==1 and child_rows[0]['returncode']==0
+                  and child_rows[0]['forced'] is False and child_rows[0]['timeout'] is False
+                  and child_rows[0]['observer_restored'] is True and all(r['reaped'] for r in child_rows))
     value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,
-      'executecmd':{'configuration':'config/executecmd.ini','configuration_sha256':sha256(cfg),'template':template,'command':command,'command_output':str(output),'command_output_sha256':sha256(output) if output.is_file() else None,'command_output_bytes':output_bytes.hex() if output_bytes is not None else None,'command_output_encoding':'hex','token':token,
+      'executecmd':{'configuration':'config/executecmd.ini','configuration_sha256':sha256(cfg),'template':template,'command':None,'command_output':str(output),'command_output_sha256':sha256(output) if output.is_file() else None,'command_output_bytes':output_bytes.hex() if output_bytes is not None else None,'command_output_encoding':'hex','token':token,
                    'first_packet':first['first_packet'],'duplicate_first_packet':duplicate['first_packet'],'executed':diverter.executed,
                    'missing_pid_executions':missing['executions'],'nonmatching_command':other_cmd,'bad_format_error':bad_error,
                    'actions':actions,'sessions_after':len(diverter.sessions),'port_forwards_after':len(diverter.port_fwd_table),
-                   'os_platform':'windows' if diverter.running_on_windows else 'posix'},
+                   'os_platform':'windows' if diverter.running_on_windows else 'posix',
+                   'child_lifecycle':'child-lifecycle.json','child_lifecycle_sha256':sha256(lifecycle_path)},
       'source_hashes':{n:sha256(Path(__file__).resolve().parents[1]/n) for n in ('fakenet/diverters/diverterbase.py','fakenet/diverters/fnpacket.py')},
-      'started_epoch':started,'ended_epoch':time.time(),'cleanup':{'stopped':not diverter.sessions and not diverter.port_fwd_table,
+      'started_epoch':started,'ended_epoch':time.time(),
+      'cleanup':({'stopped':not diverter.sessions and not diverter.port_fwd_table,
           'threads_joined':True,'sockets_closed':True,'network_restored':True,'scope':'in-memory-case-state',
-          'child_exit':'not-observed','child_termination_performed':False},'checks':[{'id':x} for x in CHECKS[case]],'identity':_result_identity(inputs)}
+          'child_exit':'observed' if natural_exit else 'not-observed',
+          'child_termination_performed':bool(child_rows) and bool(child_rows[0]['forced'])}
+          if inputs.get('schema')=='fakenet.manual-input.v5' else
+          {'stopped':not diverter.sessions and not diverter.port_fwd_table,
+           'threads_joined':True,'sockets_closed':True,'network_restored':True,'scope':'in-memory-case-state',
+           'child_exit':'not-observed','child_termination_performed':False}),
+      'checks':[{'id':x} for x in CHECKS[case]],'identity':_result_identity(inputs)}
+    value['executecmd']['command']=diverter.executed[0]['command'] if diverter.executed else None
     _json(out/'manual-result.json',value);return value
 
 def real_raw_date(case,out,inputs):

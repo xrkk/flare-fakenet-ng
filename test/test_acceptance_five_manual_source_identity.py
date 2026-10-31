@@ -200,6 +200,17 @@ def _build_executecmd(out, inputs):
         {'name': 'no-default-protocol', 'protocol': 'UDP', 'source_port': 40003,
          'destination_port': 8080, 'pid': 1234, 'first_packet': True, 'executions': 0,
          'session_count': 3}]
+    if inputs.get('case') == 'GAP-EXECUTECMD' and inputs.get('schema') == 'fakenet.manual-input.v5':
+        lifecycle = {'owner_execution': inputs['execution_id'],
+                     'children': [{'command': expected, 'pid': 43210,
+                                   'wait_result': 0, 'poll': 0, 'returncode': 0,
+                                   'forced': False, 'timeout': False,
+                                   'observer_restored': True, 'reaped': True}],
+                     'error': None, 'spawn_count': 1, 'observer_restored': True}
+        (out / 'child-lifecycle.json').write_text(json.dumps(lifecycle, indent=1) + '\n')
+        payload_sha = hashlib.sha256((out / 'child-lifecycle.json').read_bytes()).hexdigest()
+    else:
+        payload_sha = None
     _write(out, inputs, {
         'executecmd': {'configuration': 'config/executecmd.ini',
                        'configuration_sha256': _sha(cfg), 'template': template,
@@ -211,12 +222,19 @@ def _build_executecmd(out, inputs):
                        'missing_pid_executions': 0, 'nonmatching_command': None,
                        'bad_format_error': {'type': 'SystemExit', 'code': 1},
                        'actions': actions, 'sessions_after': 0, 'port_forwards_after': 0,
-                       'os_platform': 'posix'},
+                       'os_platform': 'posix',
+                       **(({'child_lifecycle': 'child-lifecycle.json',
+                            'child_lifecycle_sha256': payload_sha}
+                           if inputs.get('schema') == 'fakenet.manual-input.v5' else {}))},
         'source_hashes': {n: _sha(ROOT / n) for n in
                           ('fakenet/diverters/diverterbase.py', 'fakenet/diverters/fnpacket.py')},
-        'cleanup': {'stopped': True, 'threads_joined': True, 'sockets_closed': True,
-                    'network_restored': True, 'scope': 'in-memory-case-state',
-                    'child_exit': 'not-observed', 'child_termination_performed': False},
+        'cleanup': ({'stopped': True, 'threads_joined': True, 'sockets_closed': True,
+                     'network_restored': True, 'scope': 'in-memory-case-state',
+                     'child_exit': 'observed', 'child_termination_performed': False}
+                    if inputs.get('schema') == 'fakenet.manual-input.v5' else
+                    {'stopped': True, 'threads_joined': True, 'sockets_closed': True,
+                     'network_restored': True, 'scope': 'in-memory-case-state',
+                     'child_exit': 'not-observed', 'child_termination_performed': False}),
         'checks': [{'id': x} for x in M.CHECKS['GAP-EXECUTECMD']]})
 
 

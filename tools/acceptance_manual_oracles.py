@@ -762,9 +762,38 @@ def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False, prod
     if data.get('actions')!=expected_actions:errors.append('original first/duplicate/nontrigger action sequence differs')
     if data.get('sessions_after')!=0 or data.get('port_forwards_after')!=0:errors.append('original in-memory state not restored')
     if data.get('template')!=template:errors.append('command template identity differs')
+    # RF owned-child closure (v5 native): the real lifecycle original must
+    # back the executed entry; v1 fixtures keep their historical contract.
+    if expected_inputs.get('schema')=='fakenet.manual-input.v5':
+        if data.get('child_lifecycle')!='child-lifecycle.json':
+            errors.append('child lifecycle original missing')
+        else:
+            life_path=base/'child-lifecycle.json'
+            if (not life_path.is_file() or life_path.is_symlink()
+                    or data.get('child_lifecycle_sha256')!=hashlib.sha256(life_path.read_bytes()).hexdigest()):
+                errors.append('child lifecycle original missing/changed')
+            else:
+                life=json.loads(life_path.read_text())
+                children=life.get('children') or []
+                if life.get('error') or life.get('spawn_count')!=1 or len(children)!=1:
+                    errors.append('owned child lifecycle incomplete')
+                else:
+                    row=children[0]
+                    executed=(v.get('executecmd',{}).get('executed') or [{}])[0]
+                    if (life.get('owner_execution')!=expected_inputs['execution_id']
+                            or row.get('returncode')!=0 or row.get('forced') is not False
+                            or row.get('timeout') is not False or row.get('observer_restored') is not True
+                            or row.get('reaped') is not True or row.get('pid')!=executed.get('pid')
+                            or row.get('command')!=executed.get('command')):
+                        errors.append('owned child exit not naturally observed/reconciled')
+                if v.get('cleanup',{}).get('child_exit')!='observed':
+                    errors.append('cleanup child_exit not observed')
     if v.get('checks')!=[{'id':k} for k in ('command','first-connection','non-connection')]:errors.append('exact check set differs')
     if v.get('source_hashes')!={n:hashlib.sha256((Path(root)/n).read_bytes()).hexdigest() for n in ('fakenet/diverters/diverterbase.py','fakenet/diverters/fnpacket.py')}:errors.append('source binding mismatch')
-    if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True,
+    if expected_inputs.get('schema')=='fakenet.manual-input.v5':
+        if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True,
+                'scope':'in-memory-case-state','child_exit':'observed','child_termination_performed':False}:errors.append('cleanup mismatch')
+    elif v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True,
             'scope':'in-memory-case-state','child_exit':'not-observed','child_termination_performed':False}:errors.append('cleanup mismatch')
     out=[{'id':k,'status':'fail' if errors else 'pass'} for k in ('command','first-connection','non-connection')]
     return out,not errors,{'failures':errors}
