@@ -1475,11 +1475,17 @@ def real_executecmd(case,out,inputs):
                 row['wait_result']=proc.wait(timeout=2.0)
             except Exception as exc:
                 row['timeout']=type(exc).__name__=='TimeoutExpired'
+                row['wait_error']={'type':type(exc).__name__,'message':str(exc)}
+                # EC02: record the recovery attempt BEFORE acting on the exact
+                # captured handle, then escalate terminate -> kill only on it.
+                row['terminate_attempt']=True
                 try:
                     proc.terminate()
                     row['wait_result']=proc.wait(timeout=2.0)
                     row['forced']=True
-                except Exception:
+                except Exception as term_exc:
+                    row['terminate_error']={'type':type(term_exc).__name__,'message':str(term_exc)}
+                    row['kill_attempt']=True
                     try:
                         proc.kill();row['wait_result']=proc.wait(timeout=2.0);row['forced']=True
                     except Exception as kill_exc:
