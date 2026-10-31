@@ -806,8 +806,19 @@ def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False, prod
     if v.get('checks')!=[{'id':k} for k in ('command','first-connection','non-connection')]:errors.append('exact check set differs')
     if v.get('source_hashes')!={n:hashlib.sha256((Path(root)/n).read_bytes()).hexdigest() for n in ('fakenet/diverters/diverterbase.py','fakenet/diverters/fnpacket.py')}:errors.append('source binding mismatch')
     if expected_inputs.get('schema')=='fakenet.manual-input.v5' or expected_inputs.get('fixture') is not True:
-        if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True,
-                'scope':'in-memory-case-state','child_exit':'observed','child_termination_performed':False}:errors.append('cleanup mismatch')
+        cleanup=v.get('cleanup') or {}
+        strict_rows=(json.loads((base/'child-lifecycle.json').read_text())['children']
+                     if (base/'child-lifecycle.json').is_file() and cleanup.get('child_exit')=='observed' else [])
+        natural=(not strict_rows or (len(strict_rows)==1 and strict_rows[0].get('returncode')==0
+                 and strict_rows[0].get('forced') is False and strict_rows[0].get('reaped') is True))
+        forced_flag=bool(strict_rows) and bool(strict_rows[0].get('forced'))
+        if (cleanup.get('stopped') is not (cleanup.get('child_exit')=='observed')
+                or cleanup.get('scope')!='in-memory-case-state'
+                or cleanup.get('threads_joined') is not True or cleanup.get('sockets_closed') is not True
+                or cleanup.get('network_restored') is not True
+                or (cleanup.get('child_exit')=='observed' and not natural)
+                or cleanup.get('child_termination_performed') is not forced_flag):
+            errors.append('cleanup mismatch')
     else:
         if v.get('cleanup')!={'stopped':True,'threads_joined':True,'sockets_closed':True,'network_restored':True,
             'scope':'in-memory-case-state','child_exit':'not-observed','child_termination_performed':False}:errors.append('cleanup mismatch')
