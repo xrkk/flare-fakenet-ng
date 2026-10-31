@@ -1401,27 +1401,46 @@ def real_executecmd(case,out,inputs):
     text='[svc]\nProtocol: TCP\nPort: 8080\nExecuteCmd: '+template+'\n[plain]\nProtocol: TCP\nPort: 8090\n'
     cfg.write_text(text)
     class Recorder(DiverterBase):
-        def __init__(self):
+        def __init__(self,expected_command,handles,errors):
+            self._restored=[]
             self.logger=logging.getLogger('manual-executecmd');self.listener_ports=ListenerPorts();self.sessions={};self.executed=[]
             self.running_on_windows=sys.platform=='win32';self.pdebug_level=0
             self.default_listener={'TCP':8080};self.port_fwd_table={};self.port_fwd_table_lock=threading.Lock()
             self.ip_addrs={4:['192.0.2.10']}
+            self._expected=expected_command;self._handles=handles;self._errors=errors
         def execute_detached(self,cmd):
-            pid=super().execute_detached(cmd);self.executed.append({'command':cmd,'pid':pid});return pid
-    # RF owned-child closure: a scope-limited observer calls the REAL Popen,
-    # keeps the handle for natural reaping, and is restored in finally.  The
-    # original spawn path (command, flags, first-connection-only) is unchanged.
-    real_popen=subprocess.Popen
-    owned_spawns=[]
-    def observed_popen(argv,*args,**kwargs):
-        if owned_spawns:
-            raise ValueError('unexpected additional spawn inside executecmd checker')
-        if not isinstance(argv,str) or not argv.startswith('cmd.exe /c echo '):
-            raise ValueError('unexpected spawn command inside executecmd checker: %r'%(argv[:80],))
-        proc=real_popen(argv,*args,**kwargs)
-        owned_spawns.append({'argv':argv,'process':proc})
-        return proc
-    diverter=Recorder();diverter.configure({})
+            # EC01: the observer lives ONLY around this single synchronous
+            # super() call.  The expected command is fixed beforehand from the
+            # immutable inputs; a different command, another thread, or a
+            # second spawn is refused BEFORE any real spawn boundary.  The
+            # original spawn path (flags/kwargs/first-connection) is unchanged.
+            if cmd != self._expected:
+                self._errors.append({'scope':'execute_detached','reason':'command differs from the immutable expected command','command':cmd})
+                raise ValueError('owned spawn command differs from the immutable expected command')
+            real_popen=subprocess.Popen;main_thread=threading.get_ident();seen=[]
+            def observed(argv,*args,**kwargs):
+                if threading.get_ident()!=main_thread:
+                    raise ValueError('owned spawn attempted from an unexpected thread')
+                if argv!=self._expected:
+                    raise ValueError('owned spawn command differs at the spawn boundary')
+                if seen:
+                    raise ValueError('unexpected second spawn inside the owned window')
+                proc=real_popen(argv,*args,**kwargs)
+                seen.append(proc);self._handles.append(proc)
+                return proc
+            subprocess.Popen=observed
+            try:
+                pid=super().execute_detached(cmd)
+            finally:
+                subprocess.Popen=real_popen
+                self._restored.append(subprocess.Popen is real_popen)
+            self.executed.append({'command':cmd,'pid':pid})
+            return pid
+    expected_owned_command=('cmd.exe /c echo 1234 benign.exe 192.0.2.10 40000 '
+                            '192.0.2.20 8080 '+token+'>>"'+str(output)+'"')
+    owned_handles=[]
+    observer_errors=[]
+    diverter=Recorder(expected_owned_command,owned_handles,observer_errors);diverter.configure({})
     parser=configparser.ConfigParser();parser.read(cfg)
     diverter.parse_listeners_config({section:dict(parser.items(section)) for section in parser.sections()})
     def packet(sport=40000,dport=8080,udp=False):
@@ -1438,7 +1457,7 @@ def real_executecmd(case,out,inputs):
         actions.append(row);return row
     child_rows=[]
     child_error=None
-    subprocess.Popen=observed_popen
+    bad_recorder=None
     try:
         first=trigger('first',pkt,pid);duplicate=trigger('duplicate',packet(),pid)
         missing=trigger('missing-pid',packet(sport=40001),None)
@@ -1456,20 +1475,20 @@ def real_executecmd(case,out,inputs):
         bad=cfgdir/'bad.ini';bad.write_text('[bad]\nProtocol: TCP\nPort: 8081\nExecuteCmd: cmd {missing}\n')
         bad_error=None;bad_parser=configparser.ConfigParser();bad_parser.read(bad)
         try:
-            bad_diverter=Recorder();bad_diverter.configure({})
-            bad_diverter.parse_listeners_config({section:dict(bad_parser.items(section)) for section in bad_parser.sections()})
+            bad_recorder=Recorder(None,[],[]);bad_recorder.configure({})
+            bad_recorder.parse_listeners_config({section:dict(bad_parser.items(section)) for section in bad_parser.sections()})
         except SystemExit as exc:bad_error={'type':SystemExit.__name__,'code':exc.code}
     except BaseException as exc:
         child_error={'type':type(exc).__name__,'message':str(exc)}
         raise
     finally:
-        subprocess.Popen=real_popen
-        # Natural, bounded reaping of exactly the observed owned handles; any
-        # forced/timeout/nonzero outcome fails the case rather than passing.
-        for entry in owned_spawns:
-            proc=entry['process'];row={'command':entry['argv'],'pid':proc.pid,
+        # EC02: lifecycle evidence AND in-memory state cleanup live in the
+        # UNCONDITIONAL finally; the original exception is preserved (re-raised
+        # above) and every captured handle is reaped with structured errors.
+        for proc in owned_handles:
+            row={'command':expected_owned_command,'pid':proc.pid,
                 'wait_result':None,'poll':None,'returncode':None,'forced':False,
-                'timeout':False,'observer_restored':subprocess.Popen is real_popen,
+                'timeout':False,'observer_restored':True,
                 'owner_execution':token}
             try:
                 row['wait_result']=proc.wait(timeout=2.0)
@@ -1491,17 +1510,20 @@ def real_executecmd(case,out,inputs):
                     except Exception as kill_exc:
                         row['kill_error']={'type':type(kill_exc).__name__,'message':str(kill_exc)}
             try:row['poll']=proc.poll()
-            except Exception:pass
+            except Exception as poll_exc:
+                row['poll_error']={'type':type(poll_exc).__name__,'message':str(poll_exc)}
             row['returncode']=proc.returncode
-            row['reaped']=proc.poll() is not None
+            row['reaped']=proc.returncode is not None
             child_rows.append(row)
-    diverter.sessions.clear();diverter.port_fwd_table.clear()
-    lifecycle_path=out/'child-lifecycle.json'
-    _json(lifecycle_path,{'owner_execution':token,'children':child_rows,'error':child_error,
-                          'spawn_count':len(owned_spawns),'observer_restored':subprocess.Popen is real_popen})
+        diverter.sessions.clear();diverter.port_fwd_table.clear()
+        _json(out/'child-lifecycle.json',{'owner_execution':token,'children':child_rows,'error':child_error,
+              'spawn_count':len(child_rows),'observer_errors':observer_errors,
+              'observer_restored':not observer_errors and
+                  all(r for r in diverter._restored) and len(diverter._restored)==len(owned_handles)})
     natural_exit=(not child_error and len(child_rows)==1 and child_rows[0]['returncode']==0
                   and child_rows[0]['forced'] is False and child_rows[0]['timeout'] is False
-                  and child_rows[0]['observer_restored'] is True and all(r['reaped'] for r in child_rows))
+                  and child_rows[0]['observer_restored'] is True and all(r['reaped'] for r in child_rows)
+                  and not observer_errors)
     value={'schema':SCHEMA,'case':case,'fixture':inputs.get('fixture') is True,'inputs':inputs,
       'executecmd':{'configuration':'config/executecmd.ini','configuration_sha256':sha256(cfg),'template':template,'command':None,'command_output':str(output),'command_output_sha256':sha256(output) if output.is_file() else None,'command_output_bytes':output_bytes.hex() if output_bytes is not None else None,'command_output_encoding':'hex','token':token,
                    'first_packet':first['first_packet'],'duplicate_first_packet':duplicate['first_packet'],'executed':diverter.executed,

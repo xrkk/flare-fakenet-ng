@@ -795,6 +795,12 @@ def _evaluate_executecmd(root,original,expected_inputs,allow_fixture=False, prod
                     if not all(type(row.get(k)) is int and row.get(k)==0
                                for k in ('wait_result','poll','returncode')):
                         errors.append('owned child wait/poll evidence not strict natural zeros')
+                    if any(k in row for k in ('wait_error','terminate_attempt',
+                                              'terminate_error','kill_attempt',
+                                              'kill_error','poll_error')):
+                        errors.append('owned child recovery attempt/error evidence present')
+                    if row.get('forced') is False and ('terminate_attempt' in row or 'kill_attempt' in row):
+                        errors.append('owned child forced flag contradicts attempt evidence')
                 if v.get('cleanup',{}).get('child_exit')!='observed':
                     errors.append('cleanup child_exit not observed')
     if v.get('checks')!=[{'id':k} for k in ('command','first-connection','non-connection')]:errors.append('exact check set differs')
