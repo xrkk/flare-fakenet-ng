@@ -1100,9 +1100,10 @@ class CentralIndependentJudgeTests(_NoRealEffects):
                 identity_obj = plan['candidate']['source_deployment_identity']
                 self.assertEqual(case_id, identity_obj['case_id'])
                 code, stdout, stderr, text = self._judge(work, work / 'ind.json')
-                if case_id == 'GAP-STANDALONE-LISTENERS':
-                    self.assertNotEqual(0, code, text)  # dnslib present but byte-level
-                    continue
+                # R04: every dependency-ready case shares the SAME success
+                # criterion; the old Standalone-only assertNotEqual(0) special
+                # case was an inverted criterion that would reject a good
+                # positive (or pass a broken one) whenever dnslib is present.
                 self.assertEqual(0, code, (stdout, stderr, text))
                 summary = self._summary(text)
                 self.assertTrue(summary['fixture_contract_pass'], text)
