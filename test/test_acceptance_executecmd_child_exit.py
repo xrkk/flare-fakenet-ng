@@ -28,18 +28,42 @@ def _hit(name):
     return boom
 
 
+def _hit(name):
+    def boom(*a, **k):
+        raise AssertionError('REAL_EFFECT_HIT: ' + name)
+    return boom
+
+
 class _NoRealEffects(_unittest.TestCase):
-    """EC05 guard: no real OS creation/network in this suite; controlled fake
-    handles only. Git identity lookups stay live."""
+    """Full product-test guard scope (R328): every real OS creation, network,
+    VM/driver/EventLog exit refused before any selected node runs; only exact
+    read-only git passthrough and the controlled fake-handle path stay live."""
 
     def setUp(self):
         real_popen = subprocess.Popen
+        import socket as _socket
+        import acceptance_native as _N
 
         def guarded(argv, *a, **k):
             if isinstance(argv, (list, tuple)) and argv and str(argv[0]).endswith('git'):
                 return real_popen(argv, *a, **k)
             raise AssertionError('REAL_EFFECT_HIT: subprocess.Popen')
-        patches = [mock.patch('subprocess.Popen', side_effect=guarded)]
+        patches = [mock.patch('subprocess.Popen', side_effect=guarded),
+                   mock.patch('subprocess.run', side_effect=_hit('subprocess.run')),
+                   mock.patch('subprocess.call', side_effect=_hit('subprocess.call')),
+                   mock.patch('subprocess.check_call', side_effect=_hit('subprocess.check_call')),
+                   mock.patch('subprocess.check_output', side_effect=_hit('subprocess.check_output')),
+                   mock.patch('os.system', side_effect=_hit('os.system')),
+                   mock.patch('socket.create_connection', side_effect=_hit('socket.create_connection')),
+                   mock.patch('socket.socket.bind', side_effect=_hit('socket.socket.bind')),
+                   mock.patch('socket.socket.listen', side_effect=_hit('socket.socket.listen')),
+                   mock.patch('socket.socket.connect', side_effect=_hit('socket.socket.connect')),
+                   mock.patch('socket.socket.sendto', side_effect=_hit('socket.socket.sendto'))]
+        import logging.handlers
+        patches.append(mock.patch.object(logging.handlers, 'NTEventLogHandler',
+                                         side_effect=_hit('NTEventLogHandler')))
+        for attr in ('run_driver', 'run_production', 'run_remote'):
+            patches.append(mock.patch.object(_N, attr, side_effect=_hit('native.' + attr)))
         for item in patches:
             item.start()
             self.addCleanup(item.stop)
@@ -74,8 +98,14 @@ class _FakeProc:
         self.returncode = -9
 
 
+import os as _os
+_GUARD_ROOT = Path(_os.environ.get('FN_MANUAL_CHECK_DIR',
+                                  '/home/adminn/projects/flare-fakenet-ng/Logs/fnreg-T066-R04-executecmd-child-native/fixtures'))
+_GUARD_ROOT.mkdir(parents=True, exist_ok=True)
+
+
 def _run_producer(fake):
-    work = Path(tempfile.mkdtemp(prefix='fnreg-rf-child-', dir='/tmp'))
+    work = Path(tempfile.mkdtemp(prefix='fnreg-rf-child-', dir=str(_GUARD_ROOT)))
     out = work / 'driver'
     inputs = {'schema': 'fakenet.manual-input.v5', 'case': 'GAP-EXECUTECMD',
               'candidate_id': 'manual-candidate', 'source_commit': HEAD,
