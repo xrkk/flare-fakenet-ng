@@ -45,12 +45,22 @@ def _validate_source_identity(identity,source_commit,case_id='GAP-DUMPPACKETS'):
     if not isinstance(identity['source_hashes_sha256'],str) or len(identity['source_hashes_sha256'])!=64 or any(c not in '0123456789abcdef' for c in identity['source_hashes_sha256']):
         raise ValueError('source deployment identity digest invalid')
 
+def _require_windows_target(case):
+    """DV01/DV-A1 (S92-F2): the protected v6 branch exists only for the two
+    real Windows driver cases, so the ACTUAL consumer target is checked before
+    any owner/output/SDK/VM/producer effect.  A Linux plan, guest or direct
+    input consumer is refused here instead of failing after a half-open driver."""
+    from acceptance_runtime import target_identity
+    if target_identity().get('platform')!='windows':
+        raise ValueError('protected driver case is fixed to the Windows target: '+case)
+
 def validate_inputs(case,inputs):
     if not isinstance(inputs,dict):raise ValueError('manual inputs must be an object')
     if inputs.get('schema') not in ('fakenet.manual-input.v1','fakenet.manual-input.v2','fakenet.manual-input.v3','fakenet.manual-input.v4','fakenet.manual-input.v5','fakenet.manual-input.v6') or inputs.get('case')!=case:raise ValueError('manual input schema/case mismatch')
-    if inputs.get('schema')=='fakenet.manual-input.v5' and case in DRIVER_PROTECTED_CASES and inputs.get('fixture') is not True:
-        # DV01: an unprotected real Windows driver case must be refused before
-        # any output/producer/SDK effect; only explicit fixture history stays.
+    if inputs.get('schema') in ('fakenet.manual-input.v1','fakenet.manual-input.v5') and case in DRIVER_PROTECTED_CASES and inputs.get('fixture') is not True:
+        # DV01/S92-F1: an unprotected real Windows driver case must be refused
+        # in BOTH legacy schemas before any owner/output/producer/SDK effect;
+        # explicit v1/v5 fixture bytes keep their original semantics.
         raise ValueError('protected driver case requires manual-input.v6 control or explicit fixture')
     for k in (*IDENTITY,'config','owned_root'):
         if k=='package_sha256' and inputs.get('schema') in ('fakenet.manual-input.v3','fakenet.manual-input.v4','fakenet.manual-input.v5','fakenet.manual-input.v6'):
@@ -64,6 +74,7 @@ def validate_inputs(case,inputs):
         if set(inputs)!={'schema','case','candidate_id','source_commit','package_sha256','execution_id','owned_root','config','responsea','fixture','source_deployment_identity','control'}:raise ValueError('manual input field set differs')
         if inputs.get('control')!=DRIVER_PROTECTED_CONTROL:raise ValueError('manual input v6 control differs from the fixed control link')
         _validate_source_identity(inputs.get('source_deployment_identity'),inputs['source_commit'],case)
+        _require_windows_target(case)
     elif inputs.get('schema') in ('fakenet.manual-input.v3','fakenet.manual-input.v4','fakenet.manual-input.v5'):
         # SD-06/LM-05/FMS-04: explicit source-deployment branches (exact field set).
         fixed={'fakenet.manual-input.v3':('GAP-DUMPPACKETS',),
@@ -445,6 +456,21 @@ def real_syslog_icmp(case, out, inputs):
     return value
 
 def real_ctrlc_ipc(case,out,inputs):
+    """DV03/DV-A5 (S92-F4): the original-open observer is installed before any
+    setup/config work and restored by ONE covering finally, so a config,
+    constructor, parse, handler or start failure never leaves the global
+    wrapper behind; the original exception is preserved unchanged."""
+    obs_rows=obs_state=obs_restore=None
+    if _driver_v6(inputs):
+        obs_rows,obs_state,obs_restore=_observe_driver_control(inputs['execution_id'])
+        if obs_rows is None:
+            raise ValueError('protected driver observation cannot wrap the original diverter')
+    try:
+        return _real_ctrlc_ipc_body(case,out,inputs,obs_rows,obs_state)
+    finally:
+        if obs_restore is not None:obs_restore()
+
+def _real_ctrlc_ipc_body(case,out,inputs,obs_rows,obs_state):
     import logging
     import os
     import _thread
@@ -460,11 +486,6 @@ def real_ctrlc_ipc(case,out,inputs):
     cfg=cfgdir/'shutdown.ini'
     cfg.write_text('[FakeNet]\nDivertTraffic: Yes\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n'
                    +(_DRIVER_CONTROL_INI if _driver_v6(inputs) else ''),encoding='ascii')
-    obs_rows=obs_state=obs_restore=None
-    if _driver_v6(inputs):
-        obs_rows,obs_state,obs_restore=_observe_driver_control(inputs['execution_id'])
-        if obs_rows is None:
-            raise ValueError('protected driver observation cannot wrap the original diverter')
     token=inputs['execution_id'];owner=os.getpid();started=datetime.now(timezone.utc).isoformat()
     loggers=[logging.getLogger(''),logging.getLogger('FakeNet')]
     saved=[(logger,list(logger.handlers),logger.level,logger.propagate,logger.disabled) for logger in loggers]
@@ -625,7 +646,6 @@ def real_ctrlc_ipc(case,out,inputs):
             logger.handlers=handlers
             logger.setLevel(level);logger.propagate=propagate;logger.disabled=disabled
         sys.argv=old_argv;sys.setprofile(old_profile)
-        if obs_restore is not None:obs_restore()
     after=snapshot();thread_names=[thread.name for thread in threading.enumerate()]
     owned_absent=not any(name.startswith('owned-') and token in name for name in thread_names)
     branch_ok=bool(branches) and all(item['error'] is None and item['rc']==0 and item['wait_entered'] and item['watcher_fired']
@@ -1429,21 +1449,32 @@ def real_dumppackets(case, out, inputs):
     return value
 
 def real_diverter_switch(case,out,inputs):
-    import logging,sys
-    from fakenet.fakenet import Fakenet
-    out=Path(out);cfgdir=out/'config';cfgdir.mkdir();values={}
-    base='[FakeNet]\nDivertTraffic: {traffic}\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n'
+    """DV03/DV-A5 (S92-F4): the original-open observer wraps every setup path
+    (config writes, Fakenet constructor/parse, FileHandler, start, stop, result
+    assembly) and is restored by one covering finally on both normal and
+    exception exits; the original exception is preserved."""
     obs_rows=obs_state=obs_restore=None
     if _driver_v6(inputs):
         obs_rows,obs_state,obs_restore=_observe_driver_control(inputs['execution_id'])
         if obs_rows is None:
             raise ValueError('protected driver observation cannot wrap the original diverter')
+    try:
+        return _real_diverter_switch_body(case,out,inputs,obs_rows,obs_state)
+    finally:
+        if obs_restore is not None:obs_restore()
+
+def _real_diverter_switch_body(case,out,inputs,obs_rows,obs_state):
+    import logging,sys
+    from fakenet.fakenet import Fakenet
+    out=Path(out);cfgdir=out/'config';cfgdir.mkdir();values={}
+    base='[FakeNet]\nDivertTraffic: {traffic}\n[Diverter]\nNetworkMode: SingleHost\nLinuxRestrictInterface: Off\n'
     for mode,traffic in (('on','Yes'),('off','No')):
         cfg=cfgdir/(mode+'.ini');cfg.write_text(base.format(traffic=traffic)
             +(_DRIVER_CONTROL_INI if _driver_v6(inputs) else ''))
         f=Fakenet(logging.INFO);f.parse_config(str(cfg));before={'diverttraffic':f.fakenet_config.get('diverttraffic'),'diverter':None,'listeners':len(f.listeners_config)}
-        log=out/(mode+'-core.log');handler=logging.FileHandler(log,mode='x');handler.setFormatter(logging.Formatter('%(message)s'))
-        f.logger.addHandler(handler);previous=sys.getprofile();calls=[];error=None;stop_errors=[];stops=[];started=False;active=None
+        log=out/(mode+'-core.log')
+        previous=sys.getprofile();handler=None;installed=False
+        calls=[];error=None;stop_errors=[];stops=[];started=False;active=None
         if obs_state is not None:obs_state['branch']=mode
         def observe(frame,event,arg):
             backend=f.diverter
@@ -1453,18 +1484,24 @@ def real_diverter_switch(case,out,inputs):
                     if target is not None and frame.f_code is target.__code__:
                         calls.append({'method':method,'event':event})
             if previous is not None:previous(frame,event,arg)
-        sys.setprofile(observe)
         try:
-            f.start();started=True;active=type(f.diverter).__name__ if f.diverter is not None else None
-        except BaseException as exc:error={'type':type(exc).__name__,'message':str(exc)}
-        finally:
+            # S92-F4: the handler/profile installation is inside the covering
+            # cleanup so a handler or start failure still restores both.
+            handler=logging.FileHandler(log,mode='x');handler.setFormatter(logging.Formatter('%(message)s'))
+            f.logger.addHandler(handler);installed=True
+            sys.setprofile(observe)
             try:
+                f.start();started=True;active=type(f.diverter).__name__ if f.diverter is not None else None
+            except BaseException as exc:error={'type':type(exc).__name__,'message':str(exc)}
+            finally:
                 for index in range(2):
                     try:stops.append(f.stop())
                     except BaseException as exc:
                         stops.append(None);stop_errors.append({'type':type(exc).__name__,'message':str(exc)})
-            finally:
-                sys.setprofile(previous);f.logger.removeHandler(handler);handler.close()
+        finally:
+            sys.setprofile(previous)
+            if installed:f.logger.removeHandler(handler)
+            if handler is not None:handler.close()
         if obs_state is not None and mode=='off':obs_state['branch']=mode
         created=f.diverter is not None
         start_calls=sum(x=={'method':'start','event':'call'} for x in calls)
@@ -1483,7 +1520,9 @@ def real_diverter_switch(case,out,inputs):
       'cleanup':{'stopped':restored,'scope':'observed-core-start-stop','system_network_restored':'unverified'},
       'checks':[{'id':x} for x in CHECKS[case]],'identity':_result_identity(inputs)}
     if _driver_v6(inputs):
-        if obs_restore is not None:obs_restore()
+        # DV03: an explicitly OFF branch never opens a driver, so its row is a
+        # recorded null - not a silently missing branch.
+        obs_rows.setdefault('off',None)
         value['driver_control']={'schema':'fakenet.driver-control-observation.v1',
                                  'control':dict(inputs['control']),
                                  'branches':obs_rows}

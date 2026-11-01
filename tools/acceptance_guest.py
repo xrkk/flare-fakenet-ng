@@ -66,6 +66,10 @@ def execute(request,root):
     driver,checks=native.validate_case(matches[0],root,environment)
     if not driver.get('production_kind') or checks!=request['checks']:
         raise ValueError('guest fixed driver/check selection mismatch')
+    # S92-F1/F2: the two protected driver cases are admitted only as the v6
+    # source branch on this actual Windows target (or an explicit fixture),
+    # BEFORE output.mkdir or any producer launch.
+    native.manual_driver_admission(matches[0]['id'],environment,request['candidate'])
     if 'manual' in request and matches[0].get('native_driver') not in native.MANUAL_REMOTE_DRIVERS:
         raise ValueError('guest manual options do not apply to this case')
     if matches[0].get('native_driver') in native.MANUAL_REMOTE_DRIVERS:

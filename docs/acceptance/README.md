@@ -66,6 +66,8 @@ python tools/acceptance.py judge --plan Logs/acceptance/<run>/plan.json --result
 
 这五个用例的身份回归由 `test/test_acceptance_five_manual_source_identity.py` 以静态良性原件覆盖: 静态 receipt 携带完整 base_receipt 字段并与冻结 plan 一致, 哈希链从 driver 原件到 `receipt.artifacts`、`receipt.json`、`results.json` 逐层闭合; 真实 `judge` 入口消费该静态链给出 `fixture_contract_pass`/`full_functional_pass` 判定, 身份负例在闭合链后由目标 oracle 拒绝, 另保留不刷新哈希的 artifact 篡改负例区分拒绝类别. SYSLOG/CTRLC/STANDALONE 的旧 v1 身份保持原精确四键等值, EXECUTECMD/DIVERTER-SWITCH 保持原逐键语义. 本地静态判定是 fixture 层证据, 不构成任何 native 通过.
 
+`GAP-CTRLC-IPC` 与 `GAP-DIVERTER-SWITCH` 另有专属受保护分支: `manual-options.v3` 只增加 `control={host_ipv4:192.168.204.1,tcp_source_ports:[28788,28790]}`, 源码部署的 Windows 目标派生 `manual-input.v6`(v5 全部字段加同一 control, `package_sha256` 仍为 null), producer 只在原 `[Diverter]` 段末尾增加两行 `ControlLinkExcludeIp`/`ControlLinkExcludePort`, oracle 按 case/schema 独立重建完整配置字节并要求真实 open 的最终 filter、原 `check_filter` 通过及实际导入的 pydivert 模块/DLL/SYS 身份. 准入在 host/guest/producer 三处同一条规则: 非 fixture 只接受 Windows 目标的 v6 源码分支, 未受保护的 v1/v5 旧输入与错误平台在创建 owner、SDK/VM 或 producer 之前拒绝; 显式 `offline_fixture=true` 加 `manual-options.v1` 的历史夹具仍派生 v5(无 control)并保留原配置/oracle. 原驱动观察器经一条覆盖 setup/config/构造/解析/FileHandler/start/stop/结果路径的 finally 恢复, 正常与异常出口都不残留全局包装. `test/test_acceptance_driver_control.py` 用受控进程内 Windows 后端运行原 producer 并走原 oracle 正/负例, 同时覆盖构造/解析/配置/处理器/启动失败后的恢复; 这些是本机受控证据, 真实 WinDivert/VM 仍须原生单元.
+
 ### environment.json
 
 ```json

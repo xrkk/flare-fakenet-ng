@@ -755,6 +755,28 @@ def manual_options(environment):
     return options
 
 
+def manual_driver_admission(case_id,environment,candidate):
+    """DV01/02 + S92-F1/F2: ONE pre-effect admission rule for the two
+    protected driver cases.  Only the protected v6 source branch on the actual
+    Windows target, or an explicit offline fixture (original v1/v5 bytes),
+    may create an owner, SDK/VM output or producer; every other packaged or
+    wrong-target form is refused here, before any of those effects."""
+    if case_id not in _DRIVER_PROTECTED_CASES:
+        return
+    candidate=candidate or {}
+    if candidate.get('offline_fixture') is True:
+        return
+    identity=((environment or {}).get('native_runtime') or {}).get('identity') or {}
+    if identity.get('platform')!='windows':
+        raise ValueError('protected driver cases are fixed to the Windows target')
+    if candidate.get('deployment_kind')!='source':
+        raise ValueError('protected driver cases require the explicit source '
+                         'deployment branch (manual-input.v6)')
+    options=(environment or {}).get('manual') or {}
+    if options.get('schema')!='fakenet.manual-options.v3':
+        raise ValueError('protected driver cases require explicit manual-options.v3 control')
+
+
 def _source_deployment_identity_from_request(request, root=None, case=None):
     """SD-01/02/05/08 + G1/G2: the COMPLETE pre-effect source gate.  Mode,
     package fields, commit form, identity shape and the FULL registered
@@ -832,8 +854,21 @@ def _manual_input_value(plan,case,options,owned_root,config):
     # and the frozen source identity; every packaged case keeps the v1 value.
     if (case['id'] in _SOURCE_DEPLOYMENT_CASES and
             candidate.get('deployment_kind')=='source'):
+        driver_v6=False
         if case['id'] in _DRIVER_PROTECTED_CASES:
-            if options.get('schema')!='fakenet.manual-options.v3':
+            # DV01/DV-A1 + S92-F2/F3: the protected v6 branch exists only for
+            # the two source-deployment Windows cases; the original five-source
+            # fixture entry (offline_fixture=true + manual-options.v1) must keep
+            # deriving the legacy v5 input with no control object.
+            fixture=candidate.get('offline_fixture') is True
+            if options.get('schema')=='fakenet.manual-options.v3':
+                declared=((plan.get('environment') or {}).get('native_runtime') or {}).get('identity') or {}
+                if declared.get('platform')!='windows':
+                    raise ValueError('protected driver v6 branch is fixed to the Windows target')
+                driver_v6=True
+            elif fixture and options.get('schema')=='fakenet.manual-options.v1':
+                driver_v6=False
+            else:
                 raise ValueError('protected driver cases require explicit manual-options.v3 control')
         closure={}
         native_pins=plan.get('native_source_hashes') or {}
@@ -858,7 +893,7 @@ def _manual_input_value(plan,case,options,owned_root,config):
             raise ValueError('plan source deployment identity differs from the closure')
         schema=('fakenet.manual-input.v3' if case['id']=='GAP-DUMPPACKETS' else
                 'fakenet.manual-input.v4' if case['id']=='GAP-LIST-MUTEX' else
-                'fakenet.manual-input.v6' if case['id'] in _DRIVER_PROTECTED_CASES else
+                'fakenet.manual-input.v6' if driver_v6 else
                 'fakenet.manual-input.v5')
         value=dict(schema=schema,case=case['id'],candidate_id='manual-candidate',
                     source_commit=candidate['source_commit'],package_sha256=None,
@@ -866,7 +901,7 @@ def _manual_input_value(plan,case,options,owned_root,config):
                     responsea=options.get('responsea','192.0.2.55'),
                     fixture=candidate.get('offline_fixture') is True,
                     source_deployment_identity=identity)
-        if case['id'] in _DRIVER_PROTECTED_CASES:
+        if driver_v6:
             value['control']={'host_ipv4':_DRIVER_PROTECTED_CONTROL['host_ipv4'],
                               'tcp_source_ports':list(_DRIVER_PROTECTED_CONTROL['tcp_source_ports'])}
         return value
@@ -1672,6 +1707,7 @@ def run_production(root,case,plan,output_dir,python):
     if 'upstream_protected_tcp_ports' in runtime:
         validate_upstream_protected_tcp_ports(runtime['upstream_protected_tcp_ports'])
     selected_driver,selected_checks=validate_case(case,root,plan['environment'])
+    manual_driver_admission(case['id'],plan['environment'],plan.get('candidate'))
     if selected_driver.get('production_kind','').startswith('policy-'):
         policy_inputs(plan['environment'],plan.get('candidate',{}).get('offline_fixture') is True,selected_driver['production_kind'].split('-',1)[1])
     if selected_driver.get('production_kind') in ('process-redirect','payload-three-way'):
@@ -1823,6 +1859,7 @@ def run_remote(root,case,plan,output_dir,python):
     from acceptance_windows import ExistingWindowsChannel,ChannelError,write_new,digest
     from datetime import datetime,timezone
     driver,checks=validate_case(case,root,plan['environment'])
+    manual_driver_admission(case['id'],plan['environment'],plan.get('candidate'))
     runtime=plan['environment']['native_runtime'];output_dir=Path(output_dir)
     # Reject an illegal protection field before mkdir/Popen/channel side effects.
     if 'upstream_protected_tcp_ports' in runtime:
