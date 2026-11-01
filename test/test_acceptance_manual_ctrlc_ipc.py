@@ -322,15 +322,16 @@ class CtrIcIpcTests(unittest.TestCase):
 
     def test_constant_wallclock_preserves_actual_ipc_order(self):
         out = self.base / 'constant-clock'
-        real_monotonic_ns = time.monotonic_ns
+        real_order_clock = time.perf_counter_ns
         flag_states = []
 
         def sample_order():
             flag_states.append((out / 'ipc' / 'stop-ctrlc-fixture-01-ipc.flag').exists())
-            return real_monotonic_ns()
+            return real_order_clock()
 
         with mock.patch.object(M.time, 'time', return_value=1793515978.426341), \
-                mock.patch.object(M.time, 'monotonic_ns', side_effect=sample_order):
+                mock.patch.object(M.time, 'monotonic_ns', return_value=6581687000000), \
+                mock.patch.object(M.time, 'perf_counter_ns', side_effect=sample_order):
             inputs, value = self.produce(out)
         observations = value['ctrlc_ipc']['branches']['ipc']['observations']
         self.assertEqual(observations['unrelated_window_epoch'],

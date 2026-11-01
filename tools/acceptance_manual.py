@@ -567,7 +567,9 @@ def _real_ctrlc_ipc_body(case,out,inputs,obs_rows,obs_state):
                     time.sleep(0.25)
                     with control_lock:
                         if done.is_set():return
-                        observations['unrelated_window_monotonic_ns']=time.monotonic_ns()
+                        # Windows Python 3.11 monotonic uses coarse GetTickCount64;
+                        # perf_counter uses monotonic high-resolution QPC.
+                        observations['unrelated_window_monotonic_ns']=time.perf_counter_ns()
                         observations['unrelated_window_epoch']=time.time()
                         observations['stop_calls_before_correct']=sum(1 for event in events if event.get('method')=='stop' and event.get('event')=='call')
                         observations['stop_started_before_correct']=bool(getattr(holder.get('fakenet'),'_stop_started',False))
@@ -577,7 +579,7 @@ def _real_ctrlc_ipc_body(case,out,inputs,obs_rows,obs_state):
                             watch_errors.append('expected stop flag existed before trigger')
                             return
                         flag.write_text('stop-'+token+'\n',encoding='utf-8')
-                        observations['correct_flag_written_monotonic_ns']=time.monotonic_ns()
+                        observations['correct_flag_written_monotonic_ns']=time.perf_counter_ns()
                         observations['correct_flag_written_epoch']=time.time();fired.set()
                 else:
                     time.sleep(0.05)
