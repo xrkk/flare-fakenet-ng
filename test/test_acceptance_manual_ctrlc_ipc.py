@@ -320,6 +320,76 @@ class CtrIcIpcTests(unittest.TestCase):
                 finally:
                     result.write_bytes(original)
 
+    def test_constant_wallclock_preserves_actual_ipc_order(self):
+        out = self.base / 'constant-clock'
+        real_monotonic_ns = time.monotonic_ns
+        flag_states = []
+
+        def sample_order():
+            flag_states.append((out / 'ipc' / 'stop-ctrlc-fixture-01-ipc.flag').exists())
+            return real_monotonic_ns()
+
+        with mock.patch.object(M.time, 'time', return_value=1793515978.426341), \
+                mock.patch.object(M.time, 'monotonic_ns', side_effect=sample_order):
+            inputs, value = self.produce(out)
+        observations = value['ctrlc_ipc']['branches']['ipc']['observations']
+        self.assertEqual(observations['unrelated_window_epoch'],
+                         observations['correct_flag_written_epoch'])
+        rows, clean, detail = O.evaluate(ROOT, out, 'GAP-CTRLC-IPC', inputs, allow_fixture=True)
+        self.assertTrue(clean, detail)
+        self.assertTrue(all(row['status'] == 'pass' for row in rows))
+        self.assertEqual([False, True], flag_states)
+        self.assertLess(observations['unrelated_window_monotonic_ns'],
+                        observations['correct_flag_written_monotonic_ns'])
+
+    def test_monotonic_order_is_strict_and_legacy_remains_strict(self):
+        import copy
+        out = self.base / 'clock-evidence'
+        inputs, value = self.produce(out)
+        result = out / 'manual-result.json'
+        original = result.read_bytes()
+        before_key = 'unrelated_window_monotonic_ns'
+        after_key = 'correct_flag_written_monotonic_ns'
+        base = value['ctrlc_ipc']['branches']['ipc']['observations']
+        self.assertIn(before_key, base)
+        self.assertIn(after_key, base)
+
+        variants = {
+            'missing-before': lambda v: v.pop(before_key),
+            'missing-after': lambda v: v.pop(after_key),
+            'equal': lambda v: v.__setitem__(after_key, v[before_key]),
+            'reversed': lambda v: v.__setitem__(after_key, v[before_key] - 1),
+            'bool': lambda v: v.__setitem__(before_key, False),
+            'float': lambda v: v.__setitem__(before_key, float(v[before_key])),
+            'negative': lambda v: v.__setitem__(before_key, -1),
+            'null': lambda v: v.__setitem__(after_key, None),
+        }
+        try:
+            for label, change in variants.items():
+                with self.subTest(fault=label):
+                    changed = copy.deepcopy(value)
+                    observations = changed['ctrlc_ipc']['branches']['ipc']['observations']
+                    change(observations)
+                    result.write_text(json.dumps(changed))
+                    rows, clean, detail = O.evaluate(ROOT, out, 'GAP-CTRLC-IPC', inputs, allow_fixture=True)
+                    self.assertFalse(clean, detail)
+                    self.assertTrue(all(row['status'] == 'fail' for row in rows))
+                    self.assertIn('IPC monotonic', str(detail))
+            legacy = copy.deepcopy(value)
+            observations = legacy['ctrlc_ipc']['branches']['ipc']['observations']
+            observations.pop(before_key)
+            observations.pop(after_key)
+            result.write_text(json.dumps(legacy))
+            rows, clean, detail = O.evaluate(ROOT, out, 'GAP-CTRLC-IPC', inputs, allow_fixture=True)
+            self.assertTrue(clean, detail)
+            observations['correct_flag_written_epoch'] = observations['unrelated_window_epoch']
+            result.write_text(json.dumps(legacy))
+            rows, clean, detail = O.evaluate(ROOT, out, 'GAP-CTRLC-IPC', inputs, allow_fixture=True)
+            self.assertFalse(clean, detail)
+            self.assertIn('IPC unrelated/trigger ordering mismatch', str(detail))
+        finally:
+            result.write_bytes(original)
+
     def test_central_registration(self):
         self.assertEqual('manual-ctrlc-ipc', N.driver_table(ROOT)['manual-ctrlc-ipc']['production_kind'])
 

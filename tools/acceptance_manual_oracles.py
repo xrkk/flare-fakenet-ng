@@ -177,7 +177,18 @@ def _evaluate_ctrlc_ipc(root, original, expected_inputs, allow_fixture=False, pr
             observations = item.get('observations') or {}
             if mode == 'ipc':
                 require('Stop flag found at ' + guest(mode + '/stop-' + token + '-' + mode + '.flag') in text and 'KeyboardInterrupt' not in text, 'IPC stop flag branch/log mismatch')
-                require(observations.get('expected_existed_before_trigger') is False and observations.get('unrelated_existed_before_trigger') is True and observations.get('stop_calls_before_correct') == 0 and observations.get('stop_started_before_correct') is False and observations.get('unrelated_window_epoch') < observations.get('correct_flag_written_epoch'), 'IPC unrelated/trigger ordering mismatch')
+                require(observations.get('expected_existed_before_trigger') is False and observations.get('unrelated_existed_before_trigger') is True and observations.get('stop_calls_before_correct') == 0 and observations.get('stop_started_before_correct') is False, 'IPC unrelated/trigger ordering mismatch')
+                clock_keys = ('unrelated_window_monotonic_ns', 'correct_flag_written_monotonic_ns')
+                if any(key in observations for key in clock_keys):
+                    require(all(key in observations for key in clock_keys),
+                            'IPC monotonic ordering evidence incomplete')
+                    before, after = (observations[key] for key in clock_keys)
+                    require(type(before) is int and type(after) is int and 0 <= before < after,
+                            'IPC monotonic ordering mismatch')
+                else:
+                    # Historical originals keep their original strict rule.
+                    require(observations.get('unrelated_window_epoch') < observations.get('correct_flag_written_epoch'),
+                            'IPC unrelated/trigger ordering mismatch')
             else:
                 require('KeyboardInterrupt' in text and 'Stop flag found' not in text and observations.get('interrupt_main_epoch'), 'Ctrl-C branch/log mismatch')
         expected_cleanup = {'scope': 'owned-main-ctrlc-file-ipc-and-runtime-state', 'stopped': True, 'threads_joined': True, 'flags_removed': True, 'logger_restored': True, 'argv_restored': True, 'profile_restored': True, 'signals_restored': True, 'system_console_used': False,
