@@ -1,0 +1,270 @@
+{
+  "schema": "fnreg.verified-vm-baseline.v1",
+  "snapshot_name": "Snapshot 204-FakeNet回归已核基线-36b0f79-20261101",
+  "vmx": "/home/adminn/vmware-machines/win10h2-MalBox-20241110/win10h2-MalBox-20241110.vmx",
+  "vm_uuid": "b3e04d56-3db2-9f3d-4d52-3ec22c4cfdc0",
+  "snapshot_uid": "126",
+  "checkpoint": "win10h2-MalBox-20241110-Snapshot126.vmsn",
+  "parent_uid": "125",
+  "vmsd_sha256_after_create": "003c47bcfd4c46b925821af373aa7b81362fa3607e5bd83e7c03629788e6c1ff",
+  "source_commit": "36b0f79df08677c844928928a95283db79e2db95",
+  "deployment_manifest_sha256": "b7ebbb8643a86de268c68acfd8f3b2c4e85b0e6826bf19b2695191b89167bb9c",
+  "baseline_marker_sha256": "aec1194a3d3965065f90d40c6bfe99064631a6f134e072cf856947ee0818a78b",
+  "checkpoint_sha256": "dd9787fa6868cb4702f95dc7094f934627fc000a849a29115e3700a38431c688",
+  "memory_sha256": "fc89c8d9e701e8e2f3ee701e2c8a8336d25ae0c20448ec23e693259cc1d802f0",
+  "created_at": "2026-11-01T03:34:03.944170+00:00",
+  "restore_test": "NOT_RUN; not authorized in creation unit",
+  "case_pass_credit": false,
+  "fresh_execution_binding_required_after_restore": true,
+  "stable_baseline_evidence": {
+    "full-readonly.json": "fb3e175bb138f6cb1070de218c4533b2e7365ac20d3255bea10242aec7ddfa2b",
+    "deployment-manifest.json": "b7ebbb8643a86de268c68acfd8f3b2c4e85b0e6826bf19b2695191b89167bb9c",
+    "guest-publication.json": "9d6928d1dbf077e202987bdb1d500bdcac0044eaf8716f171e7584e19ffe9d9c",
+    "current-final.json": "336654bb9026826b5e5eea2b2f07508ad7dc0179dda37929c2457663f8b1de1f",
+    "final-live-facts.json": "260f0ac3ff86c949c98324ff84a6577af29518bcba268c7a1fc2df9c069db82e"
+  },
+  "status": "CREATED_AND_QUALIFIED; RESTORE_TEST_NOT_RUN",
+  "verified_hostname": "DESKTOP-3FI41GR",
+  "vm_mac": "00:0c:29:4c:fd:c0",
+  "host_artifacts": {
+    "checkpoint": {
+      "path": "/home/adminn/vmware-machines/win10h2-MalBox-20241110/win10h2-MalBox-20241110-Snapshot126.vmsn",
+      "bytes": 4306817,
+      "mtime_ns": 1793504039331020192,
+      "sha256": "dd9787fa6868cb4702f95dc7094f934627fc000a849a29115e3700a38431c688"
+    },
+    "memory": {
+      "path": "/home/adminn/vmware-machines/win10h2-MalBox-20241110/win10h2-MalBox-20241110-Snapshot126.vmem",
+      "bytes": 4294967296,
+      "mtime_ns": 1793504039267019924,
+      "sha256": "fc89c8d9e701e8e2f3ee701e2c8a8336d25ae0c20448ec23e693259cc1d802f0"
+    }
+  },
+  "snapshot_create_exit_code": 0,
+  "prior_snapshot_preserved": {
+    "name": "Snapshot 203-fakenetng-mcp更新隔离验证接口",
+    "uid": "125"
+  },
+  "guest_layout": {
+    "root": "E:\\FakeNetRegression\\baseline-36b0f79-20261101",
+    "python": "E:\\FakeNetRegression\\baseline-36b0f79-20261101\\python311\\python.exe",
+    "source": "E:\\FakeNetRegression\\baseline-36b0f79-20261101\\source-36b0f79",
+    "marker": "E:\\FakeNetRegression\\baseline-36b0f79-20261101\\baseline-marker.json",
+    "publication": "E:\\FakeNetRegression\\baseline-36b0f79-20261101\\publication.json"
+  },
+  "qualified_static_facts": {
+    "source_commit": "36b0f79df08677c844928928a95283db79e2db95",
+    "files_verified": 12230,
+    "runtime": {
+      "version": [
+        3,
+        11,
+        9
+      ],
+      "bits": 64,
+      "pydivert_version": "2.1.0",
+      "pydivert_origin": "E:\\FakeNetRegression\\baseline-36b0f79-20261101\\source-36b0f79\\pydivert\\__init__.py",
+      "netifaces_origin": "E:\\FakeNetRegression\\baseline-36b0f79-20261101\\python311\\Lib\\site-packages\\netifaces\\__init__.py",
+      "netifaces_api": true,
+      "versions": {
+        "netifaces-plus": "0.12.5",
+        "requests": "2.34.2",
+        "irc": "20.5.0",
+        "icmplib": "3.0.4",
+        "dnslib": "0.9.26",
+        "dpkt": "1.9.8",
+        "jinja2": "3.1.6",
+        "pyftpdlib": "2.2.0",
+        "pyopenssl": "26.4.0",
+        "cryptography": "50.0.1",
+        "certifi": "2026.7.22"
+      },
+      "native_open_called": false
+    },
+    "control_service_build": "e493a236ca8297373dc4157a6c4bd8aef8683b4e",
+    "control_service_upgrade": false,
+    "protected_files": [
+      {
+        "path": "C:\\ProgramData\\FakeNet-NG-MCP\\configs\\service.json",
+        "exists": true,
+        "sha256": "9f7915f06856a4f30d07e3ea84124a36cf715b1c515dc2a5911e27f269957196"
+      },
+      {
+        "path": "C:\\ProgramData\\FakeNet-NG-MCP\\certs\\fakenet.flare.crt",
+        "exists": true,
+        "sha256": "f6a68e27dedc787fe215fa3374d8c5c17729c0544e83e213493e7aae62288058"
+      },
+      {
+        "path": "C:\\ProgramData\\FakeNet-NG-MCP\\certs\\fakenet.flare.key",
+        "exists": true,
+        "sha256": "1b94ef4f529375a6c5c76194a9c85084708f8bbf2fc141403009ce473760d2db"
+      },
+      {
+        "path": "C:\\ProgramData\\FakeNet-NG-MCP\\certs\\ca.crl",
+        "exists": true,
+        "sha256": "782ae522c437ab8f8ce76649b1a3cbb507812c4637cd64b26a6b18e484f38e2f"
+      },
+      {
+        "path": "E:\\VeloTransfer-149\\secrets\\transfer-policy.json",
+        "exists": true,
+        "sha256": "ecc5f1d62ec7f7da05110db393f96aeb2884c59f0d7af062317ee58165e6e1ef"
+      }
+    ],
+    "network_reference": {
+      "dns": [
+        {
+          "InterfaceIndex": 1,
+          "AddressFamily": 2,
+          "ServerAddresses": []
+        },
+        {
+          "InterfaceIndex": 1,
+          "AddressFamily": 23,
+          "ServerAddresses": [
+            "fec0:0:0:ffff::1",
+            "fec0:0:0:ffff::2",
+            "fec0:0:0:ffff::3"
+          ]
+        },
+        {
+          "InterfaceIndex": 11,
+          "AddressFamily": 2,
+          "ServerAddresses": [
+            "192.168.204.2"
+          ]
+        },
+        {
+          "InterfaceIndex": 11,
+          "AddressFamily": 23,
+          "ServerAddresses": []
+        }
+      ],
+      "default_routes": [
+        {
+          "InterfaceIndex": 11,
+          "AddressFamily": 2,
+          "DestinationPrefix": "0.0.0.0/0",
+          "NextHop": "192.168.204.2"
+        }
+      ]
+    },
+    "adapter_reference": {
+      "name": "Ethernet0",
+      "status": "Up",
+      "index": 11,
+      "mac": "00-0C-29-4C-FD-C0",
+      "ips": [
+        {
+          "IPAddress": "192.168.204.149",
+          "PrefixLength": 24
+        }
+      ]
+    },
+    "certificate_thumbprints": {
+      "Root": [
+        "0119E81BE9A14CD8E22F40AC118C687ECBA3F4D8",
+        "02FAF3E291435468607857694DF5E45B68851868",
+        "0563B8630D62D75ABBC8AB1E4BDFB5A899B24D43",
+        "06F1AA330B927B753A40E68CDF22E34BCBEF3352",
+        "07E032E020B72C3F192F0628A2593A19A70F069E",
+        "0D9D0117F150F7A83B87F45708BDD04A2B3F6E36",
+        "18F7C1FCC3090203FD5BAA2F861A754976C8DD25",
+        "1F24C630CDA418EF2069FFAD4FDD5F463A1B69AA",
+        "245C97DF7514E7CF2DF8BE72AE957B9E04741E85",
+        "24A40A1F573643A67F0A4B0749F6A22BF28ABB6B",
+        "2796BAE63F1801E277261BA0D77770028F20EEE4",
+        "2B8F1B57330DBBA2D07A6C51F70EE90DDAB9AD8E",
+        "2BD63D28D7BCD0E251195AEB519243C13142EBC3",
+        "3082404DE25DFFC76E872170B546C557BC3EA4E6",
+        "31F9FC8BA3805986B721EA7295C65B3A44534274",
+        "3679CA35668772304D30A5FB873B0FA77BB70D54",
+        "3B1EFD3A66EA28B16697394703A72CA340A05BD5",
+        "4EB6D578499B1CCF5F581EAD56BE3D9B6744A5E5",
+        "4EFC31460C619ECAE59C1BCE2C008036D94C84B8",
+        "51501FBFCE69189D609CFAF140C576755DCC1FDF",
+        "5EEED86FA37C675230642F55C84DDBF67CD33C80",
+        "5FB7EE0633E259DBAD0C4C9AE6D38F1A61C7DC25",
+        "6CA22E5501CC80885FF281DD8B3338E89398EE18",
+        "742C3192E607E424EB4549542BE1BBC53E6174E2",
+        "7E04DE896A3E666D00E687D33FFAD93BE83D349E",
+        "7F88CD7223F3C813818C994614A89C99FA3B5247",
+        "8094640EB5A7A1CA119C1FDDD59F810263A7FBD1",
+        "8A334AA8052DD244A647306A76B8178FA215F344",
+        "8F43288AD272F3103B6FB1428485EA3014C0BCFE",
+        "925A8F8D2C6D04E0665F596AFF22D863E8256F3F",
+        "92B46C76E13054E104F230517E6E504D43AB10B5",
+        "A43489159A520F0D93D032CCAF37E7FE20A8B419",
+        "A4B37F4F6DE956922273D5CB8E7E0AAFB7033B90",
+        "A8985D3A65E5E5C4B2D7D66D40C6DD2FB19C5436",
+        "AD7E1C28B064EF8F6003402014C3D0E3370EB58A",
+        "AFE5D244A8D1194230FF479FE2F897BBCD7A8CB4",
+        "B1BC968BD4F49D622AA89A81F2150152A41D829C",
+        "BE36A4562FB2EE05DBB3D32323ADF445084ED656",
+        "C3197C3924E654AF1BC4AB20957AE2C30E13026A",
+        "CABD2A79A1076A31F21D253635CB039D4329A5E8",
+        "CDD4EEAE6000AC7F40C3802C171E30148030C072",
+        "D067C11351010CAAD0C76A65373116264F5371A2",
+        "D1CBCA5DB2D52A7F693B674DE5F05A1D0C957DF0",
+        "D4DE20D05E66FC53FE1A50882C78DB2852CAE474",
+        "D69B561148F01C77C54578C10926DF5B856976AD",
+        "DAC9024F54D8F6DF94935FB1732638CA6AD77C13",
+        "DDFB16CD4931C973A2037D3FC83A4D7D775D05E4",
+        "DE3F40BD5093D39B6C60F6DABC076201008976C9",
+        "DF3C24F9BFD666761B268073FE06D1CC8D4F82A4",
+        "DF717EAA4AD94EC9558499602D48DE5FBCF03A25",
+        "F40042E2E5F7E8EF8189FED15519AECE42C3BFA2",
+        "F8DB7E1C16F1FFD4AAAD4AAD8DFF0F2445184AEB"
+      ],
+      "CA": [
+        "109F1CAED645BB78B3EA2B94C0697C740733031C",
+        "D559A586669B08F46A30A133F8A9ED3D038E2EA8",
+        "FEE449EE0E3965A5246F000E87FDE2A065FD89D4"
+      ]
+    },
+    "protected_service_reference": [
+      {
+        "name": "fakenetng-mcp",
+        "state": "Running",
+        "account": "LocalSystem",
+        "startmode": "Auto",
+        "image": "C:\\Program Files\\MalTrace-P01-FakeNet\\fakenetng-mcp.exe",
+        "image_sha256": "b99e2e378a888720aeb620436e0b9e1c3a35519e24b6b6fca375423d79a69c08"
+      },
+      {
+        "name": "mcp-velociraptor",
+        "state": "Running",
+        "account": "LocalSystem",
+        "startmode": "Auto",
+        "image": "C:\\Python313\\python.exe",
+        "image_sha256": "d932e5e2f324d57f392e8fd063dcf6d0185be8a664c57c6d24e7762ed02c28ca"
+      }
+    ]
+  },
+  "evidence_directory": "/home/adminn/projects/flare-fakenet-ng/Logs/baseline-preparation-20261101/verified-snapshot-204",
+  "evidence_map": "/home/adminn/projects/flare-fakenet-ng/Logs/baseline-preparation-20261101/verified-snapshot-204/retained-evidence-map.json",
+  "static_reuse_conditions": [
+    "Exact VMX/UUID/MAC and snapshot displayName+UID126+checkpoint must match this registry, with memory checkpoint present. Recheck changed host artifact metadata against recorded SHA256 before trust.",
+    "After a real authorized restore, record a NEW host restore generation and resolve the live VM identity/channel again. Require exact guest marker/publication hashes against this record.",
+    "Only the verified static deployment inventory/version facts may be reused; do not re-read/hash all12230 unchanged files merely because a new agent turn started. Source/runtime/protected-input changes invalidate affected facts.",
+    "Resolve current protected services and fresh PID/birth/image hashes, required network/TLS state, no owned work/WinDivert/active experiment and current resources under the active task. Old observed boot/PID values are not inherited trust.",
+    "Create fresh SDK request/epoch caller binding/private profile and perform every mandatory original SDK boot/identity/authorization/budget/terminal cleanup check. Capabilities does not advertise vm_epoch; do not fabricate it."
+  ],
+  "restore_recipe": {
+    "authority": "This record identifies the baseline; actual restoration requires applicable current task/user authority and stopped writers/evidence retention. It does not authorize automatic per-case rollback.",
+    "sequence": [
+      "Preserve required guest-only evidence and verify all relevant writers stopped. Read current vmrun listSnapshots for this exact VM; uniquely match snapshot name, UID and checkpoint from current VMSD.",
+      "Issue exactly one vmrun -T ws revertToSnapshot VMX snapshot_name. Do not prepend stop or blindly reissue unknown outcome.",
+      "Require VMX checkpoint.vmState to equal this recorded checkpoint before one real Workstation vmware -x VMX; do not cold boot or vmrun start.",
+      "Require successful existing Windows MCP read-only hostname/UUID/marker response, then execute the fresh qualification gates above. Workstation GUI process lifetime and vmrun list are not completion gates."
+    ],
+    "on_mismatch": "Stop only the dependent restore/reuse; retain originals and qualify affected facts. Do not guess another snapshot or replace known results."
+  },
+  "verification_limits": [
+    "Snapshot creation, memory-file existence/hashes, full deployment/import and pre-snapshot protected/quiescence checks passed. Restore test NOT_RUN in this creation unit.",
+    "No native FakeNet/driver cases were executed; original failure and not-admitted cases unchanged. No whole62/9IMP/14ACC completion credit.",
+    "No measured model-token saving is claimed."
+  ],
+  "historical_recipe": {
+    "snapshot183_checkpoint99": "Absent in actual 2026-11-01 snapshot inventory; old AGENTS recipe retained as historical evidence, do not apply it to this baseline."
+  }
+}

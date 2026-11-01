@@ -48,7 +48,13 @@ Real Windows VM execution remains necessary for WinDivert, Windows GUI/process-h
 
 While implementing an already reviewed plan whose status is `已审核, 可以实施`, an in-scope failure found by build or acceptance evidence may be corrected, committed as a new intermediate source snapshot, and rebuilt without asking the user for repeated authorization. Keep each retry mechanically attributable to the active plan and recorded evidence, preserve unrelated work and failed artifacts, use a distinct output directory when a package name would collide, and update the implementation record. An intermediate commit or successful build does not make an ACC pass; continue through the required real-environment acceptance. This standing authorization covers local commits and rebuilds, not `git push`, branch changes, scope expansion, requirement changes, or destructive replacement of evidence.
 
-## Win10 acceptance VM reset
+## Verified FakeNet regression baseline
+
+For FakeNet regression setup, snapshot restore preparation, or post-restore qualification, read [`docs/acceptance/verified-vm-baseline.json`](docs/acceptance/verified-vm-baseline.json) first. It records the created Snapshot 204 baseline, its actual UID 126 / memory checkpoint, source and runtime identities, retained evidence, and the exact conditional reuse and recovery gates. Reuse the verified static inventory only when those bindings match; each restoration still needs a new host restore generation, fresh live identity and safety state, and every original SDK gate. The registry reports the first restore test as not run and grants no native acceptance credit or automatic per-case restore authority.
+
+## Win10 acceptance VM reset (historical Snapshot 183 recipe)
+
+The following recipe is retained as history. Snapshot 183 / checkpoint 99 were absent from the actual 2026-11-01 inventory; use the verified registry above for the current baseline.
 
 For repeatable FakeNet-NG acceptance, reset only this verified VMware Workstation VM:
 
