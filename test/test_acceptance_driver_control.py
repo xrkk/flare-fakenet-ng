@@ -500,6 +500,41 @@ class DriverControlledProducerTests(_NoRealEffects):
         self.assertEqual('outer-native-guard',
                          value['cleanup']['system_network_restored'])
 
+    def test_filter_validation_win32_bool_and_exception(self):
+        original = self._original_open()
+        outcomes = ((True, True), (1, True), (False, False), (0, False))
+        for valid, expected in outcomes:
+            with self.subTest(value=valid, value_type=type(valid).__name__):
+                with mock.patch.object(_WinDivert, 'check_filter',
+                                       return_value=(valid, 0, '')):
+                    work, out, inputs, value = self._run(
+                        'GAP-DIVERTER-SWITCH', 'dv-bool-' + type(valid).__name__
+                        + '-' + str(valid))
+                self.assertIs(expected, value['driver_control']['branches']['on']
+                              ['filter_validated'])
+                if expected:
+                    rows, clean, detail = O.evaluate(
+                        ROOT, out, 'GAP-DIVERTER-SWITCH', inputs, allow_fixture=False)
+                    self.assertTrue(clean, detail)
+                    self.assertTrue(all(row['status'] == 'pass' for row in rows), rows)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'open evidence incomplete'):
+                        O.evaluate(ROOT, out, 'GAP-DIVERTER-SWITCH', inputs,
+                                   allow_fixture=False)
+                self.assertIs(original, self._original_open())
+                self.assertTrue(all(backend.handle is None
+                                    for backend in ControlledWindowsDiverter.instances))
+        with mock.patch.object(_WinDivert, 'check_filter',
+                               side_effect=RuntimeError('controlled check failure')):
+            work, out, inputs, value = self._run(
+                'GAP-DIVERTER-SWITCH', 'dv-bool-check-error')
+        self.assertIs(False, value['driver_control']['branches']['on']['filter_validated'])
+        with self.assertRaisesRegex(ValueError, 'open evidence incomplete'):
+            O.evaluate(ROOT, out, 'GAP-DIVERTER-SWITCH', inputs, allow_fixture=False)
+        self.assertIs(original, self._original_open())
+        self.assertTrue(all(backend.handle is None
+                            for backend in ControlledWindowsDiverter.instances))
+
     def test_switch_v6_controlled_original_producer_positive(self):
         original = self._original_open()
         work, out, inputs, value = self._run('GAP-DIVERTER-SWITCH', 'dv-ctrl-switch')

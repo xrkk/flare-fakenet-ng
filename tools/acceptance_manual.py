@@ -286,7 +286,8 @@ def _observe_driver_control(token):
             checker=getattr(winmod,'WinDivert',None)
             if checker is not None:
                 valid,_pos,_msg=checker.check_filter(self.filter)
-                row['filter_validated']=valid is True
+                # pydivert forwards a Win32 BOOL (integer), not a Python bool.
+                row['filter_validated']=bool(valid)
         except Exception:
             row['filter_validated']=False
         try:
