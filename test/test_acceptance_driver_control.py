@@ -7,10 +7,13 @@ import copy
 import hashlib
 import io
 import json
+import logging
 import os
 import subprocess
 import sys
 import tempfile
+import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -31,6 +34,15 @@ CASES = ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH')
 
 def _sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _work(prefix):
+    """Retained per-test work root under the task-owned check directory (never a
+    hardcoded old-task path; FN_MANUAL_CHECK_DIR is set by the guarded runner)."""
+    root = Path(os.environ.get('FN_MANUAL_CHECK_DIR') or tempfile.gettempdir())
+    base = root / 'driver-control'
+    base.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=str(base)))
 
 
 class _NoRealEffects(unittest.TestCase):
@@ -130,18 +142,158 @@ def _write_result(out, inputs, body):
                                             encoding='utf-8')
 
 
+class _Handle:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _WinDivert:
+    @staticmethod
+    def check_filter(filter_string):
+        return True, 0, ''
+
+
+class ControlledWindowsDiverter:
+    """Controlled in-process stand-in for the source-local Windows Diverter.
+
+    The REAL Fakenet core constructs/starts/stops it and the REAL original-open
+    observer wraps `_open_windivert_handle`; the final filter is produced with
+    the product's own pure exclusion functions, so the recorded evidence is the
+    actual value the observed open received.  Nothing here touches WinDivert,
+    the OS driver, networking or a VM."""
+
+    instances = []
+    fail_open = False
+    drop_exclusion = False
+
+    def __init__(self, diverter_config, listeners_config, ip_addrs,
+                 logging_level=logging.INFO):
+        from fakenet.mcp.controlfilter import (apply_control_link_exclusion,
+                                               apply_loopback_exclusion)
+        self._control = apply_control_link_exclusion
+        self._loopback = apply_loopback_exclusion
+        self.diverter_config = diverter_config
+        self.filter = 'outbound and ip'
+        self.handle = None
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.wait_calls = 0
+        type(self).instances.append(self)
+
+    def _open_windivert_handle(self):
+        if type(self).fail_open:
+            raise RuntimeError('controlled original-open failure')
+        if self.handle is not None:
+            return
+        if not type(self).drop_exclusion:
+            ip = self.diverter_config.get('controllinkexcludeip')
+            port = self.diverter_config.get('controllinkexcludeport')
+            if ip is not None or port is not None:
+                self.filter = self._loopback(self._control(self.filter, ip, port))
+        self.handle = _Handle()
+
+    def start(self):
+        self.start_calls += 1
+        self._open_windivert_handle()
+
+    def wait_for_capture_failure(self, timeout):
+        self.wait_calls += 1
+        time.sleep(min(float(timeout), 0.02))
+        return False
+
+    def stop(self):
+        self.stop_calls += 1
+        if self.handle is not None:
+            self.handle.close()
+            self.handle = None
+        return True
+
+
+class _IfaceInfo:
+    ifaces = {'eth0': []}
+
+    def get_ips(self, versions, iface=None):
+        return ['192.0.2.10'] if 4 in versions else []
+
+
+@contextlib.contextmanager
+def _windows_environment(work, diverter=ControlledWindowsDiverter):
+    """The controlled Windows-shaped, source-local dependency tree: a fake
+    windows diverter module, source-local pydivert module/DLL/SYS files and the
+    actual platform probe.  Benign controlled valid tests only."""
+    import fakenet.diverters as diverters_package
+    work = Path(work)
+    module_file = work / 'pydivert' / 'windivert.py'
+    dll = work / 'pydivert' / 'windivert_dll' / 'WinDivert64.dll'
+    sysfile = work / 'pydivert' / 'windivert_dll' / 'WinDivert64.sys'
+    for path, payload in ((module_file, b'# controlled pydivert module\n'),
+                          (dll, b'controlled-dll'), (sysfile, b'controlled-sys')):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    win = types.ModuleType('fakenet.diverters.windows')
+    win.Diverter = diverter
+    win.WinDivert = _WinDivert
+    package = types.ModuleType('pydivert')
+    package.__path__ = []
+    wd = types.ModuleType('pydivert.windivert')
+    wd.__file__ = str(module_file)
+    dllmod = types.ModuleType('pydivert.windivert_dll')
+    dllmod.DLL_PATH = str(dll)
+    package.windivert = wd
+    package.windivert_dll = dllmod
+    with mock.patch.dict(sys.modules, {
+            'fakenet.diverters.windows': win, 'pydivert': package,
+            'pydivert.windivert': wd, 'pydivert.windivert_dll': dllmod}), \
+            mock.patch.object(diverters_package, 'windows', win, create=True), \
+            mock.patch('platform.system', return_value='Windows'), \
+            mock.patch('fakenet.fakenet.IfaceIpInfo', _IfaceInfo):
+        yield win
+
+
+def _v6_case_inputs(work, case_id, execution=None):
+    out = work / 'driver'
+    inputs = _v6_inputs(out, case_id, execution or
+                        ('dv-controlled-' + case_id.split('-')[1].lower()))
+    return out, inputs
+
+
+def _refresh_config_hashes(out, case_id):
+    """Hash-aware tampering: recompute the result's own artifact hashes so a
+    refusal must come from the ORIGINAL business assertion, not a stale hash."""
+    path = out / 'manual-result.json'
+    value = json.loads(path.read_text())
+    if case_id == 'GAP-CTRLC-IPC':
+        config = out / 'config' / 'shutdown.ini'
+        digest = _sha(config)
+        value['ctrlc_ipc']['config_sha256'] = digest
+        for branch in value['ctrlc_ipc']['branches'].values():
+            branch['config_sha256'] = digest
+            branch['log_sha256'] = _sha(Path(branch['log']))
+    else:
+        for mode, item in value['diverter_switch'].items():
+            item['config_sha256'] = _sha(Path(item['config']))
+            item['observation_sha256'] = _sha(Path(item['observation']))
+            item['core_log_sha256'] = _sha(Path(item['core_log']))
+    path.write_text(json.dumps(value))
+    return value
+
+
 class DriverControlPlanTests(_NoRealEffects):
     def test_v3_options_and_v6_plan_derivation(self):
         for case_id in CASES:
             with self.subTest(case=case_id):
-                work = Path(tempfile.mkdtemp(prefix='fnreg-dv-plan-', dir=str(ROOT / 'Logs/fnreg-T068-R01-two-driver-protected-native/fixtures')))
+                work = _work('fnreg-dv-plan-')
                 plan = _source_plan(work, case_id)
-                value = native.manual_inputs(plan, next(
-                    c for s in json.loads((ROOT / 'docs/acceptance/catalog.json').read_text())['suites']
-                    for c in s.get('cases', []) if c['id'] == case_id), str(work / 'run'))
-                self.assertEqual('fakenet.manual-input.v6', value['schema'])
-                self.assertEqual(CONTROL, value['control'])
-                M.validate_inputs(case_id, value)
+                with mock.patch('platform.system', return_value='Windows'):
+                    value = native.manual_inputs(plan, next(
+                        c for s in json.loads((ROOT / 'docs/acceptance/catalog.json').read_text())['suites']
+                        for c in s.get('cases', []) if c['id'] == case_id), str(work / 'run'))
+                    self.assertEqual('fakenet.manual-input.v6', value['schema'])
+                    self.assertEqual(CONTROL, value['control'])
+                    M.validate_inputs(case_id, value)
                 self.assertEqual(M._result_identity(value),
                                  {k: value[k] for k in (*M.IDENTITY, 'source_deployment_identity')})
 
@@ -162,7 +314,7 @@ class DriverControlPlanTests(_NoRealEffects):
                     native.manual_options({'manual': value})
 
     def test_v5_native_and_foreign_case_rejected_pre_effect(self):
-        work = Path(tempfile.mkdtemp(prefix='fnreg-dv-rej-', dir=str(ROOT / 'Logs/fnreg-T068-R01-two-driver-protected-native/fixtures')))
+        work = _work('fnreg-dv-rej-')
         for case_id in CASES:
             owned = work / (case_id + '-owned')
             value = _v6_inputs(owned, case_id, 'dv-reject')
@@ -184,7 +336,7 @@ class DriverControlPlanTests(_NoRealEffects):
             M.validate_inputs('GAP-SYSLOG-ICMP-LOG', foreign)
 
     def test_legacy_v5_fixture_still_valid(self):
-        work = Path(tempfile.mkdtemp(prefix='fnreg-dv-leg-', dir=str(ROOT / 'Logs/fnreg-T068-R01-two-driver-protected-native/fixtures')))
+        work = _work('fnreg-dv-leg-')
         value = _v6_inputs(work / 'd', CASES[0], 'dv-legacy')
         v5 = copy.deepcopy(value)
         v5['schema'] = 'fakenet.manual-input.v5'
@@ -229,7 +381,7 @@ class DriverControlOracleTests(_NoRealEffects):
         return clean, json.dumps(detail)
 
     def test_ctrlc_v6_oracle_intact_control_evidence(self):
-        work = Path(tempfile.mkdtemp(prefix='fnreg-dv-oc-', dir=str(ROOT / 'Logs/fnreg-T068-R01-two-driver-protected-native/fixtures')))
+        work = _work('fnreg-dv-oc-')
         out, inputs = self._ctrlc_fixture(work)
         clean, detail = self._ctrlc_detail(out, inputs)
         # the remaining ctrlc business assertions demand full originals; the
@@ -237,7 +389,7 @@ class DriverControlOracleTests(_NoRealEffects):
         self.assertNotIn('driver-control', detail)
 
     def test_ctrlc_tampered_filter_refused(self):
-        work = Path(tempfile.mkdtemp(prefix='fnreg-dv-tf-', dir=str(ROOT / 'Logs/fnreg-T068-R01-two-driver-protected-native/fixtures')))
+        work = _work('fnreg-dv-tf-')
         out, inputs = self._ctrlc_fixture(work)
         value = json.loads((out / 'manual-result.json').read_text())
         value['driver_control']['branches']['ctrlc']['filter'] = 'outbound and ip'
@@ -247,7 +399,7 @@ class DriverControlOracleTests(_NoRealEffects):
         self.assertIn('driver-control', detail)
 
     def test_ctrlc_invented_off_and_missing_dependency_refused(self):
-        work = Path(tempfile.mkdtemp(prefix='fnreg-dv-off-', dir=str(ROOT / 'Logs/fnreg-T068-R01-two-driver-protected-native/fixtures')))
+        work = _work('fnreg-dv-off-')
         out, inputs = self._ctrlc_fixture(work)
         value = json.loads((out / 'manual-result.json').read_text())
         value['driver_control']['branches']['ipc'] = None  # open branch invented as off
@@ -265,7 +417,7 @@ class DriverControlOracleTests(_NoRealEffects):
 
     def test_switch_v6_config_and_off_null_reconstruction(self):
         from fakenet.mcp.controlfilter import apply_control_link_exclusion, apply_loopback_exclusion
-        work = Path(tempfile.mkdtemp(prefix='fnreg-dv-sw-', dir=str(ROOT / 'Logs/fnreg-T068-R01-two-driver-protected-native/fixtures')))
+        work = _work('fnreg-dv-sw-')
         out = work / 'driver'
         out.mkdir(parents=True)
         inputs = _v6_inputs(out, 'GAP-DIVERTER-SWITCH', 'dv-oracle-switch')
@@ -297,6 +449,283 @@ class DriverControlOracleTests(_NoRealEffects):
             O.evaluate(ROOT, out, 'GAP-DIVERTER-SWITCH', inputs, allow_fixture=False)
         except ValueError as exc:
             self.assertNotIn('driver-control', str(exc))  # refusal came from config, not dc
+
+
+class DriverControlledProducerTests(_NoRealEffects):
+    """S92-F5: the REAL producers run against a controlled in-process Windows
+    backend; the ORIGINAL oracles must reach their full positive verdict, and
+    every controlled fault must be refused without a real exit."""
+
+    def setUp(self):
+        super().setUp()
+        ControlledWindowsDiverter.instances = []
+        ControlledWindowsDiverter.fail_open = False
+        ControlledWindowsDiverter.drop_exclusion = False
+
+    def _original_open(self):
+        return ControlledWindowsDiverter.__dict__['_open_windivert_handle']
+
+    def _run(self, case_id, execution):
+        work = _work('fnreg-dv-ctrl-')
+        out, inputs = _v6_case_inputs(work, case_id, execution)
+        with _windows_environment(work):
+            value = M.run(case_id, out, inputs)
+        return work, out, inputs, value
+
+    def test_ctrlc_v6_controlled_original_producer_positive(self):
+        work, out, inputs, value = self._run('GAP-CTRLC-IPC', 'dv-ctrl-ctrlc')
+        rows, clean, detail = O.evaluate(ROOT, out, 'GAP-CTRLC-IPC', inputs,
+                                         allow_fixture=False)
+        self.assertTrue(clean, detail)
+        self.assertEqual(['ctrlc', 'ipc-stop', 'owned-exit'],
+                         [row['id'] for row in rows])
+        self.assertTrue(all(row['status'] == 'pass' for row in rows), rows)
+        observation = value['driver_control']
+        self.assertEqual('fakenet.driver-control-observation.v1', observation['schema'])
+        self.assertEqual(CONTROL, observation['control'])
+        self.assertEqual({'ctrlc', 'ipc'}, set(observation['branches']))
+        for mode, row in observation['branches'].items():
+            self.assertIsNotNone(row, mode)
+            self.assertTrue(row['opened'], mode)
+            self.assertTrue(row['filter_validated'], mode)
+            self.assertEqual(_expected_filter(), row['filter'], mode)
+            self.assertEqual(inputs['execution_id'], row['owner_execution'], mode)
+            for field in ('pydivert_module', 'dll', 'sys'):
+                self.assertEqual(64, len(row[field]['sha256']), (mode, field))
+        self.assertEqual(2, len(ControlledWindowsDiverter.instances))
+        for backend in ControlledWindowsDiverter.instances:
+            self.assertEqual(1, backend.start_calls)
+            self.assertEqual(1, backend.stop_calls)
+            self.assertIsNone(backend.handle)
+        self.assertEqual('outer-native-guard',
+                         value['cleanup']['system_network_restored'])
+
+    def test_switch_v6_controlled_original_producer_positive(self):
+        original = self._original_open()
+        work, out, inputs, value = self._run('GAP-DIVERTER-SWITCH', 'dv-ctrl-switch')
+        rows, clean, detail = O.evaluate(ROOT, out, 'GAP-DIVERTER-SWITCH', inputs,
+                                         allow_fixture=False)
+        self.assertTrue(clean, detail)
+        self.assertEqual(['on', 'off', 'restore'], [row['id'] for row in rows])
+        self.assertTrue(all(row['status'] == 'pass' for row in rows), rows)
+        observation = value['driver_control']
+        self.assertEqual(CONTROL, observation['control'])
+        self.assertEqual({'on', 'off'}, set(observation['branches']))
+        self.assertIsNone(observation['branches']['off'])
+        row = observation['branches']['on']
+        self.assertTrue(row['opened'] and row['filter_validated'])
+        self.assertEqual(_expected_filter(), row['filter'])
+        self.assertEqual(inputs['execution_id'], row['owner_execution'])
+        self.assertEqual(1, len(ControlledWindowsDiverter.instances))
+        backend = ControlledWindowsDiverter.instances[0]
+        self.assertEqual(1, backend.start_calls)
+        self.assertEqual(1, backend.stop_calls)
+        self.assertIsNone(backend.handle)
+        self.assertEqual(_expected_filter(), backend.filter)
+        # the global original-open wrapper is restored after a normal exit
+        self.assertIs(original, ControlledWindowsDiverter.__dict__['_open_windivert_handle'])
+
+    def test_wrong_filter_is_refused_by_the_driver_control_gate(self):
+        ControlledWindowsDiverter.drop_exclusion = True
+        work, out, inputs, value = self._run('GAP-DIVERTER-SWITCH', 'dv-bad-filter')
+        self.assertEqual('outbound and ip', value['driver_control']['branches']['on']['filter'])
+        with self.assertRaisesRegex(ValueError, 'final filter differs'):
+            O.evaluate(ROOT, out, 'GAP-DIVERTER-SWITCH', inputs, allow_fixture=False)
+
+    def test_invented_off_open_and_missing_source_are_refused(self):
+        work, out, inputs, value = self._run('GAP-DIVERTER-SWITCH', 'dv-bad-off')
+        path = out / 'manual-result.json'
+        base = json.loads(path.read_text())
+        invented = copy.deepcopy(base)
+        invented['driver_control']['branches']['off'] = copy.deepcopy(
+            invented['driver_control']['branches']['on'])
+        path.write_text(json.dumps(invented))
+        with self.assertRaisesRegex(ValueError, 'off branch must not open'):
+            O.evaluate(ROOT, out, 'GAP-DIVERTER-SWITCH', inputs, allow_fixture=False)
+        missing = copy.deepcopy(base)
+        missing['driver_control']['branches']['on']['dll'] = None
+        path.write_text(json.dumps(missing))
+        with self.assertRaisesRegex(ValueError, 'dependency identity missing: dll'):
+            O.evaluate(ROOT, out, 'GAP-DIVERTER-SWITCH', inputs, allow_fixture=False)
+        path.write_text(json.dumps(base))
+
+    def test_hash_aware_config_tamper_reaches_the_business_assertion(self):
+        # both producers: mutate the owned config and refresh the result's own
+        # hashes, so only the exact-config business assertion can refuse it
+        work, out, inputs, value = self._run('GAP-DIVERTER-SWITCH', 'dv-cfg-switch')
+        (out / 'config' / 'on.ini').write_text(
+            '[FakeNet]\nDivertTraffic: Yes\n[Diverter]\nNetworkMode: SingleHost\n'
+            'LinuxRestrictInterface: Off\n', encoding='ascii')
+        _refresh_config_hashes(out, 'GAP-DIVERTER-SWITCH')
+        rows, clean, detail = O.evaluate(ROOT, out, 'GAP-DIVERTER-SWITCH', inputs,
+                                         allow_fixture=False)
+        self.assertFalse(clean)
+        self.assertIn('traffic configuration differs', json.dumps(detail))
+        work, out, inputs, value = self._run('GAP-CTRLC-IPC', 'dv-cfg-ctrlc')
+        (out / 'config' / 'shutdown.ini').write_text(
+            '[FakeNet]\nDivertTraffic: Yes\n[Diverter]\nNetworkMode: SingleHost\n'
+            'LinuxRestrictInterface: Off\n', encoding='ascii')
+        _refresh_config_hashes(out, 'GAP-CTRLC-IPC')
+        rows, clean, detail = O.evaluate(ROOT, out, 'GAP-CTRLC-IPC', inputs,
+                                         allow_fixture=False)
+        self.assertFalse(clean)
+        self.assertIn('exact configuration mismatch', json.dumps(detail))
+
+    def test_unprotected_v1_packaged_and_v5_native_refused_before_effect(self):
+        for case_id in CASES:
+            with self.subTest(case=case_id):
+                work = _work('fnreg-dv-v1-')
+                out, value = _v6_case_inputs(work, case_id, 'dv-v1-reject')
+                legacy = copy.deepcopy(value)
+                legacy.update(schema='fakenet.manual-input.v1', package_sha256='1' * 64)
+                legacy.pop('control')
+                legacy.pop('source_deployment_identity')
+                name = ('real_ctrlc_ipc' if case_id == CASES[0]
+                        else 'real_diverter_switch')
+                with mock.patch.object(M, name,
+                                       side_effect=AssertionError('REAL_EFFECT_HIT')):
+                    with self.assertRaisesRegex(ValueError, 'v6 control or explicit fixture'):
+                        M.run(case_id, out, legacy)
+                self.assertFalse(out.exists())
+
+    def test_wrong_target_platform_refused_before_effect(self):
+        work = _work('fnreg-dv-linux-')
+        out, value = _v6_case_inputs(work, 'GAP-CTRLC-IPC', 'dv-linux-consume')
+        with mock.patch('platform.system', return_value='Linux'):
+            with self.assertRaisesRegex(ValueError, 'fixed to the Windows target'):
+                M.run('GAP-CTRLC-IPC', out, value)
+        self.assertFalse(out.exists())
+        plan = {'candidate': {'source_commit': HEAD, 'deployment_kind': 'source',
+                              'package_sha256': None, 'offline_fixture': False},
+                'execution_id': 'dv-linux-plan',
+                'native_source_hashes': {'tools/acceptance_native.py':
+                                         _sha(ROOT / 'tools/acceptance_native.py')},
+                'source_hashes': {},
+                'environment': {'native_runtime': {'identity': {'platform': 'linux'}},
+                                'manual': {'schema': 'fakenet.manual-options.v3',
+                                           'responsea': '192.0.2.55',
+                                           'control': copy.deepcopy(CONTROL)}}}
+        with self.assertRaisesRegex(ValueError, 'fixed to the Windows target'):
+            native.manual_remote_inputs(plan, {'id': 'GAP-DIVERTER-SWITCH'},
+                                        str(work / 'linux-plan'))
+
+
+class DriverObserverRestorationTests(_NoRealEffects):
+    """S92-F4: constructor/parse/config/handler/start failures restore the
+    original global open wrapper and preserve the original exception."""
+
+    class ControlledSetupFailure(Exception):
+        pass
+
+    def setUp(self):
+        super().setUp()
+        ControlledWindowsDiverter.instances = []
+        ControlledWindowsDiverter.fail_open = False
+        ControlledWindowsDiverter.drop_exclusion = False
+        self._profile = sys.getprofile()
+
+    def _original_open(self):
+        return ControlledWindowsDiverter.__dict__['_open_windivert_handle']
+
+    def _assert_restored(self, original):
+        self.assertIs(original, ControlledWindowsDiverter.__dict__['_open_windivert_handle'])
+        self.assertIs(self._profile, sys.getprofile())
+        self.assertFalse(any(item.handle is not None
+                             for item in ControlledWindowsDiverter.instances))
+
+    def test_switch_setup_failures_restore_the_wrapper(self):
+        failure = self.ControlledSetupFailure
+        original = self._original_open()
+
+        def raising(message):
+            def boom(*args, **kwargs):
+                raise failure(message)
+            return boom
+
+        def config_failure(work, out):
+            out.mkdir()
+            (out / 'config').write_text('not-a-directory', encoding='ascii')
+            return contextlib.nullcontext()
+
+        class FailingStart(ControlledWindowsDiverter):
+            def start(self):
+                raise failure('controlled start failure')
+
+        cases = (
+            ('constructor', mock.patch('fakenet.fakenet.Fakenet.__init__',
+                                       raising('controlled constructor failure')), True),
+            ('parse', mock.patch('fakenet.fakenet.Fakenet.parse_config',
+                                 raising('controlled parse failure')), True),
+            ('handler', mock.patch('logging.FileHandler',
+                                   raising('controlled FileHandler failure')), True),
+            ('config', config_failure, True),
+            ('start', None, False),
+        )
+        for name, patch, raises in cases:
+            with self.subTest(failure=name):
+                work = _work('fnreg-dv-rst-' + name + '-')
+                out = work / 'driver'
+                inputs = _v6_inputs(out, 'GAP-DIVERTER-SWITCH', 'dv-rst-' + name)
+                diverter = FailingStart if name == 'start' else ControlledWindowsDiverter
+                if name != 'config':
+                    out.mkdir()
+                with _windows_environment(work, diverter=diverter):
+                    if name == 'config':
+                        with config_failure(work, out):
+                            with self.assertRaises(FileExistsError):
+                                M.real_diverter_switch('GAP-DIVERTER-SWITCH', out, inputs)
+                    elif patch is not None:
+                        with patch:
+                            with self.assertRaises(failure):
+                                M.real_diverter_switch('GAP-DIVERTER-SWITCH', out, inputs)
+                    else:
+                        # a failing backend start is folded into the recorded
+                        # production error by the original producer (no raise),
+                        # never into a claimed success
+                        value = M.real_diverter_switch('GAP-DIVERTER-SWITCH', out, inputs)
+                        self.assertEqual('ControlledSetupFailure',
+                                         value['diverter_switch']['on']['error']['type'])
+                        self.assertFalse(value['cleanup']['stopped'])
+                self._assert_restored(original)
+
+    def test_ctrlc_setup_failures_restore_the_wrapper(self):
+        failure = self.ControlledSetupFailure
+        original = self._original_open()
+
+        def constructor(*args, **kwargs):
+            raise failure('controlled constructor failure')
+
+        def handler(*args, **kwargs):
+            raise failure('controlled FileHandler failure')
+
+        for name, patch in (('constructor', mock.patch('fakenet.fakenet.Fakenet.__init__',
+                                                       constructor)),
+                            ('handler', mock.patch('logging.FileHandler', handler))):
+            with self.subTest(failure=name):
+                work = _work('fnreg-dv-crst-' + name + '-')
+                out = work / 'driver'
+                inputs = _v6_inputs(out, 'GAP-CTRLC-IPC', 'dv-crst-' + name)
+                with _windows_environment(work):
+                    with patch:
+                        out.mkdir()
+                        value = M.real_ctrlc_ipc('GAP-CTRLC-IPC', out, inputs)
+                # the original main folds the setup failure into rc=1; the
+                # producer never claims success and the wrapper is restored
+                self.assertEqual(1, value['ctrlc_ipc']['branches']['ctrlc']['rc'])
+                self.assertFalse(value['cleanup']['stopped'])
+                self._assert_restored(original)
+                rows, clean, detail = O.evaluate(ROOT, out, 'GAP-CTRLC-IPC', inputs,
+                                                 allow_fixture=False)
+                self.assertFalse(clean, detail)
+        work = _work('fnreg-dv-crst-config-')
+        out = work / 'driver'
+        inputs = _v6_inputs(out, 'GAP-CTRLC-IPC', 'dv-crst-config')
+        out.mkdir()
+        (out / 'config').write_text('not-a-directory', encoding='ascii')
+        with _windows_environment(work):
+            with self.assertRaises(FileExistsError):
+                M.real_ctrlc_ipc('GAP-CTRLC-IPC', out, inputs)
+        self._assert_restored(original)
 
 
 if __name__ == '__main__':

@@ -569,7 +569,12 @@ BUILDERS = {'GAP-EXECUTECMD': _build_executecmd,
 
 
 def _v5_inputs(work, case_id, plan):
-    inputs = native.manual_inputs(plan, CASES[case_id], str(work))
+    # The two driver cases take the protected v6 Windows branch; this benign
+    # controlled valid derivation declares the actual Windows target.  The
+    # explicit wrong-platform refusal is covered in
+    # test_acceptance_driver_control (S92-F2).
+    with mock.patch('platform.system', return_value='Windows'):
+        inputs = native.manual_inputs(plan, CASES[case_id], str(work))
     return inputs
 
 
@@ -705,7 +710,16 @@ class FivePreEffectGateTests(_NoRealEffects):
                 request['candidate'] = dict(request['candidate'])
                 request['candidate'].pop('deployment_kind')
                 outcome, created = self._guest_boundary(request)
-                self.assertIn('package identity or the explicit source deployment kind', outcome)
+                # The two driver cases are refused even earlier - by the
+                # protected-driver admission (S92-F1/F2) - for the same
+                # pre-mkdir property: no owner/output effect before refusal.
+                if case_id in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH'):
+                    self.assertTrue(
+                        outcome.startswith('refused') and
+                        'explicit source deployment branch' in outcome, outcome)
+                else:
+                    self.assertIn('package identity or the explicit source deployment kind',
+                                  outcome)
                 self.assertFalse(created)
 
 
@@ -797,7 +811,11 @@ class FiveOracleChainTests(_NoRealEffects):
         work = Path(tempfile.mkdtemp(prefix=work_prefix, dir='/tmp'))
         if inputs_factory is None:
             plan = _source_plan(work, case_id)
-            inputs = native.manual_inputs(plan, CASES[case_id], str(work))
+            # Benign controlled valid derivation: the driver cases declare the
+            # protected Windows v6 branch (wrong-platform refusal is covered in
+            # test_acceptance_driver_control).
+            with mock.patch('platform.system', return_value='Windows'):
+                inputs = native.manual_inputs(plan, CASES[case_id], str(work))
         else:
             inputs = inputs_factory(work, case_id)
         # FMS-A3: every local static fixture is EXPLICIT fixture evidence.
@@ -960,7 +978,8 @@ class LegacyIdentityRegressionTests(_NoRealEffects):
             with self.subTest(case=case_id):
                 work = Path(tempfile.mkdtemp(prefix='fnreg-r02-v5-', dir='/tmp'))
                 plan = _source_plan(work, case_id)
-                inputs = native.manual_inputs(plan, CASES[case_id], str(work))
+                with mock.patch('platform.system', return_value='Windows'):
+                    inputs = native.manual_inputs(plan, CASES[case_id], str(work))
                 inputs = dict(inputs, fixture=True)
                 out = Path(inputs['owned_root'])
                 out.mkdir(parents=True, exist_ok=False)
@@ -1001,12 +1020,11 @@ class CentralIndependentJudgeTests(_NoRealEffects):
                        'allowed_actions': ['native'], 'endpoints': [], 'auth_refs': [],
                        'native_runtime': {'transport': 'manual-loopback-fixture',
                                           'identity': identity},
-                       'manual': ({'schema': 'fakenet.manual-options.v3',
-                                   'responsea': '192.0.2.55',
-                                   'control': {'host_ipv4': '192.168.204.1',
-                                               'tcp_source_ports': [28788, 28790]}}
-                                  if case_id in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH') and source_branch else
-                                  {'schema': 'fakenet.manual-options.v1'})}
+                       # S92-F3: the explicit historical fixture entry keeps the
+                       # original manual-options.v1 -> manual-input.v5 chain (no
+                       # control object, original config/oracle); the protected v6
+                       # Windows path is covered in test_acceptance_driver_control.
+                       'manual': {'schema': 'fakenet.manual-options.v1'}}
         (work / 'environment.json').write_text(json.dumps(environment))
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             code = A.main(['--root', str(ROOT), 'plan', '--mode', 'selected',
@@ -1026,10 +1044,9 @@ class CentralIndependentJudgeTests(_NoRealEffects):
         inputs = native.manual_inputs(plan, case, str(output_dir))
         if source_branch:
             if case_id in ('GAP-CTRLC-IPC', 'GAP-DIVERTER-SWITCH'):
-                self.assertEqual('fakenet.manual-input.v6', inputs['schema'])
-                self.assertEqual({'host_ipv4': '192.168.204.1',
-                                  'tcp_source_ports': [28788, 28790]},
-                                 inputs['control'])
+                # S92-F3: legacy fixture entry stays v5 with no control object.
+                self.assertEqual('fakenet.manual-input.v5', inputs['schema'])
+                self.assertNotIn('control', inputs)
             else:
                 self.assertEqual('fakenet.manual-input.v5', inputs['schema'])
             self.assertIsNone(inputs['package_sha256'])
