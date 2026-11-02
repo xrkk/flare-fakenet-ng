@@ -635,6 +635,10 @@ def driver_table(root):
 
 def select_checks(driver, case, environment=None):
     if driver.get('production_kind') == 'linux-runtime':
+        linux = (environment or {}).get('linux') or {}
+        if (case['id'] == 'LINUX-DEPLOY-UPDATE'
+                and linux.get('schema') == 'fakenet.linux-deploy-options.v3'):
+            return list(__import__('acceptance_linux_runtime').EXISTING_CHECKS)
         return list(__import__('acceptance_linux_runtime').CHECKS[case['id']])
     if driver.get('production_kind','').startswith('dual-pcap-'):
         if case.get('stress'):
@@ -1012,6 +1016,19 @@ def linux_inputs(plan, case, output_dir, root=None):
                     fixture=candidate.get('offline_fixture') is True,
                     actions=list(plan['environment'].get('allowed_actions',[])),
                     **{key:options[key] for key in fields-{'schema'}})
+    if case['id'] == 'LINUX-DEPLOY-UPDATE' and options.get('schema') == 'fakenet.linux-deploy-options.v3':
+        fields = {'schema', 'system_root', 'update_template', 'update_template_sha256',
+                  'operation', 'fault', 'binding', 'existing_installation',
+                  'first_install_not_tested'}
+        if set(options) != fields or options.get('first_install_not_tested') is not True:
+            raise ValueError('exact existing-installation options required')
+        pins = pins[:6] + ['tools/acceptance_linux_recovery.py']
+        return dict(common, schema='fakenet.linux-runtime-input.v4',
+                    source_hashes={rel: sha256(source_root / rel) for rel in pins},
+                    owned_root=str(Path(output_dir) / 'driver'),
+                    fixture=candidate.get('offline_fixture') is True,
+                    actions=list(plan['environment'].get('allowed_actions', [])),
+                    **{key: options[key] for key in fields - {'schema'}})
     if case['id'] == 'LINUX-DEPLOY-UPDATE':
         if options.get('schema') != 'fakenet.linux-deploy-options.v1':
             raise ValueError('explicit fixed Linux deployment options required')
@@ -1044,6 +1061,15 @@ def runtime_block(case, environment):
                 return 'explicit exact Linux composite options required'
             return None
         if case['id'] == 'LINUX-DEPLOY-UPDATE':
+            if options.get('schema') == 'fakenet.linux-deploy-options.v3':
+                fields = {'schema', 'system_root', 'update_template', 'update_template_sha256',
+                          'operation', 'fault', 'binding', 'existing_installation',
+                          'first_install_not_tested'}
+                if set(options) != fields or options.get('first_install_not_tested') is not True:
+                    return 'explicit exact existing-installation options required'
+                if not environment.get('native_runtime', {}).get('transport') == 'local-target':
+                    return 'existing installation requires explicit local-target execution'
+                return None
             if options.get('schema') == 'fakenet.linux-deploy-options.v2':
                 fields={'schema','system_root','install_package','install_manifest_sha256','update_template','update_template_sha256','operation','fault','binding'}
                 if set(options)!=fields:

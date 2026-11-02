@@ -575,7 +575,224 @@ def run_phase_deployment(case, out, value, boundary=None):
         _json(destination/'linux-result.json',record)
     return record
 
+EXISTING_CHECKS = ['installed-state', 'idle-update', 'transaction', 'token', 'rollback']
+EXISTING_SCHEMA = 'fakenet.linux-runtime-input.v4'
+EXISTING_PHASE_FILES = ('fakenet/mcp/linuxrunner.py', 'fakenet/diverters/linuxnetpolicy.py')
+
+
+def validate_existing_inputs(case, out, value, boundary):
+    """v4: an EXISTING installation, never a fresh install."""
+    from acceptance_linux_recovery import template_data
+    common = {'schema', 'case', 'candidate_id', 'source_commit', 'package_sha256',
+              'execution_id', 'target', 'source_hashes'}
+    specific = {'owned_root', 'system_root', 'update_template', 'update_template_sha256',
+                'operation', 'fixture', 'actions', 'fault', 'binding',
+                'existing_installation', 'first_install_not_tested'}
+    if case != 'LINUX-DEPLOY-UPDATE' or set(value) != common | specific or value['schema'] != EXISTING_SCHEMA:
+        raise ValueError('exact versioned existing-installation input required')
+    if type(value['fixture']) is not bool or value['fixture'] != (boundary is not None):
+        raise ValueError('isolated provider must have explicit fixture identity')
+    if value.get('first_install_not_tested') is not True:
+        raise ValueError('existing-install mode must persist the untested first-install scope')
+    if (not re.fullmatch('[0-9a-f]{40}', value['source_commit'])
+            or not re.fullmatch('[0-9a-f]{64}', value['package_sha256'])
+            or not re.fullmatch(r'[A-Za-z0-9-]{8,72}', value['operation'])
+            or not isinstance(value['execution_id'], str) or not value['execution_id']
+            or value['target'].get('platform') != 'linux' or set(value['target']) != {'platform', 'hostname'}):
+        raise ValueError('existing installation candidate/operation/target identity invalid')
+    destination = Path(out); system = Path(value['system_root'])
+    if (str(destination) != value['owned_root'] or not destination.is_absolute() or destination.exists()
+            or any(p.is_symlink() for p in (destination, *destination.parents))
+            or not system.is_absolute() or not system.is_dir()
+            or any(p.is_symlink() for p in (system, *system.parents))):
+        raise ValueError('distinct owned evidence and real system root required')
+    if value['fixture']:
+        if system == Path('/') or not system.is_relative_to(destination.parent) or destination.is_relative_to(system):
+            raise ValueError('fixture system root escaped its owned parent')
+    elif system != Path('/') or not {'native', 'linux-install', 'linux-service', 'linux-fault-recovery'}.issubset(value['actions']):
+        raise ValueError('native existing installation requires explicit root and installation authority')
+    if value['fault'] not in ('none', 'import-start'):
+        raise ValueError('unregistered update fault schedule')
+    pins = value['source_hashes']
+    required = {'fakenet/mcp/linuxrunner.py', 'fakenet/diverters/linuxnetpolicy.py',
+                'deploy/linux/deploy.sh', 'deploy/linux/update-idle.py',
+                'tools/acceptance_linux_runtime.py', 'tools/acceptance_linux_runtime_oracles.py',
+                'tools/acceptance_linux_recovery.py'}
+    if set(pins) != required or any(sha(ROOT / name) != pin for name, pin in pins.items()):
+        raise ValueError('exact phase producer/consumer/original source pins required')
+    binding = value['binding']
+    if (not isinstance(binding, dict)
+            or set(binding) != {'vm_uuid', 'boot_id', 'control_services', 'control_state',
+                                'interpreter_sha256', 'service_argv'}):
+        raise ValueError('typed current deployment binding required')
+    existing = value['existing_installation']
+    if (not isinstance(existing, dict)
+            or set(existing) != {'sources', 'unit_sha256', 'config_sha256', 'credential', 'service'}):
+        raise ValueError('frozen existing-installation observation required')
+    if set(existing['sources']) != set(EXISTING_PHASE_FILES) or any(
+            not re.fullmatch('[0-9a-f]{64}', item) for item in existing['sources'].values()):
+        raise ValueError('existing installation source bindings invalid')
+    if (not re.fullmatch('[0-9a-f]{64}', existing['unit_sha256'])
+            or not re.fullmatch('[0-9a-f]{64}', existing['config_sha256'])):
+        raise ValueError('existing installation unit/configuration bindings invalid')
+    credential = existing['credential']; service = existing['service']
+    if (not isinstance(credential, dict) or set(credential) != {'inode', 'mode', 'sha256'}
+            or type(credential['inode']) is not int or credential['inode'] <= 0 or credential['mode'] != 0o600
+            or not re.fullmatch('[0-9a-f]{64}', credential['sha256'])):
+        raise ValueError('existing installation credential/token metadata invalid')
+    if (not isinstance(service, dict) or set(service) != {'pid', 'birth', 'argv', 'interpreter_sha256'}
+            or type(service['pid']) is not int or service['pid'] <= 0
+            or not isinstance(service['birth'], str) or not service['birth']
+            or not isinstance(service['argv'], list) or service['argv'] != binding['service_argv']
+            or not re.fullmatch('[0-9a-f]{64}', service['interpreter_sha256'] or '')
+            or service['interpreter_sha256'] != binding['interpreter_sha256']):
+        raise ValueError('existing installation service binding invalid')
+    data = template_data(value['update_template'], value['update_template_sha256'],
+                         ROOT / 'deploy/linux/update-idle.py')
+    if (data['source_commit'] != value['source_commit']
+            or data['interpreter_sha256'] != binding['interpreter_sha256']
+            or data['base_manifest'] != _update_module().BASE_MANIFEST):
+        raise ValueError('template differs from frozen source/interpreter/base identity')
+    return destination
+
+
+def run_existing_installation(case, out, value, boundary=None):
+    from acceptance_linux_recovery import ExistingInstallation, phase_package, recover_published_update
+    destination = validate_existing_inputs(case, out, value, boundary)
+    from acceptance_runtime import require_target
+    require_target(value['target'])
+    provider = boundary if boundary is not None else ExistingInstallation(value)
+    before = provider.observe_existing()
+    destination.mkdir(mode=0o700, parents=True, exist_ok=False)
+    system = Path(value['system_root']); operation = value['operation']; u = _update_module(); m = _deploy_module()
+    if boundary is not None:
+        u.OWNER = m.OWNER = getattr(boundary, 'owner', 0)
+    record = dict(schema='fakenet.linux-runtime-result.v4', case=case, inputs=value,
+                  fixture=value['fixture'], first_install_not_tested=True,
+                  scope='user-directed: first install not tested; existing installation update/reentry/fault/restore',
+                  checks=list(EXISTING_CHECKS), phase={}, cleanup=dict(restored=False), error=None)
+    phase = record['phase']
+    phase.update(initial=before, binding=value['binding'],
+                 existing_installation=value['existing_installation'], commands=[])
+
+    def observed(branch, function, argv):
+        row = dict(branch=branch, argv=list(argv)); phase['commands'].append(row)
+        try:
+            answer = function(argv)
+            row['returned'] = answer if isinstance(answer, (str, int, bool, type(None))) else 'original-command-completed'
+            return answer
+        except Exception as exc:
+            row['error'] = type(exc).__name__ + ': ' + str(exc); raise
+
+    def copy_original(source, name):
+        source = Path(source); target = destination / name
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if source.is_symlink() or not source.is_file():
+            raise ValueError('linked/missing original phase file')
+        target.write_bytes(source.read_bytes())
+        return dict(path=name, sha256=sha(target), source=str(source))
+
+    baseline_sources = None
+    try:
+        baseline_receipt = provider.baseline_receipt(destination, operation)
+        phase['baseline_receipt'] = copy_original(baseline_receipt, 'originals/baseline.json')
+        phase['baseline'] = before
+        baseline_sources = dict(json.loads(baseline_receipt.read_text())['sources'])
+        (destination / 'derived').mkdir(mode=0o700)
+        phase['identity'] = {key: value[key] for key in
+                             ('candidate_id', 'source_commit', 'package_sha256',
+                              'execution_id', 'operation', 'target')}
+        normal_package = destination / 'derived/normal'
+        phase['normal'] = dict(package='derived/normal')
+        phase['normal']['lineage'] = phase_package(
+            value['update_template'], value['update_template_sha256'], system, normal_package,
+            baseline_receipt, operation, value['binding'], ROOT / 'deploy/linux/update-idle.py')
+        fault_package = None
+        if boundary is not None:
+            u.OWNER = getattr(boundary, 'owner', 0)
+        if value['fault'] == 'import-start':
+            # The registered start failure is exercised against the untouched
+            # baseline first; recovery then restores the baseline before the
+            # normal update/reentry phase runs (same order as the v3 phase).
+            fault_package = destination / 'derived/fault'
+            phase['fault'] = dict(package='derived/fault')
+            phase['fault']['lineage'] = phase_package(
+                value['update_template'], value['update_template_sha256'], system, fault_package,
+                baseline_receipt, operation, value['binding'],
+                ROOT / 'deploy/linux/update-idle.py', fault=True)
+            error = None
+            try:
+                u.update(fault_package, sha(fault_package / 'manifest.json'), operation + '-fault', root=system,
+                         preflight=provider.preflight,
+                         run=lambda argv: observed('fault-update', provider.command, argv),
+                         get_status=provider.status)
+            except Exception as exc:
+                error = type(exc).__name__ + ': ' + str(exc)
+            failed = system / 'opt' / ('.fakenet-update-' + operation + '-fault') / 'receipt.json'
+            phase['fault']['error'] = error
+            phase['fault']['receipt'] = copy_original(failed, 'originals/fault.json')
+            raw = json.loads(failed.read_text())
+            if (not error or raw.get('phase') != 'failed' or raw.get('failure_at') != 'published'
+                    or set(raw.get('published', [])) != set(u.FILES)):
+                raise ValueError('registered original start failure was not actually observed')
+            phase['fault']['backups'] = {name: copy_original(row['backup'], 'backups/' + name)
+                                         for name, row in raw['originals'].items()}
+            phase['fault']['published'] = {name: copy_original(system / 'opt/fakenet-ng' / name,
+                                                               'failed-published/' + name)
+                                           for name in u.FILES}
+            phase['fault']['quiet'] = provider.stop()
+            phase['recovery'] = recover_published_update(failed, system, fault_package, provider.quiet)
+            phase['recovery']['observed'] = {name: copy_original(system / 'opt/fakenet-ng' / name,
+                                                                 'restored/' + name)
+                                             for name in u.FILES}
+            provider.command(['systemctl', 'start', u.UNIT])
+            phase['recovery']['service'] = provider.started()
+        run = lambda argv: observed('normal-update', provider.command, argv)
+        normal = u.update(normal_package, sha(normal_package / 'manifest.json'), operation + '-normal',
+                          root=system, preflight=provider.preflight, run=run, get_status=provider.status)
+        phase['normal']['service'] = provider.started()
+        phase['normal']['backups'] = {name: copy_original(row['backup'], 'normal-backups/' + name)
+                                      for name, row in normal['originals'].items()}
+        phase['normal']['receipt'] = copy_original(
+            system / 'opt' / ('.fakenet-update-' + operation + '-normal') / 'receipt.json',
+            'originals/normal.json')
+        count = len(phase['commands'])
+        u.update(normal_package, sha(normal_package / 'manifest.json'), operation + '-normal',
+                 root=system, preflight=provider.preflight, run=run, get_status=provider.status)
+        phase['normal']['reentry_commands'] = phase['commands'][count:]
+        phase['normal']['observed'] = {name: copy_original(system / 'opt/fakenet-ng' / name,
+                                                           'final-source/' + name)
+                                       for name in u.FILES}
+        credential = system / 'etc/fakenet-ng-linux/token'; state = credential.stat()
+        phase['final_token'] = dict(inode=state.st_ino, mode=state.st_mode & 0o777, sha256=sha(credential))
+        if phase['final_token'] != phase['existing_installation']['credential']:
+            raise ValueError('installed credential identity changed')
+        phase['final_status'] = provider.status()
+    except Exception as exc:
+        record['error'] = type(exc).__name__ + ': ' + str(exc)
+    finally:
+        try:
+            if baseline_sources is None or record['error'] is not None:
+                provider.stop()
+                record['cleanup'] = dict(restored=False, recovery_required=True,
+                                         installation_preserved=True,
+                                         reason='incomplete existing-installation phase; preserve the installation')
+            else:
+                record['cleanup'] = provider.cleanup_own(baseline_sources)
+        except Exception as exc:
+            record['cleanup'] = dict(restored=False, recovery_required=True,
+                                     installation_preserved=True,
+                                     error=type(exc).__name__ + ': ' + str(exc))
+        record['originals'] = {p.relative_to(destination).as_posix(): sha(p)
+                               for p in sorted(destination.rglob('*')) if p.is_file()}
+        _json(destination / 'linux-result.json', record)
+    return record
+
+
 def run(case, out, inputs=None, memory_mode=False, os_boundary=None):
+    if isinstance(inputs,dict) and inputs.get('schema')==EXISTING_SCHEMA:
+        if memory_mode:raise ValueError('synthetic existing-installation run forbidden')
+        return run_existing_installation(case,out,inputs,boundary=os_boundary)
     if isinstance(inputs,dict) and inputs.get('schema')=='fakenet.linux-runtime-input.v3':
         if memory_mode:raise ValueError('synthetic phase deployment forbidden')
         return run_phase_deployment(case,out,inputs,boundary=os_boundary)

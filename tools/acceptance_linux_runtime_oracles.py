@@ -276,6 +276,160 @@ def _evaluate_phase(root, folder, expected, allow_fixture):
     return [dict(id=name,status=status) for name,status in rows.items()],all(v=='pass' for v in rows.values()),detail
 
 
+EXISTING_CHECKS = ['installed-state', 'idle-update', 'transaction', 'token', 'rollback']
+
+
+def _evaluate_existing(root, folder, expected, allow_fixture):
+    """Independent v4 consumer: recomputes raw existing-installation evidence."""
+    rows = {name: 'fail' for name in EXISTING_CHECKS}; detail = {}
+
+    def require(ok, why):
+        if not ok:
+            raise ValueError(why)
+
+    try:
+        from acceptance_linux_recovery import template_data, verify_phase_package
+        value = _read(folder, 'linux-result.json')
+        require(value.get('schema') == 'fakenet.linux-runtime-result.v4'
+                and value.get('case') == 'LINUX-DEPLOY-UPDATE', 'existing-install result identity differs')
+        require(value.get('inputs') == expected, 'independent frozen existing-install identity differs')
+        require(value.get('fixture') == expected.get('fixture'), 'existing-install fixture identity differs')
+        require(not value['fixture'] or allow_fixture, 'fixture cannot earn native credit')
+        require(value.get('first_install_not_tested') is True, 'first-install scope was not persisted')
+        require(value.get('checks') == EXISTING_CHECKS, 'existing-install check names differ')
+        require(expected.get('first_install_not_tested') is True, 'expected input lacks the untested scope')
+        require(value.get('error') is None, 'existing-install producer failed: ' + str(value.get('error')))
+        pins = value['originals']
+        actual = {p.relative_to(folder).as_posix() for p in folder.rglob('*')
+                  if p.is_file() and p != folder / 'linux-result.json'}
+        require(isinstance(pins, dict) and set(pins) == actual, 'existing-install original set differs')
+        for name, pin in pins.items():
+            path = folder / name
+            require(not Path(name).is_absolute() and '..' not in Path(name).parts
+                    and not path.is_symlink() and path.resolve().is_relative_to(folder.resolve())
+                    and sha(path) == pin, 'existing-install original changed or escaped: ' + name)
+        required = {'fakenet/mcp/linuxrunner.py', 'fakenet/diverters/linuxnetpolicy.py',
+                    'deploy/linux/deploy.sh', 'deploy/linux/update-idle.py',
+                    'tools/acceptance_linux_runtime.py', 'tools/acceptance_linux_runtime_oracles.py',
+                    'tools/acceptance_linux_recovery.py'}
+        require(set(expected['source_hashes']) == required, 'existing-install source closure differs')
+        for name, pin in expected['source_hashes'].items():
+            require(sha(Path(root) / name) == pin, 'existing-install source changed')
+        data = template_data(expected['update_template'], expected['update_template_sha256'],
+                             Path(root) / 'deploy/linux/update-idle.py')
+        require(data['base_manifest'] == __import__('acceptance_linux_runtime')._update_module().BASE_MANIFEST,
+                'existing-install base manifest differs')
+        require(data['source_commit'] == expected['source_commit']
+                and data['interpreter_sha256'] == expected['binding']['interpreter_sha256'],
+                'existing-install template/binding differs')
+        phase = value['phase']; op = expected['operation']; existing = expected['existing_installation']
+        require(phase['identity'] == {key: expected[key] for key in
+                ('candidate_id', 'source_commit', 'package_sha256', 'execution_id', 'operation', 'target')},
+                'existing-install candidate/operation lineage differs')
+        baseline_row = phase['baseline_receipt']
+        require(baseline_row['path'] in pins and pins[baseline_row['path']] == baseline_row['sha256'],
+                'baseline receipt reference differs')
+        baseline = json.loads((folder / baseline_row['path']).read_bytes())
+        require(baseline.get('schema') == 'fakenet.linux-existing-install-baseline.v1'
+                and baseline.get('baseline_kind') == 'existing-install'
+                and baseline.get('first_install_tested') is False
+                and baseline.get('operation') == op
+                and isinstance(baseline.get('provenance'), dict)
+                and bool(baseline['provenance'].get('observed_at')),
+                'named existing-install baseline provenance differs')
+        require(baseline.get('sources') == existing['sources'], 'baseline source bindings differ')
+        require(baseline.get('credential') == existing['credential'], 'baseline credential binding differs')
+        initial = phase['initial']
+        require(initial.get('first_install_not_tested') is True, 'initial observation hides the untested first install')
+        require(initial.get('sources') == existing['sources']
+                and initial.get('credential') == existing['credential']
+                and initial.get('unit_sha256') == existing['unit_sha256']
+                and initial.get('config_sha256') == existing['config_sha256'],
+                'preexisting installation observation differs')
+        require(phase['existing_installation'] == existing, 'frozen existing installation differs')
+        require(value['cleanup'].get('installation_preserved') is True, 'preexisting installation was not preserved')
+        require(value['cleanup'].get('first_install_not_tested') is True, 'cleanup hides the untested first install')
+        rows['installed-state'] = 'pass'
+        normal = phase['normal']
+        require(normal['package'] == 'derived/normal', 'unexpected normal artifact path')
+        manifest = verify_phase_package(folder / normal['package'], normal['lineage'],
+                                        expected['update_template'], expected['update_template_sha256'],
+                                        (folder / baseline_row['path']).read_bytes(),
+                                        existing['credential'], expected['binding'])
+        require(normal['lineage'].get('baseline_kind') == 'existing-install'
+                and normal['lineage'].get('fault') is False, 'normal lineage is not the existing baseline')
+        for name, row in manifest['files'].items():
+            require(row['old_sha256'] == existing['sources'][name], 'baseline source does not bind the update')
+        normal_receipt = json.loads((folder / normal['receipt']['path']).read_bytes())
+        require(normal_receipt.get('phase') == 'completed'
+                and normal_receipt.get('operation') == op + '-normal'
+                and normal_receipt.get('manifest') == normal['lineage']['manifest_sha256'],
+                'normal update receipt differs')
+        require(normal['reentry_commands'] == [], 'completed existing-install reentry executed commands')
+        for name, row in manifest['files'].items():
+            require(sha(folder / normal['observed'][name]['path']) == row['new_sha256'],
+                    'updated byte observation differs: ' + name)
+            require(sha(folder / normal['backups'][name]['path']) == row['old_sha256'],
+                    'normal original backup differs: ' + name)
+        rows['idle-update'] = 'pass'; rows['transaction'] = 'pass'
+        commands = [row['argv'] for row in phase['commands'] if row['branch'] == 'normal-update']
+        require(['systemctl', 'stop', 'fakenet-ng-linux.service'] in commands
+                and ['systemctl', 'start', 'fakenet-ng-linux.service'] in commands,
+                'normal lifecycle commands missing')
+        require(phase['final_token'] == existing['credential'], 'final credential identity differs')
+        require(phase['final_status'].get('state') == 'stopped'
+                and phase['final_status'].get('run_id') is None
+                and phase['final_status'].get('health', {}).get('process_alive') is False,
+                'final protocol idle state differs')
+        rows['token'] = 'pass'
+        cleanup = value['cleanup']
+        require(cleanup.get('restored') is True
+                and cleanup.get('restored_sources') == existing['sources']
+                and set(cleanup.get('preserved_paths', [])) == {
+                    'opt/fakenet-ng', 'etc/fakenet-ng-linux', 'etc/systemd/system/fakenet-ng-linux.service'}
+                and cleanup.get('service', {}).get('pid', 0) > 0,
+                'owned existing-installation restore differs')
+        if expected['fault'] == 'none':
+            rows['rollback'] = 'blocked'; detail['rollback'] = 'registered failure and recovery not run'
+        else:
+            fault = phase['fault']
+            require(fault['package'] == 'derived/fault', 'unexpected fault artifact path')
+            fm = verify_phase_package(folder / fault['package'], fault['lineage'],
+                                      expected['update_template'], expected['update_template_sha256'],
+                                      (folder / baseline_row['path']).read_bytes(),
+                                      existing['credential'], expected['binding'])
+            require(fault['lineage'].get('fault') is True and fault.get('error'),
+                    'fault artifact/start failure missing')
+            fr = json.loads((folder / fault['receipt']['path']).read_bytes())
+            require(fr.get('phase') == 'failed' and fr.get('failure_at') == 'published'
+                    and fr.get('operation') == op + '-fault'
+                    and fr.get('manifest') == fault['lineage']['manifest_sha256']
+                    and set(fr.get('published', [])) == set(fm['files']),
+                    'original failed phase differs')
+            require(fault['quiet']['pid'] == 0, 'fault writer not quiet')
+            recovery = phase['recovery']
+            require(recovery.get('failed_receipt_preserved') is True
+                    and recovery.get('receipt_sha256') == fault['receipt']['sha256']
+                    and recovery.get('operation') == op + '-fault',
+                    'separate recovery identity differs')
+            for name, row in fm['files'].items():
+                require(row['old_sha256'] == manifest['files'][name]['old_sha256'],
+                        'fault and normal base differs')
+                require(sha(folder / fault['backups'][name]['path']) == row['old_sha256'],
+                        'failed original backup differs')
+                require(sha(folder / fault['published'][name]['path']) == row['new_sha256'],
+                        'failed published bytes differ')
+                require(sha(folder / recovery['observed'][name]['path']) == row['old_sha256'],
+                        'restored original bytes differ')
+            require(recovery['service']['service']['pid'] > 0, 'recovered service did not restart')
+            rows['rollback'] = 'pass'
+            detail['rollback'] = 'existing installation preserved; failed receipt retained; owned sources restored'
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        rows = {name: 'fail' for name in rows}
+        detail['error'] = type(exc).__name__ + ': ' + str(exc)
+    return [dict(id=name, status=status) for name, status in rows.items()], all(v == 'pass' for v in rows.values()), detail
+
+
 def unchanged_stat(path, row):
     status = Path(path).stat()
     return (status.st_mode & 0o7777) == row.get('mode') and status.st_ino == row.get('inode') and status.st_size == row.get('size')
@@ -283,6 +437,8 @@ def unchanged_stat(path, row):
 
 
 def evaluate(root, original, case, checks=None, allow_fixture=False, expected_inputs=None):
+    if expected_inputs and expected_inputs.get('schema') == 'fakenet.linux-runtime-input.v4':
+        return _evaluate_existing(root, Path(original), expected_inputs, allow_fixture)
     if case not in CHECKS:
         raise ValueError('unknown Linux original case')
     identities = CHECKS[case]

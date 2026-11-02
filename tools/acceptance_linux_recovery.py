@@ -156,8 +156,16 @@ def phase_package(template, template_pin, system_root, destination, install_rece
     data=template_data(template,template_pin,updater_path)
     destination=Path(destination);root=Path(system_root);receipt=_plain(install_receipt,root/'opt')
     installed=json.loads(receipt.read_text())
-    if installed.get('phase')!='completed' or installed.get('operation')!=operation:
-        raise ValueError('phase package requires the original completed install receipt')
+    baseline_kind=installed.get('baseline_kind','fresh-install')
+    if baseline_kind=='fresh-install':
+        if installed.get('phase')!='completed' or installed.get('operation')!=operation:
+            raise ValueError('phase package requires the original completed install receipt')
+    elif baseline_kind!='existing-install':
+        raise ValueError('phase package baseline kind differs')
+    elif (installed.get('schema')!='fakenet.linux-existing-install-baseline.v1'
+          or installed.get('operation')!=operation or installed.get('first_install_tested') is not False
+          or not isinstance(installed.get('provenance'),dict) or not installed['provenance'].get('observed_at')):
+        raise ValueError('phase package requires a named existing-install baseline with real provenance')
     if destination.exists() or destination.is_symlink():raise ValueError('phase package output collision')
     if any(p.is_symlink() for p in destination.parents):raise ValueError('linked phase output parent')
     token=_plain(root/'etc/fakenet-ng-linux/token',root)
@@ -187,6 +195,7 @@ def phase_package(template, template_pin, system_root, destination, install_rece
     (destination/'manifest.json').chmod(0o600)
     lineage=dict(schema='fakenet.linux-phase-update.v1',template_sha256=template_pin,
                  install_receipt_sha256=_digest(receipt),operation=operation,binding=binding,
+                 baseline_kind=baseline_kind,
                  token=dict(inode=state.st_ino,mode=0o600,sha256=_digest(token)),
                  manifest_sha256=_digest(destination/'manifest.json'),fault=fault,
                  files={p.relative_to(destination).as_posix():_digest(p) for p in destination.rglob('*') if p.is_file()})
@@ -197,11 +206,19 @@ def verify_phase_package(package, lineage, template, template_pin, install_bytes
     from pathlib import Path
     import hashlib
     package=Path(package);data=json.loads((Path(template)/'template.json').read_text())
+    baseline=json.loads(install_bytes);baseline_kind=baseline.get('baseline_kind','fresh-install')
+    if baseline_kind=='fresh-install':baseline_ok=baseline.get('phase')=='completed'
+    elif baseline_kind=='existing-install':
+        baseline_ok=(baseline.get('schema')=='fakenet.linux-existing-install-baseline.v1'
+                     and baseline.get('first_install_tested') is False
+                     and isinstance(baseline.get('provenance'),dict)
+                     and bool(baseline['provenance'].get('observed_at')))
+    else:baseline_ok=False
     if (lineage.get('schema')!='fakenet.linux-phase-update.v1' or lineage.get('template_sha256')!=template_pin
             or _digest(Path(template)/'template.json')!=template_pin
             or lineage.get('install_receipt_sha256')!=hashlib.sha256(install_bytes).hexdigest()
-            or json.loads(install_bytes).get('phase')!='completed'
-            or lineage.get('operation')!=json.loads(install_bytes).get('operation')
+            or not baseline_ok or lineage.get('baseline_kind',baseline_kind)!=baseline_kind
+            or lineage.get('operation')!=baseline.get('operation')
             or lineage.get('token')!=token or lineage.get('binding')!=binding):
         raise ValueError('phase update provenance mismatch')
     actual={p.relative_to(package).as_posix():_digest(_plain(p,package)) for p in package.rglob('*') if p.is_file()}
@@ -450,3 +467,127 @@ def remove_created_installation(root, created, expected_updates):
         else:
             if row['kind']=='file' and _digest(path)!=row['sha256']:raise ValueError('installation bytes changed before cleanup')
             path.unlink()
+
+
+class ExistingInstallation(NativeDeployment):
+    """Explicit existing-installation provider: observe and preserve it.
+
+    The preexisting installation is bound by observation and never created,
+    removed or disabled. Only this unit's two updated sources are restored to
+    their recorded baseline bytes, then the original service is restarted.
+    """
+    fixture = False
+    owner = 0
+
+    def __init__(self, inputs):
+        from pathlib import Path
+        import os
+        self.inputs = inputs; self.root = Path(inputs['system_root'])
+        self.binding = inputs['binding']; self.expected = inputs['existing_installation']
+        self.installed_receipt = None; self.last_pid = None; self.initial = None
+        self.baseline = None; self._baseline_copy = {}; self._baseline_mode = {}
+        self.unit = 'fakenet-ng-linux.service'
+        required = {'native', 'linux-install', 'linux-service', 'linux-fault-recovery'}
+        if self.fixture or os.geteuid() != 0 or self.root != Path('/') or not required.issubset(inputs['actions']):
+            raise ValueError('explicit authorized root existing-installation actions required')
+
+    def observe_existing(self):
+        import os
+        self.initial = self.machine(); service = self.service()
+        if service['load'] != 'loaded' or service['pid'] <= 0 or service['active'] != 'active':
+            raise ValueError('existing installation service is not the enrolled active installation')
+        process = self._process(service['pid']); expected_service = self.expected['service']
+        if (process['pid'] != expected_service['pid'] or process['birth'] != str(expected_service['birth'])
+                or process['argv'] != self.binding['service_argv']
+                or process['interpreter_sha256'] != self.binding['interpreter_sha256']):
+            raise ValueError('existing installation process identity differs from the frozen observation')
+        inventory = installation_inventory(self.root)
+        sources = {name: inventory.get('opt/fakenet-ng/' + name, {}).get('sha256')
+                   for name in self.expected['sources']}
+        if sources != self.expected['sources']:
+            raise ValueError('existing installation source bytes differ from the frozen observation')
+        for name in self.expected['sources']:
+            path = self.root / 'opt/fakenet-ng' / name
+            if path.is_symlink() or not path.is_file():
+                raise ValueError('existing installation owned source missing')
+            self._baseline_copy[name] = path.read_bytes()
+            self._baseline_mode[name] = path.stat().st_mode & 0o777
+        unit = self.root / 'etc/systemd/system' / self.unit
+        config = self.root / 'opt/fakenet-ng/fakenet/configs/default.ini'
+        token = self.root / 'etc/fakenet-ng-linux/token'
+        for path in (unit, config, token):
+            if not path.is_file() or path.is_symlink():
+                raise ValueError('existing installation owned metadata missing')
+        state = token.stat()
+        observed = dict(inode=state.st_ino, mode=state.st_mode & 0o777, sha256=_digest(token))
+        if observed != self.expected['credential']:
+            raise ValueError('existing installation credential identity differs')
+        if _digest(unit) != self.expected['unit_sha256'] or _digest(config) != self.expected['config_sha256']:
+            raise ValueError('existing installation unit/configuration differs')
+        self.last_pid = process
+        self.baseline = dict(sources=dict(sources), unit_sha256=self.expected['unit_sha256'],
+                             config_sha256=self.expected['config_sha256'], credential=observed,
+                             service=service, process=process, inventory=inventory)
+        return dict(machine=self.initial, service=service, process=process, credential=observed,
+                    sources=dict(sources), unit_sha256=self.expected['unit_sha256'],
+                    config_sha256=self.expected['config_sha256'], first_install_not_tested=True)
+
+    def baseline_receipt(self, destination, operation):
+        from datetime import datetime, timezone
+        root = self.root; target = root / 'opt/fakenet-ng'
+        sources = {name: _digest(target / name) for name in self.expected['sources']}
+        if sources != self.expected['sources']:
+            raise ValueError('baseline source bytes changed before receipt')
+        receipt = dict(schema='fakenet.linux-existing-install-baseline.v1',
+                       baseline_kind='existing-install', first_install_tested=False,
+                       phase='existing-observed', operation=operation, sources=dict(sources),
+                       files={name: None for name in self.expected['sources']},
+                       installed_files={'opt/fakenet-ng/fakenet/configs/default.ini': self.expected['config_sha256'],
+                                        'etc/fakenet-ng-linux/token': self.expected['credential']['sha256'],
+                                        'etc/systemd/system/fakenet-ng-linux.service': self.expected['unit_sha256']},
+                       credential=self.expected['credential'], manifest_sha256=None,
+                       provenance=dict(kind='named-existing-install-baseline',
+                                       observed_at=datetime.now(timezone.utc).isoformat(),
+                                       observed_by='acceptance_linux_recovery.ExistingInstallation',
+                                       service=self.baseline['service'], process=self.baseline['process']))
+        directory = root / 'opt' / ('.fakenet-existing-baseline-' + operation)
+        if directory.exists() or directory.is_symlink():
+            raise ValueError('existing baseline directory collision')
+        directory.mkdir(mode=0o700)
+        path = directory / 'baseline.json'
+        with path.open('x', encoding='utf-8') as stream:
+            json.dump(receipt, stream, sort_keys=True, indent=2); stream.write('\n')
+        path.chmod(0o600)
+        return path
+
+    def cleanup_own(self, baseline_sources):
+        target = self.root / 'opt/fakenet-ng'
+        self.command(['systemctl', 'stop', self.unit])
+        if not self.quiet():
+            raise ValueError('existing installation did not stop for owned restore')
+        restored = {}
+        for name, want in baseline_sources.items():
+            path = target / name
+            if path.is_symlink() or not path.is_file():
+                raise ValueError('owned existing source missing before restore')
+            path.write_bytes(self._baseline_copy[name]); path.chmod(self._baseline_mode[name])
+            if _digest(path) != want:
+                raise ValueError('owned existing source restore differs')
+            restored[name] = want
+        self.command(['systemctl', 'start', self.unit]); service = self.service()
+        if service['load'] != 'loaded' or service['pid'] <= 0 or service['active'] != 'active':
+            raise ValueError('existing installation not restarted after owned restore')
+        token = self.root / 'etc/fakenet-ng-linux/token'; state = token.stat()
+        if dict(inode=state.st_ino, mode=state.st_mode & 0o777, sha256=_digest(token)) != self.expected['credential']:
+            raise ValueError('installed credential identity changed after owned restore')
+        if (_digest(self.root / 'etc/systemd/system' / self.unit) != self.expected['unit_sha256']
+                or _digest(self.root / 'opt/fakenet-ng/fakenet/configs/default.ini') != self.expected['config_sha256']):
+            raise ValueError('installation unit/configuration changed after owned restore')
+        inventory = installation_inventory(self.root)
+        if set(inventory) != set(self.baseline['inventory']):
+            raise ValueError('existing installation object set changed')
+        return dict(restored=True, installation_preserved=True, restored_sources=restored,
+                    preserved_paths=['opt/fakenet-ng', 'etc/fakenet-ng-linux',
+                                     'etc/systemd/system/' + self.unit],
+                    service=service, credential=self.expected['credential'],
+                    first_install_not_tested=True)
