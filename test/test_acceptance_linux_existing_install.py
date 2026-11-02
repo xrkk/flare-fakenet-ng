@@ -203,7 +203,8 @@ class ExistingInstallationTests(unittest.TestCase):
 
             def started(self):
                 return dict(service=self.service(),
-                            process=dict(pid=self.pid, birth='fixture-2', children=''))
+                            process=dict(pid=self.pid, birth='fixture-birth', argv=list(test.argv),
+                                         interpreter_sha256=test.interpreter, children=''))
 
             def quiet(self):
                 return self.pid == 0
@@ -212,7 +213,7 @@ class ExistingInstallationTests(unittest.TestCase):
                 self.pid = 0
                 return self.service()
 
-            def cleanup_own(self, baseline_sources):
+            def cleanup_own(self, baseline_sources, published_sources):
                 for name, want in baseline_sources.items():
                     path = test.system / 'opt/fakenet-ng' / name
                     path.write_bytes(self.copies[name])
@@ -295,25 +296,80 @@ class ExistingInstallationTests(unittest.TestCase):
         self.assertTrue(O.evaluate(ROOT, out, 'LINUX-DEPLOY-UPDATE',
                                    expected_inputs=value, allow_fixture=True)[1])
 
-    def test_central_plan_freezes_the_existing_install_checks(self):
-        """The central plan derives the existing-install check names from the
-        v3 options; execution/judging of this benign fixture is covered by the
-        direct producer+consumer positive above (the central execute path must
-        create the system root after the plan, which this fixture cannot do)."""
+    def _real_provider(self, root, inputs, commands=None):
+        from acceptance_linux_recovery import ExistingInstallation
+        commands = commands if commands is not None else []
+        inputs = dict(inputs, actions=['native', 'linux-install', 'linux-service', 'linux-fault-recovery'])
+        with mock.patch.object(ExistingInstallation, 'require_root_user', False), \
+                mock.patch.object(ExistingInstallation, 'required_root', str(root)):
+            provider = ExistingInstallation(inputs)
+        provider.command = lambda argv: commands.append(list(argv))
+        provider.quiet = lambda: True
+        provider._process = lambda pid: dict(pid=pid, birth='fixture-birth', argv=list(self.argv),
+                                             interpreter_sha256=self.interpreter, children='')
+        provider.service = lambda: dict(load='loaded', pid=4210, active='active')
+        provider.machine = lambda: {}
+        return provider
+
+    def test_real_provider_post_restart_state_and_checked_cleanup(self):
+        """F1/F2: the REAL production provider must restart and must refuse
+        foreign bytes before any service action or write."""
+        value = self.inputs('real-provider')
+        commands = []
+        provider = self._real_provider(self.system, value, commands)
+        provider.baseline = dict(inventory=recovery.installation_inventory(self.system),
+                                 sources=dict(self.installed), service=dict(load='loaded', pid=4210, active='active'),
+                                 process=dict(pid=4210, birth='fixture-birth', argv=list(self.argv),
+                                              interpreter_sha256=self.interpreter),
+                                 credential=self.token_row, unit_sha256=_sha(self.unit),
+                                 config_sha256=_sha(self.config))
+        provider._baseline_copy = {name: (self.system / 'opt/fakenet-ng' / name).read_bytes() for name in FILES}
+        provider._baseline_mode = {name: 0o600 for name in FILES}
+        # F1: the post-restart observation must work on the real class state.
+        started = provider.started()
+        self.assertEqual(4210, started['service']['pid'])
+        # F2 drift: foreign bytes must be refused untouched, with no command.
+        target = self.system / 'opt/fakenet-ng' / FILES[0]
+        target.write_bytes(b'foreign drift')
+        foreign = target.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'foreign existing source bytes'):
+            provider.cleanup_own(dict(self.installed), {FILES[0]: 'f' * 64, FILES[1]: 'e' * 64})
+        self.assertEqual([], commands)
+        self.assertEqual(foreign, target.read_bytes())
+        # restore the published update state and perform the owned cleanup
+        published = {}
+        for name in FILES:
+            path = self.system / 'opt/fakenet-ng' / name
+            path.write_bytes(('updated ' + name + '\n').encode())
+            published[name] = _sha(path)
+        result = provider.cleanup_own(dict(self.installed), published)
+        self.assertTrue(result['restored'])
+        self.assertTrue(result['installation_preserved'])
+        self.assertEqual(self.installed,
+                         {name: _sha(self.system / 'opt/fakenet-ng' / name) for name in FILES})
+        self.assertIn(['systemctl', 'stop', 'fakenet-ng-linux.service'], commands)
+        self.assertIn(['systemctl', 'start', 'fakenet-ng-linux.service'], commands)
+
+    def _central_environment(self, name):
         head = A.git_head(ROOT)
         template = json.loads((self.template / 'template.json').read_text())
         template['source_commit'] = head
         (self.template / 'template.json').write_text(json.dumps(template))
         self.template_pin = _sha(self.template / 'template.json')
-        value = self.inputs('central-plan')
+        # The fixture installation lives outside the empty central run dir so
+        # the frozen binding (token inode) is known before the plan.
+        self.system = self.base / (name + '-system')
+        self.build_installation('installed')
+        value = self.inputs(name)
         value['source_commit'] = head
         value['update_template_sha256'] = self.template_pin
+        value['system_root'] = str(self.system)
         fields = ('system_root', 'update_template', 'update_template_sha256', 'operation',
                   'fault', 'binding', 'existing_installation', 'first_install_not_tested')
         options = {key: value[key] for key in fields}
         options['schema'] = 'fakenet.linux-deploy-options.v3'
-        candidate = self.base / 'candidate.json'
-        environment = self.base / 'environment.json'
+        candidate = self.base / (name + '-candidate.json')
+        environment = self.base / (name + '-environment.json')
         candidate.write_text(json.dumps(dict(schema=A.CANDIDATE_V2, candidate_id=value['candidate_id'],
                                              source_commit=head, package_sha256='b' * 64,
                                              offline_fixture=True, deployed_identity=value['target'])))
@@ -321,22 +377,108 @@ class ExistingInstallationTests(unittest.TestCase):
             schema=A.ENVIRONMENT_V2, targets=['host-linux'], interpreters={'python': sys.executable},
             endpoints=[], auth_refs=[], work_root=str(self.base), allowed_actions=['native'],
             native_runtime=dict(transport='local-target', identity=value['target']), linux=options)))
+        return value, candidate, environment
+
+    @staticmethod
+    def _cli(*args):
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            code = A.main(['--root', str(ROOT), 'plan', '--mode', 'selected',
-                           '--case', 'LINUX-DEPLOY-UPDATE', '--candidate', str(candidate),
-                           '--environment', str(environment), '--output',
-                           str(self.base / 'plan/plan.json')])
-        self.assertEqual(0, code, (stdout.getvalue(), stderr.getvalue()))
-        planned = json.loads((self.base / 'plan/plan.json').read_text())
+            code = A.main(['--root', str(ROOT), *map(str, args)])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def _central_chain(self, name, provider_factory, expect_execute=0):
+        value, candidate, environment = self._central_environment(name)
+        run = self.base / (name + '-run')
+        plan = run / 'plan.json'
+        code, stdout, stderr = self._cli('plan', '--mode', 'selected', '--case', 'LINUX-DEPLOY-UPDATE',
+                                         '--candidate', candidate, '--environment', environment,
+                                         '--output', plan)
+        self.assertEqual(0, code, (stdout, stderr))
+        planned = json.loads(plan.read_text())
         self.assertEqual(L.EXISTING_CHECKS,
                          planned['cases']['LINUX-DEPLOY-UPDATE']['required_checks'])
-        self.assertNotIn('LINUX-DEPLOY-UPDATE', planned.get('blocked') or {})
-        derived = native.linux_inputs(planned, next(
-            c for s in json.loads((ROOT / 'docs/acceptance/catalog.json').read_text())['suites']
-            for c in s.get('cases', []) if c['id'] == 'LINUX-DEPLOY-UPDATE'), str(self.base / 'derived'))
-        self.assertEqual(L.EXISTING_SCHEMA, derived['schema'])
-        self.assertTrue(derived['first_install_not_tested'])
+        provider = provider_factory()
+        real_run = L.run
+
+        def fixture_run(*args, **kwargs):
+            kwargs['os_boundary'] = provider
+            return real_run(*args, **kwargs)
+
+        class Child:
+            pid = 999994
+
+            def wait(self, timeout=None):
+                return self.code
+
+        def launch(argv, **kwargs):
+            captured = io.StringIO()
+            with mock.patch.object(L, 'run', side_effect=fixture_run), contextlib.redirect_stdout(captured):
+                code = L.main(argv[2:])
+            kwargs['stdout'].write(captured.getvalue().encode())
+            child = Child(); child.code = code
+            return child
+
+        backend = types.SimpleNamespace(**vars(__import__('subprocess')))
+        backend.Popen = launch
+        with mock.patch.object(__import__('acceptance_runtime'), 'require_target',
+                               return_value=value['target']), \
+                mock.patch.object(native, 'subprocess', backend):
+            code, stdout, stderr = self._cli('execute', '--plan', plan)
+        if expect_execute is not None:
+            self.assertEqual(expect_execute, code, (stdout, stderr))
+        code, stdout, stderr = self._cli('judge', '--plan', plan, '--results', run / 'results',
+                                         '--output', run / 'judged.json')
+        return value, plan, run, code, stdout, stderr
+
+    def test_central_execute_and_judge_positive(self):
+        provider = self.provider()
+
+        def factory():
+            provider.expected = provider.observe_existing() and None
+            return provider
+        value, plan, run, code, stdout, stderr = self._central_chain('central-positive', factory)
+        self.assertEqual(0, code, (stdout, stderr))
+        summary = json.loads((run / 'judged.json').read_text())
+        self.assertFalse(summary['full_functional_pass'])
+        self.assertEqual('pass', summary['cases'][0]['status'], summary)
+        record = json.loads((run / 'results/LINUX-DEPLOY-UPDATE/driver/linux-result.json').read_text())
+        self.assertEqual('derived/normal', record['phase']['normal']['package'])
+        self.assertTrue(record['phase']['normal']['reentry_commands'] == [])
+        self.assertIn('fault', record['phase'])
+        self.assertIn('recovery', record['phase'])
+        self.assertTrue(record['cleanup']['restored'])
+
+    def test_central_judge_rejects_broken_actual_restore(self):
+        value, provider, record = self.run_case('broken-restore')
+        broken = self.provider()
+
+        def broken_cleanup(baseline_sources, published_sources):
+            # reports success but physically leaves the updated bytes in place
+            return dict(restored=True, installation_preserved=True,
+                        preserved_paths=['opt/fakenet-ng', 'etc/fakenet-ng-linux',
+                                         'etc/systemd/system/fakenet-ng-linux.service'],
+                        restored_sources=dict(baseline_sources), service=broken.service(),
+                        credential=self.token_row, first_install_not_tested=True)
+        broken.cleanup_own = broken_cleanup
+
+        def factory():
+            broken.expected = broken.observe_existing() and None
+            return broken
+        out_value, plan, run, code, stdout, stderr = self._central_chain('central-broken', factory, expect_execute=None)
+        # The producer itself claims success (error None, restored True) yet the
+        # independent consumer must reject the physically unrestored sources.
+        self.assertNotEqual(0, code, (stdout, stderr))
+        driver = run / 'results/LINUX-DEPLOY-UPDATE/driver'
+        record = json.loads((driver / 'linux-result.json').read_text())
+        self.assertIsNone(record['error'])
+        self.assertTrue(record['cleanup']['restored'])
+        rows, clean, detail = O.evaluate(ROOT, driver, 'LINUX-DEPLOY-UPDATE',
+                                         expected_inputs=record['inputs'], allow_fixture=True)
+        self.assertFalse(clean)
+        self.assertIn('not physically restored', json.dumps(detail))
+        judged = self._cli('judge', '--plan', plan, '--results', run / 'results',
+                           '--output', run / 'judged-broken.json')
+        self.assertNotEqual(0, judged[0], judged)
 
 
 if __name__ == '__main__':

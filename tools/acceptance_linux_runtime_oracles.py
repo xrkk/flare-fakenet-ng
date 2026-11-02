@@ -347,6 +347,13 @@ def _evaluate_existing(root, folder, expected, allow_fixture):
                 and initial.get('config_sha256') == existing['config_sha256'],
                 'preexisting installation observation differs')
         require(phase['existing_installation'] == existing, 'frozen existing installation differs')
+        frozen_process = existing['service']
+        initial_process = initial.get('process') or {}
+        require(initial_process.get('pid') == frozen_process['pid']
+                and str(initial_process.get('birth')) == str(frozen_process['birth'])
+                and initial_process.get('argv') == frozen_process['argv']
+                and initial_process.get('interpreter_sha256') == frozen_process['interpreter_sha256'],
+                'initial existing process does not match the frozen PID/birth/argv/interpreter')
         require(value['cleanup'].get('installation_preserved') is True, 'preexisting installation was not preserved')
         require(value['cleanup'].get('first_install_not_tested') is True, 'cleanup hides the untested first install')
         rows['installed-state'] = 'pass'
@@ -383,6 +390,24 @@ def _evaluate_existing(root, folder, expected, allow_fixture):
                 'final protocol idle state differs')
         rows['token'] = 'pass'
         cleanup = value['cleanup']
+        observed = phase.get('cleanup_observed') or {}
+        observed_sources = observed.get('sources') or {}
+        require(set(observed_sources) == set(existing['sources']), 'post-cleanup source observation set differs')
+        for name, row in observed_sources.items():
+            require(row.get('path') in pins and pins[row['path']] == row.get('sha256'),
+                    'post-cleanup source evidence not hash-bound: ' + name)
+            require(row.get('sha256') == existing['sources'][name],
+                    'post-cleanup source is not physically restored: ' + name)
+        require(observed.get('credential') == existing['credential'],
+                'post-cleanup credential identity differs')
+        require(observed.get('unit_sha256') == existing['unit_sha256']
+                and observed.get('config_sha256') == existing['config_sha256'],
+                'post-cleanup unit/configuration differs')
+        require(observed.get('service', {}).get('pid', 0) > 0, 'post-cleanup service not running')
+        if observed.get('process'):
+            require(observed['process'].get('argv') == existing['service']['argv']
+                    and observed['process'].get('interpreter_sha256') == existing['service']['interpreter_sha256'],
+                    'post-cleanup service process differs')
         require(cleanup.get('restored') is True
                 and cleanup.get('restored_sources') == existing['sources']
                 and set(cleanup.get('preserved_paths', [])) == {

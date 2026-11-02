@@ -607,8 +607,14 @@ def validate_existing_inputs(case, out, value, boundary):
             or any(p.is_symlink() for p in (system, *system.parents))):
         raise ValueError('distinct owned evidence and real system root required')
     if value['fixture']:
-        if system == Path('/') or not system.is_relative_to(destination.parent) or destination.is_relative_to(system):
-            raise ValueError('fixture system root escaped its owned parent')
+        # Fixtures are owned by the isolated provider; bind the root by the
+        # provider owner instead of forcing it under the (not yet created)
+        # central results directory. It must still be a real, non-root,
+        # non-symlinked directory that does not contain the owned output.
+        owner = getattr(boundary, 'owner', os.getuid()) if boundary is not None else os.getuid()
+        if (system == Path('/') or destination.is_relative_to(system)
+                or system.stat().st_uid != owner):
+            raise ValueError('fixture system root escaped its owned boundary')
     elif system != Path('/') or not {'native', 'linux-install', 'linux-service', 'linux-fault-recovery'}.issubset(value['actions']):
         raise ValueError('native existing installation requires explicit root and installation authority')
     if value['fault'] not in ('none', 'import-start'):
@@ -778,7 +784,19 @@ def run_existing_installation(case, out, value, boundary=None):
                                          installation_preserved=True,
                                          reason='incomplete existing-installation phase; preserve the installation')
             else:
-                record['cleanup'] = provider.cleanup_own(baseline_sources)
+                published = {name: sha(system / 'opt/fakenet-ng' / name) for name in u.FILES}
+                record['cleanup'] = provider.cleanup_own(baseline_sources, published)
+                restored = provider.started()
+                phase['cleanup_observed'] = {
+                    'sources': {name: copy_original(system / 'opt/fakenet-ng' / name,
+                                                    'cleanup-source/' + name) for name in u.FILES},
+                    'credential': (lambda row: dict(inode=row.st_ino, mode=row.st_mode & 0o777,
+                                                    sha256=sha(system / 'etc/fakenet-ng-linux/token')))(
+                        (system / 'etc/fakenet-ng-linux/token').stat()),
+                    'unit_sha256': sha(system / 'etc/systemd/system' / u.UNIT),
+                    'config_sha256': sha(system / 'opt/fakenet-ng/fakenet/configs/default.ini'),
+                    'service': restored['service'], 'process': restored.get('process'),
+                    'machine': (provider.machine() if callable(getattr(provider, 'machine', None)) else {})}
         except Exception as exc:
             record['cleanup'] = dict(restored=False, recovery_required=True,
                                      installation_preserved=True,

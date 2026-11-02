@@ -478,6 +478,10 @@ class ExistingInstallation(NativeDeployment):
     """
     fixture = False
     owner = 0
+    # Isolated benign OS seam for the controlled provider tests; production
+    # always keeps the elevated root '/' gate.
+    require_root_user = True
+    required_root = '/'
 
     def __init__(self, inputs):
         from pathlib import Path
@@ -486,10 +490,26 @@ class ExistingInstallation(NativeDeployment):
         self.binding = inputs['binding']; self.expected = inputs['existing_installation']
         self.installed_receipt = None; self.last_pid = None; self.initial = None
         self.baseline = None; self._baseline_copy = {}; self._baseline_mode = {}
+        self.created_objects = None
         self.unit = 'fakenet-ng-linux.service'
         required = {'native', 'linux-install', 'linux-service', 'linux-fault-recovery'}
-        if self.fixture or os.geteuid() != 0 or self.root != Path('/') or not required.issubset(inputs['actions']):
+        authorized = (self.root == Path(self.required_root) and required.issubset(inputs['actions'])
+                      and (not self.require_root_user or os.geteuid() == 0))
+        if self.fixture or not authorized:
             raise ValueError('explicit authorized root existing-installation actions required')
+
+    def started(self):
+        """Post-restart observation for an EXISTING installation (never the
+        fresh-install ownership bookkeeping)."""
+        service = self.service()
+        if service['load'] != 'loaded' or service['pid'] <= 0 or service['active'] != 'active':
+            raise ValueError('existing installation not active after restart')
+        process = self._process(service['pid'])
+        if (process['argv'] != self.binding['service_argv']
+                or process['interpreter_sha256'] != self.binding['interpreter_sha256']):
+            raise ValueError('restarted existing installation process differs')
+        self.last_pid = process
+        return dict(service=service, process=process)
 
     def observe_existing(self):
         import os
@@ -560,8 +580,37 @@ class ExistingInstallation(NativeDeployment):
         path.chmod(0o600)
         return path
 
-    def cleanup_own(self, baseline_sources):
+    def cleanup_own(self, baseline_sources, published_sources):
+        """Restore ONLY this unit's published sources after proving ownership.
+
+        All checks (object set, metadata, known old/new bytes, credential,
+        unit/configuration) run BEFORE any service command or write; drift is
+        refused untouched. Each restore is atomic via a private staging file.
+        The preexisting installation is never removed.
+        """
+        import os
         target = self.root / 'opt/fakenet-ng'
+        if set(baseline_sources) != set(published_sources):
+            raise ValueError('published/baseline source sets differ')
+        inventory = installation_inventory(self.root)
+        if set(inventory) != set(self.baseline['inventory']):
+            raise ValueError('existing installation object set changed before cleanup')
+        for name, want in baseline_sources.items():
+            row = inventory.get('opt/fakenet-ng/' + name)
+            prior = self.baseline['inventory'].get('opt/fakenet-ng/' + name)
+            if row is None or prior is None or row.get('kind') != 'file' or prior.get('kind') != 'file':
+                raise ValueError('owned existing source object missing: ' + name)
+            if (row.get('uid') != prior.get('uid') or row.get('gid') != prior.get('gid')
+                    or row.get('mode') != prior.get('mode')):
+                raise ValueError('owned existing source metadata drift: ' + name)
+            if row.get('sha256') not in (want, published_sources[name]):
+                raise ValueError('foreign existing source bytes before cleanup: ' + name)
+        token = self.root / 'etc/fakenet-ng-linux/token'; state = token.stat()
+        if dict(inode=state.st_ino, mode=state.st_mode & 0o777, sha256=_digest(token)) != self.expected['credential']:
+            raise ValueError('installed credential identity changed before cleanup')
+        if (_digest(self.root / 'etc/systemd/system' / self.unit) != self.expected['unit_sha256']
+                or _digest(self.root / 'opt/fakenet-ng/fakenet/configs/default.ini') != self.expected['config_sha256']):
+            raise ValueError('installation unit/configuration changed before cleanup')
         self.command(['systemctl', 'stop', self.unit])
         if not self.quiet():
             raise ValueError('existing installation did not stop for owned restore')
@@ -570,21 +619,29 @@ class ExistingInstallation(NativeDeployment):
             path = target / name
             if path.is_symlink() or not path.is_file():
                 raise ValueError('owned existing source missing before restore')
-            path.write_bytes(self._baseline_copy[name]); path.chmod(self._baseline_mode[name])
+            pending = path.with_name('.' + path.name + '.owned-existing-restore')
+            if pending.exists() or pending.is_symlink():
+                raise ValueError('owned restore staging collision: ' + name)
+            with pending.open('xb') as stream:
+                stream.write(self._baseline_copy[name]); stream.flush(); os.fsync(stream.fileno())
+            pending.chmod(self._baseline_mode[name])
+            if _digest(pending) != want:
+                pending.unlink()
+                raise ValueError('owned restore staging bytes differ: ' + name)
+            os.replace(pending, path)
             if _digest(path) != want:
-                raise ValueError('owned existing source restore differs')
+                raise ValueError('owned existing source restore differs: ' + name)
             restored[name] = want
         self.command(['systemctl', 'start', self.unit]); service = self.service()
         if service['load'] != 'loaded' or service['pid'] <= 0 or service['active'] != 'active':
             raise ValueError('existing installation not restarted after owned restore')
-        token = self.root / 'etc/fakenet-ng-linux/token'; state = token.stat()
+        state = token.stat()
         if dict(inode=state.st_ino, mode=state.st_mode & 0o777, sha256=_digest(token)) != self.expected['credential']:
             raise ValueError('installed credential identity changed after owned restore')
         if (_digest(self.root / 'etc/systemd/system' / self.unit) != self.expected['unit_sha256']
                 or _digest(self.root / 'opt/fakenet-ng/fakenet/configs/default.ini') != self.expected['config_sha256']):
             raise ValueError('installation unit/configuration changed after owned restore')
-        inventory = installation_inventory(self.root)
-        if set(inventory) != set(self.baseline['inventory']):
+        if set(installation_inventory(self.root)) != set(self.baseline['inventory']):
             raise ValueError('existing installation object set changed')
         return dict(restored=True, installation_preserved=True, restored_sources=restored,
                     preserved_paths=['opt/fakenet-ng', 'etc/fakenet-ng-linux',
