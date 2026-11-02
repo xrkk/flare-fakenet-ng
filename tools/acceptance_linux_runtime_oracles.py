@@ -288,7 +288,7 @@ def _evaluate_existing(root, folder, expected, allow_fixture):
             raise ValueError(why)
 
     try:
-        from acceptance_linux_recovery import template_data, verify_phase_package
+        from acceptance_linux_recovery import template_data, verify_phase_package, stable_machine
         value = _read(folder, 'linux-result.json')
         require(value.get('schema') == 'fakenet.linux-runtime-result.v4'
                 and value.get('case') == 'LINUX-DEPLOY-UPDATE', 'existing-install result identity differs')
@@ -404,10 +404,18 @@ def _evaluate_existing(root, folder, expected, allow_fixture):
                 and observed.get('config_sha256') == existing['config_sha256'],
                 'post-cleanup unit/configuration differs')
         require(observed.get('service', {}).get('pid', 0) > 0, 'post-cleanup service not running')
-        if observed.get('process'):
-            require(observed['process'].get('argv') == existing['service']['argv']
-                    and observed['process'].get('interpreter_sha256') == existing['service']['interpreter_sha256'],
-                    'post-cleanup service process differs')
+        process = observed.get('process')
+        require(isinstance(process, dict)
+                and process.get('pid') == observed['service']['pid']
+                and bool(str(process.get('birth') or ''))
+                and process.get('children') == ''
+                and process.get('argv') == existing['service']['argv']
+                and process.get('interpreter_sha256') == existing['service']['interpreter_sha256'],
+                'post-cleanup service process missing or differs')
+        require(isinstance(observed.get('machine'), dict)
+                and isinstance(initial.get('machine'), dict)
+                and stable_machine(observed['machine']) == stable_machine(initial['machine']),
+                'post-cleanup machine/network state differs from the initial observation')
         require(cleanup.get('restored') is True
                 and cleanup.get('restored_sources') == existing['sources']
                 and set(cleanup.get('preserved_paths', [])) == {

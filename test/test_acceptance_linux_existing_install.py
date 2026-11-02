@@ -350,6 +350,94 @@ class ExistingInstallationTests(unittest.TestCase):
         self.assertIn(['systemctl', 'stop', 'fakenet-ng-linux.service'], commands)
         self.assertIn(['systemctl', 'start', 'fakenet-ng-linux.service'], commands)
 
+    def _real_cleanup(self, value, provider):
+        from acceptance_linux_recovery import ExistingInstallation
+        real = object.__new__(ExistingInstallation)
+        real.root = self.system; real.unit = 'fakenet-ng-linux.service'
+        real.expected = value['existing_installation']
+        real._baseline_copy = {n: (self.system / 'opt/fakenet-ng' / n).read_bytes() for n in FILES}
+        real._baseline_mode = {n: 0o600 for n in FILES}
+        real.baseline = {'inventory': recovery.installation_inventory(self.system)}
+        real.command = provider.command; real.quiet = provider.quiet; real.service = provider.service
+        return real.cleanup_own
+
+    def test_actual_caller_rejects_foreign_bytes_before_cleanup(self):
+        """F2 caller: foreign bytes injected AFTER the normal update completed
+        must be preserved and rejected before any cleanup command/write."""
+        value = self.inputs('caller-foreign')
+        provider = self.provider(); provider.expected = value['existing_installation']
+        provider.cleanup_own = self._real_cleanup(value, provider)
+        original_status = provider.status
+        target = self.system / 'opt/fakenet-ng' / FILES[0]
+        marker = b'FOREIGN-BYTES-NOT-PUBLISHED-BY-THIS-OPERATION\n'
+        state = {'injected': False, 'commands': None}
+
+        def status():
+            result = original_status()
+            receipt = self.system / 'opt' / ('.fakenet-update-' + value['operation'] + '-normal') / 'receipt.json'
+            if (not state['injected'] and receipt.exists()
+                    and json.loads(receipt.read_text()).get('phase') == 'completed'):
+                target.write_bytes(marker)
+                state['injected'] = True
+                state['commands'] = len(provider.commands)
+            return result
+        provider.status = status
+        value, provider, record = self.run_case('caller-foreign', provider=provider)
+        self.assertTrue(state['injected'])
+        self.assertEqual(marker, target.read_bytes())
+        self.assertFalse(record['cleanup'].get('restored'))
+        self.assertTrue(record['cleanup'].get('preserved_installation', True))
+        after = len(provider.commands) - (state['commands'] or 0)
+        self.assertEqual(0, after, provider.commands)
+
+    def test_source_change_during_stop_is_rejected_before_overwrite(self):
+        value = self.inputs('stop-drift')
+        provider = self.provider(); provider.expected = value['existing_installation']
+        provider.cleanup_own = self._real_cleanup(value, provider)
+        original_command = provider.command
+        target = self.system / 'opt/fakenet-ng' / FILES[1]
+
+        def command(argv):
+            answer = original_command(argv)
+            if argv[:2] == ['systemctl', 'stop']:
+                target.write_bytes(b'LATE-STOP-DRIFT')
+            return answer
+        provider.command = command
+        value, provider, record = self.run_case('stop-drift', provider=provider)
+        self.assertFalse(record['cleanup'].get('restored'))
+        self.assertEqual(b'LATE-STOP-DRIFT', target.read_bytes())
+
+    def test_consumer_requires_final_process_and_machine_evidence(self):
+        value, provider, record = self.run_case('consumer-negatives')
+        result = Path(value['owned_root']) / 'linux-result.json'
+        raw = result.read_bytes()
+        base = json.loads(raw)
+
+        def rejected(changed):
+            result.write_text(json.dumps(changed))
+            try:
+                rows, clean, detail = O.evaluate(ROOT, value['owned_root'], 'LINUX-DEPLOY-UPDATE',
+                                                 expected_inputs=value, allow_fixture=True)
+            finally:
+                result.write_bytes(raw)
+            return not clean
+        self.assertTrue(O.evaluate(ROOT, value['owned_root'], 'LINUX-DEPLOY-UPDATE',
+                                   expected_inputs=value, allow_fixture=True)[1])
+        mutations = {
+            'missing-process': lambda v: v['phase']['cleanup_observed'].__setitem__('process', None),
+            'wrong-pid': lambda v: v['phase']['cleanup_observed']['process'].__setitem__('pid', 1),
+            'empty-birth': lambda v: v['phase']['cleanup_observed']['process'].__setitem__('birth', ''),
+            'wrong-argv': lambda v: v['phase']['cleanup_observed']['process'].__setitem__('argv', ['foreign']),
+            'wrong-interpreter': lambda v: v['phase']['cleanup_observed']['process'].__setitem__('interpreter_sha256', '0' * 64),
+            'children': lambda v: v['phase']['cleanup_observed']['process'].__setitem__('children', '4242'),
+            'foreign-machine': lambda v: v['phase']['cleanup_observed'].__setitem__('machine', {'FOREIGN_NETWORK_STATE': True}),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(field=label):
+                changed = json.loads(raw)
+                mutate(changed)
+                self.assertTrue(rejected(changed), label)
+
     def _central_environment(self, name):
         head = A.git_head(ROOT)
         template = json.loads((self.template / 'template.json').read_text())

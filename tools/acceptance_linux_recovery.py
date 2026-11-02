@@ -506,7 +506,8 @@ class ExistingInstallation(NativeDeployment):
             raise ValueError('existing installation not active after restart')
         process = self._process(service['pid'])
         if (process['argv'] != self.binding['service_argv']
-                or process['interpreter_sha256'] != self.binding['interpreter_sha256']):
+                or process['interpreter_sha256'] != self.binding['interpreter_sha256']
+                or process.get('children') != ''):
             raise ValueError('restarted existing installation process differs')
         self.last_pid = process
         return dict(service=service, process=process)
@@ -595,6 +596,7 @@ class ExistingInstallation(NativeDeployment):
         inventory = installation_inventory(self.root)
         if set(inventory) != set(self.baseline['inventory']):
             raise ValueError('existing installation object set changed before cleanup')
+        checked_sources = {}
         for name, want in baseline_sources.items():
             row = inventory.get('opt/fakenet-ng/' + name)
             prior = self.baseline['inventory'].get('opt/fakenet-ng/' + name)
@@ -605,6 +607,7 @@ class ExistingInstallation(NativeDeployment):
                 raise ValueError('owned existing source metadata drift: ' + name)
             if row.get('sha256') not in (want, published_sources[name]):
                 raise ValueError('foreign existing source bytes before cleanup: ' + name)
+            checked_sources[name] = dict(row)
         token = self.root / 'etc/fakenet-ng-linux/token'; state = token.stat()
         if dict(inode=state.st_ino, mode=state.st_mode & 0o777, sha256=_digest(token)) != self.expected['credential']:
             raise ValueError('installed credential identity changed before cleanup')
@@ -617,8 +620,13 @@ class ExistingInstallation(NativeDeployment):
         restored = {}
         for name, want in baseline_sources.items():
             path = target / name
-            if path.is_symlink() or not path.is_file():
-                raise ValueError('owned existing source missing before restore')
+            _plain(path, target)
+            row = checked_sources[name]; current = path.lstat()
+            if ((current.st_dev, current.st_ino, current.st_uid, current.st_gid,
+                 current.st_mode & 0o7777) !=
+                    (row['device'], row['inode'], row['uid'], row['gid'], row['mode'])
+                    or _digest(path) != row['sha256']):
+                raise ValueError('owned existing source changed before restore: ' + name)
             pending = path.with_name('.' + path.name + '.owned-existing-restore')
             if pending.exists() or pending.is_symlink():
                 raise ValueError('owned restore staging collision: ' + name)
@@ -628,6 +636,14 @@ class ExistingInstallation(NativeDeployment):
             if _digest(pending) != want:
                 pending.unlink()
                 raise ValueError('owned restore staging bytes differ: ' + name)
+            _plain(path, target)
+            current = path.lstat()
+            if ((current.st_dev, current.st_ino, current.st_uid, current.st_gid,
+                 current.st_mode & 0o7777) !=
+                    (row['device'], row['inode'], row['uid'], row['gid'], row['mode'])
+                    or _digest(path) != row['sha256']):
+                pending.unlink()
+                raise ValueError('owned existing source changed before atomic restore: ' + name)
             os.replace(pending, path)
             if _digest(path) != want:
                 raise ValueError('owned existing source restore differs: ' + name)

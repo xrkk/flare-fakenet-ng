@@ -784,7 +784,7 @@ def run_existing_installation(case, out, value, boundary=None):
                                          installation_preserved=True,
                                          reason='incomplete existing-installation phase; preserve the installation')
             else:
-                published = {name: sha(system / 'opt/fakenet-ng' / name) for name in u.FILES}
+                published = {name: phase['normal']['lineage']['files'][name] for name in u.FILES}
                 record['cleanup'] = provider.cleanup_own(baseline_sources, published)
                 restored = provider.started()
                 phase['cleanup_observed'] = {
