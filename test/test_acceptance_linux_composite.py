@@ -55,6 +55,52 @@ class CompositeTests(unittest.TestCase):
             'fixture': True,
         }
 
+    def _windows_client(self, vm_uuid='b3e04d56-3db2-9f3d-4d52-3ec22c4cfdc0'):
+        return {'transport': 'windows-mcp-velo',
+                'identity': {'platform': 'windows', 'hostname': 'DESKTOP-3FI41GR'},
+                'mcp_config_ref': '/home/adminn/.codex/config.toml', 'mcp_server': 'VMMalBox',
+                'python': 'E:\\FakeNetRegression\\baseline-36b0f79-20261101\\python311\\python.exe',
+                'source_root': 'E:\\FakeNetRegression\\baseline-36b0f79-20261101\\source-36b0f79',
+                'work_root': 'E:\\FakeNetRegression\\baseline-36b0f79-20261101\\diag-t069',
+                'transfer': {'expected_vm_identity': {
+                    'vm_uuid': vm_uuid,
+                    'boot_identity': 'winboot-' + 'a' * 57, 'vm_epoch': 'fixture-epoch'}}}
+
+    def test_windows_client_is_selected_through_the_existing_channel(self):
+        # The real existing Windows channel is the primary client candidate; the
+        # only changed rule is the upper composite Linux-client restriction.
+        value = self.inputs('windows-client')
+        value['multihost']['client'] = self._windows_client()
+        value['deployed_identity'] = composite._identities(value)
+        composite.validate_inputs(value['owned_root'], value)
+        case, plan = composite._multi_plan(value)
+        runtime_value = plan['environment']['native_runtime']
+        self.assertEqual('windows', runtime_value['client']['identity']['platform'])
+        from acceptance_orchestration import multi_runtime_block
+        self.assertIsNone(multi_runtime_block(runtime_value, case, plan['environment']))
+        self.assertEqual('linux', runtime_value['server']['identity']['platform'])
+
+    def test_windows_server_and_same_vm_client_are_rejected(self):
+        value = self.inputs('windows-server')
+        value['multihost']['server'] = self._windows_client()
+        value['singlehost']['target'] = value['multihost']['server']['identity']
+        value['target'] = value['singlehost']['target']
+        value['deployed_identity'] = composite._identities(value)
+        with self.assertRaisesRegex(ValueError, 'Linux target'):
+            composite.validate_inputs(value['owned_root'], value)
+        same = self.inputs('same-vm')
+        same['multihost']['client'] = self._windows_client(
+            vm_uuid=self.server.get('expected_vm_uuid'))
+        same['deployed_identity'] = composite._identities(same)
+        if self.server.get('expected_vm_uuid'):
+            with self.assertRaises(ValueError):
+                composite.validate_inputs(same['owned_root'], same)
+        local = self.inputs('local-alias')
+        local['multihost']['client'] = json.loads(json.dumps(local['multihost']['server']))
+        local['deployed_identity'] = composite._identities(local)
+        with self.assertRaises(ValueError):
+            composite.validate_inputs(local['owned_root'], local)
+
     def test_exact_three_role_identity_is_required(self):
         value = self.inputs()
         composite.validate_inputs(value['owned_root'], value)

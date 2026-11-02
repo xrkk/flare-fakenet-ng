@@ -102,10 +102,28 @@ def validate_inputs(out, value):
         raise ValueError('composite MultiHost actions required')
     for role in ('server', 'client'):
         runtime = multi[role]
-        if not isinstance(runtime, dict) or runtime.get('identity', {}).get('platform') != 'linux':
-            raise ValueError('composite two explicit Linux targets required')
-        if not runtime.get('workspace_root') or not runtime.get('work_root') or not runtime.get('source_root'):
-            raise ValueError('composite MultiHost channel references incomplete')
+        platform = runtime.get('identity', {}).get('platform') if isinstance(runtime, dict) else None
+        if role == 'server':
+            # The SingleHost server is the original Linux runtime target.
+            if platform != 'linux':
+                raise ValueError('composite SingleHost/server requires an explicit Linux target')
+            if not runtime.get('workspace_root') or not runtime.get('work_root') or not runtime.get('source_root'):
+                raise ValueError('composite Linux server channel references incomplete')
+        elif platform == 'linux':
+            if not runtime.get('workspace_root') or not runtime.get('work_root') or not runtime.get('source_root'):
+                raise ValueError('composite MultiHost Linux client channel references incomplete')
+        elif platform == 'windows':
+            # Only the upper composite restriction is relaxed: the independent
+            # client may be the REAL existing Windows channel (windows-mcp-velo).
+            # The deep topology/identity/path gate remains multi_runtime_block
+            # through the native runtime_block call below.
+            if runtime.get('transport') != 'windows-mcp-velo':
+                raise ValueError('composite Windows client requires the existing windows-mcp-velo channel')
+            required = {'mcp_config_ref', 'mcp_server', 'python', 'source_root', 'work_root', 'transfer'}
+            if not required.issubset(runtime):
+                raise ValueError('composite Windows client channel references incomplete')
+        else:
+            raise ValueError('composite MultiHost client requires an explicit Linux or existing Windows target')
     identities = _identities(value)
     if identities['singlehost'] != identities['server']:
         raise ValueError('composite SingleHost must be the server target, never the independent client')
