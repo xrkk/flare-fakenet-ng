@@ -352,14 +352,17 @@ def foreign_udp_owner_changes(baseline, sample, proof):
             parts = line.split()
             if len(parts) != 3 or parts[0].upper() != 'UDP':
                 raise ValueError('non-UDP row remains in difference')
-        def raw_owner(text, address_port):
+        def raw_owners(text, address_port):
+            owners = []
             for raw in str(text).splitlines():
                 parts = raw.split()
                 if (len(parts) == 4 and parts[0].upper() == 'UDP' and
                         parts[1] == address_port and parts[2] == '*:*' and
                         parts[3].isdigit()):
-                    return int(parts[3])
-            raise ValueError('raw owner row unavailable for %s' % address_port)
+                    owners.append(int(parts[3]))
+            if not owners or len(owners) != len(set(owners)):
+                raise ValueError('raw owner rows unavailable or duplicated for %s' % address_port)
+            return owners
         managed = _managed_process_ids(baseline['sections'].get('windivert_processes'))
         start_ids = {int(row['ProcessId']): str(row['CreationTime'])
                      for row in proof['start']['processes']}
@@ -367,20 +370,21 @@ def foreign_udp_owner_changes(baseline, sample, proof):
             raise ValueError('ambiguous process identity')
         for direction, line in norm_changed:
             address_port = line.split()[1]
-            owner = raw_owner(baseline['sections']['listen_ports'] if direction == 'removed'
-                              else sample['current']['listen_ports'], address_port)
-            if owner in managed:
-                result['refused'].append({'direction': direction, 'row': line,
-                                          'pid': owner, 'reason': 'baseline-managed owner'})
-                continue
-            if owner not in start_ids:
-                result['refused'].append({'direction': direction, 'row': line,
-                                          'pid': owner,
-                                          'reason': 'owner created during run or unknown'})
-                continue
-            result['attributed'].append({'direction': direction, 'row': line,
-                                         'pid': owner,
-                                         'creation_time': start_ids[owner]})
+            owners = raw_owners(baseline['sections']['listen_ports'] if direction == 'removed'
+                                else sample['current']['listen_ports'], address_port)
+            for owner in owners:
+                if owner in managed:
+                    result['refused'].append({'direction': direction, 'row': line,
+                                              'pid': owner, 'reason': 'baseline-managed owner'})
+                    continue
+                if owner not in start_ids:
+                    result['refused'].append({'direction': direction, 'row': line,
+                                              'pid': owner,
+                                              'reason': 'owner created during run or unknown'})
+                    continue
+                result['attributed'].append({'direction': direction, 'row': line,
+                                             'pid': owner,
+                                             'creation_time': start_ids[owner]})
         result['accepted'] = bool(result['attributed']) and not result['refused']
     except Exception as exc:
         result['accepted'] = False

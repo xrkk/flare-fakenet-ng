@@ -20,6 +20,21 @@ def filetime_ns(value):
     return (integer(value) - FILETIME_EPOCH) * 100
 
 
+def cim_creation_matches(native_ticks, cim_ticks):
+    """Compare native FILETIME to a Win32_Process CreationDate observation.
+
+    CIM_DATETIME has microsecond resolution; FILETIME has 100 ns resolution.
+    CreationDate.ToFileTimeUtc() therefore drops the final FILETIME digit.
+    Preserve exact comparison for full-precision evidence and interpret only
+    microsecond-aligned CIM values as their ten-tick interval. This never
+    extends to a different microsecond or substitutes for the boot/live gates.
+    """
+    native, observed = integer(native_ticks), integer(cim_ticks)
+    return (native > FILETIME_EPOCH and observed > FILETIME_EPOCH and
+            (native == observed or
+             (observed % 10 == 0 and observed <= native < observed + 10)))
+
+
 def address(value):
     import ipaddress
     return str(ipaddress.ip_address(str(value).strip('[]')))
@@ -230,7 +245,7 @@ def same_boot_owner_proof(decision, sample, *, foreign=False):
             if owner.get('alive') is not True or owner.get('error') or not owner.get('image'):
                 return False
             if foreign:
-                if str(owner['birth_ticks']) != str(row['creation_time']):
+                if not cim_creation_matches(owner['birth_ticks'], row['creation_time']):
                     return False
             elif row.get('direction') == 'added':
                 _native_owner(owner, context, _window(sample)[1], '')
