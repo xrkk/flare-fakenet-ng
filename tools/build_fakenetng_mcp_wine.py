@@ -105,12 +105,21 @@ WINE_ALLOWED_SKIPS = {
         'host locale is not GBK family',
     'test.test_gui_vm_acceptance::test_export_logs_collects_package_root_artifacts':
         'Wine powershell.exe stub did not execute the script',
-    # Native PowerShell API-boundary case (05a3d0e): Linux hosts have no
-    # powershell.exe, so the win32-only node reports its declared skip on the
-    # host gate; it stays a native qualification gap there, never a pass.
+    # Native PowerShell cases (05a3d0e): Linux hosts have no powershell.exe,
+    # so these win32-only nodes report their declared skips on the host gate;
+    # they stay native qualification gaps there, never passes.
     'test.test_acceptance_mcp.NativePinPrecisionTests::'
     'test_shared_helper_retains_full_identity_and_quantizes_only_cim':
         'native PowerShell API-boundary test; live service is not touched',
+    'test.test_acceptance_mcp.NativeConsumerPrecisionTests::'
+    'test_fixed_consumers_keep_full_identity_and_refuse_before_kill':
+        'native safe API-object consumer tests',
+    'test.test_acceptance_mcp.NativeLiveHealthLogTests::'
+    'test_original_health_consumer_reads_while_writer_is_open':
+        'native benign live-writer and byte-boundary tests',
+    'test.test_acceptance_mcp.NativeLiveHealthLogTests::'
+    'test_fixed_prefix_refuses_truncation_short_reads_and_changes':
+        'native fixed prefix byte-boundary tests',
 }
 
 
