@@ -2326,6 +2326,12 @@ class SnapshotOwnedScopeTests(unittest.TestCase):
         saved = boundary.baselines.save(run, {key: 'unchanged' for key in BASELINE_FIELDS})
         boundary.snapshot.write(run_id=run, controller_id=None, state_version=1, command_id='old-clean', config_sha256=self.inputs['config_identity']['sha256'], baseline_path=saved['path'], needs_recovery=False)
         boundary._recover()
+        # The restored marker binds the installed active configuration, so the
+        # normalized service keeps it after recovery; only the baseline file
+        # stays foreign. Since 28c1b64 the judge treats a null initial
+        # configuration with accepted load operations as an unrestorable
+        # scene, which this fixture never intended to build.
+        boundary.active_config = self.inputs['config_identity']
         original = Path(saved['path']).read_bytes()
         out = self.root / 'foreign'
         result = m.run('MCP-P03-FULL', out, self.inputs, selected=['ACC-008'], boundary=boundary, fixture=True)
