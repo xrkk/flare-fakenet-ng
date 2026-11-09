@@ -688,6 +688,15 @@ def build_payload_report(raw_pcap_path, observation_index, flow_registry=None,
     tcp_sent_ends = {}
     tcp_peer_acks = {}
     udp_datagrams = {}
+    # Flows the main divert handle observed carry initial/final observations
+    # and stay fail-closed under DEC-008 reassembly.  A flow whose every
+    # observation has the record-only role 'inbound' was only sniffed: the
+    # SNIFF handle's bounded WinDivert queue may silently drop a segment of
+    # unrelated ambient traffic (e.g. a deployment's own loopback TLS), and
+    # that loss must degrade only that flow instead of invalidating the
+    # whole sealed capture.
+    strict_flow_ids = set()
+    record_only_degradations = []
     for (ordinal, timestamp, raw), entry in selected:
         facts = _packet_parts(raw)
         if facts['protocol'] not in ('TCP', 'UDP'):
@@ -700,6 +709,8 @@ def build_payload_report(raw_pcap_path, observation_index, flow_registry=None,
         if flow_id is None:
             flow_id = 'flow-unowned-%06d' % ordinal
         flow_id = str(flow_id)
+        if entry.get('observation_role') in ('initial', 'final'):
+            strict_flow_ids.add(flow_id)
         registry_flow = registry_flows.get(flow_id)
         model = flow_models.get(flow_id)
         if model is None:
@@ -770,8 +781,32 @@ def build_payload_report(raw_pcap_path, observation_index, flow_registry=None,
     for flow_id, model in flow_models.items():
         for direction, direction_model in model['directions'].items():
             if model['protocol'] == 'TCP':
-                payload, _cursor = _assemble_tcp(tcp_segments.get(
-                    (flow_id, direction), []))
+                segments = tcp_segments.get((flow_id, direction), [])
+                try:
+                    payload, _cursor = _assemble_tcp(segments)
+                except PayloadReportError as exc:
+                    if flow_id in strict_flow_ids:
+                        raise
+                    # Record-only observation with an unfillable hole: the
+                    # payload cannot be attested, so withhold it and keep the
+                    # sealed capture usable for the fail-closed takeover
+                    # flows instead of failing the entire report.
+                    payload = b''
+                    direction_model['capture_degraded'] = {
+                        'reason': 'record-only-tcp-sequence-gap',
+                        'error': str(exc),
+                        'observed_segments': len(segments),
+                        'observed_payload_bytes': sum(
+                            len(bytes(item['payload'])) for item in segments),
+                    }
+                    record_only_degradations.append({
+                        'flow_id': flow_id,
+                        'direction': direction,
+                        'source': direction_model['source'],
+                        'destination': direction_model['destination'],
+                        'reason': 'record-only-tcp-sequence-gap',
+                        'error': str(exc),
+                    })
                 direction_model['bytes'] = len(payload)
                 direction_model['sha256'] = _sha256(payload)
                 direction_model['base64'] = _b64(payload)
@@ -849,6 +884,11 @@ def build_payload_report(raw_pcap_path, observation_index, flow_registry=None,
         'flows': list(flow_models.values()),
         'nbis': _serialize_nbis(nbis, registry=registry),
     }
+    if record_only_degradations:
+        # Every main-handle (takeover) flow still reassembled fail-closed;
+        # these entries enumerate only sniffed flows whose payload bytes are
+        # withheld, so downstream consumers never mistake them for complete.
+        model['capture']['record_only_degradations'] = record_only_degradations
     validate_payload_model(model)
     return model
 

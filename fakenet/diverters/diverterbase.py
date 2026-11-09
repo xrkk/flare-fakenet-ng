@@ -2638,6 +2638,17 @@ class DiverterBase(fnconfig.Config):
                     self._log_capture_health_summary()
                 raise
             self._capture_reassembly_health = True
+            degradations = (payload_model.get('capture', {}).get(
+                'record_only_degradations') or [])
+            if degradations:
+                # Takeover flows reassembled fail-closed; one or more flows
+                # observed only by the record-only handle had a queue-loss
+                # gap and their payload bytes are withheld in the report.
+                self.logger.info(
+                    'PCAP_RECORD_ONLY_DEGRADED count=%d flows=%s',
+                    len(degradations),
+                    ','.join(sorted(str(item.get('flow_id'))
+                                    for item in degradations)))
             self._log_capture_health_summary()
         else:
             # DumpPackets=No is an explicit, mechanically visible limitation;

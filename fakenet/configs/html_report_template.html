@@ -431,6 +431,8 @@
           row.appendChild(make("td", null, direction.bytes));
           var actions = make("td"); addFact(actions, "SHA-256", direction.sha256);
           if (direction.datagrams) addFact(actions, "UDP datagrams", direction.datagrams.length);
+          if (direction.capture_degraded) addFact(actions, "Capture degraded",
+            direction.capture_degraded.reason + ": " + direction.capture_degraded.error);
           var toggle = make("button", "payload-action", "View Full Payload"); toggle.type = "button";
           var view = viewer(flow, direction);
           toggle.addEventListener("click", function () {
@@ -457,6 +459,9 @@
         valueText(capture.converted_record_count) + " | Observations: " +
         valueText(capture.observation_record_count)));
       if (capture.limitation) root.appendChild(make("div", null, capture.limitation));
+      if (capture.record_only_degradations) root.appendChild(make("div", null,
+        "Record-only flows with withheld payload: " + capture.record_only_degradations.length +
+        " (takeover flows remain fail-closed; see each flow's Capture degraded fact)"));
     }
     function copyNbis(mode) {
       var rows = Array.from(document.querySelectorAll(".nbi-row"));

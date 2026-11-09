@@ -219,6 +219,82 @@ class PayloadReportTests(unittest.TestCase):
                                                  'coverage_health': True,
                                                  'reassembly_health': True})
 
+    def test_record_only_loopback_gap_degrades_without_failing_capture(self):
+        # Reproduces the 2026-11-09 dyn-c2-24a75 stop failure: a deployment's
+        # own loopback TLS flow is recorded only by the record-only SNIFF
+        # handle (observation role 'inbound'), one 14-byte segment is dropped
+        # by the bounded WinDivert queue, and the sealed capture must keep a
+        # complete fail-closed attestation for the takeover flow instead of
+        # invalidating the whole pair.
+        takeover_request = tcp_packet(
+            '192.0.2.10', '198.51.100.20', 40000, 80, 100, b'POST /poll')
+        takeover_reply = tcp_packet(
+            '198.51.100.20', '192.0.2.10', 80, 40000, 900, b'{"next_data":null}')
+        ambient_a = tcp_packet(
+            '127.0.0.1', '127.0.0.1', 49695, 8000, 543104660, b'A' * 1460)
+        ambient_c = tcp_packet(
+            '127.0.0.1', '127.0.0.1', 49695, 8000, 543106134, b'C' * 35)
+        paths = self.make_capture([
+            {'raw': takeover_request, 'logical': 'poll', 'direction': 'outbound'},
+            {'raw': takeover_reply, 'logical': 'reply', 'direction': 'inbound'},
+            {'raw': ambient_a, 'logical': 'loop-1',
+             'role': 'inbound', 'direction': 'inbound'},
+            # The 14-byte segment at 543106120 was never captured.
+            {'raw': ambient_c, 'logical': 'loop-3',
+             'role': 'inbound', 'direction': 'inbound'},
+        ])
+        model = build_payload_report(
+            paths[0], paths[2], paths[3], capture_health={
+                'writer_health': True, 'coverage_health': True,
+                'reassembly_health': True})
+        validate_payload_model(model)
+        self.assertTrue(model['capture']['overall_health'])
+        self.assertEqual('complete-capture', model['capture']['marker'])
+        degradations = model['capture']['record_only_degradations']
+        self.assertEqual(1, len(degradations))
+        self.assertEqual('record-only-tcp-sequence-gap',
+                         degradations[0]['reason'])
+        self.assertIn('sequence gap', degradations[0]['error'])
+        degraded = [flow for flow in model['flows']
+                    if any('capture_degraded' in item
+                           for item in flow['directions'].values())]
+        self.assertEqual(1, len(degraded))
+        degraded_direction = next(
+            item for item in degraded[0]['directions'].values()
+            if 'capture_degraded' in item)
+        self.assertEqual(0, degraded_direction['bytes'])
+        self.assertEqual('', degraded_direction['base64'])
+        self.assertEqual(2, degraded_direction['capture_degraded']['observed_segments'])
+        # The takeover flow keeps its full fail-closed payload attestation.
+        takeover = [flow for flow in model['flows']
+                    if flow['source']['ip'] == '192.0.2.10'][0]
+        outbound = next(item for item in takeover['directions'].values()
+                        if item['direction'] == 'outbound')
+        self.assertEqual(b'POST /poll', base64.b64decode(outbound['base64']))
+        self.assertNotIn('capture_degraded', outbound)
+        self.assertNotIn('capture_degraded', next(
+            item for item in takeover['directions'].values()
+            if item['direction'] == 'inbound'))
+
+    def test_record_only_gap_in_main_handle_flow_still_fails_closed(self):
+        # A single sniff-role observation of a takeover flow does not loosen
+        # the contract: the same logical packet also observed by the main
+        # handle (initial/final roles) keeps that flow fail-closed.
+        strict_a = tcp_packet(
+            '192.0.2.10', '198.51.100.20', 1, 2, 100, b'abc')
+        strict_c = tcp_packet(
+            '192.0.2.10', '198.51.100.20', 1, 2, 105, b'xyz')
+        paths = self.make_capture([
+            {'raw': strict_a, 'logical': 'a', 'direction': 'outbound'},
+            {'raw': strict_c, 'logical': 'c',
+             'role': 'inbound', 'direction': 'outbound'},
+        ])
+        with self.assertRaisesRegex(PayloadReportError, 'sequence gap'):
+            build_payload_report(paths[0], paths[2], paths[3],
+                                 capture_health={'writer_health': True,
+                                                 'coverage_health': True,
+                                                 'reassembly_health': True})
+
     def test_pair_validation_rejects_count_and_byte_mismatch(self):
         packet = tcp_packet('192.0.2.10', '198.51.100.20', 40000, 3585,
                             100, b'paired-bytes')
