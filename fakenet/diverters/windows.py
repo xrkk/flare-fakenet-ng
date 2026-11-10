@@ -139,7 +139,7 @@ PROCESS_REDIRECT_RESTART_ADOPT_POLL_SECONDS = 0.25
 
 from fakenet.mcp.controlfilter import (
     ControlFilterError, apply_control_link_exclusion,
-    apply_loopback_exclusion)
+    apply_loopback_exclusion, apply_local_control_exclusion)
 from .egresspolicy import (EgressPolicy, PolicyConfigError,
                            RelayMappingQuotaExceeded,
                            ReviewedPacketTuple, Verdict)
@@ -1103,6 +1103,8 @@ class Diverter(DiverterBase, WinUtilMixin):
             # validated by the same fail-closed check_filter below. The
             # record-only inbound capture handle keeps recording loopback.
             self.filter = apply_loopback_exclusion(self.filter)
+            self.filter = apply_local_control_exclusion(
+                self.filter, self.external_ip, control_port)
         except ControlFilterError as exc:
             raise PolicyConfigError(str(exc)) from exc
         if self.filter is None:

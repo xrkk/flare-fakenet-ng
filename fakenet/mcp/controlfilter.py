@@ -154,3 +154,39 @@ def build_control_link_exclusion_clause(exclude_ip, exclude_port):
 def exclusion_clause(filter_string, exclude_ip, exclude_port):
     """Backward-compatible single-entry alias used by older callers."""
     return build_control_link_exclusion_clause(exclude_ip, exclude_port)
+
+
+def apply_local_control_exclusion(filter_string, local_ip, ports):
+    """Exclude only same-address management TCP requests and replies.
+
+    Windows marks traffic to its own non-loopback interface as loopback too,
+    but a 127/8-only address exemption misses it. Never exempt remote peers
+    or non-management ports (in particular the sample's C2 port).
+    """
+    if filter_string is None:
+        return None
+    # Reuse canonical address and numeric port validation.
+    build_control_link_exclusion_clause(local_ip, ports)
+    address = str(local_ip).strip()
+    parsed = ipaddress.ip_address(address)
+    if parsed.is_unspecified or parsed.is_multicast or parsed.is_loopback:
+        raise ControlFilterError('concrete local control IPv4 required')
+    values = [int(v.strip()) for v in str(ports).split(',')]
+    if any(not 1 <= p <= 65535 for p in values):
+        raise ControlFilterError('local control port out of range')
+    keep = ' and '.join('(tcp.SrcPort != %d and tcp.DstPort != %d)' % (p,p)
+                        for p in sorted(set(values)))
+    clause = ('(ip.SrcAddr != %s or ip.DstAddr != %s or ip.Protocol != 6 or (%s))'
+              % (address,address,keep))
+    if clause in filter_string:
+        return filter_string
+    marker = ' or (outbound and ipv6'
+    index = filter_string.find(marker)
+    if index < 0:
+        if filter_string.startswith(LEGACY_BASE):
+            return '(%s) and %s' % (filter_string,clause)
+        raise ControlFilterError('unknown local control main filter shape')
+    head = filter_string[:index]
+    if not head.startswith('(outbound and ip') or not head.endswith(')'):
+        raise ControlFilterError('unknown local control IPv4 arm')
+    return head[:-1] + ' and ' + clause + ')' + filter_string[index:]

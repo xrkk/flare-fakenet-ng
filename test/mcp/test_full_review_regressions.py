@@ -234,6 +234,7 @@ def _shared_link_exclusion():
                   and node.name == '_apply_control_link_exclusion')
     env = {'apply_control_link_exclusion': controlfilter.apply_control_link_exclusion,
            'apply_loopback_exclusion': controlfilter.apply_loopback_exclusion,
+           'apply_local_control_exclusion': controlfilter.apply_local_control_exclusion,
            'ControlFilterError': controlfilter.ControlFilterError,
            'PolicyConfigError': RuntimeError,
            'WinDivert': SimpleNamespace(check_filter=lambda f: (True, 0, None))}
@@ -253,6 +254,7 @@ def test_independent_gui_filter_is_unchanged():
 def test_configured_control_link_still_applies_both_exclusions():
     apply = _shared_link_exclusion()
     obj = SimpleNamespace(filter='outbound and ip',
+                          external_ip='192.168.204.149',
                           _dict={'controllinkexcludeip': '192.168.204.1',
                                  'controllinkexcludeport': '28788'})
     apply(obj)
